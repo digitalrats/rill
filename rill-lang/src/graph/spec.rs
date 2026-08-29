@@ -39,6 +39,10 @@ pub struct GraphSpec {
     /// as program outputs, in `(node index, output channel)` order. Empty for a
     /// full (non-sub) graph.
     pub boundary_out: Vec<(usize, usize)>,
+    /// Free program input ports: `(node index, input channel)` that receive
+    /// signal from an active input backend (capture) or a cross-in boundary.
+    /// The reconstruction emits a `_` wire for each.
+    pub input_ports: Vec<(usize, usize)>,
 }
 
 /// A graph node: a direct builtin name, its parameter bag, and its backend

@@ -75,6 +75,7 @@ fn sine_graph_is_one_subprogram_with_nullbackend_input() {
         sample_rate: 44100.0,
         backends: vec![attach(true, 1)],
         boundary_out: Vec::new(),
+        input_ports: Vec::new(),
     };
     let parts = partition(&s);
     assert_eq!(parts.len(), 1, "sine graph partitions to one subgraph");
@@ -122,16 +123,22 @@ fn tape_echo_splits_into_two_subprograms() {
             capacity: 96000,
         }],
         sample_rate: 44100.0,
-        backends: vec![attach(false, 0), attach(true, 4)],
+        backends: vec![attach(true, 0), attach(false, 4)],
         boundary_out: Vec::new(),
+        input_ports: Vec::new(),
     };
     let parts = partition(&s);
     assert_eq!(parts.len(), 2, "tape echo partitions into two subgraphs");
-    // recording (active input at node 0): owns stereo_sum + write_head
-    let rec = &parts[0];
+    // recording owns stereo_sum + write_head; playback owns the read side.
+    let rec = parts
+        .iter()
+        .find(|p| p.nodes.contains(&1))
+        .expect("recording region");
+    let pb = parts
+        .iter()
+        .find(|p| p.nodes.contains(&3))
+        .expect("playback region");
     assert!(rec.nodes.contains(&0) && rec.nodes.contains(&1));
-    // playback (active output at node 4): owns read_head, tap_mixer, mixL, fb_lp
-    let pb = &parts[1];
     assert!(
         pb.nodes.contains(&2)
             && pb.nodes.contains(&3)

@@ -41,6 +41,7 @@ impl std::fmt::Display for BuildError {
 /// A deferred node recipe — constructed at `ast_from_def` time.
 struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
+    #[allow(dead_code)]
     id: u32,
     // Node anchor name — consumed by `ast_from_def` (where-def anchors) once
     // full topology lowering lands; kept in the recipe for that purpose.
@@ -119,7 +120,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         &mut self,
         type_name: &str,
         params: &Params,
-        id: u32,
+        #[allow(dead_code)] id: u32,
         name: String,
     ) -> usize {
         let idx = self.recipes.len();
@@ -295,6 +296,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
             sample_rate: self.sample_rate.unwrap_or(44100.0),
             backends: Vec::new(),
             boundary_out: Vec::new(),
+            input_ports: Vec::new(),
         }
     }
 

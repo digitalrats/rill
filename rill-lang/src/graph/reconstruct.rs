@@ -149,6 +149,15 @@ pub fn reconstruct<T: Transcendental + 'static>(
     let sig_ins: Vec<usize> = metas.iter().map(|m| m.signal_ins).collect();
     let sig_outs: Vec<usize> = metas.iter().map(|m| m.signal_outs).collect();
 
+    // Free input ports per node (from active input attachments and cross-in
+    // boundary edges) — each emits a `_` wire so the program exposes it.
+    let mut node_input_ports: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for &(node, port) in &spec.input_ports {
+        if node < n && !node_input_ports[node].contains(&port) {
+            node_input_ports[node].push(port);
+        }
+    }
+
     // --- Channel-aware build (memoized for fan-out) ---------------------------
     let mut memo: Vec<Option<Expr>> = vec![None; n];
 
@@ -158,6 +167,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
         in_edges: &[Vec<(usize, usize, usize)>],
         sig_ins: &[usize],
         sig_outs: &[usize],
+        node_input_ports: &[Vec<usize>],
         memo: &mut Vec<Option<Expr>>,
         dummy: Span,
     ) -> Expr {
@@ -166,7 +176,12 @@ pub fn reconstruct<T: Transcendental + 'static>(
         }
         let block = blocks[idx].clone();
         let max_port = in_edges[idx].iter().map(|&(_, _, tp)| tp).max();
-        let n_in = max_port.map(|p| p + 1).unwrap_or(0).max(sig_ins[idx]);
+        let max_input_port = node_input_ports[idx].iter().copied().max();
+        let n_in = max_port
+            .map(|p| p + 1)
+            .unwrap_or(0)
+            .max(sig_ins[idx])
+            .max(max_input_port.map(|p| p + 1).unwrap_or(0));
 
         // One channel-source per input port: the producer's selected channel
         // (`<:` with `_`/`!` selectors), or a free `_` wire (program input).
@@ -174,7 +189,16 @@ pub fn reconstruct<T: Transcendental + 'static>(
         for j in 0..n_in {
             match in_edges[idx].iter().find(|&&(_, _, tp)| tp == j) {
                 Some(&(from, from_port, _)) => {
-                    let producer = build(from, blocks, in_edges, sig_ins, sig_outs, memo, dummy);
+                    let producer = build(
+                        from,
+                        blocks,
+                        in_edges,
+                        sig_ins,
+                        sig_outs,
+                        node_input_ports,
+                        memo,
+                        dummy,
+                    );
                     channels.push(select_channels(
                         producer,
                         sig_outs[from],
@@ -221,14 +245,28 @@ pub fn reconstruct<T: Transcendental + 'static>(
         Expr::Wire(dummy)
     } else {
         let mut body = build(
-            sinks[0], &blocks, &in_edges, &sig_ins, &sig_outs, &mut memo, dummy,
+            sinks[0],
+            &blocks,
+            &in_edges,
+            &sig_ins,
+            &sig_outs,
+            &node_input_ports,
+            &mut memo,
+            dummy,
         );
         for &s in &sinks[1..] {
             body = Expr::Bin {
                 op: BinOp::Par,
                 lhs: Box::new(body),
                 rhs: Box::new(build(
-                    s, &blocks, &in_edges, &sig_ins, &sig_outs, &mut memo, dummy,
+                    s,
+                    &blocks,
+                    &in_edges,
+                    &sig_ins,
+                    &sig_outs,
+                    &node_input_ports,
+                    &mut memo,
+                    dummy,
                 )),
                 span: dummy,
             };
@@ -239,7 +277,14 @@ pub fn reconstruct<T: Transcendental + 'static>(
     // producing node as an additional program output.
     for &(node, channel) in &spec.boundary_out {
         let ch = build(
-            node, &blocks, &in_edges, &sig_ins, &sig_outs, &mut memo, dummy,
+            node,
+            &blocks,
+            &in_edges,
+            &sig_ins,
+            &sig_outs,
+            &node_input_ports,
+            &mut memo,
+            dummy,
         );
         body = Expr::Bin {
             op: BinOp::Par,

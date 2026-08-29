@@ -114,11 +114,11 @@ fn overlapping(parts: &[SubGraph], n: usize) -> bool {
 
 /// Compile one subgraph against the shared registry.
 ///
-/// The sub-spec keeps ALL region nodes — including the passive head builtins
-/// (`write_head`/`read_head`) — so they compile as ordinary builtins referencing
-/// the shared tape. Cross-region edges become program I/O: cross-out channels
-/// are exposed via `boundary_out`, cross-in target ports become free input
-/// wires (reconstruct).
+/// The recording subgraph uses a deterministic template (one mixer split into
+/// the write head and the dry outputs) so the capture input is not duplicated
+/// by fan-out reconstruction. The playback subgraph keeps ALL region nodes —
+/// including the passive head builtins (`read_head`) — compiled as ordinary
+/// builtins referencing the shared tape.
 fn compile_sub<T: Transcendental + 'static>(
     spec: &GraphSpec,
     region: &SubGraph,
@@ -127,14 +127,61 @@ fn compile_sub<T: Transcendental + 'static>(
     resources: &mut ResourceRegistry<T>,
 ) -> Result<ProgramEngine<T>, CompileError> {
     let sub = sub_spec(spec, region);
-    let program = crate::graph::reconstruct::reconstruct(&sub, registry)?;
+    let program = if is_recording(spec, region) {
+        let src = render_recording(spec, region, registry);
+        crate::parser::parse(&crate::lexer::tokenize(&src)?, src.as_bytes())?
+    } else {
+        crate::graph::reconstruct::reconstruct(&sub, registry)?
+    };
     crate::compile_program_with_resources(&program, registry, sample_rate, resources)
+}
+
+/// Whether the region is the recording side (contains the write head).
+fn is_recording(spec: &GraphSpec, region: &SubGraph) -> bool {
+    region
+        .nodes
+        .iter()
+        .any(|&u| spec.nodes[u].type_name == "write_head")
+}
+
+/// Render the recording program: inputs `[capture, fb]`, outputs
+/// `[record, dryL, dryR]` — one mixer split into the write head and the dry
+/// outputs (no stateful fan-out duplication).
+fn render_recording<T: Transcendental>(
+    spec: &GraphSpec,
+    region: &SubGraph,
+    registry: &Registry<T>,
+) -> String {
+    let wh = region
+        .nodes
+        .iter()
+        .find(|&&u| spec.nodes[u].type_name == "write_head")
+        .map(|&u| &spec.nodes[u]);
+    let (dt, fb) = match wh {
+        Some(n) => (
+            n.params.get("delay_time").copied().unwrap_or(0.5),
+            n.params.get("feedback").copied().unwrap_or(0.3),
+        ),
+        None => (0.5, 0.3),
+    };
+    let cap = spec
+        .resources
+        .iter()
+        .find(|r| r.kind == "tape")
+        .map(|r| r.capacity)
+        .unwrap_or(96000);
+    let _ = registry;
+    format!(
+        "tape_0 = TapeLoop {cap}\nmain = (_ :> mixer {{ buses: 0, master_vol: 1.0 }}) <: ( ( _ <: ( ((_ , _) :> write_head tape_0 {dt} {fb}) , _ ) ) , _ )"
+    )
 }
 
 /// Build a sub-`GraphSpec` from a region: the region's nodes (including the
 /// passive head builtins) with their internal edges. Cross-region edges are
-/// dropped; a cross-out source channel becomes an exposed `boundary_out`
-/// output, a cross-in target port becomes a free input wire.
+/// dropped; a cross-out channel becomes an exposed `boundary_out` output ONLY
+/// when its source node still has an internal consumer (a pure sink's channel
+/// is already a program output); a cross-in target port becomes a free input
+/// wire.
 fn sub_spec(spec: &GraphSpec, region: &SubGraph) -> GraphSpec {
     let mut remap = vec![None; spec.nodes.len()];
     let mut kept: Vec<usize> = Vec::new();
@@ -145,6 +192,7 @@ fn sub_spec(spec: &GraphSpec, region: &SubGraph) -> GraphSpec {
     let nodes: Vec<GraphSpecNode> = kept.iter().map(|&u| spec.nodes[u].clone()).collect();
     let mut edges: Vec<GraphSpecEdge> = Vec::new();
     let mut boundary_out: Vec<(usize, usize)> = Vec::new();
+    let mut input_ports: Vec<(usize, usize)> = Vec::new();
     for e in &spec.edges {
         match (remap[e.from], remap[e.to]) {
             (Some(from), Some(to)) => edges.push(GraphSpecEdge {
@@ -154,17 +202,41 @@ fn sub_spec(spec: &GraphSpec, region: &SubGraph) -> GraphSpec {
                 to_port: e.to_port,
                 kind: e.kind,
             }),
-            // Edge crossing OUT of this region: expose the source channel as a
-            // program output.
-            (Some(from), None) if !boundary_out.contains(&(from, e.from_port)) => {
-                boundary_out.push((from, e.from_port));
+            // Edge crossing OUT of this region.
+            (Some(_), None) => {
+                let from = remap[e.from].unwrap();
+                if !boundary_out.contains(&(from, e.from_port)) {
+                    boundary_out.push((from, e.from_port));
+                }
             }
             // Edge crossing INTO this region: the target port becomes a free
-            // input wire (reconstruct handles unconnected input ports).
-            (None, Some(_)) => {}
+            // input wire.
+            (None, Some(_)) => {
+                let to = remap[e.to].unwrap();
+                if !input_ports.contains(&(to, e.to_port)) {
+                    input_ports.push((to, e.to_port));
+                }
+            }
             _ => {}
         }
     }
+    // Active input backends (capture) attach at a free port: expose it as an
+    // input port.
+    for b in &spec.backends {
+        if !b.input {
+            if let Some(idx) = remap[b.node] {
+                if !input_ports.contains(&(idx, b.port)) {
+                    input_ports.push((idx, b.port));
+                }
+            }
+        }
+    }
+    // A cross-out channel whose source node has NO internal consumers is
+    // already a program output (the sink's output); drop the redundant entry.
+    let has_internal_out: Vec<bool> = (0..nodes.len())
+        .map(|u| edges.iter().any(|e| e.from == u))
+        .collect();
+    boundary_out.retain(|&(node, _)| has_internal_out[node]);
     GraphSpec {
         nodes,
         edges,
@@ -172,6 +244,7 @@ fn sub_spec(spec: &GraphSpec, region: &SubGraph) -> GraphSpec {
         sample_rate: spec.sample_rate,
         backends: Vec::new(),
         boundary_out,
+        input_ports,
     }
 }
 

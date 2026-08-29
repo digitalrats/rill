@@ -49,6 +49,7 @@ fn spec(nodes: Vec<GraphSpecNode>, edges: Vec<GraphSpecEdge>) -> GraphSpec {
         sample_rate: 44100.0,
         backends: Vec::new(),
         boundary_out: Vec::new(),
+        input_ports: Vec::new(),
     }
 }
 
