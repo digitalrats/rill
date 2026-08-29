@@ -28,6 +28,7 @@ criterion = { workspace = true, features = ["html_reports"] }
 rill-digital-effects = { workspace = true }
 rill-core-dsp = { workspace = true }
 rill-router = { workspace = true, features = ["lang"] }
+rill-sampler = { workspace = true }
 
 [[bench]]
 name = "lang_bench"

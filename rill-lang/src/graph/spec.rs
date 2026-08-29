@@ -1,12 +1,26 @@
 //! Graph specification data types.
 //!
 //! A [`GraphSpec`] is a data-level description of a signal graph: nodes with
-//! direct builtin names, signal/feedback edges, tape resources, and backend
-//! attachments that mark where active/passive backends connect. It is the
-//! input to IR formation ([`crate::graph::reconstruct`]) and the generalized
-//! partition ([`crate::graph::partition`]).
+//! direct builtin names, signal/feedback edges, tape resources, and active
+//! backend attachments. Each node carries a [`NodeBackendKind`] that classifies
+//! it as an active callback attachment point, a passive boundary (generator or
+//! tape head), or a pure transform. The [`crate::graph::partition`] uses that
+//! classification to split the graph into subgraphs; [`crate::graph::reconstruct`]
+//! turns each subgraph into a compiled program.
 
 use std::collections::HashMap;
+
+/// Backend kind of a graph node: active callback attachment, passive boundary,
+/// or a pure transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeBackendKind {
+    /// Attached to a rill-io callback backend (capture/playback attachment
+    /// points). Seeds a subgraph in the partition.
+    Active,
+    /// A software generator (`sine`, `saw`, `sampler`) or a tape head
+    /// (`write_head`/`read_head`). No callback; forms a subgraph boundary.
+    Passive,
+}
 
 /// A complete signal graph ready for IR formation.
 #[derive(Debug, Clone, Default)]
@@ -15,21 +29,28 @@ pub struct GraphSpec {
     pub nodes: Vec<GraphSpecNode>,
     /// Signal and feedback edges between nodes.
     pub edges: Vec<GraphSpecEdge>,
-    /// Named resources (tape loops) shared by the backends.
+    /// Named resources (tape loops) shared by the subgraphs.
     pub resources: Vec<GraphResourceSpec>,
     /// Sample rate the graph is compiled for.
     pub sample_rate: f32,
-    /// Where active/passive backends attach to the graph.
+    /// Active rill-io backend attachment points (capture/playback).
     pub backends: Vec<BackendAttachment>,
+    /// Channels of nodes that cross the subgraph boundary and must be exposed
+    /// as program outputs, in `(node index, output channel)` order. Empty for a
+    /// full (non-sub) graph.
+    pub boundary_out: Vec<(usize, usize)>,
 }
 
-/// A graph node: a direct builtin name and its parameter bag.
+/// A graph node: a direct builtin name, its parameter bag, and its backend
+/// classification.
 #[derive(Debug, Clone)]
 pub struct GraphSpecNode {
     /// Direct builtin name (no prefix, no alias).
     pub type_name: String,
     /// Named parameters in `BuiltinSig::param_names` order (default 0.0).
     pub params: HashMap<String, f64>,
+    /// Backend classification: `Active`, `Passive`, or `None` (pure transform).
+    pub backend: Option<NodeBackendKind>,
 }
 
 /// Edge kind: an ordinary signal edge or a feedback edge.
@@ -67,29 +88,18 @@ pub struct GraphResourceSpec {
     pub capacity: usize,
 }
 
-/// Backend kind: an active input (capture), an active output (playback), or a
-/// passive backend (tape heads) that forms a subgraph boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackendKind {
-    /// Active input backend — drives a recording subgraph.
-    ActiveInput,
-    /// Active output backend — drives a playback subgraph.
-    ActiveOutput,
-    /// Passive backend (tape heads) — a boundary between subgraphs.
-    Passive,
-}
-
-/// A backend attached to a graph node port.
+/// An active rill-io backend attached to a graph node port.
+///
+/// Only active (callback-driving) backends appear here — passive boundaries
+/// are marked on the node itself via [`GraphSpecNode::backend`].
 #[derive(Debug, Clone)]
 pub struct BackendAttachment {
-    /// Whether this backend is an active input, an active output, or passive.
-    pub kind: BackendKind,
-    /// Backend name, e.g. `"pipewire"`, `"tape"`.
+    /// Whether this is an input (capture) or an output (playback) attachment.
+    pub input: bool,
+    /// Backend name, e.g. `"pipewire"`.
     pub backend_name: String,
     /// Node the backend attaches to.
     pub node: usize,
     /// Port on that node.
     pub port: usize,
-    /// Backend configuration (tape capacity, head delays, feedback).
-    pub params: HashMap<String, f64>,
 }

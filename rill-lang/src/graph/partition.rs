@@ -1,13 +1,17 @@
-//! Generalized partition: split a [`GraphSpec`] into subgraphs driven by active
-//! backends, with passive backends (tape heads) as the boundaries.
+//! Generalized partition: split a [`GraphSpec`] into subgraphs, each driven by
+//! exactly one active (rill-io) backend, with passive backends (generators and
+//! tape heads) as the boundaries.
 //!
+//! rill is clocked exclusively by hardware: only rill-io backends are active.
 //! From each `ActiveInput` attachment the graph is walked forward over signal
 //! edges until a `Passive` boundary node or a node claimed by another region
 //! (recording). From each `ActiveOutput` attachment the graph is walked
-//! backward until a `Passive` node or a claimed node, then extended forward
-//! from the passive sources (playback). Cross-region edges become cross-ports.
+//! backward until a `Passive` node, then extended forward from the passive
+//! sources (playback). Passive nodes belong to the region that reaches them and
+//! are compiled as builtins inside it (the write head is the recording sink,
+//! the read heads are the playback sources). Cross-region edges become ports.
 
-use crate::graph::spec::{BackendKind, GraphEdgeKind, GraphSpec};
+use crate::graph::spec::{GraphEdgeKind, GraphSpec, NodeBackendKind};
 
 /// One subgraph of a partition.
 #[derive(Debug, Clone)]
@@ -22,17 +26,18 @@ pub struct SubGraph {
 
 /// Partition a graph into subgraphs driven by active backends.
 ///
-/// Recording regions are claimed by walking forward from each `ActiveInput`
-/// attachment; playback regions by walking backward from each `ActiveOutput`
+/// Recording regions are claimed by walking forward from each active input
+/// attachment; playback regions by walking backward from each active output
 /// attachment and extending forward from the passive sources they reach. A
-/// passive boundary node belongs to the region that reaches it (the write head
-/// is the recording sink, the read heads are the playback sources). Edges whose
+/// passive boundary node belongs to the region that reaches it. Edges whose
 /// endpoints land in different regions become cross-ports.
 pub fn partition(spec: &GraphSpec) -> Vec<SubGraph> {
     let n = spec.nodes.len();
-    let passive = marker(spec, BackendKind::Passive);
-    let active_in = marker(spec, BackendKind::ActiveInput);
-    let active_out = marker(spec, BackendKind::ActiveOutput);
+    let passive: Vec<bool> = (0..n)
+        .map(|i| spec.nodes[i].backend == Some(NodeBackendKind::Passive))
+        .collect();
+    let active_in = (0..n).filter(|&i| spec.backends.iter().any(|b| b.node == i && !b.input));
+    let active_out = (0..n).filter(|&i| spec.backends.iter().any(|b| b.node == i && b.input));
 
     // Forward/backward adjacency over signal edges.
     let mut fwd = vec![Vec::<usize>::new(); n];
@@ -47,15 +52,15 @@ pub fn partition(spec: &GraphSpec) -> Vec<SubGraph> {
     let mut region_of: Vec<Option<usize>> = vec![None; n];
     let mut regions: Vec<SubGraph> = Vec::new();
 
-    // Recording regions: forward walk from each ActiveInput anchor. Passive
+    // Recording regions: forward walk from each active input anchor. Passive
     // boundary nodes are claimed as region sinks but not expanded through.
-    for seed in (0..n).filter(|&i| active_in[i]) {
+    for seed in active_in {
         let mut seen = vec![false; n];
         let mut stack = vec![seed];
         seen[seed] = true;
         while let Some(u) = stack.pop() {
             for &v in &fwd[u] {
-                if seen[v] || active_out[v] || region_of[v].is_some() {
+                if seen[v] || is_active_out(v, spec) || region_of[v].is_some() {
                     continue;
                 }
                 seen[v] = true;
@@ -68,16 +73,16 @@ pub fn partition(spec: &GraphSpec) -> Vec<SubGraph> {
         regions.push(claim(&mut region_of, &seen, rid));
     }
 
-    // Playback regions: backward walk from each ActiveOutput anchor, then a
+    // Playback regions: backward walk from each active output anchor, then a
     // forward extension from the passive sources (read heads) the region
     // reached — nodes downstream of the tape reads belong to playback.
-    for seed in (0..n).filter(|&i| active_out[i]) {
+    for seed in active_out {
         let mut seen = vec![false; n];
         let mut stack = vec![seed];
         seen[seed] = true;
         while let Some(u) = stack.pop() {
             for &v in &bwd[u] {
-                if seen[v] || active_in[v] || region_of[v].is_some() {
+                if seen[v] || is_active_in(v, spec) || region_of[v].is_some() {
                     continue;
                 }
                 seen[v] = true;
@@ -92,7 +97,7 @@ pub fn partition(spec: &GraphSpec) -> Vec<SubGraph> {
             .collect();
         while let Some(u) = queue.pop() {
             for &v in &fwd[u] {
-                if !seen[v] && !passive[v] && !active_in[v] && region_of[v].is_none() {
+                if !seen[v] && !passive[v] && !is_active_in(v, spec) && region_of[v].is_none() {
                     seen[v] = true;
                     queue.push(v);
                 }
@@ -118,11 +123,14 @@ pub fn partition(spec: &GraphSpec) -> Vec<SubGraph> {
     regions
 }
 
-/// Whether the given node index has a backend attachment of `kind`.
-fn marker(spec: &GraphSpec, kind: BackendKind) -> Vec<bool> {
-    (0..spec.nodes.len())
-        .map(|i| spec.backends.iter().any(|b| b.kind == kind && b.node == i))
-        .collect()
+/// Whether the node has an active output (playback) attachment.
+fn is_active_out(node: usize, spec: &GraphSpec) -> bool {
+    spec.backends.iter().any(|b| b.node == node && b.input)
+}
+
+/// Whether the node has an active input (capture) attachment.
+fn is_active_in(node: usize, spec: &GraphSpec) -> bool {
+    spec.backends.iter().any(|b| b.node == node && !b.input)
 }
 
 /// Register all `seen` nodes into the new region `rid` and return its

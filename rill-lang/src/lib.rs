@@ -119,13 +119,18 @@ fn compile_program_inner<T: Transcendental>(
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
 
-    for bi in &ir.builtins {
-        if let Some(res) = &bi.resource {
-            if !resource_decls.iter().any(|d| &d.name == res) {
-                return Err(CompileError::Unsupported(format!(
-                    "built-in '{}' references undeclared resource '{}'",
-                    bi.name, res
-                )));
+    // The declared-resource check only applies when the registry is auto-created
+    // from the source's `TapeLoop` declarations. When a caller-supplied registry
+    // is used, its presence is validated below.
+    if resources.is_none() {
+        for bi in &ir.builtins {
+            if let Some(res) = &bi.resource {
+                if !resource_decls.iter().any(|d| &d.name == res) {
+                    return Err(CompileError::Unsupported(format!(
+                        "built-in '{}' references undeclared resource '{}'",
+                        bi.name, res
+                    )));
+                }
             }
         }
     }

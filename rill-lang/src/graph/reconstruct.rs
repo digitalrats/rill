@@ -10,7 +10,7 @@
 
 use rill_core::math::Transcendental;
 
-use crate::ast::{BinOp, Def, Expr, Param, Program};
+use crate::ast::{BinOp, Def, Expr, Program};
 use crate::builtin::{Registry, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::graph::spec::{GraphEdgeKind, GraphSpec};
@@ -38,6 +38,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
         builtin_name: String,
         param_values: Vec<f64>,
         param_names: Vec<String>,
+        has_resource: bool,
         signal_ins: usize,
         signal_outs: usize,
     }
@@ -52,10 +53,15 @@ pub fn reconstruct<T: Transcendental + 'static>(
             .iter()
             .map(|name| node.params.get(name).copied().unwrap_or(0.0))
             .collect();
+        let has_resource = sig
+            .params
+            .iter()
+            .any(|p| matches!(p, crate::builtin::ParamType::Resource));
         metas.push(NodeMeta {
             builtin_name: node.type_name.clone(),
             param_values,
             param_names,
+            has_resource,
             signal_ins: sig.signal_ins(),
             signal_outs: sig.signal_outs,
         });
@@ -88,12 +94,23 @@ pub fn reconstruct<T: Transcendental + 'static>(
     }
 
     // --- Per-node block expression (Apply with ordered params) ---------------
-    // The last param of each node (convention) is exposed as a dynamic `main`
-    // parameter; the rest are compile-time constants.
-    let mut all_param_names: Vec<String> = Vec::new();
+    // The last param of each node is exposed as an actor parameter
+    // `?name=default` (0-in, late-binding slot addressable by name from the
+    // control thread) — NOT a `main` λ-parameter, which would add a signal
+    // input. Resource-backed nodes (tape heads) get a symbolic `Ref` to the
+    // shared tape as their first arg.
+    let default_tape = spec
+        .resources
+        .iter()
+        .find(|r| r.kind == "tape")
+        .map(|r| r.name.clone())
+        .unwrap_or_else(|| "tape_0".to_string());
     let mut blocks: Vec<Expr> = Vec::with_capacity(n);
     for meta in &metas {
-        let mut args: Vec<Expr> = Vec::with_capacity(meta.param_names.len());
+        let mut args: Vec<Expr> = Vec::with_capacity(meta.param_names.len() + 1);
+        if meta.has_resource {
+            args.push(Expr::Ref(default_tape.clone(), dummy));
+        }
         let last = meta.param_names.len().saturating_sub(1);
         for (i, (&val, name)) in meta
             .param_values
@@ -104,8 +121,11 @@ pub fn reconstruct<T: Transcendental + 'static>(
             if i < last {
                 args.push(Expr::Float(val, dummy));
             } else {
-                all_param_names.push(name.clone());
-                args.push(Expr::Ref(name.clone(), dummy));
+                args.push(Expr::ActorParam {
+                    name: name.clone(),
+                    default: Some(Box::new(Expr::Float(val, dummy))),
+                    span: dummy,
+                });
             }
         }
         blocks.push(Expr::Apply {
@@ -197,7 +217,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
         }
     }
     let sinks: Vec<usize> = (0..n).filter(|&i| out_edges_count[i] == 0).collect();
-    let body = if sinks.is_empty() {
+    let mut body = if sinks.is_empty() {
         Expr::Wire(dummy)
     } else {
         let mut body = build(
@@ -215,14 +235,23 @@ pub fn reconstruct<T: Transcendental + 'static>(
         }
         body
     };
+    // Cross-boundary outputs (dry, fb): expose the selected channel of the
+    // producing node as an additional program output.
+    for &(node, channel) in &spec.boundary_out {
+        let ch = build(
+            node, &blocks, &in_edges, &sig_ins, &sig_outs, &mut memo, dummy,
+        );
+        body = Expr::Bin {
+            op: BinOp::Par,
+            lhs: Box::new(body),
+            rhs: Box::new(select_channels(ch, sig_outs[node], &[channel], dummy)),
+            span: dummy,
+        };
+    }
 
-    let params: Vec<Param> = all_param_names
-        .into_iter()
-        .map(|name| Param { name, span: dummy })
-        .collect();
     let defs = vec![Def::Anchor {
         name: "main".to_string(),
-        params,
+        params: Vec::new(),
         body,
         span: dummy,
         where_defs: vec![],
