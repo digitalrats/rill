@@ -1,6 +1,6 @@
 # Unified Backend Model — Subgraph IR, Heads as Resource-Backed Builtins (final)
 
-> **Status:** Design — final 2026-08-29.
+> **Status:** Implemented — 2026-08-29.
 > **Date:** 2026-08-29
 > **Scope:** Fix `moonlight_delay` in drift. A program is `input → output`. A tape echo is two independent subgraphs, each a clean program whose boundaries are active rill-io backends or NullBackends. `write_head`/`read_head` are **internal resource-backed rill-lang builtins** (like oscillators) referencing a shared `TapeLoop` via the resource machinery (restored). Subgraph is a first-class IR concept; `Runtime::launch` drives one or two callbacks. Topology unchanged. **No bridge node, no `BridgeAlgorithm`, no `DuplexSchedule`, no `TapeSystem`.**
 
