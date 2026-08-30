@@ -173,14 +173,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 nodes: vec![
                     NodeDef::Source(SourceDef {
                         id: 0,
-                        type_name: "rill/lofi_chip".into(),
+                        type_name: "ay38910".into(),
                         name: "ay_chip".into(),
                         backend: None,
                         parameters: source_params,
                     }),
                     NodeDef::Processor(ProcessorDef {
                         id: 1,
-                        type_name: "rill/lofi".into(),
+                        type_name: "lofi".into(),
                         name: "lofi".into(),
                         parameters: lofi_params,
                     }),
