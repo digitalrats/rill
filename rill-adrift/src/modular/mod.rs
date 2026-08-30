@@ -79,8 +79,6 @@ pub struct ModularSystem<const BUF: usize = 64> {
     module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,
     default_backend: Option<(String, HashMap<String, ParamValue>)>,
-    #[allow(dead_code)]
-    config: ModularConfig,
     #[cfg(feature = "serialization")]
     tokio_rt: Option<tokio::runtime::Runtime>,
 }
@@ -103,7 +101,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
             default_backend,
             actor_system: Arc::new(ActorSystem::new()),
             cases: HashMap::new(),
-            config,
             #[cfg(feature = "serialization")]
             tokio_rt: None,
         }

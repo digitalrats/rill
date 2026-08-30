@@ -38,15 +38,9 @@ impl std::fmt::Display for BuildError {
 // Node Storage
 // ============================================================================
 
-/// A deferred node recipe — constructed at `ast_from_def` time.
+/// A deferred node recipe — constructed at `populate` time.
 struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
-    #[allow(dead_code)]
-    id: u32,
-    // Node anchor name — consumed by `ast_from_def` (where-def anchors) once
-    // full topology lowering lands; kept in the recipe for that purpose.
-    #[allow(dead_code)]
-    name: String,
     params: Params,
     routing_entries: Vec<(usize, usize, f32)>,
     _phantom: std::marker::PhantomData<(T, [(); BUF_SIZE])>,
@@ -102,32 +96,13 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
     /// Add a node by type name.
     ///
+    /// Add a node by type name.
+    ///
     /// Returns the index of the newly added node.
     pub fn add_node(&mut self, type_name: &str, params: &Params) -> usize {
-        let id = self.recipes.len() as u32;
-        self.add_node_with_id(type_name, params, id)
-    }
-
-    /// Add a node with an explicit `NodeId`.
-    pub fn add_node_with_id(&mut self, type_name: &str, params: &Params, id: u32) -> usize {
-        self.add_node_with_name(type_name, params, id, String::new())
-    }
-
-    /// Add a node with an explicit `NodeId` and a human-readable name
-    /// (typically sourced from the JSON `name` field). The name becomes the
-    /// program/anchor name in the compiled graph, used by `SetParameter` routing.
-    pub fn add_node_with_name(
-        &mut self,
-        type_name: &str,
-        params: &Params,
-        #[allow(dead_code)] id: u32,
-        name: String,
-    ) -> usize {
         let idx = self.recipes.len();
         self.recipes.push(NodeRecipe {
             type_name: type_name.to_string(),
-            id,
-            name,
             params: params.clone(),
             routing_entries: Vec::new(),
             _phantom: std::marker::PhantomData,
