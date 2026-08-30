@@ -72,11 +72,6 @@ pub enum Drain {
         /// Drain interval in milliseconds.
         interval_ms: u64,
     },
-    /// Tokio task with periodic drain (handler: Send).
-    TokioTask {
-        /// Drain interval in milliseconds.
-        interval_ms: u64,
-    },
     /// I/O callback drain — handler drained inline in the backend callback.
     /// Factory spawns the I/O thread, construction closures run inside it.
     IoCallback,
@@ -104,7 +99,6 @@ impl ModuleFactory {
     /// `make_handler` receives module params and the graph handle, and returns
     /// the message handler closure. The factory calls it **inside the drain thread**,
     /// so the handler does not need `Send`.
-    #[allow(dead_code)]
     pub fn register_fn(
         &mut self,
         type_name: impl Into<String>,
@@ -121,29 +115,6 @@ impl ModuleFactory {
         self.entries.insert(
             type_name.into(),
             Box::new(ClosureCtor::new_erased(drain, make_handler)),
-        );
-    }
-
-    /// Register a closure-based constructor (handler: `Send`, for [`Drain::TokioTask`]).
-    ///
-    /// The returned handler must be `Send` so it can be stored in a tokio future.
-    #[allow(dead_code)]
-    pub fn register_fn_send(
-        &mut self,
-        type_name: impl Into<String>,
-        drain: Drain,
-        make_handler: impl Fn(
-                &str,
-                &HashMap<String, ParamValue>,
-                &ActorRef<CommandEnum>,
-            ) -> Box<dyn FnMut(CommandEnum) + Send + 'static>
-            + Send
-            + Sync
-            + 'static,
-    ) {
-        self.entries.insert(
-            type_name.into(),
-            Box::new(ClosureCtor::new_send(drain, make_handler)),
         );
     }
 
@@ -206,19 +177,8 @@ type ErasedCtorFn = Arc<
         + Sync,
 >;
 
-type SendCtorFn = Arc<
-    dyn Fn(
-            &str,
-            &HashMap<String, ParamValue>,
-            &ActorRef<CommandEnum>,
-        ) -> Box<dyn FnMut(CommandEnum) + Send + 'static>
-        + Send
-        + Sync,
->;
-
 enum ClosureCtorKind {
     Erased { f: ErasedCtorFn },
-    Send { f: SendCtorFn },
 }
 
 struct ClosureCtor {
@@ -241,23 +201,6 @@ impl ClosureCtor {
         Self {
             drain,
             kind: ClosureCtorKind::Erased { f: Arc::new(f) },
-        }
-    }
-
-    fn new_send(
-        drain: Drain,
-        f: impl Fn(
-                &str,
-                &HashMap<String, ParamValue>,
-                &ActorRef<CommandEnum>,
-            ) -> Box<dyn FnMut(CommandEnum) + Send + 'static>
-            + Send
-            + Sync
-            + 'static,
-    ) -> Self {
-        Self {
-            drain,
-            kind: ClosureCtorKind::Send { f: Arc::new(f) },
         }
     }
 }
@@ -299,37 +242,9 @@ impl ModuleConstructor for ClosureCtor {
                 );
                 Ok(actor_ref)
             }
-            (ClosureCtorKind::Send { f }, Drain::OsThread { interval_ms }) => {
-                let f = f.clone();
-                let actor_ref = system.spawn_detached(
-                    &name,
-                    move || f(&id_owned, &params, &graph_ref),
-                    interval_ms,
-                );
-                Ok(actor_ref)
-            }
-            (ClosureCtorKind::Send { f }, Drain::TokioTask { interval_ms }) => {
-                let f = f.clone();
-                let actor_ref = system.spawn_detached_tokio(
-                    &name,
-                    move || f(&id_owned, &params, &graph_ref),
-                    interval_ms,
-                );
-                Ok(actor_ref)
-            }
-            (ClosureCtorKind::Erased { .. }, Drain::TokioTask { .. }) => {
-                Err(ModuleError::ConstructionFailed(
-                    "TokioTask drain requires a Send handler; use register_fn_send()".into(),
-                ))
-            }
             (ClosureCtorKind::Erased { .. }, Drain::IoCallback) => {
                 Err(ModuleError::ConstructionFailed(
                     "IoCallback drain not supported via register_fn(); use Graph constructor directly".into(),
-                ))
-            }
-            (ClosureCtorKind::Send { .. }, Drain::IoCallback) => {
-                Err(ModuleError::ConstructionFailed(
-                    "IoCallback drain not supported via register_fn_send(); use Graph constructor directly".into(),
                 ))
             }
         }
@@ -339,10 +254,6 @@ impl ModuleConstructor for ClosureCtor {
             ClosureCtorKind::Erased { f } => Box::new(ClosureCtor {
                 drain: self.drain,
                 kind: ClosureCtorKind::Erased { f: f.clone() },
-            }),
-            ClosureCtorKind::Send { f } => Box::new(ClosureCtor {
-                drain: self.drain,
-                kind: ClosureCtorKind::Send { f: f.clone() },
             }),
         }
     }

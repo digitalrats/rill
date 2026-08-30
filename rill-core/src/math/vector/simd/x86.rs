@@ -4,7 +4,6 @@
 
 #![cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #![allow(unused_imports)]
-#![allow(dead_code)]
 
 use super::super::traits::*;
 use crate::Transcendental;

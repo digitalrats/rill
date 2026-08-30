@@ -16,7 +16,6 @@
 //! but use the high-level abstractions from `vector::traits`.
 
 #![allow(unused_imports)]
-#![allow(dead_code)]
 
 // Cross-platform SIMD implementation via the wide crate (requires simd feature)
 #[cfg(feature = "simd")]
@@ -31,7 +30,16 @@ pub mod arm;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
-/// SIMD capability detector for the CPU
+/// SIMD capability detector for the CPU.
+///
+/// The struct records the FULL capability map of the current CPU — including
+/// feature flags that the current dispatch does not yet branch on
+/// (`has_sse4_1`, `has_avx2`, `has_avx512`). These are kept write-only on
+/// purpose: they document the detected hardware surface for diagnostics and
+/// future dispatch tiers, and `recommended_simd_width` only reads the flags it
+/// currently uses. Keep this detector complete — do not delete fields just
+/// because they are not read today.
+#[allow(dead_code)]
 pub struct SimdDetector {
     has_sse2: bool,
     has_sse4_1: bool,

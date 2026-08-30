@@ -15,9 +15,4 @@ impl History {
         self.entries.push(entry);
         self.position = self.entries.len();
     }
-
-    #[allow(dead_code)]
-    pub fn all(&self) -> &[String] {
-        &self.entries
-    }
 }

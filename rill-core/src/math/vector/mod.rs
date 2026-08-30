@@ -33,7 +33,6 @@
 //! - Scalar fallback for platforms without SIMD
 
 #![allow(unused_imports)]
-#![allow(dead_code)]
 
 /// Complex vector abstractions (ComplexVector, ComplexSoa).
 pub mod complex;

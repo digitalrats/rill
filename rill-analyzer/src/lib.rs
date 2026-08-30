@@ -14,9 +14,13 @@ pub mod prelude;
 pub mod repl;
 
 pub struct Analyzer {
+    // Stored to keep the collector thread (and its shared-memory channel) alive
+    // for the lifetime of the analyzer; never read directly.
     #[allow(dead_code)]
     collector: CollectorThread,
     repl_handle: Option<std::thread::JoinHandle<()>>,
+    // Kept alive so the REPL and other senders' clones keep the command channel
+    // open; the field itself is never read.
     #[allow(dead_code)]
     cmd_tx: mpsc::Sender<AnalyzerCommand>,
 }
