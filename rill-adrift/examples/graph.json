@@ -7,7 +7,7 @@
         {
             "Source": {
                 "id": 0,
-                "type_name": "rill/sampler",
+                "type_name": "sampler",
                 "name": "player",
                 "parameters": {
                     "gate": 1.0,
@@ -21,7 +21,7 @@
         {
             "Processor": {
                 "id": 1,
-                "type_name": "rill/biquad",
+                "type_name": "biquad",
                 "name": "filter",
                 "parameters": {
                     "type": 0.0,
