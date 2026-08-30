@@ -106,6 +106,43 @@ pub fn reconstruct<T: Transcendental + 'static>(
         .find(|r| r.kind == "tape")
         .map(|r| r.name.clone())
         .unwrap_or_else(|| "tape_0".to_string());
+
+    // Per-node actor-param names, collision-aware: a name used with a SINGLE
+    // consistent default keeps its plain form (addressable externally, e.g. the
+    // STC player's "regs"); a name used with different defaults across nodes is
+    // namespaced per node (`delay_0`, `delay_1`, ...) so the redeclaration is
+    // not ambiguous.
+    let last_param: Vec<Option<(String, f64)>> = metas
+        .iter()
+        .map(|m| {
+            let last = m.param_names.len().saturating_sub(1);
+            if m.param_names.is_empty() {
+                None
+            } else {
+                Some((m.param_names[last].clone(), m.param_values[last]))
+            }
+        })
+        .collect();
+    let ambiguous: std::collections::HashSet<String> = {
+        use std::collections::HashMap as M;
+        let mut defaults: M<String, Vec<f64>> = M::new();
+        for (name, val) in last_param.iter().flatten() {
+            defaults.entry(name.clone()).or_default().push(*val);
+        }
+        defaults
+            .iter()
+            .filter(|(_, vals)| vals.iter().any(|&v| (v - vals[0]).abs() > f64::EPSILON))
+            .map(|(name, _)| name.clone())
+            .collect()
+    };
+    let actor_name = |idx: usize| -> String {
+        match &last_param[idx] {
+            Some((name, _)) if ambiguous.contains(name) => format!("{name}_{idx}"),
+            Some((name, _)) => name.clone(),
+            None => String::new(),
+        }
+    };
+
     let mut blocks: Vec<Expr> = Vec::with_capacity(n);
     for (idx, meta) in metas.iter().enumerate() {
         let mut args: Vec<Expr> = Vec::with_capacity(meta.param_names.len() + 1);
@@ -123,7 +160,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
                 args.push(Expr::Float(val, dummy));
             } else {
                 args.push(Expr::ActorParam {
-                    name: format!("{name}_{idx}"),
+                    name: actor_name(idx),
                     default: Some(Box::new(Expr::Float(val, dummy))),
                     span: dummy,
                 });

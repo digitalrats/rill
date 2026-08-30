@@ -243,12 +243,12 @@ fn graph_builder_param_routing_works() {
 
     // Verify which index "regs" maps to
     let param_map = engine.param_map();
-    let rw_idx = param_map.get("regs_0");
+    let rw_idx = param_map.get("regs");
     println!("regs param index: {:?}, full map: {:?}", rw_idx, param_map);
 
     let sp = SetParameter::new(
         String::new(),
-        ParameterId::new("regs_0").unwrap(),
+        ParameterId::new("regs").unwrap(),
         ParamValue::Float(1.0),
         rill_core::queues::SignalOrigin::Manual,
     );
@@ -277,7 +277,7 @@ fn graph_builder_param_routing_works() {
     // Now send actual Bytes register data to enable tone channels
     let sp = SetParameter::new(
         String::new(),
-        ParameterId::new("regs_0").unwrap(),
+        ParameterId::new("regs").unwrap(),
         ParamValue::Bytes(vec![
             0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFE, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]),
@@ -297,7 +297,7 @@ fn graph_builder_param_routing_works() {
 
     // Verify SetParameter reached the right place
     let param_map = engine.param_map();
-    let mapped_idx = param_map.get("regs_0");
+    let mapped_idx = param_map.get("regs");
     println!(
         "regs in param_map: {:?}, full map: {:?}",
         mapped_idx, param_map
