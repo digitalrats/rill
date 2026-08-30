@@ -159,6 +159,6 @@ fn tape_echo_splits_into_two_subprograms() {
             assert!((tape.write_feedback - 0.35).abs() < 1e-9);
             assert!(!resources.is_empty(), "shared tape must be registered");
         }
-        other => panic!("expected duplex, got Single"),
+        _other => panic!("expected duplex, got Single"),
     }
 }
