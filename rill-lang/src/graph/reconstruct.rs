@@ -150,7 +150,7 @@ pub fn reconstruct<T: Transcendental + 'static>(
             args.push(Expr::Ref(default_tape.clone(), dummy));
         }
         let last = meta.param_names.len().saturating_sub(1);
-        for (i, (&val, name)) in meta
+        for (i, (&val, _name)) in meta
             .param_values
             .iter()
             .zip(meta.param_names.iter())
