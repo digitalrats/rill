@@ -132,7 +132,7 @@ main = complex 1.0 2.0 , complex 3.0 4.0 : cadd () : norm (); // → ≈7.21
 | `A , B` | parallel | — | `(in A + in B, out A + out B)` |
 | `A <: B` | split / fan-out | `in(B)` multiple of `out(A)` | `(in A, out B)` |
 | `A :> B` | merge / fan-in (sums) | `out(A)` multiple of `in(B)` | `(in A, out B)` |
-| `A ~ B` | feedback (1-sample delay) | `in(B) ≤ out(A)`, `out(B) ≤ in(A)` | `(in A − out B, out A)` |
+| `A ~ B` | feedback tap (1-tick delay) | `out(B) ≤ in(A)` | `(in A − out B, out A)` |
 | `A @ n` | integer delay (`n` const) | `A` is `_ → 1` | same as `A` |
 
 Precedence, loosest → tightest: `~` < `:` < `:>` < `<:` < `,` < `+ -` < `* / %` < `@` < unary `-` < atoms.
@@ -140,8 +140,10 @@ Precedence, loosest → tightest: `~` < `:` < `:>` < `<:` < `,` < `+ -` < `* / %
 ### Idioms
 
 ```faust
-main = + ~ _;              // integrator:         y[n] = x[n] + y[n-1]
-main = + ~ (_ * 0.5);      // leaky integrator:    y[n] = x[n] + 0.5·y[n-1]
+main = integrator;           // integrator:         y[n] = x[n] + y[n-1]
+main = leaky_integrator 0.5; // leaky integrator:  y[n] = x[n] + 0.5·y[n-1]
+main = + ~ _;               // short form for `integrator`
+main = + ~ (_ * 0.5);       // short form for `leaky_integrator 0.5`
 main = _ @ 1;              // one-sample delay
 main = _ <: (_ , _) :> +;  // fan-out then sum = 2·x
 ```
@@ -153,11 +155,12 @@ rill-lang supports calling stateful DSP/model built-ins from
 
 | Category | Builtins | Feature |
 |---|---|---|
-| Filters | `onepole`, `moog` (sample), `lowpass`, `highpass`, `biquad` (block) | always |
+| Filters | `onepole`, `moog`, `lowpass`, `highpass`, `biquad` (block) | always |
+| Integrators | `integrator`, `leaky_integrator` (block) | always |
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
 | Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassettedeck`, `tape_bridge` (block) | `analog` |
+| Analog | `analog_moog`, `cassettedeck` (block) | `analog` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
 | Sampler | `sampler` (block) | `sampler` |
@@ -174,9 +177,10 @@ main = dry_wet _ wet { mix: 0.7 };
 main = eq_parametric _ { bands: [{ freq: 500.0, q: 2.0, gain_db: -3.0 }] };
 ```
 
-Per-sample built-ins (`onepole`, `moog`) are feedback-legal; whole-buffer
-built-ins (`lowpass`, `highpass`, etc.) are opaque block steps and cannot
-appear inside `~`. Bindings and registries live in `rill-adrift`
+All built-ins are whole-buffer `BlockBuiltin`s — opaque block steps implementing
+`Algorithm<T>`. Per-sample state (filters, integrators) lives inside the built-in,
+so the engine stays block-only and SIMD-friendly. Bindings and registries live in
+`rill-adrift`
 (`lang_builtins::full_registry`), with per-crate `register_lang_builtins()`
 functions for selective registration.
 
@@ -262,11 +266,13 @@ Setting the `source` parameter at runtime recompiles and hot-swaps the program.
 
 ## Execution model
 
-The interpreter compiles the linear IR into a hybrid schedule via SCC analysis:
-feedforward regions run whole-buffer through the `rill_core::math::vector` SIMD
-eDSL, while feedback (`~`) and delay (`@`) recurrences run per-sample. The block
-path computes in `T` with zero heap allocation on the hot path. A Cranelift JIT
-backend is still planned and will reuse the same IR.
+The interpreter compiles the linear IR into a block-only schedule via SCC analysis:
+every instruction runs whole-buffer through the `rill_core::math::vector` SIMD
+eDSL, and `BlockBuiltin`s are opaque whole-buffer `Algorithm` calls. Feedback (`~`)
+uses a double-buffered block state with a one-tick shadow copy; delay (`@`) uses a
+block-level ring buffer. No instruction runs sample-by-sample. The block path
+computes in `T` with zero heap allocation on the hot path. A Cranelift JIT backend
+is still planned and will reuse the same IR.
 
 ## Debug infrastructure (`debug` feature)
 

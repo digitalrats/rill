@@ -139,7 +139,7 @@ pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
             kind: BuiltinKind::Block,
             param_names: vec!["pan", "smoothing"],
         },
-        |params, _sr| {
+        |_signal_ins, params, _sr| {
             Box::new(MonoToStereoBuiltin::<T> {
                 inner: MonoToStereo::new(PanLaw::ConstantPower, params[0] as f32, params[1] as f32),
             })

@@ -1,25 +1,14 @@
-//! Foreign-function registry: DSP/model built-ins callable from rill-lang.
+//! Foreign-function registry: whole-buffer built-ins callable from rill-lang.
 //!
-//! Two kinds: `SampleBuiltin` (per-sample, feedback-legal) and block built-ins
-//! (`rill_core::Algorithm`, opaque whole-buffer). Concrete bindings live outside
-//! this crate (e.g. `rill-adrift`); core stays `rill-core`-only.
+//! `BlockBuiltin` (`rill_core::Algorithm`, opaque whole-buffer) is the only
+//! built-in form. Concrete bindings live outside this crate (e.g. `rill-adrift`);
+//! core stays `rill-core`-only.
 
 use std::collections::HashMap;
 
+use crate::buffer::ResourceRegistry;
 use crate::math::Transcendental;
 use crate::traits::ParamValue;
-
-/// A stateful per-sample built-in: `signal_ins` inputs → 1 output.
-pub trait SampleBuiltin<T: Transcendental>: Send + Sync {
-    /// Process one sample. `inputs.len() == signal_ins`.
-    fn process_sample(&mut self, inputs: &[T]) -> T;
-    /// Re-initialise for a sample rate (default no-op).
-    fn init(&mut self, _sample_rate: f32) {}
-    /// Clear internal state.
-    fn reset(&mut self);
-    /// Set a parameter by index.
-    fn set_param(&mut self, _index: usize, _value: &ParamValue) {}
-}
 
 /// A whole-buffer built-in with settable params.
 pub trait BlockBuiltin<T: Transcendental>: crate::traits::Algorithm<T> {
@@ -38,8 +27,6 @@ pub trait MultichannelBlockBuiltin<T: Transcendental>:
 /// Whether a built-in is per-sample or whole-buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinKind {
-    /// Per-sample [`SampleBuiltin`].
-    Sample,
     /// Whole-buffer `Algorithm` (1→1).
     Block,
 }
@@ -61,6 +48,8 @@ pub enum ParamType {
     Record(RecordSchema),
     /// A compile-time enum value with allowed variants.
     Enum(&'static [&'static str]),
+    /// A compile-time symbolic reference to a named resource (e.g. a tape loop).
+    Resource,
     /// Zero or more arguments of the inner type.
     Variadic(Box<ParamType>),
 }
@@ -153,12 +142,25 @@ impl BuiltinSig {
             .count()
     }
 
+    /// Whether the built-in takes variadic signal inputs (e.g. a mixer).
+    pub fn has_variadic_signal(&self) -> bool {
+        self.params.iter().any(
+            |p| matches!(p, ParamType::Variadic(inner) if matches!(**inner, ParamType::Signal)),
+        )
+    }
+
     /// Minimum number of Apply arguments (excludes Signal params).
     pub fn min_args(&self) -> usize {
         let mut count = 0;
         for p in &self.params {
             match p {
                 ParamType::Signal | ParamType::Variadic(_) => {}
+                ParamType::Record(schema) => {
+                    // A record whose fields all have defaults is optional.
+                    if !schema.fields.iter().all(|f| f.default.is_some()) {
+                        count += 1;
+                    }
+                }
                 _ => count += 1,
             }
         }
@@ -185,15 +187,33 @@ impl BuiltinSig {
 }
 
 /// A boxed factory building an instance from folded params + a sample rate.
-type SampleFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn SampleBuiltin<T>> + Send + Sync>;
 type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
 type MultichannelBlockFactory<T> =
-    Box<dyn Fn(&[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
+    Box<dyn Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
+/// A block factory that also receives the resource registry and the resource
+/// name to resolve named resources (e.g. tape loops) for resource-backed built-ins.
+type ResourceBlockFactory<T> = Box<
+    dyn Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
+>;
+/// A multi-channel block factory that also receives the signal input count, the
+/// resource registry, and the resource name.
+type ResourceMultichannelBlockFactory<T> = Box<
+    dyn Fn(
+            usize,
+            &[f64],
+            f32,
+            &mut ResourceRegistry<T>,
+            &str,
+        ) -> Box<dyn MultichannelBlockBuiltin<T>>
+        + Send
+        + Sync,
+>;
 
 enum Factory<T: Transcendental> {
-    Sample(SampleFactory<T>),
     Block(BlockFactory<T>),
     MultichannelBlock(MultichannelBlockFactory<T>),
+    ResourceBlock(ResourceBlockFactory<T>),
+    ResourceMultichannelBlock(ResourceMultichannelBlockFactory<T>),
 }
 
 /// A registry entry.
@@ -204,18 +224,6 @@ pub struct Entry<T: Transcendental> {
 }
 
 impl<T: Transcendental> Entry<T> {
-    /// Build a sample instance (panics if this entry is a block built-in — callers
-    /// gate on `sig.kind`).
-    pub fn build_sample(
-        &self,
-        params: &[f64],
-        sample_rate: f32,
-    ) -> Option<Box<dyn SampleBuiltin<T>>> {
-        match &self.factory {
-            Factory::Sample(f) => Some(f(params, sample_rate)),
-            Factory::Block(_) | Factory::MultichannelBlock(_) => None,
-        }
-    }
     /// Build a block instance.
     pub fn build_block(
         &self,
@@ -224,17 +232,51 @@ impl<T: Transcendental> Entry<T> {
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match &self.factory {
             Factory::Block(f) => Some(f(params, sample_rate)),
-            Factory::Sample(_) | Factory::MultichannelBlock(_) => None,
+            Factory::MultichannelBlock(_)
+            | Factory::ResourceBlock(_)
+            | Factory::ResourceMultichannelBlock(_) => None,
         }
     }
     /// Build a multichannel block instance.
     pub fn build_multichannel_block(
         &self,
+        signal_ins: usize,
         params: &[f64],
         sample_rate: f32,
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match &self.factory {
-            Factory::MultichannelBlock(f) => Some(f(params, sample_rate)),
+            Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate)),
+            _ => None,
+        }
+    }
+    /// Build a resource-backed block instance, resolving named resources (e.g.
+    /// tape loops) via the provided registry.
+    pub fn build_resource_block(
+        &self,
+        params: &[f64],
+        sample_rate: f32,
+        registry: &mut ResourceRegistry<T>,
+        resource_name: &str,
+    ) -> Option<Box<dyn BlockBuiltin<T>>> {
+        match &self.factory {
+            Factory::ResourceBlock(f) => Some(f(params, sample_rate, registry, resource_name)),
+            _ => None,
+        }
+    }
+
+    /// Build a resource-backed multi-channel block instance.
+    pub fn build_resource_multichannel_block(
+        &self,
+        signal_ins: usize,
+        params: &[f64],
+        sample_rate: f32,
+        registry: &mut ResourceRegistry<T>,
+        resource_name: &str,
+    ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
+        match &self.factory {
+            Factory::ResourceMultichannelBlock(f) => {
+                Some(f(signal_ins, params, sample_rate, registry, resource_name))
+            }
             _ => None,
         }
     }
@@ -259,22 +301,6 @@ impl<T: Transcendental> Registry<T> {
         }
     }
 
-    /// Register a per-sample built-in.
-    pub fn register_sample(
-        &mut self,
-        sig: BuiltinSig,
-        factory: impl Fn(&[f64], f32) -> Box<dyn SampleBuiltin<T>> + Send + Sync + 'static,
-    ) {
-        debug_assert_eq!(sig.kind, BuiltinKind::Sample);
-        self.entries.insert(
-            sig.name.to_string(),
-            Entry {
-                sig,
-                factory: Factory::Sample(Box::new(factory)),
-            },
-        );
-    }
-
     /// Register a whole-buffer (`Algorithm`) built-in.
     pub fn register_block(
         &mut self,
@@ -295,7 +321,10 @@ impl<T: Transcendental> Registry<T> {
     pub fn register_multichannel_block(
         &mut self,
         sig: BuiltinSig,
-        factory: impl Fn(&[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync + 'static,
+        factory: impl Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
     ) {
         debug_assert_eq!(sig.kind, BuiltinKind::Block);
         self.entries.insert(
@@ -303,6 +332,51 @@ impl<T: Transcendental> Registry<T> {
             Entry {
                 sig,
                 factory: Factory::MultichannelBlock(Box::new(factory)),
+            },
+        );
+    }
+
+    /// Register a resource-backed whole-buffer built-in. The factory receives
+    /// the resource registry to resolve named resources (e.g. tape loops).
+    pub fn register_resource_block(
+        &mut self,
+        sig: BuiltinSig,
+        factory: impl Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        debug_assert_eq!(sig.kind, BuiltinKind::Block);
+        self.entries.insert(
+            sig.name.to_string(),
+            Entry {
+                sig,
+                factory: Factory::ResourceBlock(Box::new(factory)),
+            },
+        );
+    }
+
+    /// Register a resource-backed multi-channel whole-buffer built-in.
+    pub fn register_resource_multichannel_block(
+        &mut self,
+        sig: BuiltinSig,
+        factory: impl Fn(
+                usize,
+                &[f64],
+                f32,
+                &mut ResourceRegistry<T>,
+                &str,
+            ) -> Box<dyn MultichannelBlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        debug_assert_eq!(sig.kind, BuiltinKind::Block);
+        self.entries.insert(
+            sig.name.to_string(),
+            Entry {
+                sig,
+                factory: Factory::ResourceMultichannelBlock(Box::new(factory)),
             },
         );
     }
@@ -330,42 +404,5 @@ pub struct NoSigs;
 impl SignatureSource for NoSigs {
     fn builtin_sig(&self, _name: &str) -> Option<&BuiltinSig> {
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Gain {
-        k: f32,
-    }
-    impl SampleBuiltin<f32> for Gain {
-        fn process_sample(&mut self, inputs: &[f32]) -> f32 {
-            inputs[0] * self.k
-        }
-        fn reset(&mut self) {}
-    }
-
-    #[test]
-    fn register_and_lookup_sample() {
-        let mut reg = Registry::<f32>::new();
-        reg.register_sample(
-            BuiltinSig::simple("gain", 1, 1, 1, BuiltinKind::Sample),
-            |params, _sr| {
-                Box::new(Gain {
-                    k: params[0] as f32,
-                })
-            },
-        );
-        let sig = reg.builtin_sig("gain").unwrap();
-        assert_eq!((sig.signal_ins(), sig.params.len()), (1, 2));
-        let mut inst = reg
-            .get("gain")
-            .unwrap()
-            .build_sample(&[0.5], 44100.0)
-            .unwrap();
-        assert_eq!(inst.process_sample(&[2.0]), 1.0);
-        assert!(reg.builtin_sig("missing").is_none());
     }
 }

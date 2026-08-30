@@ -4,7 +4,6 @@
 
 #![cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 #![allow(unused_imports)]
-#![allow(dead_code)]
 
 use super::super::traits::*;
 use crate::math::vector::traits::VectorTranscendental;

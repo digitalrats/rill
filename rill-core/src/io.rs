@@ -192,6 +192,31 @@ impl IoPlayback for SpmcPlayback<f32, 256, 64> {
 }
 
 // ============================================================================
+// BackendMeta — static backend metadata
+// ============================================================================
+
+/// Static metadata for a backend definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackendMeta {
+    /// Active backends create a callback that drives the signal (rill-io
+    /// input/output). Passive backends (sampler, tape) provide or consume data
+    /// without a callback.
+    pub active: bool,
+}
+
+impl BackendMeta {
+    /// An active backend — always creates a callback (e.g. rill-io input/output).
+    pub const fn active() -> Self {
+        Self { active: true }
+    }
+
+    /// A passive backend — no callback (e.g. sampler, tape).
+    pub const fn passive() -> Self {
+        Self { active: false }
+    }
+}
+
+// ============================================================================
 // Backward-compatible alias
 // ============================================================================
 

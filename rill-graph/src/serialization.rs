@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 pub struct ResourceDef {
     /// Unique name referenced by node parameters (e.g. `"tape_0"`).
     pub name: String,
-    /// Resource kind: `"tape"` for a [`TapeLoop`](rill_core::buffer::TapeLoop).
+    /// Resource kind: `"tape"` for a tape loop (see `rill_sampler::tape`).
     pub kind: String,
     /// Capacity in samples (for `"tape"` kind).
     pub capacity: usize,
@@ -398,8 +398,7 @@ impl GraphDef {
             for (k, v) in nd.parameters() {
                 p = p.with(k.clone(), v.clone());
             }
-            let idx =
-                builder.add_node_with_name(nd.type_name(), &p, nd.id(), nd.name().to_string());
+            let idx = builder.add_node(nd.type_name(), &p);
 
             if let NodeDef::Router(ref r) = nd {
                 for entry in &r.routing_matrix {

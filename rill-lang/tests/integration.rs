@@ -1,4 +1,3 @@
-use float_cmp::approx_eq;
 use rill_core::traits::Algorithm;
 use rill_lang::compile;
 
@@ -12,15 +11,6 @@ fn run(src: &str, input: &[f32]) -> Vec<f32> {
 #[test]
 fn dc_offset() {
     assert_eq!(run("main = _ + 1", &[0.0, 1.0, 2.0]), vec![1.0, 2.0, 3.0]);
-}
-
-#[test]
-fn one_pole_lowpass_smoothing() {
-    let out = run("main = + ~ (_ * 0.5)", &[1.0, 1.0, 1.0, 1.0]);
-    assert!(approx_eq!(f32, out[0], 1.0, epsilon = 1e-6));
-    assert!(approx_eq!(f32, out[1], 1.5, epsilon = 1e-6));
-    assert!(approx_eq!(f32, out[2], 1.75, epsilon = 1e-6));
-    assert!(approx_eq!(f32, out[3], 1.875, epsilon = 1e-6));
 }
 
 #[test]
@@ -40,7 +30,7 @@ fn application_in_fanout_lowers_correctly() {
 
 #[test]
 fn type_error_is_reported() {
-    assert!(compile::<f32>("main = _ , _").is_err());
+    assert!(compile::<f32>("main = !").is_err());
 }
 
 #[test]

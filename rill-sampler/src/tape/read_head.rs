@@ -1,13 +1,18 @@
+//! Tape read head with gliding delay interpolation.
+
+use rill_core::buffer::SharedReader;
 use rill_core::{
-    buffer::TapeReader,
     math::Transcendental,
     traits::algorithm::{Algorithm, AlgorithmCategory, AlgorithmMetadata},
     traits::ProcessResult,
 };
 
 /// Tape read head for delay-based tape effects with gliding delay interpolation.
+///
+/// Holds a shared read capability over a tape buffer ([`SharedReader`]); the
+/// buffer itself stays single-threaded.
 pub struct ReadHead<T: Transcendental, const BUF_SIZE: usize> {
-    tape: Option<TapeReader<T>>,
+    tape: Option<SharedReader<T>>,
     delay: f32,
     sample_rate: f32,
     current_delay_samples: f64,
@@ -20,6 +25,9 @@ fn delay_smoothing_coeff(sample_rate: f64) -> f64 {
     1.0 - (-1.0 / (DELAY_SMOOTH_SECONDS * sample_rate)).exp()
 }
 
+/// SAFETY: the tape buffer is single-threaded; the duplex stream never moves a
+/// head across threads while another thread touches the shared tape. `Send +
+/// Sync` is only required by the builtin registry's static bounds.
 #[allow(unsafe_code)]
 unsafe impl<T: Transcendental, const B: usize> Send for ReadHead<T, B> {}
 #[allow(unsafe_code)]
@@ -34,11 +42,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Default for ReadHead<T, BUF_SIZE>
 impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     /// Creates a new read head with default settings.
     pub fn new() -> Self {
-        Self::with_resource("tape_0")
-    }
-
-    /// Creates a new read head with a named tape resource.
-    pub fn with_resource(_resource_name: &str) -> Self {
         Self {
             tape: None,
             delay: 0.5,
@@ -54,7 +57,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> ReadHead<T, BUF_SIZE> {
     }
 
     /// Sets the tape reader to read from.
-    pub fn set_reader(&mut self, reader: TapeReader<T>) {
+    pub fn set_reader(&mut self, reader: SharedReader<T>) {
         self.tape = Some(reader);
     }
 }
@@ -71,6 +74,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for ReadHead<T, BUF_
     }
 
     fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        use rill_core::buffer::Reader;
         let Some(tape) = self.tape.as_ref() else {
             output.fill(T::ZERO);
             return Ok(());
@@ -102,7 +106,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Algorithm<T> for ReadHead<T, BUF_
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::buffer::{tape_handles, TapeLoop};
+    use rill_core::buffer::{shared_handles, TapeLoop};
 
     fn ramp_tape(n: usize) -> TapeLoop<f32> {
         let mut tape = TapeLoop::<f32>::new(1024).unwrap();
@@ -124,7 +128,8 @@ mod tests {
         let mut rh = ReadHead::<f32, 4>::new();
         rh.set_delay(0.1);
         rh.init(100.0);
-        let (_writer, reader) = tape_handles(tape);
+        let (_writer, reader) =
+            shared_handles(Box::new(tape) as Box<dyn rill_core::buffer::DelayBuffer<f32>>);
         rh.set_reader(reader);
 
         let mut out = [0.0f32; 4];
@@ -139,7 +144,8 @@ mod tests {
         let mut rh = ReadHead::<f32, 4>::new();
         rh.set_delay(0.105);
         rh.init(100.0);
-        let (_writer, reader) = tape_handles(tape);
+        let (_writer, reader) =
+            shared_handles(Box::new(tape) as Box<dyn rill_core::buffer::DelayBuffer<f32>>);
         rh.set_reader(reader);
 
         let mut out = [0.0f32; 4];

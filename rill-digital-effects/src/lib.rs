@@ -16,16 +16,10 @@ pub mod delay;
 pub mod distortion;
 /// Lookahead limiter with configurable threshold and release.
 pub mod limiter;
-/// Tape read head for delay-line playback.
-pub mod read_head;
-/// Tape write head for delay-line recording with feedback.
-pub mod write_head;
 
 pub use delay::Delay;
 pub use distortion::{Distortion, DistortionType};
 pub use limiter::Limiter;
-pub use read_head::ReadHead;
-pub use write_head::WriteHead;
 
 /// rill-lang builtin registration for digital effects.
 pub mod lang;

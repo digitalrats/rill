@@ -12,16 +12,15 @@ pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
 pub mod error;
-pub mod graph_compiler;
-pub mod graph_engine;
-pub mod graph_ir;
-pub mod graph_optimize;
+/// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → [`CompiledStream`](graph::CompiledStream).
+pub mod graph;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
 pub mod parser;
 pub mod prelude;
 pub mod program;
+pub mod program_engine;
 pub mod program_runner;
 pub mod reduce;
 pub mod regalloc;
@@ -39,9 +38,7 @@ pub use error::{CompileError, Span};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{
-    BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry, SampleBuiltin,
-};
+pub use builtin::{BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry};
 
 use rill_core::math::Transcendental;
 use rill_core_actor::Mailbox;
@@ -80,122 +77,150 @@ pub fn compile_with<T: Transcendental>(
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
     // regalloc::allocate(&mut ir);
-    validate_block_builtins(&ir)?;
     RillProgram::<T>::new_with(ir, registry, sample_rate)
 }
 
 /// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
-pub fn compile_program<T: Transcendental, const BUF_SIZE: usize>(
+pub fn compile_program<T: Transcendental>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<graph_engine::CompiledGraphEngine<T, BUF_SIZE>, CompileError> {
-    let mut typed = types::infer::infer_program_with(program, registry)?;
-    typed.program = reduce::reduce(&typed.program);
-    let ir = lower::lower_with(&typed, registry, sample_rate)?;
-    validate_block_builtins(&ir)?;
-
-    use crate::graph_ir::{GraphIr, GraphNode};
-    let mut nodes: indexmap::IndexMap<String, GraphNode> = indexmap::IndexMap::new();
-    let params = ir.params.clone();
-    nodes.insert(
-        "main".to_string(),
-        GraphNode {
-            arity: (ir.num_inputs, ir.num_outputs),
-            ir,
-            params,
-            keep: false,
-            inline: false,
-            is_bridge: false,
-            feedback_read: vec![],
-            feedback_write: vec![],
-        },
-    );
-    let graph_ir = GraphIr {
-        inputs: 1,
-        outputs: 1,
-        nodes,
-        edges: vec![],
-        topo_order: vec!["main".to_string()],
-    };
-
-    let compiled = graph_compiler::compile::<T, BUF_SIZE>(&graph_ir, registry, sample_rate)
-        .map_err(CompileError::Unsupported)?;
-
-    let mailbox = Arc::new(Mailbox::new(64));
-    Ok(graph_engine::CompiledGraphEngine::new(compiled, mailbox))
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    compile_program_inner(program, registry, sample_rate, None)
 }
 
-/// Compile rill-lang source into a graph engine that supports SetParameter.
-pub fn compile_graph<T: Transcendental, const BUF_SIZE: usize>(
-    src: &str,
+/// Compile an AST program against a pre-built resource registry.
+///
+/// The registry is shared (e.g. one tape across recording + playback engines);
+/// the caller owns it and must keep it alive while both engines run. The DSL's
+/// `TapeLoop <capacity>` declaration is only a declaration: when an external
+/// registry is supplied, its tape capacity is used. Every resource referenced
+/// by the program must exist in `resources`, otherwise the program fails with
+/// `Unsupported` rather than compiling to a silently dead engine (a write head
+/// without a writer, a read head without a reader).
+pub fn compile_program_with_resources<T: Transcendental>(
+    program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<graph_engine::CompiledGraphEngine<T, BUF_SIZE>, CompileError> {
-    let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens, src.as_bytes())?;
+    resources: &mut rill_core::buffer::ResourceRegistry<T>,
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    compile_program_inner(program, registry, sample_rate, Some(resources))
+}
+
+fn compile_program_inner<T: Transcendental>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    let (program, resource_decls) = extract_resources(program);
+
     let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
-    validate_block_builtins(&ir)?;
 
-    use crate::graph_ir::{GraphIr, GraphNode};
-    let mut nodes: indexmap::IndexMap<String, GraphNode> = indexmap::IndexMap::new();
-    nodes.insert(
-        "main".to_string(),
-        GraphNode {
-            arity: (ir.num_inputs, ir.num_outputs),
-            ir,
-            params: vec![],
-            keep: false,
-            inline: false,
-            is_bridge: false,
-            feedback_read: vec![],
-            feedback_write: vec![],
-        },
-    );
-    let graph_ir = GraphIr {
-        inputs: 1,
-        outputs: 1,
-        nodes,
-        edges: vec![],
-        topo_order: vec!["main".to_string()],
-    };
-
-    let compiled = graph_compiler::compile::<T, BUF_SIZE>(&graph_ir, registry, sample_rate)
-        .map_err(CompileError::Unsupported)?;
-
-    let mailbox = Arc::new(Mailbox::new(64));
-    Ok(graph_engine::CompiledGraphEngine::new(compiled, mailbox))
-}
-
-fn validate_block_builtins(ir: &crate::ir::Ir) -> Result<(), CompileError> {
-    use crate::ir::Instr;
-    use crate::schedule::{build_schedule, Step};
-    for instr in &ir.instrs {
-        if let Instr::CallSample { srcs, .. } = instr {
-            if srcs.len() > backend::interp::MAX_SAMPLE_BUILTIN_INS {
-                return Err(CompileError::Unsupported(format!(
-                    "sample built-in has {} signal inputs; the maximum is {}",
-                    srcs.len(),
-                    backend::interp::MAX_SAMPLE_BUILTIN_INS,
-                )));
-            }
-        }
-    }
-    let sched = build_schedule(ir);
-    for step in &sched.steps {
-        if let Step::Sample(instrs) = step {
-            for &idx in instrs {
-                if matches!(ir.instrs[idx], Instr::CallBlock { .. }) {
-                    return Err(CompileError::Unsupported(
-                        "block built-in cannot be used inside a feedback loop (`~`)".to_string(),
-                    ));
+    // The declared-resource check only applies when the registry is auto-created
+    // from the source's `TapeLoop` declarations. When a caller-supplied registry
+    // is used, its presence is validated below.
+    if resources.is_none() {
+        for bi in &ir.builtins {
+            if let Some(res) = &bi.resource {
+                if !resource_decls.iter().any(|d| &d.name == res) {
+                    return Err(CompileError::Unsupported(format!(
+                        "built-in '{}' references undeclared resource '{}'",
+                        bi.name, res
+                    )));
                 }
             }
         }
     }
-    Ok(())
+
+    let mut owned = rill_core::buffer::ResourceRegistry::<T>::new();
+    let res: &mut rill_core::buffer::ResourceRegistry<T> = match resources {
+        Some(r) => {
+            for bi in &ir.builtins {
+                if let Some(name) = &bi.resource {
+                    if r.reader(name).is_none() {
+                        return Err(CompileError::Unsupported(format!(
+                            "resource '{}' not found in the provided registry",
+                            name
+                        )));
+                    }
+                }
+            }
+            r
+        }
+        None => {
+            for decl in &resource_decls {
+                let tape =
+                    rill_core::buffer::TapeLoop::<T>::new(decl.capacity).ok_or_else(|| {
+                        CompileError::Unsupported(format!("tape '{}' has zero capacity", decl.name))
+                    })?;
+                owned.register_buffer(decl.name.clone(), Box::new(tape));
+            }
+            &mut owned
+        }
+    };
+
+    let rp = RillProgram::<T>::new_with_resources(ir, registry, sample_rate, res)?;
+    let mailbox = Arc::new(Mailbox::new(64));
+    Ok(program_engine::ProgramEngine::new(rp, mailbox))
+}
+
+/// Compile rill-lang source into a graph engine that supports SetParameter.
+pub fn compile_graph<T: Transcendental>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    compile_program::<T>(&program, registry, sample_rate)
+}
+
+/// A named resource declaration (e.g. a tape loop) from the DSL.
+pub struct ResourceDecl {
+    /// Resource name.
+    pub name: String,
+    /// Capacity in samples (for tape loops).
+    pub capacity: usize,
+}
+
+/// Extract top-level `name = TapeLoop <capacity>` resource declarations,
+/// returning the remaining signal program plus the declarations.
+fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec<ResourceDecl>) {
+    use crate::ast::{Def, Expr};
+    let mut decls = Vec::new();
+    let mut defs = Vec::with_capacity(program.defs.len());
+    for def in &program.defs {
+        let mut is_resource = false;
+        if let Def::Local {
+            name,
+            body: Expr::Apply {
+                name: ctor, args, ..
+            },
+            ..
+        } = def
+        {
+            if ctor == "TapeLoop" {
+                if let Some(cap) = args.first().and_then(|a| match a {
+                    Expr::Int(v, _) => Some(*v as usize),
+                    Expr::Float(v, _) => Some(*v as usize),
+                    _ => None,
+                }) {
+                    decls.push(ResourceDecl {
+                        name: name.clone(),
+                        capacity: cap,
+                    });
+                    is_resource = true;
+                }
+            }
+        }
+        if !is_resource {
+            defs.push(def.clone());
+        }
+    }
+    (crate::ast::Program { defs }, decls)
 }
 
 #[cfg(test)]

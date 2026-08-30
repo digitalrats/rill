@@ -1,32 +1,189 @@
-//! # Resource registry — named shared resources
+//! # Shared-buffer resources — generic Reader/Writer capabilities
 //!
-//! [`ResourceRegistry`] — a build-time registry that owns named resources
-//! (currently [`TapeLoop`](super::TapeLoop)s) and hands out capability handles
-//! to graph nodes during `GraphBuilder::build()`.
+//! A **resource** is a named shared buffer (e.g. a tape loop) handed to
+//! resource-backed builtins at construction. Buffers are **single-threaded** —
+//! they are never shared across threads. Interaction with a buffer goes only
+//! through the [`Reader`] / [`Writer`] capability wrappers, which split the
+//! full [`DelayBuffer`] into a read side (cloneable, many consumers) and a
+//! write side (unique, one producer).
 //!
-//! Each registered tape yields a [`TapeWriter`] (unique) and a [`TapeReader`]
-//! (shared, cloneable). Nodes acquire the capability matching their role. The
-//! handles keep the underlying resource alive via reference counting, so the
-//! registry itself is only needed during assembly — it is dropped once every
-//! node has resolved its resources.
+//! The mechanism is generic: the registry holds any `Box<dyn DelayBuffer>`, and
+//! builtins receive `SharedReader`/`SharedWriter` handles via the traits — it is
+//! not tied to a particular buffer type.
 
+use std::cell::UnsafeCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use super::tape::{tape_handles, TapeReader, TapeWriter};
-use super::TapeLoop;
+use crate::math::Transcendental;
 
-/// Registry of named shared resources.
+// ============================================================================
+// Capability traits
+// ============================================================================
+
+/// Read capability over a shared delay buffer (single-threaded).
 ///
-/// Used in `GraphBuilder::build()` to allocate resources and distribute
-/// capability handles to graph nodes.
-pub struct ResourceRegistry<T> {
-    /// Unique writer handles, removed on first acquisition (single-writer).
-    writers: HashMap<String, TapeWriter<T>>,
-    /// Reader handles, cloned on each acquisition (many read taps).
-    readers: HashMap<String, TapeReader<T>>,
+/// Implemented by buffer-specific reader handles; consumers read only through
+/// this trait, so they cannot mutate the buffer.
+pub trait Reader<T: Transcendental> {
+    /// Read a whole block at `delay` samples behind the write position.
+    fn read_block(&self, delay: usize, out: &mut [T]);
+    /// Read a single sample at a fractional `delay` with interpolation.
+    fn read_interpolated(&self, delay: f64) -> T;
 }
 
-impl<T> ResourceRegistry<T> {
+/// Write capability over a shared delay buffer (single-threaded).
+///
+/// Implemented by a unique writer handle; the single-writer invariant is
+/// encoded by construction (one handle per named buffer).
+pub trait Writer<T: Transcendental> {
+    /// Write a single sample and advance the write position.
+    fn write(&mut self, sample: T);
+    /// Write a whole block and advance the write position.
+    fn write_block(&mut self, block: &[T]);
+}
+
+/// Full capabilities of a delay buffer (read + write + lifecycle).
+///
+/// The concrete buffer (e.g. [`TapeLoop`](crate::buffer::TapeLoop)) lives
+/// inside a shared cell; the registry splits it into a [`Reader`] and a
+/// [`Writer`] for builtins.
+pub trait DelayBuffer<T: Transcendental>: 'static {
+    /// Maximum capacity in samples.
+    fn capacity(&self) -> usize;
+    /// Write a single sample and advance the write position.
+    fn write(&mut self, sample: T);
+    /// Write a whole block.
+    fn write_block(&mut self, block: &[T]);
+    /// Read a single sample at a fractional `delay` with interpolation.
+    fn read_interpolated(&self, delay: f64) -> T;
+    /// Read a whole block at `delay` samples behind the write position.
+    fn read_block(&self, delay: usize, out: &mut [T]);
+    /// Reset the buffer to zeros.
+    fn clear(&mut self);
+}
+
+// ============================================================================
+// Shared cell + capability wrappers
+// ============================================================================
+
+/// Shared, single-threaded cell holding a boxed [`DelayBuffer`].
+///
+/// Lives on the signal thread; the graph is single-threaded, so writer and
+/// readers never overlap (nodes run sequentially in topological order).
+struct SharedCell<T: Transcendental> {
+    inner: Rc<UnsafeCell<Box<dyn DelayBuffer<T>>>>,
+}
+
+impl<T: Transcendental> Clone for SharedCell<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T: Transcendental> SharedCell<T> {
+    fn new(buffer: Box<dyn DelayBuffer<T>>) -> Self {
+        Self {
+            inner: Rc::new(UnsafeCell::new(buffer)),
+        }
+    }
+}
+
+/// Unique write handle over a shared [`DelayBuffer`]. Not `Clone`.
+pub struct SharedWriter<T: Transcendental> {
+    cell: SharedCell<T>,
+}
+
+/// Shared read handle over a [`DelayBuffer`]. `Clone` — one per reader.
+pub struct SharedReader<T: Transcendental> {
+    cell: SharedCell<T>,
+}
+
+impl<T: Transcendental> Clone for SharedReader<T> {
+    fn clone(&self) -> Self {
+        Self {
+            cell: self.cell.clone(),
+        }
+    }
+}
+
+/// Wrap a buffer into a writer + reader handle pair sharing one cell.
+///
+/// The writer is unique; clone the reader for additional read taps. The buffer
+/// stays alive while any handle exists.
+pub fn shared_handles<T: Transcendental>(
+    buffer: Box<dyn DelayBuffer<T>>,
+) -> (SharedWriter<T>, SharedReader<T>) {
+    let cell = SharedCell::new(buffer);
+    (SharedWriter { cell: cell.clone() }, SharedReader { cell })
+}
+
+impl<T: Transcendental> Writer<T> for SharedWriter<T> {
+    /// SAFETY: the graph is single-threaded; at most one writer exists per cell
+    /// and it never runs concurrently with a reader (sequential topo order).
+    #[allow(unsafe_code)]
+    fn write(&mut self, sample: T) {
+        unsafe { &mut *self.cell.inner.get() }.write(sample);
+    }
+    #[allow(unsafe_code)]
+    fn write_block(&mut self, block: &[T]) {
+        unsafe { &mut *self.cell.inner.get() }.write_block(block);
+    }
+}
+
+impl<T: Transcendental> SharedWriter<T> {
+    /// Reset the underlying buffer to zeros.
+    #[allow(unsafe_code)]
+    pub fn clear(&mut self) {
+        unsafe { &mut *self.cell.inner.get() }.clear();
+    }
+    /// Maximum capacity in samples.
+    #[allow(unsafe_code)]
+    pub fn capacity(&self) -> usize {
+        unsafe { &*self.cell.inner.get() }.capacity()
+    }
+}
+
+impl<T: Transcendental> Reader<T> for SharedReader<T> {
+    /// SAFETY: see [`SharedWriter::write_block`] — no `&mut` is live while a
+    /// reader is active.
+    #[allow(unsafe_code)]
+    fn read_block(&self, delay: usize, out: &mut [T]) {
+        unsafe { &*self.cell.inner.get() }.read_block(delay, out);
+    }
+    #[allow(unsafe_code)]
+    fn read_interpolated(&self, delay: f64) -> T {
+        unsafe { &*self.cell.inner.get() }.read_interpolated(delay)
+    }
+}
+
+impl<T: Transcendental> SharedReader<T> {
+    /// Maximum capacity in samples.
+    #[allow(unsafe_code)]
+    pub fn capacity(&self) -> usize {
+        unsafe { &*self.cell.inner.get() }.capacity()
+    }
+}
+
+// ============================================================================
+// Resource registry
+// ============================================================================
+
+/// Registry of named shared buffers.
+///
+/// Used at build time to allocate buffers and distribute capability handles to
+/// resource-backed builtins. The registry itself is only needed during
+/// assembly — the handles keep the buffer alive after it is dropped.
+pub struct ResourceRegistry<T: Transcendental> {
+    /// Unique writer handles, removed on first acquisition (single-writer).
+    writers: HashMap<String, SharedWriter<T>>,
+    /// Reader handles, cloned on each acquisition (many readers).
+    readers: HashMap<String, SharedReader<T>>,
+}
+
+impl<T: Transcendental> ResourceRegistry<T> {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self {
@@ -35,24 +192,24 @@ impl<T> ResourceRegistry<T> {
         }
     }
 
-    /// Register a named tape loop, creating its writer/reader capability pair.
-    pub fn register_tape(&mut self, name: impl Into<String>, tape: TapeLoop<T>) {
+    /// Register a named shared buffer, creating its writer/reader handle pair.
+    pub fn register_buffer(&mut self, name: impl Into<String>, buffer: Box<dyn DelayBuffer<T>>) {
         let name = name.into();
-        let (writer, reader) = tape_handles(tape);
+        let (writer, reader) = shared_handles(buffer);
         self.writers.insert(name.clone(), writer);
         self.readers.insert(name, reader);
     }
 
-    /// Acquire a read capability for the named tape (cloneable, many taps).
-    pub fn reader(&self, name: &str) -> Option<TapeReader<T>> {
+    /// Acquire a read handle for the named buffer (cloneable, many readers).
+    pub fn reader(&self, name: &str) -> Option<SharedReader<T>> {
         self.readers.get(name).cloned()
     }
 
-    /// Acquire the unique write capability for the named tape.
+    /// Acquire the unique write handle for the named buffer.
     ///
-    /// Returns `Some` only on the first call for a given name; subsequent
-    /// calls return `None`. This enforces the single-writer invariant.
-    pub fn writer(&mut self, name: &str) -> Option<TapeWriter<T>> {
+    /// Returns `Some` only on the first call for a given name; subsequent calls
+    /// return `None` (single-writer invariant).
+    pub fn writer(&mut self, name: &str) -> Option<SharedWriter<T>> {
         self.writers.remove(name)
     }
 
@@ -67,7 +224,7 @@ impl<T> ResourceRegistry<T> {
     }
 }
 
-impl<T> Default for ResourceRegistry<T> {
+impl<T: Transcendental> Default for ResourceRegistry<T> {
     fn default() -> Self {
         Self::new()
     }
@@ -79,8 +236,12 @@ mod tests {
 
     #[test]
     fn test_registry_writer_is_unique() {
+        use crate::buffer::TapeLoop;
         let mut reg = ResourceRegistry::<f32>::new();
-        reg.register_tape("tape_0", TapeLoop::new(1024).unwrap());
+        reg.register_buffer(
+            "tape_0",
+            Box::new(TapeLoop::<f32>::new(1024).unwrap()) as Box<dyn DelayBuffer<f32>>,
+        );
         assert_eq!(reg.len(), 1);
         assert!(reg.reader("tape_0").is_some());
         assert!(reg.reader("nonexistent").is_none());
@@ -91,14 +252,19 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_reader_writer_share_tape() {
+    fn test_registry_reader_writer_share_buffer() {
+        use crate::buffer::TapeLoop;
         let mut reg = ResourceRegistry::<f32>::new();
-        reg.register_tape("t", TapeLoop::new(64).unwrap());
+        reg.register_buffer(
+            "t",
+            Box::new(TapeLoop::<f32>::new(64).unwrap()) as Box<dyn DelayBuffer<f32>>,
+        );
         let mut writer = reg.writer("t").unwrap();
         let reader = reg.reader("t").unwrap();
-        writer.write(1.0);
-        writer.write(2.0);
-        assert_eq!(reader.read(0), 2.0);
-        assert_eq!(reader.read(1), 1.0);
+        writer.write_block(&[1.0, 2.0]);
+        let mut out = [0.0f32; 2];
+        reader.read_block(0, &mut out);
+        assert_eq!(out[0], 1.0);
+        assert_eq!(out[1], 2.0);
     }
 }

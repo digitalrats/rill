@@ -6,7 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{Def, Expr, Program};
+use crate::ast::{BinOp, Def, Expr, Program};
+use crate::error::Span;
 
 fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
     match e {
@@ -127,6 +128,25 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>) -> Expr {
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
             reduce_expr(body, &let_ctx)
         }
+        Expr::Bin {
+            op: BinOp::Feedback,
+            lhs,
+            rhs,
+            span,
+        } => {
+            // Desugar the Faust-style integrator short forms to block built-ins:
+            //   `+ ~ _`       → `integrator`
+            //   `+ ~ (_ * k)` → `leaky_integrator k`
+            if let Some(desugared) = desugar_integrator(lhs, rhs, *span) {
+                return desugared;
+            }
+            Expr::Bin {
+                op: BinOp::Feedback,
+                lhs: Box::new(reduce_expr(lhs, ctx)),
+                rhs: Box::new(reduce_expr(rhs, ctx)),
+                span: *span,
+            }
+        }
         Expr::Bin { op, lhs, rhs, span } => Expr::Bin {
             op: *op,
             lhs: Box::new(reduce_expr(lhs, ctx)),
@@ -135,6 +155,32 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>) -> Expr {
         },
         Expr::Neg(inner, span) => Expr::Neg(Box::new(reduce_expr(inner, ctx)), *span),
         _ => e.clone(),
+    }
+}
+
+/// Recognize the `+ ~ _` / `+ ~ (_ * k)` integrator short forms.
+fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
+    let is_plus = matches!(lhs, Expr::Ref(name, _) if name == "+");
+    if !is_plus {
+        return None;
+    }
+    match rhs {
+        Expr::Wire(_) => Some(Expr::Apply {
+            name: "integrator".to_string(),
+            args: vec![],
+            span,
+        }),
+        Expr::Bin {
+            op: BinOp::Mul,
+            lhs: w,
+            rhs: k,
+            ..
+        } if matches!(w.as_ref(), Expr::Wire(_)) => Some(Expr::Apply {
+            name: "leaky_integrator".to_string(),
+            args: vec![(**k).clone()],
+            span,
+        }),
+        _ => None,
     }
 }
 

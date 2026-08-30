@@ -10,7 +10,7 @@
 
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use jack::{AudioIn, AudioOut, Client, ClientOptions, Control, Port, ProcessHandler, ProcessScope};
@@ -49,8 +49,6 @@ pub struct JackBackend {
     config: AudioConfig,
     process_cb: CbSlot,
     output_slot: OutputSlot,
-    #[allow(dead_code)]
-    xruns: Arc<AtomicU32>,
     running: Arc<AtomicBool>,
     sample_pos: Arc<AtomicU64>,
     /// Stores the active JACK client handle.
@@ -86,7 +84,6 @@ impl JackBackend {
             config,
             process_cb: CbSlot::new(),
             output_slot: OutputSlot::new(),
-            xruns: Arc::new(AtomicU32::new(0)),
             running: Arc::new(AtomicBool::new(false)),
             sample_pos: Arc::new(AtomicU64::new(0)),
             active_client: UnsafeCell::new(None),

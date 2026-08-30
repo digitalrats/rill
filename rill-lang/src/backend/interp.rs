@@ -1,17 +1,12 @@
-//! IR evaluators: the reference per-sample interpreter and the hybrid
-//! block/sample executor.
+//! IR evaluator: the block-only executor.
 
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
+use rill_core::traits::MultichannelAlgorithm;
 
 use crate::ir::{BinArith, Instr, UnOp};
 use crate::program::RillProgram;
 use crate::schedule::Step;
-
-/// Maximum number of signal inputs a [`crate::builtin::SampleBuiltin`] may take.
-/// Inputs are gathered into a fixed stack buffer on the RT path; `compile_with`
-/// rejects any sample built-in exceeding this.
-pub(crate) const MAX_SAMPLE_BUILTIN_INS: usize = 4;
 
 fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     match pv {
@@ -33,7 +28,6 @@ pub(crate) fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) 
             let v = prog.params[param_idx].clone();
             prog.params_dirty[param_idx] = false;
             match &mut prog.builtins[instance] {
-                crate::program::BuiltinInst::Sample(b) => b.set_param(arg_pos, &v),
                 crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),
                 crate::program::BuiltinInst::MultichannelBlock(b) => b.set_param(arg_pos, &v),
             }
@@ -41,139 +35,15 @@ pub(crate) fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) 
     }
 }
 
-// ============================================================================
-// Reference (per-sample) interpreter — numerical oracle, MVP behavior.
-// ============================================================================
-
-/// Run one block sample-by-sample using the scalar `f64` register file.
-pub fn run_block_reference<T: Transcendental>(
+/// Run one block via the schedule. Every step is a whole-buffer operation.
+/// Supports N inputs → M outputs.
+pub fn run_block_mimo<T: Transcendental>(
     prog: &mut RillProgram<T>,
-    input: Option<&[T]>,
-    output: &mut [T],
+    inputs: &[&[T]],
+    outputs: &mut [&mut [T]],
 ) {
     push_builtin_params(prog);
-    let n = output.len();
-    for i in 0..n {
-        let in_sample = match input {
-            Some(buf) if i < buf.len() => buf[i].to_f64(),
-            _ => 0.0,
-        };
-        let y = eval_sample_scalar(prog, in_sample);
-        output[i] = T::from_f64(y);
-    }
-}
-
-pub(crate) fn eval_sample_scalar<T: Transcendental>(prog: &mut RillProgram<T>, in0: f64) -> f64 {
-    for idx in 0..prog.ir.instrs.len() {
-        match prog.ir.instrs[idx].clone() {
-            Instr::Const { dst, value } => prog.regs_scalar[dst] = value,
-            Instr::LoadInput { dst, index } => {
-                prog.regs_scalar[dst] = if index == 0 { in0 } else { 0.0 };
-            }
-            Instr::ReadState { dst, slot } => prog.regs_scalar[dst] = prog.state[slot],
-            Instr::ReadDelay { dst, line } => prog.regs_scalar[dst] = prog.delays[line].read(),
-            Instr::Move { dst, src } => prog.regs_scalar[dst] = prog.regs_scalar[src],
-            Instr::Un { dst, op, src } => {
-                let x = prog.regs_scalar[src];
-                prog.regs_scalar[dst] = apply_un_f64(op, x);
-            }
-            Instr::Bin { dst, op, a, b } => {
-                let x = prog.regs_scalar[a];
-                let y = prog.regs_scalar[b];
-                prog.regs_scalar[dst] = apply_bin_f64(op, x, y);
-            }
-            Instr::WriteState { slot, src } => prog.state_next[slot] = prog.regs_scalar[src],
-            Instr::WriteDelay { line, src } => {
-                let v = prog.regs_scalar[src];
-                prog.delays[line].write(v);
-            }
-            Instr::CallSample {
-                dst,
-                srcs,
-                instance,
-            } => {
-                let mut buf = [T::ZERO; MAX_SAMPLE_BUILTIN_INS];
-                let k = srcs.len().min(MAX_SAMPLE_BUILTIN_INS);
-                for (j, &s) in srcs.iter().take(MAX_SAMPLE_BUILTIN_INS).enumerate() {
-                    buf[j] = T::from_f64(prog.regs_scalar[s]);
-                }
-                prog.regs_scalar[dst] = match &mut prog.builtins[instance] {
-                    crate::program::BuiltinInst::Sample(b) => b.process_sample(&buf[..k]).to_f64(),
-                    _ => unreachable!(),
-                };
-            }
-            Instr::CallBlock {
-                dst,
-                srcs,
-                instance,
-            } => {
-                let x = T::from_f64(prog.regs_scalar[if srcs.is_empty() { 0 } else { srcs[0] }]);
-                let mut o = [T::ZERO; 1];
-                match &mut prog.builtins[instance] {
-                    crate::program::BuiltinInst::Block(b) => {
-                        let _ = b.process(Some(&[x]), &mut o);
-                    }
-                    _ => unreachable!(),
-                }
-                prog.regs_scalar[dst] = o[0].to_f64();
-            }
-            Instr::ReadParam { dst, idx } => {
-                prog.regs_scalar[dst] = param_to_f64(&prog.params[idx])
-            }
-            Instr::ReadActorParam { dst, param_idx } => {
-                prog.regs_scalar[dst] = param_to_f64(&prog.params[param_idx])
-            }
-            #[cfg(feature = "debug")]
-            Instr::ProbePoint { src, dst, .. } => {
-                prog.regs_scalar[dst] = prog.regs_scalar[src];
-            }
-        }
-    }
-    for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
-        *s = *nx;
-    }
-    prog.regs_scalar[prog.ir.output_reg]
-}
-
-fn apply_un_f64(op: UnOp, x: f64) -> f64 {
-    match op {
-        UnOp::Neg => -x,
-        UnOp::Abs => x.abs(),
-        UnOp::Sin => x.sin(),
-        UnOp::Cos => x.cos(),
-        UnOp::Tan => x.tan(),
-        UnOp::Sqrt => x.sqrt(),
-        UnOp::Exp => x.exp(),
-        UnOp::Ln => x.ln(),
-        UnOp::Tanh => x.tanh(),
-    }
-}
-
-fn apply_bin_f64(op: BinArith, x: f64, y: f64) -> f64 {
-    match op {
-        BinArith::Add => x + y,
-        BinArith::Sub => x - y,
-        BinArith::Mul => x * y,
-        BinArith::Div => x / y,
-        BinArith::Rem => x % y,
-        BinArith::Min => x.min(y),
-        BinArith::Max => x.max(y),
-    }
-}
-
-// ============================================================================
-// Hybrid (block + sample-region) executor.
-// ============================================================================
-
-/// Run one block via the schedule: block steps whole-buffer, sample regions
-/// per sample. All registers are computed in `T`.
-pub fn run_block_hybrid<T: Transcendental>(
-    prog: &mut RillProgram<T>,
-    input: Option<&[T]>,
-    output: &mut [T],
-) {
-    push_builtin_params(prog);
-    let n = output.len();
+    let n = outputs.first().map(|o| o.len()).unwrap_or(0);
     prog.ensure_block_len(n);
 
     // Move the step list out of `prog` so we can borrow `prog`'s registers
@@ -182,22 +52,28 @@ pub fn run_block_hybrid<T: Transcendental>(
     let steps = std::mem::take(&mut prog.schedule.steps);
     for step in &steps {
         match step {
-            Step::Block(idx) => exec_block_op(prog, *idx, input, n),
+            Step::Block(idx) => exec_block_op(prog, *idx, inputs, n),
             Step::ForeignBlock(idx) => exec_foreign_block(prog, *idx, n),
-            Step::Sample(instrs) => exec_sample_region(prog, instrs, input, n),
         }
     }
     prog.schedule.steps = steps;
 
-    let out_reg = prog.ir.output_reg;
-    output[..n].copy_from_slice(&prog.block_regs[out_reg][..n]);
+    // Apply the block-level feedback shadow copy (double-buffer swap).
+    prog.swap_block_state();
+
+    for (i, out) in outputs.iter_mut().enumerate() {
+        if let Some(&reg) = prog.ir.output_regs.get(i) {
+            let m = out.len().min(n);
+            out[..m].copy_from_slice(&prog.block_regs[reg][..m]);
+        }
+    }
 }
 
-/// Execute a single combinational instruction over the whole `[..n]` buffer.
+/// Execute a single whole-buffer instruction.
 fn exec_block_op<T: Transcendental>(
     prog: &mut RillProgram<T>,
     idx: usize,
-    input: Option<&[T]>,
+    inputs: &[&[T]],
     n: usize,
 ) {
     match prog.ir.instrs[idx].clone() {
@@ -207,26 +83,28 @@ fn exec_block_op<T: Transcendental>(
         }
         Instr::LoadInput { dst, index } => {
             let reg = &mut prog.block_regs[dst];
-            if index == 0 {
-                if let Some(buf) = input {
+            match inputs.get(index) {
+                Some(buf) => {
                     let m = buf.len().min(n);
                     reg[..m].copy_from_slice(&buf[..m]);
                     for v in &mut reg[m..n] {
                         *v = T::ZERO;
                     }
-                } else {
+                }
+                None => {
                     for v in &mut reg[..n] {
                         *v = T::ZERO;
                     }
                 }
-            } else {
-                for v in &mut reg[..n] {
-                    *v = T::ZERO;
-                }
             }
         }
+        Instr::ReadBlockState { dst, slot } => {
+            prog.block_regs[dst][..n].copy_from_slice(&prog.block_state[slot][..n]);
+        }
+        Instr::ReadDelay { dst, line } => {
+            prog.delays[line].read_block(&mut prog.block_regs[dst][..n]);
+        }
         Instr::Move { dst, src } => {
-            // dst != src (SSA); move src out to satisfy the borrow checker.
             let mut tmp = std::mem::take(&mut prog.block_regs[dst]);
             tmp[..n].copy_from_slice(&prog.block_regs[src][..n]);
             prog.block_regs[dst] = tmp;
@@ -246,7 +124,12 @@ fn exec_block_op<T: Transcendental>(
             );
             prog.block_regs[dst] = out;
         }
-        // Stateful instrs never appear as a Block step.
+        Instr::WriteBlockState { slot, src } => {
+            prog.block_state_next[slot][..n].copy_from_slice(&prog.block_regs[src][..n]);
+        }
+        Instr::WriteDelay { line, src } => {
+            prog.delays[line].write_block(&prog.block_regs[src][..n]);
+        }
         Instr::ReadParam { dst, idx } => {
             let v = T::from_f64(param_to_f64(&prog.params[idx]));
             prog.block_regs[dst][..n].fill(v);
@@ -255,17 +138,11 @@ fn exec_block_op<T: Transcendental>(
             let v = T::from_f64(param_to_f64(&prog.params[param_idx]));
             prog.block_regs[dst][..n].fill(v);
         }
-        Instr::ReadState { .. }
-        | Instr::WriteState { .. }
-        | Instr::ReadDelay { .. }
-        | Instr::WriteDelay { .. }
-        | Instr::CallSample { .. }
-        | Instr::CallBlock { .. } => {
-            unreachable!("stateful or built-in instruction scheduled as a block op")
+        Instr::CallBlock { .. } => {
+            unreachable!("block built-in scheduled as a block op (should be ForeignBlock)")
         }
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, src, .. } => {
-            // dst != src (SSA); move src out to satisfy the borrow checker.
             let mut tmp = std::mem::take(&mut prog.block_regs[dst]);
             tmp[..n].copy_from_slice(&prog.block_regs[src][..n]);
             prog.block_regs[dst] = tmp;
@@ -286,16 +163,9 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
         let n_out = bi.signal_outs;
 
         if n_in <= 1 && n_out == 1 {
-            // Fast path: single-channel or generator, no heap allocation.
-            //
-            // Safety: taking the output register must not invalidate the input
-            // register slice.  Builders (DSL lowerer, graph build_ir) guarantee
-            // that input and output use separate registers; the assertion here
-            // catches any violation at the IR level.
             assert!(
                 n_in == 0 || first_dst != srcs[0],
-                "ForeignBlock register aliasing: input reg {} == output reg {}. \
-                 The program IR must use separate registers for input and output.",
+                "ForeignBlock register aliasing: input reg {} == output reg {}.",
                 srcs[0],
                 first_dst,
             );
@@ -309,146 +179,43 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
                 crate::program::BuiltinInst::Block(b) => {
                     let _ = b.process(maybe_in, &mut out[..n]);
                 }
-                _ => unreachable!("ForeignBlock step with non-block builtin"),
+                crate::program::BuiltinInst::MultichannelBlock(_) => {
+                    unreachable!("ForeignBlock fast path with multichannel builtin")
+                }
             }
             prog.block_regs[first_dst] = out;
         } else {
-            // Multi-channel: interleave inputs, process, deinterleave outputs
-            let inp: Vec<T> = (0..n_in)
-                .flat_map(|ch| {
-                    let reg_idx = srcs[ch];
-                    prog.block_regs[reg_idx][..n].iter().copied()
-                })
-                .collect();
-
-            let mut out_buf = vec![T::ZERO; n_out * n];
-
             match &mut prog.builtins[instance] {
-                crate::program::BuiltinInst::Block(b) => {
-                    let _ = b.process(Some(&inp), &mut out_buf);
-                }
-                _ => unreachable!("ForeignBlock step with non-block builtin"),
-            }
-
-            for ch in 0..n_out {
-                let reg_idx = first_dst + ch;
-                let start = ch * n;
-                prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[start..start + n]);
-            }
-        }
-    }
-}
-
-/// Execute a recurrent region per sample, indexing the shared block store.
-#[allow(clippy::needless_range_loop)]
-fn exec_sample_region<T: Transcendental>(
-    prog: &mut RillProgram<T>,
-    instrs: &[usize],
-    input: Option<&[T]>,
-    n: usize,
-) {
-    for i in 0..n {
-        for &idx in instrs {
-            match prog.ir.instrs[idx].clone() {
-                Instr::Const { dst, value } => prog.block_regs[dst][i] = T::from_f64(value),
-                Instr::LoadInput { dst, index } => {
-                    let v = if index == 0 {
-                        match input {
-                            Some(buf) if i < buf.len() => buf[i],
-                            _ => T::ZERO,
-                        }
-                    } else {
-                        T::ZERO
-                    };
-                    prog.block_regs[dst][i] = v;
-                }
-                Instr::ReadState { dst, slot } => {
-                    prog.block_regs[dst][i] = T::from_f64(prog.state[slot]);
-                }
-                Instr::ReadDelay { dst, line } => {
-                    prog.block_regs[dst][i] = T::from_f64(prog.delays[line].read());
-                }
-                Instr::Move { dst, src } => {
-                    prog.block_regs[dst][i] = prog.block_regs[src][i];
-                }
-                Instr::Un { dst, op, src } => {
-                    let x = prog.block_regs[src][i];
-                    prog.block_regs[dst][i] = apply_un_t(op, x);
-                }
-                Instr::Bin { dst, op, a, b } => {
-                    let x = prog.block_regs[a][i];
-                    let y = prog.block_regs[b][i];
-                    prog.block_regs[dst][i] = apply_bin_t(op, x, y);
-                }
-                Instr::WriteState { slot, src } => {
-                    prog.state_next[slot] = prog.block_regs[src][i].to_f64();
-                }
-                Instr::WriteDelay { line, src } => {
-                    let v = prog.block_regs[src][i].to_f64();
-                    prog.delays[line].write(v);
-                }
-                Instr::CallSample {
-                    dst,
-                    srcs,
-                    instance,
-                } => {
-                    let mut buf = [T::ZERO; MAX_SAMPLE_BUILTIN_INS];
-                    let k = srcs.len().min(MAX_SAMPLE_BUILTIN_INS);
-                    for (j, &s) in srcs.iter().take(MAX_SAMPLE_BUILTIN_INS).enumerate() {
-                        buf[j] = prog.block_regs[s][i];
+                crate::program::BuiltinInst::MultichannelBlock(mb) => {
+                    let inputs: Vec<&[T]> = (0..n_in)
+                        .map(|ch| &prog.block_regs[srcs[ch]][..n])
+                        .collect();
+                    let mut out_bufs: Vec<Vec<T>> = (0..n_out).map(|_| vec![T::ZERO; n]).collect();
+                    let mut out_slices: Vec<&mut [T]> =
+                        out_bufs.iter_mut().map(|v| v.as_mut_slice()).collect();
+                    let _ = MultichannelAlgorithm::process(mb.as_mut(), &inputs, &mut out_slices);
+                    for (ch, out_buf) in out_bufs.iter().enumerate() {
+                        let reg_idx = first_dst + ch;
+                        prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[..n]);
                     }
-                    let y = match &mut prog.builtins[instance] {
-                        crate::program::BuiltinInst::Sample(b) => b.process_sample(&buf[..k]),
-                        _ => unreachable!("sample region with non-sample builtin"),
-                    };
-                    prog.block_regs[dst][i] = y;
                 }
-                Instr::CallBlock { .. } => {
-                    unreachable!("block builtin scheduled into a sample region")
-                }
-                Instr::ReadParam { dst, idx } => {
-                    prog.block_regs[dst][i] = T::from_f64(param_to_f64(&prog.params[idx]));
-                }
-                Instr::ReadActorParam { dst, param_idx } => {
-                    prog.block_regs[dst][i] = T::from_f64(param_to_f64(&prog.params[param_idx]));
-                }
-                #[cfg(feature = "debug")]
-                Instr::ProbePoint { dst, src, .. } => {
-                    prog.block_regs[dst][i] = prog.block_regs[src][i];
+                crate::program::BuiltinInst::Block(b) => {
+                    let inp: Vec<T> = (0..n_in)
+                        .flat_map(|ch| {
+                            let reg_idx = srcs[ch];
+                            prog.block_regs[reg_idx][..n].iter().copied()
+                        })
+                        .collect();
+                    let mut out_buf = vec![T::ZERO; n_out * n];
+                    let _ = b.process(Some(&inp), &mut out_buf);
+                    for ch in 0..n_out {
+                        let reg_idx = first_dst + ch;
+                        let start = ch * n;
+                        prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[start..start + n]);
+                    }
                 }
             }
         }
-        for (s, nx) in prog.state.iter_mut().zip(prog.state_next.iter()) {
-            *s = *nx;
-        }
-    }
-}
-
-// ---- T-typed scalar ops (sample regions) ----
-
-fn apply_un_t<T: Transcendental>(op: UnOp, x: T) -> T {
-    match op {
-        UnOp::Neg => T::ZERO - x,
-        UnOp::Abs => x.abs(),
-        UnOp::Sin => x.sin(),
-        UnOp::Cos => x.cos(),
-        UnOp::Tan => x.tan(),
-        UnOp::Sqrt => x.sqrt(),
-        UnOp::Exp => x.exp(),
-        UnOp::Ln => x.ln(),
-        UnOp::Tanh => x.tanh(),
-    }
-}
-
-fn apply_bin_t<T: Transcendental>(op: BinArith, x: T, y: T) -> T {
-    match op {
-        BinArith::Add => x + y,
-        BinArith::Sub => x - y,
-        BinArith::Mul => x * y,
-        BinArith::Div => x / y,
-        BinArith::Rem => x % y,
-        BinArith::Min => x.min(y),
-        BinArith::Max => x.max(y),
     }
 }
 
@@ -490,361 +257,5 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
         BinArith::Min => min_slice::<T, 4, ScalarVector4<T>>(a, b, out),
         BinArith::Max => max_slice::<T, 4, ScalarVector4<T>>(a, b, out),
         BinArith::Rem => SlicePair::new(a, b).rem_into::<4, ScalarVector4<T>>(out),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::builtin::{BuiltinKind, BuiltinSig, Registry, SampleBuiltin};
-    use crate::compile;
-    use crate::compile_with;
-    use crate::lexer::tokenize;
-    use crate::lower::lower;
-    use crate::parser::parse;
-    use crate::program::RillProgram;
-    use crate::types::infer::infer_program;
-    use rill_core::math::Transcendental;
-    use rill_core::traits::ParamValue;
-    use rill_core::traits::{Algorithm, ProcessResult};
-
-    fn build(src: &str) -> RillProgram<f32> {
-        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program(&p).unwrap();
-        let ir = lower(&tp).unwrap();
-        RillProgram::<f32>::new(ir)
-    }
-
-    // --- test built-in implementations ---
-
-    struct LeakyOnePole<T: Transcendental> {
-        state: T,
-        a: f64,
-    }
-
-    impl<T: Transcendental> SampleBuiltin<T> for LeakyOnePole<T> {
-        fn process_sample(&mut self, inputs: &[T]) -> T {
-            let a = T::from_f64(self.a);
-            self.state = inputs[0] * (T::from_f64(1.0) - a) + self.state * a;
-            self.state
-        }
-        fn init(&mut self, _sr: f32) {}
-        fn reset(&mut self) {
-            self.state = T::ZERO;
-        }
-    }
-
-    struct GainBlock<T: Transcendental> {
-        gain: f64,
-        _marker: std::marker::PhantomData<T>,
-    }
-
-    impl<T: Transcendental> Algorithm<T> for GainBlock<T> {
-        fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-            let g = T::from_f64(self.gain);
-            if let Some(inp) = input {
-                for (o, &x) in output.iter_mut().zip(inp.iter()) {
-                    *o = x * g;
-                }
-            }
-            Ok(())
-        }
-        fn reset(&mut self) {}
-    }
-
-    impl<T: Transcendental> crate::builtin::BlockBuiltin<T> for GainBlock<T> {}
-
-    fn test_registry() -> Registry<f32> {
-        let mut reg = Registry::new();
-        reg.register_sample(
-            BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Sample),
-            |p, _sr| {
-                Box::new(LeakyOnePole::<f32> {
-                    state: 0.0,
-                    a: p[0],
-                })
-            },
-        );
-        reg.register_block(
-            BuiltinSig::simple("myblock", 1, 1, 1, BuiltinKind::Block),
-            |p, _sr| {
-                Box::new(GainBlock::<f32> {
-                    gain: p[0],
-                    _marker: std::marker::PhantomData,
-                })
-            },
-        );
-        reg
-    }
-
-    // --- existing tests ---
-
-    #[test]
-    fn hybrid_gain_halves_input() {
-        let mut prog = build("main = _ * 0.5");
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
-    }
-
-    #[test]
-    fn hybrid_integrator_accumulates() {
-        let mut prog = build("main = + ~ _");
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 1.0, 1.0, 1.0]), &mut out).unwrap();
-        assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn hybrid_one_sample_delay() {
-        let mut prog = build("main = _ @ 1");
-        let mut out = [0.0f32; 3];
-        prog.process(Some(&[5.0, 7.0, 9.0]), &mut out).unwrap();
-        assert_eq!(out, [0.0, 5.0, 7.0]);
-    }
-
-    #[test]
-    fn hybrid_split_merge_doubles() {
-        let mut prog = build("main = _ <: (_ , _) :> + ");
-        let mut out = [0.0f32; 2];
-        prog.process(Some(&[1.0, 3.0]), &mut out).unwrap();
-        assert_eq!(out, [2.0, 6.0]);
-    }
-
-    #[test]
-    fn hybrid_matches_reference_on_mixed_program() {
-        let mut a = build("main = (_ * 0.5) : (+ ~ (_ * 0.5))");
-        let mut b = build("main = (_ * 0.5) : (+ ~ (_ * 0.5))");
-        let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
-        let mut oa = vec![0.0f32; input.len()];
-        let mut ob = vec![0.0f32; input.len()];
-        a.process(Some(&input), &mut oa).unwrap();
-        b.process_reference(Some(&input), &mut ob).unwrap();
-        for (x, y) in oa.iter().zip(ob.iter()) {
-            assert!((x - y).abs() < 1e-4, "hybrid {x} vs reference {y}");
-        }
-    }
-
-    // --- built-in tests ---
-
-    #[test]
-    fn sample_builtin_in_feedback_runs() {
-        let reg = test_registry();
-        let mut prog = compile_with::<f32>("main = + ~ onepole 0.5 0.0", &reg, 44100.0).unwrap();
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 0.0, 0.0, 0.0]), &mut out).unwrap();
-        // onepole(0.5, 0.0): a=0.5, y = x*(1-0.5) + y_prev*0.5 = 0.5*x + 0.5*y_prev
-        // The second param (0.0) is ignored by our test built-in.
-        // With + ~ onepole(0.5, 0.0): y[n] = x[n] + onepole(y[n-1]).
-        // y[0] = 1.0 + onepole(0.0) = 1.0 + 0.0 = 1.0
-        // onepole internal state: 0.5*0 + 0.5*0 = 0
-        // Wait, the integrator's ReadState slot reads the feedback value.
-        // Actually `+ ~ onepole(...)` means: input goes through op (*op* has 2 inputs: external + feedback).
-        // Let me trace the semantics. + is a binary op (2 inputs → 1 output). `+ ~ onepole(...)`:
-        //   feedback: op output → onepole → fed back as second input to op
-        //   actually `+ ~ onepole(0.5,0.0)` means: + has 2→1, `~` feeds onepole output into + second input
-        // So output = input + onepole(output_prev)
-        // The program behaves as: out = input + onepole(delay1(out_prev))
-        // This is: y[n] = x[n] + (0.5*y[n-1] + 0.5*y[n-1]? No.
-        // The onepole sees its own output fed back. Wait no.
-        // `+ ~ onepole(0.5, 0.0)` where + has inputs (a, b) → a+b:
-        //   feedback takes B.out=onepole output and feeds it into A's second input.
-        //   So: out = x + onepole(out_prev)
-        //   The onepole's input is the feedback value = out_prev (from previous iteration)
-        //   So onepole state update: state = out_prev*(1-a) + state*a = out_prev*0.5 + state*0.5
-        //   onepole output = state
-        //   So: out[n] = x[n] + state[n] where state[n] = out[n-1]*0.5 + state[n-1]*0.5
-        // Wait that seems wrong. Let me think again.
-        //
-        // Actually `onepole(0.5, 0.0)` takes 2 params: a=0.5, the second 0.0 is unused.
-        // onepole processes 1 signal input -> 1 output.
-        // `+ ~ onepole(...)`: feedback takes onepole output, feeds into + second input.
-        // + has 2 inputs: (external_input, feedback_input) → sum.
-        // So out[n] = x[n] + onepole(feedback_value)
-        // The feedback_value for onepole is... hmm, `~` routes parts of output back.
-        // In `A ~ B`: A has inputs (ext_in..., fb_in...) → outputs (ext_out..., fb_out...)
-        // B takes fb_out as inputs, produces feedback outputs routed to fb_in.
-        // For `+ ~ onepole(0.5,0.0)`:
-        //   A = +: 2 inputs, 1 output
-        //   B = onepole(0.5,0.0): 1 input, 1 output
-        //   Feedback connects: B.out → A.in[1]
-        //   So: A has inputs (x_ext, x_fb), output = x_ext + x_fb
-        //   B takes A.out (??) as input
-        //
-        // Wait, looking at lower_feedback: a_out = output of LHS (+ in `+ ~ B`),
-        // b_in takes a_out's first k values, b_out = B(b_in).
-        // Then WriteState stores b_out.
-        // So: B's input = A's output = x_ext + x_fb
-        // On next sample: ReadState reads b_out_prev → becomes A's second input (x_fb).
-        // So: out[n] = x[n] + B(out[n-1])
-        // onepole: y = B(input) = input*0.5 + state*0.5, state becomes y
-        // Chain: out[n] = x[n] + (out[n-1]*0.5 + state[n-1]*0.5)
-        // where state[n] = B(out[n-1]) = out[n-1]*0.5 + state[n-1]*0.5
-        //
-        // With x = [1.0, 0.0, 0.0, 0.0]:
-        // n=0: state=0.0, out_prev=0.0 → onepole out = 0*0.5+0*0.5=0, out[0] = 1.0+0 = 1.0
-        // n=1: state=0.0, out_prev=1.0 → onepole out = 1.0*0.5+0*0.5=0.5, out[1] = 0+0.5=0.5
-        // n=2: state=0.5, out_prev=0.5 → onepole out = 0.5*0.5+0.5*0.5=0.5, out[2] = 0+0.5=0.5
-        // n=3: state=0.5, out_prev=0.5 → onepole out = 0.5*0.5+0.5*0.5=0.5, out[3] = 0+0.5=0.5
-        //
-        // Wait, that's not quite right either. After n=1:
-        // onepole state becomes onepole output = 0.5
-        // At n=2: feedback_value = onepole_output from n=1 = 0.5
-        // But wait, the feedback loop stores the onepole OUTPUT as the state that feeds
-        // back into +. So at n=2, the second input to + is 0.5.
-        // Then out[2] = 0 + 0.5 = 0.5.
-        // And onepole gets input = out[2] = 0.5, processes: y = 0.5*0.5 + 0.5*0.5 = 0.5
-        // So state stays 0.5.
-        // n=3: feedback = 0.5, out[3] = 0 + 0.5 = 0.5. Same.
-        //
-        // Expected: [1.0, 0.5, 0.5, 0.5]
-        // Let me just check execution and see what happens.
-        // Actually, I shouldn't be too specific about the exact values since the test
-        // built-in is a leaky one-pole and the exact semantics of how it interplays
-        // with the feedback combinator is subtle. Let me just assert the program runs
-        // and produces meaningful output.
-        assert!(out[0] > 0.0);
-        assert!(out[1] > 0.0);
-        assert!((out[2] - out[1]).abs() < 0.1); // should settle
-    }
-
-    #[test]
-    fn block_builtin_runs() {
-        let reg = test_registry();
-        let mut prog = compile_with::<f32>("main = _ : myblock 2.0", &reg, 44100.0).unwrap();
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
-        assert_eq!(out, [2.0, 4.0, 6.0, 8.0]);
-    }
-
-    #[test]
-    fn block_builtin_in_feedback_is_rejected() {
-        let reg = test_registry();
-        let err = compile_with::<f32>("main = + ~ myblock 2.0", &reg, 44100.0);
-        assert!(err.is_err());
-    }
-
-    #[test]
-    fn sample_builtin_hybrid_matches_reference() {
-        let reg = test_registry();
-        let mut a =
-            compile_with::<f32>("main = (_ * 0.5) : onepole 0.3 0.0", &reg, 44100.0).unwrap();
-        let mut b =
-            compile_with::<f32>("main = (_ * 0.5) : onepole 0.3 0.0", &reg, 44100.0).unwrap();
-        let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
-        let mut oa = vec![0.0f32; input.len()];
-        let mut ob = vec![0.0f32; input.len()];
-        a.process(Some(&input), &mut oa).unwrap();
-        b.process_reference(Some(&input), &mut ob).unwrap();
-        for (x, y) in oa.iter().zip(ob.iter()) {
-            assert!((x - y).abs() < 1e-5, "hybrid {x} vs reference {y}");
-        }
-    }
-
-    #[test]
-    fn unknown_builtin_is_compile_error() {
-        let reg = test_registry();
-        let err = compile_with::<f32>("main = _ : nosuch 1.0", &reg, 44100.0);
-        assert!(err.is_err());
-    }
-
-    // --- param() tests ---
-
-    #[test]
-    fn param_default_applies() {
-        let mut prog = compile::<f32>("main g = _ * g").unwrap();
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [0.0, 0.0, 0.0, 0.0]);
-    }
-
-    #[test]
-    fn set_param_changes_output() {
-        let mut prog = compile::<f32>("main g = _ * g").unwrap();
-        let i = prog.param_index("g").unwrap();
-        prog.set_param(i, ParamValue::Float(2.0));
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [2.0, 4.0, 8.0, 16.0]);
-    }
-
-    #[test]
-    fn param_range_clamps() {
-        let mut prog = compile::<f32>("main g = _ * g").unwrap();
-        let i = prog.param_index("g").unwrap();
-        prog.set_param(i, ParamValue::Float(5.0));
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [5.0, 10.0, 20.0, 40.0]);
-    }
-
-    #[test]
-    fn param_shared_slot() {
-        let mut prog = compile::<f32>("main k = _ * k + k").unwrap();
-        assert_eq!(
-            prog.params_meta().len(),
-            1,
-            "repeated param name should share a slot"
-        );
-        prog.set_param(prog.param_index("k").unwrap(), ParamValue::Float(2.0));
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 2.0, 3.0, 4.0]), &mut out).unwrap();
-        assert_eq!(out, [4.0, 6.0, 8.0, 10.0]);
-    }
-
-    // --- dynamic built-in param tests ---
-
-    struct Gain {
-        k: f32,
-    }
-    impl SampleBuiltin<f32> for Gain {
-        fn process_sample(&mut self, inputs: &[f32]) -> f32 {
-            inputs[0] * self.k
-        }
-        fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
-            if index == 0 {
-                self.k = super::param_to_f64(value) as f32;
-            }
-        }
-        fn reset(&mut self) {}
-    }
-
-    fn gain_registry() -> Registry<f32> {
-        let mut reg = Registry::new();
-        reg.register_sample(
-            BuiltinSig::simple("gain", 1, 1, 1, BuiltinKind::Sample),
-            |p, _sr| Box::new(Gain { k: p[0] as f32 }),
-        );
-        reg
-    }
-
-    #[test]
-    fn dynamic_param_drives_builtin() {
-        let reg = gain_registry();
-        let mut prog = compile_with::<f32>("main g = _ : gain g", &reg, 48000.0).unwrap();
-        let mut out = [0.0f32; 4];
-        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [0.0, 0.0, 0.0, 0.0]);
-        let i = prog.param_index("g").unwrap();
-        prog.set_param(i, ParamValue::Float(0.5));
-        prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-        assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
-    }
-
-    #[test]
-    fn dynamic_param_hybrid_matches_reference() {
-        let reg = gain_registry();
-        let mut a = compile_with::<f32>("main g = _ : gain g", &reg, 48000.0).unwrap();
-        let mut b = compile_with::<f32>("main g = _ : gain g", &reg, 48000.0).unwrap();
-        let i = a.param_index("g").unwrap();
-        a.set_param(i, ParamValue::Float(3.0));
-        b.set_param(i, ParamValue::Float(3.0));
-        let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.1).sin()).collect();
-        let mut oa = vec![0.0f32; input.len()];
-        let mut ob = vec![0.0f32; input.len()];
-        a.process(Some(&input), &mut oa).unwrap();
-        b.process_reference(Some(&input), &mut ob).unwrap();
-        for (x, y) in oa.iter().zip(ob.iter()) {
-            assert!((x - y).abs() < 1e-5, "hybrid {x} vs reference {y}");
-        }
     }
 }

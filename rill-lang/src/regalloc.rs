@@ -14,13 +14,12 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
         | Instr::Move { dst, .. }
         | Instr::Un { dst, .. }
         | Instr::Bin { dst, .. }
-        | Instr::ReadState { dst, .. }
+        | Instr::ReadBlockState { dst, .. }
         | Instr::ReadDelay { dst, .. }
-        | Instr::CallSample { dst, .. }
         | Instr::CallBlock { dst, .. }
         | Instr::ReadParam { dst, .. }
         | Instr::ReadActorParam { dst, .. } => Some(*dst),
-        Instr::WriteState { .. } | Instr::WriteDelay { .. } => None,
+        Instr::WriteBlockState { .. } | Instr::WriteDelay { .. } => None,
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, .. } => Some(*dst),
     }
@@ -30,14 +29,13 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
     match instr {
         Instr::Const { .. }
         | Instr::LoadInput { .. }
-        | Instr::ReadState { .. }
+        | Instr::ReadBlockState { .. }
         | Instr::ReadParam { .. }
         | Instr::ReadActorParam { .. }
         | Instr::ReadDelay { .. } => vec![],
         Instr::Move { src, .. } | Instr::Un { src, .. } => vec![*src],
         Instr::Bin { a, b, .. } => vec![*a, *b],
-        Instr::WriteState { src, .. } | Instr::WriteDelay { src, .. } => vec![*src],
-        Instr::CallSample { srcs, .. } => srcs.clone(),
+        Instr::WriteBlockState { src, .. } | Instr::WriteDelay { src, .. } => vec![*src],
         Instr::CallBlock { srcs, .. } => srcs.clone(),
         #[cfg(feature = "debug")]
         Instr::ProbePoint { src, .. } => vec![*src],
@@ -51,9 +49,8 @@ fn set_dst(instr: &mut Instr, phys: usize) {
         | Instr::Move { dst, .. }
         | Instr::Un { dst, .. }
         | Instr::Bin { dst, .. }
-        | Instr::ReadState { dst, .. }
+        | Instr::ReadBlockState { dst, .. }
         | Instr::ReadDelay { dst, .. }
-        | Instr::CallSample { dst, .. }
         | Instr::CallBlock { dst, .. }
         | Instr::ReadParam { dst, .. }
         | Instr::ReadActorParam { dst, .. } => *dst = phys,
@@ -71,12 +68,7 @@ fn remap_srcs(instr: &mut Instr, remap: &HashMap<usize, usize>) {
             m(a);
             m(b);
         }
-        Instr::WriteState { src, .. } | Instr::WriteDelay { src, .. } => m(src),
-        Instr::CallSample { srcs, .. } => {
-            for s in srcs {
-                m(s);
-            }
-        }
+        Instr::WriteBlockState { src, .. } | Instr::WriteDelay { src, .. } => m(src),
         Instr::CallBlock { srcs, .. } => {
             for s in srcs {
                 m(s);
@@ -141,9 +133,8 @@ pub fn allocate(ir: &mut Ir) {
     }
 
     ir.instrs = new_instrs;
-    ir.output_reg = vir2phys
-        .get(&ir.output_reg)
-        .copied()
-        .unwrap_or(ir.output_reg);
+    for out in &mut ir.output_regs {
+        *out = vir2phys.get(out).copied().unwrap_or(*out);
+    }
     ir.num_regs = next_phys;
 }

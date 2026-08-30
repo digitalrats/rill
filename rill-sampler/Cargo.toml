@@ -16,6 +16,9 @@ rill-lang = { workspace = true, optional = true }
 
 hound = { version = "3.5", optional = true }
 
+[dev-dependencies]
+rill-lang = { workspace = true }
+
 [features]
 default = ["wav"]
 wav = ["dep:hound"]

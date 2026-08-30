@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::ast::{BinOp, Def, Expr, Program};
-use crate::builtin::{BuiltinKind, ParamType, SignatureSource};
+use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
 use crate::types::infer::TypedProgram;
@@ -13,7 +13,7 @@ struct Lowerer<'a> {
     sigs: &'a dyn SignatureSource,
     instrs: Vec<Instr>,
     next_reg: usize,
-    state_slots: usize,
+    block_state_slots: usize,
     delay_lens: Vec<usize>,
     locals: Vec<HashMap<String, Vec<usize>>>,
     builtins: Vec<BuiltinInstance>,
@@ -56,6 +56,7 @@ impl<'a> Lowerer<'a> {
                     self.builtins.push(BuiltinInstance {
                         name,
                         params: vec![0.0, *v],
+                        resource: None,
                         kind: sig.kind,
                         signal_ins: sig.signal_ins(),
                         signal_outs: sig.signal_outs,
@@ -110,10 +111,10 @@ impl<'a> Lowerer<'a> {
                         let tau = ms / 1000.0;
                         1.0 - (-1.0 / (tau * sr)).exp()
                     };
-                    let slot = self.state_slots;
-                    self.state_slots += 1;
+                    let slot = self.block_state_slots;
+                    self.block_state_slots += 1;
                     let prev = self.fresh_reg();
-                    self.emit(Instr::ReadState { dst: prev, slot });
+                    self.emit(Instr::ReadBlockState { dst: prev, slot });
                     let diff = self.fresh_reg();
                     self.emit(Instr::Bin {
                         dst: diff,
@@ -140,7 +141,7 @@ impl<'a> Lowerer<'a> {
                         a: prev,
                         b: scaled,
                     });
-                    self.emit(Instr::WriteState { slot, src: y });
+                    self.emit(Instr::WriteBlockState { slot, src: y });
                     return Ok(vec![y]);
                 }
                 if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
@@ -149,6 +150,7 @@ impl<'a> Lowerer<'a> {
                     let mut signal_srcs = Vec::new();
                     let mut signal_pos = 0;
                     let mut param_pos = 0;
+                    let mut resource: Option<String> = None;
 
                     for ptype in &sig.params {
                         match ptype {
@@ -161,6 +163,25 @@ impl<'a> Lowerer<'a> {
                                 }
                                 signal_srcs.push(args[signal_pos]);
                                 signal_pos += 1;
+                            }
+                            ParamType::Resource => {
+                                if param_pos >= call_args.len() {
+                                    break;
+                                }
+                                match &call_args[param_pos] {
+                                    Expr::Ref(res_name, _) => {
+                                        resource = Some(res_name.clone());
+                                    }
+                                    other => {
+                                        return Err(CompileError::Type {
+                                            msg: format!(
+                                                "resource argument of `{name}` must be a symbolic reference",
+                                            ),
+                                            span: other.span(),
+                                        });
+                                    }
+                                }
+                                param_pos += 1;
                             }
                             ParamType::Float | ParamType::Int => {
                                 if param_pos >= call_args.len() {
@@ -232,11 +253,26 @@ impl<'a> Lowerer<'a> {
                                 }
                                 param_pos += 1;
                             }
-                            ParamType::Record(_schema) => {
+                            ParamType::Record(schema) => {
                                 if param_pos >= call_args.len() {
                                     break;
                                 }
                                 if let Expr::Record(fields, field_span) = &call_args[param_pos] {
+                                    let mut field_values: HashMap<&str, f64> = HashMap::new();
+                                    for (field_name, field_expr) in fields {
+                                        if let Some(val) = const_f64(field_expr) {
+                                            field_values.insert(field_name.as_str(), val);
+                                        }
+                                    }
+                                    // Push schema field values in schema order so the
+                                    // built-in factory can read its configuration.
+                                    for field in &schema.fields {
+                                        let val = field_values
+                                            .get(field.name)
+                                            .copied()
+                                            .unwrap_or(field.default.unwrap_or(0.0));
+                                        param_values.push(val);
+                                    }
                                     for (field_name, field_expr) in fields {
                                         if let Some(val) = const_f64(field_expr) {
                                             self.intern_param(
@@ -281,34 +317,22 @@ impl<'a> Lowerer<'a> {
                     self.builtins.push(BuiltinInstance {
                         name: name.clone(),
                         params: param_values,
+                        resource,
                         kind: sig.kind,
                         signal_ins: signal_srcs.len(),
                         signal_outs: sig.signal_outs,
                         param_bindings,
                     });
-                    match sig.kind {
-                        BuiltinKind::Sample => {
-                            let dst = self.fresh_reg();
-                            self.emit(Instr::CallSample {
-                                dst,
-                                srcs: signal_srcs,
-                                instance,
-                            });
-                            return Ok(vec![dst]);
-                        }
-                        BuiltinKind::Block => {
-                            let fst = self.fresh_reg();
-                            for _ in 1..sig.signal_outs {
-                                self.fresh_reg();
-                            }
-                            self.emit(Instr::CallBlock {
-                                dst: fst,
-                                srcs: signal_srcs,
-                                instance,
-                            });
-                            return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                        }
+                    let fst = self.fresh_reg();
+                    for _ in 1..sig.signal_outs {
+                        self.fresh_reg();
                     }
+                    self.emit(Instr::CallBlock {
+                        dst: fst,
+                        srcs: signal_srcs,
+                        instance,
+                    });
+                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
                 let mut arg_regs = Vec::new();
                 for a in call_args {
@@ -427,36 +451,23 @@ impl<'a> Lowerer<'a> {
                 self.builtins.push(BuiltinInstance {
                     name: name.to_string(),
                     params: Vec::new(),
+                    resource: None,
                     kind: sig.kind,
                     signal_ins: sig.signal_ins(),
                     signal_outs: sig.signal_outs,
                     param_bindings: Vec::new(),
                 });
-                match sig.kind {
-                    BuiltinKind::Sample => {
-                        let dst = self.fresh_reg();
-                        let srcs = args.to_vec();
-                        self.emit(Instr::CallSample {
-                            dst,
-                            srcs,
-                            instance,
-                        });
-                        return Ok(vec![dst]);
-                    }
-                    BuiltinKind::Block => {
-                        let fst = self.fresh_reg();
-                        for _ in 1..sig.signal_outs {
-                            self.fresh_reg();
-                        }
-                        let srcs = args.to_vec();
-                        self.emit(Instr::CallBlock {
-                            dst: fst,
-                            srcs,
-                            instance,
-                        });
-                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                    }
+                let fst = self.fresh_reg();
+                for _ in 1..sig.signal_outs {
+                    self.fresh_reg();
                 }
+                let srcs = args.to_vec();
+                self.emit(Instr::CallBlock {
+                    dst: fst,
+                    srcs,
+                    instance,
+                });
+                return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
             }
         }
         let bin = match name {
@@ -559,7 +570,11 @@ impl<'a> Lowerer<'a> {
             }
             BinOp::Split => {
                 let a_out = self.lower(lhs, args)?;
-                let bi = arity_in(rhs, self.sigs)?;
+                let bi = if self.rhs_variadic(rhs) {
+                    a_out.len()
+                } else {
+                    arity_in(rhs, self.sigs)?
+                };
                 let reps = bi / a_out.len().max(1);
                 let mut fanned = Vec::with_capacity(bi);
                 for _ in 0..reps {
@@ -569,7 +584,11 @@ impl<'a> Lowerer<'a> {
             }
             BinOp::Merge => {
                 let a_out = self.lower(lhs, args)?;
-                let bi = arity_in(rhs, self.sigs)?;
+                let bi = if self.rhs_variadic(rhs) {
+                    a_out.len()
+                } else {
+                    arity_in(rhs, self.sigs)?
+                };
                 let groups = a_out.len() / bi.max(1);
                 let mut merged = Vec::with_capacity(bi);
                 for k in 0..bi {
@@ -609,6 +628,7 @@ impl<'a> Lowerer<'a> {
                             self.builtins.push(BuiltinInstance {
                                 name,
                                 params: vec![re, im],
+                                resource: None,
                                 kind: sig.kind,
                                 signal_ins: sig.signal_ins(),
                                 signal_outs: sig.signal_outs,
@@ -649,6 +669,9 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// `A ~ B` — B's output feeds A's feedback input (1-tick delay), while B is
+    /// evaluated independently (it does not consume A's output). This models a
+    /// unidirectional feedback edge.
     fn lower_feedback(
         &mut self,
         lhs: &Expr,
@@ -660,26 +683,36 @@ impl<'a> Lowerer<'a> {
         let mut fb_regs = Vec::with_capacity(bo);
         let mut slots = Vec::with_capacity(bo);
         for _ in 0..bo {
-            let slot = self.state_slots;
-            self.state_slots += 1;
+            let slot = self.block_state_slots;
+            self.block_state_slots += 1;
             slots.push(slot);
             let dst = self.fresh_reg();
-            self.emit(Instr::ReadState { dst, slot });
+            self.emit(Instr::ReadBlockState { dst, slot });
             fb_regs.push(dst);
         }
-        let mut a_in = fb_regs.clone();
-        a_in.extend_from_slice(args);
+        let mut a_in = args.to_vec();
+        a_in.extend(fb_regs);
         let a_out = self.lower(lhs, &a_in)?;
-        let bi = arity_in(rhs, self.sigs)?;
-        let b_in: Vec<usize> = a_out.iter().copied().take(bi).collect();
-        let b_out = self.lower(rhs, &b_in)?;
+        let b_out = self.lower(rhs, args)?;
         for (k, slot) in slots.iter().enumerate() {
-            self.emit(Instr::WriteState {
+            self.emit(Instr::WriteBlockState {
                 slot: *slot,
                 src: b_out[k],
             });
         }
         Ok(a_out)
+    }
+
+    /// Whether `rhs` is a built-in that takes variadic signal inputs.
+    fn rhs_variadic(&self, rhs: &Expr) -> bool {
+        match rhs {
+            Expr::Apply { name, .. } | Expr::Ref(name, _) => self
+                .sigs
+                .builtin_sig(name)
+                .map(|s| s.has_variadic_signal())
+                .unwrap_or(false),
+            _ => false,
+        }
     }
 
     fn lower_delay(
@@ -840,7 +873,7 @@ pub fn lower_with(
         sigs,
         instrs: Vec::new(),
         next_reg: 0,
-        state_slots: 0,
+        block_state_slots: 0,
         delay_lens: Vec::new(),
         locals: Vec::new(),
         builtins: Vec::new(),
@@ -866,22 +899,22 @@ pub fn lower_with(
         main_args.push(dst);
     }
     let outs = lw.lower(main.body(), &main_args)?;
-    if outs.len() != 1 {
-        return Err(CompileError::Unsupported(format!(
-            "body lowered to {} outputs, expected 1",
-            outs.len()
-        )));
+    if outs.is_empty() {
+        return Err(CompileError::Unsupported(
+            "body lowered to 0 outputs, expected at least 1".into(),
+        ));
     }
+    let num_outputs = outs.len();
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
-        output_reg: outs[0],
+        output_regs: outs,
         num_inputs,
-        num_outputs: 1,
+        num_outputs,
         state: StateLayout {
-            state_slots: lw.state_slots,
+            block_state_slots: lw.block_state_slots,
             delay_lens: lw.delay_lens,
-            num_outputs: 1,
+            num_outputs,
         },
         builtins: lw.builtins,
         params: lw.params,
@@ -891,6 +924,7 @@ pub fn lower_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::builtin::BuiltinKind;
     use crate::lexer::tokenize;
     use crate::parser::parse;
     use crate::types::infer::{infer_program, infer_program_with};
@@ -918,7 +952,7 @@ mod tests {
                     1,
                     1,
                     2,
-                    BuiltinKind::Sample,
+                    BuiltinKind::Block,
                 )))),
                 _ => None,
             }
@@ -951,15 +985,15 @@ mod tests {
     #[test]
     fn integrator_allocates_one_state_slot() {
         let ir = ir_of("main = + ~ _");
-        assert_eq!(ir.state.state_slots, 1);
+        assert_eq!(ir.state.block_state_slots, 1);
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::ReadState { .. })));
+            .any(|i| matches!(i, Instr::ReadBlockState { .. })));
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::WriteState { .. })));
+            .any(|i| matches!(i, Instr::WriteBlockState { .. })));
     }
 
     #[test]
@@ -969,17 +1003,17 @@ mod tests {
     }
 
     #[test]
-    fn sample_builtin_lowers_to_callsample() {
+    fn onepole_lowers_to_callblock() {
         let ir = ir_with("main = _ : onepole 200.0 0.5");
         assert!(
             ir.instrs
                 .iter()
-                .any(|i| matches!(i, Instr::CallSample { .. })),
-            "expected a CallSample instruction"
+                .any(|i| matches!(i, Instr::CallBlock { .. })),
+            "expected a CallBlock instruction"
         );
         assert_eq!(ir.builtins.len(), 1);
         let bi = &ir.builtins[0];
-        assert_eq!(bi.kind, BuiltinKind::Sample);
+        assert_eq!(bi.kind, BuiltinKind::Block);
         assert_eq!(bi.params, vec![200.0, 0.5]);
     }
 
@@ -1001,14 +1035,14 @@ mod tests {
     #[test]
     fn smooth_allocates_state() {
         let ir = ir_of("main = smooth _ 10.0");
-        assert_eq!(ir.state.state_slots, 1);
+        assert_eq!(ir.state.block_state_slots, 1);
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::ReadState { .. })));
+            .any(|i| matches!(i, Instr::ReadBlockState { .. })));
         assert!(ir
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::WriteState { .. })));
+            .any(|i| matches!(i, Instr::WriteBlockState { .. })));
     }
 }

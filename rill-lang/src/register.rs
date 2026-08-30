@@ -2,8 +2,10 @@
 
 use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 #[cfg(feature = "router")]
-use rill_core::builtin::{ParamType, RecordField, RecordSchema};
+use rill_core::builtin::{MultichannelBlockBuiltin, ParamType, RecordField, RecordSchema};
 use rill_core::math::Transcendental;
+#[cfg(feature = "router")]
+use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ProcessResult};
 
 // ============================================================================
@@ -186,23 +188,23 @@ impl<T: Transcendental> MixerAlgorithmWrapper<T> {
 }
 
 #[cfg(feature = "router")]
-impl<T: Transcendental> Algorithm<T> for MixerAlgorithmWrapper<T> {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        if let Some(inp) = input {
-            output.copy_from_slice(inp);
-        } else {
-            output.fill(T::ZERO);
-        }
-        Ok(())
+impl<T: Transcendental> MultichannelAlgorithm<T> for MixerAlgorithmWrapper<T> {
+    fn num_inputs(&self) -> usize {
+        self.state.num_inputs()
     }
-
+    fn num_outputs(&self) -> usize {
+        self.state.num_outputs()
+    }
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        self.state.process(inputs, outputs)
+    }
     fn reset(&mut self) {
         self.state = crate::builtins::mixer::MixerState::<T, 512>::new(self.cfg.clone());
     }
 }
 
 #[cfg(feature = "router")]
-impl<T: Transcendental> BlockBuiltin<T> for MixerAlgorithmWrapper<T> {}
+impl<T: Transcendental> MultichannelBlockBuiltin<T> for MixerAlgorithmWrapper<T> {}
 
 // ============================================================================
 // EQ built-in struct
@@ -234,33 +236,47 @@ impl<T: Transcendental> BlockBuiltin<T> for EqBuiltin<T> {}
 
 #[cfg(feature = "router")]
 struct DryWetBuiltin<T: Transcendental> {
-    mix: T,
+    state: crate::builtins::dry_wet::DryWetState,
+    _phantom: std::marker::PhantomData<T>,
 }
 
 #[cfg(feature = "router")]
-impl<T: Transcendental> Algorithm<T> for DryWetBuiltin<T> {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = (inp.len() / 2).min(output.len() / 2);
-                let dry_gain = T::ONE - self.mix;
-                for i in 0..n {
-                    let dry = inp[2 * i];
-                    let wet = inp[2 * i + 1];
-                    let out = dry * dry_gain + wet * self.mix;
-                    output[2 * i] = out;
-                    output[2 * i + 1] = out;
-                }
-            }
-            None => output.fill(T::ZERO),
+impl<T: Transcendental> DryWetBuiltin<T> {
+    fn new(mix: f64) -> Self {
+        Self {
+            state: crate::builtins::dry_wet::DryWetState::new(
+                crate::builtins::dry_wet::DryWetConfig { mix },
+            ),
+            _phantom: std::marker::PhantomData,
         }
-        Ok(())
+    }
+}
+
+#[cfg(feature = "router")]
+impl<T: Transcendental> MultichannelAlgorithm<T> for DryWetBuiltin<T> {
+    fn num_inputs(&self) -> usize {
+        self.state.num_inputs()
+    }
+    fn num_outputs(&self) -> usize {
+        self.state.num_outputs()
+    }
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        self.state.process::<T>(inputs, outputs)
     }
     fn reset(&mut self) {}
 }
 
 #[cfg(feature = "router")]
-impl<T: Transcendental> BlockBuiltin<T> for DryWetBuiltin<T> {}
+impl<T: Transcendental> MultichannelBlockBuiltin<T> for DryWetBuiltin<T> {
+    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+        if index == 0 {
+            let mix = value.as_f32().unwrap_or(0.5) as f64;
+            self.state = crate::builtins::dry_wet::DryWetState::new(
+                crate::builtins::dry_wet::DryWetConfig { mix },
+            );
+        }
+    }
+}
 
 // ============================================================================
 // Registration functions
@@ -345,17 +361,14 @@ fn register_mixer<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         param_names: Vec::new(),
     };
 
-    reg.register_block(
+    reg.register_multichannel_block(
         mixer_sig,
-        |params: &[f64], _sample_rate: f32| -> Box<dyn BlockBuiltin<T>> {
-            let num_channels = if params.len() > 1 {
-                params.len() - 1
-            } else {
-                1
-            };
-            let num_buses = params.last().copied().unwrap_or(0.0) as usize;
-
-            let config = MixerConfig::new(num_channels.max(1), num_buses);
+        |signal_ins, params, _sr| -> Box<dyn MultichannelBlockBuiltin<T>> {
+            let num_channels = signal_ins.max(1);
+            let mut config = MixerConfig::new(num_channels, 0);
+            if params.len() > 1 {
+                config.master_vol = params[1];
+            }
             Box::new(MixerAlgorithmWrapper::<T>::new(config))
         },
     );
@@ -430,12 +443,11 @@ fn register_dry_wet<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         param_names: Vec::new(),
     };
 
-    reg.register_block(
+    reg.register_multichannel_block(
         sig,
-        |_params: &[f64], _sr: f32| -> Box<dyn BlockBuiltin<T>> {
-            Box::new(DryWetBuiltin {
-                mix: T::from_f64(0.5),
-            })
+        |_signal_ins, params, _sr| -> Box<dyn MultichannelBlockBuiltin<T>> {
+            let mix = params.first().copied().unwrap_or(0.5);
+            Box::new(DryWetBuiltin::<T>::new(mix))
         },
     );
 }

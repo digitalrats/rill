@@ -12,6 +12,9 @@ use crate::midi_input::MidiInput;
 use crate::midi_message::MidiMessage;
 use crate::midi_output::MidiOutput;
 
+/// Held connection to the MIDI port. The payload fields are never read on
+/// purpose — keeping the connection alive is what keeps the port open; the
+/// connection disconnects on `Drop`. Do not remove the payload.
 #[allow(dead_code)]
 enum MidirConnection {
     Input(midir::MidiInputConnection<()>),
@@ -47,7 +50,7 @@ impl MidirBackend {
             let name = mi.port_name(p).unwrap_or_else(|_| "?".into());
             log::info!("  MIDI port #{}: {}", i, name);
         }
-        eprintln!("  ({} ports total)", ports.len());
+        log::info!("  ({} ports total)", ports.len());
         Ok(())
     }
 

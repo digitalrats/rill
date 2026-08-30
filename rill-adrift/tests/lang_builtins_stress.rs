@@ -3,7 +3,7 @@ use rill_core::traits::Algorithm;
 use rill_lang::compile_with;
 
 #[test]
-fn sample_builtin_inside_feedback_runs() {
+fn builtin_inside_feedback_runs() {
     let reg = full_registry::<f32>();
     let mut prog =
         compile_with::<f32>("main = + ~ (onepole 300.0 0.5 : (_ * 0.5))", &reg, 48_000.0).unwrap();
@@ -15,7 +15,7 @@ fn sample_builtin_inside_feedback_runs() {
 }
 
 #[test]
-fn chained_block_then_sample_runs() {
+fn chained_blocks_runs() {
     let reg = full_registry::<f32>();
     let mut prog = compile_with::<f32>(
         "main = _ : lowpass 2000.0 0.7 : moog 500.0 0.6",
@@ -93,43 +93,9 @@ fn const_arithmetic_params_fold() {
 }
 
 #[test]
-fn block_builtin_in_feedback_rejected() {
+fn block_builtin_in_feedback_compiles() {
     let reg = full_registry::<f32>();
-    let err = compile_with::<f32>("main = + ~ lowpass 500.0 0.7", &reg, 48_000.0);
-    assert!(err.is_err(), "block-in-feedback should be rejected");
-}
-
-#[test]
-fn sample_builtins_hybrid_matches_reference() {
-    let reg = full_registry::<f32>();
-    let mut prog_hybrid = compile_with::<f32>(
-        "main = _ : onepole 300.0 0.5 : moog 500.0 0.6",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
-    let mut prog_ref = compile_with::<f32>(
-        "main = _ : onepole 300.0 0.5 : moog 500.0 0.6",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
-    let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut out_h = vec![0.0f32; input.len()];
-    let mut out_r = vec![0.0f32; input.len()];
-    prog_hybrid.process(Some(&input), &mut out_h).unwrap();
-    prog_ref
-        .process_reference(Some(&input), &mut out_r)
-        .unwrap();
-    let max_diff = out_h
-        .iter()
-        .zip(out_r.iter())
-        .map(|(h, r)| (h - r).abs())
-        .fold(0.0f32, f32::max);
-    assert!(
-        max_diff < 1e-3,
-        "hybrid vs reference mismatch: max_diff={max_diff}"
-    );
+    assert!(compile_with::<f32>("main = + ~ lowpass 500.0 0.7", &reg, 48_000.0).is_ok());
 }
 
 #[test]

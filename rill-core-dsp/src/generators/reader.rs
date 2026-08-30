@@ -350,7 +350,6 @@ impl<T: Transcendental + Copy> InterpolatedReader<T> {
     }
 
     /// Render a scalar range (helper for cubic SIMD to handle 4-sample chunks).
-    #[allow(dead_code)]
     fn render_scalar_range(
         &mut self,
         output: &mut [T],

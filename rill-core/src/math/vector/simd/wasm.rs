@@ -4,7 +4,6 @@
 
 #![cfg(target_arch = "wasm32")]
 #![allow(unused_imports)]
-#![allow(dead_code)]
 
 use super::super::traits::*;
 use crate::math::vector::traits::VectorTranscendental;

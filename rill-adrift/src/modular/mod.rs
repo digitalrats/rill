@@ -79,8 +79,6 @@ pub struct ModularSystem<const BUF: usize = 64> {
     module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,
     default_backend: Option<(String, HashMap<String, ParamValue>)>,
-    #[allow(dead_code)]
-    config: ModularConfig,
     #[cfg(feature = "serialization")]
     tokio_rt: Option<tokio::runtime::Runtime>,
 }
@@ -103,7 +101,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
             default_backend,
             actor_system: Arc::new(ActorSystem::new()),
             cases: HashMap::new(),
-            config,
             #[cfg(feature = "serialization")]
             tokio_rt: None,
         }
@@ -118,12 +115,11 @@ impl<const BUF: usize> ModularSystem<BUF> {
         GraphBuilder::new()
     }
 
-    /// Build a `CompiledGraphEngine` from a `GraphDef` using the rill-lang compilation pipeline.
+    /// Build a `ProgramEngine` from a `GraphDef` using the rill-lang compilation pipeline.
     pub fn build_engine(
         &self,
         def: &GraphDef,
-    ) -> Result<rill_lang::graph_engine::CompiledGraphEngine<f32, BUF>, Box<dyn std::error::Error>>
-    {
+    ) -> Result<rill_lang::program_engine::ProgramEngine<f32>, Box<dyn std::error::Error>> {
         let mut builder = self.create_builder();
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))?;
@@ -134,7 +130,31 @@ impl<const BUF: usize> ModularSystem<BUF> {
         let registry = crate::lang_builtins::full_registry_f32();
 
         builder
-            .compile_def::<BUF>(&registry, def.sample_rate)
+            .compile_def(&registry, def.sample_rate)
+            .map_err(|e| e.to_string().into())
+    }
+
+    /// Build a [`CompiledStream`](rill_lang::graph::CompiledStream) from a
+    /// `GraphDef` — a single program for a plain graph, or a duplex stream
+    /// (recording + playback over the shared tape) for a tape echo.
+    pub fn build_stream(
+        &self,
+        def: &GraphDef,
+    ) -> Result<rill_lang::graph::CompiledStream<f32>, Box<dyn std::error::Error>> {
+        let mut builder = self.create_builder();
+        def.populate(&mut builder)
+            .map_err(|e| format!("populate: {e}"))?;
+        let mut spec = builder.to_graph_spec();
+        if spec.backends.is_empty() {
+            spec.backends = builder.infer_backends(&spec);
+        }
+
+        #[cfg(not(feature = "lofi"))]
+        let registry = crate::lang_builtins::full_registry::<f32>();
+        #[cfg(feature = "lofi")]
+        let registry = crate::lang_builtins::full_registry_f32();
+
+        rill_lang::graph::compile(&spec, &registry, def.sample_rate)
             .map_err(|e| e.to_string().into())
     }
 
@@ -204,7 +224,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         log::error!("graph populate: {e}");
                         return;
                     }
-                    let engine = match builder.compile_def::<BUF>(&registry, sr) {
+                    let engine = match builder.compile_def(&registry, sr) {
                         Ok(eng) => eng,
                         Err(e) => {
                             log::error!("graph compile: {e}");

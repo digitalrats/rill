@@ -1,7 +1,7 @@
-//! Integration tests for CompiledGraphEngine parameter propagation.
+//! Integration tests for ProgramEngine parameter propagation.
 //!
 //! Verifies SetParameter routing through the engine's mailbox → drain_mailbox
-//! → param_maps → NodeClosure::set_param → RillProgram chain.
+//! → param_map → RillProgram::set_param → program execution.
 
 use rill_adrift::lang_builtins::full_registry;
 use rill_core::queues::SetParameter;
@@ -17,7 +17,7 @@ fn run_with_param(
     buf_size: usize,
 ) -> Vec<f32> {
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 512>(src, &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32>(src, &reg, 44100.0).unwrap();
 
     let sp = SetParameter::new(
         String::new(),
@@ -70,7 +70,7 @@ fn actor_param_default_applies() {
     // main = _ * ?gain=0.25
     // No SetParameter — default 0.25 should apply
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 512>("main = _ * ?gain=0.25", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32>("main = _ * ?gain=0.25", &reg, 44100.0).unwrap();
 
     let signal = [2.0f32; 256];
     let mut output = vec![0.0f32; 256];
@@ -112,7 +112,7 @@ fn actor_param_no_default_applies() {
     // main = _ * ?gain
     // No default — should be 0.0, so output = 0.0
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 512>("main = _ * ?gain", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32>("main = _ * ?gain", &reg, 44100.0).unwrap();
 
     let signal = [1.0f32; 64];
     let mut output = vec![0.0f32; 64];
@@ -134,7 +134,7 @@ fn actor_param_persists_across_ticks() {
     // SetParameter("gain", 3.0) → tick 1
     // No SetParameter → tick 2 — gain should still be 3.0
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 512>("main = _ * ?gain=1.0", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32>("main = _ * ?gain=1.0", &reg, 44100.0).unwrap();
 
     // Tick 1: set gain to 3.0
     let sp = SetParameter::new(
@@ -175,7 +175,7 @@ fn source_node_produces_output() {
     // A source node with no signal inputs should produce audio.
     // Use a simple DSL that generates a constant tone.
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 512>("main = 0.5", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32>("main = 0.5", &reg, 44100.0).unwrap();
 
     let mut output = vec![0.0f32; 64];
     engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
@@ -208,7 +208,7 @@ fn source_node_with_param_routing() {
 fn source_node_without_param_produces_default() {
     // Source with actor param default: no SetParameter, should use default.
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 512>("main = ?value=0.75", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32>("main = ?value=0.75", &reg, 44100.0).unwrap();
 
     let mut output = vec![0.0f32; 64];
     engine.process_tick(&[], &mut [&mut output[..]], 0).unwrap();
@@ -237,9 +237,9 @@ fn graph_builder_param_routing_works() {
     let mut params = Params::new(44100.0);
     params.insert("clock", ParamValue::Float(1_750_000.0));
     params.insert("regs", ParamValue::Float(0.0));
-    builder.add_node("rill/lofi_chip", &params);
+    builder.add_node("ay38910", &params);
 
-    let mut engine = builder.compile_def::<256>(&reg, 44100.0).unwrap();
+    let mut engine = builder.compile_def(&reg, 44100.0).unwrap();
 
     // Verify which index "regs" maps to
     let param_map = engine.param_map();
@@ -317,7 +317,7 @@ fn lang_chiptune_ir_produces_output() {
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
 
-    let mut engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap();
+    let mut engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0).unwrap();
     let pm = engine.param_map();
     assert!(pm.contains_key("regs"), "param_map should contain regs");
 

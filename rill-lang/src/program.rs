@@ -4,23 +4,19 @@
 
 use rill_core::builtin::MultichannelBlockBuiltin;
 use rill_core::math::Transcendental;
-#[cfg(feature = "router")]
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 
-use crate::builtin::{BlockBuiltin, SampleBuiltin};
+use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
 use crate::ir::{Ir, ParamDef};
 use crate::schedule::{build_schedule, Schedule};
 
 /// A runtime built-in instance, indexed directly by IR `instance` fields.
 pub(crate) enum BuiltinInst<T: Transcendental> {
-    /// A per-sample stateful built-in.
-    Sample(Box<dyn SampleBuiltin<T>>),
     /// An opaque whole-buffer built-in.
     Block(Box<dyn BlockBuiltin<T>>),
     /// A whole-buffer multi-channel built-in.
-    #[allow(dead_code)]
     MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
 }
 
@@ -28,16 +24,14 @@ pub(crate) enum BuiltinInst<T: Transcendental> {
 pub struct RillProgram<T: Transcendental> {
     pub(crate) ir: Ir,
     pub(crate) schedule: Schedule,
-    /// Persistent feedback state (previous-sample values). Length = state_slots.
-    pub(crate) state: Vec<f64>,
-    /// Next-sample feedback writes, applied at sample end.
-    pub(crate) state_next: Vec<f64>,
-    /// Delay lines: ring buffers, one per `@` site.
-    pub(crate) delays: Vec<DelayRing>,
-    /// Whole-buffer register store for the hybrid path (grown to block length).
+    /// Block-level feedback state (previous tick's whole block per slot).
+    pub(crate) block_state: Vec<Vec<T>>,
+    /// Current-tick feedback writes, swapped with `block_state` at tick end.
+    pub(crate) block_state_next: Vec<Vec<T>>,
+    /// Delay lines: block-level ring buffers, one per `@` site.
+    pub(crate) delays: Vec<DelayRing<T>>,
+    /// Whole-buffer register store (grown to block length).
     pub(crate) block_regs: Vec<Vec<T>>,
-    /// Scalar register file for the reference (per-sample) path.
-    pub(crate) regs_scalar: Vec<f64>,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
     pub(crate) builtins: Vec<BuiltinInst<T>>,
     /// Current parameter values, indexed by [`Ir::params`].
@@ -48,25 +42,36 @@ pub struct RillProgram<T: Transcendental> {
     pub(crate) params_meta: Vec<ParamDef>,
 }
 
-/// A fixed-length ring buffer for one `@` delay site.
-pub(crate) struct DelayRing {
-    pub(crate) buf: Vec<f64>,
-    pub(crate) head: usize,
+/// A fixed-length ring buffer for one `@` delay site, processed whole-block.
+pub(crate) struct DelayRing<T> {
+    buf: Vec<T>,
+    head: usize,
+    len: usize,
 }
 
-impl DelayRing {
+impl<T: Transcendental> DelayRing<T> {
     pub(crate) fn new(len: usize) -> Self {
+        let len = len.max(1);
         Self {
-            buf: vec![0.0; len.max(1)],
+            buf: vec![T::ZERO; len],
             head: 0,
+            len,
         }
     }
-    pub(crate) fn read(&self) -> f64 {
-        self.buf[self.head]
+
+    /// Read a whole block of delayed samples into `out`.
+    pub(crate) fn read_block(&self, out: &mut [T]) {
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = self.buf[(self.head + i) % self.len];
+        }
     }
-    pub(crate) fn write(&mut self, v: f64) {
-        self.buf[self.head] = v;
-        self.head = (self.head + 1) % self.buf.len();
+
+    /// Write a whole block into the ring buffer and advance the head.
+    pub(crate) fn write_block(&mut self, input: &[T]) {
+        for (i, &v) in input.iter().enumerate() {
+            self.buf[(self.head + i) % self.len] = v;
+        }
+        self.head = (self.head + input.len()) % self.len;
     }
 }
 
@@ -75,8 +80,8 @@ impl<T: Transcendental> RillProgram<T> {
     /// and builds the execution schedule. Built-ins are NOT instantiated — use
     /// [`new_with`](Self::new_with) if the IR references built-in functions.
     pub fn new(ir: Ir) -> Self {
-        let state = vec![0.0; ir.state.state_slots];
-        let state_next = state.clone();
+        let block_state = vec![Vec::new(); ir.state.block_state_slots];
+        let block_state_next = vec![Vec::new(); ir.state.block_state_slots];
         let delays = ir
             .state
             .delay_lens
@@ -84,7 +89,6 @@ impl<T: Transcendental> RillProgram<T> {
             .map(|&l| DelayRing::new(l))
             .collect();
         let block_regs = vec![Vec::new(); ir.num_regs];
-        let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
@@ -96,11 +100,10 @@ impl<T: Transcendental> RillProgram<T> {
         Self {
             ir,
             schedule,
-            state,
-            state_next,
+            block_state,
+            block_state_next,
             delays,
             block_regs,
-            regs_scalar,
             builtins: Vec::new(),
             params,
             params_dirty,
@@ -119,30 +122,89 @@ impl<T: Transcendental> RillProgram<T> {
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
     ) -> Result<Self, CompileError> {
+        Self::build(ir, registry, sample_rate, None)
+    }
+
+    /// Create a program with a resource registry, resolving resource-backed
+    /// built-ins (e.g. tape heads) from the named resources.
+    pub fn new_with_resources(
+        ir: Ir,
+        registry: &crate::builtin::Registry<T>,
+        sample_rate: f32,
+        resources: &mut rill_core::buffer::ResourceRegistry<T>,
+    ) -> Result<Self, CompileError> {
+        Self::build(ir, registry, sample_rate, Some(resources))
+    }
+
+    fn build(
+        ir: Ir,
+        registry: &crate::builtin::Registry<T>,
+        sample_rate: f32,
+        mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+    ) -> Result<Self, CompileError> {
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
             let entry = registry.get(&bi.name).ok_or_else(|| {
                 CompileError::Unsupported(format!("unknown built-in '{}'", bi.name))
             })?;
-            match bi.kind {
-                crate::builtin::BuiltinKind::Sample => {
-                    let mut b = entry
-                        .build_sample(&bi.params, sample_rate)
-                        .expect("registry build_sample failed for sample builtin");
-                    b.init(sample_rate);
-                    builtins.push(BuiltinInst::Sample(b));
-                }
-                crate::builtin::BuiltinKind::Block => {
-                    let mut b = entry
+            let is_multi = bi.signal_ins > 1 || bi.signal_outs > 1;
+            if is_multi {
+                let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(res) = &bi.resource {
+                    let reg = resources.as_deref_mut().ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "built-in '{}' requires a resource registry",
+                            bi.name
+                        ))
+                    })?;
+                    entry
+                        .build_resource_multichannel_block(
+                            bi.signal_ins,
+                            &bi.params,
+                            sample_rate,
+                            reg,
+                            res,
+                        )
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "resource built-in '{}' is not registered as resource-backed",
+                                bi.name
+                            ))
+                        })?
+                } else {
+                    entry
+                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
+                        .expect("registry build_multichannel_block failed")
+                };
+                MultichannelAlgorithm::reset(b.as_mut());
+                builtins.push(BuiltinInst::MultichannelBlock(b));
+            } else {
+                let mut b: Box<dyn BlockBuiltin<T>> = if let Some(res) = &bi.resource {
+                    let reg = resources.as_deref_mut().ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "built-in '{}' requires a resource registry",
+                            bi.name
+                        ))
+                    })?;
+                    entry
+                        .build_resource_block(&bi.params, sample_rate, reg, res)
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "resource built-in '{}' is not registered as resource-backed",
+                                bi.name
+                            ))
+                        })?
+                } else {
+                    entry
                         .build_block(&bi.params, sample_rate)
-                        .expect("registry build_block failed for block builtin");
-                    Algorithm::init(b.as_mut(), sample_rate);
-                    builtins.push(BuiltinInst::Block(b));
-                }
+                        .expect("registry build_block failed for block builtin")
+                };
+                Algorithm::init(b.as_mut(), sample_rate);
+                builtins.push(BuiltinInst::Block(b));
             }
         }
-        let state = vec![0.0; ir.state.state_slots];
-        let state_next = state.clone();
+
+        let block_state = vec![Vec::new(); ir.state.block_state_slots];
+        let block_state_next = vec![Vec::new(); ir.state.block_state_slots];
         let delays = ir
             .state
             .delay_lens
@@ -150,7 +212,6 @@ impl<T: Transcendental> RillProgram<T> {
             .map(|&l| DelayRing::new(l))
             .collect();
         let block_regs = vec![Vec::new(); ir.num_regs];
-        let regs_scalar = vec![0.0; ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
@@ -162,11 +223,10 @@ impl<T: Transcendental> RillProgram<T> {
         Ok(Self {
             ir,
             schedule,
-            state,
-            state_next,
+            block_state,
+            block_state_next,
             delays,
             block_regs,
-            regs_scalar,
             builtins,
             params,
             params_dirty,
@@ -174,12 +234,30 @@ impl<T: Transcendental> RillProgram<T> {
         })
     }
 
-    /// Ensure every block register can hold `n` samples (grows + reuses).
+    /// Ensure every block register and block-state buffer can hold `n` samples.
     pub(crate) fn ensure_block_len(&mut self, n: usize) {
         for r in &mut self.block_regs {
             if r.len() < n {
                 r.resize(n, T::ZERO);
             }
+        }
+        for b in &mut self.block_state {
+            if b.len() < n {
+                b.resize(n, T::ZERO);
+            }
+        }
+        for b in &mut self.block_state_next {
+            if b.len() < n {
+                b.resize(n, T::ZERO);
+            }
+        }
+    }
+
+    /// Swap the double-buffered block feedback state at the end of a tick.
+    pub(crate) fn swap_block_state(&mut self) {
+        std::mem::swap(&mut self.block_state, &mut self.block_state_next);
+        for b in &mut self.block_state_next {
+            b.fill(T::ZERO);
         }
     }
 
@@ -218,22 +296,10 @@ impl<T: Transcendental> RillProgram<T> {
         &self.params_meta
     }
 
-    /// Reference implementation: the MVP per-sample interpreter. Used by tests
-    /// as a numerical oracle; not the production path.
-    pub fn process_reference(
-        &mut self,
-        input: Option<&[T]>,
-        output: &mut [T],
-    ) -> ProcessResult<()> {
-        crate::backend::interp::run_block_reference(self, input, output);
-        Ok(())
-    }
-
     /// Forward initialisation to all built-in instances.
     pub fn init(&mut self, sample_rate: f32) {
         for b in &mut self.builtins {
             match b {
-                BuiltinInst::Sample(inst) => inst.init(sample_rate),
                 BuiltinInst::Block(inst) => Algorithm::init(inst.as_mut(), sample_rate),
                 BuiltinInst::MultichannelBlock(_) => {}
             }
@@ -243,26 +309,25 @@ impl<T: Transcendental> RillProgram<T> {
 
 impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        crate::backend::interp::run_block_hybrid(self, input, output);
+        let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
+        let mut outs: [&mut [T]; 1] = [output];
+        crate::backend::interp::run_block_mimo(self, inputs, &mut outs);
         Ok(())
     }
 
     fn reset(&mut self) {
-        for s in &mut self.state {
-            *s = 0.0;
+        for b in &mut self.block_state {
+            b.fill(T::ZERO);
         }
-        for s in &mut self.state_next {
-            *s = 0.0;
+        for b in &mut self.block_state_next {
+            b.fill(T::ZERO);
         }
         for d in &mut self.delays {
-            for v in &mut d.buf {
-                *v = 0.0;
-            }
+            d.buf.fill(T::ZERO);
             d.head = 0;
         }
         for b in &mut self.builtins {
             match b {
-                BuiltinInst::Sample(inst) => inst.reset(),
                 BuiltinInst::Block(inst) => Algorithm::reset(inst.as_mut()),
                 BuiltinInst::MultichannelBlock(_) => {}
             }
@@ -270,7 +335,6 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
     }
 }
 
-#[cfg(feature = "router")]
 impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
     fn num_inputs(&self) -> usize {
         self.ir.num_inputs
@@ -281,27 +345,7 @@ impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
     }
 
     fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
-        let n_in = inputs.len();
-        let n_out = outputs.len();
-        let buf_size = if n_out > 0 { outputs[0].len() } else { 0 };
-
-        if n_in <= 1 && n_out == 1 {
-            let input = if n_in == 0 { None } else { Some(inputs[0]) };
-            return Algorithm::process(self, input, outputs[0]);
-        }
-
-        crate::backend::interp::push_builtin_params(self);
-        for sample_idx in 0..buf_size {
-            let in_sample = if n_in > 0 {
-                inputs[0][sample_idx].to_f64()
-            } else {
-                0.0
-            };
-            let y = crate::backend::interp::eval_sample_scalar(self, in_sample);
-            if n_out > 0 {
-                outputs[0][sample_idx] = T::from_f64(y);
-            }
-        }
+        crate::backend::interp::run_block_mimo(self, inputs, outputs);
         Ok(())
     }
 

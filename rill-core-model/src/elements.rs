@@ -466,37 +466,6 @@ impl<T: Transcendental> WdfElement<T> for OpAmp<T> {
     }
 }
 
-/// Process a batch of samples through any element that supports
-/// `process_incident_vector`, chunking into 4-wide SIMD blocks.
-#[allow(dead_code)]
-pub fn process_batch_simd<T: Transcendental>(
-    process_fn: &mut dyn FnMut(ScalarVector4<T>) -> ScalarVector4<T>,
-    inputs: &[T],
-    outputs: &mut [T],
-) {
-    let len = inputs.len().min(outputs.len());
-    let chunks = len / 4;
-    let remainder = len % 4;
-
-    for i in 0..chunks {
-        let offset = i * 4;
-        let a = ScalarVector4::load(&inputs[offset..offset + 4]);
-        let b = process_fn(a);
-        b.store(&mut outputs[offset..offset + 4]);
-    }
-
-    if remainder > 0 {
-        let offset = chunks * 4;
-        let mut tail = [T::ZERO; 4];
-        tail[..remainder].copy_from_slice(&inputs[offset..offset + remainder]);
-        let a = ScalarVector4::load(&tail);
-        let b = process_fn(a);
-        let mut b_arr = [T::ZERO; 4];
-        b.store(&mut b_arr);
-        outputs[offset..offset + remainder].copy_from_slice(&b_arr[..remainder]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

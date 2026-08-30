@@ -6,6 +6,7 @@ use crate::filters::{Biquad, FilterParams, FilterType, MoogLadder, OnePole};
 use crate::generators::{BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform};
 
 use super::biquad::{BiquadBuiltin, GeneralBiquadBuiltin};
+use super::integrator::{IntegratorBuiltin, LeakyIntegratorBuiltin};
 use super::moog::MoogBuiltin;
 use super::noise::NoiseGenBuiltin;
 use super::onepole::OnePoleBuiltin;
@@ -14,11 +15,24 @@ use super::osc::OscBuiltin;
 pub fn register_lang_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     register_filters(reg);
     register_oscillators(reg);
+    register_integrators(reg);
+}
+
+fn register_integrators<T: Transcendental + 'static>(reg: &mut Registry<T>) {
+    reg.register_block(
+        BuiltinSig::simple("integrator", 1, 1, 0, BuiltinKind::Block),
+        |_p, _sr| Box::new(IntegratorBuiltin::<T>::new()),
+    );
+    reg.register_block(
+        BuiltinSig::simple("leaky_integrator", 1, 1, 1, BuiltinKind::Block)
+            .with_names(vec!["coeff"]),
+        |p, _sr| Box::new(LeakyIntegratorBuiltin::<T>::new(T::from_f64(p[0]))),
+    );
 }
 
 fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    reg.register_sample(
-        BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Sample).with_names(vec!["cutoff", "q"]),
+    reg.register_block(
+        BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Block).with_names(vec!["cutoff", "q"]),
         |p, sr| {
             let mut inner = OnePole::<T>::new(FilterParams {
                 filter_type: FilterType::LowPass,
@@ -30,8 +44,8 @@ fn register_filters<T: Transcendental + 'static>(reg: &mut Registry<T>) {
             Box::new(OnePoleBuiltin { inner })
         },
     );
-    reg.register_sample(
-        BuiltinSig::simple("moog", 1, 1, 2, BuiltinKind::Sample)
+    reg.register_block(
+        BuiltinSig::simple("moog", 1, 1, 2, BuiltinKind::Block)
             .with_names(vec!["cutoff", "resonance"]),
         |p, sr| {
             let mut inner = MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
