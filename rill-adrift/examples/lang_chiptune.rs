@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::rill_core::io::{IoCapture, NullBackend};
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
 use rill_lang::program_runner::ProgramRunner;
@@ -117,7 +118,17 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
     let playback = output.playback.clone();
     let signal_thread = std::thread::spawn(move || {
         let runner = ProgramRunner::new(engine, Some(stc_ref));
-        Runtime::launch::<256>(driver, None, Some(playback), runner, runner_running).ok();
+        Runtime::launch::<256>(
+            driver,
+            // The program's main λ-param (`regs`) surfaces as one unused input
+            // channel; a null 1-channel capture satisfies the strict arity
+            // policy and zero-fills it (register data flows via SetParameter).
+            Some(Arc::new(NullBackend::new(1)) as Arc<dyn IoCapture>),
+            Some(playback),
+            runner,
+            runner_running,
+        )
+        .ok();
     });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");
