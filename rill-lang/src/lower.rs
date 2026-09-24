@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{ArithOp, Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
-use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
+use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp, ValueLayout};
 use crate::types::infer::TypedProgram;
 
 struct Lowerer<'a> {
@@ -1058,6 +1058,11 @@ pub fn lower_with_cafs(
         },
         builtins: lw.builtins,
         params: lw.params,
+        value_instrs: Vec::new(),
+        num_value_regs: 0,
+        value_output_regs: Vec::new(),
+        value_funcs: Vec::new(),
+        value_state: ValueLayout::default(),
     })
 }
 

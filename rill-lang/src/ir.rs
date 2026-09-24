@@ -13,6 +13,9 @@ use crate::builtin::BuiltinKind;
 /// A register index into the per-sample scratch file.
 pub type Reg = usize;
 
+/// A register index into the per-tick value register file.
+pub type ValueReg = usize;
+
 /// A slot index into the persistent state vector.
 pub type StateSlot = usize;
 
@@ -171,6 +174,150 @@ pub enum Instr {
     },
 }
 
+/// A per-tick value instruction. Executed once per block in the value-track
+/// phase, alongside the whole-buffer block instructions.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueInstr {
+    /// Push a scope frame onto the runtime cell stack.
+    ValuePushScope,
+    /// Pop a scope frame, releasing cell refs.
+    ValuePopScope,
+    /// Bind a cell (fresh slot) for a local variable.
+    ValueBindCell {
+        /// Destination value register (holds the cell ref).
+        dst: usize,
+    },
+    /// Read a variable: cell ref -> value ref (RC++ on result).
+    ValueReadCell {
+        /// Destination value register.
+        dst: usize,
+        /// Value register holding the cell ref.
+        cell: usize,
+    },
+    /// Write a variable: value ref into a cell.
+    ValueWriteCell {
+        /// Cell register to write into.
+        cell: usize,
+        /// Value register to write.
+        src: usize,
+    },
+    /// Create an Int value.
+    ValueConstInt {
+        /// Destination value register.
+        dst: usize,
+        /// The value.
+        value: i64,
+    },
+    /// Create a Float value.
+    ValueConstFloat {
+        /// Destination value register.
+        dst: usize,
+        /// The value.
+        value: f64,
+    },
+    /// Construct a record: alloc + write field refs.
+    ValueConstructRecord {
+        /// Destination value register.
+        dst: usize,
+        /// Field value registers (refs).
+        fields: Vec<usize>,
+    },
+    /// Construct a sum: alloc + write constructor + payload.
+    ValueConstructSum {
+        /// Destination value register.
+        dst: usize,
+        /// Constructor index.
+        ctor: u32,
+        /// Payload value registers.
+        payload: Vec<usize>,
+    },
+    /// Project a field: read `field` of the record in `slot`.
+    ValueProject {
+        /// Destination value register.
+        dst: usize,
+        /// Record value register.
+        slot: usize,
+        /// Field index.
+        field: usize,
+    },
+    /// COW-mutate a field of a record.
+    ValueUpdateField {
+        /// Record value register (in/out: may be COW-copied).
+        slot: usize,
+        /// Field index.
+        field: usize,
+        /// New field value register.
+        src: usize,
+    },
+    /// Wrap a value in a newtype.
+    ValueNewtype {
+        /// Destination value register.
+        dst: usize,
+        /// Inner value register.
+        src: usize,
+    },
+    /// Unwrap a newtype to its inner value.
+    ValueUnwrap {
+        /// Destination value register.
+        dst: usize,
+        /// Newtype value register.
+        src: usize,
+    },
+    /// Call a named function reference.
+    ValueCallFunc {
+        /// Destination value register.
+        dst: usize,
+        /// Index into [`Ir::value_funcs`].
+        func: usize,
+        /// Argument value registers.
+        args: Vec<usize>,
+    },
+    /// Share a value (RC++).
+    ValueCopy {
+        /// Destination value register (same slot).
+        dst: usize,
+        /// Source value register.
+        src: usize,
+    },
+    /// Drop a value (RC--, free at 0).
+    ValueDrop {
+        /// Value register to drop.
+        src: usize,
+    },
+    /// Read a per-tick value-state slot (for `~` / `@` on values).
+    ValueStateRead {
+        /// Destination value register.
+        dst: usize,
+        /// State slot.
+        slot: usize,
+    },
+    /// Write a per-tick value-state slot.
+    ValueStateWrite {
+        /// State slot.
+        slot: usize,
+        /// Value register.
+        src: usize,
+    },
+}
+
+/// Layout for value-track persistent storage.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ValueLayout {
+    /// Number of arena slots pre-allocated for the whole program.
+    pub capacity: usize,
+    /// Number of per-tick value-state slots (feedback/delay of values).
+    pub value_state_slots: usize,
+}
+
+/// A named function value: reference to a lowering-time definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueFunc {
+    /// Definition name.
+    pub name: String,
+    /// Number of value arguments.
+    pub arity: usize,
+}
+
 /// Layout describing pre-allocated persistent storage.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StateLayout {
@@ -235,4 +382,26 @@ pub struct Ir {
     pub builtins: Vec<BuiltinInstance>,
     /// Named parameter definitions, indexed by [`Instr::ReadParam::idx`].
     pub params: Vec<ParamDef>,
+    /// Value-track instructions (per-tick).
+    pub value_instrs: Vec<ValueInstr>,
+    /// Number of value registers required.
+    pub num_value_regs: usize,
+    /// Value registers holding program outputs.
+    pub value_output_regs: Vec<usize>,
+    /// Named function values referenced by [`ValueInstr::ValueCallFunc`].
+    pub value_funcs: Vec<ValueFunc>,
+    /// Value-track persistent layout.
+    pub value_state: ValueLayout,
+}
+
+#[cfg(test)]
+mod value_ir_tests {
+    use super::*;
+
+    #[test]
+    fn value_layout_is_defaultable() {
+        let l = ValueLayout::default();
+        assert_eq!(l.capacity, 0);
+        assert_eq!(l.value_state_slots, 0);
+    }
 }

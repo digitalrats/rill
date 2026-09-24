@@ -38,6 +38,7 @@ pub mod types;
 pub mod debug;
 
 pub use error::{CompileError, Span};
+pub use ir::{Instr, Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
