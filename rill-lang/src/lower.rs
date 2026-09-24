@@ -1222,6 +1222,56 @@ mod tests {
     }
 
     #[test]
+    fn transitive_caf_const_fold() {
+        // b = 1000.0; a = b; main = _ : lowpass a 0.7 -> a resolves through b to 1000.0
+        let ir = ir_with_cafs("b = 1000.0; a = b; main = _ : lowpass a 0.7");
+        let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
+        assert!((lp.params[0] - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn non_folding_caf_in_builtin_param_is_error() {
+        // osc = sine 440 0.5 0 is a CAF whose body is not a constant: using it in
+        // a builtin param position must error, not silently become 0.
+        let p = parse(
+            &tokenize("osc = sine 440 0.5 0; main = _ : lowpass osc 0.7").unwrap(),
+            "osc = sine 440 0.5 0; main = _ : lowpass osc 0.7".as_bytes(),
+        )
+        .unwrap();
+        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs: cafs.clone(),
+        };
+        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn mutually_recursive_cafs_are_errors() {
+        // a = b; b = a  -> the reference cycle must surface as a compile error,
+        // not a stack overflow.
+        let p = parse(
+            &tokenize("a = b; b = a; main = a").unwrap(),
+            "a = b; b = a; main = a".as_bytes(),
+        )
+        .unwrap();
+        let typed = infer_program(&p).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs: cafs.clone(),
+        };
+        let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
+        assert!(res.is_err());
+    }
+
+    #[test]
     fn unreferenced_caf_is_not_lowered() {
         // dead = sine 440 0.5 0; main = _ * 0.5  -> no sine builtin
         let ir = ir_with_cafs("dead = sine 440 0.5 0; main = _ * 0.5");
