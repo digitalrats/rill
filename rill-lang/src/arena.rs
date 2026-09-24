@@ -131,8 +131,11 @@ impl Arena {
             .map(|s| &s.val)
     }
 
-    /// Mutable view of a slot's value (no RC change).
+    /// Mutable view of a slot's value (no RC change). Debug builds assert the
+    /// slot is exclusively owned (`rc == 1`) so field refs cannot be rewritten
+    /// without accounting; call `mutate` first when shared.
     pub fn get_mut(&mut self, r: ArenaRef) -> Option<&mut Value> {
+        debug_assert_eq!(self.rc(r), 1);
         self.slots
             .get_mut(r as usize)
             .and_then(|s| s.as_mut())
@@ -186,16 +189,32 @@ impl Arena {
     /// Copies when `rc > 1`, otherwise returns the same ref.
     pub fn mutate(&mut self, r: ArenaRef) -> Result<ArenaRef, ArenaError> {
         let rc = self.rc(r);
+        if rc == 0 {
+            return Err(ArenaError::DanglingRef);
+        }
         if rc <= 1 {
             return Ok(r);
         }
-        // Copy value, decrement original, return fresh slot.
+        // Copy value, decrement original, return fresh slot. The clone shares
+        // the original's field refs, so count each one to give the fresh slot
+        // independent ownership before the original is dropped.
         let val = self
             .slots
             .get(r as usize)
             .and_then(|s| s.as_ref())
             .map(|s| s.val.clone())
             .ok_or(ArenaError::DanglingRef)?;
+        match &val {
+            Value::Record(fields) | Value::Sum(_, fields) => {
+                for f in fields {
+                    self.copy(*f)?;
+                }
+            }
+            Value::Newtype(inner) => {
+                self.copy(*inner)?;
+            }
+            _ => {}
+        }
         self.drop_ref(r);
         self.alloc(val)
     }
@@ -279,5 +298,35 @@ mod tests {
         );
         a.drop_ref(f);
         assert_eq!(a.rc(f), 0);
+    }
+
+    #[test]
+    fn mutate_on_freed_ref_errors() {
+        let mut a = Arena::with_capacity(4);
+        let r = a.alloc(Value::Int(1)).unwrap();
+        a.drop_ref(r);
+        let out = a.mutate(r);
+        assert_eq!(out, Err(ArenaError::DanglingRef));
+    }
+
+    #[test]
+    fn cow_copies_keep_field_rc_consistent() {
+        let mut a = Arena::with_capacity(8);
+        let f = a.alloc(Value::Int(3)).unwrap();
+        let r = a.alloc(Value::Record(vec![f])).unwrap();
+        a.copy(r).unwrap(); // rc 2
+        let out = a.mutate(r).unwrap();
+        assert_ne!(out, r, "COW must clone the shared record");
+        // Both records now own the field independently.
+        assert_eq!(a.rc(f), 2);
+        a.drop_ref(r);
+        // The surviving copy holds the last counted ref on the field.
+        assert_eq!(a.rc(f), 1);
+        match a.get(out).unwrap() {
+            Value::Record(fields) => {
+                assert_eq!(a.get(fields[0]).unwrap(), &Value::Int(3));
+            }
+            _ => panic!("surviving copy must still be a record"),
+        }
     }
 }
