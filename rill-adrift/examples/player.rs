@@ -97,7 +97,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
 
         let reg = rill_adrift::lang_builtins::full_registry_f32();
-        let src = "main = sampler 1.0 1.0 1.0 0.0 ?source";
+        // `s` is a closed top-level def (0 input channels) — a CAF — so the
+        // broadcast `s , s` shares ONE sampler instance: both stereo outputs
+        // carry a copy of the same mono sample.
+        let src = "s = sampler 1.0 1.0 1.0 0.0 ?source; main = s , s";
         let engine =
             rill_lang::compile_graph::<f32, 256>(src, &reg, cfg.sample_rate).expect("compile DSL");
         let runner = ProgramRunner::new(engine, None);

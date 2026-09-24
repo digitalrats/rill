@@ -74,7 +74,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut be_params = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
     be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-    be_params.insert("input_channels".into(), ParamValue::Int(2));
+    // `main = _` is 1 -> 1; capture mono to match the mono WAV output.
+    be_params.insert("input_channels".into(), ParamValue::Int(1));
     be_params.insert("output_channels".into(), ParamValue::Int(0));
     let InputBundle { driver, capture } = bf
         .create_input(&backend_name, &be_params)

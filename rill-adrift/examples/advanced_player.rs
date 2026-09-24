@@ -117,7 +117,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut be_params = HashMap::new();
             be_params.insert("sample_rate".into(), ParamValue::Float(cfg.sample_rate));
             be_params.insert("buffer_size".into(), ParamValue::Int(cfg.block_size as i32));
-            be_params.insert("channels".into(), ParamValue::Int(2));
+            // graph.json is a mono chain (sampler -> biquad, arity 0 -> 1);
+            // match the playback channel count to the program.
+            be_params.insert("channels".into(), ParamValue::Int(1));
             let OutputBundle { driver, playback } = bf
                 .create_output(&backend_name, &be_params)
                 .expect("create output backend");

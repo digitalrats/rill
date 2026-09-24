@@ -65,6 +65,8 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
     let mut be_params: HashMap<String, ParamValue> = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(44100.0));
     be_params.insert("block_size".into(), ParamValue::Int(2048));
+    // Program is 1 -> 1 (`regs` -> ay38910 -> lofi); mono backend matches
+    // the strict `Runtime::launch` arity policy.
     be_params.insert("channels".into(), ParamValue::Int(1));
 
     let output = be
