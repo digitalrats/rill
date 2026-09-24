@@ -59,8 +59,11 @@ assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
 ```
 
 A program is a list of mutually-recursive definitions, each terminated by `;`.
-Exactly one must be named `main` — the entry point. `main` must reduce to a
-signal block of arity **(0 or 1) → 1**.
+Exactly one must be named `main` — the entry point. `main` may be any `n → m`
+arrow; the example above is the common 1 → 1 case. `compile()` accepts general
+arrows — its SISO `process()` drives the **first** output channel, while
+multi-channel programs use the `MultichannelAlgorithm` trait (see
+[Multi-IO and graph compilation](#multi-io-and-graph-compilation)).
 
 ### A program is an arrow
 
@@ -213,8 +216,9 @@ Definitions with input channels (e.g. `gain = _ * 0.5`) are **open**: they keep
 macro semantics and are re-instantiated at each reference site, exactly as
 β-reduction dictates.
 
-> **Behavior change.** A closed stateful local referenced two or more times used
-> to compile into N independent copies; it is now **1 shared instance**:
+> **Behavior change.** A closed stateful top-level definition referenced two or
+> more times used to compile into N independent copies; it is now **1 shared
+> instance**:
 >
 > ```faust
 > osc = sine 440 0.5 0;
@@ -357,8 +361,8 @@ interpreter.
 
 ```rust,no_run
 use rill_lang::compile;
-// top-level parallel pair is (2 → 2): not a valid SISO main
-assert!(compile::<f32>("main = _ , _;").is_err());
+// a top-level parallel pair is a (2 → 2) arrow: compile() accepts general arrows
+assert!(compile::<f32>("main = _ , _;").is_ok());
 ```
 
 ## Built-in functions
@@ -833,8 +837,8 @@ The language is feature-complete for signal authoring: a block-arrow model
 (`Scalar` / `Block` / `ArrowTy`) with block-diagram combinators as arrow laws,
 feedback and delay, Hindley-Milner types, Haskell-style definitions with
 β-reduction, CAF free variables (shared closed instances) with binding-level
-laziness, `let` and `where` binding groups with mutual visibility, hybrid
-block/sample execution, a 27-built-in registry (DSP, effects, oscillators,
+laziness, `let` and `where` binding groups with mutual visibility, block-only
+execution, a 27-built-in registry (DSP, effects, oscillators,
 mixer/EQ, analog, spectral, complex, lofi), RT-safe named parameters (`param()`
 and `?name`), records for built-in configuration, multi-IO via
 `MultichannelAlgorithm`, and graph compilation (`compile_graph()` →

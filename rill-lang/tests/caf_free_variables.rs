@@ -76,10 +76,12 @@ fn sine_registry() -> (Registry<f32>, Arc<AtomicUsize>) {
 
 /// `osc = sine 440.0 0.5 0.0; main = osc , osc` must be ONE shared oscillator.
 ///
-/// The program exposes two outputs, both fed by the same phase accumulator: the
-/// call counter advances by exactly one per tick (a duplicated build would
-/// advance by two), and both channels are bit-identical because they read the
-/// same running phase.
+/// The program exposes two outputs fed by the same phase accumulator: the call
+/// counter advances by exactly one per tick (a duplicated build would advance
+/// by two), and both channels must agree — even after the shared accumulator
+/// advances into the second tick. `ch0 == ch1` asserts that agreement, not
+/// causation: two independent lockstep instances would also agree, so the call
+/// counter is the real sharing discriminator.
 #[test]
 fn shared_oscillator_runs_one_instance_per_tick() {
     let (registry, calls) = sine_registry();
@@ -194,6 +196,10 @@ fn user_function_captures_shared_free_variable() {
         calls.load(Ordering::SeqCst),
         1,
         "the captured CAF is one shared instance"
+    );
+    assert!(
+        ch0.iter().any(|v| *v != 0.0),
+        "the shared sine must produce a non-zero signal"
     );
     // ch0 = phase * 0.5, ch1 = phase * 0.7 → ch1 = 1.4 * ch0.
     for (a, b) in ch0.iter().zip(ch1.iter()) {
