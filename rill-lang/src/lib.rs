@@ -123,7 +123,7 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
 
     let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
 
     // The declared-resource check only applies when the registry is auto-created
     // from the source's `TapeLoop` declarations. When a caller-supplied registry
