@@ -8,6 +8,7 @@ use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 
+use crate::arena::Arena;
 use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
 use crate::ir::{Ir, ParamDef};
@@ -52,6 +53,14 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) params_dirty: Vec<bool>,
     /// Parameter metadata (name, default, range).
     pub(crate) params_meta: Vec<ParamDef>,
+    /// Value arena (fixed capacity from IR).
+    pub(crate) arena: Arena,
+    /// Per-tick value registers.
+    pub(crate) value_regs: Vec<Option<crate::arena::ArenaRef>>,
+    /// Per-tick value-state slots (feedback/delay of values).
+    pub(crate) value_state: Vec<Option<crate::arena::ArenaRef>>,
+    /// Current runtime cell-stack frames (bindings).
+    pub(crate) cell_stack: Vec<Vec<(u32, crate::arena::ArenaRef)>>,
 }
 
 /// A fixed-length ring buffer for one `@` delay site, processed whole-block.
@@ -121,6 +130,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .map(|p| ParamValue::Float(p.default as f32))
             .collect();
         let params_dirty = vec![false; params.len()];
+        let arena = Arena::with_capacity(ir.value_state.capacity);
+        let value_regs = vec![None; ir.num_value_regs];
+        let value_state = vec![None; ir.value_state.value_state_slots];
+        let cell_stack = Vec::new();
         Self {
             ir,
             schedule,
@@ -132,6 +145,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             params,
             params_dirty,
             params_meta,
+            arena,
+            value_regs,
+            value_state,
+            cell_stack,
         }
     }
 
@@ -244,6 +261,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .map(|p| ParamValue::Float(p.default as f32))
             .collect();
         let params_dirty = vec![false; params.len()];
+        let arena = Arena::with_capacity(ir.value_state.capacity);
+        let value_regs = vec![None; ir.num_value_regs];
+        let value_state = vec![None; ir.value_state.value_state_slots];
+        let cell_stack = Vec::new();
         Ok(Self {
             ir,
             schedule,
@@ -255,6 +276,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             params,
             params_dirty,
             params_meta,
+            arena,
+            value_regs,
+            value_state,
+            cell_stack,
         })
     }
 
@@ -336,6 +361,30 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
                 BuiltinInst::MultichannelBlock(_) => {}
             }
         }
+        // Release value-track state. Each occupied slot holds a counted arena
+        // ref; dropping it (rather than just clearing the `Option`) keeps the
+        // arena's fixed capacity consistent across mid-lifetime resets, so a
+        // reset cannot exhaust the arena on a later tick. Slots are set to
+        // `None` afterwards; the per-tick value-track executor (next task)
+        // allocates fresh values on the next tick.
+        for v in &mut self.value_state {
+            if let Some(r) = v {
+                self.arena.drop_ref(*r);
+            }
+            *v = None;
+        }
+        for r in &mut self.value_regs {
+            if let Some(r) = r {
+                self.arena.drop_ref(*r);
+            }
+            *r = None;
+        }
+        for frame in &mut self.cell_stack {
+            for (_, r) in frame {
+                self.arena.drop_ref(*r);
+            }
+        }
+        self.cell_stack.clear();
     }
 }
 
@@ -361,5 +410,72 @@ impl<T: Transcendental, const BUF: usize> MultichannelAlgorithm<T> for RillProgr
 impl<T: Transcendental, const BUF: usize> BlockBuiltin<T> for RillProgram<T, BUF> {
     fn set_param(&mut self, index: usize, value: &ParamValue) {
         self.set_param(index, value.clone());
+    }
+}
+
+#[cfg(test)]
+mod program_value_tests {
+    use super::*;
+    use crate::ir::{StateLayout, ValueLayout};
+
+    #[test]
+    fn new_program_has_empty_value_state() {
+        let ir = Ir {
+            instrs: Vec::new(),
+            num_regs: 0,
+            output_regs: Vec::new(),
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            value_instrs: Vec::new(),
+            num_value_regs: 0,
+            value_output_regs: Vec::new(),
+            value_funcs: Vec::new(),
+            value_state: ValueLayout {
+                capacity: 4,
+                value_state_slots: 2,
+            },
+        };
+        let prog = RillProgram::<f32, 256>::new(ir);
+        assert_eq!(prog.arena.capacity(), 4);
+        assert_eq!(prog.value_state.len(), 2);
+    }
+
+    #[test]
+    fn reset_drops_value_track_refs() {
+        let ir = Ir {
+            instrs: Vec::new(),
+            num_regs: 0,
+            output_regs: Vec::new(),
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            value_instrs: Vec::new(),
+            num_value_regs: 0,
+            value_output_regs: Vec::new(),
+            value_funcs: Vec::new(),
+            value_state: ValueLayout {
+                capacity: 4,
+                value_state_slots: 1,
+            },
+        };
+        let mut prog = RillProgram::<f32, 256>::new(ir);
+        // Three counted refs to the same value: one per value-state slot,
+        // value register, and cell-stack frame.
+        let r = prog.arena.alloc(crate::arena::Value::Int(1)).unwrap();
+        prog.value_state[0] = Some(r);
+        let r2 = prog.arena.copy(r).unwrap();
+        prog.value_regs.push(Some(r2));
+        let r3 = prog.arena.copy(r).unwrap();
+        prog.cell_stack.push(vec![(0, r3)]);
+        Algorithm::reset(&mut prog);
+        assert_eq!(prog.value_state[0], None);
+        assert_eq!(prog.value_regs[0], None);
+        assert_eq!(prog.cell_stack.len(), 0);
+        assert_eq!(prog.arena.rc(r), 0, "all refs dropped, slot freed");
     }
 }
