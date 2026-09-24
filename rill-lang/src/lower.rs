@@ -106,7 +106,7 @@ impl<'a> Lowerer<'a> {
                 if name == "smooth" {
                     let x_regs = self.lower(&call_args[0], args)?;
                     let x = x_regs[0];
-                    let ms = const_f64(&call_args[1]).unwrap_or(0.0);
+                    let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
                     let sr = self.sample_rate as f64;
                     let a = if ms <= 0.0 {
                         1.0
@@ -451,10 +451,23 @@ impl<'a> Lowerer<'a> {
     /// reference to a closed CAF by const-folding its reduced body. Returns
     /// `None` when the argument is not a constant expression.
     fn caf_const(&self, e: &Expr) -> Option<f64> {
+        self.caf_const_impl(e, &mut HashSet::new())
+    }
+
+    /// Workhorse for [`caf_const`]: follows CAF→CAF reference chains
+    /// transitively, tracking visited names so a cycle folds to `None` rather
+    /// than recursing forever.
+    fn caf_const_impl(&self, e: &Expr, visited: &mut HashSet<String>) -> Option<f64> {
         if let Expr::Ref(ref_name, _) = e {
             if self.cafs.contains(ref_name) {
+                if visited.contains(ref_name) {
+                    return None;
+                }
                 if let Some(Def::Local { body, .. }) = self.defs.get(ref_name) {
-                    return const_f64(body);
+                    visited.insert(ref_name.clone());
+                    let v = self.caf_const_impl(body, visited);
+                    visited.remove(ref_name);
+                    return v;
                 }
             }
         }
