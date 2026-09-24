@@ -266,14 +266,22 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         crate::registration::register_backends(&mut bf);
                         match bf.create_any(name, params) {
                             Ok((driver, capture, playback)) => {
-                                let _ = rill_lang::runtime::Runtime::launch::<BUF>(
+                                match rill_lang::runtime::Runtime::launch::<BUF>(
                                     driver, capture, playback, runner, running,
-                                );
-                                log::info!(
-                                    "rill-adrift: rack '{}' backend '{}' started",
-                                    rack_name,
-                                    name
-                                );
+                                ) {
+                                    Ok(()) => {
+                                        log::info!(
+                                            "rill-adrift: rack '{}' backend '{}' started",
+                                            rack_name,
+                                            name
+                                        );
+                                    }
+                                    Err(e) => log::error!(
+                                        "rill-adrift: rack '{}' backend '{}': failed to launch signal stream: {e}",
+                                        rack_name,
+                                        name
+                                    ),
+                                }
                             }
                             Err(e) => log::error!(
                                 "rill-adrift: rack '{}' backend create '{}': {e}",
