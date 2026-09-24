@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::rill_core::io::{IoCapture, NullBackend};
 use rill_adrift::rill_core::queues::{CommandEnum, SetParameter, SignalOrigin};
 use rill_adrift::rill_core::traits::{ParamValue, ParameterId};
 use rill_lang::program_runner::ProgramRunner;
@@ -41,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let engine = rill_lang::compile_graph::<f32>(src, &reg, 44100.0)?;
+    let engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0)?;
 
     // ── Backend ────────────────────────────────────────────────────────────
     let backend_name = args
@@ -65,6 +66,8 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
     let mut be_params: HashMap<String, ParamValue> = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(44100.0));
     be_params.insert("block_size".into(), ParamValue::Int(2048));
+    // Program is 1 -> 1 (`regs` -> ay38910 -> lofi); mono backend matches
+    // the strict `Runtime::launch` arity policy.
     be_params.insert("channels".into(), ParamValue::Int(1));
 
     let output = be
@@ -115,7 +118,17 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
     let playback = output.playback.clone();
     let signal_thread = std::thread::spawn(move || {
         let runner = ProgramRunner::new(engine, Some(stc_ref));
-        Runtime::launch::<256>(driver, None, Some(playback), runner, runner_running).ok();
+        Runtime::launch::<256>(
+            driver,
+            // The program's main λ-param (`regs`) surfaces as one unused input
+            // channel; a null 1-channel capture satisfies the strict arity
+            // policy and zero-fills it (register data flows via SetParameter).
+            Some(Arc::new(NullBackend::new(1)) as Arc<dyn IoCapture>),
+            Some(playback),
+            runner,
+            runner_running,
+        )
+        .ok();
     });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");

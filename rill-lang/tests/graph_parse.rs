@@ -29,7 +29,7 @@ fn parses_main_with_where_layout() {
 fn parses_main_simple() {
     let prg = parse_str("main = _ : _").unwrap();
     let main = prg.main_def().unwrap();
-    assert!(matches!(main.body(), Expr::Bin { .. }));
+    assert!(matches!(main.body(), Expr::Seq(..)));
 }
 
 #[test]

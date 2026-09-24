@@ -10,19 +10,19 @@
 
 use rill_core::math::Transcendental;
 
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{Def, Expr, Program};
 use crate::builtin::{Registry, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::graph::spec::{GraphEdgeKind, GraphSpec};
 
 /// Compile a [`GraphSpec`] into a runnable [`crate::program_engine::ProgramEngine`].
-pub fn compile_spec<T: Transcendental + 'static>(
+pub fn compile_spec<T: Transcendental + 'static, const BUF: usize>(
     spec: &GraphSpec,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<crate::program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<crate::program_engine::ProgramEngine<T, BUF>, CompileError> {
     let program = reconstruct(spec, registry)?;
-    crate::compile_program(&program, registry, sample_rate)
+    crate::compile_program::<T, BUF>(&program, registry, sample_rate)
 }
 
 /// Reconstruct a [`GraphSpec`] into an rill-lang AST `Program`.
@@ -254,19 +254,9 @@ pub fn reconstruct<T: Transcendental + 'static>(
         } else {
             let mut par = channels.pop().unwrap();
             while let Some(c) = channels.pop() {
-                par = Expr::Bin {
-                    op: BinOp::Par,
-                    lhs: Box::new(c),
-                    rhs: Box::new(par),
-                    span: dummy,
-                };
+                par = Expr::Par(Box::new(c), Box::new(par), dummy);
             }
-            Expr::Bin {
-                op: BinOp::Merge,
-                lhs: Box::new(par),
-                rhs: Box::new(block),
-                span: dummy,
-            }
+            Expr::Merge(Box::new(par), Box::new(block), dummy)
         };
         memo[idx] = Some(expr.clone());
         expr
@@ -294,10 +284,9 @@ pub fn reconstruct<T: Transcendental + 'static>(
             dummy,
         );
         for &s in &sinks[1..] {
-            body = Expr::Bin {
-                op: BinOp::Par,
-                lhs: Box::new(body),
-                rhs: Box::new(build(
+            body = Expr::Par(
+                Box::new(body),
+                Box::new(build(
                     s,
                     &blocks,
                     &in_edges,
@@ -307,8 +296,8 @@ pub fn reconstruct<T: Transcendental + 'static>(
                     &mut memo,
                     dummy,
                 )),
-                span: dummy,
-            };
+                dummy,
+            );
         }
         body
     };
@@ -325,12 +314,11 @@ pub fn reconstruct<T: Transcendental + 'static>(
             &mut memo,
             dummy,
         );
-        body = Expr::Bin {
-            op: BinOp::Par,
-            lhs: Box::new(body),
-            rhs: Box::new(select_channels(ch, sig_outs[node], &[channel], dummy)),
-            span: dummy,
-        };
+        body = Expr::Par(
+            Box::new(body),
+            Box::new(select_channels(ch, sig_outs[node], &[channel], dummy)),
+            dummy,
+        );
     }
 
     let defs = vec![Def::Anchor {
@@ -362,17 +350,7 @@ fn select_channels(expr: Expr, out_arity: usize, keep: &[usize], dummy: Span) ->
     }
     let mut rhs = parts.pop().unwrap();
     while let Some(p) = parts.pop() {
-        rhs = E::Bin {
-            op: BinOp::Par,
-            lhs: Box::new(p),
-            rhs: Box::new(rhs),
-            span: dummy,
-        };
+        rhs = E::Par(Box::new(p), Box::new(rhs), dummy);
     }
-    E::Bin {
-        op: BinOp::Split,
-        lhs: Box::new(expr),
-        rhs: Box::new(rhs),
-        span: dummy,
-    }
+    E::Split(Box::new(expr), Box::new(rhs), dummy)
 }

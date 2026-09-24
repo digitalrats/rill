@@ -4,14 +4,17 @@
 //! functions — only builtins, `smooth`, `param`, and combinators remain.
 //! This simplifies lowering: no Anchor handling in `lower_ref`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, Program};
 use crate::error::Span;
 
 fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
     match e {
         Expr::Ref(name, _) => {
+            // CAF references are not inlined during substitution: they pass
+            // through unchanged — `reduce_expr` keeps them once the β-reduction
+            // completes.
             if let Some(replacement) = subst.get(name) {
                 replacement.clone()
             } else {
@@ -27,24 +30,42 @@ fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 span: *span,
             }
         }
-        Expr::Bin { op, lhs, rhs, span } => Expr::Bin {
+        Expr::Seq(lhs, rhs, span) => Expr::Seq(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Par(lhs, rhs, span) => Expr::Par(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Split(lhs, rhs, span) => Expr::Split(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Merge(lhs, rhs, span) => Expr::Merge(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Loop(lhs, rhs, span) => Expr::Loop(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Delay(lhs, rhs, span) => Expr::Delay(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
             lhs: Box::new(substitute(lhs, subst)),
             rhs: Box::new(substitute(rhs, subst)),
             span: *span,
         },
-        Expr::Let { defs, body, span } => {
-            let reduced_defs: Vec<Def> = defs
-                .iter()
-                .map(|d| reduce_def(d, &HashMap::new()))
-                .collect();
-            let reduced_body = reduce_expr(body, &defs_map(&reduced_defs));
-            Expr::Let {
-                defs: reduced_defs,
-                body: Box::new(reduced_body),
-                span: *span,
-            }
-        }
         _ => e.clone(),
     }
 }
@@ -55,12 +76,12 @@ fn defs_map(defs: &[Def]) -> HashMap<String, Def> {
         .collect()
 }
 
-fn reduce_def(def: &Def, ctx: &HashMap<String, Def>) -> Def {
-    let reduced_body = reduce_expr(def.body(), ctx);
+fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Def {
+    let reduced_body = reduce_expr(def.body(), ctx, cafs);
     let reduced_where: Vec<Def> = def
         .where_defs()
         .iter()
-        .map(|d| reduce_def(d, ctx))
+        .map(|d| reduce_def(d, ctx, cafs))
         .collect();
     match def {
         Def::Anchor {
@@ -81,13 +102,17 @@ fn reduce_def(def: &Def, ctx: &HashMap<String, Def>) -> Def {
     }
 }
 
-fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>) -> Expr {
+fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Expr {
     match e {
         Expr::Ref(name, _) => {
-            if let Some(def) = ctx.get(name) {
+            if cafs.contains(name) {
+                // Closed top-level definition (CAF): keep the shared reference so
+                // lowering can lift it once instead of duplicating state here.
+                e.clone()
+            } else if let Some(def) = ctx.get(name) {
                 if def.params().is_empty() {
                     // Local binding with no params — inline the body
-                    reduce_expr(def.body(), ctx)
+                    reduce_expr(def.body(), ctx, cafs)
                 } else {
                     // Has unapplied λ-params — can't inline, leave as ref
                     e.clone()
@@ -97,7 +122,7 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>) -> Expr {
             }
         }
         Expr::Apply { name, args, span } => {
-            let reduced_args: Vec<Expr> = args.iter().map(|a| reduce_expr(a, ctx)).collect();
+            let reduced_args: Vec<Expr> = args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect();
             if let Some(def) = ctx.get(name) {
                 // β-reduce: substitute args for params in the definition's body
                 let mut subst = HashMap::new();
@@ -108,7 +133,7 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>) -> Expr {
                 }
                 let inlined = substitute(def.body(), &subst);
                 // Recursively reduce the inlined body (may contain more calls)
-                reduce_expr(&inlined, ctx)
+                reduce_expr(&inlined, ctx, cafs)
             } else {
                 // Builtin, math, or unknown — leave as-is
                 Expr::Apply {
@@ -124,36 +149,55 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>) -> Expr {
             span: _,
         } => {
             // Reduce let defs, build context, reduce body
-            let reduced_defs: Vec<Def> = defs.iter().map(|d| reduce_def(d, ctx)).collect();
+            let reduced_defs: Vec<Def> = defs.iter().map(|d| reduce_def(d, ctx, cafs)).collect();
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
-            reduce_expr(body, &let_ctx)
+            reduce_expr(body, &let_ctx, cafs)
         }
-        Expr::Bin {
-            op: BinOp::Feedback,
-            lhs,
-            rhs,
-            span,
-        } => {
+        Expr::Loop(lhs, rhs, span) => {
             // Desugar the Faust-style integrator short forms to block built-ins:
             //   `+ ~ _`       → `integrator`
             //   `+ ~ (_ * k)` → `leaky_integrator k`
             if let Some(desugared) = desugar_integrator(lhs, rhs, *span) {
                 return desugared;
             }
-            Expr::Bin {
-                op: BinOp::Feedback,
-                lhs: Box::new(reduce_expr(lhs, ctx)),
-                rhs: Box::new(reduce_expr(rhs, ctx)),
-                span: *span,
-            }
+            Expr::Loop(
+                Box::new(reduce_expr(lhs, ctx, cafs)),
+                Box::new(reduce_expr(rhs, ctx, cafs)),
+                *span,
+            )
         }
-        Expr::Bin { op, lhs, rhs, span } => Expr::Bin {
+        Expr::Seq(lhs, rhs, span) => Expr::Seq(
+            Box::new(reduce_expr(lhs, ctx, cafs)),
+            Box::new(reduce_expr(rhs, ctx, cafs)),
+            *span,
+        ),
+        Expr::Par(lhs, rhs, span) => Expr::Par(
+            Box::new(reduce_expr(lhs, ctx, cafs)),
+            Box::new(reduce_expr(rhs, ctx, cafs)),
+            *span,
+        ),
+        Expr::Split(lhs, rhs, span) => Expr::Split(
+            Box::new(reduce_expr(lhs, ctx, cafs)),
+            Box::new(reduce_expr(rhs, ctx, cafs)),
+            *span,
+        ),
+        Expr::Merge(lhs, rhs, span) => Expr::Merge(
+            Box::new(reduce_expr(lhs, ctx, cafs)),
+            Box::new(reduce_expr(rhs, ctx, cafs)),
+            *span,
+        ),
+        Expr::Delay(lhs, rhs, span) => Expr::Delay(
+            Box::new(reduce_expr(lhs, ctx, cafs)),
+            Box::new(reduce_expr(rhs, ctx, cafs)),
+            *span,
+        ),
+        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
-            lhs: Box::new(reduce_expr(lhs, ctx)),
-            rhs: Box::new(reduce_expr(rhs, ctx)),
+            lhs: Box::new(reduce_expr(lhs, ctx, cafs)),
+            rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
             span: *span,
         },
-        Expr::Neg(inner, span) => Expr::Neg(Box::new(reduce_expr(inner, ctx)), *span),
+        Expr::Neg(inner, span) => Expr::Neg(Box::new(reduce_expr(inner, ctx, cafs)), *span),
         _ => e.clone(),
     }
 }
@@ -170,8 +214,8 @@ fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
             args: vec![],
             span,
         }),
-        Expr::Bin {
-            op: BinOp::Mul,
+        Expr::Arith {
+            op: ArithOp::Mul,
             lhs: w,
             rhs: k,
             ..
@@ -195,11 +239,15 @@ fn merge_contexts(
     merged
 }
 
-/// β-reduce all user-defined function calls in the program.
+/// β-reduce all user-defined function calls in the program, keeping references
+/// to closed top-level definitions (`cafs`) un-inlined.
 ///
-/// After this pass, no `Apply` node targets a user-defined function.
-/// `let` blocks with all defs inlined collapse to their reduced body.
-pub fn reduce(program: &Program) -> Program {
+/// CAFs (closed top-level `Def::Local`s with zero signal inputs and zero
+/// λ-parameters) are shared state: duplicating their body at each use site
+/// would fork the stateful process. They are left as `Expr::Ref`s so lowering
+/// can lift them once and route multiple consumers to the single instance.
+/// Open blocks (macros) are still inlined as before.
+pub fn reduce_with_cafs(program: &Program, cafs: &HashSet<String>) -> Program {
     let top_ctx: HashMap<String, Def> = program
         .defs
         .iter()
@@ -213,7 +261,7 @@ pub fn reduce(program: &Program) -> Program {
         for wd in def.where_defs() {
             ctx.insert(wd.name().to_string(), wd.clone());
         }
-        let d = reduce_def(def, &ctx);
+        let d = reduce_def(def, &ctx, cafs);
         reduced_defs.push(d);
     }
     // Re-reduce with the reduced defs to handle references between top-level defs
@@ -227,17 +275,28 @@ pub fn reduce(program: &Program) -> Program {
         for wd in def.where_defs() {
             ctx.insert(wd.name().to_string(), wd.clone());
         }
-        result.defs.push(reduce_def(def, &ctx));
+        result.defs.push(reduce_def(def, &ctx, cafs));
     }
     result
+}
+
+/// β-reduce all user-defined function calls in the program.
+///
+/// After this pass, no `Apply` node targets a user-defined function.
+/// `let` blocks with all defs inlined collapse to their reduced body.
+/// With no CAF set, every closed top-level local is inlined (back-compat
+/// for callers that do not distinguish CAFs).
+pub fn reduce(program: &Program) -> Program {
+    reduce_with_cafs(program, &HashSet::new())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::BinOp;
+    use crate::ast::ArithOp;
     use crate::lexer::tokenize;
     use crate::parser;
+    use crate::types::infer::infer_program;
 
     fn reduced_body(src: &str) -> Expr {
         let tokens = tokenize(src).unwrap();
@@ -247,13 +306,70 @@ mod tests {
         main.body().clone()
     }
 
+    fn caf_names(src: &str) -> std::collections::HashSet<String> {
+        let tokens = tokenize(src).unwrap();
+        let program = parser::parse(&tokens, src.as_bytes()).unwrap();
+        let typed = infer_program(&program).unwrap();
+        typed.cafs
+    }
+
+    fn reduced_with_cafs(src: &str) -> Program {
+        let tokens = tokenize(src).unwrap();
+        let program = parser::parse(&tokens, src.as_bytes()).unwrap();
+        let cafs = caf_names(src);
+        reduce_with_cafs(&program, &cafs)
+    }
+
+    fn contains_name(e: &Expr, name: &str) -> bool {
+        match e {
+            Expr::Ref(n, _) => n == name,
+            Expr::Seq(l, r, _)
+            | Expr::Par(l, r, _)
+            | Expr::Split(l, r, _)
+            | Expr::Merge(l, r, _) => {
+                contains_name(l.as_ref(), name) || contains_name(r.as_ref(), name)
+            }
+            Expr::Loop(l, r, _) | Expr::Delay(l, r, _) => {
+                contains_name(l.as_ref(), name) || contains_name(r.as_ref(), name)
+            }
+            Expr::Arith { lhs, rhs, .. } => {
+                contains_name(lhs.as_ref(), name) || contains_name(rhs.as_ref(), name)
+            }
+            Expr::Apply { args, .. } => args.iter().any(|a| contains_name(a, name)),
+            Expr::Neg(i, _) => contains_name(i.as_ref(), name),
+            Expr::Let { defs, body, .. } => {
+                defs.iter().any(|d| contains_name(d.body(), name))
+                    || contains_name(body.as_ref(), name)
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn caf_ref_is_not_inlined() {
+        // c = 440.0 is a closed top-level local (CAF): main must keep the shared
+        // reference `c` instead of inlining the constant at both use sites.
+        let reduced = reduced_with_cafs("c = 440.0; main = c , c");
+        let main = reduced.main_def().unwrap();
+        assert!(contains_name(main.body(), "c"));
+    }
+
+    #[test]
+    fn non_caf_local_is_still_inlined() {
+        // gain = _ * 0.5 is open (1 signal input) — a macro. After reduce, no
+        // `gain` reference may remain in main.
+        let reduced = reduced_with_cafs("gain = _ * 0.5; main = gain");
+        let main = reduced.main_def().unwrap();
+        assert!(!contains_name(main.body(), "gain"));
+    }
+
     #[test]
     fn simple_apply_is_inlined() {
         // main = g 0.5 where { g x = _ * x; }  →  main = _ * 0.5
         let body = reduced_body("main = g 0.5 where { g x = _ * x; }");
         match &body {
-            Expr::Bin {
-                op: BinOp::Mul,
+            Expr::Arith {
+                op: ArithOp::Mul,
                 lhs,
                 rhs,
                 ..
@@ -261,7 +377,7 @@ mod tests {
                 assert!(matches!(lhs.as_ref(), Expr::Wire(_)));
                 assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
             }
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 
@@ -270,8 +386,8 @@ mod tests {
         // main = h where { f x = _ * x; g y = f y; h = g 0.5; }
         let body = reduced_body("main = h where { f x = _ * x; g y = f y; h = g 0.5; }");
         match &body {
-            Expr::Bin {
-                op: BinOp::Mul,
+            Expr::Arith {
+                op: ArithOp::Mul,
                 lhs,
                 rhs,
                 ..
@@ -279,7 +395,7 @@ mod tests {
                 assert!(matches!(lhs.as_ref(), Expr::Wire(_)));
                 assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
             }
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 
@@ -287,8 +403,10 @@ mod tests {
     fn top_level_call_is_inlined() {
         let body = reduced_body("sq x = _ * x; main = sq 0.5");
         match &body {
-            Expr::Bin { op: BinOp::Mul, .. } => {}
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            Expr::Arith {
+                op: ArithOp::Mul, ..
+            } => {}
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 
@@ -296,14 +414,10 @@ mod tests {
     fn builtin_not_reduced() {
         let body = reduced_body("main = _ : lowpass 1000.0 0.7");
         match &body {
-            Expr::Bin {
-                op: BinOp::Seq,
-                rhs,
-                ..
-            } => {
+            Expr::Seq(_, rhs, _) => {
                 assert!(matches!(rhs.as_ref(), Expr::Apply { name, .. } if name == "lowpass"));
             }
-            other => panic!("expected Bin(Seq), got {other:?}"),
+            other => panic!("expected Seq, got {other:?}"),
         }
     }
 }

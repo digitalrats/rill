@@ -119,7 +119,8 @@ impl<const BUF: usize> ModularSystem<BUF> {
     pub fn build_engine(
         &self,
         def: &GraphDef,
-    ) -> Result<rill_lang::program_engine::ProgramEngine<f32>, Box<dyn std::error::Error>> {
+    ) -> Result<rill_lang::program_engine::ProgramEngine<f32, BUF>, Box<dyn std::error::Error>>
+    {
         let mut builder = self.create_builder();
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))?;
@@ -140,7 +141,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
     pub fn build_stream(
         &self,
         def: &GraphDef,
-    ) -> Result<rill_lang::graph::CompiledStream<f32>, Box<dyn std::error::Error>> {
+    ) -> Result<rill_lang::graph::CompiledStream<f32, BUF>, Box<dyn std::error::Error>> {
         let mut builder = self.create_builder();
         def.populate(&mut builder)
             .map_err(|e| format!("populate: {e}"))?;
@@ -154,7 +155,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
         #[cfg(feature = "lofi")]
         let registry = crate::lang_builtins::full_registry_f32();
 
-        rill_lang::graph::compile(&spec, &registry, def.sample_rate)
+        rill_lang::graph::compile::<f32, BUF>(&spec, &registry, def.sample_rate)
             .map_err(|e| e.to_string().into())
     }
 
@@ -265,14 +266,22 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         crate::registration::register_backends(&mut bf);
                         match bf.create_any(name, params) {
                             Ok((driver, capture, playback)) => {
-                                let _ = rill_lang::runtime::Runtime::launch::<BUF>(
+                                match rill_lang::runtime::Runtime::launch::<BUF>(
                                     driver, capture, playback, runner, running,
-                                );
-                                log::info!(
-                                    "rill-adrift: rack '{}' backend '{}' started",
-                                    rack_name,
-                                    name
-                                );
+                                ) {
+                                    Ok(()) => {
+                                        log::info!(
+                                            "rill-adrift: rack '{}' backend '{}' started",
+                                            rack_name,
+                                            name
+                                        );
+                                    }
+                                    Err(e) => log::error!(
+                                        "rill-adrift: rack '{}' backend '{}': failed to launch signal stream: {e}",
+                                        rack_name,
+                                        name
+                                    ),
+                                }
                             }
                             Err(e) => log::error!(
                                 "rill-adrift: rack '{}' backend create '{}': {e}",

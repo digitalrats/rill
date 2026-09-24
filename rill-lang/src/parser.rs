@@ -1,8 +1,44 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{BinOp, Def, Expr, Param, Program};
+use crate::ast::{ArithOp, Def, Expr, Param, Program};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
+
+/// An infix operator: a block-diagram combinator or an arithmetic operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfixOp {
+    Seq,
+    Par,
+    Split,
+    Merge,
+    Loop,
+    Delay,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+}
+
+impl InfixOp {
+    fn is_arith(self) -> bool {
+        matches!(
+            self,
+            InfixOp::Add | InfixOp::Sub | InfixOp::Mul | InfixOp::Div | InfixOp::Rem
+        )
+    }
+
+    fn to_arith(self) -> ArithOp {
+        match self {
+            InfixOp::Add => ArithOp::Add,
+            InfixOp::Sub => ArithOp::Sub,
+            InfixOp::Mul => ArithOp::Mul,
+            InfixOp::Div => ArithOp::Div,
+            InfixOp::Rem => ArithOp::Rem,
+            _ => unreachable!("not an arithmetic operator"),
+        }
+    }
+}
 
 struct Parser<'a> {
     toks: &'a [Token],
@@ -11,19 +47,19 @@ struct Parser<'a> {
 }
 
 /// Binding powers. Higher = binds tighter. Returns (op, left_bp, right_bp).
-fn infix_binding_power(t: &Tok) -> Option<(BinOp, u8, u8)> {
+fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
     Some(match t {
-        Tok::Tilde => (BinOp::Feedback, 1, 2),
-        Tok::Colon => (BinOp::Seq, 3, 4),
-        Tok::Merge => (BinOp::Merge, 5, 6),
-        Tok::Split => (BinOp::Split, 7, 8),
-        Tok::Comma => (BinOp::Par, 9, 10),
-        Tok::Plus => (BinOp::Add, 11, 12),
-        Tok::Minus => (BinOp::Sub, 11, 12),
-        Tok::Star => (BinOp::Mul, 13, 14),
-        Tok::Slash => (BinOp::Div, 13, 14),
-        Tok::Percent => (BinOp::Rem, 13, 14),
-        Tok::At => (BinOp::Delay, 15, 16),
+        Tok::Tilde => (InfixOp::Loop, 1, 2),
+        Tok::Colon => (InfixOp::Seq, 3, 4),
+        Tok::Merge => (InfixOp::Merge, 5, 6),
+        Tok::Split => (InfixOp::Split, 7, 8),
+        Tok::Comma => (InfixOp::Par, 9, 10),
+        Tok::Plus => (InfixOp::Add, 11, 12),
+        Tok::Minus => (InfixOp::Sub, 11, 12),
+        Tok::Star => (InfixOp::Mul, 13, 14),
+        Tok::Slash => (InfixOp::Div, 13, 14),
+        Tok::Percent => (InfixOp::Rem, 13, 14),
+        Tok::At => (InfixOp::Delay, 15, 16),
         _ => return None,
     })
 }
@@ -241,7 +277,7 @@ impl<'a> Parser<'a> {
     fn parse_expr(&mut self, min_bp: u8, no_comma: bool) -> Result<Expr, CompileError> {
         let mut lhs = self.parse_prefix(no_comma)?;
         while let Some((op, l_bp, r_bp)) = infix_binding_power(&self.peek().tok) {
-            if no_comma && op == BinOp::Par {
+            if no_comma && op == InfixOp::Par {
                 break;
             }
             if l_bp < min_bp {
@@ -250,7 +286,7 @@ impl<'a> Parser<'a> {
             self.bump();
             let rhs = self.parse_expr(r_bp, no_comma)?;
 
-            if matches!(op, BinOp::Add | BinOp::Sub) {
+            if matches!(op, InfixOp::Add | InfixOp::Sub) {
                 let re = match &lhs {
                     Expr::Float(v, _) => Some(*v),
                     Expr::Int(v, _) => Some(*v as f64),
@@ -262,7 +298,7 @@ impl<'a> Parser<'a> {
                     _ => None,
                 };
                 let im = match &rhs {
-                    Expr::Imag(v, _) => Some(if matches!(op, BinOp::Sub) { -*v } else { *v }),
+                    Expr::Imag(v, _) => Some(if matches!(op, InfixOp::Sub) { -*v } else { *v }),
                     _ => None,
                 };
                 if let (Some(re), Some(im)) = (re, im) {
@@ -280,11 +316,23 @@ impl<'a> Parser<'a> {
             }
 
             let span = lhs.span().merge(rhs.span());
-            lhs = Expr::Bin {
-                op,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-                span,
+            lhs = if op.is_arith() {
+                Expr::Arith {
+                    op: op.to_arith(),
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
+                }
+            } else {
+                match op {
+                    InfixOp::Seq => Expr::Seq(Box::new(lhs), Box::new(rhs), span),
+                    InfixOp::Par => Expr::Par(Box::new(lhs), Box::new(rhs), span),
+                    InfixOp::Split => Expr::Split(Box::new(lhs), Box::new(rhs), span),
+                    InfixOp::Merge => Expr::Merge(Box::new(lhs), Box::new(rhs), span),
+                    InfixOp::Loop => Expr::Loop(Box::new(lhs), Box::new(rhs), span),
+                    InfixOp::Delay => Expr::Delay(Box::new(lhs), Box::new(rhs), span),
+                    _ => unreachable!(),
+                }
             };
         }
         Ok(lhs)
@@ -476,7 +524,7 @@ mod tests {
     #[test]
     fn arithmetic_binds_tighter_than_par() {
         match body("main = _ * 2 , _") {
-            Expr::Bin { op: BinOp::Par, .. } => {}
+            Expr::Par(..) => {}
             other => panic!("expected Par, got {other:?}"),
         }
     }
@@ -484,18 +532,15 @@ mod tests {
     #[test]
     fn feedback_binds_loosest() {
         match body("main = + ~ _") {
-            Expr::Bin {
-                op: BinOp::Feedback,
-                ..
-            } => {}
-            other => panic!("expected Feedback, got {other:?}"),
+            Expr::Loop(..) => {}
+            other => panic!("expected Loop, got {other:?}"),
         }
     }
 
     #[test]
     fn seq_is_left_associative() {
         match body("main = _ : _ : _") {
-            Expr::Bin { op: BinOp::Seq, .. } => {}
+            Expr::Seq(..) => {}
             other => panic!("expected Seq, got {other:?}"),
         }
     }
@@ -516,9 +561,7 @@ mod tests {
     #[test]
     fn grouping_paren_is_parallel_inside() {
         match body("main = (_ , _) :> _") {
-            Expr::Bin {
-                op: BinOp::Merge, ..
-            } => {}
+            Expr::Merge(..) => {}
             other => panic!("expected Merge, got {other:?}"),
         }
     }
@@ -544,7 +587,7 @@ mod tests {
     fn juxtaposition_parse() {
         let p = prog("main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1");
         match p.main_def().unwrap().body() {
-            Expr::Bin { op: BinOp::Seq, .. } => {}
+            Expr::Seq(..) => {}
             other => panic!("expected Seq, got {other:?}"),
         }
     }
@@ -714,8 +757,8 @@ mod tests {
         let p = prog("main = _ * ?gain");
         let main = p.main_def().unwrap();
         match main.body() {
-            Expr::Bin {
-                op: BinOp::Mul,
+            Expr::Arith {
+                op: ArithOp::Mul,
                 rhs,
                 ..
             } => match rhs.as_ref() {
@@ -725,7 +768,7 @@ mod tests {
                 }
                 other => panic!("expected ActorParam, got {other:?}"),
             },
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 
@@ -734,8 +777,8 @@ mod tests {
         let p = prog("main = _ * ?gain=0.5");
         let main = p.main_def().unwrap();
         match main.body() {
-            Expr::Bin {
-                op: BinOp::Mul,
+            Expr::Arith {
+                op: ArithOp::Mul,
                 rhs,
                 ..
             } => match rhs.as_ref() {
@@ -748,7 +791,7 @@ mod tests {
                 }
                 other => panic!("expected ActorParam, got {other:?}"),
             },
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 

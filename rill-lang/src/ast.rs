@@ -5,23 +5,10 @@ use crate::error::Span;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Binary block-diagram combinators and arithmetic operators.
+/// Arithmetic operators (elementwise, 2→1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum BinOp {
-    /// `:` sequential composition.
-    Seq,
-    /// `,` parallel composition.
-    Par,
-    /// `<:` split / fan-out.
-    Split,
-    /// `:>` merge / fan-in.
-    Merge,
-    /// `~` feedback tap — RHS output feeds LHS feedback input (1-tick delay),
-    /// RHS is evaluated independently (does not consume LHS output).
-    Feedback,
-    /// `@` integer delay.
-    Delay,
+pub enum ArithOp {
     /// `+`
     Add,
     /// `-`
@@ -63,10 +50,24 @@ pub enum Expr {
     },
     /// Unary negation `-expr`.
     Neg(Box<Expr>, Span),
-    /// A binary combinator/operator.
-    Bin {
+    // --- arrow combinators (first-class) ---
+    /// Sequential composition `A : B`.
+    Seq(Box<Expr>, Box<Expr>, Span),
+    /// Parallel composition `A , B`.
+    Par(Box<Expr>, Box<Expr>, Span),
+    /// Fan-out `A <: B` (split).
+    Split(Box<Expr>, Box<Expr>, Span),
+    /// Fan-in `A :> B` (merge/sum).
+    Merge(Box<Expr>, Box<Expr>, Span),
+    /// Feedback `A ~ B` (1-block delayed).
+    Loop(Box<Expr>, Box<Expr>, Span),
+    /// Integer delay `A @ n`.
+    Delay(Box<Expr>, Box<Expr>, Span),
+    // --- arithmetic ---
+    /// Elementwise arithmetic `lhs op rhs`.
+    Arith {
         /// The operator.
-        op: BinOp,
+        op: ArithOp,
         /// Left operand.
         lhs: Box<Expr>,
         /// Right operand.
@@ -107,9 +108,15 @@ impl Expr {
             | Expr::Cut(s)
             | Expr::Str(_, s)
             | Expr::Ref(_, s)
-            | Expr::Neg(_, s) => *s,
+            | Expr::Neg(_, s)
+            | Expr::Seq(_, _, s)
+            | Expr::Par(_, _, s)
+            | Expr::Split(_, _, s)
+            | Expr::Merge(_, _, s)
+            | Expr::Loop(_, _, s)
+            | Expr::Delay(_, _, s) => *s,
             Expr::Apply { span, .. }
-            | Expr::Bin { span, .. }
+            | Expr::Arith { span, .. }
             | Expr::Let { span, .. }
             | Expr::Record(_, span)
             | Expr::ActorParam { span, .. } => *span,

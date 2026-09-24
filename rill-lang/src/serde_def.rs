@@ -29,7 +29,10 @@ impl RillLangDef {
 }
 
 /// Compile a [`RillLangDef`] into a runnable program for scalar type `T`.
-pub fn compile_def<T: Transcendental>(def: &RillLangDef) -> Result<RillProgram<T>, CompileError> {
+/// Uses the default block size (`BUF = 256`).
+pub fn compile_def<T: Transcendental>(
+    def: &RillLangDef,
+) -> Result<RillProgram<T, 256>, CompileError> {
     crate::compile::<T>(&def.source)
 }
 

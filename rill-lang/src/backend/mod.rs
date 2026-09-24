@@ -10,8 +10,11 @@ use crate::program::RillProgram;
 
 /// A backend builds a runnable program from lowered IR.
 pub trait Backend {
-    /// Build a program for scalar type `T`.
-    fn build<T: Transcendental>(&self, ir: Ir) -> Result<RillProgram<T>, CompileError>;
+    /// Build a program for scalar type `T` and block size `BUF`.
+    fn build<T: Transcendental, const BUF: usize>(
+        &self,
+        ir: Ir,
+    ) -> Result<RillProgram<T, BUF>, CompileError>;
 }
 
 /// The default safe interpreter backend.
@@ -19,7 +22,10 @@ pub trait Backend {
 pub struct InterpBackend;
 
 impl Backend for InterpBackend {
-    fn build<T: Transcendental>(&self, ir: Ir) -> Result<RillProgram<T>, CompileError> {
-        Ok(RillProgram::new(ir))
+    fn build<T: Transcendental, const BUF: usize>(
+        &self,
+        ir: Ir,
+    ) -> Result<RillProgram<T, BUF>, CompileError> {
+        Ok(RillProgram::<T, BUF>::new(ir))
     }
 }

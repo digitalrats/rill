@@ -189,7 +189,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     ///
     /// Each graph node becomes an [`Expr::Apply`](rill_lang::ast::Expr::Apply) with parameters ordered
     /// according to the builtin's `BuiltinSig::param_names`. Nodes are
-    /// chained via [`BinOp::Seq`](rill_lang::ast::BinOp::Seq) according to their signal connections.
+    /// chained via [`Expr::Seq`](rill_lang::ast::Expr::Seq) according to their signal connections.
     ///
     /// Only simple chain topologies are supported (fan-out/fan-in will
     /// return [`BuildError::UnsupportedTopology`]).
@@ -367,9 +367,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         &self,
         registry: &rill_lang::builtin::Registry<T>,
         sample_rate: f32,
-    ) -> Result<rill_lang::program_engine::ProgramEngine<T>, BuildError> {
+    ) -> Result<rill_lang::program_engine::ProgramEngine<T, BUF_SIZE>, BuildError> {
         let spec = self.to_graph_spec();
-        match rill_lang::graph::compile(&spec, registry, sample_rate) {
+        match rill_lang::graph::compile::<T, BUF_SIZE>(&spec, registry, sample_rate) {
             Ok(rill_lang::graph::CompiledStream::Single(engine)) => Ok(engine),
             Ok(_) => Err(BuildError::CompilationFailed(
                 "graph is a tape echo; use rill_lang::graph::compile for the duplex stream".into(),

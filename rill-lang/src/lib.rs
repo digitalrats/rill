@@ -6,6 +6,8 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// The signal-arrow core: combinators as arrow laws over [`arrow::ArrowTy`].
+pub mod arrow;
 pub mod ast;
 pub mod backend;
 pub mod builtin;
@@ -46,6 +48,9 @@ use std::sync::Arc;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
+/// Uses the runtime-safe default block size (`BUF = 256`); each block passed to
+/// `process` must be no longer than that.
+///
 /// ```
 /// use rill_lang::compile;
 /// use rill_core::traits::Algorithm;
@@ -55,37 +60,38 @@ use std::sync::Arc;
 /// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
 /// assert_eq!(out, [1.0, 2.0]);
 /// ```
-pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T>, CompileError> {
+pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program(&program)?;
-    typed.program = reduce::reduce(&typed.program);
-    let ir = lower::lower(&typed)?;
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, 44_100.0, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
-    Ok(RillProgram::<T>::new(ir))
+    Ok(RillProgram::<T, 256>::new(ir))
 }
 
-/// Compile with a built-in registry and a sample rate.
+/// Compile with a built-in registry and a sample rate. Uses the default block
+/// size (`BUF = 256`).
 pub fn compile_with<T: Transcendental>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<RillProgram<T>, CompileError> {
+) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
-    typed.program = reduce::reduce(&typed.program);
-    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
-    RillProgram::<T>::new_with(ir, registry, sample_rate)
+    RillProgram::<T, 256>::new_with(ir, registry, sample_rate)
 }
 
 /// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
-pub fn compile_program<T: Transcendental>(
+pub fn compile_program<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     compile_program_inner(program, registry, sample_rate, None)
 }
 
@@ -98,26 +104,26 @@ pub fn compile_program<T: Transcendental>(
 /// by the program must exist in `resources`, otherwise the program fails with
 /// `Unsupported` rather than compiling to a silently dead engine (a write head
 /// without a writer, a read head without a reader).
-pub fn compile_program_with_resources<T: Transcendental>(
+pub fn compile_program_with_resources<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
     resources: &mut rill_core::buffer::ResourceRegistry<T>,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     compile_program_inner(program, registry, sample_rate, Some(resources))
 }
 
-fn compile_program_inner<T: Transcendental>(
+fn compile_program_inner<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
     resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     let (program, resource_decls) = extract_resources(program);
 
     let mut typed = types::infer::infer_program_with(&program, registry)?;
-    typed.program = reduce::reduce(&typed.program);
-    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
 
     // The declared-resource check only applies when the registry is auto-created
     // from the source's `TapeLoop` declarations. When a caller-supplied registry
@@ -162,20 +168,23 @@ fn compile_program_inner<T: Transcendental>(
         }
     };
 
-    let rp = RillProgram::<T>::new_with_resources(ir, registry, sample_rate, res)?;
+    let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res)?;
     let mailbox = Arc::new(Mailbox::new(64));
-    Ok(program_engine::ProgramEngine::new(rp, mailbox))
+    Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox))
 }
 
 /// Compile rill-lang source into a graph engine that supports SetParameter.
-pub fn compile_graph<T: Transcendental>(
+///
+/// `BUF` is the block size the caller will feed the engine each tick; all
+/// internal buffers are pre-allocated to this size at construction.
+pub fn compile_graph<T: Transcendental, const BUF: usize>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    compile_program::<T>(&program, registry, sample_rate)
+    compile_program::<T, BUF>(&program, registry, sample_rate)
 }
 
 /// A named resource declaration (e.g. a tape loop) from the DSL.
@@ -226,11 +235,55 @@ fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec
 #[cfg(test)]
 mod ir_tests {
     use super::*;
+    use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
+
+    struct TestOsc;
+    impl rill_core::traits::Algorithm<f32> for TestOsc {
+        fn process(
+            &mut self,
+            _input: Option<&[f32]>,
+            output: &mut [f32],
+        ) -> rill_core::traits::ProcessResult<()> {
+            output.fill(0.0);
+            Ok(())
+        }
+        fn reset(&mut self) {}
+    }
+    impl rill_core::builtin::BlockBuiltin<f32> for TestOsc {}
+
+    fn sine_registry() -> Registry<f32> {
+        let mut registry = Registry::<f32>::new();
+        registry.register_block(
+            BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block),
+            |_, _| Box::new(TestOsc),
+        );
+        registry
+    }
+
+    #[test]
+    fn public_compile_rejects_recursive_caf() {
+        // a = a -> graceful CompileError, not stack overflow
+        let res = compile::<f32>("a = a; main = a");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn public_compile_with_shares_closed_caf() {
+        // osc = sine 440.0 1.0 0.0; main = osc , osc -> ONE sine instance
+        let registry = sine_registry();
+        let prog = compile_with::<f32>(
+            "osc = sine 440.0 1.0 0.0; main = osc , osc",
+            &registry,
+            44100.0,
+        )
+        .unwrap();
+        let sines = prog.ir.builtins.iter().filter(|b| b.name == "sine").count();
+        assert_eq!(sines, 1);
+        assert_eq!(prog.ir.builtins.len(), 1);
+    }
 
     #[test]
     fn lang_chiptune_ir_structure() {
-        use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
-
         let mut registry = Registry::<f32>::new();
         registry.register_block(
             BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),

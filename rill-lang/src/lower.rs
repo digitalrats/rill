@@ -1,8 +1,8 @@
 //! Lower a type-checked program to linear IR.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
@@ -11,6 +11,9 @@ use crate::types::infer::TypedProgram;
 struct Lowerer<'a> {
     defs: HashMap<String, Def>,
     sigs: &'a dyn SignatureSource,
+    cafs: &'a HashSet<String>,
+    caf_cache: HashMap<String, Vec<usize>>,
+    caf_lifting: HashSet<String>,
     instrs: Vec<Instr>,
     next_reg: usize,
     block_state_slots: usize,
@@ -103,7 +106,7 @@ impl<'a> Lowerer<'a> {
                 if name == "smooth" {
                     let x_regs = self.lower(&call_args[0], args)?;
                     let x = x_regs[0];
-                    let ms = const_f64(&call_args[1]).unwrap_or(0.0);
+                    let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
                     let sr = self.sample_rate as f64;
                     let a = if ms <= 0.0 {
                         1.0
@@ -218,7 +221,7 @@ impl<'a> Lowerer<'a> {
                                     param_pos += 1;
                                     continue;
                                 }
-                                let v = const_f64(&call_args[param_pos]).ok_or_else(|| {
+                                let v = self.caf_const(&call_args[param_pos]).ok_or_else(|| {
                                     CompileError::Type {
                                         msg: format!(
                                             "param at position {param_pos} of `{name}` \
@@ -260,7 +263,7 @@ impl<'a> Lowerer<'a> {
                                 if let Expr::Record(fields, field_span) = &call_args[param_pos] {
                                     let mut field_values: HashMap<&str, f64> = HashMap::new();
                                     for (field_name, field_expr) in fields {
-                                        if let Some(val) = const_f64(field_expr) {
+                                        if let Some(val) = self.caf_const(field_expr) {
                                             field_values.insert(field_name.as_str(), val);
                                         }
                                     }
@@ -274,7 +277,7 @@ impl<'a> Lowerer<'a> {
                                         param_values.push(val);
                                     }
                                     for (field_name, field_expr) in fields {
-                                        if let Some(val) = const_f64(field_expr) {
+                                        if let Some(val) = self.caf_const(field_expr) {
                                             self.intern_param(
                                                 field_name.clone(),
                                                 val,
@@ -303,7 +306,7 @@ impl<'a> Lowerer<'a> {
                                                 continue;
                                             }
                                         }
-                                        if let Some(val) = const_f64(arg) {
+                                        if let Some(val) = self.caf_const(arg) {
                                             param_values.push(val);
                                         }
                                     }
@@ -353,7 +356,13 @@ impl<'a> Lowerer<'a> {
                 msg: "string literal is only valid as a parameter name".into(),
                 span: *span,
             }),
-            Expr::Bin { op, lhs, rhs, span } => self.lower_bin(*op, lhs, rhs, args, *span),
+            Expr::Seq(lhs, rhs, _) => self.lower_seq(lhs, rhs, args),
+            Expr::Par(lhs, rhs, _) => self.lower_par(lhs, rhs, args),
+            Expr::Split(lhs, rhs, _) => self.lower_split(lhs, rhs, args),
+            Expr::Merge(lhs, rhs, _) => self.lower_merge(lhs, rhs, args),
+            Expr::Loop(lhs, rhs, span) => self.lower_feedback(lhs, rhs, args, *span),
+            Expr::Delay(lhs, rhs, span) => self.lower_delay(lhs, rhs, args, *span),
+            Expr::Arith { op, lhs, rhs, .. } => self.lower_arith(*op, lhs, rhs, args),
             Expr::Let {
                 defs,
                 body,
@@ -436,6 +445,33 @@ impl<'a> Lowerer<'a> {
     /// Build composit param name from current scope context + local name.
     fn actor_param_prefix(&self, local_name: &str) -> String {
         local_name.to_string()
+    }
+
+    /// Fold a compile-time parameter argument to a constant, resolving a
+    /// reference to a closed CAF by const-folding its reduced body. Returns
+    /// `None` when the argument is not a constant expression.
+    fn caf_const(&self, e: &Expr) -> Option<f64> {
+        self.caf_const_impl(e, &mut HashSet::new())
+    }
+
+    /// Workhorse for [`caf_const`]: follows CAF→CAF reference chains
+    /// transitively, tracking visited names so a cycle folds to `None` rather
+    /// than recursing forever.
+    fn caf_const_impl(&self, e: &Expr, visited: &mut HashSet<String>) -> Option<f64> {
+        if let Expr::Ref(ref_name, _) = e {
+            if self.cafs.contains(ref_name) {
+                if visited.contains(ref_name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(ref_name) {
+                    visited.insert(ref_name.clone());
+                    let v = self.caf_const_impl(body, visited);
+                    visited.remove(ref_name);
+                    return v;
+                }
+            }
+        }
+        const_f64(e)
     }
 
     fn lower_ref(
@@ -544,129 +580,171 @@ impl<'a> Lowerer<'a> {
                 self.locals.pop();
                 Ok(out)
             }
-            Def::Local { ref body, .. } => self.lower(body, args),
+            Def::Local { ref body, .. } => {
+                if self.cafs.contains(name) {
+                    if let Some(regs) = self.caf_cache.get(name) {
+                        return Ok(regs.clone());
+                    }
+                    if self.caf_lifting.contains(name) {
+                        return Err(CompileError::Type {
+                            msg: format!("recursive CAF definition `{name}`"),
+                            span: _span,
+                        });
+                    }
+                    // Lift the closed body once: no signal inputs, so lower it with
+                    // no arguments and cache the output registers for sharing.
+                    self.caf_lifting.insert(name.to_string());
+                    let res = self.lower(body, &[]);
+                    self.caf_lifting.remove(name);
+                    let out = res?;
+                    self.caf_cache.insert(name.to_string(), out.clone());
+                    return Ok(out);
+                }
+                self.lower(body, args)
+            }
         }
     }
 
-    fn lower_bin(
+    /// `A : B` — lower lhs, feed its outputs into rhs.
+    fn lower_seq(
         &mut self,
-        op: BinOp,
         lhs: &Expr,
         rhs: &Expr,
         args: &[usize],
-        span: Span,
     ) -> Result<Vec<usize>, CompileError> {
-        match op {
-            BinOp::Seq => {
-                let mid = self.lower(lhs, args)?;
-                self.lower(rhs, &mid)
-            }
-            BinOp::Par => {
-                let li = arity_in(lhs, self.sigs)?;
-                let (a_in, b_in) = args.split_at(li.min(args.len()));
-                let mut out = self.lower(lhs, a_in)?;
-                out.extend(self.lower(rhs, b_in)?);
-                Ok(out)
-            }
-            BinOp::Split => {
-                let a_out = self.lower(lhs, args)?;
-                let bi = if self.rhs_variadic(rhs) {
-                    a_out.len()
-                } else {
-                    arity_in(rhs, self.sigs)?
-                };
-                let reps = bi / a_out.len().max(1);
-                let mut fanned = Vec::with_capacity(bi);
-                for _ in 0..reps {
-                    fanned.extend(a_out.iter().copied());
-                }
-                self.lower(rhs, &fanned)
-            }
-            BinOp::Merge => {
-                let a_out = self.lower(lhs, args)?;
-                let bi = if self.rhs_variadic(rhs) {
-                    a_out.len()
-                } else {
-                    arity_in(rhs, self.sigs)?
-                };
-                let groups = a_out.len() / bi.max(1);
-                let mut merged = Vec::with_capacity(bi);
-                for k in 0..bi {
-                    let mut acc = a_out[k];
-                    for g in 1..groups {
-                        let dst = self.fresh_reg();
-                        self.emit(Instr::Bin {
-                            dst,
-                            op: BinArith::Add,
-                            a: acc,
-                            b: a_out[g * bi + k],
-                        });
-                        acc = dst;
-                    }
-                    merged.push(acc);
-                }
-                self.lower(rhs, &merged)
-            }
-            BinOp::Feedback => self.lower_feedback(lhs, rhs, args, span),
-            BinOp::Delay => self.lower_delay(lhs, rhs, args, span),
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-                if matches!(op, BinOp::Add | BinOp::Sub) {
-                    let re = match lhs {
-                        Expr::Float(v, _) => Some(*v),
-                        Expr::Int(v, _) => Some(*v as f64),
-                        _ => None,
-                    };
-                    let im = match rhs {
-                        Expr::Imag(v, _) => Some(if matches!(op, BinOp::Sub) { -*v } else { *v }),
-                        _ => None,
-                    };
-                    if let (Some(re), Some(im)) = (re, im) {
-                        let name = "complex".to_string();
-                        if let Some(sig) = self.sigs.builtin_sig(&name) {
-                            let sig = sig.clone();
-                            let instance = self.builtins.len();
-                            self.builtins.push(BuiltinInstance {
-                                name,
-                                params: vec![re, im],
-                                resource: None,
-                                kind: sig.kind,
-                                signal_ins: sig.signal_ins(),
-                                signal_outs: sig.signal_outs,
-                                param_bindings: Vec::new(),
-                            });
-                            let fst = self.fresh_reg();
-                            for _ in 1..sig.signal_outs {
-                                self.fresh_reg();
-                            }
-                            self.emit(Instr::CallBlock {
-                                dst: fst,
-                                srcs: vec![],
-                                instance,
-                            });
-                            return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                        }
-                    }
-                }
-                let a = self.lower(lhs, args)?;
-                let b = self.lower(rhs, args)?;
-                let arith = match op {
-                    BinOp::Add => BinArith::Add,
-                    BinOp::Sub => BinArith::Sub,
-                    BinOp::Mul => BinArith::Mul,
-                    BinOp::Div => BinArith::Div,
-                    BinOp::Rem => BinArith::Rem,
-                    _ => unreachable!(),
-                };
+        let mid = self.lower(lhs, args)?;
+        self.lower(rhs, &mid)
+    }
+
+    /// `A , B` — split the input registers between the two sides, concatenate outputs.
+    fn lower_par(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        let li = self.arity_in(lhs)?;
+        let (a_in, b_in) = args.split_at(li.min(args.len()));
+        let mut out = self.lower(lhs, a_in)?;
+        out.extend(self.lower(rhs, b_in)?);
+        Ok(out)
+    }
+
+    /// `A <: B` — fan out A's outputs to fill B's inputs, then lower B.
+    fn lower_split(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        let a_out = self.lower(lhs, args)?;
+        let bi = if self.rhs_variadic(rhs) {
+            a_out.len()
+        } else {
+            self.arity_in(rhs)?
+        };
+        let reps = bi / a_out.len().max(1);
+        let mut fanned = Vec::with_capacity(bi);
+        for _ in 0..reps {
+            fanned.extend(a_out.iter().copied());
+        }
+        self.lower(rhs, &fanned)
+    }
+
+    /// `A :> B` — sum groups of A's outputs into B's inputs, then lower B.
+    fn lower_merge(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        let a_out = self.lower(lhs, args)?;
+        let bi = if self.rhs_variadic(rhs) {
+            a_out.len()
+        } else {
+            self.arity_in(rhs)?
+        };
+        let groups = a_out.len() / bi.max(1);
+        let mut merged = Vec::with_capacity(bi);
+        for k in 0..bi {
+            let mut acc = a_out[k];
+            for g in 1..groups {
                 let dst = self.fresh_reg();
                 self.emit(Instr::Bin {
                     dst,
-                    op: arith,
-                    a: a[0],
-                    b: b[0],
+                    op: BinArith::Add,
+                    a: acc,
+                    b: a_out[g * bi + k],
                 });
-                Ok(vec![dst])
+                acc = dst;
+            }
+            merged.push(acc);
+        }
+        self.lower(rhs, &merged)
+    }
+
+    /// `A op B` — elementwise arithmetic on the single output wire of each side.
+    fn lower_arith(
+        &mut self,
+        op: ArithOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        if matches!(op, ArithOp::Add | ArithOp::Sub) {
+            let re = match lhs {
+                Expr::Float(v, _) => Some(*v),
+                Expr::Int(v, _) => Some(*v as f64),
+                _ => None,
+            };
+            let im = match rhs {
+                Expr::Imag(v, _) => Some(if matches!(op, ArithOp::Sub) { -*v } else { *v }),
+                _ => None,
+            };
+            if let (Some(re), Some(im)) = (re, im) {
+                let name = "complex".to_string();
+                if let Some(sig) = self.sigs.builtin_sig(&name) {
+                    let sig = sig.clone();
+                    let instance = self.builtins.len();
+                    self.builtins.push(BuiltinInstance {
+                        name,
+                        params: vec![re, im],
+                        resource: None,
+                        kind: sig.kind,
+                        signal_ins: sig.signal_ins(),
+                        signal_outs: sig.signal_outs,
+                        param_bindings: Vec::new(),
+                    });
+                    let fst = self.fresh_reg();
+                    for _ in 1..sig.signal_outs {
+                        self.fresh_reg();
+                    }
+                    self.emit(Instr::CallBlock {
+                        dst: fst,
+                        srcs: vec![],
+                        instance,
+                    });
+                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
+                }
             }
         }
+        let a = self.lower(lhs, args)?;
+        let b = self.lower(rhs, args)?;
+        let arith = match op {
+            ArithOp::Add => BinArith::Add,
+            ArithOp::Sub => BinArith::Sub,
+            ArithOp::Mul => BinArith::Mul,
+            ArithOp::Div => BinArith::Div,
+            ArithOp::Rem => BinArith::Rem,
+        };
+        let dst = self.fresh_reg();
+        self.emit(Instr::Bin {
+            dst,
+            op: arith,
+            a: a[0],
+            b: b[0],
+        });
+        Ok(vec![dst])
     }
 
     /// `A ~ B` — B's output feeds A's feedback input (1-tick delay), while B is
@@ -679,7 +757,7 @@ impl<'a> Lowerer<'a> {
         args: &[usize],
         _span: Span,
     ) -> Result<Vec<usize>, CompileError> {
-        let bo = arity_out(rhs, self.sigs)?;
+        let bo = self.arity_out(rhs)?;
         let mut fb_regs = Vec::with_capacity(bo);
         let mut slots = Vec::with_capacity(bo);
         for _ in 0..bo {
@@ -732,6 +810,15 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
+        if len as usize > crate::program::MAX_DELAY_LEN {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "delay length {len} exceeds MAX_DELAY_LEN ({})",
+                    crate::program::MAX_DELAY_LEN
+                ),
+                span,
+            });
+        }
         let signal = self.lower(lhs, args)?;
         let src = signal[0];
         if len == 0 {
@@ -744,63 +831,102 @@ impl<'a> Lowerer<'a> {
         self.emit(Instr::WriteDelay { line, src });
         Ok(vec![dst])
     }
-}
 
-fn arity_out(e: &Expr, sigs: &dyn SignatureSource) -> Result<usize, CompileError> {
-    Ok(arity(e, sigs)?.1)
-}
-fn arity_in(e: &Expr, sigs: &dyn SignatureSource) -> Result<usize, CompileError> {
-    Ok(arity(e, sigs)?.0)
-}
+    fn arity_in(&self, e: &Expr) -> Result<usize, CompileError> {
+        Ok(self.arity(e)?.0)
+    }
 
-fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), CompileError> {
-    let _unsupported = |m: &str| CompileError::Unsupported(m.to_string());
-    Ok(match e {
-        Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
-        Expr::Imag(_, _) => (0, 2),
-        Expr::Str(_, _) => (0, 1),
-        Expr::Wire(_) => (1, 1),
-        Expr::Cut(_) => (1, 0),
-        Expr::Neg(inner, _) => arity(inner, sigs)?,
-        Expr::Ref(name, _) => match name.as_str() {
-            "+" | "-" | "*" | "/" | "%" | "min" | "max" => (2, 1),
-            "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
-            _ => {
-                if let Some(sig) = sigs.builtin_sig(name) {
+    fn arity_out(&self, e: &Expr) -> Result<usize, CompileError> {
+        Ok(self.arity(e)?.1)
+    }
+
+    /// Signal-arity `(ins, outs)` of an expression. User-defined references are
+    /// resolved through `self.defs` so combinator fan-out/split uses the true
+    /// arity of an open block.
+    fn arity(&self, e: &Expr) -> Result<(usize, usize), CompileError> {
+        self.arity_with(e, &mut HashSet::new())
+    }
+
+    fn arity_with(
+        &self,
+        e: &Expr,
+        visited: &mut HashSet<String>,
+    ) -> Result<(usize, usize), CompileError> {
+        let _unsupported = |m: &str| CompileError::Unsupported(m.to_string());
+        Ok(match e {
+            Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
+            Expr::Imag(_, _) => (0, 2),
+            Expr::Str(_, _) => (0, 1),
+            Expr::Wire(_) => (1, 1),
+            Expr::Cut(_) => (1, 0),
+            Expr::Neg(inner, _) => self.arity_with(inner, visited)?,
+            Expr::Ref(name, _) => match name.as_str() {
+                "+" | "-" | "*" | "/" | "%" | "min" | "max" => (2, 1),
+                "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
+                _ => {
+                    if let Some(sig) = self.sigs.builtin_sig(name) {
+                        (sig.signal_ins(), sig.signal_outs)
+                    } else if let Some(def) = self.defs.get(name) {
+                        if visited.contains(name) {
+                            (0, 1)
+                        } else {
+                            visited.insert(name.clone());
+                            let a = self.arity_with(def.body(), visited)?;
+                            visited.remove(name);
+                            a
+                        }
+                    } else {
+                        (0, 1)
+                    }
+                }
+            },
+            Expr::Apply { name, args, .. } => {
+                if let Some(sig) = self.sigs.builtin_sig(name) {
                     (sig.signal_ins(), sig.signal_outs)
                 } else {
-                    (0, 1)
+                    let mut ins = 0;
+                    for a in args {
+                        ins += self.arity_with(a, visited)?.0;
+                    }
+                    (ins, 1)
                 }
             }
-        },
-        Expr::Apply { name, args, .. } => {
-            if let Some(sig) = sigs.builtin_sig(name) {
-                (sig.signal_ins(), sig.signal_outs)
-            } else {
-                let mut ins = 0;
-                for a in args {
-                    ins += arity(a, sigs)?.0;
-                }
-                (ins, 1)
+            Expr::Seq(lhs, rhs, _) => {
+                let (ai, _) = self.arity_with(lhs, visited)?;
+                let (_, bo) = self.arity_with(rhs, visited)?;
+                (ai, bo)
             }
-        }
-        Expr::Bin { op, lhs, rhs, .. } => {
-            let (ai, ao) = arity(lhs, sigs)?;
-            let (bi, bo) = arity(rhs, sigs)?;
-            match op {
-                BinOp::Seq => (ai, bo),
-                BinOp::Par => (ai + bi, ao + bo),
-                BinOp::Split => (ai, bo),
-                BinOp::Merge => (ai, bo),
-                BinOp::Feedback => (ai - bo, ao),
-                BinOp::Delay => (ai, ao),
-                _ => (ai + bi, 1),
+            Expr::Par(lhs, rhs, _) => {
+                let (ai, ao) = self.arity_with(lhs, visited)?;
+                let (bi, bo) = self.arity_with(rhs, visited)?;
+                (ai + bi, ao + bo)
             }
-        }
-        Expr::Let { body, .. } => arity(body, sigs)?,
-        Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
-        Expr::ActorParam { .. } => (0, 1),
-    })
+            Expr::Split(lhs, rhs, _) => {
+                let (ai, _) = self.arity_with(lhs, visited)?;
+                let (_, bo) = self.arity_with(rhs, visited)?;
+                (ai, bo)
+            }
+            Expr::Merge(lhs, rhs, _) => {
+                let (ai, _) = self.arity_with(lhs, visited)?;
+                let (_, bo) = self.arity_with(rhs, visited)?;
+                (ai, bo)
+            }
+            Expr::Loop(lhs, rhs, _) => {
+                let (ai, ao) = self.arity_with(lhs, visited)?;
+                let (_, bo) = self.arity_with(rhs, visited)?;
+                (ai - bo, ao)
+            }
+            Expr::Delay(lhs, _rhs, _) => self.arity_with(lhs, visited)?,
+            Expr::Arith { lhs, rhs, .. } => {
+                let (ai, _) = self.arity_with(lhs, visited)?;
+                let (bi, _) = self.arity_with(rhs, visited)?;
+                (ai + bi, 1)
+            }
+            Expr::Let { body, .. } => self.arity_with(body, visited)?,
+            Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
+            Expr::ActorParam { .. } => (0, 1),
+        })
+    }
 }
 
 fn const_f64(e: &Expr) -> Option<f64> {
@@ -808,14 +934,14 @@ fn const_f64(e: &Expr) -> Option<f64> {
         Expr::Float(v, _) => Some(*v),
         Expr::Int(v, _) => Some(*v as f64),
         Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
-        Expr::Bin { op, lhs, rhs, .. } => {
+        Expr::Arith { op, lhs, rhs, .. } => {
             let a = const_f64(lhs)?;
             let b = const_f64(rhs)?;
             Some(match op {
-                BinOp::Add => a + b,
-                BinOp::Sub => a - b,
-                BinOp::Mul => a * b,
-                BinOp::Div => a / b,
+                ArithOp::Add => a + b,
+                ArithOp::Sub => a - b,
+                ArithOp::Mul => a * b,
+                ArithOp::Div => a / b,
                 _ => return None,
             })
         }
@@ -827,15 +953,15 @@ fn const_int(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int(v, _) => Some(*v),
         Expr::Neg(inner, _) => const_int(inner).map(|v| -v),
-        Expr::Bin { op, lhs, rhs, .. } => {
+        Expr::Arith { op, lhs, rhs, .. } => {
             let a = const_int(lhs)?;
             let b = const_int(rhs)?;
             Some(match op {
-                BinOp::Add => a + b,
-                BinOp::Sub => a - b,
-                BinOp::Mul => a * b,
-                BinOp::Div if b != 0 => a / b,
-                BinOp::Rem if b != 0 => a % b,
+                ArithOp::Add => a + b,
+                ArithOp::Sub => a - b,
+                ArithOp::Mul => a * b,
+                ArithOp::Div if b != 0 => a / b,
+                ArithOp::Rem if b != 0 => a % b,
                 _ => return None,
             })
         }
@@ -854,6 +980,17 @@ pub fn lower_with(
     sigs: &dyn SignatureSource,
     sample_rate: f32,
 ) -> Result<Ir, CompileError> {
+    lower_with_cafs(tp, sigs, sample_rate, &HashSet::new())
+}
+
+/// Like [`lower_with`], but treats the given names as closed CAFs that are
+/// lifted once and shared across reference sites.
+pub fn lower_with_cafs(
+    tp: &TypedProgram,
+    sigs: &dyn SignatureSource,
+    sample_rate: f32,
+    cafs: &HashSet<String>,
+) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
     let main = program
         .main_def()
@@ -871,6 +1008,9 @@ pub fn lower_with(
     let mut lw = Lowerer {
         defs,
         sigs,
+        cafs,
+        caf_cache: HashMap::new(),
+        caf_lifting: HashSet::new(),
         instrs: Vec::new(),
         next_reg: 0,
         block_state_slots: 0,
@@ -927,6 +1067,7 @@ mod tests {
     use crate::builtin::BuiltinKind;
     use crate::lexer::tokenize;
     use crate::parser::parse;
+    use crate::reduce::reduce_with_cafs;
     use crate::types::infer::{infer_program, infer_program_with};
 
     fn ir_of(src: &str) -> Ir {
@@ -954,6 +1095,13 @@ mod tests {
                     2,
                     BuiltinKind::Block,
                 )))),
+                "sine" => Some(Box::leak(Box::new(BuiltinSig::simple(
+                    "sine",
+                    0,
+                    1,
+                    3,
+                    BuiltinKind::Block,
+                )))),
                 _ => None,
             }
         }
@@ -963,6 +1111,19 @@ mod tests {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let tp = infer_program_with(&p, &TestSigs).unwrap();
         lower_with(&tp, &TestSigs, 44_100.0).unwrap()
+    }
+
+    fn ir_with_cafs(src: &str) -> Ir {
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs,
+        };
+        lower_with_cafs(&tp, &TestSigs, 44_100.0, &tp.cafs).unwrap()
     }
 
     #[test]
@@ -1000,6 +1161,19 @@ mod tests {
     fn delay_allocates_line() {
         let ir = ir_of("main = _ @ 3");
         assert_eq!(ir.state.delay_lens, vec![3]);
+    }
+
+    #[test]
+    fn delay_over_max_is_compile_error() {
+        // `@ 70000` exceeds MAX_DELAY_LEN (65536): must be a compile error, not
+        // a construction-time panic in DelayRing::new.
+        let p = parse(
+            &tokenize("main = _ @ 70000").unwrap(),
+            "main = _ @ 70000".as_bytes(),
+        )
+        .unwrap();
+        let tp = infer_program(&p).unwrap();
+        assert!(lower(&tp).is_err());
     }
 
     #[test]
@@ -1044,5 +1218,127 @@ mod tests {
             .instrs
             .iter()
             .any(|i| matches!(i, Instr::WriteBlockState { .. })));
+    }
+
+    #[test]
+    fn closed_caf_lowers_to_single_instance() {
+        // osc = sine 440 0.5 0; main = osc , osc  -> ONE sine builtin
+        let ir = ir_with_cafs("osc = sine 440 0.5 0; main = osc , osc");
+        let sines = ir.builtins.iter().filter(|b| b.name == "sine").count();
+        assert_eq!(sines, 1);
+    }
+
+    #[test]
+    fn open_block_stays_macro() {
+        // integ = + ~ _; main = integ , integ  -> 2 state slots (two independent integrators)
+        let ir = ir_of("integ = + ~ _; main = integ , integ");
+        assert_eq!(ir.state.block_state_slots, 2);
+    }
+
+    #[test]
+    fn caf_const_param_still_folds() {
+        // cutoff = 1000.0; main = _ : lowpass cutoff 0.7 -> param 1000.0
+        let ir = ir_with_cafs("cutoff = 1000.0; main = _ : lowpass cutoff 0.7");
+        let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
+        assert!((lp.params[0] - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn transitive_caf_const_fold() {
+        // b = 1000.0; a = b; main = _ : lowpass a 0.7 -> a resolves through b to 1000.0
+        let ir = ir_with_cafs("b = 1000.0; a = b; main = _ : lowpass a 0.7");
+        let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
+        assert!((lp.params[0] - 1000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn non_folding_caf_in_builtin_param_is_error() {
+        // osc = sine 440 0.5 0 is a CAF whose body is not a constant: using it in
+        // a builtin param position must error, not silently become 0.
+        let p = parse(
+            &tokenize("osc = sine 440 0.5 0; main = _ : lowpass osc 0.7").unwrap(),
+            "osc = sine 440 0.5 0; main = _ : lowpass osc 0.7".as_bytes(),
+        )
+        .unwrap();
+        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs: cafs.clone(),
+        };
+        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn mutually_recursive_cafs_are_errors() {
+        // a = b; b = a  -> the reference cycle must surface as a compile error,
+        // not a stack overflow.
+        let p = parse(
+            &tokenize("a = b; b = a; main = a").unwrap(),
+            "a = b; b = a; main = a".as_bytes(),
+        )
+        .unwrap();
+        let typed = infer_program(&p).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs: cafs.clone(),
+        };
+        let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn cyclic_caf_in_builtin_param_is_error() {
+        // a = b; b = a; main = _ : lowpass a 0.7
+        // The cycle is reached through a BUILTIN PARAM, exercising caf_const_impl's
+        // visited-set guard (not the caf_lifting guard in lower_ref).
+        let p = parse(
+            &tokenize("a = b; b = a; main = _ : lowpass a 0.7").unwrap(),
+            "a = b; b = a; main = _ : lowpass a 0.7".as_bytes(),
+        )
+        .unwrap();
+        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs: cafs.clone(),
+        };
+        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn unreferenced_caf_is_not_lowered() {
+        // dead = sine 440 0.5 0; main = _ * 0.5  -> no sine builtin
+        let ir = ir_with_cafs("dead = sine 440 0.5 0; main = _ * 0.5");
+        assert!(!ir.builtins.iter().any(|b| b.name == "sine"));
+    }
+
+    #[test]
+    fn recursive_caf_is_error_not_overflow() {
+        // a = a  -> compile error, not stack overflow
+        let p = parse(
+            &tokenize("a = a; main = a").unwrap(),
+            "a = a; main = a".as_bytes(),
+        )
+        .unwrap();
+        let typed = infer_program(&p).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs: cafs.clone(),
+        };
+        let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
+        assert!(res.is_err());
     }
 }

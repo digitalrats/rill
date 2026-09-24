@@ -1,15 +1,17 @@
-//! Type representation for the HM scalar layer.
+//! Arrow type model: a program is a block transform.
 //!
-//! Scalar types classify the *element* type of a signal wire. Arities (wire
-//! counts) are synthesized separately (see `infer.rs`) because `<:`/`:>`
-//! divisibility is not expressible by unification.
+//! Signal types are structured in three levels: the per-sample scalar type
+//! (`Scalar`), one signal channel (`Block`), and a block transform (`ArrowTy`,
+//! n input channels → m output channels). Arities (channel counts) are
+//! synthesized separately (see `infer.rs`) because `<:`/`:>` divisibility is
+//! not expressible by unification.
 
 use std::collections::HashMap;
 
 /// A unification variable identifier.
 pub type TypeVarId = u32;
 
-/// The scalar (element) type of a wire.
+/// The scalar (element) type of a sample.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scalar {
     /// Integer.
@@ -20,31 +22,46 @@ pub enum Scalar {
     Var(TypeVarId),
 }
 
-/// A block/diagram type: the scalar type of each input and output wire.
-///
-/// The vector *lengths* are the arities. During inference we usually know the
-/// arities as concrete integers; unification only touches the `Scalar`s.
+/// A signal channel: one block of samples. `elem` is the per-sample scalar type.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Type {
-    /// Scalar type of each input wire (len = input arity).
-    pub ins: Vec<Scalar>,
-    /// Scalar type of each output wire (len = output arity).
-    pub outs: Vec<Scalar>,
+pub struct Block {
+    /// Scalar type of the samples in this channel's block.
+    pub elem: Scalar,
 }
 
-impl Type {
-    /// A (n_in → n_out) type where every wire has the same scalar `s`.
-    pub fn uniform(n_in: usize, n_out: usize, s: Scalar) -> Type {
-        Type {
-            ins: vec![s.clone(); n_in],
-            outs: vec![s; n_out],
+impl Block {
+    /// Build a channel whose samples have scalar type `elem`.
+    pub fn new(elem: Scalar) -> Self {
+        Self { elem }
+    }
+}
+
+/// A block transform: n input channels → m output channels.
+///
+/// The vector *lengths* are the arities (channel counts). During inference we
+/// usually know the arities as concrete integers; unification only touches the
+/// `Block::elem` scalars.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrowTy {
+    /// Scalar type of each input channel (len = input arity).
+    pub ins: Vec<Block>,
+    /// Scalar type of each output channel (len = output arity).
+    pub outs: Vec<Block>,
+}
+
+impl ArrowTy {
+    /// A (n_in → n_out) transform where every channel has the same scalar `s`.
+    pub fn uniform(n_in: usize, n_out: usize, s: Scalar) -> ArrowTy {
+        ArrowTy {
+            ins: vec![Block::new(s.clone()); n_in],
+            outs: vec![Block::new(s); n_out],
         }
     }
-    /// Input arity.
+    /// Input arity (channel count).
     pub fn arity_in(&self) -> usize {
         self.ins.len()
     }
-    /// Output arity.
+    /// Output arity (channel count).
     pub fn arity_out(&self) -> usize {
         self.outs.len()
     }
@@ -63,7 +80,7 @@ pub struct Scheme {
     /// Quantified type variables.
     pub vars: Vec<TypeVarId>,
     /// The generalized diagram type.
-    pub ty: Type,
+    pub ty: ArrowTy,
 }
 
 /// A substitution mapping type variables to scalars.
@@ -85,10 +102,18 @@ impl Subst {
         }
     }
     /// Apply the substitution across a whole type.
-    pub fn apply(&self, t: &Type) -> Type {
-        Type {
-            ins: t.ins.iter().map(|s| self.resolve_scalar(s)).collect(),
-            outs: t.outs.iter().map(|s| self.resolve_scalar(s)).collect(),
+    pub fn apply(&self, t: &ArrowTy) -> ArrowTy {
+        ArrowTy {
+            ins: t
+                .ins
+                .iter()
+                .map(|b| Block::new(self.resolve_scalar(&b.elem)))
+                .collect(),
+            outs: t
+                .outs
+                .iter()
+                .map(|b| Block::new(self.resolve_scalar(&b.elem)))
+                .collect(),
         }
     }
 }

@@ -211,7 +211,7 @@ impl IoDriver for MockDriver {
 #[test]
 fn duplex_stream_delivers_signal() {
     let spec = moonlight_spec();
-    let stream = compile(&spec, &test_registry(), 44100.0).unwrap();
+    let stream = compile::<f32, BUF>(&spec, &test_registry(), 44100.0).unwrap();
     let capture = Arc::new(MockCapture { value: 0.3 });
     let playback = Arc::new(MockPlayback::default());
     let driver = Arc::new(MockDriver {

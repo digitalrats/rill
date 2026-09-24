@@ -67,14 +67,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
     let src = "main = _";
-    let engine = rill_lang::compile_graph::<f32>(src, &reg, RATE)?;
+    let engine = rill_lang::compile_graph::<f32, BUF>(src, &reg, RATE)?;
 
     let mut bf = BackendFactory::new();
     registration::register_backends(&mut bf);
     let mut be_params = HashMap::new();
     be_params.insert("sample_rate".into(), ParamValue::Float(RATE));
     be_params.insert("buffer_size".into(), ParamValue::Int(BUF as i32));
-    be_params.insert("input_channels".into(), ParamValue::Int(2));
+    // `main = _` is 1 -> 1; capture mono to match the mono WAV output.
+    be_params.insert("input_channels".into(), ParamValue::Int(1));
     be_params.insert("output_channels".into(), ParamValue::Int(0));
     let InputBundle { driver, capture } = bf
         .create_input(&backend_name, &be_params)

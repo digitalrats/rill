@@ -4,11 +4,11 @@
 //! All binding groups (top-level, `where`, `let`) use mutual recursion:
 //! every name in the group is visible to every body.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use super::ty::{Scalar, Scheme, Subst, Type, TypeVarId};
+use super::ty::{ArrowTy, Block, Scalar, Scheme, Subst, TypeVarId};
 use super::unify::unify_scalar;
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 
@@ -19,7 +19,10 @@ pub struct TypedProgram {
     /// The original program (unchanged AST).
     pub program: Program,
     /// Resolved diagram type of the body.
-    pub process_ty: Type,
+    pub process_ty: ArrowTy,
+    /// Names of closed top-level definitions (CAFs): zero λ-parameters and
+    /// zero signal input channels. Referenced by name, shared across the graph.
+    pub cafs: HashSet<String>,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -28,7 +31,7 @@ struct Ctx<'a> {
     next: TypeVarId,
     subst: Subst,
     defs: HashMap<String, Scheme>,
-    locals: HashMap<String, Type>,
+    locals: HashMap<String, ArrowTy>,
     sigs: &'a dyn SignatureSource,
 }
 
@@ -39,7 +42,7 @@ impl Ctx<'_> {
         Scalar::Var(v)
     }
 
-    fn instantiate(&mut self, scheme: &Scheme) -> Type {
+    fn instantiate(&mut self, scheme: &Scheme) -> ArrowTy {
         let mut remap: HashMap<TypeVarId, Scalar> = HashMap::new();
         for v in &scheme.vars {
             let f = self.fresh();
@@ -49,15 +52,25 @@ impl Ctx<'_> {
             Scalar::Var(v) => remap.get(v).cloned().unwrap_or_else(|| s.clone()),
             _ => s.clone(),
         };
-        Type {
-            ins: scheme.ty.ins.iter().map(&rw).collect(),
-            outs: scheme.ty.outs.iter().map(&rw).collect(),
+        ArrowTy {
+            ins: scheme
+                .ty
+                .ins
+                .iter()
+                .map(|b| Block::new(rw(&b.elem)))
+                .collect(),
+            outs: scheme
+                .ty
+                .outs
+                .iter()
+                .map(|b| Block::new(rw(&b.elem)))
+                .collect(),
         }
     }
 
-    fn free_vars(&self, t: &Type) -> Vec<TypeVarId> {
+    fn free_vars(&self, t: &ArrowTy) -> Vec<TypeVarId> {
         let mut acc = Vec::new();
-        for s in t.ins.iter().chain(t.outs.iter()) {
+        for s in t.ins.iter().chain(t.outs.iter()).map(|b| &b.elem) {
             if let Scalar::Var(v) = self.subst.resolve_scalar(s) {
                 if !acc.contains(&v) {
                     acc.push(v);
@@ -111,9 +124,24 @@ pub fn infer_program_with(
             span: Span::new(0, 0),
         });
     }
+
+    let cafs = program
+        .defs
+        .iter()
+        .filter_map(|def| match def {
+            Def::Local { name, .. } => ctx
+                .defs
+                .get(name)
+                .filter(|s| s.lam_count == 0 && s.ty.ins.is_empty())
+                .map(|_| name.clone()),
+            Def::Anchor { .. } => None,
+        })
+        .collect();
+
     Ok(TypedProgram {
         program: program.clone(),
         process_ty: main_scheme.ty,
+        cafs,
     })
 }
 
@@ -144,9 +172,9 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
             Scheme {
                 lam_count,
                 vars: vec![],
-                ty: Type {
-                    ins,
-                    outs: vec![out],
+                ty: ArrowTy {
+                    ins: ins.into_iter().map(Block::new).collect(),
+                    outs: vec![Block::new(out)],
                 },
             },
         );
@@ -160,16 +188,16 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
         ctx.locals.clear();
         for p in def.params() {
             ctx.locals
-                .insert(p.name.clone(), Type::uniform(0, 1, Scalar::Float));
+                .insert(p.name.clone(), ArrowTy::uniform(0, 1, Scalar::Float));
         }
         let body_ty = infer_expr(ctx, def.body())?;
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
-            full_ins.push(Scalar::Float);
+            full_ins.push(Block::new(Scalar::Float));
         }
         full_ins.extend(body_ty.ins);
-        let resolved = ctx.subst.apply(&Type {
+        let resolved = ctx.subst.apply(&ArrowTy {
             ins: full_ins,
             outs: body_ty.outs,
         });
@@ -190,16 +218,16 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
         ctx.locals.clear();
         for p in def.params() {
             ctx.locals
-                .insert(p.name.clone(), Type::uniform(0, 1, Scalar::Float));
+                .insert(p.name.clone(), ArrowTy::uniform(0, 1, Scalar::Float));
         }
         let body_ty = infer_expr(ctx, def.body())?;
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
-            full_ins.push(Scalar::Float);
+            full_ins.push(Block::new(Scalar::Float));
         }
         full_ins.extend(body_ty.ins);
-        let resolved = ctx.subst.apply(&Type {
+        let resolved = ctx.subst.apply(&ArrowTy {
             ins: full_ins,
             outs: body_ty.outs,
         });
@@ -219,28 +247,28 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
 }
 
 /// Infer the diagram type of an expression, synthesizing concrete arities.
-fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
+fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
     match e {
-        Expr::Int(_, _) => Ok(Type {
+        Expr::Int(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![Scalar::Int],
+            outs: vec![Block::new(Scalar::Int)],
         }),
-        Expr::Float(_, _) => Ok(Type {
+        Expr::Float(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![Scalar::Float],
+            outs: vec![Block::new(Scalar::Float)],
         }),
-        Expr::Imag(_, _) => Ok(Type {
+        Expr::Imag(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![Scalar::Float, Scalar::Float],
+            outs: vec![Block::new(Scalar::Float), Block::new(Scalar::Float)],
         }),
         Expr::Wire(_) => {
             let s = ctx.fresh();
-            Ok(Type::uniform(1, 1, s))
+            Ok(ArrowTy::uniform(1, 1, s))
         }
         Expr::Cut(_) => {
             let s = ctx.fresh();
-            Ok(Type {
-                ins: vec![s],
+            Ok(ArrowTy {
+                ins: vec![Block::new(s)],
                 outs: vec![],
             })
         }
@@ -255,12 +283,13 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
             msg: "string literal is only valid as a parameter name".into(),
             span: *span,
         }),
-        Expr::Bin { op, lhs, rhs, span } => {
-            let a = infer_expr(ctx, lhs)?;
-            let b = infer_expr(ctx, rhs)?;
-            let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
-            infer_bin(ctx, *op, &a, &b, *span, rhs_variadic)
-        }
+        Expr::Seq(lhs, rhs, span) => infer_seq(ctx, lhs, rhs, *span),
+        Expr::Par(lhs, rhs, span) => infer_par(ctx, lhs, rhs, *span),
+        Expr::Split(lhs, rhs, span) => infer_split(ctx, lhs, rhs, *span),
+        Expr::Merge(lhs, rhs, span) => infer_merge(ctx, lhs, rhs, *span),
+        Expr::Loop(lhs, rhs, span) => infer_loop(ctx, lhs, rhs, *span),
+        Expr::Delay(lhs, rhs, span) => infer_delay(ctx, lhs, rhs, *span),
+        Expr::Arith { lhs, rhs, span, .. } => infer_arith(ctx, lhs, rhs, *span),
         Expr::Let {
             defs,
             body,
@@ -272,7 +301,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
             ctx.defs = saved_defs;
             Ok(ty)
         }
-        Expr::Record(_, _) => Ok(Type::uniform(0, 1, Scalar::Float)),
+        Expr::Record(_, _) => Ok(ArrowTy::uniform(0, 1, Scalar::Float)),
         Expr::ActorParam { default, span, .. } => {
             if let Some(d) = default {
                 let ty = infer_expr(ctx, d)?;
@@ -286,29 +315,29 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<Type, CompileError> {
                     });
                 }
             }
-            Ok(Type::uniform(0, 1, Scalar::Float))
+            Ok(ArrowTy::uniform(0, 1, Scalar::Float))
         }
     }
 }
 
-fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<Type, CompileError> {
+fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, CompileError> {
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
         let s = ctx.fresh();
-        return Ok(Type::uniform(2, 1, s));
+        return Ok(ArrowTy::uniform(2, 1, s));
     }
     if matches!(
         name,
         "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
     ) {
-        return Ok(Type::uniform(1, 1, Scalar::Float));
+        return Ok(ArrowTy::uniform(1, 1, Scalar::Float));
     }
     if matches!(name, "min" | "max") {
         let s = ctx.fresh();
-        return Ok(Type::uniform(2, 1, s));
+        return Ok(ArrowTy::uniform(2, 1, s));
     }
     if let Some(sig) = ctx.sigs.builtin_sig(name) {
         if sig.params.len() == sig.signal_ins() {
-            return Ok(Type::uniform(
+            return Ok(ArrowTy::uniform(
                 sig.signal_ins(),
                 sig.signal_outs,
                 Scalar::Float,
@@ -341,7 +370,7 @@ fn infer_apply(
     name: &str,
     args: &[Expr],
     span: Span,
-) -> Result<Type, CompileError> {
+) -> Result<ArrowTy, CompileError> {
     if name == "smooth" {
         if args.len() != 2 {
             return Err(CompileError::Type {
@@ -363,7 +392,7 @@ fn infer_apply(
                 span: args[1].span(),
             });
         }
-        return Ok(Type::uniform(
+        return Ok(ArrowTy::uniform(
             sig_ty.arity_in(),
             sig_ty.arity_out(),
             Scalar::Float,
@@ -527,7 +556,7 @@ fn infer_apply(
             }
         }
 
-        return Ok(Type::uniform(signal_ins, sig.signal_outs, Scalar::Float));
+        return Ok(ArrowTy::uniform(signal_ins, sig.signal_outs, Scalar::Float));
     }
     // User-defined function: λ-params are consumed, signal ports remain open
     if let Some(scheme) = ctx.defs.get(name).cloned() {
@@ -542,13 +571,13 @@ fn infer_apply(
             });
         }
         let ty = ctx.instantiate(&scheme);
-        return Ok(Type {
+        return Ok(ArrowTy {
             ins: ty.ins[scheme.lam_count..].to_vec(),
             outs: ty.outs,
         });
     }
     // Fallback: builtin reference (abs, sin, +, etc.) applied to signal args
-    let mut combined: Option<Type> = None;
+    let mut combined: Option<ArrowTy> = None;
     for arg in args {
         let at = infer_expr(ctx, arg)?;
         combined = Some(match combined {
@@ -563,7 +592,7 @@ fn infer_apply(
     }
 }
 
-fn infer_param(args: &[Expr], span: Span) -> Result<Type, CompileError> {
+fn infer_param(args: &[Expr], span: Span) -> Result<ArrowTy, CompileError> {
     if args.is_empty() || args.len() > 4 {
         return Err(CompileError::Type {
             msg: "param expects 1–4 arguments: param(name, default[, min, max])".into(),
@@ -576,7 +605,7 @@ fn infer_param(args: &[Expr], span: Span) -> Result<Type, CompileError> {
             span: args[0].span(),
         });
     }
-    Ok(Type::uniform(0, 1, Scalar::Float))
+    Ok(ArrowTy::uniform(0, 1, Scalar::Float))
 }
 
 fn expr_has_variadic_signal(ctx: &Ctx<'_>, e: &Expr) -> bool {
@@ -591,34 +620,94 @@ fn expr_has_variadic_signal(ctx: &Ctx<'_>, e: &Expr) -> bool {
         .unwrap_or(false)
 }
 
-fn infer_bin(
+fn infer_seq(
     ctx: &mut Ctx<'_>,
-    op: BinOp,
-    a: &Type,
-    b: &Type,
+    lhs: &Expr,
+    rhs: &Expr,
     span: Span,
-    rhs_variadic: bool,
-) -> Result<Type, CompileError> {
-    match op {
-        BinOp::Seq => seq(ctx, a, b, span),
-        BinOp::Par => Ok(par(a, b)),
-        BinOp::Split => split(ctx, a, b, span, rhs_variadic),
-        BinOp::Merge => merge(ctx, a, b, span, rhs_variadic),
-        BinOp::Feedback => feedback(ctx, a, b, span),
-        BinOp::Delay => delay(ctx, a, b, span),
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => arith(ctx, a, b, span),
-    }
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    seq(ctx, &a, &b, span)
 }
 
-fn par(a: &Type, b: &Type) -> Type {
+fn infer_par(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    _span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    Ok(par(&a, &b))
+}
+
+fn infer_split(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
+    split(ctx, &a, &b, span, rhs_variadic)
+}
+
+fn infer_merge(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
+    merge(ctx, &a, &b, span, rhs_variadic)
+}
+
+fn infer_loop(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    feedback(ctx, &a, &b, span)
+}
+
+fn infer_delay(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    delay(ctx, &a, &b, span)
+}
+
+fn infer_arith(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    arith(ctx, &a, &b, span)
+}
+
+pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
     let mut ins = a.ins.clone();
     ins.extend(b.ins.clone());
     let mut outs = a.outs.clone();
     outs.extend(b.outs.clone());
-    Type { ins, outs }
+    ArrowTy { ins, outs }
 }
 
-fn seq(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn seq(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     if a.arity_out() != b.arity_in() {
         return Err(CompileError::Type {
             msg: format!(
@@ -630,9 +719,9 @@ fn seq(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, Compil
         });
     }
     for (x, y) in a.outs.iter().zip(b.ins.iter()) {
-        unify_scalar(x, y, &mut ctx.subst, span)?;
+        unify_scalar(&x.elem, &y.elem, &mut ctx.subst, span)?;
     }
-    Ok(Type {
+    Ok(ArrowTy {
         ins: a.ins.clone(),
         outs: b.outs.clone(),
     })
@@ -640,11 +729,11 @@ fn seq(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, Compil
 
 fn split(
     ctx: &mut Ctx<'_>,
-    a: &Type,
-    b: &Type,
+    a: &ArrowTy,
+    b: &ArrowTy,
     span: Span,
     rhs_variadic: bool,
-) -> Result<Type, CompileError> {
+) -> Result<ArrowTy, CompileError> {
     let ao = a.arity_out();
     let bi = if rhs_variadic { ao } else { b.arity_in() };
     if ao == 0 || bi % ao != 0 {
@@ -659,11 +748,16 @@ fn split(
     if !rhs_variadic {
         for r in 0..reps {
             for k in 0..ao {
-                unify_scalar(&a.outs[k], &b.ins[r * ao + k], &mut ctx.subst, span)?;
+                unify_scalar(
+                    &a.outs[k].elem,
+                    &b.ins[r * ao + k].elem,
+                    &mut ctx.subst,
+                    span,
+                )?;
             }
         }
     }
-    Ok(Type {
+    Ok(ArrowTy {
         ins: a.ins.clone(),
         outs: b.outs.clone(),
     })
@@ -671,11 +765,11 @@ fn split(
 
 fn merge(
     ctx: &mut Ctx<'_>,
-    a: &Type,
-    b: &Type,
+    a: &ArrowTy,
+    b: &ArrowTy,
     span: Span,
     rhs_variadic: bool,
-) -> Result<Type, CompileError> {
+) -> Result<ArrowTy, CompileError> {
     let ao = a.arity_out();
     let bi = if rhs_variadic { ao } else { b.arity_in() };
     if bi == 0 || !ao.is_multiple_of(bi) {
@@ -690,17 +784,27 @@ fn merge(
     if !rhs_variadic {
         for g in 0..groups {
             for k in 0..bi {
-                unify_scalar(&a.outs[g * bi + k], &b.ins[k], &mut ctx.subst, span)?;
+                unify_scalar(
+                    &a.outs[g * bi + k].elem,
+                    &b.ins[k].elem,
+                    &mut ctx.subst,
+                    span,
+                )?;
             }
         }
     }
-    Ok(Type {
+    Ok(ArrowTy {
         ins: a.ins.clone(),
         outs: b.outs.clone(),
     })
 }
 
-fn feedback(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn feedback(
+    ctx: &mut Ctx<'_>,
+    a: &ArrowTy,
+    b: &ArrowTy,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
     let (ai, ao, bi, bo) = (a.arity_in(), a.arity_out(), b.arity_in(), b.arity_out());
     if bi > ao || bo > ai {
         return Err(CompileError::Type {
@@ -711,18 +815,18 @@ fn feedback(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, C
         });
     }
     for k in 0..bi {
-        unify_scalar(&b.ins[k], &a.outs[k], &mut ctx.subst, span)?;
+        unify_scalar(&b.ins[k].elem, &a.outs[k].elem, &mut ctx.subst, span)?;
     }
     for k in 0..bo {
-        unify_scalar(&b.outs[k], &a.ins[k], &mut ctx.subst, span)?;
+        unify_scalar(&b.outs[k].elem, &a.ins[k].elem, &mut ctx.subst, span)?;
     }
-    Ok(Type {
+    Ok(ArrowTy {
         ins: a.ins[bo..].to_vec(),
         outs: a.outs.clone(),
     })
 }
 
-fn delay(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn delay(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     if a.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: format!(
@@ -738,30 +842,30 @@ fn delay(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, Comp
             span,
         });
     }
-    unify_scalar(&b.outs[0], &Scalar::Int, &mut ctx.subst, span)?;
-    Ok(Type {
+    unify_scalar(&b.outs[0].elem, &Scalar::Int, &mut ctx.subst, span)?;
+    Ok(ArrowTy {
         ins: a.ins.clone(),
         outs: a.outs.clone(),
     })
 }
 
-fn arith(ctx: &mut Ctx<'_>, a: &Type, b: &Type, span: Span) -> Result<Type, CompileError> {
+fn arith(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     if a.arity_out() != 1 || b.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: "arithmetic operands must each produce exactly one wire".into(),
             span,
         });
     }
-    unify_scalar(&a.outs[0], &b.outs[0], &mut ctx.subst, span)?;
+    unify_scalar(&a.outs[0].elem, &b.outs[0].elem, &mut ctx.subst, span)?;
     let mut ins = a.ins.clone();
     ins.extend(b.ins.clone());
-    Ok(Type {
+    Ok(ArrowTy {
         ins,
         outs: vec![a.outs[0].clone()],
     })
 }
 
-fn check_all_numeric(_ctx: &mut Ctx<'_>, _t: &Type, _span: Span) -> Result<(), CompileError> {
+fn check_all_numeric(_ctx: &mut Ctx<'_>, _t: &ArrowTy, _span: Span) -> Result<(), CompileError> {
     Ok(())
 }
 
@@ -881,6 +985,13 @@ mod tests {
                     2,
                     BuiltinKind::Block,
                 )))),
+                "sine" => Some(Box::leak(Box::new(BuiltinSig::simple(
+                    "sine",
+                    0,
+                    1,
+                    3,
+                    BuiltinKind::Block,
+                )))),
                 _ => None,
             }
         }
@@ -923,7 +1034,7 @@ mod tests {
     #[test]
     fn var_unifies_with_float() {
         let t = ty_of("main = _ * 0.5").unwrap();
-        assert!(matches!(t.process_ty.outs[0], Scalar::Float));
+        assert!(matches!(t.process_ty.outs[0].elem, Scalar::Float));
     }
 
     #[test]
@@ -948,5 +1059,28 @@ mod tests {
     #[test]
     fn actor_param_default_must_be_constant() {
         assert!(ty_of("main = _ * ?gain=_").is_err());
+    }
+
+    #[test]
+    fn closed_top_level_local_is_caf() {
+        // osc = sine 440 0.5 0  (0 input channels, 0 λ-params) -> CAF
+        let typed = ty_with("osc = sine 440 0.5 0; main = _ * 0.5").unwrap();
+        assert!(typed.cafs.contains("osc"));
+    }
+
+    #[test]
+    fn open_block_is_not_caf() {
+        // gain = _ * 0.5  (1 input channel) -> macro, not CAF
+        let typed = ty_with("gain = _ * 0.5; main = _ * 0.5").unwrap();
+        assert!(!typed.cafs.contains("gain"));
+    }
+
+    #[test]
+    fn function_with_params_is_not_caf() {
+        // voice amp = osc * amp  (has a λ-param) -> not CAF
+        let typed =
+            ty_with("osc = sine 440 0.5 0; voice amp = osc * amp; main = voice 0.5").unwrap();
+        assert!(typed.cafs.contains("osc"));
+        assert!(!typed.cafs.contains("voice"));
     }
 }

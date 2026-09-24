@@ -20,13 +20,15 @@ fn write_then_read_through_shared_registry() {
     let wp =
         rill_lang::parser::parse(&rill_lang::lexer::tokenize(ws).unwrap(), ws.as_bytes()).unwrap();
     let mut weng =
-        rill_lang::compile_program_with_resources(&wp, &reg, 44100.0, &mut resources).unwrap();
+        rill_lang::compile_program_with_resources::<f32, 256>(&wp, &reg, 44100.0, &mut resources)
+            .unwrap();
 
     let rs = "tape_0 = TapeLoop 1024\nmain = read_head tape_0 0.1";
     let rp =
         rill_lang::parser::parse(&rill_lang::lexer::tokenize(rs).unwrap(), rs.as_bytes()).unwrap();
     let mut reng =
-        rill_lang::compile_program_with_resources(&rp, &reg, 44100.0, &mut resources).unwrap();
+        rill_lang::compile_program_with_resources::<f32, 256>(&rp, &reg, 44100.0, &mut resources)
+            .unwrap();
 
     let dry = [1.0f32; 64];
     let fb = [0.0f32; 64];

@@ -20,16 +20,16 @@ use crate::program_engine::ProgramEngine;
 
 /// A compiled graph: one program (plain) or two plus a shared tape (duplex).
 #[allow(clippy::large_enum_variant)]
-pub enum CompiledStream<T: Transcendental> {
+pub enum CompiledStream<T: Transcendental, const BUF: usize> {
     /// A plain graph — a single program engine.
-    Single(ProgramEngine<T>),
+    Single(ProgramEngine<T, BUF>),
     /// A tape-echo graph — a recording program, a playback program, the shared
     /// tape registry, and the tape backend specification.
     Duplex {
         /// The recording subgraph's program (`[capture, fb] → [dryL, dryR]`).
-        recording: ProgramEngine<T>,
+        recording: ProgramEngine<T, BUF>,
         /// The playback subgraph's program (`[dryL, dryR] → [fb, out]`).
-        playback: ProgramEngine<T>,
+        playback: ProgramEngine<T, BUF>,
         /// Shared tape registry used by both engines (one buffer per channel).
         resources: ResourceRegistry<T>,
         /// Tape backend spec derived from the graph's tape resource + heads.
@@ -42,17 +42,17 @@ pub enum CompiledStream<T: Transcendental> {
 /// Graphs without passive backends always compile to [`CompiledStream::Single`].
 /// With passive backends the graph partitions into subgraphs; exactly two
 /// subgraphs become a [`CompiledStream::Duplex`].
-pub fn compile<T: Transcendental + 'static>(
+pub fn compile<T: Transcendental + 'static, const BUF: usize>(
     spec: &GraphSpec,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<CompiledStream<T>, CompileError> {
+) -> Result<CompiledStream<T, BUF>, CompileError> {
     let has_passive = spec
         .nodes
         .iter()
         .any(|n| n.backend == Some(NodeBackendKind::Passive));
     if !has_passive {
-        return Ok(CompiledStream::Single(compile_spec(
+        return Ok(CompiledStream::Single(compile_spec::<T, BUF>(
             spec,
             registry,
             sample_rate,
@@ -61,7 +61,7 @@ pub fn compile<T: Transcendental + 'static>(
 
     let parts = partition(spec);
     match parts.len() {
-        0 | 1 => Ok(CompiledStream::Single(compile_spec(
+        0 | 1 => Ok(CompiledStream::Single(compile_spec::<T, BUF>(
             spec,
             registry,
             sample_rate,
@@ -85,8 +85,10 @@ pub fn compile<T: Transcendental + 'static>(
                     CompileError::Unsupported("tape capacity must be > 0".into())
                 })?),
             );
-            let recording = compile_sub(spec, &parts[0], registry, sample_rate, &mut resources)?;
-            let playback = compile_sub(spec, &parts[1], registry, sample_rate, &mut resources)?;
+            let recording =
+                compile_sub::<T, BUF>(spec, &parts[0], registry, sample_rate, &mut resources)?;
+            let playback =
+                compile_sub::<T, BUF>(spec, &parts[1], registry, sample_rate, &mut resources)?;
             let tape = tape_spec_from(spec);
             Ok(CompiledStream::Duplex {
                 recording,
@@ -119,13 +121,13 @@ fn overlapping(parts: &[SubGraph], n: usize) -> bool {
 /// by fan-out reconstruction. The playback subgraph keeps ALL region nodes —
 /// including the passive head builtins (`read_head`) — compiled as ordinary
 /// builtins referencing the shared tape.
-fn compile_sub<T: Transcendental + 'static>(
+fn compile_sub<T: Transcendental + 'static, const BUF: usize>(
     spec: &GraphSpec,
     region: &SubGraph,
     registry: &Registry<T>,
     sample_rate: f32,
     resources: &mut ResourceRegistry<T>,
-) -> Result<ProgramEngine<T>, CompileError> {
+) -> Result<ProgramEngine<T, BUF>, CompileError> {
     let sub = sub_spec(spec, region);
     let program = if is_recording(spec, region) {
         let src = render_recording(spec, region, registry);
@@ -133,7 +135,7 @@ fn compile_sub<T: Transcendental + 'static>(
     } else {
         crate::graph::reconstruct::reconstruct(&sub, registry)?
     };
-    crate::compile_program_with_resources(&program, registry, sample_rate, resources)
+    crate::compile_program_with_resources::<T, BUF>(&program, registry, sample_rate, resources)
 }
 
 /// Whether the region is the recording side (contains the write head).
