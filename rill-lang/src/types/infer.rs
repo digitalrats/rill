@@ -4,7 +4,7 @@
 //! All binding groups (top-level, `where`, `let`) use mutual recursion:
 //! every name in the group is visible to every body.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::ty::{ArrowTy, Block, Scalar, Scheme, Subst, TypeVarId};
 use super::unify::unify_scalar;
@@ -20,6 +20,9 @@ pub struct TypedProgram {
     pub program: Program,
     /// Resolved diagram type of the body.
     pub process_ty: ArrowTy,
+    /// Names of closed top-level definitions (CAFs): zero λ-parameters and
+    /// zero signal input channels. Referenced by name, shared across the graph.
+    pub cafs: HashSet<String>,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -121,9 +124,24 @@ pub fn infer_program_with(
             span: Span::new(0, 0),
         });
     }
+
+    let cafs = program
+        .defs
+        .iter()
+        .filter_map(|def| match def {
+            Def::Local { name, .. } => ctx
+                .defs
+                .get(name)
+                .filter(|s| s.lam_count == 0 && s.ty.ins.is_empty())
+                .map(|_| name.clone()),
+            Def::Anchor { .. } => None,
+        })
+        .collect();
+
     Ok(TypedProgram {
         program: program.clone(),
         process_ty: main_scheme.ty,
+        cafs,
     })
 }
 
@@ -967,6 +985,13 @@ mod tests {
                     2,
                     BuiltinKind::Block,
                 )))),
+                "sine" => Some(Box::leak(Box::new(BuiltinSig::simple(
+                    "sine",
+                    0,
+                    1,
+                    3,
+                    BuiltinKind::Block,
+                )))),
                 _ => None,
             }
         }
@@ -1034,5 +1059,28 @@ mod tests {
     #[test]
     fn actor_param_default_must_be_constant() {
         assert!(ty_of("main = _ * ?gain=_").is_err());
+    }
+
+    #[test]
+    fn closed_top_level_local_is_caf() {
+        // osc = sine 440 0.5 0  (0 input channels, 0 λ-params) -> CAF
+        let typed = ty_with("osc = sine 440 0.5 0; main = _ * 0.5").unwrap();
+        assert!(typed.cafs.contains("osc"));
+    }
+
+    #[test]
+    fn open_block_is_not_caf() {
+        // gain = _ * 0.5  (1 input channel) -> macro, not CAF
+        let typed = ty_with("gain = _ * 0.5; main = _ * 0.5").unwrap();
+        assert!(!typed.cafs.contains("gain"));
+    }
+
+    #[test]
+    fn function_with_params_is_not_caf() {
+        // voice amp = osc * amp  (has a λ-param) -> not CAF
+        let typed =
+            ty_with("osc = sine 440 0.5 0; voice amp = osc * amp; main = voice 0.5").unwrap();
+        assert!(typed.cafs.contains("osc"));
+        assert!(!typed.cafs.contains("voice"));
     }
 }
