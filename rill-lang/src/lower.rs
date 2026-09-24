@@ -1209,6 +1209,13 @@ mod tests {
     }
 
     #[test]
+    fn unreferenced_caf_is_not_lowered() {
+        // dead = sine 440 0.5 0; main = _ * 0.5  -> no sine builtin
+        let ir = ir_with_cafs("dead = sine 440 0.5 0; main = _ * 0.5");
+        assert!(!ir.builtins.iter().any(|b| b.name == "sine"));
+    }
+
+    #[test]
     fn recursive_caf_is_error_not_overflow() {
         // a = a  -> compile error, not stack overflow
         let p = parse(
