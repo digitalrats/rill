@@ -64,8 +64,8 @@ pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, Comp
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program(&program)?;
-    typed.program = reduce::reduce(&typed.program);
-    let ir = lower::lower(&typed)?;
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, 44_100.0, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
     Ok(RillProgram::<T, 256>::new(ir))
 }
@@ -80,8 +80,8 @@ pub fn compile_with<T: Transcendental>(
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
-    typed.program = reduce::reduce(&typed.program);
-    let ir = lower::lower_with(&typed, registry, sample_rate)?;
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
     RillProgram::<T, 256>::new_with(ir, registry, sample_rate)
 }
@@ -235,11 +235,55 @@ fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec
 #[cfg(test)]
 mod ir_tests {
     use super::*;
+    use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
+
+    struct TestOsc;
+    impl rill_core::traits::Algorithm<f32> for TestOsc {
+        fn process(
+            &mut self,
+            _input: Option<&[f32]>,
+            output: &mut [f32],
+        ) -> rill_core::traits::ProcessResult<()> {
+            output.fill(0.0);
+            Ok(())
+        }
+        fn reset(&mut self) {}
+    }
+    impl rill_core::builtin::BlockBuiltin<f32> for TestOsc {}
+
+    fn sine_registry() -> Registry<f32> {
+        let mut registry = Registry::<f32>::new();
+        registry.register_block(
+            BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block),
+            |_, _| Box::new(TestOsc),
+        );
+        registry
+    }
+
+    #[test]
+    fn public_compile_rejects_recursive_caf() {
+        // a = a -> graceful CompileError, not stack overflow
+        let res = compile::<f32>("a = a; main = a");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn public_compile_with_shares_closed_caf() {
+        // osc = sine 440.0 1.0 0.0; main = osc , osc -> ONE sine instance
+        let registry = sine_registry();
+        let prog = compile_with::<f32>(
+            "osc = sine 440.0 1.0 0.0; main = osc , osc",
+            &registry,
+            44100.0,
+        )
+        .unwrap();
+        let sines = prog.ir.builtins.iter().filter(|b| b.name == "sine").count();
+        assert_eq!(sines, 1);
+        assert_eq!(prog.ir.builtins.len(), 1);
+    }
 
     #[test]
     fn lang_chiptune_ir_structure() {
-        use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
-
         let mut registry = Registry::<f32>::new();
         registry.register_block(
             BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),
