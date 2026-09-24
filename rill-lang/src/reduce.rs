@@ -9,20 +9,21 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{ArithOp, Def, Expr, Program};
 use crate::error::Span;
 
-fn substitute(e: &Expr, subst: &HashMap<String, Expr>, cafs: &HashSet<String>) -> Expr {
+fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
     match e {
         Expr::Ref(name, _) => {
-            // λ-param substitution takes priority over the CAF set: a parameter
-            // name shadowing a top-level CAF must still be replaced by its argument.
+            // CAF references are not inlined during substitution: they pass
+            // through unchanged — `reduce_expr` keeps them once the β-reduction
+            // completes.
             if let Some(replacement) = subst.get(name) {
                 replacement.clone()
             } else {
                 e.clone()
             }
         }
-        Expr::Neg(inner, span) => Expr::Neg(Box::new(substitute(inner, subst, cafs)), *span),
+        Expr::Neg(inner, span) => Expr::Neg(Box::new(substitute(inner, subst)), *span),
         Expr::Apply { name, args, span } => {
-            let reduced_args: Vec<Expr> = args.iter().map(|a| substitute(a, subst, cafs)).collect();
+            let reduced_args: Vec<Expr> = args.iter().map(|a| substitute(a, subst)).collect();
             Expr::Apply {
                 name: name.clone(),
                 args: reduced_args,
@@ -30,53 +31,41 @@ fn substitute(e: &Expr, subst: &HashMap<String, Expr>, cafs: &HashSet<String>) -
             }
         }
         Expr::Seq(lhs, rhs, span) => Expr::Seq(
-            Box::new(substitute(lhs, subst, cafs)),
-            Box::new(substitute(rhs, subst, cafs)),
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
             *span,
         ),
         Expr::Par(lhs, rhs, span) => Expr::Par(
-            Box::new(substitute(lhs, subst, cafs)),
-            Box::new(substitute(rhs, subst, cafs)),
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
             *span,
         ),
         Expr::Split(lhs, rhs, span) => Expr::Split(
-            Box::new(substitute(lhs, subst, cafs)),
-            Box::new(substitute(rhs, subst, cafs)),
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
             *span,
         ),
         Expr::Merge(lhs, rhs, span) => Expr::Merge(
-            Box::new(substitute(lhs, subst, cafs)),
-            Box::new(substitute(rhs, subst, cafs)),
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
             *span,
         ),
         Expr::Loop(lhs, rhs, span) => Expr::Loop(
-            Box::new(substitute(lhs, subst, cafs)),
-            Box::new(substitute(rhs, subst, cafs)),
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
             *span,
         ),
         Expr::Delay(lhs, rhs, span) => Expr::Delay(
-            Box::new(substitute(lhs, subst, cafs)),
-            Box::new(substitute(rhs, subst, cafs)),
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
             *span,
         ),
         Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
-            lhs: Box::new(substitute(lhs, subst, cafs)),
-            rhs: Box::new(substitute(rhs, subst, cafs)),
+            lhs: Box::new(substitute(lhs, subst)),
+            rhs: Box::new(substitute(rhs, subst)),
             span: *span,
         },
-        Expr::Let { defs, body, span } => {
-            let reduced_defs: Vec<Def> = defs
-                .iter()
-                .map(|d| reduce_def(d, &HashMap::new(), cafs))
-                .collect();
-            let reduced_body = reduce_expr(body, &defs_map(&reduced_defs), cafs);
-            Expr::Let {
-                defs: reduced_defs,
-                body: Box::new(reduced_body),
-                span: *span,
-            }
-        }
         _ => e.clone(),
     }
 }
@@ -142,7 +131,7 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                         subst.insert(p.name.clone(), reduced_args[idx].clone());
                     }
                 }
-                let inlined = substitute(def.body(), &subst, cafs);
+                let inlined = substitute(def.body(), &subst);
                 // Recursively reduce the inlined body (may contain more calls)
                 reduce_expr(&inlined, ctx, cafs)
             } else {
