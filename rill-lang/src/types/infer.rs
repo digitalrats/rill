@@ -620,7 +620,7 @@ fn infer_bin(
     }
 }
 
-fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
+pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
     let mut ins = a.ins.clone();
     ins.extend(b.ins.clone());
     let mut outs = a.outs.clone();
