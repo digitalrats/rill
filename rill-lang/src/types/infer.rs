@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use super::ty::{ArrowTy, Block, Scalar, Scheme, Subst, TypeVarId};
 use super::unify::unify_scalar;
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 
@@ -265,12 +265,13 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             msg: "string literal is only valid as a parameter name".into(),
             span: *span,
         }),
-        Expr::Bin { op, lhs, rhs, span } => {
-            let a = infer_expr(ctx, lhs)?;
-            let b = infer_expr(ctx, rhs)?;
-            let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
-            infer_bin(ctx, *op, &a, &b, *span, rhs_variadic)
-        }
+        Expr::Seq(lhs, rhs, span) => infer_seq(ctx, lhs, rhs, *span),
+        Expr::Par(lhs, rhs, span) => infer_par(ctx, lhs, rhs, *span),
+        Expr::Split(lhs, rhs, span) => infer_split(ctx, lhs, rhs, *span),
+        Expr::Merge(lhs, rhs, span) => infer_merge(ctx, lhs, rhs, *span),
+        Expr::Loop(lhs, rhs, span) => infer_loop(ctx, lhs, rhs, *span),
+        Expr::Delay(lhs, rhs, span) => infer_delay(ctx, lhs, rhs, *span),
+        Expr::Arith { lhs, rhs, span, .. } => infer_arith(ctx, lhs, rhs, *span),
         Expr::Let {
             defs,
             body,
@@ -601,23 +602,83 @@ fn expr_has_variadic_signal(ctx: &Ctx<'_>, e: &Expr) -> bool {
         .unwrap_or(false)
 }
 
-fn infer_bin(
+fn infer_seq(
     ctx: &mut Ctx<'_>,
-    op: BinOp,
-    a: &ArrowTy,
-    b: &ArrowTy,
+    lhs: &Expr,
+    rhs: &Expr,
     span: Span,
-    rhs_variadic: bool,
 ) -> Result<ArrowTy, CompileError> {
-    match op {
-        BinOp::Seq => seq(ctx, a, b, span),
-        BinOp::Par => Ok(par(a, b)),
-        BinOp::Split => split(ctx, a, b, span, rhs_variadic),
-        BinOp::Merge => merge(ctx, a, b, span, rhs_variadic),
-        BinOp::Feedback => feedback(ctx, a, b, span),
-        BinOp::Delay => delay(ctx, a, b, span),
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => arith(ctx, a, b, span),
-    }
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    seq(ctx, &a, &b, span)
+}
+
+fn infer_par(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    _span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    Ok(par(&a, &b))
+}
+
+fn infer_split(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
+    split(ctx, &a, &b, span, rhs_variadic)
+}
+
+fn infer_merge(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
+    merge(ctx, &a, &b, span, rhs_variadic)
+}
+
+fn infer_loop(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    feedback(ctx, &a, &b, span)
+}
+
+fn infer_delay(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    delay(ctx, &a, &b, span)
+}
+
+fn infer_arith(
+    ctx: &mut Ctx<'_>,
+    lhs: &Expr,
+    rhs: &Expr,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let a = infer_expr(ctx, lhs)?;
+    let b = infer_expr(ctx, rhs)?;
+    arith(ctx, &a, &b, span)
 }
 
 pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {

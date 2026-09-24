@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, Program};
 use crate::error::Span;
 
 fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
@@ -27,7 +27,37 @@ fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 span: *span,
             }
         }
-        Expr::Bin { op, lhs, rhs, span } => Expr::Bin {
+        Expr::Seq(lhs, rhs, span) => Expr::Seq(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Par(lhs, rhs, span) => Expr::Par(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Split(lhs, rhs, span) => Expr::Split(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Merge(lhs, rhs, span) => Expr::Merge(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Loop(lhs, rhs, span) => Expr::Loop(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Delay(lhs, rhs, span) => Expr::Delay(
+            Box::new(substitute(lhs, subst)),
+            Box::new(substitute(rhs, subst)),
+            *span,
+        ),
+        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
             lhs: Box::new(substitute(lhs, subst)),
             rhs: Box::new(substitute(rhs, subst)),
@@ -128,26 +158,45 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>) -> Expr {
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
             reduce_expr(body, &let_ctx)
         }
-        Expr::Bin {
-            op: BinOp::Feedback,
-            lhs,
-            rhs,
-            span,
-        } => {
+        Expr::Loop(lhs, rhs, span) => {
             // Desugar the Faust-style integrator short forms to block built-ins:
             //   `+ ~ _`       → `integrator`
             //   `+ ~ (_ * k)` → `leaky_integrator k`
             if let Some(desugared) = desugar_integrator(lhs, rhs, *span) {
                 return desugared;
             }
-            Expr::Bin {
-                op: BinOp::Feedback,
-                lhs: Box::new(reduce_expr(lhs, ctx)),
-                rhs: Box::new(reduce_expr(rhs, ctx)),
-                span: *span,
-            }
+            Expr::Loop(
+                Box::new(reduce_expr(lhs, ctx)),
+                Box::new(reduce_expr(rhs, ctx)),
+                *span,
+            )
         }
-        Expr::Bin { op, lhs, rhs, span } => Expr::Bin {
+        Expr::Seq(lhs, rhs, span) => Expr::Seq(
+            Box::new(reduce_expr(lhs, ctx)),
+            Box::new(reduce_expr(rhs, ctx)),
+            *span,
+        ),
+        Expr::Par(lhs, rhs, span) => Expr::Par(
+            Box::new(reduce_expr(lhs, ctx)),
+            Box::new(reduce_expr(rhs, ctx)),
+            *span,
+        ),
+        Expr::Split(lhs, rhs, span) => Expr::Split(
+            Box::new(reduce_expr(lhs, ctx)),
+            Box::new(reduce_expr(rhs, ctx)),
+            *span,
+        ),
+        Expr::Merge(lhs, rhs, span) => Expr::Merge(
+            Box::new(reduce_expr(lhs, ctx)),
+            Box::new(reduce_expr(rhs, ctx)),
+            *span,
+        ),
+        Expr::Delay(lhs, rhs, span) => Expr::Delay(
+            Box::new(reduce_expr(lhs, ctx)),
+            Box::new(reduce_expr(rhs, ctx)),
+            *span,
+        ),
+        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
             lhs: Box::new(reduce_expr(lhs, ctx)),
             rhs: Box::new(reduce_expr(rhs, ctx)),
@@ -170,8 +219,8 @@ fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
             args: vec![],
             span,
         }),
-        Expr::Bin {
-            op: BinOp::Mul,
+        Expr::Arith {
+            op: ArithOp::Mul,
             lhs: w,
             rhs: k,
             ..
@@ -235,7 +284,7 @@ pub fn reduce(program: &Program) -> Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::BinOp;
+    use crate::ast::ArithOp;
     use crate::lexer::tokenize;
     use crate::parser;
 
@@ -252,8 +301,8 @@ mod tests {
         // main = g 0.5 where { g x = _ * x; }  →  main = _ * 0.5
         let body = reduced_body("main = g 0.5 where { g x = _ * x; }");
         match &body {
-            Expr::Bin {
-                op: BinOp::Mul,
+            Expr::Arith {
+                op: ArithOp::Mul,
                 lhs,
                 rhs,
                 ..
@@ -261,7 +310,7 @@ mod tests {
                 assert!(matches!(lhs.as_ref(), Expr::Wire(_)));
                 assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
             }
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 
@@ -270,8 +319,8 @@ mod tests {
         // main = h where { f x = _ * x; g y = f y; h = g 0.5; }
         let body = reduced_body("main = h where { f x = _ * x; g y = f y; h = g 0.5; }");
         match &body {
-            Expr::Bin {
-                op: BinOp::Mul,
+            Expr::Arith {
+                op: ArithOp::Mul,
                 lhs,
                 rhs,
                 ..
@@ -279,7 +328,7 @@ mod tests {
                 assert!(matches!(lhs.as_ref(), Expr::Wire(_)));
                 assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
             }
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 
@@ -287,8 +336,10 @@ mod tests {
     fn top_level_call_is_inlined() {
         let body = reduced_body("sq x = _ * x; main = sq 0.5");
         match &body {
-            Expr::Bin { op: BinOp::Mul, .. } => {}
-            other => panic!("expected Bin(Mul), got {other:?}"),
+            Expr::Arith {
+                op: ArithOp::Mul, ..
+            } => {}
+            other => panic!("expected Arith(Mul), got {other:?}"),
         }
     }
 
@@ -296,14 +347,10 @@ mod tests {
     fn builtin_not_reduced() {
         let body = reduced_body("main = _ : lowpass 1000.0 0.7");
         match &body {
-            Expr::Bin {
-                op: BinOp::Seq,
-                rhs,
-                ..
-            } => {
+            Expr::Seq(_, rhs, _) => {
                 assert!(matches!(rhs.as_ref(), Expr::Apply { name, .. } if name == "lowpass"));
             }
-            other => panic!("expected Bin(Seq), got {other:?}"),
+            other => panic!("expected Seq, got {other:?}"),
         }
     }
 }

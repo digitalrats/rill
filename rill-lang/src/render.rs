@@ -4,7 +4,7 @@
 //! string. The renderer is used for round-trip tests that verify
 //! isomorphism between JSON and DSL representations.
 
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, Program};
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
@@ -89,18 +89,13 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             write!(buf, "-").ok();
             render_expr(inner, buf, 15);
         }
-        Expr::Bin { op, lhs, rhs, .. } => {
-            let (prec, l_bp, r_bp, sym) = bin_info(op);
-            if outer_bp > prec {
-                write!(buf, "(").ok();
-            }
-            render_expr(lhs, buf, l_bp);
-            write!(buf, " {sym} ").ok();
-            render_expr(rhs, buf, r_bp);
-            if outer_bp > prec {
-                write!(buf, ")").ok();
-            }
-        }
+        Expr::Seq(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (3, 3, 4, ":")),
+        Expr::Split(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (5, 5, 6, "<:")),
+        Expr::Merge(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (7, 7, 8, ":>")),
+        Expr::Par(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (9, 9, 10, ",")),
+        Expr::Arith { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, arith_info(op)),
+        Expr::Delay(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (15, 15, 16, "@")),
+        Expr::Loop(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (1, 1, 2, "~")),
         Expr::Let { defs, body, .. } => {
             write!(buf, "let ").ok();
             if defs.len() > 1 {
@@ -139,19 +134,32 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
     }
 }
 
-fn bin_info(op: &BinOp) -> (u8, u8, u8, &'static str) {
+/// Render a binary node with parenthesization based on its binding power.
+fn render_bin(
+    lhs: &Expr,
+    rhs: &Expr,
+    buf: &mut String,
+    outer_bp: u8,
+    (prec, l_bp, r_bp, sym): (u8, u8, u8, &'static str),
+) {
+    if outer_bp > prec {
+        write!(buf, "(").ok();
+    }
+    render_expr(lhs, buf, l_bp);
+    write!(buf, " {sym} ").ok();
+    render_expr(rhs, buf, r_bp);
+    if outer_bp > prec {
+        write!(buf, ")").ok();
+    }
+}
+
+fn arith_info(op: &ArithOp) -> (u8, u8, u8, &'static str) {
     match op {
-        BinOp::Seq => (3, 3, 4, ":"),
-        BinOp::Split => (5, 5, 6, "<:"),
-        BinOp::Merge => (7, 7, 8, ":>"),
-        BinOp::Par => (9, 9, 10, ","),
-        BinOp::Add => (11, 11, 12, "+"),
-        BinOp::Sub => (11, 11, 12, "-"),
-        BinOp::Mul => (13, 13, 14, "*"),
-        BinOp::Div => (13, 13, 14, "/"),
-        BinOp::Rem => (13, 13, 14, "%"),
-        BinOp::Delay => (15, 15, 16, "@"),
-        BinOp::Feedback => (1, 1, 2, "~"),
+        ArithOp::Add => (11, 11, 12, "+"),
+        ArithOp::Sub => (11, 11, 12, "-"),
+        ArithOp::Mul => (13, 13, 14, "*"),
+        ArithOp::Div => (13, 13, 14, "/"),
+        ArithOp::Rem => (13, 13, 14, "%"),
     }
 }
 
@@ -190,16 +198,15 @@ mod tests {
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![],
-                body: Expr::Bin {
-                    op: BinOp::Seq,
-                    lhs: Box::new(Expr::Wire(span())),
-                    rhs: Box::new(Expr::Apply {
+                body: Expr::Seq(
+                    Box::new(Expr::Wire(span())),
+                    Box::new(Expr::Apply {
                         name: "lowpass".into(),
                         args: vec![Expr::Float(1000.0, span()), Expr::Float(0.7, span())],
                         span: span(),
                     }),
-                    span: span(),
-                },
+                    span(),
+                ),
                 span: span(),
                 where_defs: vec![],
             }],
@@ -217,8 +224,8 @@ mod tests {
                     name: "gain".into(),
                     span: span(),
                 }],
-                body: Expr::Bin {
-                    op: BinOp::Mul,
+                body: Expr::Arith {
+                    op: ArithOp::Mul,
                     lhs: Box::new(Expr::Wire(span())),
                     rhs: Box::new(Expr::Ref("gain".into(), span())),
                     span: span(),

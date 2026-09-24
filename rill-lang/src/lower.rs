@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::{BinOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp};
@@ -353,7 +353,13 @@ impl<'a> Lowerer<'a> {
                 msg: "string literal is only valid as a parameter name".into(),
                 span: *span,
             }),
-            Expr::Bin { op, lhs, rhs, span } => self.lower_bin(*op, lhs, rhs, args, *span),
+            Expr::Seq(lhs, rhs, _) => self.lower_seq(lhs, rhs, args),
+            Expr::Par(lhs, rhs, _) => self.lower_par(lhs, rhs, args),
+            Expr::Split(lhs, rhs, _) => self.lower_split(lhs, rhs, args),
+            Expr::Merge(lhs, rhs, _) => self.lower_merge(lhs, rhs, args),
+            Expr::Loop(lhs, rhs, span) => self.lower_feedback(lhs, rhs, args, *span),
+            Expr::Delay(lhs, rhs, span) => self.lower_delay(lhs, rhs, args, *span),
+            Expr::Arith { op, lhs, rhs, .. } => self.lower_arith(*op, lhs, rhs, args),
             Expr::Let {
                 defs,
                 body,
@@ -548,125 +554,146 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_bin(
+    /// `A : B` — lower lhs, feed its outputs into rhs.
+    fn lower_seq(
         &mut self,
-        op: BinOp,
         lhs: &Expr,
         rhs: &Expr,
         args: &[usize],
-        span: Span,
     ) -> Result<Vec<usize>, CompileError> {
-        match op {
-            BinOp::Seq => {
-                let mid = self.lower(lhs, args)?;
-                self.lower(rhs, &mid)
-            }
-            BinOp::Par => {
-                let li = arity_in(lhs, self.sigs)?;
-                let (a_in, b_in) = args.split_at(li.min(args.len()));
-                let mut out = self.lower(lhs, a_in)?;
-                out.extend(self.lower(rhs, b_in)?);
-                Ok(out)
-            }
-            BinOp::Split => {
-                let a_out = self.lower(lhs, args)?;
-                let bi = if self.rhs_variadic(rhs) {
-                    a_out.len()
-                } else {
-                    arity_in(rhs, self.sigs)?
-                };
-                let reps = bi / a_out.len().max(1);
-                let mut fanned = Vec::with_capacity(bi);
-                for _ in 0..reps {
-                    fanned.extend(a_out.iter().copied());
-                }
-                self.lower(rhs, &fanned)
-            }
-            BinOp::Merge => {
-                let a_out = self.lower(lhs, args)?;
-                let bi = if self.rhs_variadic(rhs) {
-                    a_out.len()
-                } else {
-                    arity_in(rhs, self.sigs)?
-                };
-                let groups = a_out.len() / bi.max(1);
-                let mut merged = Vec::with_capacity(bi);
-                for k in 0..bi {
-                    let mut acc = a_out[k];
-                    for g in 1..groups {
-                        let dst = self.fresh_reg();
-                        self.emit(Instr::Bin {
-                            dst,
-                            op: BinArith::Add,
-                            a: acc,
-                            b: a_out[g * bi + k],
-                        });
-                        acc = dst;
-                    }
-                    merged.push(acc);
-                }
-                self.lower(rhs, &merged)
-            }
-            BinOp::Feedback => self.lower_feedback(lhs, rhs, args, span),
-            BinOp::Delay => self.lower_delay(lhs, rhs, args, span),
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
-                if matches!(op, BinOp::Add | BinOp::Sub) {
-                    let re = match lhs {
-                        Expr::Float(v, _) => Some(*v),
-                        Expr::Int(v, _) => Some(*v as f64),
-                        _ => None,
-                    };
-                    let im = match rhs {
-                        Expr::Imag(v, _) => Some(if matches!(op, BinOp::Sub) { -*v } else { *v }),
-                        _ => None,
-                    };
-                    if let (Some(re), Some(im)) = (re, im) {
-                        let name = "complex".to_string();
-                        if let Some(sig) = self.sigs.builtin_sig(&name) {
-                            let sig = sig.clone();
-                            let instance = self.builtins.len();
-                            self.builtins.push(BuiltinInstance {
-                                name,
-                                params: vec![re, im],
-                                resource: None,
-                                kind: sig.kind,
-                                signal_ins: sig.signal_ins(),
-                                signal_outs: sig.signal_outs,
-                                param_bindings: Vec::new(),
-                            });
-                            let fst = self.fresh_reg();
-                            for _ in 1..sig.signal_outs {
-                                self.fresh_reg();
-                            }
-                            self.emit(Instr::CallBlock {
-                                dst: fst,
-                                srcs: vec![],
-                                instance,
-                            });
-                            return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                        }
-                    }
-                }
-                let a = self.lower(lhs, args)?;
-                let b = self.lower(rhs, args)?;
-                let arith = match op {
-                    BinOp::Add => BinArith::Add,
-                    BinOp::Sub => BinArith::Sub,
-                    BinOp::Mul => BinArith::Mul,
-                    BinOp::Div => BinArith::Div,
-                    BinOp::Rem => BinArith::Rem,
-                    _ => unreachable!(),
-                };
+        let mid = self.lower(lhs, args)?;
+        self.lower(rhs, &mid)
+    }
+
+    /// `A , B` — split the input registers between the two sides, concatenate outputs.
+    fn lower_par(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        let li = arity_in(lhs, self.sigs)?;
+        let (a_in, b_in) = args.split_at(li.min(args.len()));
+        let mut out = self.lower(lhs, a_in)?;
+        out.extend(self.lower(rhs, b_in)?);
+        Ok(out)
+    }
+
+    /// `A <: B` — fan out A's outputs to fill B's inputs, then lower B.
+    fn lower_split(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        let a_out = self.lower(lhs, args)?;
+        let bi = if self.rhs_variadic(rhs) {
+            a_out.len()
+        } else {
+            arity_in(rhs, self.sigs)?
+        };
+        let reps = bi / a_out.len().max(1);
+        let mut fanned = Vec::with_capacity(bi);
+        for _ in 0..reps {
+            fanned.extend(a_out.iter().copied());
+        }
+        self.lower(rhs, &fanned)
+    }
+
+    /// `A :> B` — sum groups of A's outputs into B's inputs, then lower B.
+    fn lower_merge(
+        &mut self,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        let a_out = self.lower(lhs, args)?;
+        let bi = if self.rhs_variadic(rhs) {
+            a_out.len()
+        } else {
+            arity_in(rhs, self.sigs)?
+        };
+        let groups = a_out.len() / bi.max(1);
+        let mut merged = Vec::with_capacity(bi);
+        for k in 0..bi {
+            let mut acc = a_out[k];
+            for g in 1..groups {
                 let dst = self.fresh_reg();
                 self.emit(Instr::Bin {
                     dst,
-                    op: arith,
-                    a: a[0],
-                    b: b[0],
+                    op: BinArith::Add,
+                    a: acc,
+                    b: a_out[g * bi + k],
                 });
-                Ok(vec![dst])
+                acc = dst;
+            }
+            merged.push(acc);
+        }
+        self.lower(rhs, &merged)
+    }
+
+    /// `A op B` — elementwise arithmetic on the single output wire of each side.
+    fn lower_arith(
+        &mut self,
+        op: ArithOp,
+        lhs: &Expr,
+        rhs: &Expr,
+        args: &[usize],
+    ) -> Result<Vec<usize>, CompileError> {
+        if matches!(op, ArithOp::Add | ArithOp::Sub) {
+            let re = match lhs {
+                Expr::Float(v, _) => Some(*v),
+                Expr::Int(v, _) => Some(*v as f64),
+                _ => None,
+            };
+            let im = match rhs {
+                Expr::Imag(v, _) => Some(if matches!(op, ArithOp::Sub) { -*v } else { *v }),
+                _ => None,
+            };
+            if let (Some(re), Some(im)) = (re, im) {
+                let name = "complex".to_string();
+                if let Some(sig) = self.sigs.builtin_sig(&name) {
+                    let sig = sig.clone();
+                    let instance = self.builtins.len();
+                    self.builtins.push(BuiltinInstance {
+                        name,
+                        params: vec![re, im],
+                        resource: None,
+                        kind: sig.kind,
+                        signal_ins: sig.signal_ins(),
+                        signal_outs: sig.signal_outs,
+                        param_bindings: Vec::new(),
+                    });
+                    let fst = self.fresh_reg();
+                    for _ in 1..sig.signal_outs {
+                        self.fresh_reg();
+                    }
+                    self.emit(Instr::CallBlock {
+                        dst: fst,
+                        srcs: vec![],
+                        instance,
+                    });
+                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
+                }
             }
         }
+        let a = self.lower(lhs, args)?;
+        let b = self.lower(rhs, args)?;
+        let arith = match op {
+            ArithOp::Add => BinArith::Add,
+            ArithOp::Sub => BinArith::Sub,
+            ArithOp::Mul => BinArith::Mul,
+            ArithOp::Div => BinArith::Div,
+            ArithOp::Rem => BinArith::Rem,
+        };
+        let dst = self.fresh_reg();
+        self.emit(Instr::Bin {
+            dst,
+            op: arith,
+            a: a[0],
+            b: b[0],
+        });
+        Ok(vec![dst])
     }
 
     /// `A ~ B` — B's output feeds A's feedback input (1-tick delay), while B is
@@ -784,18 +811,39 @@ fn arity(e: &Expr, sigs: &dyn SignatureSource) -> Result<(usize, usize), Compile
                 (ins, 1)
             }
         }
-        Expr::Bin { op, lhs, rhs, .. } => {
+        Expr::Seq(lhs, rhs, _) => {
+            let (ai, _) = arity(lhs, sigs)?;
+            let (_, bo) = arity(rhs, sigs)?;
+            (ai, bo)
+        }
+        Expr::Par(lhs, rhs, _) => {
             let (ai, ao) = arity(lhs, sigs)?;
             let (bi, bo) = arity(rhs, sigs)?;
-            match op {
-                BinOp::Seq => (ai, bo),
-                BinOp::Par => (ai + bi, ao + bo),
-                BinOp::Split => (ai, bo),
-                BinOp::Merge => (ai, bo),
-                BinOp::Feedback => (ai - bo, ao),
-                BinOp::Delay => (ai, ao),
-                _ => (ai + bi, 1),
-            }
+            (ai + bi, ao + bo)
+        }
+        Expr::Split(lhs, rhs, _) => {
+            let (ai, _) = arity(lhs, sigs)?;
+            let (_, bo) = arity(rhs, sigs)?;
+            (ai, bo)
+        }
+        Expr::Merge(lhs, rhs, _) => {
+            let (ai, _) = arity(lhs, sigs)?;
+            let (_, bo) = arity(rhs, sigs)?;
+            (ai, bo)
+        }
+        Expr::Loop(lhs, rhs, _) => {
+            let (ai, ao) = arity(lhs, sigs)?;
+            let (_, bo) = arity(rhs, sigs)?;
+            (ai - bo, ao)
+        }
+        Expr::Delay(lhs, _rhs, _) => {
+            let (ai, ao) = arity(lhs, sigs)?;
+            (ai, ao)
+        }
+        Expr::Arith { lhs, rhs, .. } => {
+            let (ai, _) = arity(lhs, sigs)?;
+            let (bi, _) = arity(rhs, sigs)?;
+            (ai + bi, 1)
         }
         Expr::Let { body, .. } => arity(body, sigs)?,
         Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
@@ -808,14 +856,14 @@ fn const_f64(e: &Expr) -> Option<f64> {
         Expr::Float(v, _) => Some(*v),
         Expr::Int(v, _) => Some(*v as f64),
         Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
-        Expr::Bin { op, lhs, rhs, .. } => {
+        Expr::Arith { op, lhs, rhs, .. } => {
             let a = const_f64(lhs)?;
             let b = const_f64(rhs)?;
             Some(match op {
-                BinOp::Add => a + b,
-                BinOp::Sub => a - b,
-                BinOp::Mul => a * b,
-                BinOp::Div => a / b,
+                ArithOp::Add => a + b,
+                ArithOp::Sub => a - b,
+                ArithOp::Mul => a * b,
+                ArithOp::Div => a / b,
                 _ => return None,
             })
         }
@@ -827,15 +875,15 @@ fn const_int(e: &Expr) -> Option<i64> {
     match e {
         Expr::Int(v, _) => Some(*v),
         Expr::Neg(inner, _) => const_int(inner).map(|v| -v),
-        Expr::Bin { op, lhs, rhs, .. } => {
+        Expr::Arith { op, lhs, rhs, .. } => {
             let a = const_int(lhs)?;
             let b = const_int(rhs)?;
             Some(match op {
-                BinOp::Add => a + b,
-                BinOp::Sub => a - b,
-                BinOp::Mul => a * b,
-                BinOp::Div if b != 0 => a / b,
-                BinOp::Rem if b != 0 => a % b,
+                ArithOp::Add => a + b,
+                ArithOp::Sub => a - b,
+                ArithOp::Mul => a * b,
+                ArithOp::Div if b != 0 => a / b,
+                ArithOp::Rem if b != 0 => a % b,
                 _ => return None,
             })
         }
