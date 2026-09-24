@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 
 use rill_core::queues::CommandEnum;
 use rill_core::time::ClockTick;
+use rill_core::traits::MultichannelAlgorithm;
 use rill_core_actor::ActorRef;
 
 use crate::program_engine::ProgramEngine;
@@ -45,6 +46,16 @@ impl<const BUF: usize> ProgramRunner<BUF> {
     /// Reference to the underlying program engine.
     pub fn engine(&self) -> &ProgramEngine<f32, BUF> {
         &self.engine
+    }
+
+    /// Number of signal input channels the program expects.
+    pub fn num_inputs(&self) -> usize {
+        self.engine.num_inputs()
+    }
+
+    /// Number of signal output channels the program produces.
+    pub fn num_outputs(&self) -> usize {
+        self.engine.num_outputs()
     }
 
     /// Process one tick: transform `inputs` into `outputs`.
