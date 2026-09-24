@@ -6,6 +6,8 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// The signal-arrow core: combinators as arrow laws over [`arrow::ArrowTy`].
+pub mod arrow;
 pub mod ast;
 pub mod backend;
 pub mod builtin;
