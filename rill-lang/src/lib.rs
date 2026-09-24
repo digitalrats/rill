@@ -48,6 +48,9 @@ use std::sync::Arc;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
+/// Uses the runtime-safe default block size (`BUF = 256`); each block passed to
+/// `process` must be no longer than that.
+///
 /// ```
 /// use rill_lang::compile;
 /// use rill_core::traits::Algorithm;
@@ -57,37 +60,38 @@ use std::sync::Arc;
 /// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
 /// assert_eq!(out, [1.0, 2.0]);
 /// ```
-pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T>, CompileError> {
+pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program(&program)?;
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower(&typed)?;
     // regalloc::allocate(&mut ir);
-    Ok(RillProgram::<T>::new(ir))
+    Ok(RillProgram::<T, 256>::new(ir))
 }
 
-/// Compile with a built-in registry and a sample rate.
+/// Compile with a built-in registry and a sample rate. Uses the default block
+/// size (`BUF = 256`).
 pub fn compile_with<T: Transcendental>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<RillProgram<T>, CompileError> {
+) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.program = reduce::reduce(&typed.program);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
     // regalloc::allocate(&mut ir);
-    RillProgram::<T>::new_with(ir, registry, sample_rate)
+    RillProgram::<T, 256>::new_with(ir, registry, sample_rate)
 }
 
 /// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
-pub fn compile_program<T: Transcendental>(
+pub fn compile_program<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     compile_program_inner(program, registry, sample_rate, None)
 }
 
@@ -100,21 +104,21 @@ pub fn compile_program<T: Transcendental>(
 /// by the program must exist in `resources`, otherwise the program fails with
 /// `Unsupported` rather than compiling to a silently dead engine (a write head
 /// without a writer, a read head without a reader).
-pub fn compile_program_with_resources<T: Transcendental>(
+pub fn compile_program_with_resources<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
     resources: &mut rill_core::buffer::ResourceRegistry<T>,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     compile_program_inner(program, registry, sample_rate, Some(resources))
 }
 
-fn compile_program_inner<T: Transcendental>(
+fn compile_program_inner<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
     resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     let (program, resource_decls) = extract_resources(program);
 
     let mut typed = types::infer::infer_program_with(&program, registry)?;
@@ -164,20 +168,23 @@ fn compile_program_inner<T: Transcendental>(
         }
     };
 
-    let rp = RillProgram::<T>::new_with_resources(ir, registry, sample_rate, res)?;
+    let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res)?;
     let mailbox = Arc::new(Mailbox::new(64));
-    Ok(program_engine::ProgramEngine::new(rp, mailbox))
+    Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox))
 }
 
 /// Compile rill-lang source into a graph engine that supports SetParameter.
-pub fn compile_graph<T: Transcendental>(
+///
+/// `BUF` is the block size the caller will feed the engine each tick; all
+/// internal buffers are pre-allocated to this size at construction.
+pub fn compile_graph<T: Transcendental, const BUF: usize>(
     src: &str,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    compile_program::<T>(&program, registry, sample_rate)
+    compile_program::<T, BUF>(&program, registry, sample_rate)
 }
 
 /// A named resource declaration (e.g. a tape loop) from the DSL.

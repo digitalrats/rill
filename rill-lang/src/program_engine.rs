@@ -31,8 +31,8 @@ struct PendingParam {
 }
 
 /// A runnable signal program with SetParameter routing and a control mailbox.
-pub struct ProgramEngine<T: Transcendental> {
-    program: RillProgram<T>,
+pub struct ProgramEngine<T: Transcendental, const BUF: usize> {
+    program: RillProgram<T, BUF>,
     pending: Vec<PendingParam>,
     param_map: ParamMap,
     anchor: String,
@@ -46,9 +46,9 @@ pub struct ProgramEngine<T: Transcendental> {
     pub(crate) debug_control: DebugControl,
 }
 
-impl<T: Transcendental> ProgramEngine<T> {
+impl<T: Transcendental, const BUF: usize> ProgramEngine<T, BUF> {
     /// Create a new engine from a compiled program and a shared mailbox.
-    pub fn new(program: RillProgram<T>, mailbox: Arc<Mailbox<CommandEnum>>) -> Self {
+    pub fn new(program: RillProgram<T, BUF>, mailbox: Arc<Mailbox<CommandEnum>>) -> Self {
         let actor_ref = mailbox.actor_ref();
         let param_map = program
             .params_meta()
@@ -83,12 +83,12 @@ impl<T: Transcendental> ProgramEngine<T> {
     }
 
     /// Reference to the underlying program.
-    pub fn program(&self) -> &RillProgram<T> {
+    pub fn program(&self) -> &RillProgram<T, BUF> {
         &self.program
     }
 
     /// Mutable reference to the underlying program.
-    pub fn program_mut(&mut self) -> &mut RillProgram<T> {
+    pub fn program_mut(&mut self) -> &mut RillProgram<T, BUF> {
         &mut self.program
     }
 
@@ -209,7 +209,7 @@ impl<T: Transcendental> ProgramEngine<T> {
     }
 }
 
-impl<T: Transcendental> Algorithm<T> for ProgramEngine<T> {
+impl<T: Transcendental, const BUF: usize> Algorithm<T> for ProgramEngine<T, BUF> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
         let mut outs: [&mut [T]; 1] = [output];
@@ -221,7 +221,7 @@ impl<T: Transcendental> Algorithm<T> for ProgramEngine<T> {
     }
 }
 
-impl<T: Transcendental> MultichannelAlgorithm<T> for ProgramEngine<T> {
+impl<T: Transcendental, const BUF: usize> MultichannelAlgorithm<T> for ProgramEngine<T, BUF> {
     fn num_inputs(&self) -> usize {
         self.program.ir.num_inputs
     }

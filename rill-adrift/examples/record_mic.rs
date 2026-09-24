@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
     let src = "main = _";
-    let engine = rill_lang::compile_graph::<f32>(src, &reg, RATE)?;
+    let engine = rill_lang::compile_graph::<f32, BUF>(src, &reg, RATE)?;
 
     let mut bf = BackendFactory::new();
     registration::register_backends(&mut bf);

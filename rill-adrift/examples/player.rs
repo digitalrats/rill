@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let reg = rill_adrift::lang_builtins::full_registry_f32();
         let src = "main = sampler 1.0 1.0 1.0 0.0 ?source";
         let engine =
-            rill_lang::compile_graph::<f32>(src, &reg, cfg.sample_rate).expect("compile DSL");
+            rill_lang::compile_graph::<f32, 256>(src, &reg, cfg.sample_rate).expect("compile DSL");
         let runner = ProgramRunner::new(engine, None);
         let handle = runner.handle();
 

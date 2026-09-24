@@ -85,7 +85,7 @@ fn dry_wet_blends() {
     use rill_core::traits::MultichannelAlgorithm;
     let reg = full_registry::<f32>();
     let mut engine =
-        compile_graph::<f32>("main = (_, _) :> dry_wet { mix: 1.0 }", &reg, 48_000.0).unwrap();
+        compile_graph::<f32, 256>("main = (_, _) :> dry_wet { mix: 1.0 }", &reg, 48_000.0).unwrap();
     let dry = [1.0f32; 4];
     let wet = [3.0f32; 4];
     let mut l = [0.0f32; 4];
@@ -101,7 +101,8 @@ fn mixer_sums_stereo() {
     use rill_core::traits::MultichannelAlgorithm;
     let reg = full_registry::<f32>();
     let mut engine =
-        compile_graph::<f32>("main = (_, _) :> mixer { master_vol: 1.0 }", &reg, 48_000.0).unwrap();
+        compile_graph::<f32, 256>("main = (_, _) :> mixer { master_vol: 1.0 }", &reg, 48_000.0)
+            .unwrap();
     let ch0 = [1.0f32; 4];
     let ch1 = [2.0f32; 4];
     let mut l = [0.0f32; 4];

@@ -1,7 +1,8 @@
-//! `RillProgram<T>` — a compiled rill-lang program that implements
+//! `RillProgram<T, BUF>` — a compiled rill-lang program that implements
 //! [`rill_core::Algorithm`]. Owns its IR, schedule, and pre-allocated state;
 //! `process()` performs no heap allocation after warm-up.
 
+use rill_core::buffer::FixedBuffer;
 use rill_core::builtin::MultichannelBlockBuiltin;
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
@@ -12,6 +13,17 @@ use crate::error::CompileError;
 use crate::ir::{Ir, ParamDef};
 use crate::schedule::{build_schedule, Schedule};
 
+/// Upper bound on a single `@ n` delay line, in samples.
+///
+/// Delay lengths are compile-time constants per site; every ring is a fixed
+/// [`FixedBuffer`] of this size (largest delay allowed by the `@` operator).
+pub(crate) const MAX_DELAY_LEN: usize = 65536;
+
+/// Upper bound on built-in signal channels routed through one call site.
+///
+/// Used for stack scratch storage in the interpreter's foreign-block path.
+pub(crate) const MAX_BUILTIN_CHANNELS: usize = 8;
+
 /// A runtime built-in instance, indexed directly by IR `instance` fields.
 pub(crate) enum BuiltinInst<T: Transcendental> {
     /// An opaque whole-buffer built-in.
@@ -21,17 +33,17 @@ pub(crate) enum BuiltinInst<T: Transcendental> {
 }
 
 /// A compiled program ready to run inside the rill graph.
-pub struct RillProgram<T: Transcendental> {
+pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) ir: Ir,
     pub(crate) schedule: Schedule,
     /// Block-level feedback state (previous tick's whole block per slot).
-    pub(crate) block_state: Vec<Vec<T>>,
+    pub(crate) block_state: Vec<FixedBuffer<T, BUF>>,
     /// Current-tick feedback writes, swapped with `block_state` at tick end.
-    pub(crate) block_state_next: Vec<Vec<T>>,
+    pub(crate) block_state_next: Vec<FixedBuffer<T, BUF>>,
     /// Delay lines: block-level ring buffers, one per `@` site.
-    pub(crate) delays: Vec<DelayRing<T>>,
-    /// Whole-buffer register store (grown to block length).
-    pub(crate) block_regs: Vec<Vec<T>>,
+    pub(crate) delays: Vec<DelayRing<T, MAX_DELAY_LEN>>,
+    /// Whole-buffer register store (fixed length `BUF` per register).
+    pub(crate) block_regs: Vec<FixedBuffer<T, BUF>>,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
     pub(crate) builtins: Vec<BuiltinInst<T>>,
     /// Current parameter values, indexed by [`Ir::params`].
@@ -43,17 +55,23 @@ pub struct RillProgram<T: Transcendental> {
 }
 
 /// A fixed-length ring buffer for one `@` delay site, processed whole-block.
-pub(crate) struct DelayRing<T> {
-    buf: Vec<T>,
+///
+/// Backed by a [`FixedBuffer`] (no heap in the RT path); the ring's usable
+/// length is the site's compile-time delay length, clamped to `MAX_DELAY`.
+pub(crate) struct DelayRing<T: Transcendental, const MAX_DELAY: usize> {
+    buf: FixedBuffer<T, MAX_DELAY>,
     head: usize,
     len: usize,
 }
 
-impl<T: Transcendental> DelayRing<T> {
+impl<T: Transcendental, const MAX_DELAY: usize> DelayRing<T, MAX_DELAY> {
     pub(crate) fn new(len: usize) -> Self {
-        let len = len.max(1);
+        assert!(
+            (1..=MAX_DELAY).contains(&len),
+            "delay length {len} exceeds MAX_DELAY_LEN ({MAX_DELAY})"
+        );
         Self {
-            buf: vec![T::ZERO; len],
+            buf: FixedBuffer::new(),
             head: 0,
             len,
         }
@@ -73,22 +91,28 @@ impl<T: Transcendental> DelayRing<T> {
         }
         self.head = (self.head + input.len()) % self.len;
     }
+
+    /// Zero the ring and reset the head.
+    pub(crate) fn clear(&mut self) {
+        self.buf.fill(T::ZERO);
+        self.head = 0;
+    }
 }
 
-impl<T: Transcendental> RillProgram<T> {
+impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// Create a program from a compiled IR. Allocates state, delays, registers,
     /// and builds the execution schedule. Built-ins are NOT instantiated — use
     /// [`new_with`](Self::new_with) if the IR references built-in functions.
     pub fn new(ir: Ir) -> Self {
-        let block_state = vec![Vec::new(); ir.state.block_state_slots];
-        let block_state_next = vec![Vec::new(); ir.state.block_state_slots];
+        let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let delays = ir
             .state
             .delay_lens
             .iter()
             .map(|&l| DelayRing::new(l))
             .collect();
-        let block_regs = vec![Vec::new(); ir.num_regs];
+        let block_regs = vec![FixedBuffer::new(); ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
@@ -203,15 +227,15 @@ impl<T: Transcendental> RillProgram<T> {
             }
         }
 
-        let block_state = vec![Vec::new(); ir.state.block_state_slots];
-        let block_state_next = vec![Vec::new(); ir.state.block_state_slots];
+        let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let delays = ir
             .state
             .delay_lens
             .iter()
             .map(|&l| DelayRing::new(l))
             .collect();
-        let block_regs = vec![Vec::new(); ir.num_regs];
+        let block_regs = vec![FixedBuffer::new(); ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
@@ -232,25 +256,6 @@ impl<T: Transcendental> RillProgram<T> {
             params_dirty,
             params_meta,
         })
-    }
-
-    /// Ensure every block register and block-state buffer can hold `n` samples.
-    pub(crate) fn ensure_block_len(&mut self, n: usize) {
-        for r in &mut self.block_regs {
-            if r.len() < n {
-                r.resize(n, T::ZERO);
-            }
-        }
-        for b in &mut self.block_state {
-            if b.len() < n {
-                b.resize(n, T::ZERO);
-            }
-        }
-        for b in &mut self.block_state_next {
-            if b.len() < n {
-                b.resize(n, T::ZERO);
-            }
-        }
     }
 
     /// Swap the double-buffered block feedback state at the end of a tick.
@@ -307,7 +312,7 @@ impl<T: Transcendental> RillProgram<T> {
     }
 }
 
-impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
+impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
         let mut outs: [&mut [T]; 1] = [output];
@@ -323,8 +328,7 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
             b.fill(T::ZERO);
         }
         for d in &mut self.delays {
-            d.buf.fill(T::ZERO);
-            d.head = 0;
+            d.clear();
         }
         for b in &mut self.builtins {
             match b {
@@ -335,7 +339,7 @@ impl<T: Transcendental> Algorithm<T> for RillProgram<T> {
     }
 }
 
-impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
+impl<T: Transcendental, const BUF: usize> MultichannelAlgorithm<T> for RillProgram<T, BUF> {
     fn num_inputs(&self) -> usize {
         self.ir.num_inputs
     }
@@ -354,7 +358,7 @@ impl<T: Transcendental> MultichannelAlgorithm<T> for RillProgram<T> {
     }
 }
 
-impl<T: Transcendental> BlockBuiltin<T> for RillProgram<T> {
+impl<T: Transcendental, const BUF: usize> BlockBuiltin<T> for RillProgram<T, BUF> {
     fn set_param(&mut self, index: usize, value: &ParamValue) {
         self.set_param(index, value.clone());
     }

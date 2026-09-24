@@ -1,11 +1,12 @@
 //! IR evaluator: the block-only executor.
 
+use rill_core::buffer::FixedBuffer;
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 
 use crate::ir::{BinArith, Instr, UnOp};
-use crate::program::RillProgram;
+use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
 
 fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
@@ -16,7 +17,9 @@ fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     }
 }
 
-pub(crate) fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) {
+pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+) {
     let n = prog.ir.builtins.len();
     for instance in 0..n {
         let blen = prog.ir.builtins[instance].param_bindings.len();
@@ -37,14 +40,14 @@ pub(crate) fn push_builtin_params<T: Transcendental>(prog: &mut RillProgram<T>) 
 
 /// Run one block via the schedule. Every step is a whole-buffer operation.
 /// Supports N inputs → M outputs.
-pub fn run_block_mimo<T: Transcendental>(
-    prog: &mut RillProgram<T>,
+pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
     inputs: &[&[T]],
     outputs: &mut [&mut [T]],
 ) {
     push_builtin_params(prog);
     let n = outputs.first().map(|o| o.len()).unwrap_or(0);
-    prog.ensure_block_len(n);
+    debug_assert!(n <= BUF, "block length {n} exceeds BUF {BUF}");
 
     // Move the step list out of `prog` so we can borrow `prog`'s registers
     // mutably while iterating. `mem::take` leaves an empty `Vec` behind — no
@@ -70,8 +73,8 @@ pub fn run_block_mimo<T: Transcendental>(
 }
 
 /// Execute a single whole-buffer instruction.
-fn exec_block_op<T: Transcendental>(
-    prog: &mut RillProgram<T>,
+fn exec_block_op<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
     idx: usize,
     inputs: &[&[T]],
     n: usize,
@@ -105,24 +108,21 @@ fn exec_block_op<T: Transcendental>(
             prog.delays[line].read_block(&mut prog.block_regs[dst][..n]);
         }
         Instr::Move { dst, src } => {
-            let mut tmp = std::mem::take(&mut prog.block_regs[dst]);
-            tmp[..n].copy_from_slice(&prog.block_regs[src][..n]);
-            prog.block_regs[dst] = tmp;
+            let mut scratch = [T::ZERO; BUF];
+            scratch[..n].copy_from_slice(&prog.block_regs[src][..n]);
+            prog.block_regs[dst][..n].copy_from_slice(&scratch[..n]);
         }
         Instr::Un { dst, op, src } => {
-            let mut out = std::mem::take(&mut prog.block_regs[dst]);
-            apply_un_slice(op, &prog.block_regs[src][..n], &mut out[..n]);
-            prog.block_regs[dst] = out;
+            let mut scratch = [T::ZERO; BUF];
+            scratch[..n].copy_from_slice(&prog.block_regs[src][..n]);
+            apply_un_slice(op, &scratch[..n], &mut prog.block_regs[dst][..n]);
         }
         Instr::Bin { dst, op, a, b } => {
-            let mut out = std::mem::take(&mut prog.block_regs[dst]);
-            apply_bin_slice(
-                op,
-                &prog.block_regs[a][..n],
-                &prog.block_regs[b][..n],
-                &mut out[..n],
-            );
-            prog.block_regs[dst] = out;
+            let mut sa = [T::ZERO; BUF];
+            let mut sb = [T::ZERO; BUF];
+            sa[..n].copy_from_slice(&prog.block_regs[a][..n]);
+            sb[..n].copy_from_slice(&prog.block_regs[b][..n]);
+            apply_bin_slice(op, &sa[..n], &sb[..n], &mut prog.block_regs[dst][..n]);
         }
         Instr::WriteBlockState { slot, src } => {
             prog.block_state_next[slot][..n].copy_from_slice(&prog.block_regs[src][..n]);
@@ -143,15 +143,19 @@ fn exec_block_op<T: Transcendental>(
         }
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, src, .. } => {
-            let mut tmp = std::mem::take(&mut prog.block_regs[dst]);
-            tmp[..n].copy_from_slice(&prog.block_regs[src][..n]);
-            prog.block_regs[dst] = tmp;
+            let mut scratch = [T::ZERO; BUF];
+            scratch[..n].copy_from_slice(&prog.block_regs[src][..n]);
+            prog.block_regs[dst][..n].copy_from_slice(&scratch[..n]);
         }
     }
 }
 
 /// Execute a whole-buffer foreign built-in (opaque `Algorithm`).
-fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, n: usize) {
+fn exec_foreign_block<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    idx: usize,
+    n: usize,
+) {
     if let Instr::CallBlock {
         dst: first_dst,
         srcs,
@@ -161,6 +165,11 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
         let bi = &prog.ir.builtins[instance];
         let n_in = bi.signal_ins;
         let n_out = bi.signal_outs;
+        assert!(
+            n_in <= MAX_BUILTIN_CHANNELS && n_out <= MAX_BUILTIN_CHANNELS,
+            "built-in '{0}' has {n_in}→{n_out} channels, exceeding MAX_BUILTIN_CHANNELS ({MAX_BUILTIN_CHANNELS})",
+            bi.name
+        );
 
         if n_in <= 1 && n_out == 1 {
             assert!(
@@ -169,49 +178,71 @@ fn exec_foreign_block<T: Transcendental>(prog: &mut RillProgram<T>, idx: usize, 
                 srcs[0],
                 first_dst,
             );
-            let mut out = std::mem::take(&mut prog.block_regs[first_dst]);
+            let mut scratch = [T::ZERO; BUF];
             let maybe_in = if n_in == 0 {
                 None
             } else {
-                Some(&prog.block_regs[srcs[0]][..n] as &[T])
+                scratch[..n].copy_from_slice(&prog.block_regs[srcs[0]][..n]);
+                Some(&scratch[..n])
             };
             match &mut prog.builtins[instance] {
                 crate::program::BuiltinInst::Block(b) => {
-                    let _ = b.process(maybe_in, &mut out[..n]);
+                    let _ = b.process(maybe_in, &mut prog.block_regs[first_dst][..n]);
                 }
                 crate::program::BuiltinInst::MultichannelBlock(_) => {
                     unreachable!("ForeignBlock fast path with multichannel builtin")
                 }
             }
-            prog.block_regs[first_dst] = out;
         } else {
             match &mut prog.builtins[instance] {
                 crate::program::BuiltinInst::MultichannelBlock(mb) => {
-                    let inputs: Vec<&[T]> = (0..n_in)
-                        .map(|ch| &prog.block_regs[srcs[ch]][..n])
-                        .collect();
-                    let mut out_bufs: Vec<Vec<T>> = (0..n_out).map(|_| vec![T::ZERO; n]).collect();
-                    let mut out_slices: Vec<&mut [T]> =
-                        out_bufs.iter_mut().map(|v| v.as_mut_slice()).collect();
-                    let _ = MultichannelAlgorithm::process(mb.as_mut(), &inputs, &mut out_slices);
-                    for (ch, out_buf) in out_bufs.iter().enumerate() {
-                        let reg_idx = first_dst + ch;
-                        prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[..n]);
+                    // Two-phase: snapshot all input channels into stack scratch
+                    // (they may alias the destination registers), then write the
+                    // outputs directly into the destination register store.
+                    let mut in_bufs: [FixedBuffer<T, BUF>; MAX_BUILTIN_CHANNELS] =
+                        std::array::from_fn(|_| FixedBuffer::new());
+                    for ch in 0..n_in {
+                        in_bufs[ch][..n].copy_from_slice(&prog.block_regs[srcs[ch]][..n]);
                     }
+                    let input_refs: [&[T]; MAX_BUILTIN_CHANNELS] =
+                        std::array::from_fn(|i| &in_bufs[i][..n]);
+                    let dst_bufs = &mut prog.block_regs[first_dst..first_dst + n_out];
+                    // Real output channels followed by zero-length dummies so the
+                    // stack array always yields exactly MAX_BUILTIN_CHANNELS slots.
+                    let mut empties: [[T; 0]; MAX_BUILTIN_CHANNELS] = std::array::from_fn(|_| []);
+                    let mut it = dst_bufs
+                        .iter_mut()
+                        .map(|b| &mut b[..n])
+                        .chain(empties.iter_mut().map(|d| &mut d[..]));
+                    let mut out_refs: [&mut [T]; MAX_BUILTIN_CHANNELS] =
+                        std::array::from_fn(|_| it.next().unwrap());
+                    let _ = MultichannelAlgorithm::process(
+                        mb.as_mut(),
+                        &input_refs[..n_in],
+                        &mut out_refs[..n_out],
+                    );
                 }
                 crate::program::BuiltinInst::Block(b) => {
-                    let inp: Vec<T> = (0..n_in)
-                        .flat_map(|ch| {
-                            let reg_idx = srcs[ch];
-                            prog.block_regs[reg_idx][..n].iter().copied()
-                        })
-                        .collect();
-                    let mut out_buf = vec![T::ZERO; n_out * n];
-                    let _ = b.process(Some(&inp), &mut out_buf);
+                    // Interleaved path: a contiguous input/output pair, both on
+                    // the stack (bounded by MAX_BUILTIN_CHANNELS). Nested arrays
+                    // `[[T; BUF]; N]` are laid out contiguously, so the flattened
+                    // view is a single `[T; BUF * N]` block.
+                    let mut inp: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
+                        std::array::from_fn(|_| [T::ZERO; BUF]);
+                    for (ch, &reg_idx) in srcs.iter().enumerate() {
+                        inp[ch][..n].copy_from_slice(&prog.block_regs[reg_idx][..n]);
+                    }
+                    let mut out_buf: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
+                        std::array::from_fn(|_| [T::ZERO; BUF]);
+                    let _ = b.process(
+                        Some(&inp.as_flattened()[..n_in * n]),
+                        &mut out_buf.as_flattened_mut()[..n_out * n],
+                    );
                     for ch in 0..n_out {
                         let reg_idx = first_dst + ch;
                         let start = ch * n;
-                        prog.block_regs[reg_idx][..n].copy_from_slice(&out_buf[start..start + n]);
+                        prog.block_regs[reg_idx][..n]
+                            .copy_from_slice(&out_buf.as_flattened()[start..start + n]);
                     }
                 }
             }

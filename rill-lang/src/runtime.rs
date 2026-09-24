@@ -26,7 +26,7 @@ impl Runtime {
         driver: Arc<dyn IoDriver>,
         capture: Option<Arc<dyn IoCapture>>,
         playback: Option<Arc<dyn IoPlayback>>,
-        mut program: ProgramRunner,
+        mut program: ProgramRunner<BUF>,
         running: Arc<AtomicBool>,
     ) -> Result<(), String> {
         let (cap, pb) = (capture.clone(), playback.clone());
@@ -60,13 +60,13 @@ impl Runtime {
         driver: Arc<dyn IoDriver>,
         capture: Option<Arc<dyn IoCapture>>,
         playback: Option<Arc<dyn IoPlayback>>,
-        stream: CompiledStream<f32>,
+        stream: CompiledStream<f32, BUF>,
         running: Arc<AtomicBool>,
     ) -> Result<(), String> {
         let (cap, pb) = (capture, playback);
         match stream {
             CompiledStream::Single(engine) => {
-                let runner = ProgramRunner::new(engine, None);
+                let runner = ProgramRunner::<BUF>::new(engine, None);
                 Self::launch::<BUF>(driver, cap, pb, runner, running)
             }
             CompiledStream::Duplex {

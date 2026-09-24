@@ -69,7 +69,7 @@ fn stereo_mixer_to_mono_consumer_compiles() {
         ],
         vec![edge(0, 0, 2, 0), edge(1, 0, 2, 1), edge(2, 0, 3, 0)],
     );
-    let mut engine = compile_spec(&s, &test_registry(), 44100.0).unwrap();
+    let mut engine = compile_spec::<f32, 256>(&s, &test_registry(), 44100.0).unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut engine, &[], &mut [&mut out[..]]).unwrap();
     assert!(
@@ -89,7 +89,7 @@ fn free_input_port_becomes_a_wire() {
         ],
         vec![edge(0, 0, 1, 1)],
     );
-    let mut engine = compile_spec(&s, &test_registry(), 44100.0).unwrap();
+    let mut engine = compile_spec::<f32, 256>(&s, &test_registry(), 44100.0).unwrap();
     assert_eq!(
         rill_core::traits::MultichannelAlgorithm::num_inputs(&engine),
         1
@@ -111,7 +111,8 @@ fn heads_compile_as_builtins_with_shared_tape() {
     let prog = rill_lang::parser::parse(&rill_lang::lexer::tokenize(src).unwrap(), src.as_bytes())
         .unwrap();
     let mut weng =
-        rill_lang::compile_program_with_resources(&prog, &reg, 44100.0, &mut resources).unwrap();
+        rill_lang::compile_program_with_resources::<f32, 256>(&prog, &reg, 44100.0, &mut resources)
+            .unwrap();
     let dry = [1.0f32; 64];
     let fb = [0.0f32; 64];
     let mut wout = [0.0f32; 64];
@@ -122,7 +123,8 @@ fn heads_compile_as_builtins_with_shared_tape() {
     let prog = rill_lang::parser::parse(&rill_lang::lexer::tokenize(src).unwrap(), src.as_bytes())
         .unwrap();
     let mut reng =
-        rill_lang::compile_program_with_resources(&prog, &reg, 44100.0, &mut resources).unwrap();
+        rill_lang::compile_program_with_resources::<f32, 256>(&prog, &reg, 44100.0, &mut resources)
+            .unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut reng, &[], &mut [&mut out[..]]).unwrap();
     assert!(

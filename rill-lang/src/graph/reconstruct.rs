@@ -16,13 +16,13 @@ use crate::error::{CompileError, Span};
 use crate::graph::spec::{GraphEdgeKind, GraphSpec};
 
 /// Compile a [`GraphSpec`] into a runnable [`crate::program_engine::ProgramEngine`].
-pub fn compile_spec<T: Transcendental + 'static>(
+pub fn compile_spec<T: Transcendental + 'static, const BUF: usize>(
     spec: &GraphSpec,
     registry: &Registry<T>,
     sample_rate: f32,
-) -> Result<crate::program_engine::ProgramEngine<T>, CompileError> {
+) -> Result<crate::program_engine::ProgramEngine<T, BUF>, CompileError> {
     let program = reconstruct(spec, registry)?;
-    crate::compile_program(&program, registry, sample_rate)
+    crate::compile_program::<T, BUF>(&program, registry, sample_rate)
 }
 
 /// Reconstruct a [`GraphSpec`] into an rill-lang AST `Program`.

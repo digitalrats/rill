@@ -21,15 +21,15 @@ use crate::program_engine::ProgramEngine;
 /// The caller is responsible for wiring I/O backends and managing the
 /// driver lifecycle. Use [`apply`](ProgramRunner::apply) inside the
 /// process callback set on the driver.
-pub struct ProgramRunner {
-    engine: ProgramEngine<f32>,
+pub struct ProgramRunner<const BUF: usize> {
+    engine: ProgramEngine<f32, BUF>,
     parent_ref: Option<ActorRef<CommandEnum>>,
     _not_send_sync: PhantomData<*const ()>,
 }
 
-impl ProgramRunner {
+impl<const BUF: usize> ProgramRunner<BUF> {
     /// Create a new runner wrapping a compiled program engine.
-    pub fn new(engine: ProgramEngine<f32>, parent_ref: Option<ActorRef<CommandEnum>>) -> Self {
+    pub fn new(engine: ProgramEngine<f32, BUF>, parent_ref: Option<ActorRef<CommandEnum>>) -> Self {
         Self {
             engine,
             parent_ref,
@@ -43,7 +43,7 @@ impl ProgramRunner {
     }
 
     /// Reference to the underlying program engine.
-    pub fn engine(&self) -> &ProgramEngine<f32> {
+    pub fn engine(&self) -> &ProgramEngine<f32, BUF> {
         &self.engine
     }
 
@@ -77,7 +77,8 @@ mod tests {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
-        let engine = compile_graph::<f32>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
+        let engine =
+            compile_graph::<f32, 256>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
         let mut runner = ProgramRunner::new(engine, None);
 
         let tick = ClockTick {

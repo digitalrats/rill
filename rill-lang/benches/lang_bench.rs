@@ -12,7 +12,7 @@ fn make_input() -> Vec<f32> {
     (0..BLOCK).map(|i| (i as f32 * 0.017).sin() * 0.7).collect()
 }
 
-fn build(src: &str) -> RillProgram<f32> {
+fn build(src: &str) -> RillProgram<f32, 256> {
     compile::<f32>(src).expect("program compiles")
 }
 

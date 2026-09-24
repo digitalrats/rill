@@ -79,7 +79,7 @@ fn sine_graph_is_one_subprogram_with_nullbackend_input() {
     };
     let parts = partition(&s);
     assert_eq!(parts.len(), 1, "sine graph partitions to one subgraph");
-    let stream = compile(&s, &test_registry(), 44100.0).unwrap();
+    let stream = compile::<f32, 256>(&s, &test_registry(), 44100.0).unwrap();
     assert!(
         matches!(stream, CompiledStream::Single(_)),
         "sine graph compiles to a Single program"
@@ -146,7 +146,7 @@ fn tape_echo_splits_into_two_subprograms() {
             && pb.nodes.contains(&5)
     );
 
-    let stream = compile(&s, &test_registry(), 44100.0).unwrap();
+    let stream = compile::<f32, 256>(&s, &test_registry(), 44100.0).unwrap();
     match stream {
         CompiledStream::Duplex {
             recording: _,
