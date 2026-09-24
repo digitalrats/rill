@@ -79,14 +79,14 @@ fn exec_block_op<T: Transcendental, const BUF: usize>(
     inputs: &[&[T]],
     n: usize,
 ) {
-    match prog.ir.instrs[idx].clone() {
+    match &prog.ir.instrs[idx] {
         Instr::Const { dst, value } => {
-            let v = T::from_f64(value);
-            prog.block_regs[dst][..n].fill(v);
+            let v = T::from_f64(*value);
+            prog.block_regs[*dst][..n].fill(v);
         }
         Instr::LoadInput { dst, index } => {
-            let reg = &mut prog.block_regs[dst];
-            match inputs.get(index) {
+            let reg = &mut prog.block_regs[*dst];
+            match inputs.get(*index) {
                 Some(buf) => {
                     let m = buf.len().min(n);
                     reg[..m].copy_from_slice(&buf[..m]);
@@ -102,41 +102,41 @@ fn exec_block_op<T: Transcendental, const BUF: usize>(
             }
         }
         Instr::ReadBlockState { dst, slot } => {
-            prog.block_regs[dst][..n].copy_from_slice(&prog.block_state[slot][..n]);
+            prog.block_regs[*dst][..n].copy_from_slice(&prog.block_state[*slot][..n]);
         }
         Instr::ReadDelay { dst, line } => {
-            prog.delays[line].read_block(&mut prog.block_regs[dst][..n]);
+            prog.delays[*line].read_block(&mut prog.block_regs[*dst][..n]);
         }
         Instr::Move { dst, src } => {
             let mut scratch = [T::ZERO; BUF];
-            scratch[..n].copy_from_slice(&prog.block_regs[src][..n]);
-            prog.block_regs[dst][..n].copy_from_slice(&scratch[..n]);
+            scratch[..n].copy_from_slice(&prog.block_regs[*src][..n]);
+            prog.block_regs[*dst][..n].copy_from_slice(&scratch[..n]);
         }
         Instr::Un { dst, op, src } => {
             let mut scratch = [T::ZERO; BUF];
-            scratch[..n].copy_from_slice(&prog.block_regs[src][..n]);
-            apply_un_slice(op, &scratch[..n], &mut prog.block_regs[dst][..n]);
+            scratch[..n].copy_from_slice(&prog.block_regs[*src][..n]);
+            apply_un_slice(*op, &scratch[..n], &mut prog.block_regs[*dst][..n]);
         }
         Instr::Bin { dst, op, a, b } => {
             let mut sa = [T::ZERO; BUF];
             let mut sb = [T::ZERO; BUF];
-            sa[..n].copy_from_slice(&prog.block_regs[a][..n]);
-            sb[..n].copy_from_slice(&prog.block_regs[b][..n]);
-            apply_bin_slice(op, &sa[..n], &sb[..n], &mut prog.block_regs[dst][..n]);
+            sa[..n].copy_from_slice(&prog.block_regs[*a][..n]);
+            sb[..n].copy_from_slice(&prog.block_regs[*b][..n]);
+            apply_bin_slice(*op, &sa[..n], &sb[..n], &mut prog.block_regs[*dst][..n]);
         }
         Instr::WriteBlockState { slot, src } => {
-            prog.block_state_next[slot][..n].copy_from_slice(&prog.block_regs[src][..n]);
+            prog.block_state_next[*slot][..n].copy_from_slice(&prog.block_regs[*src][..n]);
         }
         Instr::WriteDelay { line, src } => {
-            prog.delays[line].write_block(&prog.block_regs[src][..n]);
+            prog.delays[*line].write_block(&prog.block_regs[*src][..n]);
         }
         Instr::ReadParam { dst, idx } => {
-            let v = T::from_f64(param_to_f64(&prog.params[idx]));
-            prog.block_regs[dst][..n].fill(v);
+            let v = T::from_f64(param_to_f64(&prog.params[*idx]));
+            prog.block_regs[*dst][..n].fill(v);
         }
         Instr::ReadActorParam { dst, param_idx } => {
-            let v = T::from_f64(param_to_f64(&prog.params[param_idx]));
-            prog.block_regs[dst][..n].fill(v);
+            let v = T::from_f64(param_to_f64(&prog.params[*param_idx]));
+            prog.block_regs[*dst][..n].fill(v);
         }
         Instr::CallBlock { .. } => {
             unreachable!("block built-in scheduled as a block op (should be ForeignBlock)")
@@ -144,8 +144,8 @@ fn exec_block_op<T: Transcendental, const BUF: usize>(
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, src, .. } => {
             let mut scratch = [T::ZERO; BUF];
-            scratch[..n].copy_from_slice(&prog.block_regs[src][..n]);
-            prog.block_regs[dst][..n].copy_from_slice(&scratch[..n]);
+            scratch[..n].copy_from_slice(&prog.block_regs[*src][..n]);
+            prog.block_regs[*dst][..n].copy_from_slice(&scratch[..n]);
         }
     }
 }
@@ -160,9 +160,9 @@ fn exec_foreign_block<T: Transcendental, const BUF: usize>(
         dst: first_dst,
         srcs,
         instance,
-    } = prog.ir.instrs[idx].clone()
+    } = &prog.ir.instrs[idx]
     {
-        let bi = &prog.ir.builtins[instance];
+        let bi = &prog.ir.builtins[*instance];
         let n_in = bi.signal_ins;
         let n_out = bi.signal_outs;
         assert!(
@@ -173,10 +173,10 @@ fn exec_foreign_block<T: Transcendental, const BUF: usize>(
 
         if n_in <= 1 && n_out == 1 {
             assert!(
-                n_in == 0 || first_dst != srcs[0],
+                n_in == 0 || *first_dst != srcs[0],
                 "ForeignBlock register aliasing: input reg {} == output reg {}.",
                 srcs[0],
-                first_dst,
+                *first_dst,
             );
             let mut scratch = [T::ZERO; BUF];
             let maybe_in = if n_in == 0 {
@@ -185,16 +185,16 @@ fn exec_foreign_block<T: Transcendental, const BUF: usize>(
                 scratch[..n].copy_from_slice(&prog.block_regs[srcs[0]][..n]);
                 Some(&scratch[..n])
             };
-            match &mut prog.builtins[instance] {
+            match &mut prog.builtins[*instance] {
                 crate::program::BuiltinInst::Block(b) => {
-                    let _ = b.process(maybe_in, &mut prog.block_regs[first_dst][..n]);
+                    let _ = b.process(maybe_in, &mut prog.block_regs[*first_dst][..n]);
                 }
                 crate::program::BuiltinInst::MultichannelBlock(_) => {
                     unreachable!("ForeignBlock fast path with multichannel builtin")
                 }
             }
         } else {
-            match &mut prog.builtins[instance] {
+            match &mut prog.builtins[*instance] {
                 crate::program::BuiltinInst::MultichannelBlock(mb) => {
                     // Two-phase: snapshot all input channels into stack scratch
                     // (they may alias the destination registers), then write the
@@ -206,7 +206,7 @@ fn exec_foreign_block<T: Transcendental, const BUF: usize>(
                     }
                     let input_refs: [&[T]; MAX_BUILTIN_CHANNELS] =
                         std::array::from_fn(|i| &in_bufs[i][..n]);
-                    let dst_bufs = &mut prog.block_regs[first_dst..first_dst + n_out];
+                    let dst_bufs = &mut prog.block_regs[*first_dst..*first_dst + n_out];
                     // Real output channels followed by zero-length dummies so the
                     // stack array always yields exactly MAX_BUILTIN_CHANNELS slots.
                     let mut empties: [[T; 0]; MAX_BUILTIN_CHANNELS] = std::array::from_fn(|_| []);
@@ -239,7 +239,7 @@ fn exec_foreign_block<T: Transcendental, const BUF: usize>(
                         &mut out_buf.as_flattened_mut()[..n_out * n],
                     );
                     for ch in 0..n_out {
-                        let reg_idx = first_dst + ch;
+                        let reg_idx = *first_dst + ch;
                         let start = ch * n;
                         prog.block_regs[reg_idx][..n]
                             .copy_from_slice(&out_buf.as_flattened()[start..start + n]);
