@@ -1294,6 +1294,28 @@ mod tests {
     }
 
     #[test]
+    fn cyclic_caf_in_builtin_param_is_error() {
+        // a = b; b = a; main = _ : lowpass a 0.7
+        // The cycle is reached through a BUILTIN PARAM, exercising caf_const_impl's
+        // visited-set guard (not the caf_lifting guard in lower_ref).
+        let p = parse(
+            &tokenize("a = b; b = a; main = _ : lowpass a 0.7").unwrap(),
+            "a = b; b = a; main = _ : lowpass a 0.7".as_bytes(),
+        )
+        .unwrap();
+        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let cafs = typed.cafs.clone();
+        let reduced = reduce_with_cafs(&typed.program, &cafs);
+        let tp = crate::types::infer::TypedProgram {
+            program: reduced,
+            process_ty: typed.process_ty,
+            cafs: cafs.clone(),
+        };
+        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        assert!(res.is_err());
+    }
+
+    #[test]
     fn unreferenced_caf_is_not_lowered() {
         // dead = sine 440 0.5 0; main = _ * 0.5  -> no sine builtin
         let ir = ir_with_cafs("dead = sine 440 0.5 0; main = _ * 0.5");
