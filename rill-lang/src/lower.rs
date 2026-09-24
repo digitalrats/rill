@@ -810,6 +810,15 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
+        if len as usize > crate::program::MAX_DELAY_LEN {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "delay length {len} exceeds MAX_DELAY_LEN ({})",
+                    crate::program::MAX_DELAY_LEN
+                ),
+                span,
+            });
+        }
         let signal = self.lower(lhs, args)?;
         let src = signal[0];
         if len == 0 {
@@ -1152,6 +1161,19 @@ mod tests {
     fn delay_allocates_line() {
         let ir = ir_of("main = _ @ 3");
         assert_eq!(ir.state.delay_lens, vec![3]);
+    }
+
+    #[test]
+    fn delay_over_max_is_compile_error() {
+        // `@ 70000` exceeds MAX_DELAY_LEN (65536): must be a compile error, not
+        // a construction-time panic in DelayRing::new.
+        let p = parse(
+            &tokenize("main = _ @ 70000").unwrap(),
+            "main = _ @ 70000".as_bytes(),
+        )
+        .unwrap();
+        let tp = infer_program(&p).unwrap();
+        assert!(lower(&tp).is_err());
     }
 
     #[test]
