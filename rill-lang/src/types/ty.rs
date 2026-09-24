@@ -1,4 +1,4 @@
-//! Type representation for the HM signal layer.
+//! Arrow type model: a program is a block transform.
 //!
 //! Signal types are structured in three levels: the per-sample scalar type
 //! (`Scalar`), one signal channel (`Block`), and a block transform (`ArrowTy`,

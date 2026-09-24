@@ -24,17 +24,22 @@ graph. The compiler is tiny and self-contained, and the compiled program obeys
 rill's real-time rules: no heap allocation, no locks, and no syscalls on the hot
 path.
 
-Four properties define the language:
+Five properties define the language:
 
-- **Block-diagram algebra (Faust-style).** Programs are compositions of signal
-  processors via geometric combinators (`:` `,` `<:` `:>` `~`), not imperative
-  statements. There are no runtime variables — only signals flowing through
-  blocks.
+- **Block-arrow algebra.** A program is an **arrow** — a block transform over
+  channels, `(I₁:Block<Scalar>…Iₙ) → (O₁:Block<Scalar>…Oₘ)` — executed by the
+  backend on each hardware tick. Programs are compositions of signal processors
+  via geometric combinators (`:` `,` `<:` `:>` `~` `@`), which are arrow laws,
+  not imperative statements. There are no runtime variables — only signal blocks
+  flowing through wires.
 - **Haskell-style definitions.** Functions and constants use a unified syntax
-  (`name args = body`), distinguished only by parameter count. All binding groups
+  (`name args = body`). A **closed** top-level definition — no λ-parameters and
+  zero input channels — is a single shared CAF instance, evaluated once; every
+  other definition is macro-instantiated per reference site. All binding groups
   (`where`, `let`, top-level) have mutual visibility.
-- **β-reduction.** User-defined function calls are fully inlined before lowering.
-  The final IR is flat — only Wire, constants, built-ins, and combinators remain.
+- **β-reduction.** User-defined function calls are fully inlined before lowering;
+  references to closed CAFs are lifted once and shared instead. The final IR is
+  flat — only Wire, constants, built-ins, and combinators remain.
 - **Block-only execution.** The engine runs every instruction whole-buffer
   (SIMD-friendly); per-sample state (filters, integrators, delay lines) lives
   exclusively inside whole-block `BlockBuiltin` implementations.
@@ -57,11 +62,30 @@ A program is a list of mutually-recursive definitions, each terminated by `;`.
 Exactly one must be named `main` — the entry point. `main` must reduce to a
 signal block of arity **(0 or 1) → 1**.
 
+### A program is an arrow
+
+Every program is an **arrow** `(I₁:Block<Scalar>…Iₙ) → (O₁:Block<Scalar>…Oₘ)` — a
+block transform over channels, in Hughes' sense of *Arrows*. It is *not* a
+monad: parallel composition (`,`), for instance, cannot be expressed as monadic
+bind. The type system has three levels:
+
+| Level | Type | Meaning |
+|---|---|---|
+| sample | `Scalar` | one element inside a block (`int` / `float` / type variable) |
+| channel | `Block<Scalar>` | one signal channel — a fixed-size buffer of samples (`BUF_SIZE`), mutated in place each tick |
+| arrow | `ArrowTy` | a block transform `(I₁:Block…Iₙ) → (O₁:Block…Oₘ)` |
+
+On each hardware tick the backend feeds n input blocks through the program and
+receives m output blocks. Stateful DSP (oscillators, filters, delay lines)
+lives *inside* the arrow and persists between ticks.
+
 ## Definitions and functions
 
 rill-lang uses a unified syntax for constants and functions — both are
-definitions of the form `name params = body`. The only difference is the
-parameter count: 0 params = constant, 1+ params = function:
+definitions of the form `name params = body`. The parameter count separates
+constants (0 params) from functions (1+ params); whether a definition is
+**shared** or **macro-instantiated** depends on its input channels — see
+[Free variables (CAF)](#free-variables-caf):
 
 ```faust
 gain x = _ * x;    // function of one argument (x is a constant parameter)
@@ -172,6 +196,47 @@ main  = gain;
 Exactly one must be named `main`. All top-level definitions are mutually
 recursive and visible to each other.
 
+### Free variables (CAF)
+
+A top-level definition with **no λ-parameters and zero input channels** is
+**closed** and becomes a *Constant Applicative Form* (CAF) — Haskell's
+shared-instance semantics. The compiler evaluates it **once** and every
+reference — including references from inside user-defined functions — sees the
+**same** instance:
+
+```faust
+osc  = sine 440.0 0.5 0.0;
+main = osc, osc;          // both channels feed the same shared oscillator
+```
+
+Definitions with input channels (e.g. `gain = _ * 0.5`) are **open**: they keep
+macro semantics and are re-instantiated at each reference site, exactly as
+β-reduction dictates.
+
+> **Behavior change.** A closed stateful local referenced two or more times used
+> to compile into N independent copies; it is now **1 shared instance**:
+>
+> ```faust
+> osc = sine 440 0.5 0;
+> main = osc, osc;   // was 2 oscillators, now 1 shared
+> ```
+>
+> To get independent instances, define distinct names or parametrize the
+> definition with a λ-argument.
+
+Three consequences of the CAF model:
+
+- **Binding-level laziness.** A top-level definition that is never referenced
+  produces no code (dead-code elimination by reference). `where`/`let` bindings
+  keep macro semantics — they are re-instantiated per enclosing call, matching
+  Haskell.
+- **Global buffers.** A buffer resource declared at top level (e.g.
+  `tape = TapeLoop 4096`) is closed, so functions capture it as a free variable;
+  the existing `write_head`/`read_head` machinery resolves it at lowering. No
+  new buffer syntax is needed.
+- **Recursion.** A self-referential closed definition (`a = a`) is a compile
+  error, not a stack overflow.
+
 ### `main` with parameters
 
 `main` can declare input parameters — their names become slots in the compiled
@@ -225,25 +290,28 @@ recognises `1.0 + 2.0i` as syntactic sugar for `complex 1.0 2.0`.
 
 ## Combinators
 
-The block-diagram algebra composes diagrams. For `A : (aᵢ, aₒ)` and
-`B : (bᵢ, bₒ)`:
+The block-diagram combinators are the **arrow laws** of the category of block
+transforms: `:` is composition, `,` is the product, `<:` fan-out, `:>` fan-in
+(sum), `~` the 1-block delayed loop, and `@` block-level delay. For
+`A : (aᵢ, aₒ)` and `B : (bᵢ, bₒ)`:
 
-| Form | Name | Requirement | Resulting arity |
+| Form | Arrow law | Requirement | Resulting arity |
 |---|---|---|---|
-| `A : B` | sequential | `aₒ = bᵢ` | `(aᵢ, bₒ)` |
-| `A , B` | parallel | — | `(aᵢ + bᵢ, aₒ + bₒ)` |
-| `A <: B` | split (fan-out) | `bᵢ` is a multiple of `aₒ` | `(aᵢ, bₒ)` |
-| `A :> B` | merge (fan-in, sums) | `aₒ` is a multiple of `bᵢ` | `(aᵢ, bₒ)` |
-| `A ~ B` | feedback tap | `bₒ ≤ aᵢ` | `(aᵢ − bₒ, aₒ)` |
-| `A @ n` | integer delay | `A` is `_ → 1`, `n` a constant int | same as `A` |
+| `A : B` | composition (`Seq`) | `aₒ = bᵢ` | `(aᵢ, bₒ)` |
+| `A , B` | product (`Par`) | — | `(aᵢ + bᵢ, aₒ + bₒ)` |
+| `A <: B` | split / fan-out (`Split`) | `bᵢ` is a multiple of `aₒ` | `(aᵢ, bₒ)` |
+| `A :> B` | merge / fan-in sum (`Merge`) | `aₒ` is a multiple of `bᵢ` | `(aᵢ, bₒ)` |
+| `A ~ B` | 1-block delayed loop (`Loop`) | `bₒ ≤ aᵢ` | `(aᵢ − bₒ, aₒ)` |
+| `A @ n` | block-level delay (`Delay`) | `A` is `_ → 1`, `n` a constant int | same as `A` |
 
-Feedback (`~`) routes `B`'s outputs back into `A`'s trailing inputs through a
-one-tick (block) delay — this models a unidirectional feedback edge; `B` is
-evaluated independently and does not consume `A`'s output. Stateful filters and
-recursive structures are whole-block built-ins (per-sample state lives inside
-their `Algorithm` implementation). The delay operator `@` requires a compile-time
-constant integer length (constant-folded from integer literals and arithmetic on
-them); variable delays are not part of the MVP.
+Feedback (`~`) is the 1-block delayed **loop**: `B`'s outputs feed back into
+`A`'s trailing inputs through one block (one tick) of delay — a unidirectional
+feedback edge. `B` is evaluated independently and does not consume `A`'s output.
+Stateful filters and recursive structures are whole-block built-ins (per-sample
+state lives inside their `Algorithm` implementation). The delay operator `@` is
+the block-level delay: it requires a compile-time constant integer length
+(constant-folded from integer literals and arithmetic on them); variable delays
+are not part of the MVP.
 
 ### Operator precedence
 
@@ -269,7 +337,9 @@ main = abs _;                  // full-wave rectifier
 
 ## Type checking
 
-`rill-lang` runs a Hindley-Milner inference pass before code generation:
+`rill-lang` runs a Hindley-Milner inference pass before code generation. Every
+term is typed as an **arrow** — an `ArrowTy` over channels, each channel a
+`Block<Scalar>`:
 
 - **Scalar types** — `int`, `float` (the runtime `T`), and type variables — are
   unified with an occurs check. Overloaded operators default to the runtime
@@ -661,7 +731,9 @@ lowering → scheduling**.
 After type inference, all user-defined function calls are eliminated by
 substituting argument values directly into the function body. This happens at
 compile time, producing a flat expression containing only Wire, constants,
-built-ins, and combinators:
+built-ins, and combinators. References to **closed CAFs** are the one exception —
+they are not inlined here, but lifted once at lowering and shared by every
+reference site (see [Free variables (CAF)](#free-variables-caf)):
 
 ```faust
 // Before reduction:
@@ -678,9 +750,10 @@ single expression.
 
 ### Scheduling
 
-The interpreter compiles the linear IR into an **execution schedule** via SCC
-(strongly-connected component) analysis of the data-dependency graph. Every step
-is a whole-buffer operation:
+On each hardware tick the arrow runs: the backend feeds n input blocks in, the
+schedule executes, m output blocks come out. The interpreter compiles the linear
+IR into an **execution schedule** via SCC (strongly-connected component) analysis
+of the data-dependency graph. Every step is a whole-buffer operation:
 
 - **Block steps** — all instructions (arithmetic, math builtins, fan-out/fan-in,
   block-state read/write, delay read/write) run **whole-buffer** through the
@@ -691,9 +764,10 @@ is a whole-buffer operation:
   `Algorithm::process` invocations. A built-in's internal per-sample recurrence
   (e.g. a filter's state) is invisible to the engine.
 
-The whole-buffer register store is a flat `Vec<Vec<T>>` grown once to the block
-length and reused across calls. The hot `process()` path performs no heap
-allocation, no locks, and no syscalls, honoring rill's real-time rules.
+The whole-buffer register store is a `Vec<FixedBuffer<T, BUF>>` — fixed buffers
+of the program's `BUF_SIZE`, pre-allocated at construction and mutated in place,
+reused across calls. The hot `process()` path performs no heap allocation, no
+locks, and no syscalls, honoring rill's real-time rules.
 
 Feedback (`~`) and delay (`@`) are block-level: feedback uses a double-buffered
 block state with a one-tick shadow copy (swapped at tick end), and delay uses a
@@ -755,10 +829,12 @@ a filter parameter with `param(...)` adds only the per-block coefficient update.
 
 ## Status
 
-The language is feature-complete for signal authoring: block-diagram
-combinators, feedback and delay, Hindley-Milner types, Haskell-style definitions
-with β-reduction, `let` and `where` binding groups with mutual visibility,
-hybrid block/sample execution, a 27-built-in registry (DSP, effects, oscillators,
+The language is feature-complete for signal authoring: a block-arrow model
+(`Scalar` / `Block` / `ArrowTy`) with block-diagram combinators as arrow laws,
+feedback and delay, Hindley-Milner types, Haskell-style definitions with
+β-reduction, CAF free variables (shared closed instances) with binding-level
+laziness, `let` and `where` binding groups with mutual visibility, hybrid
+block/sample execution, a 27-built-in registry (DSP, effects, oscillators,
 mixer/EQ, analog, spectral, complex, lofi), RT-safe named parameters (`param()`
 and `?name`), records for built-in configuration, multi-IO via
 `MultichannelAlgorithm`, and graph compilation (`compile_graph()` →
