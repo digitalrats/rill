@@ -122,7 +122,7 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
     let (program, resource_decls) = extract_resources(program);
 
     let mut typed = types::infer::infer_program_with(&program, registry)?;
-    typed.program = reduce::reduce(&typed.program);
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
     let ir = lower::lower_with(&typed, registry, sample_rate)?;
 
     // The declared-resource check only applies when the registry is auto-created
