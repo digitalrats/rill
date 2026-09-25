@@ -263,8 +263,38 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
+                if arms.is_empty() {
+                    return Err(CompileError::Type {
+                        msg: "match requires at least one arm".into(),
+                        span: *span,
+                    });
+                }
+                // v1 static dispatch: v1 has no runtime control flow, so the
+                // match selects its arm at compile time. When the scrutinee's
+                // ctor is statically known (a literal sum or an inlined value
+                // def that is one), lower ONLY the matching arm — emitting the
+                // other arms would run dead bodies and select a None register.
+                // An unbound scrutinee (`_`) assumes the first arm's ctor: the
+                // value arrives constructed per the first arm in v1's static
+                // world (no runtime value inputs).
+                let selected_arm = match self.static_scrutinee_ctor(scrutinee.as_ref()) {
+                    Some(cname) => {
+                        arms.iter()
+                            .position(|(c, _, _)| c == &cname)
+                            .ok_or_else(|| CompileError::Type {
+                                msg: format!("match over `{cname}` has no matching arm"),
+                                span: *span,
+                            })?
+                    }
+                    None => 0,
+                };
+                // Lower the selected arm only, binding its params to the match's
+                // payload regs.
                 let mut result: Option<(usize, ValueTy)> = None;
-                for (ctor, params, body) in arms {
+                for (arm_idx, (ctor, params, body)) in arms.iter().enumerate() {
+                    if arm_idx != selected_arm {
+                        continue;
+                    }
                     let ctor_idx = ctors.iter().position(|(c, _)| c == ctor).ok_or_else(|| {
                         CompileError::Type {
                             msg: format!("unknown constructor `{ctor}` for `{sum_name}`"),
@@ -288,12 +318,10 @@ impl<'a> Lowerer<'a> {
                         scope.insert(p.name.clone(), (payload_regs[idx], pty));
                     }
                     self.value_locals.push(scope);
-                    let arm = self.lower_value(body);
+                    let (arm_reg, arm_vty) = self.lower_value(body)?;
                     self.value_locals.pop();
-                    let (arm_reg, arm_vty) = arm?;
-                    if result.is_none() {
-                        result = Some((arm_reg, arm_vty));
-                    }
+                    result = Some((arm_reg, arm_vty));
+                    break;
                 }
                 result.ok_or_else(|| CompileError::Type {
                     msg: "match requires at least one arm".into(),
@@ -444,6 +472,38 @@ impl<'a> Lowerer<'a> {
                 msg: format!("`{name}` is not a value expression in v1"),
                 span,
             }),
+        }
+    }
+
+    /// Resolve the constructor name of a scrutinee expression when it is
+    /// statically known at compile time: a literal sum construction
+    /// (`Circle 1.5`) or a `Ref` to an inlined value definition whose body is
+    /// one. Returns `None` when the constructor cannot be determined statically
+    /// (an unbound `_` wire, a field projection, a nested match, ...).
+    fn static_scrutinee_ctor(&self, e: &Expr) -> Option<String> {
+        self.static_scrutinee_ctor_impl(e, &mut HashSet::new())
+    }
+
+    fn static_scrutinee_ctor_impl(
+        &self,
+        e: &Expr,
+        visited: &mut HashSet<String>,
+    ) -> Option<String> {
+        match e {
+            Expr::Apply { name, .. } => self.sum_ctor(name).map(|_| name.clone()),
+            Expr::Ref(name, _) => {
+                if visited.contains(name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    visited.insert(name.clone());
+                    let r = self.static_scrutinee_ctor_impl(&body, visited);
+                    visited.remove(name);
+                    return r;
+                }
+                None
+            }
+            _ => None,
         }
     }
 
@@ -1911,5 +1971,59 @@ mod tests {
             .value_instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueMatch { .. })));
+    }
+
+    #[test]
+    fn match_selects_matching_arm_not_first() {
+        // The matching arm is NOT first: static dispatch must select Circle's
+        // arm, emitting a single ValueMatch for Circle's ctor index and routing
+        // the output to the Circle arm's body register (not Rect's `w`, which
+        // would be None at runtime).
+        let ir = ir_of(
+            "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Rect w h => w; Circle r => r; }",
+        );
+        let matches = ir
+            .value_instrs
+            .iter()
+            .filter(|i| matches!(i, ValueInstr::ValueMatch { .. }))
+            .count();
+        assert_eq!(
+            matches, 1,
+            "static dispatch must emit exactly one ValueMatch"
+        );
+        let vm = ir
+            .value_instrs
+            .iter()
+            .find(|i| matches!(i, ValueInstr::ValueMatch { .. }))
+            .unwrap();
+        let ctor = match vm {
+            ValueInstr::ValueMatch { ctor, .. } => *ctor,
+            _ => u32::MAX,
+        };
+        assert_eq!(
+            ctor, 0,
+            "Circle is the first declared ctor of Shape (index 0)"
+        );
+        assert_eq!(
+            ir.value_output_regs,
+            vec![2],
+            "output must be the Circle arm's payload reg (r), not Rect's w"
+        );
+    }
+
+    #[test]
+    fn match_wire_uses_first_arm() {
+        // An unbound `_` scrutinee has no static ctor: v1 static dispatch
+        // assumes the value is constructed per the first arm's ctor, so exactly
+        // one ValueMatch is emitted.
+        let ir = ir_of(
+            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+        );
+        let matches = ir
+            .value_instrs
+            .iter()
+            .filter(|i| matches!(i, ValueInstr::ValueMatch { .. }))
+            .count();
+        assert_eq!(matches, 1);
     }
 }
