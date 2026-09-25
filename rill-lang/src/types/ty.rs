@@ -97,8 +97,9 @@ pub type Block = Channel;
 /// A block transform: n input channels → m output channels.
 ///
 /// The vector *lengths* are the arities (channel counts). During inference we
-/// usually know the arities as concrete integers; unification only touches the
-/// `Block::elem` scalars.
+/// usually know the arities as concrete integers; unification touches the
+/// `Block::elem` scalars, and value-type unification (`unify_value`) lands with
+/// value channels (Task 6+).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrowTy {
     /// Scalar type of each input channel (len = input arity).
@@ -161,16 +162,26 @@ impl Subst {
     }
     /// Apply the substitution across a whole type.
     pub fn apply(&self, t: &ArrowTy) -> ArrowTy {
+        // TODO(Task 7): preserve `rate`/`vty` through substitution. For now a
+        // Value-rate channel reaching here is flattened to Signal/Int by the
+        // `Block::new` back-compat constructor — fail loudly instead of silently
+        // corrupting the type.
         ArrowTy {
             ins: t
                 .ins
                 .iter()
-                .map(|b| Block::new(self.resolve_scalar(&b.elem)))
+                .map(|b| {
+                    debug_assert_eq!(b.rate, Rate::Signal);
+                    Block::new(self.resolve_scalar(&b.elem))
+                })
                 .collect(),
             outs: t
                 .outs
                 .iter()
-                .map(|b| Block::new(self.resolve_scalar(&b.elem)))
+                .map(|b| {
+                    debug_assert_eq!(b.rate, Rate::Signal);
+                    Block::new(self.resolve_scalar(&b.elem))
+                })
                 .collect(),
         }
     }
@@ -187,5 +198,17 @@ mod channel_tests {
         assert_eq!(sig.rate, Rate::Signal);
         assert_eq!(val.rate, Rate::Value);
         assert_eq!(sig.vty, ValueTy::Int);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn apply_asserts_on_value_channel() {
+        let s = Subst::default();
+        let t = ArrowTy {
+            ins: vec![Channel::value(ValueTy::Int)],
+            outs: vec![],
+        };
+        s.apply(&t);
     }
 }

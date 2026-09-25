@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{ArrowTy, Block, Scalar, Scheme, Subst, TypeVarId};
+use super::ty::{ArrowTy, Block, Rate, Scalar, Scheme, Subst, TypeVarId};
 use super::unify::unify_scalar;
 use crate::ast::{Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
@@ -52,18 +52,28 @@ impl Ctx<'_> {
             Scalar::Var(v) => remap.get(v).cloned().unwrap_or_else(|| s.clone()),
             _ => s.clone(),
         };
+        // TODO(Task 7): preserve `rate`/`vty` through instantiation. For now a
+        // Value-rate channel reaching here is flattened to Signal/Int by the
+        // `Block::new` back-compat constructor — fail loudly instead of silently
+        // corrupting the type.
         ArrowTy {
             ins: scheme
                 .ty
                 .ins
                 .iter()
-                .map(|b| Block::new(rw(&b.elem)))
+                .map(|b| {
+                    debug_assert_eq!(b.rate, Rate::Signal);
+                    Block::new(rw(&b.elem))
+                })
                 .collect(),
             outs: scheme
                 .ty
                 .outs
                 .iter()
-                .map(|b| Block::new(rw(&b.elem)))
+                .map(|b| {
+                    debug_assert_eq!(b.rate, Rate::Signal);
+                    Block::new(rw(&b.elem))
+                })
                 .collect(),
         }
     }

@@ -108,7 +108,10 @@ mod tests {
     }
 
     #[test]
-    fn value_var_resolves_against_concrete() {
+    fn value_var_against_concrete_ok() {
+        // Value-type vars are structural in v1: unifying against a concrete
+        // type records nothing yet (resolution lands with the `Subst` value
+        // map in Task 6), so this only checks that no error is produced.
         let mut s = Subst::default();
         unify_value(&ValueTy::Var(0), &ValueTy::Float, &mut s, sp()).unwrap();
         unify_value(&ValueTy::Var(1), &ValueTy::Var(0), &mut s, sp()).unwrap();
