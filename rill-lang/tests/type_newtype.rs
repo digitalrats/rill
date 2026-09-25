@@ -44,3 +44,20 @@ fn type_synonym_substitutes() {
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(1.0));
 }
+
+#[test]
+fn type_declaration_order_does_not_matter() {
+    // Regression: the synonym and newtype are declared AFTER the data type
+    // that uses them. Registration must be order-independent.
+    let mut prog = compile::<f32>(
+        "data Volt = { v: Scale }; type Scale = Float; v = Volt { v: 12.0 }; main = v.v",
+    )
+    .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let vo = prog.value_outputs();
+    assert_eq!(vo.len(), 1);
+    let v = vo[0].unwrap();
+    let val = prog.arena().get(v).unwrap();
+    assert_eq!(val, &rill_lang::arena::Value::Float(12.0));
+}

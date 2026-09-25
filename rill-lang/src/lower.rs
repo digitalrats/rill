@@ -9,106 +9,8 @@ use crate::ir::{
     BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp, ValueInstr, ValueLayout,
 };
 use crate::types::infer::TypedProgram;
-use crate::types::ty::{Rate, ValueTy};
+use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
 
-/// Shape of a declared data type, mirrored from inference (`types::infer`) so
-/// the value-track lowering can resolve field indices and constructor indices
-/// without consulting the inference context.
-#[derive(Debug, Clone)]
-enum DataInfo {
-    /// A product type: field name → value type.
-    Record(Vec<(String, ValueTy)>),
-    /// A sum type: constructor name → payload value types.
-    Sum(Vec<(String, Vec<ValueTy>)>),
-}
-
-/// Map a DSL type name in a `data` declaration to its value type, following
-/// type synonyms (`type A = B`) and newtype wrappers (mirrors
-/// `types::infer::type_name_to_vty` so the lowering mirror stays consistent
-/// with inference).
-fn vty_of_type_name(
-    aliases: &HashMap<String, String>,
-    newtypes: &HashMap<String, String>,
-    t: &str,
-) -> ValueTy {
-    let mut cur = t.to_string();
-    for _ in 0..=aliases.len() {
-        match aliases.get(&cur) {
-            Some(target) => cur = target.clone(),
-            None => break,
-        }
-    }
-    match cur.as_str() {
-        "Float" => ValueTy::Float,
-        "Int" => ValueTy::Int,
-        name => {
-            if newtypes.contains_key(name) {
-                ValueTy::Newtype(name.to_string())
-            } else {
-                ValueTy::Data(name.to_string())
-            }
-        }
-    }
-}
-
-/// Re-derive the data-type environment from the AST's declarations. Declarations
-/// are pure (no recursion), so this is safe to build once at lowering start.
-fn build_data_types(
-    program: &Program,
-    aliases: &HashMap<String, String>,
-    newtypes: &HashMap<String, String>,
-) -> HashMap<String, DataInfo> {
-    let mut m = HashMap::new();
-    for def in &program.defs {
-        match def {
-            Def::Data { name, fields, .. } => {
-                let fields_ty = fields
-                    .iter()
-                    .map(|(f, t)| (f.clone(), vty_of_type_name(aliases, newtypes, t)))
-                    .collect();
-                m.insert(name.clone(), DataInfo::Record(fields_ty));
-            }
-            Def::Sum { name, ctors, .. } => {
-                let ctors_ty = ctors
-                    .iter()
-                    .map(|(c, ts)| {
-                        (
-                            c.clone(),
-                            ts.iter()
-                                .map(|t| vty_of_type_name(aliases, newtypes, t))
-                                .collect(),
-                        )
-                    })
-                    .collect();
-                m.insert(name.clone(), DataInfo::Sum(ctors_ty));
-            }
-            _ => {}
-        }
-    }
-    m
-}
-
-/// Type synonyms (alias name → target) declared in the program.
-fn build_type_aliases(program: &Program) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    for def in &program.defs {
-        if let Def::TypeAlias { name, target, .. } = def {
-            m.insert(name.clone(), target.clone());
-        }
-    }
-    m
-}
-
-/// Newtype wrappers (wrapper name → inner type name) declared in the program.
-fn build_newtypes(program: &Program) -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    for def in &program.defs {
-        if let Def::Newtype { name, target, .. } = def {
-            m.insert(name.clone(), target.clone());
-        }
-    }
-    m
-}
 /// Whether a value instruction allocates a fresh arena slot when executed.
 ///
 /// Drives the v1 `ValueLayout::capacity` heuristic: value registers are per-tick
@@ -158,11 +60,10 @@ struct Lowerer<'a> {
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
     /// per-tick value registers — a `Ref` to one returns the register directly.
     value_locals: Vec<HashMap<String, (usize, ValueTy)>>,
-    /// Data-type environment mirror (field/ctor shapes) for value lowering.
-    data_types: HashMap<String, DataInfo>,
-    /// Newtype wrappers mirror (wrapper name → inner type name) for the
-    /// newtype-constructor lowering path.
-    newtypes: HashMap<String, String>,
+    /// The shared compile-time type environment (aliases, newtypes, data-type
+    /// shapes) carried from inference — the single source of truth for name
+    /// resolution in both infer and lower.
+    env: &'a TypeEnv,
     /// Recursion guard while inlining value definitions.
     value_inline: HashSet<String>,
 }
@@ -233,7 +134,7 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let fields = match self.data_types.get(&rec_name) {
+                let fields = match self.env.data_types.get(&rec_name) {
                     Some(DataInfo::Record(fields)) => fields.clone(),
                     _ => {
                         return Err(CompileError::Type {
@@ -272,7 +173,7 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let fields = match self.data_types.get(&rec_name) {
+                let fields = match self.env.data_types.get(&rec_name) {
                     Some(DataInfo::Record(fields)) => fields.clone(),
                     _ => {
                         return Err(CompileError::Type {
@@ -308,7 +209,7 @@ impl<'a> Lowerer<'a> {
                     ValueTy::Data(n) => n.clone(),
                     _ => self.resolve_match_sum(arms, *span)?,
                 };
-                let ctors = match self.data_types.get(&sum_name) {
+                let ctors = match self.env.data_types.get(&sum_name) {
                     Some(DataInfo::Sum(ctors)) => ctors.clone(),
                     _ => {
                         return Err(CompileError::Type {
@@ -388,7 +289,7 @@ impl<'a> Lowerer<'a> {
                 span,
             } => {
                 // Record constructor: `Point { x: 1.0 }`.
-                if let Some(info) = self.data_types.get(name).cloned() {
+                if let Some(info) = self.env.data_types.get(name).cloned() {
                     match info {
                         DataInfo::Record(fields) => {
                             if call_args.len() != 1 {
@@ -469,7 +370,7 @@ impl<'a> Lowerer<'a> {
                     return Ok((dst, ValueTy::Data(sum_name)));
                 }
                 // Newtype constructor: `Hz 440.0` wraps its single argument.
-                if self.newtypes.contains_key(name) {
+                if self.env.newtypes.contains_key(name) {
                     if call_args.len() != 1 {
                         return Err(CompileError::Type {
                             msg: format!(
@@ -508,13 +409,13 @@ impl<'a> Lowerer<'a> {
                 return Ok((reg, vty.clone()));
             }
         }
-        if self.data_types.contains_key(name) {
+        if self.env.data_types.contains_key(name) {
             return Err(CompileError::Type {
                 msg: format!("`{name}` is a data type, not a value"),
                 span,
             });
         }
-        if self.newtypes.contains_key(name) {
+        if self.env.newtypes.contains_key(name) {
             return Err(CompileError::Type {
                 msg: format!("`{name}` is a newtype; use its constructor `{name} <value>`"),
                 span,
@@ -593,6 +494,7 @@ impl<'a> Lowerer<'a> {
         let mut candidates: Option<Vec<String>> = None;
         for (ctor, _, _) in arms {
             let per_ctor: Vec<String> = self
+                .env
                 .data_types
                 .iter()
                 .filter_map(|(tname, info)| match info {
@@ -627,7 +529,7 @@ impl<'a> Lowerer<'a> {
     /// (declared in multiple sum types — inference already rejected that).
     fn sum_ctor(&self, name: &str) -> Option<(String, usize, Vec<ValueTy>)> {
         let mut found: Option<(String, usize, Vec<ValueTy>)> = None;
-        for (tname, info) in &self.data_types {
+        for (tname, info) in &self.env.data_types {
             if let DataInfo::Sum(ctors) = info {
                 for (idx, (c, payload)) in ctors.iter().enumerate() {
                     if c == name {
@@ -755,7 +657,8 @@ impl<'a> Lowerer<'a> {
                 }
                 // A data constructor in a signal position is a type error: value
                 // expressions lower on the value track (see `lower_value`).
-                if self.data_types.contains_key(name.as_str()) || self.sum_ctor(name).is_some() {
+                if self.env.data_types.contains_key(name.as_str()) || self.sum_ctor(name).is_some()
+                {
                     return Err(CompileError::Type {
                         msg: format!(
                             "`{name}` is a value constructor; it cannot be used in a signal expression"
@@ -1647,8 +1550,6 @@ pub fn lower_with_cafs(
     }
 
     let num_inputs = tp.process_ty.arity_in();
-    let type_aliases = build_type_aliases(&tp.program);
-    let newtypes = build_newtypes(&tp.program);
     let mut lw = Lowerer {
         defs,
         sigs,
@@ -1668,8 +1569,7 @@ pub fn lower_with_cafs(
         next_value_reg: 0,
         value_regs_out: Vec::new(),
         value_locals: Vec::new(),
-        data_types: build_data_types(&tp.program, &type_aliases, &newtypes),
-        newtypes,
+        env: &tp.type_env,
         value_inline: HashSet::new(),
     };
 
@@ -1805,6 +1705,7 @@ mod tests {
             program: reduced,
             process_ty: typed.process_ty,
             cafs,
+            type_env: typed.type_env.clone(),
         };
         lower_with_cafs(&tp, &TestSigs, 44_100.0, &tp.cafs).unwrap()
     }
@@ -1950,6 +1851,7 @@ mod tests {
             program: reduced,
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
+            type_env: typed.type_env.clone(),
         };
         let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -1971,6 +1873,7 @@ mod tests {
             program: reduced,
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
+            type_env: typed.type_env.clone(),
         };
         let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -1993,6 +1896,7 @@ mod tests {
             program: reduced,
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
+            type_env: typed.type_env.clone(),
         };
         let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -2020,6 +1924,7 @@ mod tests {
             program: reduced,
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
+            type_env: typed.type_env.clone(),
         };
         let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
         assert!(res.is_err());

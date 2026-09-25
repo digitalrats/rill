@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{ArrowTy, Block, Channel, Rate, Scalar, Scheme, Subst, TypeVarId, ValueTy};
+use super::ty::{
+    ArrowTy, Block, Channel, DataInfo, Rate, Scalar, Scheme, Subst, TypeEnv, TypeVarId, ValueTy,
+};
 use super::unify::{unify_scalar, unify_value};
 use crate::ast::{Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
@@ -23,6 +25,9 @@ pub struct TypedProgram {
     /// Names of closed top-level definitions (CAFs): zero λ-parameters and
     /// zero signal input channels. Referenced by name, shared across the graph.
     pub cafs: HashSet<String>,
+    /// The compile-time type environment (aliases, newtypes, data types),
+    /// built once here and shared with lowering.
+    pub type_env: TypeEnv,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -33,21 +38,8 @@ struct Ctx<'a> {
     defs: HashMap<String, Scheme>,
     locals: HashMap<String, ArrowTy>,
     sigs: &'a dyn SignatureSource,
-    /// Registered data type declarations: name → shape info.
-    data_types: HashMap<String, DataInfo>,
-    /// Type synonyms (alias name → target).
-    type_aliases: HashMap<String, String>,
-    /// Newtype wrappers (wrapper name → inner type name).
-    newtypes: HashMap<String, String>,
-}
-
-/// Shape of a declared data type.
-#[derive(Debug, Clone)]
-enum DataInfo {
-    /// A product type: field name → value type.
-    Record(Vec<(String, ValueTy)>),
-    /// A sum type: constructor name → payload value types.
-    Sum(Vec<(String, Vec<ValueTy>)>),
+    /// The compile-time type environment (aliases, newtypes, data types).
+    env: TypeEnv,
 }
 
 impl Ctx<'_> {
@@ -90,39 +82,12 @@ impl Ctx<'_> {
         }
         acc
     }
-
-    /// Resolve a type synonym chain (`type A = B`) to its target name.
-    fn resolve_alias(&self, name: &str) -> String {
-        let mut cur = name.to_string();
-        for _ in 0..=self.type_aliases.len() {
-            match self.type_aliases.get(&cur) {
-                Some(t) => cur = t.clone(),
-                None => return cur,
-            }
-        }
-        cur
-    }
-}
-
-/// Map a DSL type name to a value type, following type aliases and newtypes.
-fn type_name_to_vty(ctx: &Ctx<'_>, t: &str) -> ValueTy {
-    let t = ctx.resolve_alias(t);
-    match t.as_str() {
-        "Float" => ValueTy::Float,
-        "Int" => ValueTy::Int,
-        name => {
-            if ctx.newtypes.contains_key(name) {
-                ValueTy::Newtype(name.to_string())
-            } else {
-                ValueTy::Data(name.to_string())
-            }
-        }
-    }
 }
 
 /// Names of sum types that declare a constructor with the given name.
 fn sum_types_with_ctor(ctx: &Ctx<'_>, ctor: &str) -> Vec<String> {
-    ctx.data_types
+    ctx.env
+        .data_types
         .iter()
         .filter_map(|(tname, info)| match info {
             DataInfo::Sum(ctors) if ctors.iter().any(|(c, _)| c == ctor) => Some(tname.clone()),
@@ -133,7 +98,7 @@ fn sum_types_with_ctor(ctx: &Ctx<'_>, ctor: &str) -> Vec<String> {
 
 /// The payload value types of `ctor` within the sum type `sum_name`.
 fn sum_ctor_payload(ctx: &Ctx<'_>, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy>> {
-    match ctx.data_types.get(sum_name) {
+    match ctx.env.data_types.get(sum_name) {
         Some(DataInfo::Sum(ctors)) => ctors
             .iter()
             .find(|(c, _)| c == ctor)
@@ -185,47 +150,19 @@ pub fn infer_program_with(
     program: &Program,
     sigs: &dyn SignatureSource,
 ) -> Result<TypedProgram, CompileError> {
-    let mut ctx = Ctx {
-        next: 0,
-        subst: Subst::default(),
-        defs: HashMap::new(),
-        locals: HashMap::new(),
-        sigs,
-        data_types: HashMap::new(),
-        type_aliases: HashMap::new(),
-        newtypes: HashMap::new(),
-    };
-
-    // Register type-level declarations first (pure, no recursion). The
-    // inference/lowering pipeline skips them via `Def::is_decl`; they exist
-    // here only as a type environment for value-channel expressions.
+    // Build the type environment in two phases so declaration ORDER does not
+    // matter. Phase 1 registers the pure name-mapping declarations (synonyms
+    // and newtypes); phase 2 resolves data-type field/payload types against
+    // the COMPLETE alias/newtype environment. A single-pass registration would
+    // wrongly reject `data P = { x: Angles }; type Angles = Float; ...`.
+    let mut env = TypeEnv::default();
     for def in &program.defs {
         match def {
-            Def::Data { name, fields, .. } => {
-                let fields_ty = fields
-                    .iter()
-                    .map(|(f, t)| (f.clone(), type_name_to_vty(&ctx, t)))
-                    .collect();
-                ctx.data_types
-                    .insert(name.clone(), DataInfo::Record(fields_ty));
-            }
-            Def::Sum { name, ctors, .. } => {
-                let ctors_ty = ctors
-                    .iter()
-                    .map(|(c, ts)| {
-                        (
-                            c.clone(),
-                            ts.iter().map(|t| type_name_to_vty(&ctx, t)).collect(),
-                        )
-                    })
-                    .collect();
-                ctx.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
-            }
             Def::TypeAlias { name, target, .. } => {
-                ctx.type_aliases.insert(name.clone(), target.clone());
+                env.type_aliases.insert(name.clone(), target.clone());
             }
             Def::Newtype { name, target, .. } => {
-                ctx.newtypes.insert(name.clone(), target.clone());
+                env.newtypes.insert(name.clone(), target.clone());
             }
             Def::Typeclass { .. } | Def::Instance { .. } => {
                 // Task 12 registers these.
@@ -233,6 +170,35 @@ pub fn infer_program_with(
             _ => {}
         }
     }
+    for def in &program.defs {
+        match def {
+            Def::Data { name, fields, .. } => {
+                let fields_ty = fields
+                    .iter()
+                    .map(|(f, t)| (f.clone(), env.vty_of_name(t)))
+                    .collect();
+                env.data_types
+                    .insert(name.clone(), DataInfo::Record(fields_ty));
+            }
+            Def::Sum { name, ctors, .. } => {
+                let ctors_ty = ctors
+                    .iter()
+                    .map(|(c, ts)| (c.clone(), ts.iter().map(|t| env.vty_of_name(t)).collect()))
+                    .collect();
+                env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
+            }
+            _ => {}
+        }
+    }
+
+    let mut ctx = Ctx {
+        next: 0,
+        subst: Subst::default(),
+        defs: HashMap::new(),
+        locals: HashMap::new(),
+        sigs,
+        env,
+    };
 
     infer_def_group(&mut ctx, &program.defs)?;
 
@@ -275,6 +241,7 @@ pub fn infer_program_with(
         program: program.clone(),
         process_ty: main_scheme.ty,
         cafs,
+        type_env: ctx.env.clone(),
     })
 }
 
@@ -473,7 +440,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             match &t.outs[0].vty {
-                ValueTy::Data(name) => match ctx.data_types.get(name.as_str()) {
+                ValueTy::Data(name) => match ctx.env.data_types.get(name.as_str()) {
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
                             .iter()
@@ -514,6 +481,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             match &rt.outs[0].vty {
                 ValueTy::Data(name) => {
                     let fty = ctx
+                        .env
                         .data_types
                         .get(name.as_str())
                         .and_then(|info| match info {
@@ -668,7 +636,7 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
     // Data-type names and constructors are checked before builtins/user defs:
     // `Point` (record type) is a value channel; a bare sum constructor like
     // `Circle` must be applied to its payload.
-    if let Some(info) = ctx.data_types.get(name) {
+    if let Some(info) = ctx.env.data_types.get(name) {
         match info {
             DataInfo::Record(_) => return Ok(ArrowTy::value_channel(ValueTy::Data(name.into()))),
             DataInfo::Sum(_) => {
@@ -679,7 +647,7 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
             }
         }
     }
-    if ctx.newtypes.contains_key(name) {
+    if ctx.env.newtypes.contains_key(name) {
         return Err(CompileError::Type {
             msg: format!("newtype constructor `{name}` requires one argument"),
             span,
@@ -781,7 +749,7 @@ fn infer_apply(
     }
     // Data-type constructors take priority over builtins and user definitions:
     // ctor names (`Circle`, `Point`) are never builtins.
-    if let Some(info) = ctx.data_types.get(name).cloned() {
+    if let Some(info) = ctx.env.data_types.get(name).cloned() {
         match info {
             DataInfo::Record(fields) => {
                 // Record constructor: `Point { x: 1.0, y: 2.0 }`. The single
@@ -855,7 +823,7 @@ fn infer_apply(
         }
     }
     // Newtype constructor: `Hz 440.0` wraps its single argument in the wrapper.
-    if let Some(inner_name) = ctx.newtypes.get(name).cloned() {
+    if let Some(inner_name) = ctx.env.newtypes.get(name).cloned() {
         if args.len() != 1 {
             return Err(CompileError::Type {
                 msg: format!(
@@ -866,7 +834,7 @@ fn infer_apply(
             });
         }
         let vt = infer_const_value(ctx, &args[0])?;
-        let inner = type_name_to_vty(ctx, &inner_name);
+        let inner = ctx.env.vty_of_name(&inner_name);
         unify_value(&vt, &inner, &mut ctx.subst, args[0].span())?;
         return Ok(ArrowTy::value_channel(ValueTy::Newtype(name.to_string())));
     }
@@ -1657,5 +1625,34 @@ mod tests {
             "data Point = { x: Float, y: Float }; main = Point { x: 1.0, x: 2.0, y: 3.0 }"
         )
         .is_err());
+    }
+
+    #[test]
+    fn type_after_data_resolves() {
+        // Regression: the synonym is declared AFTER the data type that uses it.
+        // Registration must be order-independent (two-phase: aliases first).
+        let t = ty_of("data P = { x: Angles }; type Angles = Float; main = P { x: 1.0 }").unwrap();
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+    }
+
+    #[test]
+    fn newtype_after_data_resolves() {
+        // The newtype is declared AFTER the data type that uses it. The field
+        // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
+        // it requires the explicit `Hz 440.0` wrapper.
+        let t = ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: Hz 440.0 }").unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+        // Newtypes are distinct wrappers: a bare Float does not satisfy a Hz
+        // field (no automatic wrapping) — this is what the ordering fix buys
+        // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
+        assert!(ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: 440.0 }").is_err());
+    }
+
+    #[test]
+    fn chained_alias_resolves() {
+        let t =
+            ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
     }
 }

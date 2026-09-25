@@ -156,6 +156,56 @@ pub struct Subst {
     pub map: HashMap<TypeVarId, Scalar>,
 }
 
+/// Shape of a declared data type.
+#[derive(Debug, Clone)]
+pub enum DataInfo {
+    /// A product type: field name → value type.
+    Record(Vec<(String, ValueTy)>),
+    /// A sum type: constructor name → payload value types.
+    Sum(Vec<(String, Vec<ValueTy>)>),
+}
+
+/// The compile-time type environment: aliases, newtypes, and data-type shapes.
+///
+/// Built once during inference and carried to lowering so both phases resolve
+/// type names identically (no order dependence, no duplicated resolution).
+#[derive(Debug, Clone, Default)]
+pub struct TypeEnv {
+    /// Type synonyms (alias name → target name).
+    pub type_aliases: HashMap<String, String>,
+    /// Newtype wrappers (wrapper name → inner type name).
+    pub newtypes: HashMap<String, String>,
+    /// Data type declarations: name → shape.
+    pub data_types: HashMap<String, DataInfo>,
+}
+
+impl TypeEnv {
+    /// Resolve a DSL type name to a value type, following type synonyms and
+    /// newtype wrappers. Alias chains resolve iteratively with a bounded loop
+    /// (cycle-safe): each pass follows one link and there are at most
+    /// `len(aliases)` distinct links to follow.
+    pub fn vty_of_name(&self, name: &str) -> ValueTy {
+        let mut cur = name.to_string();
+        for _ in 0..=self.type_aliases.len() {
+            match self.type_aliases.get(&cur) {
+                Some(target) => cur = target.clone(),
+                None => break,
+            }
+        }
+        match cur.as_str() {
+            "Float" => ValueTy::Float,
+            "Int" => ValueTy::Int,
+            n => {
+                if self.newtypes.contains_key(n) {
+                    ValueTy::Newtype(n.to_string())
+                } else {
+                    ValueTy::Data(n.to_string())
+                }
+            }
+        }
+    }
+}
+
 impl Subst {
     /// Follow the substitution chain for a single scalar to its representative.
     pub fn resolve_scalar(&self, s: &Scalar) -> Scalar {
