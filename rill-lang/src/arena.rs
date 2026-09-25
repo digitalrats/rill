@@ -23,8 +23,8 @@ pub enum ValueKind {
     Sum,
     /// `newtype`-wrapped inner value.
     Newtype,
-    /// Named function reference.
-    Func,
+    /// First-class function: captured environment record + body fragment id.
+    Closure,
     /// The unit value.
     Void,
 }
@@ -42,8 +42,8 @@ pub enum Value {
     Sum(u32, Vec<ArenaRef>),
     /// A single inner value wrapped by a `newtype`.
     Newtype(ArenaRef),
-    /// Named function reference (compile-time registry index).
-    Func(u32),
+    /// A first-class function: captured environment record + body fragment id.
+    Closure(ArenaRef, u32),
     /// The unit value.
     Void,
 }
@@ -57,7 +57,7 @@ impl Value {
             Value::Record(_) => ValueKind::Record,
             Value::Sum(_, _) => ValueKind::Sum,
             Value::Newtype(_) => ValueKind::Newtype,
-            Value::Func(_) => ValueKind::Func,
+            Value::Closure(_, _) => ValueKind::Closure,
             Value::Void => ValueKind::Void,
         }
     }

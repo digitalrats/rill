@@ -57,7 +57,22 @@ pub fn unify_value(
         (ValueTy::Int, ValueTy::Int) | (ValueTy::Float, ValueTy::Float) => Ok(()),
         (ValueTy::Data(x), ValueTy::Data(y)) if x == y => Ok(()),
         (ValueTy::Newtype(x), ValueTy::Newtype(y)) if x == y => Ok(()),
-        (ValueTy::Func(x), ValueTy::Func(y)) if x == y => Ok(()),
+        (ValueTy::Func(ax, rx), ValueTy::Func(by, sy)) => {
+            if ax.len() == by.len() && rx.len() == sy.len() {
+                for i in 0..ax.len() {
+                    unify_value(&ax[i], &by[i], _subst, span)?;
+                }
+                for i in 0..rx.len() {
+                    unify_value(&rx[i], &sy[i], _subst, span)?;
+                }
+                Ok(())
+            } else {
+                Err(CompileError::Type {
+                    msg: format!("cannot unify value type {a:?} with {b:?}"),
+                    span,
+                })
+            }
+        }
         _ => Err(CompileError::Type {
             msg: format!("cannot unify value type {a:?} with {b:?}"),
             span,

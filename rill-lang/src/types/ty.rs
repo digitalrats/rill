@@ -49,8 +49,10 @@ pub enum ValueTy {
     Data(String),
     /// A newtype wrapping another value type.
     Newtype(String),
-    /// A function value.
-    Func(String),
+    /// Function type: value-argument types and value-result types. Signal-wire
+    /// arguments are positional wire-captures at the call site, not part of the
+    /// type.
+    Func(Vec<ValueTy>, Vec<ValueTy>),
     /// Unresolved value-type unification variable.
     Var(TypeVarId),
 }
@@ -397,6 +399,22 @@ impl Subst {
             ins: t.ins.iter().map(&block).collect(),
             outs: t.outs.iter().map(&block).collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod funcsig_tests {
+    use super::*;
+
+    #[test]
+    fn func_signature_carries_arg_and_result_types() {
+        let f = ValueTy::Func(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]);
+        assert_eq!(
+            f,
+            ValueTy::Func(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float])
+        );
+        let g = ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float]);
+        assert_ne!(f, g);
     }
 }
 

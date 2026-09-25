@@ -37,6 +37,10 @@ struct Ctx<'a> {
     next: TypeVarId,
     subst: Subst,
     defs: HashMap<String, Scheme>,
+    /// Definition name → body expression, for every non-declaration def that
+    /// has been registered. Used to resolve a func value's transitively
+    /// referenced definition at application time (see [`func_target`]).
+    def_bodies: HashMap<String, Expr>,
     locals: HashMap<String, ArrowTy>,
     sigs: &'a dyn SignatureSource,
     /// The compile-time type environment (aliases, newtypes, data types).
@@ -320,6 +324,7 @@ pub fn infer_program_with(
         next: 0,
         subst: Subst::default(),
         defs: HashMap::new(),
+        def_bodies: HashMap::new(),
         locals: HashMap::new(),
         sigs,
         env,
@@ -435,6 +440,10 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
                 span: def.body().span(),
             });
         }
+        // Bodies are unchanged by inference; record them once so func-value
+        // application can resolve the transitively referenced definition.
+        ctx.def_bodies
+            .insert(def.name().to_string(), def.body().clone());
         let lam_count = def.params().len();
         let mut ins = Vec::with_capacity(lam_count);
         for _ in 0..lam_count {
@@ -885,10 +894,12 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
             // A bare reference to a user definition with λ-parameters is a
             // first-class function value (v1: named references only, no
             // lambdas/closures). `f = double` binds `f` to
-            // `ValueTy::Func("double")`; calling it dispatches to the
+            // `ValueTy::Func([], [])`; calling it dispatches to the
             // referenced definition (see `infer_apply`). Using it where a
             // signal is required is rejected by the signal combinators.
-            return Ok(ArrowTy::value_channel(ValueTy::Func(name.into())));
+            // A bare named ref has an unknown signature, so v1 types it as
+            // `Func([], [])`; real signatures land with lambda literals.
+            return Ok(ArrowTy::value_channel(ValueTy::Func(vec![], vec![])));
         }
         return Ok(ctx.instantiate(&scheme));
     }
@@ -896,6 +907,33 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
         msg: format!("unknown identifier `{name}`"),
         span,
     })
+}
+
+/// Resolve the definition a func value dispatches to.
+///
+/// A func value binding (`f = double`) is a `Def::Local` whose body is a bare
+/// `Ref` to another definition; chains (`g = f`) follow the body refs until a
+/// definition that is itself not a func value is reached (the referenced
+/// definition, with λ-parameters). The structural `ValueTy::Func` no longer
+/// carries the referenced name, so it is recovered from the AST bodies here.
+/// (A later task replaces this with signature-based dispatch.)
+fn func_target(ctx: &Ctx<'_>, name: &str) -> String {
+    let mut cur = name.to_string();
+    for _ in 0..=ctx.defs.len() {
+        let is_func_value = ctx.defs.get(cur.as_str()).is_some_and(|s| {
+            s.ty.outs.len() == 1
+                && s.ty.outs[0].rate == Rate::Value
+                && matches!(s.ty.outs[0].vty, ValueTy::Func(_, _))
+        });
+        match ctx.def_bodies.get(cur.as_str()) {
+            Some(Expr::Ref(next, _)) if is_func_value => {
+                cur = next.clone();
+                continue;
+            }
+            _ => return cur,
+        }
+    }
+    cur
 }
 
 fn infer_apply(
@@ -1277,8 +1315,9 @@ fn infer_apply(
         // the body for lowering). The referenced definition's arity must match
         // the applied arguments.
         if scheme.ty.outs.len() == 1 && scheme.ty.outs[0].rate == Rate::Value {
-            if let ValueTy::Func(ref_name) = &scheme.ty.outs[0].vty {
-                if let Some(ref_scheme) = ctx.defs.get(ref_name).cloned() {
+            if let ValueTy::Func(_, _) = &scheme.ty.outs[0].vty {
+                let ref_name = func_target(ctx, name);
+                if let Some(ref_scheme) = ctx.defs.get(ref_name.as_str()).cloned() {
                     if args.len() != ref_scheme.lam_count {
                         return Err(CompileError::Type {
                             msg: format!(

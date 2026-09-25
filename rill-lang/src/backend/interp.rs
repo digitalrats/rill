@@ -453,8 +453,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueMakeFunc { dst, func } => {
             // A first-class function value is a leaf: a single slot holding
-            // the registry index of the referenced definition.
-            prog.value_regs[*dst] = alloc_owned(prog, Value::Func(*func as u32));
+            // the captured environment record and the registry index of the
+            // referenced definition. The env is a dummy `0` (no capture) until
+            // real closure environments arrive in a later task.
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Closure(0, *func as u32));
         }
         ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src] {
             Some(sr) => {

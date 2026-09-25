@@ -71,7 +71,7 @@ struct Lowerer<'a> {
     value_out_tys: Vec<ValueTy>,
     /// First-class named-function values referenced by [`ValueInstr::ValueMakeFunc`].
     /// A bare reference to a user definition in value position allocates a
-    /// [`Value::Func`] referencing the entry's index.
+    /// [`Value::Closure`] referencing the entry's index.
     value_funcs: Vec<crate::ir::ValueFunc>,
     /// Scope stack of value locals: name → (value reg, value type). Match-arm
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
@@ -536,7 +536,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 // A bare reference to a user definition with λ-parameters in
                 // value position is a first-class function value: allocate a
-                // `Value::Func` referencing the definition's registry entry.
+                // `Value::Closure` referencing the definition's registry entry.
                 // (Calls to it are β-reduced at compile time, so no dispatch
                 // instruction is emitted — see `ValueMakeFunc`.)
                 let func = self.value_funcs.len();
@@ -546,7 +546,9 @@ impl<'a> Lowerer<'a> {
                 });
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeFunc { dst, func });
-                Ok((dst, ValueTy::Func(def_name)))
+                // A bare named ref has an unknown signature in v1; real
+                // signatures land with lambda literals.
+                Ok((dst, ValueTy::Func(vec![], vec![])))
             }
             _ => Err(CompileError::Type {
                 msg: format!("`{name}` is not a value expression in v1"),
@@ -667,7 +669,7 @@ impl<'a> Lowerer<'a> {
 
     fn subtree_size_impl(&self, vty: &ValueTy, visiting: &mut HashSet<String>) -> usize {
         match vty {
-            ValueTy::Int | ValueTy::Float | ValueTy::Func(_) | ValueTy::Var(_) => 1,
+            ValueTy::Int | ValueTy::Float | ValueTy::Func(_, _) | ValueTy::Var(_) => 1,
             ValueTy::Newtype(name) => {
                 if !visiting.insert(name.clone()) {
                     return 1;
