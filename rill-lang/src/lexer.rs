@@ -55,6 +55,28 @@ pub enum Tok {
     KwLet,
     /// `in` keyword — separator in `let defs in expr`.
     KwIn,
+    /// `data` keyword — product or sum type declaration.
+    KwData,
+    /// `type` keyword — type synonym declaration.
+    KwType,
+    /// `newtype` keyword — distinct wrapper type declaration.
+    KwNewtype,
+    /// `typeclass` keyword — method dictionary declaration.
+    KwTypeclass,
+    /// `instance` keyword — concrete typeclass instance.
+    KwInstance,
+    /// `match` keyword — pattern matching over a sum value.
+    KwMatch,
+    /// `of` keyword — separator in `match x of { .. }`.
+    KwOf,
+    /// `=>` fat arrow — match arm separator.
+    FatArrow,
+    /// `|` — sum-type constructor separator.
+    Pipe,
+    /// `.` — field access.
+    Dot,
+    /// `:=` — field update assignment.
+    ColonEq,
     /// `{`
     LBrace,
     /// `}`
@@ -112,6 +134,22 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             i += 2;
             out.push(Token {
                 tok: Tok::Merge,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b':' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::ColonEq,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b'=' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::FatArrow,
                 span: Span::new(start, i),
             });
             continue;
@@ -184,6 +222,13 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "where" if !followed_by_paren => Tok::KwWhere,
                 "let" if !followed_by_paren => Tok::KwLet,
                 "in" if !followed_by_paren => Tok::KwIn,
+                "data" if !followed_by_paren => Tok::KwData,
+                "type" if !followed_by_paren => Tok::KwType,
+                "newtype" if !followed_by_paren => Tok::KwNewtype,
+                "typeclass" if !followed_by_paren => Tok::KwTypeclass,
+                "instance" if !followed_by_paren => Tok::KwInstance,
+                "match" if !followed_by_paren => Tok::KwMatch,
+                "of" if !followed_by_paren => Tok::KwOf,
                 _ => Tok::Ident(text.to_string()),
             };
             out.push(Token { tok, span });
@@ -226,6 +271,8 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             b'}' => Tok::RBrace,
             b'=' => Tok::Eq,
             b';' => Tok::Semi,
+            b'|' => Tok::Pipe,
+            b'.' => Tok::Dot,
             other => {
                 return Err(CompileError::Lex {
                     msg: format!("unexpected character `{}`", other as char),
@@ -381,6 +428,49 @@ mod tests {
                 Tok::LParen,
                 Tok::Ident("x".into()),
                 Tok::Comma,
+                Tok::Ident("y".into()),
+                Tok::RParen,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_new_declaration_keywords() {
+        assert_eq!(
+            kinds("data type newtype typeclass instance match of"),
+            vec![
+                Tok::KwData,
+                Tok::KwType,
+                Tok::KwNewtype,
+                Tok::KwTypeclass,
+                Tok::KwInstance,
+                Tok::KwMatch,
+                Tok::KwOf,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_new_punctuation() {
+        assert_eq!(
+            kinds("=> := | ."),
+            vec![Tok::FatArrow, Tok::ColonEq, Tok::Pipe, Tok::Dot, Tok::Eof]
+        );
+    }
+
+    #[test]
+    fn new_keywords_not_reserved_when_followed_by_paren() {
+        assert_eq!(
+            kinds(r#"match(x) data(y)"#),
+            vec![
+                Tok::Ident("match".into()),
+                Tok::LParen,
+                Tok::Ident("x".into()),
+                Tok::RParen,
+                Tok::Ident("data".into()),
+                Tok::LParen,
                 Tok::Ident("y".into()),
                 Tok::RParen,
                 Tok::Eof,

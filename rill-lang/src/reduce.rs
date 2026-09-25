@@ -66,6 +66,56 @@ fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
             rhs: Box::new(substitute(rhs, subst)),
             span: *span,
         },
+        Expr::FieldProject {
+            record,
+            field,
+            span,
+        } => Expr::FieldProject {
+            record: Box::new(substitute(record, subst)),
+            field: field.clone(),
+            span: *span,
+        },
+        Expr::FieldUpdate {
+            record,
+            field,
+            value,
+            span,
+        } => Expr::FieldUpdate {
+            record: Box::new(substitute(record, subst)),
+            field: field.clone(),
+            value: Box::new(substitute(value, subst)),
+            span: *span,
+        },
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+        } => {
+            // A match-arm binding shadows an outer name of the same spelling:
+            // drop it from the substitution while descending into the arm body.
+            let reduced_arms: Vec<(String, Vec<crate::ast::Param>, Expr)> = arms
+                .iter()
+                .map(|(ctor, params, body)| {
+                    let mut inner = subst.clone();
+                    for p in params {
+                        inner.remove(&p.name);
+                    }
+                    (ctor.clone(), params.clone(), substitute(body, &inner))
+                })
+                .collect();
+            Expr::Match {
+                scrutinee: Box::new(substitute(scrutinee, subst)),
+                arms: reduced_arms,
+                span: *span,
+            }
+        }
+        Expr::Record(fields, span) => Expr::Record(
+            fields
+                .iter()
+                .map(|(n, e)| (n.clone(), substitute(e, subst)))
+                .collect(),
+            *span,
+        ),
         _ => e.clone(),
     }
 }
@@ -77,6 +127,9 @@ fn defs_map(defs: &[Def]) -> HashMap<String, Def> {
 }
 
 fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Def {
+    if def.is_decl() {
+        return def.clone();
+    }
     let reduced_body = reduce_expr(def.body(), ctx, cafs);
     let reduced_where: Vec<Def> = def
         .where_defs()
@@ -99,6 +152,7 @@ fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             where_defs: reduced_where,
             span: *span,
         },
+        _ => def.clone(),
     }
 }
 
@@ -110,7 +164,7 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                 // lowering can lift it once instead of duplicating state here.
                 e.clone()
             } else if let Some(def) = ctx.get(name) {
-                if def.params().is_empty() {
+                if def.params().is_empty() && !def.is_decl() {
                     // Local binding with no params — inline the body
                     reduce_expr(def.body(), ctx, cafs)
                 } else {
@@ -124,16 +178,46 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
         Expr::Apply { name, args, span } => {
             let reduced_args: Vec<Expr> = args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect();
             if let Some(def) = ctx.get(name) {
-                // β-reduce: substitute args for params in the definition's body
-                let mut subst = HashMap::new();
-                for (idx, p) in def.params().iter().enumerate() {
-                    if p.name != "_" {
-                        subst.insert(p.name.clone(), reduced_args[idx].clone());
+                if def.is_decl() {
+                    // Type declarations aren't signal definitions — keep the
+                    // application as-is rather than inlining a sentinel body.
+                    Expr::Apply {
+                        name: name.clone(),
+                        args: reduced_args,
+                        span: *span,
                     }
+                } else {
+                    // β-reduce: substitute args for params in the definition's body
+                    let np = def.params().len();
+                    let mut subst = HashMap::new();
+                    for (idx, p) in def.params().iter().enumerate() {
+                        if p.name != "_" {
+                            subst.insert(p.name.clone(), reduced_args[idx].clone());
+                        }
+                    }
+                    let inlined = substitute(def.body(), &subst);
+                    // A func-value call (`f = double; main = f 21.0`) applies
+                    // a definition with FEWER λ-params than arguments: the
+                    // def's body is a `Ref` to the referenced definition, and
+                    // the leftover arguments must be re-applied to it
+                    // (`double 21.0`), not dropped. In v1 func values are
+                    // named references only, so the inlined body is always a
+                    // `Ref`; any other shape falls back to the pre-fix inline.
+                    let wrapped = if reduced_args.len() > np {
+                        match inlined {
+                            Expr::Ref(inner_name, _) => Expr::Apply {
+                                name: inner_name,
+                                args: reduced_args[np..].to_vec(),
+                                span: *span,
+                            },
+                            other => other,
+                        }
+                    } else {
+                        inlined
+                    };
+                    // Recursively reduce the inlined body (may contain more calls)
+                    reduce_expr(&wrapped, ctx, cafs)
                 }
-                let inlined = substitute(def.body(), &subst);
-                // Recursively reduce the inlined body (may contain more calls)
-                reduce_expr(&inlined, ctx, cafs)
             } else {
                 // Builtin, math, or unknown — leave as-is
                 Expr::Apply {
@@ -419,5 +503,22 @@ mod tests {
             }
             other => panic!("expected Seq, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn decl_ref_does_not_panic() {
+        // A bare reference to a type declaration must not be inlined as a
+        // signal body (declarations have no body to inline) — it stays a Ref.
+        let tokens = tokenize("data Point = { x: Float }; main = Point").unwrap();
+        let program = parser::parse(
+            &tokens,
+            "data Point = { x: Float }; main = Point".as_bytes(),
+        )
+        .unwrap();
+        let reduced = reduce(&program);
+        assert!(matches!(
+            reduced.main_def().unwrap().body(),
+            Expr::Ref(name, _) if name == "Point"
+        ));
     }
 }

@@ -18,7 +18,8 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
         | Instr::ReadDelay { dst, .. }
         | Instr::CallBlock { dst, .. }
         | Instr::ReadParam { dst, .. }
-        | Instr::ReadActorParam { dst, .. } => Some(*dst),
+        | Instr::ReadActorParam { dst, .. }
+        | Instr::ReadMainCell { dst, .. } => Some(*dst),
         Instr::WriteBlockState { .. } | Instr::WriteDelay { .. } => None,
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, .. } => Some(*dst),
@@ -32,6 +33,7 @@ fn instr_srcs(instr: &Instr) -> Vec<usize> {
         | Instr::ReadBlockState { .. }
         | Instr::ReadParam { .. }
         | Instr::ReadActorParam { .. }
+        | Instr::ReadMainCell { .. }
         | Instr::ReadDelay { .. } => vec![],
         Instr::Move { src, .. } | Instr::Un { src, .. } => vec![*src],
         Instr::Bin { a, b, .. } => vec![*a, *b],
@@ -53,7 +55,8 @@ fn set_dst(instr: &mut Instr, phys: usize) {
         | Instr::ReadDelay { dst, .. }
         | Instr::CallBlock { dst, .. }
         | Instr::ReadParam { dst, .. }
-        | Instr::ReadActorParam { dst, .. } => *dst = phys,
+        | Instr::ReadActorParam { dst, .. }
+        | Instr::ReadMainCell { dst, .. } => *dst = phys,
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, .. } => *dst = phys,
         _ => {}

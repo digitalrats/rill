@@ -6,6 +6,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod arena;
 /// The signal-arrow core: combinators as arrow laws over [`arrow::ArrowTy`].
 pub mod arrow;
 pub mod ast;
@@ -36,7 +37,9 @@ pub mod types;
 #[cfg(feature = "debug")]
 pub mod debug;
 
+pub use arena::{Arena, ArenaError, ArenaRef, Value, ValueKind};
 pub use error::{CompileError, Span};
+pub use ir::{Instr, Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 

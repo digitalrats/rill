@@ -5,4 +5,4 @@ pub mod infer;
 pub mod ty;
 pub mod unify;
 
-pub use ty::{ArrowTy, Block, Scalar, Scheme, Subst, TypeVarId};
+pub use ty::{ArrowTy, Block, Channel, Rate, Scalar, Scheme, Subst, TypeVarId, ValueTy};

@@ -40,4 +40,4 @@
 //! The re-exports below are the arrow core and its type model.
 
 pub use crate::ast::{ArithOp, Expr};
-pub use crate::types::ty::{ArrowTy, Block, Scalar, Scheme};
+pub use crate::types::ty::{ArrowTy, Block, Channel, Rate, Scalar, Scheme, ValueTy};

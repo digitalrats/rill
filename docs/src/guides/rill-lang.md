@@ -831,6 +831,66 @@ Wrapping a `rill-core-dsp` filter in the DSL costs about 13% over calling the ra
 `Algorithm` — the price of the schedule dispatch and the register store. Driving
 a filter parameter with `param(...)` adds only the per-block coefficient update.
 
+## Value channels and first-class data
+
+Alongside block-rate **signal** channels, a program can carry **value**
+channels: one arena value per tick. Value channels are typed (`ValueTy`),
+flow through the same combinators, and are processed in a per-tick value-track
+phase of the interpreter (the signal track stays whole-buffer SIMD).
+
+### Value types
+
+| Construct | Meaning |
+|---|---|
+| `data Point = { x: Float, y: Float }` | record (product) type; construct `Point { x: 1.0, y: 2.0 }`, project `p.x` |
+| `data Shape = Circle Float \| Rect Float Float` | sum type with constructors; match with `match s of { Circle r => ...; Rect w h => ...; }` |
+| `type Angles = Float` | type synonym (pure substitution) |
+| `newtype Hz = Float` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
+| `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Float where { show f = ...; }` |
+| `f = double; main = f 21.0` | named function references (β-inlined at compile time) |
+
+Value expressions: record/sum/newtype constructors, field projection `p.x`,
+COW field update `p.x := 3.0`, `match` pattern matching, and method calls.
+A `data` value output is inspected via `RillProgram::value_outputs()`.
+
+### Memory model: arena + RC + COW
+
+Value data lives in a **fixed-capacity arena** owned by the `RillProgram`,
+pre-allocated at build time (no heap growth on the RT path). Slots are managed
+by non-atomic reference counting (single-threaded DAG) with **copy-on-write**:
+mutating a field of a shared value copies it first. Local variables (including
+`main`'s λ-parameters) are **runtime-stack cells** — persistent arena slots that
+`SetParameter` writes into directly.
+
+Acyclicity is guaranteed at compile time: a `data`/`newtype` type that
+(transitively) references itself is rejected. The arena capacity bound is
+computed from the value instructions and the static subtree sizes of value
+outputs, so a well-formed program never exhausts the arena.
+
+Deferred: closures (only named function references), runtime typeclass
+dispatch (methods resolve at compile time), value-state persistence beyond
+per-tick scratch, and `strict`/`complete` compiler modes (the acyclicity and
+capacity checks above are the foundation of the `strict` contract).
+
+### Known v1 limitations
+
+- **No value arithmetic** — value expressions are constructors, projections,
+  updates, and `match`; `w + h` over payloads is a signal combinator and is
+  rejected. Use a signal function when arithmetic is needed.
+- **Single value output** — `main` exposes one value channel; `main = p, p`
+  (multi-value fan-out) and mixed signal+value outputs are rejected at
+  lowering.
+- **Nullary constructors** — `data Color = Red | Green` cannot be constructed
+  in v1 (`Red` requires an argument); declare a payload, e.g.
+  `data Color = Red Float | Green Float`.
+- **Value functions are untyped at the boundary** — arguments are not unified
+  against the λ-parameter type; type errors surface at lowering with the
+  argument's span.
+- **β-substitution gaps** — `substitute` does not descend into `let` /
+  `ActorParam`, and reduction does not run inside `match` / field
+  project/update / record bodies; a user-def call in those positions errors at
+  lowering.
+
 ## Status
 
 The language is feature-complete for signal authoring: a block-arrow model
@@ -841,8 +901,9 @@ laziness, `let` and `where` binding groups with mutual visibility, block-only
 execution, a 27-built-in registry (DSP, effects, oscillators,
 mixer/EQ, analog, spectral, complex, lofi), RT-safe named parameters (`param()`
 and `?name`), records for built-in configuration, multi-IO via
-`MultichannelAlgorithm`, and graph compilation (`compile_graph()` →
-`CompiledGraphEngine`).
+`MultichannelAlgorithm`, graph compilation (`compile_graph()` →
+`CompiledGraphEngine`), and first-class data (`data`/`type`/`newtype`/
+`typeclass`, value channels, arena+RC+COW memory, runtime-stack cells).
 
 Deferred to follow-on work:
 
@@ -851,6 +912,8 @@ Deferred to follow-on work:
   schedule);
 - **signal-rate** (per-sample) modulation of imported built-in parameters
   (current parameter modulation is control-rate/per-block);
-- composed expressions as built-in arguments.
+- composed expressions as built-in arguments;
+- closures, runtime typeclass dispatch, cross-node value ports, and the
+  `strict`/`complete` compiler-mode contract.
 
 [`RillLangDef`]: https://docs.rs/rill-lang

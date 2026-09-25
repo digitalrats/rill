@@ -5,11 +5,12 @@ use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 
-use crate::ir::{BinArith, Instr, UnOp};
+use crate::arena::{ArenaRef, Value};
+use crate::ir::{BinArith, Instr, UnOp, ValueInstr};
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
 
-fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
+pub(crate) fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     match pv {
         rill_core::traits::ParamValue::Float(v) => *v as f64,
         rill_core::traits::ParamValue::Int(v) => *v as f64,
@@ -61,6 +62,9 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
     prog.schedule.steps = steps;
 
+    // Value-track phase (per-tick): allocate/free the program's values.
+    run_value_track(prog);
+
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
 
@@ -68,6 +72,466 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
         if let Some(&reg) = prog.ir.output_regs.get(i) {
             let m = out.len().min(n);
             out[..m].copy_from_slice(&prog.block_regs[reg][..m]);
+        }
+    }
+
+    // Copy the value outputs (one per value output channel) into the program's
+    // stable `value_outputs` store. Each output is an INDEPENDENT counted owner:
+    // `copy` (rc++) so it survives the register clear below, and the previous
+    // tick's output ref is released first — outputs persist across ticks and
+    // must not leak one slot per tick. `clear_value_regs` then drops the
+    // register's refs (the per-tick scratch) while the output refs remain live.
+    for (i, &r) in prog.ir.value_output_regs.iter().enumerate() {
+        if let Some(Some(v)) = prog.value_regs.get(r) {
+            if let Some(prev) = prog.value_outputs[i].take() {
+                prog.arena.drop_ref(prev);
+            }
+            if let Ok(c) = prog.arena.copy(*v) {
+                prog.value_outputs[i] = Some(c);
+            }
+        }
+    }
+
+    // Release this tick's per-tick value registers now that the value outputs
+    // have been read (value outputs are copied after the block outputs above).
+    // The value-state is NOT cleared: it is the 1-tick delay
+    // store, and `ValueStateWrite` already drops the previous ref when
+    // overwriting a slot.
+    prog.clear_value_regs();
+}
+
+/// Execute the per-tick value track: run every [`ValueInstr`] once per block,
+/// in order, allocating and freeing values in the program's fixed arena.
+///
+/// Every value register, value-state slot, and cell holds ONE ownership of the
+/// arena ref it stores (the RC is already counted for that ref). A store that
+/// places an already-owned ref into a second location `copy`s it first
+/// (RC++); a store that MOVES a ref clears the source (`None`). Drops are
+/// deferred to the end of the track so a drop cannot free a slot mid-track
+/// that a later instruction reuses, and the release order is deterministic.
+pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>) {
+    let mut drops: Vec<ArenaRef> = Vec::new();
+    // Move the instruction list out of `prog` so we can borrow `prog`'s value
+    // registers mutably while iterating (`mem::take` leaves an empty `Vec`
+    // behind — no allocation on the RT path).
+    let value_instrs = std::mem::take(&mut prog.ir.value_instrs);
+    for instr in &value_instrs {
+        exec_value_instr(prog, instr, &mut drops);
+    }
+    prog.ir.value_instrs = value_instrs;
+    for r in drops {
+        prog.arena.drop_ref(r);
+    }
+}
+
+/// Allocate a slot holding `v`, taking over the ownership of `v`'s child refs.
+///
+/// The caller must have counted those children (via `copy` / `read_field_refs`)
+/// so the slot owns them independently. Returns `None` on capacity exhaustion,
+/// releasing the not-yet-owned children so the fixed capacity stays balanced.
+///
+/// Deliberately does NOT fall back to `Some(0)`: slot 0 is a valid ref, so
+/// conflating "arena full" with a real slot would silently corrupt data.
+/// Capacity is computed conservatively at build time, so exhaustion means a
+/// lowering bug — `debug_assert!` flags it in debug builds and the `None`
+/// register is a detectable no-op in release.
+fn alloc_owned<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    v: Value,
+) -> Option<ArenaRef> {
+    let children: Vec<ArenaRef> = match v {
+        Value::Record(ref fields) | Value::Sum(_, ref fields) => fields.clone(),
+        Value::Newtype(inner) => vec![inner],
+        _ => Vec::new(),
+    };
+    match prog.arena.alloc(v) {
+        Ok(r) => Some(r),
+        Err(_) => {
+            for c in children {
+                prog.arena.drop_ref(c);
+            }
+            debug_assert!(false, "value arena capacity exhausted at build time");
+            None
+        }
+    }
+}
+
+/// Allocate a fresh slot holding an independent copy of `v`.
+///
+/// The new slot counts its own refs on `v`'s children (RC++ per child), so the
+/// caller may keep `v` — its register retains its own ownership. Returns `None`
+/// on exhaustion, undoing the recounts so nothing leaks.
+fn alloc_copy<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    v: &Value,
+) -> Option<ArenaRef> {
+    let cloned = v.clone();
+    match &cloned {
+        Value::Record(fields) | Value::Sum(_, fields) => {
+            for f in fields {
+                // The fresh slot shares these refs with the original value:
+                // count each one so both owners are balanced.
+                _ = prog.arena.copy(*f);
+            }
+        }
+        Value::Newtype(inner) => {
+            _ = prog.arena.copy(*inner);
+        }
+        _ => {}
+    }
+    match prog.arena.alloc(cloned) {
+        Ok(r) => Some(r),
+        Err(_) => {
+            // No slot was created; undo the recounts above so the original
+            // value keeps exclusive ownership of its children. Never `Some(0)`.
+            drop_value_children(prog, v);
+            debug_assert!(false, "value arena capacity exhausted at build time");
+            None
+        }
+    }
+}
+
+/// Share `r` into a new owner (RC++). `None` on arena error — never `Some(0)`.
+fn copy_owned<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    r: ArenaRef,
+) -> Option<ArenaRef> {
+    match prog.arena.copy(r) {
+        Ok(c) => Some(c),
+        Err(_) => {
+            debug_assert!(false, "copy on a freed or overflowing arena ref");
+            None
+        }
+    }
+}
+
+/// Collect a copied ref for every register in `regs`.
+///
+/// Each source register keeps its own ownership, so every collected ref is a
+/// fresh `copy` (RC++) — the constructed record/sum owns its fields
+/// independently of the source registers (aliasing). Returns `None`, dropping
+/// anything already copied, when any source is unbound or the arena cannot
+/// count another ref.
+fn read_field_refs<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    regs: &[usize],
+) -> Option<Vec<ArenaRef>> {
+    let mut refs: Vec<ArenaRef> = Vec::with_capacity(regs.len());
+    for r in regs {
+        match prog.value_regs[*r] {
+            Some(src) => match prog.arena.copy(src) {
+                Ok(c) => refs.push(c),
+                Err(_) => {
+                    for x in refs {
+                        prog.arena.drop_ref(x);
+                    }
+                    return None;
+                }
+            },
+            None => {
+                for x in refs {
+                    prog.arena.drop_ref(x);
+                }
+                return None;
+            }
+        }
+    }
+    Some(refs)
+}
+
+/// Release the child refs of a raw value: the children of a slot that is about
+/// to be overwritten or was never created. Mirrors `Arena::drop_ref` recursion.
+fn drop_value_children<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    v: &Value,
+) {
+    match v {
+        Value::Record(fields) | Value::Sum(_, fields) => {
+            for f in fields {
+                prog.arena.drop_ref(*f);
+            }
+        }
+        Value::Newtype(inner) => prog.arena.drop_ref(*inner),
+        _ => {}
+    }
+}
+
+fn exec_value_instr<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    instr: &ValueInstr,
+    drops: &mut Vec<ArenaRef>,
+) {
+    match instr {
+        ValueInstr::ValuePushScope => {
+            prog.cell_stack.push(Vec::new());
+        }
+        ValueInstr::ValuePopScope => {
+            // Frames are empty in v1 (cells are owned by their register); the
+            // drop collection below is the future-proof hook for scoped cells.
+            if let Some(frame) = prog.cell_stack.pop() {
+                for (_, cell) in frame {
+                    drops.push(cell);
+                }
+            }
+        }
+        ValueInstr::ValueBindCell { dst } => {
+            // A cell is a fresh slot holding the cell's value directly; the
+            // register owns the cell ref.
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Void);
+        }
+        ValueInstr::ValueReadCell { dst, cell } => {
+            match prog.value_regs[*cell] {
+                Some(cr) => match prog.arena.get(cr) {
+                    Some(v) => {
+                        // Copy the value OUT of the cell into a fresh slot: a
+                        // read result is a new owner, it does not share. An
+                        // uninitialised (Void) cell reads as 0.0.
+                        let out = if matches!(v, Value::Void) {
+                            Value::Float(0.0)
+                        } else {
+                            v.clone()
+                        };
+                        prog.value_regs[*dst] = alloc_copy(prog, &out);
+                    }
+                    None => prog.value_regs[*dst] = None,
+                },
+                None => prog.value_regs[*dst] = None,
+            }
+        }
+        ValueInstr::ValueReadMainCell { dst, cell } => {
+            // Read a persistent main λ-parameter cell (see `ReadMainCell` in the
+            // block track). The result is a new owner; a `Void` cell reads 0.0.
+            match prog.main_cells[*cell] {
+                Some(cr) => match prog.arena.get(cr) {
+                    Some(v) => {
+                        let out = if matches!(v, Value::Void) {
+                            Value::Float(0.0)
+                        } else {
+                            v.clone()
+                        };
+                        prog.value_regs[*dst] = alloc_copy(prog, &out);
+                    }
+                    None => prog.value_regs[*dst] = None,
+                },
+                _ => prog.value_regs[*dst] = None,
+            }
+        }
+        ValueInstr::ValueWriteCell { cell, src } => {
+            if let (Some(cr), Some(sr)) = (prog.value_regs[*cell], prog.value_regs[*src]) {
+                let sv = prog.arena.get(sr).cloned();
+                if let Some(v) = sv {
+                    // The cell holds its value: allocate a fresh slot with a
+                    // copy, then release the previous cell (a cell is
+                    // re-assignable). The src register keeps its own ref —
+                    // this is a copy, not a move.
+                    let new_cell = alloc_copy(prog, &v);
+                    prog.arena.drop_ref(cr);
+                    prog.value_regs[*cell] = new_cell;
+                }
+            }
+        }
+        ValueInstr::ValueConstInt { dst, value } => {
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Int(*value));
+        }
+        ValueInstr::ValueConstFloat { dst, value } => {
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Float(*value));
+        }
+        ValueInstr::ValueConstructRecord { dst, fields } => {
+            prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, fields) {
+                alloc_owned(prog, Value::Record(refs))
+            } else {
+                None
+            };
+        }
+        ValueInstr::ValueConstructSum { dst, ctor, payload } => {
+            prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, payload) {
+                alloc_owned(prog, Value::Sum(*ctor, refs))
+            } else {
+                None
+            };
+        }
+        ValueInstr::ValueProject { dst, slot, field } => {
+            match prog.value_regs[*slot] {
+                Some(rec) => {
+                    let fref: Option<ArenaRef> = match prog.arena.get(rec) {
+                        Some(Value::Record(fields)) => fields.get(*field).cloned(),
+                        _ => None,
+                    };
+                    // A project result is a new owner: share the field ref.
+                    match fref {
+                        Some(fr) => prog.value_regs[*dst] = copy_owned(prog, fr),
+                        None => prog.value_regs[*dst] = None,
+                    }
+                }
+                None => prog.value_regs[*dst] = None,
+            }
+        }
+        ValueInstr::ValueUpdateField { slot, field, src } => {
+            match (prog.value_regs[*slot], prog.value_regs[*src]) {
+                (Some(rec), Some(sr)) => {
+                    // COW: if the record is shared, mutate gives us a private
+                    // copy; the slot register takes the (possibly new) ref.
+                    let new_rec = match prog.arena.mutate(rec) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            prog.value_regs[*slot] = None;
+                            return;
+                        }
+                    };
+                    // Snapshot the old field ref and count the source ref
+                    // before touching the record, so the field write below is
+                    // a clean replacement.
+                    let old_field: Option<ArenaRef> = match prog.arena.get(new_rec) {
+                        Some(Value::Record(fields)) => fields.get(*field).cloned(),
+                        _ => None,
+                    };
+                    let new_field = copy_owned(prog, sr);
+                    let wrote = match new_field {
+                        Some(nf) => match prog.arena.get_mut(new_rec) {
+                            Some(Value::Record(fields)) => {
+                                fields[*field] = nf;
+                                true
+                            }
+                            _ => {
+                                // The slot held no record after all: release
+                                // the counted ref and fail the update.
+                                prog.arena.drop_ref(nf);
+                                false
+                            }
+                        },
+                        None => false,
+                    };
+                    // Release the previous field ref now that the record no
+                    // longer points at it, and surface the (possibly
+                    // COW-copied) record ref to the slot register.
+                    if wrote {
+                        if let Some(of) = old_field {
+                            prog.arena.drop_ref(of);
+                        }
+                        prog.value_regs[*slot] = Some(new_rec);
+                    } else {
+                        prog.value_regs[*slot] = None;
+                    }
+                }
+                _ => prog.value_regs[*slot] = None,
+            }
+        }
+        ValueInstr::ValueNewtype { dst, src } => {
+            match prog.value_regs[*src] {
+                // The newtype owns its inner value; the src register keeps its
+                // own ref — copy first so both hold a counted ref.
+                Some(sr) => {
+                    let copied = copy_owned(prog, sr);
+                    match copied {
+                        Some(c) => prog.value_regs[*dst] = alloc_owned(prog, Value::Newtype(c)),
+                        None => prog.value_regs[*dst] = None,
+                    }
+                }
+                None => prog.value_regs[*dst] = None,
+            }
+        }
+        ValueInstr::ValueUnwrap { dst, src } => {
+            match prog.value_regs[*src] {
+                Some(sr) => {
+                    let inner: Option<ArenaRef> = match prog.arena.get(sr) {
+                        Some(Value::Newtype(inner)) => Some(*inner),
+                        _ => None,
+                    };
+                    // The unwrapped result is a new owner: share the inner ref.
+                    match inner {
+                        Some(i) => prog.value_regs[*dst] = copy_owned(prog, i),
+                        None => prog.value_regs[*dst] = None,
+                    }
+                }
+                None => prog.value_regs[*dst] = None,
+            }
+        }
+        ValueInstr::ValueCallFunc { .. } => {
+            // No-op in v1: named function calls execute at compile time (β-
+            // reduction), so this instruction is never emitted. Reserved for a
+            // future task that dispatches func values at runtime.
+        }
+        ValueInstr::ValueMakeFunc { dst, func } => {
+            // A first-class function value is a leaf: a single slot holding
+            // the registry index of the referenced definition.
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Func(*func as u32));
+        }
+        ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src] {
+            Some(sr) => {
+                let copied = copy_owned(prog, sr);
+                prog.value_regs[*dst] = copied;
+            }
+            None => prog.value_regs[*dst] = None,
+        },
+        ValueInstr::ValueDrop { src } => {
+            if let Some(r) = prog.value_regs[*src].take() {
+                drops.push(r);
+            }
+        }
+        ValueInstr::ValueStateRead { dst, slot } => {
+            match prog.value_state.get(*slot) {
+                // The read result is a new owner of the stored value.
+                Some(Some(stored)) => {
+                    let sr = *stored;
+                    prog.value_regs[*dst] = copy_owned(prog, sr);
+                }
+                // An empty state slot reads as 0.0.
+                _ => prog.value_regs[*dst] = alloc_owned(prog, Value::Float(0.0)),
+            }
+        }
+        ValueInstr::ValueStateWrite { slot, src } => {
+            if let Some(sr) = prog.value_regs[*src] {
+                // The state slot owns its value: copy the src ref, then
+                // release the previous tick's value and store the fresh one.
+                let stored = copy_owned(prog, sr);
+                if let Some(old) = prog.value_state[*slot].take() {
+                    prog.arena.drop_ref(old);
+                }
+                prog.value_state[*slot] = stored;
+            }
+        }
+        ValueInstr::ValueMatch { dst, slot, ctor } => {
+            // v1 static dispatch: the scrutinee's constructor is statically
+            // known (a literal sum), so exactly one arm matches. A non-matching
+            // arm (or an unbound scrutinee) writes None into every dst reg — a
+            // detectable no-op. Each dst reg owns its payload ref via a copy
+            // (rc++); the scrutinee keeps its own ownership of the sum.
+            let payload: Option<Vec<ArenaRef>> = match prog.value_regs.get(*slot).copied().flatten()
+            {
+                Some(sr) => match prog.arena.get(sr) {
+                    Some(Value::Sum(c, fields)) if *c == *ctor => Some(fields.clone()),
+                    _ => None,
+                },
+                None => None,
+            };
+            match payload {
+                Some(fields) => {
+                    for (i, d) in dst.iter().enumerate() {
+                        let r = fields
+                            .get(i)
+                            .copied()
+                            .and_then(|fr| prog.arena.copy(fr).ok());
+                        if let Some(reg) = prog.value_regs.get_mut(*d) {
+                            // Release any previous occupant (dst regs are SSA in
+                            // lowering, but re-assignment must not leak).
+                            if let Some(old) = reg.take() {
+                                drops.push(old);
+                            }
+                            *reg = r;
+                        }
+                    }
+                }
+                None => {
+                    for d in dst {
+                        if let Some(reg) = prog.value_regs.get_mut(*d) {
+                            if let Some(old) = reg.take() {
+                                drops.push(old);
+                            }
+                            *reg = None;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -137,6 +601,20 @@ fn exec_block_op<T: Transcendental, const BUF: usize>(
         Instr::ReadActorParam { dst, param_idx } => {
             let v = T::from_f64(param_to_f64(&prog.params[*param_idx]));
             prog.block_regs[*dst][..n].fill(v);
+        }
+        Instr::ReadMainCell { dst, cell } => {
+            // Materialise the persistent main λ-parameter cell's float value.
+            // The cell was allocated at construction and survives across ticks,
+            // so a value written by `SetParameter` on the control thread is
+            // read here on every subsequent block. A `Void` (unset) cell is 0.0.
+            let v = match prog.main_cells[*cell] {
+                Some(r) => match prog.arena.get(r) {
+                    Some(crate::arena::Value::Float(f)) => *f,
+                    _ => 0.0,
+                },
+                _ => 0.0,
+            };
+            prog.block_regs[*dst][..n].fill(T::from_f64(v));
         }
         Instr::CallBlock { .. } => {
             unreachable!("block built-in scheduled as a block op (should be ForeignBlock)")
@@ -288,5 +766,201 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
         BinArith::Min => min_slice::<T, 4, ScalarVector4<T>>(a, b, out),
         BinArith::Max => max_slice::<T, 4, ScalarVector4<T>>(a, b, out),
         BinArith::Rem => SlicePair::new(a, b).rem_into::<4, ScalarVector4<T>>(out),
+    }
+}
+
+#[cfg(test)]
+mod value_track_tests {
+    use super::*;
+    use crate::ir::{Ir, StateLayout, ValueInstr, ValueLayout};
+    use rill_core::traits::MultichannelAlgorithm;
+
+    fn prog_with(
+        value_instrs: Vec<ValueInstr>,
+        num_value_regs: usize,
+        value_state_slots: usize,
+    ) -> RillProgram<f32, 256> {
+        let ir = Ir {
+            instrs: Vec::new(),
+            num_regs: 0,
+            output_regs: Vec::new(),
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            num_main_cells: 0,
+            value_instrs,
+            num_value_regs,
+            value_output_regs: Vec::new(),
+            value_funcs: Vec::new(),
+            value_state: ValueLayout {
+                capacity: 16,
+                value_state_slots,
+            },
+        };
+        RillProgram::<f32, 256>::new(ir)
+    }
+
+    #[test]
+    fn const_int_and_const_float_run_per_tick() {
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 42 },
+                ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
+            ],
+            2,
+            0,
+        );
+        // Drive the value track directly (the full tick additionally clears
+        // the per-tick registers at the end) so the registers and arena can be
+        // inspected mid-tick.
+        run_value_track(&mut prog);
+        assert_eq!(prog.value_regs[0], Some(0));
+        let slot0 = prog.arena.get(0).unwrap().clone();
+        assert_eq!(slot0, crate::arena::Value::Int(42));
+        let slot1 = prog.arena.get(1).unwrap().clone();
+        assert_eq!(slot1, crate::arena::Value::Float(1.5));
+    }
+
+    #[test]
+    fn cell_stack_bind_read_write() {
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValuePushScope,
+                ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                ValueInstr::ValueBindCell { dst: 1 },
+                ValueInstr::ValueWriteCell { cell: 1, src: 0 },
+                ValueInstr::ValueReadCell { dst: 2, cell: 1 },
+                ValueInstr::ValuePopScope,
+            ],
+            3,
+            0,
+        );
+        run_value_track(&mut prog);
+        let cell = prog.value_regs[1].unwrap();
+        let val = prog.arena.get(cell).unwrap();
+        assert_eq!(val, &crate::arena::Value::Int(7));
+        let read = prog.value_regs[2].unwrap();
+        assert_eq!(prog.arena.get(read).unwrap(), &crate::arena::Value::Int(7));
+    }
+
+    #[test]
+    fn value_state_persists_one_tick() {
+        // Value-state is a 1-tick delayed value: what tick 1 writes into slot 0
+        // must be readable in tick 2. The read runs before the write, so slot 1
+        // latches whatever the read saw; asserting it proves the delay.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueStateRead { dst: 1, slot: 0 },
+                ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                ValueInstr::ValueStateWrite { slot: 0, src: 0 },
+                ValueInstr::ValueStateWrite { slot: 1, src: 1 },
+            ],
+            2,
+            2,
+        );
+        let mut out = [0.0f32; 2];
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        // Tick 1: the read saw the empty state (0.0); slot 0 was then written 7
+        // and must survive until the next tick.
+        assert_eq!(
+            prog.arena.get(prog.value_state[0].unwrap()).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
+        assert_eq!(
+            prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
+            &crate::arena::Value::Float(0.0)
+        );
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        // Tick 2: the read saw tick 1's 7 (the 1-tick delay) and latched it
+        // into slot 1.
+        assert_eq!(
+            prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
+    }
+
+    #[test]
+    fn value_regs_are_cleared_per_tick() {
+        // Value registers are per-tick scratch: after a tick they must be
+        // cleared and their refs released, so a multi-tick value program cannot
+        // exhaust the fixed arena (one leaked slot per register per tick).
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 42 },
+                ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
+            ],
+            2,
+            0,
+        );
+        let mut out = [0.0f32; 4];
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        assert_eq!(prog.value_regs[0], None);
+        assert_eq!(prog.value_regs[1], None);
+        assert_eq!(prog.arena.live(), 0);
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        assert_eq!(prog.arena.live(), 0, "second tick leaks nothing");
+    }
+
+    #[test]
+    fn value_match_selects_payload_of_matching_ctor() {
+        // Sum(0, [7]) matched against ctor 0: dst reg 2 receives a shared ref to
+        // the payload (rc++), so both the sum and the dst reg own it.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                ValueInstr::ValueConstructSum {
+                    dst: 1,
+                    ctor: 0,
+                    payload: vec![0],
+                },
+                ValueInstr::ValueMatch {
+                    dst: vec![2],
+                    slot: 1,
+                    ctor: 0,
+                },
+            ],
+            3,
+            0,
+        );
+        run_value_track(&mut prog);
+        let payload = prog.value_regs[2].unwrap();
+        assert_eq!(
+            prog.arena.get(payload).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
+        let sum = prog.value_regs[1].unwrap();
+        assert_eq!(prog.arena.rc(sum), 1);
+        assert_eq!(
+            prog.arena.rc(payload),
+            3,
+            "const reg + sum payload + match dst each own it"
+        );
+    }
+
+    #[test]
+    fn value_match_non_matching_ctor_writes_none() {
+        // Sum(1, [7]) matched against ctor 0: no arm matches, so the dst reg is
+        // written None (a detectable no-op under v1 static dispatch).
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                ValueInstr::ValueConstructSum {
+                    dst: 1,
+                    ctor: 1,
+                    payload: vec![0],
+                },
+                ValueInstr::ValueMatch {
+                    dst: vec![2],
+                    slot: 1,
+                    ctor: 0,
+                },
+            ],
+            3,
+            0,
+        );
+        run_value_track(&mut prog);
+        assert_eq!(prog.value_regs[2], None);
     }
 }
