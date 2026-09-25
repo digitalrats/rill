@@ -120,16 +120,26 @@ fn type_name_to_vty(ctx: &Ctx<'_>, t: &str) -> ValueTy {
     }
 }
 
-/// Find a sum constructor by name across all declared sum types, returning the
-/// owning type name and the payload types.
-fn find_sum_ctor(ctx: &Ctx<'_>, ctor: &str) -> Option<(String, Vec<ValueTy>)> {
-    ctx.data_types.iter().find_map(|(tname, info)| match info {
-        DataInfo::Sum(ctors) => ctors
+/// Names of sum types that declare a constructor with the given name.
+fn sum_types_with_ctor(ctx: &Ctx<'_>, ctor: &str) -> Vec<String> {
+    ctx.data_types
+        .iter()
+        .filter_map(|(tname, info)| match info {
+            DataInfo::Sum(ctors) if ctors.iter().any(|(c, _)| c == ctor) => Some(tname.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The payload value types of `ctor` within the sum type `sum_name`.
+fn sum_ctor_payload(ctx: &Ctx<'_>, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy>> {
+    match ctx.data_types.get(sum_name) {
+        Some(DataInfo::Sum(ctors)) => ctors
             .iter()
             .find(|(c, _)| c == ctor)
-            .map(|(_, payload)| (tname.clone(), payload.clone())),
+            .map(|(_, payload)| payload.clone()),
         _ => None,
-    })
+    }
 }
 
 /// Infer an expression that must yield exactly one output and no inputs — a
@@ -539,46 +549,114 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             arms,
             span,
         } => {
-            let st = infer_expr(ctx, scrutinee)?;
-            // The scrutinee must produce a single output. v1 derives the
-            // concrete sum type from the arm constructors rather than from the
-            // scrutinee channel, so any single-output channel is accepted here.
-            if st.arity_out() != 1 {
+            // `_` in match-scrutinee position is the identity value wire: it is
+            // a Value channel with a fresh value type, pinned to the arm-derived
+            // sum type below by unification.
+            let st = match scrutinee.as_ref() {
+                Expr::Wire(_) => {
+                    let v = ctx.next;
+                    ctx.next += 1;
+                    ArrowTy::value_channel(ValueTy::Var(v))
+                }
+                _ => infer_expr(ctx, scrutinee)?,
+            };
+            // The scrutinee must be a sum value.
+            if st.arity_out() != 1 || st.outs[0].rate != Rate::Value {
                 return Err(CompileError::Type {
-                    msg: "match scrutinee must produce exactly one output".into(),
+                    msg: "match scrutinee must be a sum value".into(),
                     span: *span,
                 });
             }
+            let scrutinee_vty = st.outs[0].vty.clone();
+            let scrutinee_sum = match &scrutinee_vty {
+                ValueTy::Data(name) => Some(name.clone()),
+                _ => None,
+            };
+            // Derive the sum type name: every arm's constructor must belong to
+            // the same sum type. A concrete scrutinee type disambiguates ctor
+            // names shared across sum types; otherwise an ambiguous or unknown
+            // constructor is a deterministic error (no HashMap-order hazard).
+            let mut candidates: Option<Vec<String>> = None;
+            for (ctor, _, _) in arms {
+                let mut per_ctor = sum_types_with_ctor(ctx, ctor);
+                if let Some(sn) = &scrutinee_sum {
+                    per_ctor.retain(|n| n == sn);
+                }
+                if per_ctor.is_empty() {
+                    return Err(CompileError::Type {
+                        msg: format!("unknown constructor `{ctor}`"),
+                        span: *span,
+                    });
+                }
+                candidates = Some(match candidates {
+                    None => per_ctor,
+                    Some(acc) => acc.into_iter().filter(|n| per_ctor.contains(n)).collect(),
+                });
+            }
+            let sum_name = match candidates {
+                Some(v) if v.len() == 1 => v[0].clone(),
+                Some(_) => {
+                    return Err(CompileError::Type {
+                        msg: "match arms use constructors of ambiguous or different sum types"
+                            .into(),
+                        span: *span,
+                    });
+                }
+                None => {
+                    return Err(CompileError::Type {
+                        msg: "match requires at least one arm".into(),
+                        span: *span,
+                    });
+                }
+            };
+            // Pin the scrutinee's value type to the arm-derived sum type.
+            unify_value(
+                &scrutinee_vty,
+                &ValueTy::Data(sum_name.clone()),
+                &mut ctx.subst,
+                *span,
+            )?;
             let mut result: Option<ArrowTy> = None;
             for (ctor, params, body) in arms {
-                let payload = find_sum_ctor(ctx, ctor);
-                match payload {
-                    Some((_, payload)) => {
-                        let saved = ctx.locals.clone();
-                        for (idx, p) in params.iter().enumerate() {
-                            let pty = payload.get(idx).cloned().unwrap_or(ValueTy::Float);
-                            ctx.locals
-                                .insert(p.name.clone(), ArrowTy::value_channel(pty));
-                        }
-                        let bt = infer_expr(ctx, body)?;
-                        ctx.locals = saved;
-                        if let Some(ref acc) = result {
-                            if acc.outs[0].vty != bt.outs[0].vty {
-                                return Err(CompileError::Type {
-                                    msg: "match arms must produce the same value type".into(),
-                                    span: *span,
-                                });
-                            }
-                        } else {
-                            result = Some(bt);
-                        }
-                    }
+                let payload = match sum_ctor_payload(ctx, &sum_name, ctor) {
+                    Some(p) => p,
                     None => {
                         return Err(CompileError::Type {
-                            msg: format!("unknown constructor `{ctor}`"),
+                            msg: format!("unknown constructor `{ctor}` for `{sum_name}`"),
                             span: *span,
                         });
                     }
+                };
+                if params.len() > payload.len() {
+                    return Err(CompileError::Type {
+                        msg: format!("too many bindings for constructor `{ctor}`"),
+                        span: body.span(),
+                    });
+                }
+                let saved = ctx.locals.clone();
+                for (idx, p) in params.iter().enumerate() {
+                    let pty = payload.get(idx).cloned().unwrap_or(ValueTy::Float);
+                    ctx.locals
+                        .insert(p.name.clone(), ArrowTy::value_channel(pty));
+                }
+                let bt = infer_expr(ctx, body)?;
+                ctx.locals = saved;
+                // Each arm body must be a value expression (0→1 value channel).
+                if bt.arity_in() != 0 || bt.arity_out() != 1 || bt.outs[0].rate != Rate::Value {
+                    return Err(CompileError::Type {
+                        msg: "match arm must be a value expression (0→1 value channel)".into(),
+                        span: body.span(),
+                    });
+                }
+                if let Some(ref acc) = result {
+                    if acc.outs[0].vty != bt.outs[0].vty {
+                        return Err(CompileError::Type {
+                            msg: "match arms must produce the same value type".into(),
+                            span: body.span(),
+                        });
+                    }
+                } else {
+                    result = Some(bt);
                 }
             }
             Ok(result.unwrap_or(ArrowTy::value_channel(ValueTy::Float)))
@@ -601,11 +679,19 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
             }
         }
     }
-    if let Some((sum_name, _)) = find_sum_ctor(ctx, name) {
-        return Err(CompileError::Type {
-            msg: format!("constructor `{name}` for `{sum_name}` requires arguments"),
-            span,
-        });
+    let ctor_sums = sum_types_with_ctor(ctx, name);
+    if !ctor_sums.is_empty() {
+        // A bare constructor must be applied to its payload. If the ctor name
+        // is shared, the ambiguity is reported rather than resolved by map order.
+        let msg = if ctor_sums.len() == 1 {
+            format!(
+                "constructor `{name}` for `{}` requires arguments",
+                ctor_sums[0]
+            )
+        } else {
+            format!("constructor `{name}` requires arguments")
+        };
+        return Err(CompileError::Type { msg, span });
     }
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
         let s = ctx.fresh();
@@ -705,6 +791,25 @@ fn infer_apply(
                 }
                 match &args[0] {
                     Expr::Record(fields_expr, _) => {
+                        // Every declared field exactly once, no duplicates.
+                        let mut seen: Vec<&String> = Vec::new();
+                        for (f, _) in fields_expr {
+                            if seen.contains(&f) {
+                                return Err(CompileError::Type {
+                                    msg: format!("duplicate field `{f}` in `{name}` constructor"),
+                                    span,
+                                });
+                            }
+                            seen.push(f);
+                        }
+                        for (fname, _) in &fields {
+                            if !seen.iter().any(|s| s.as_str() == fname.as_str()) {
+                                return Err(CompileError::Type {
+                                    msg: format!("missing field `{fname}` in `{name}` constructor"),
+                                    span,
+                                });
+                            }
+                        }
                         for (f, e) in fields_expr {
                             let fty = fields
                                 .iter()
@@ -743,7 +848,17 @@ fn infer_apply(
             }
         }
     }
-    if let Some((sum_name, payload)) = find_sum_ctor(ctx, name) {
+    let ctor_sums = sum_types_with_ctor(ctx, name);
+    if !ctor_sums.is_empty() {
+        let sum_name = if ctor_sums.len() == 1 {
+            ctor_sums[0].clone()
+        } else {
+            return Err(CompileError::Type {
+                msg: format!("ambiguous constructor `{name}` (declared in multiple sum types)"),
+                span,
+            });
+        };
+        let payload = sum_ctor_payload(ctx, &sum_name, name).expect("ctor belongs to its sum");
         if args.len() != payload.len() {
             return Err(CompileError::Type {
                 msg: format!(
@@ -1479,5 +1594,46 @@ mod tests {
         .unwrap();
         assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
         assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+    }
+
+    #[test]
+    fn match_arm_zero_output_is_error() {
+        assert!(ty_of(
+            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => !; Rect w h => 2.0 }"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn match_arms_must_be_value_channels() {
+        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r => 1.0 }").is_err());
+    }
+
+    #[test]
+    fn match_scrutinee_must_be_value() {
+        assert!(ty_of("data Shape = Circle Float; main = match 3 of { Circle r => r }").is_err());
+    }
+
+    #[test]
+    fn match_arms_same_sum_type() {
+        assert!(ty_of("data A = C Float; data B = C Int; main = match _ of { C r => r }").is_err());
+    }
+
+    #[test]
+    fn match_too_many_arm_bindings_is_error() {
+        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r s => r }").is_err());
+    }
+
+    #[test]
+    fn record_ctor_missing_field_is_error() {
+        assert!(ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0 }").is_err());
+    }
+
+    #[test]
+    fn record_ctor_duplicate_field_is_error() {
+        assert!(ty_of(
+            "data Point = { x: Float, y: Float }; main = Point { x: 1.0, x: 2.0, y: 3.0 }"
+        )
+        .is_err());
     }
 }
