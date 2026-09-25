@@ -1,10 +1,14 @@
 //! Arrow type model: a program is a block transform.
 //!
 //! Signal types are structured in three levels: the per-sample scalar type
-//! (`Scalar`), one signal channel (`Block`), and a block transform (`ArrowTy`,
+//! (`Scalar`), one channel (`Channel`), and a block transform (`ArrowTy`,
 //! n input channels → m output channels). Arities (channel counts) are
 //! synthesized separately (see `infer.rs`) because `<:`/`:>` divisibility is
 //! not expressible by unification.
+//!
+//! Channels carry a **rate**: [`Rate::Signal`] (a block of samples per tick,
+//! the existing SIMD path) or [`Rate::Value`] (one arena value per tick).
+//! [`Block`] is a back-compat alias for a signal-rate `Channel`.
 
 use std::collections::HashMap;
 
@@ -22,19 +26,73 @@ pub enum Scalar {
     Var(TypeVarId),
 }
 
-/// A signal channel: one block of samples. `elem` is the per-sample scalar type.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Block {
-    /// Scalar type of the samples in this channel's block.
-    pub elem: Scalar,
+/// Wire rate: block-rate signal vs per-block value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rate {
+    /// A block of samples processed per tick (existing SIMD path).
+    Signal,
+    /// One arena value per tick.
+    Value,
 }
 
-impl Block {
-    /// Build a channel whose samples have scalar type `elem`.
+/// Type of an arena value (per-block value channel).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueTy {
+    /// Integer value.
+    Int,
+    /// Floating point value.
+    Float,
+    /// A named data record.
+    Data(String),
+    /// A newtype wrapping another value type.
+    Newtype(String),
+    /// A function value.
+    Func(String),
+    /// Unresolved value-type unification variable.
+    Var(TypeVarId),
+}
+
+/// A signal or value channel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Channel {
+    /// Wire rate: signal (block of samples) or value (one per tick).
+    pub rate: Rate,
+    /// Scalar type of the samples (Signal rate only).
+    pub elem: Scalar,
+    /// Arena value type (Value rate only).
+    pub vty: ValueTy,
+}
+
+impl Channel {
+    /// A signal-rate channel whose samples have scalar type `elem`.
+    pub fn signal(elem: Scalar) -> Self {
+        Self {
+            rate: Rate::Signal,
+            elem,
+            vty: ValueTy::Int,
+        }
+    }
+    /// A value-rate channel carrying arena values of type `vty`.
+    pub fn value(vty: ValueTy) -> Self {
+        Self {
+            rate: Rate::Value,
+            elem: Scalar::Int,
+            vty,
+        }
+    }
+    /// The scalar element type (Signal rate) — panics for Value rate.
+    pub fn scalar(&self) -> &Scalar {
+        debug_assert_eq!(self.rate, Rate::Signal);
+        &self.elem
+    }
+    /// Back-compat constructor: a Signal-rate channel with scalar `elem`.
     pub fn new(elem: Scalar) -> Self {
-        Self { elem }
+        Self::signal(elem)
     }
 }
+
+/// Back-compat alias for [`Channel`] (a signal-rate channel).
+pub type Block = Channel;
 
 /// A block transform: n input channels → m output channels.
 ///
@@ -115,5 +173,19 @@ impl Subst {
                 .map(|b| Block::new(self.resolve_scalar(&b.elem)))
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    #[test]
+    fn channel_rates_are_distinct() {
+        let sig = Channel::signal(Scalar::Float);
+        let val = Channel::value(ValueTy::Data("Point".into()));
+        assert_eq!(sig.rate, Rate::Signal);
+        assert_eq!(val.rate, Rate::Value);
+        assert_eq!(sig.vty, ValueTy::Int);
     }
 }
