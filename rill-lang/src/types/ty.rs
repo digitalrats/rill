@@ -10,9 +10,10 @@
 //! the existing SIMD path) or [`Rate::Value`] (one arena value per tick).
 //! [`Block`] is a back-compat alias for a signal-rate `Channel`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::Expr;
+use crate::error::{CompileError, Span};
 
 /// A unification variable identifier.
 pub type TypeVarId = u32;
@@ -262,6 +263,90 @@ impl TypeEnv {
             ValueTy::Newtype(n) => Some(n.clone()),
             _ => None,
         }
+    }
+
+    /// Validate that all data types and newtypes are acyclic. A data type that
+    /// (transitively) references itself through a field, payload, or newtype
+    /// inner is rejected: v1 guarantees acyclicity at compile time so the
+    /// arena-capacity bound (`subtree_size`) is exact and RC is sound
+    /// (spec §9.1, the `strict` contract).
+    pub fn check_acyclic(&self) -> Result<(), CompileError> {
+        let mut visiting = HashSet::new();
+        for name in self.data_types.keys() {
+            self.check_acyclic_name(name, &mut visiting)?;
+        }
+        visiting.clear();
+        for name in self.newtypes.keys() {
+            self.check_acyclic_newtype(name, &mut visiting)?;
+        }
+        Ok(())
+    }
+
+    fn check_acyclic_name(
+        &self,
+        name: &str,
+        visiting: &mut HashSet<String>,
+    ) -> Result<(), CompileError> {
+        if !visiting.insert(name.to_string()) {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "recursive data type `{name}` is not supported in v1 (acyclicity is required)"
+                ),
+                span: Span::new(0, 0),
+            });
+        }
+        match self.data_types.get(name) {
+            Some(DataInfo::Record(fields)) => {
+                for (_, t) in fields {
+                    match t {
+                        ValueTy::Data(inner) => self.check_acyclic_name(inner, visiting)?,
+                        ValueTy::Newtype(inner) => self.check_acyclic_newtype(inner, visiting)?,
+                        _ => {}
+                    }
+                }
+            }
+            Some(DataInfo::Sum(ctors)) => {
+                for (_, payload) in ctors {
+                    for t in payload {
+                        match t {
+                            ValueTy::Data(inner) => self.check_acyclic_name(inner, visiting)?,
+                            ValueTy::Newtype(inner) => {
+                                self.check_acyclic_newtype(inner, visiting)?
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+        visiting.remove(name);
+        Ok(())
+    }
+
+    fn check_acyclic_newtype(
+        &self,
+        name: &str,
+        visiting: &mut HashSet<String>,
+    ) -> Result<(), CompileError> {
+        if !visiting.insert(name.to_string()) {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "recursive newtype `{name}` is not supported in v1 (acyclicity is required)"
+                ),
+                span: Span::new(0, 0),
+            });
+        }
+        let res = match self.newtypes.get(name) {
+            Some(inner) => match self.vty_of_name(inner) {
+                ValueTy::Data(data_name) => self.check_acyclic_name(&data_name, visiting),
+                ValueTy::Newtype(nw_name) => self.check_acyclic_newtype(&nw_name, visiting),
+                _ => Ok(()),
+            },
+            None => Ok(()),
+        };
+        visiting.remove(name);
+        res
     }
 
     /// Resolve a typeclass method call: the class declaring `method`, the

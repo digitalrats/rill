@@ -309,6 +309,13 @@ pub fn infer_program_with(
         }
     }
 
+    // Reject recursive data types / newtypes: v1 guarantees acyclic value
+    // graphs at compile time (the `strict` contract), keeping the arena
+    // capacity bound exact and RC sound. A self-referential declaration would
+    // otherwise materialise an unbounded subtree and exhaust the arena at
+    // runtime (spec §9.1).
+    env.check_acyclic()?;
+
     let mut ctx = Ctx {
         next: 0,
         subst: Subst::default(),
@@ -1945,5 +1952,26 @@ mod tests {
         let t =
             ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
         assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+    }
+
+    #[test]
+    fn recursive_data_type_is_compile_error() {
+        // A self-referential type would materialise an unbounded arena subtree
+        // and exhaust the fixed capacity (spec §9.1 strict acyclicity).
+        assert!(
+            ty_of("data List = Cons Float List | End Float; main = Cons 1.0 (End 2.0)").is_err()
+        );
+    }
+
+    #[test]
+    fn recursive_newtype_is_compile_error() {
+        assert!(ty_of("newtype A = B; newtype B = A; main = A 1.0").is_err());
+    }
+
+    #[test]
+    fn acyclic_data_type_still_compiles() {
+        let t =
+            ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
     }
 }
