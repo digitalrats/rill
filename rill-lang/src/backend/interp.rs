@@ -75,9 +75,26 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
         }
     }
 
+    // Copy the value outputs (one per value output channel) into the program's
+    // stable `value_outputs` store. Each output is an INDEPENDENT counted owner:
+    // `copy` (rc++) so it survives the register clear below, and the previous
+    // tick's output ref is released first — outputs persist across ticks and
+    // must not leak one slot per tick. `clear_value_regs` then drops the
+    // register's refs (the per-tick scratch) while the output refs remain live.
+    for (i, &r) in prog.ir.value_output_regs.iter().enumerate() {
+        if let Some(Some(v)) = prog.value_regs.get(r) {
+            if let Some(prev) = prog.value_outputs[i].take() {
+                prog.arena.drop_ref(prev);
+            }
+            if let Ok(c) = prog.arena.copy(*v) {
+                prog.value_outputs[i] = Some(c);
+            }
+        }
+    }
+
     // Release this tick's per-tick value registers now that the value outputs
-    // have been read (value outputs are copied after the block outputs in a
-    // later task). The value-state is NOT cleared: it is the 1-tick delay
+    // have been read (value outputs are copied after the block outputs above).
+    // The value-state is NOT cleared: it is the 1-tick delay
     // store, and `ValueStateWrite` already drops the previous ref when
     // overwriting a slot.
     prog.clear_value_regs();

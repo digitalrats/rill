@@ -37,6 +37,7 @@ pub mod types;
 #[cfg(feature = "debug")]
 pub mod debug;
 
+pub use arena::{Arena, ArenaError, ArenaRef, Value, ValueKind};
 pub use error::{CompileError, Span};
 pub use ir::{Instr, Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;

@@ -1631,12 +1631,15 @@ pub fn lower_with_cafs(
     // v1 capacity heuristic: the arena never needs more slots than the number
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
-    // is a strict upper bound on simultaneously-live slots.
+    // is a strict upper bound on simultaneously-live slots — plus one slot per
+    // value output channel, since `value_outputs` holds its ref across ticks
+    // (the previous tick's output is still live while the next tick runs).
     let value_capacity = lw
         .value_instrs
         .iter()
         .filter(|i| is_alloc_producing(i))
-        .count();
+        .count()
+        + lw.value_regs_out.len();
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,

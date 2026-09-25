@@ -61,6 +61,9 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) value_state: Vec<Option<crate::arena::ArenaRef>>,
     /// Current runtime cell-stack frames (bindings).
     pub(crate) cell_stack: Vec<Vec<(u32, crate::arena::ArenaRef)>>,
+    /// Value outputs of the last processed tick: one counted arena ref per
+    /// value output channel, held across ticks (see [`value_outputs`](Self::value_outputs)).
+    pub(crate) value_outputs: Vec<Option<crate::arena::ArenaRef>>,
 }
 
 /// A fixed-length ring buffer for one `@` delay site, processed whole-block.
@@ -134,6 +137,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let value_regs = vec![None; ir.num_value_regs];
         let value_state = vec![None; ir.value_state.value_state_slots];
         let cell_stack = Vec::new();
+        let value_outputs = vec![None; ir.value_output_regs.len()];
         Self {
             ir,
             schedule,
@@ -149,6 +153,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             value_regs,
             value_state,
             cell_stack,
+            value_outputs,
         }
     }
 
@@ -265,6 +270,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let value_regs = vec![None; ir.num_value_regs];
         let value_state = vec![None; ir.value_state.value_state_slots];
         let cell_stack = Vec::new();
+        let value_outputs = vec![None; ir.value_output_regs.len()];
         Ok(Self {
             ir,
             schedule,
@@ -280,6 +286,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             value_regs,
             value_state,
             cell_stack,
+            value_outputs,
         })
     }
 
@@ -342,6 +349,20 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         &self.params_meta
     }
 
+    /// Value outputs of the last processed tick, one per value output channel.
+    ///
+    /// Each entry is a counted arena ref (an independent owner of the slot): it
+    /// survives until the next `process` tick, after which it is replaced. An
+    /// empty value-output program (signal-only `main`) yields an empty slice.
+    pub fn value_outputs(&self) -> &[Option<crate::arena::ArenaRef>] {
+        &self.value_outputs
+    }
+
+    /// Access to the value arena, for inspecting output values (tests, tooling).
+    pub fn arena(&self) -> &Arena {
+        &self.arena
+    }
+
     /// Forward initialisation to all built-in instances.
     pub fn init(&mut self, sample_rate: f32) {
         for b in &mut self.builtins {
@@ -390,6 +411,12 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
             *v = None;
         }
         for r in &mut self.value_regs {
+            if let Some(r) = r {
+                self.arena.drop_ref(*r);
+            }
+            *r = None;
+        }
+        for r in &mut self.value_outputs {
             if let Some(r) = r {
                 self.arena.drop_ref(*r);
             }
