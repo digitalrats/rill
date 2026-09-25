@@ -6,8 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{ArrowTy, Block, Rate, Scalar, Scheme, Subst, TypeVarId};
-use super::unify::unify_scalar;
+use super::ty::{ArrowTy, Block, Channel, Rate, Scalar, Scheme, Subst, TypeVarId, ValueTy};
+use super::unify::{unify_scalar, unify_value};
 use crate::ast::{Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
@@ -33,6 +33,21 @@ struct Ctx<'a> {
     defs: HashMap<String, Scheme>,
     locals: HashMap<String, ArrowTy>,
     sigs: &'a dyn SignatureSource,
+    /// Registered data type declarations: name → shape info.
+    data_types: HashMap<String, DataInfo>,
+    /// Type synonyms (alias name → target).
+    type_aliases: HashMap<String, String>,
+    /// Newtype wrappers (wrapper name → inner type name).
+    newtypes: HashMap<String, String>,
+}
+
+/// Shape of a declared data type.
+#[derive(Debug, Clone)]
+enum DataInfo {
+    /// A product type: field name → value type.
+    Record(Vec<(String, ValueTy)>),
+    /// A sum type: constructor name → payload value types.
+    Sum(Vec<(String, Vec<ValueTy>)>),
 }
 
 impl Ctx<'_> {
@@ -52,29 +67,15 @@ impl Ctx<'_> {
             Scalar::Var(v) => remap.get(v).cloned().unwrap_or_else(|| s.clone()),
             _ => s.clone(),
         };
-        // TODO(Task 7): preserve `rate`/`vty` through instantiation. For now a
-        // Value-rate channel reaching here is flattened to Signal/Int by the
-        // `Block::new` back-compat constructor — fail loudly instead of silently
-        // corrupting the type.
+        // Preserve rate: value channels carry concrete value types (v1 keeps
+        // value-typed schemes monomorphic, `vars` is empty for them).
+        let block = |b: &Block| match b.rate {
+            Rate::Value => Channel::value(b.vty.clone()),
+            Rate::Signal => Block::new(rw(&b.elem)),
+        };
         ArrowTy {
-            ins: scheme
-                .ty
-                .ins
-                .iter()
-                .map(|b| {
-                    debug_assert_eq!(b.rate, Rate::Signal);
-                    Block::new(rw(&b.elem))
-                })
-                .collect(),
-            outs: scheme
-                .ty
-                .outs
-                .iter()
-                .map(|b| {
-                    debug_assert_eq!(b.rate, Rate::Signal);
-                    Block::new(rw(&b.elem))
-                })
-                .collect(),
+            ins: scheme.ty.ins.iter().map(&block).collect(),
+            outs: scheme.ty.outs.iter().map(&block).collect(),
         }
     }
 
@@ -88,6 +89,76 @@ impl Ctx<'_> {
             }
         }
         acc
+    }
+
+    /// Resolve a type synonym chain (`type A = B`) to its target name.
+    fn resolve_alias(&self, name: &str) -> String {
+        let mut cur = name.to_string();
+        for _ in 0..=self.type_aliases.len() {
+            match self.type_aliases.get(&cur) {
+                Some(t) => cur = t.clone(),
+                None => return cur,
+            }
+        }
+        cur
+    }
+}
+
+/// Map a DSL type name to a value type, following type aliases and newtypes.
+fn type_name_to_vty(ctx: &Ctx<'_>, t: &str) -> ValueTy {
+    let t = ctx.resolve_alias(t);
+    match t.as_str() {
+        "Float" => ValueTy::Float,
+        "Int" => ValueTy::Int,
+        name => {
+            if ctx.newtypes.contains_key(name) {
+                ValueTy::Newtype(name.to_string())
+            } else {
+                ValueTy::Data(name.to_string())
+            }
+        }
+    }
+}
+
+/// Find a sum constructor by name across all declared sum types, returning the
+/// owning type name and the payload types.
+fn find_sum_ctor(ctx: &Ctx<'_>, ctor: &str) -> Option<(String, Vec<ValueTy>)> {
+    ctx.data_types.iter().find_map(|(tname, info)| match info {
+        DataInfo::Sum(ctors) => ctors
+            .iter()
+            .find(|(c, _)| c == ctor)
+            .map(|(_, payload)| (tname.clone(), payload.clone())),
+        _ => None,
+    })
+}
+
+/// Infer an expression that must yield exactly one output and no inputs — a
+/// constant or a per-block value. Signal-rate constants (literals) are coerced
+/// to their value type; returns the resulting `ValueTy`.
+fn infer_const_value(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ValueTy, CompileError> {
+    let span = e.span();
+    let t = infer_expr(ctx, e)?;
+    if t.arity_in() != 0 || t.arity_out() != 1 {
+        return Err(CompileError::Type {
+            msg: format!(
+                "expected a constant or value expression, got arity {}->{}",
+                t.arity_in(),
+                t.arity_out()
+            ),
+            span,
+        });
+    }
+    let ch = &t.outs[0];
+    match ch.rate {
+        Rate::Value => Ok(ch.vty.clone()),
+        Rate::Signal => match ch.elem {
+            Scalar::Int => Ok(ValueTy::Int),
+            Scalar::Float => Ok(ValueTy::Float),
+            Scalar::Var(_) => Err(CompileError::Type {
+                msg: "cannot determine the value type of a variable signal".into(),
+                span,
+            }),
+        },
     }
 }
 
@@ -110,7 +181,48 @@ pub fn infer_program_with(
         defs: HashMap::new(),
         locals: HashMap::new(),
         sigs,
+        data_types: HashMap::new(),
+        type_aliases: HashMap::new(),
+        newtypes: HashMap::new(),
     };
+
+    // Register type-level declarations first (pure, no recursion). The
+    // inference/lowering pipeline skips them via `Def::is_decl`; they exist
+    // here only as a type environment for value-channel expressions.
+    for def in &program.defs {
+        match def {
+            Def::Data { name, fields, .. } => {
+                let fields_ty = fields
+                    .iter()
+                    .map(|(f, t)| (f.clone(), type_name_to_vty(&ctx, t)))
+                    .collect();
+                ctx.data_types
+                    .insert(name.clone(), DataInfo::Record(fields_ty));
+            }
+            Def::Sum { name, ctors, .. } => {
+                let ctors_ty = ctors
+                    .iter()
+                    .map(|(c, ts)| {
+                        (
+                            c.clone(),
+                            ts.iter().map(|t| type_name_to_vty(&ctx, t)).collect(),
+                        )
+                    })
+                    .collect();
+                ctx.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
+            }
+            Def::TypeAlias { name, target, .. } => {
+                ctx.type_aliases.insert(name.clone(), target.clone());
+            }
+            Def::Newtype { name, target, .. } => {
+                ctx.newtypes.insert(name.clone(), target.clone());
+            }
+            Def::Typeclass { .. } | Def::Instance { .. } => {
+                // Task 12 registers these.
+            }
+            _ => {}
+        }
+    }
 
     infer_def_group(&mut ctx, &program.defs)?;
 
@@ -337,22 +449,164 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             }
             Ok(ArrowTy::uniform(0, 1, Scalar::Float))
         }
-        Expr::FieldProject { span, .. } => Err(CompileError::Type {
-            msg: "field projection is not yet supported by type inference".into(),
-            span: *span,
-        }),
-        Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
-            msg: "field update is not yet supported by type inference".into(),
-            span: *span,
-        }),
-        Expr::Match { span, .. } => Err(CompileError::Type {
-            msg: "match expressions are not yet supported by type inference".into(),
-            span: *span,
-        }),
+        Expr::FieldProject {
+            record,
+            field,
+            span,
+        } => {
+            let t = infer_expr(ctx, record)?;
+            // record must be a single Value channel of a known Data type
+            if t.arity_out() != 1 || t.outs[0].rate != Rate::Value {
+                return Err(CompileError::Type {
+                    msg: "field projection requires a data value".into(),
+                    span: *span,
+                });
+            }
+            match &t.outs[0].vty {
+                ValueTy::Data(name) => match ctx.data_types.get(name.as_str()) {
+                    Some(DataInfo::Record(fields)) => {
+                        let fty = fields
+                            .iter()
+                            .find(|(f, _)| f == field)
+                            .map(|(_, t)| t.clone());
+                        match fty {
+                            Some(ft) => Ok(ArrowTy::value_channel(ft)),
+                            None => Err(CompileError::Type {
+                                msg: format!("no field `{field}` in `{name}`"),
+                                span: *span,
+                            }),
+                        }
+                    }
+                    _ => Err(CompileError::Type {
+                        msg: format!("`{name}` is not a record type"),
+                        span: *span,
+                    }),
+                },
+                _ => Err(CompileError::Type {
+                    msg: "field projection requires a record value".into(),
+                    span: *span,
+                }),
+            }
+        }
+        Expr::FieldUpdate {
+            record,
+            field,
+            value,
+            span,
+        } => {
+            let rt = infer_expr(ctx, record)?;
+            if rt.arity_out() != 1 || rt.outs[0].rate != Rate::Value {
+                return Err(CompileError::Type {
+                    msg: "field update requires a data record".into(),
+                    span: *span,
+                });
+            }
+            match &rt.outs[0].vty {
+                ValueTy::Data(name) => {
+                    let fty = ctx
+                        .data_types
+                        .get(name.as_str())
+                        .and_then(|info| match info {
+                            DataInfo::Record(fields) => fields
+                                .iter()
+                                .find(|(f, _)| f == field)
+                                .map(|(_, t)| t.clone()),
+                            _ => None,
+                        });
+                    let fty = match fty {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no field `{field}` in `{name}`"),
+                                span: *span,
+                            });
+                        }
+                    };
+                    // COW update: the new value must be a constant or a value
+                    // channel whose type matches the declared field type.
+                    let vt = infer_const_value(ctx, value)?;
+                    unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
+                    Ok(rt)
+                }
+                _ => Err(CompileError::Type {
+                    msg: "field update requires a record value".into(),
+                    span: *span,
+                }),
+            }
+        }
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+        } => {
+            let st = infer_expr(ctx, scrutinee)?;
+            // The scrutinee must produce a single output. v1 derives the
+            // concrete sum type from the arm constructors rather than from the
+            // scrutinee channel, so any single-output channel is accepted here.
+            if st.arity_out() != 1 {
+                return Err(CompileError::Type {
+                    msg: "match scrutinee must produce exactly one output".into(),
+                    span: *span,
+                });
+            }
+            let mut result: Option<ArrowTy> = None;
+            for (ctor, params, body) in arms {
+                let payload = find_sum_ctor(ctx, ctor);
+                match payload {
+                    Some((_, payload)) => {
+                        let saved = ctx.locals.clone();
+                        for (idx, p) in params.iter().enumerate() {
+                            let pty = payload.get(idx).cloned().unwrap_or(ValueTy::Float);
+                            ctx.locals
+                                .insert(p.name.clone(), ArrowTy::value_channel(pty));
+                        }
+                        let bt = infer_expr(ctx, body)?;
+                        ctx.locals = saved;
+                        if let Some(ref acc) = result {
+                            if acc.outs[0].vty != bt.outs[0].vty {
+                                return Err(CompileError::Type {
+                                    msg: "match arms must produce the same value type".into(),
+                                    span: *span,
+                                });
+                            }
+                        } else {
+                            result = Some(bt);
+                        }
+                    }
+                    None => {
+                        return Err(CompileError::Type {
+                            msg: format!("unknown constructor `{ctor}`"),
+                            span: *span,
+                        });
+                    }
+                }
+            }
+            Ok(result.unwrap_or(ArrowTy::value_channel(ValueTy::Float)))
+        }
     }
 }
 
 fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, CompileError> {
+    // Data-type names and constructors are checked before builtins/user defs:
+    // `Point` (record type) is a value channel; a bare sum constructor like
+    // `Circle` must be applied to its payload.
+    if let Some(info) = ctx.data_types.get(name) {
+        match info {
+            DataInfo::Record(_) => return Ok(ArrowTy::value_channel(ValueTy::Data(name.into()))),
+            DataInfo::Sum(_) => {
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` is a sum type; use one of its constructors"),
+                    span,
+                });
+            }
+        }
+    }
+    if let Some((sum_name, _)) = find_sum_ctor(ctx, name) {
+        return Err(CompileError::Type {
+            msg: format!("constructor `{name}` for `{sum_name}` requires arguments"),
+            span,
+        });
+    }
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
         let s = ctx.fresh();
         return Ok(ArrowTy::uniform(2, 1, s));
@@ -432,6 +686,79 @@ fn infer_apply(
     }
     if name == "param" {
         return infer_param(args, span);
+    }
+    // Data-type constructors take priority over builtins and user definitions:
+    // ctor names (`Circle`, `Point`) are never builtins.
+    if let Some(info) = ctx.data_types.get(name).cloned() {
+        match info {
+            DataInfo::Record(fields) => {
+                // Record constructor: `Point { x: 1.0, y: 2.0 }`. The single
+                // argument must be a record literal matched by field name.
+                if args.len() != 1 {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "record constructor `{name}` expects one record literal, got {} arguments",
+                            args.len()
+                        ),
+                        span,
+                    });
+                }
+                match &args[0] {
+                    Expr::Record(fields_expr, _) => {
+                        for (f, e) in fields_expr {
+                            let fty = fields
+                                .iter()
+                                .find(|(fname, _)| fname == f)
+                                .map(|(_, t)| t.clone());
+                            let fty = match fty {
+                                Some(t) => t,
+                                None => {
+                                    return Err(CompileError::Type {
+                                        msg: format!("no field `{f}` in `{name}`"),
+                                        span: e.span(),
+                                    });
+                                }
+                            };
+                            let vt = infer_const_value(ctx, e)?;
+                            unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
+                        }
+                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into())));
+                    }
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "record constructor `{name}` expects a record literal, e.g. `{name} {{ ... }}`"
+                            ),
+                            span,
+                        });
+                    }
+                }
+            }
+            DataInfo::Sum(_) => {
+                // Applying the sum type name itself is not a constructor call.
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` is a sum type; use one of its constructors"),
+                    span,
+                });
+            }
+        }
+    }
+    if let Some((sum_name, payload)) = find_sum_ctor(ctx, name) {
+        if args.len() != payload.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "constructor `{name}` expects {} argument(s), got {}",
+                    payload.len(),
+                    args.len()
+                ),
+                span,
+            });
+        }
+        for (e, pty) in args.iter().zip(payload.iter()) {
+            let vt = infer_const_value(ctx, e)?;
+            unify_value(&vt, pty, &mut ctx.subst, e.span())?;
+        }
+        return Ok(ArrowTy::value_channel(ValueTy::Data(sum_name)));
     }
     if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {
         let min = sig.min_args();
@@ -1114,5 +1441,43 @@ mod tests {
             ty_with("osc = sine 440 0.5 0; voice amp = osc * amp; main = voice 0.5").unwrap();
         assert!(typed.cafs.contains("osc"));
         assert!(!typed.cafs.contains("voice"));
+    }
+
+    #[test]
+    fn data_record_constructor_infers_value_channel() {
+        let t =
+            ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
+        assert_eq!(t.process_ty.outs.len(), 1);
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+    }
+
+    #[test]
+    fn field_project_produces_float_value() {
+        let t =
+            ty_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x")
+                .unwrap();
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+    }
+
+    #[test]
+    fn sum_match_branches_on_constructor() {
+        let t = ty_of(
+            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+        )
+        .unwrap();
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+    }
+
+    #[test]
+    fn field_update_preserves_record_type() {
+        let t = ty_of(
+            "data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x := 3.0",
+        )
+        .unwrap();
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
     }
 }

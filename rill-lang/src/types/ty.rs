@@ -116,6 +116,13 @@ impl ArrowTy {
             outs: vec![Block::new(s); n_out],
         }
     }
+    /// A value channel (per-block value): 0 inputs → 1 output.
+    pub fn value_channel(vty: ValueTy) -> ArrowTy {
+        ArrowTy {
+            ins: vec![],
+            outs: vec![Channel::value(vty)],
+        }
+    }
     /// Input arity (channel count).
     pub fn arity_in(&self) -> usize {
         self.ins.len()
@@ -161,28 +168,17 @@ impl Subst {
         }
     }
     /// Apply the substitution across a whole type.
+    ///
+    /// Value-rate channels carry concrete value types (`vty`) that are not
+    /// quantified in v1, so they pass through unchanged.
     pub fn apply(&self, t: &ArrowTy) -> ArrowTy {
-        // TODO(Task 7): preserve `rate`/`vty` through substitution. For now a
-        // Value-rate channel reaching here is flattened to Signal/Int by the
-        // `Block::new` back-compat constructor — fail loudly instead of silently
-        // corrupting the type.
+        let block = |b: &Channel| match b.rate {
+            Rate::Value => Channel::value(b.vty.clone()),
+            Rate::Signal => Channel::signal(self.resolve_scalar(&b.elem)),
+        };
         ArrowTy {
-            ins: t
-                .ins
-                .iter()
-                .map(|b| {
-                    debug_assert_eq!(b.rate, Rate::Signal);
-                    Block::new(self.resolve_scalar(&b.elem))
-                })
-                .collect(),
-            outs: t
-                .outs
-                .iter()
-                .map(|b| {
-                    debug_assert_eq!(b.rate, Rate::Signal);
-                    Block::new(self.resolve_scalar(&b.elem))
-                })
-                .collect(),
+            ins: t.ins.iter().map(&block).collect(),
+            outs: t.outs.iter().map(&block).collect(),
         }
     }
 }
@@ -200,15 +196,15 @@ mod channel_tests {
         assert_eq!(sig.vty, ValueTy::Int);
     }
 
-    #[cfg(debug_assertions)]
     #[test]
-    #[should_panic]
-    fn apply_asserts_on_value_channel() {
+    fn apply_preserves_value_channels() {
         let s = Subst::default();
         let t = ArrowTy {
             ins: vec![Channel::value(ValueTy::Int)],
             outs: vec![],
         };
-        s.apply(&t);
+        let r = s.apply(&t);
+        assert_eq!(r.ins[0].rate, Rate::Value);
+        assert_eq!(r.ins[0].vty, ValueTy::Int);
     }
 }
