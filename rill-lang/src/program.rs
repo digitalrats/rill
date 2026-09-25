@@ -291,14 +291,17 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         }
     }
 
-    /// Drop the previous tick's value-state refs.
+    /// Release this tick's per-tick value registers.
     ///
-    /// The value-state is single-buffered in v1: each tick `ValueStateWrite`
-    /// stores a fresh (copied) ref and every read already copies; this clears
-    /// ownership at tick end so a slot never leaks into the next tick.
-    pub(crate) fn swap_value_state(&mut self) {
-        for v in &mut self.value_state {
-            if let Some(r) = v.take() {
+    /// Value registers are per-tick scratch: every occupied register holds a
+    /// counted arena ref that must be released before the next tick (otherwise
+    /// a multi-tick value program leaks one slot per register per tick and
+    /// exhausts the fixed arena). Called at the very end of a tick, after the
+    /// value outputs have been read. Mirrors the value_regs cleanup in
+    /// [`Algorithm::reset`](Self::reset).
+    pub(crate) fn clear_value_regs(&mut self) {
+        for r in &mut self.value_regs {
+            if let Some(r) = r.take() {
                 self.arena.drop_ref(r);
             }
         }

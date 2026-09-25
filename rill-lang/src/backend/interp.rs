@@ -62,10 +62,8 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
     prog.schedule.steps = steps;
 
-    // Value-track phase (per-tick): allocate/free the program's values, then
-    // release this tick's value-state refs.
+    // Value-track phase (per-tick): allocate/free the program's values.
     run_value_track(prog);
-    prog.swap_value_state();
 
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
@@ -76,6 +74,13 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
             out[..m].copy_from_slice(&prog.block_regs[reg][..m]);
         }
     }
+
+    // Release this tick's per-tick value registers now that the value outputs
+    // have been read (value outputs are copied after the block outputs in a
+    // later task). The value-state is NOT cleared: it is the 1-tick delay
+    // store, and `ValueStateWrite` already drops the previous ref when
+    // overwriting a slot.
+    prog.clear_value_regs();
 }
 
 /// Execute the per-tick value track: run every [`ValueInstr`] once per block,
@@ -671,7 +676,11 @@ mod value_track_tests {
     use crate::ir::{Ir, StateLayout, ValueInstr, ValueLayout};
     use rill_core::traits::MultichannelAlgorithm;
 
-    fn prog_with(value_instrs: Vec<ValueInstr>, num_value_regs: usize) -> RillProgram<f32, 256> {
+    fn prog_with(
+        value_instrs: Vec<ValueInstr>,
+        num_value_regs: usize,
+        value_state_slots: usize,
+    ) -> RillProgram<f32, 256> {
         let ir = Ir {
             instrs: Vec::new(),
             num_regs: 0,
@@ -687,7 +696,7 @@ mod value_track_tests {
             value_funcs: Vec::new(),
             value_state: ValueLayout {
                 capacity: 16,
-                value_state_slots: 0,
+                value_state_slots,
             },
         };
         RillProgram::<f32, 256>::new(ir)
@@ -701,9 +710,12 @@ mod value_track_tests {
                 ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
             ],
             2,
+            0,
         );
-        let mut out = [0.0f32; 4];
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        // Drive the value track directly (the full tick additionally clears
+        // the per-tick registers at the end) so the registers and arena can be
+        // inspected mid-tick.
+        run_value_track(&mut prog);
         assert_eq!(prog.value_regs[0], Some(0));
         let slot0 = prog.arena.get(0).unwrap().clone();
         assert_eq!(slot0, crate::arena::Value::Int(42));
@@ -723,13 +735,71 @@ mod value_track_tests {
                 ValueInstr::ValuePopScope,
             ],
             3,
+            0,
         );
-        let mut out = [0.0f32; 2];
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        run_value_track(&mut prog);
         let cell = prog.value_regs[1].unwrap();
         let val = prog.arena.get(cell).unwrap();
         assert_eq!(val, &crate::arena::Value::Int(7));
         let read = prog.value_regs[2].unwrap();
         assert_eq!(prog.arena.get(read).unwrap(), &crate::arena::Value::Int(7));
+    }
+
+    #[test]
+    fn value_state_persists_one_tick() {
+        // Value-state is a 1-tick delayed value: what tick 1 writes into slot 0
+        // must be readable in tick 2. The read runs before the write, so slot 1
+        // latches whatever the read saw; asserting it proves the delay.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueStateRead { dst: 1, slot: 0 },
+                ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                ValueInstr::ValueStateWrite { slot: 0, src: 0 },
+                ValueInstr::ValueStateWrite { slot: 1, src: 1 },
+            ],
+            2,
+            2,
+        );
+        let mut out = [0.0f32; 2];
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        // Tick 1: the read saw the empty state (0.0); slot 0 was then written 7
+        // and must survive until the next tick.
+        assert_eq!(
+            prog.arena.get(prog.value_state[0].unwrap()).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
+        assert_eq!(
+            prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
+            &crate::arena::Value::Float(0.0)
+        );
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        // Tick 2: the read saw tick 1's 7 (the 1-tick delay) and latched it
+        // into slot 1.
+        assert_eq!(
+            prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
+    }
+
+    #[test]
+    fn value_regs_are_cleared_per_tick() {
+        // Value registers are per-tick scratch: after a tick they must be
+        // cleared and their refs released, so a multi-tick value program cannot
+        // exhaust the fixed arena (one leaked slot per register per tick).
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 42 },
+                ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
+            ],
+            2,
+            0,
+        );
+        let mut out = [0.0f32; 4];
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        assert_eq!(prog.value_regs[0], None);
+        assert_eq!(prog.value_regs[1], None);
+        assert_eq!(prog.arena.live(), 0);
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        assert_eq!(prog.arena.live(), 0, "second tick leaks nothing");
     }
 }
