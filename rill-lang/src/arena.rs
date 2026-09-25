@@ -43,6 +43,11 @@ pub enum Value {
     /// A single inner value wrapped by a `newtype`.
     Newtype(ArenaRef),
     /// A first-class function: captured environment record + body fragment id.
+    ///
+    /// A closure OWNS its env record the way a record owns its field refs:
+    /// `drop_ref` releases the env when the last closure reference is dropped,
+    /// and `ValueMakeClosure` recounts the env so both the creating register
+    /// and the closure are balanced owners.
     Closure(ArenaRef, u32),
     /// The unit value.
     Void,
@@ -180,6 +185,7 @@ impl Arena {
                 }
             }
             Value::Newtype(inner) => self.drop_ref(inner),
+            Value::Closure(env, _) => self.drop_ref(env),
             _ => {}
         }
         self.free.push_front(r);
@@ -212,6 +218,9 @@ impl Arena {
             }
             Value::Newtype(inner) => {
                 self.copy(*inner)?;
+            }
+            Value::Closure(env, _) => {
+                self.copy(*env)?;
             }
             _ => {}
         }

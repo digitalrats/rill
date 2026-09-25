@@ -151,6 +151,25 @@ fn infer_const_value(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ValueTy, CompileErro
     }
 }
 
+/// Whether `e` is a reference (possibly chained) to a definition whose body is
+/// a constant literal — a numeric scalar the value track can capture by value.
+fn is_const_value_ref(ctx: &Ctx<'_>, e: &Expr) -> bool {
+    let mut cur = e;
+    let mut seen = HashSet::new();
+    while let Expr::Ref(name, _) = cur {
+        if !seen.insert(name.clone()) {
+            return false;
+        }
+        match ctx.def_bodies.get(name.as_str()) {
+            Some(Expr::Int(_, _)) => return true,
+            Some(Expr::Float(_, _)) => return true,
+            Some(next @ Expr::Ref(_, _)) => cur = next,
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// Infer a typeclass method's argument or body expression (labeled by `what`
 /// for error messages): it must produce a single output channel that is either
 /// a value channel ([`Rate::Value`]) or a bare Float/Int literal (value-
@@ -1344,9 +1363,40 @@ fn infer_apply(
         // the body for lowering). The referenced definition's arity must match
         // the applied arguments.
         if scheme.ty.outs.len() == 1 && scheme.ty.outs[0].rate == Rate::Value {
-            if let ValueTy::Func(_, _) = &scheme.ty.outs[0].vty {
+            if let ValueTy::Func(arg_tys, ret_tys) = &scheme.ty.outs[0].vty {
                 let ref_name = func_target(ctx, name);
-                if let Some(ref_scheme) = ctx.defs.get(ref_name.as_str()).cloned() {
+                let target = ctx.defs.get(ref_name.as_str()).cloned();
+                // A closure-valued definition (a lambda literal, or an
+                // application/ref chain that produces one) dispatches at
+                // RUNTIME — `add2 = adder 2.0`, `main = add2 3.0`. Its call
+                // type comes from the Func signature, and the args are value
+                // expressions unified against the parameter types.
+                let apply_by_signature = target.as_ref().is_some_and(|ts| {
+                    ts.lam_count == 0
+                        && matches!(
+                            ts.ty.outs.first().map(|o| &o.vty),
+                            Some(ValueTy::Func(_, _))
+                        )
+                });
+                if apply_by_signature {
+                    if args.len() != arg_tys.len() {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{name}` expects {} argument(s), got {}",
+                                arg_tys.len(),
+                                args.len()
+                            ),
+                            span,
+                        });
+                    }
+                    for (a, pty) in args.iter().zip(arg_tys.iter()) {
+                        let vt = infer_method_value_vty(ctx, a, "argument")?;
+                        unify_value(&vt, pty, &mut ctx.subst, a.span())?;
+                    }
+                    let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                    return Ok(ArrowTy::value_channel(ret_ty));
+                }
+                if let Some(ref_scheme) = target {
                     if args.len() != ref_scheme.lam_count {
                         return Err(CompileError::Type {
                             msg: format!(
@@ -1513,14 +1563,19 @@ fn infer_arith(
         // A value operand must be a numeric scalar (Float/Int, or an as-yet
         // unresolved Var such as a lambda parameter). Func values, records and
         // newtypes cannot take part in arithmetic (spec: no arithmetic on
-        // closures); a bare Float/Int literal is value-compatible.
+        // closures); a bare Float/Int literal or a reference to a constant
+        // definition (`k = 2.0`) is value-compatible — the latter is a common
+        // lambda free variable, captured by value into the closure env.
         let scalar_vty = |v: &ValueTy| matches!(v, ValueTy::Float | ValueTy::Int | ValueTy::Var(_));
         let value_operand = |t: &ArrowTy, e: &Expr| -> bool {
             t.arity_in() == 0
                 && t.arity_out() == 1
                 && match t.outs[0].rate {
                     Rate::Value => scalar_vty(&t.outs[0].vty),
-                    Rate::Signal => matches!(e, Expr::Int(_, _) | Expr::Float(_, _)),
+                    Rate::Signal => {
+                        matches!(e, Expr::Int(_, _) | Expr::Float(_, _))
+                            || is_const_value_ref(ctx, e)
+                    }
                 }
         };
         if value_operand(&a, lhs) && value_operand(&b, rhs) {

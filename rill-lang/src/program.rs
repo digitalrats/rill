@@ -67,6 +67,12 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) value_state: Vec<Option<crate::arena::ArenaRef>>,
     /// Current runtime cell-stack frames (bindings).
     pub(crate) cell_stack: Vec<Vec<(u32, crate::arena::ArenaRef)>>,
+    /// Env capture cells of the currently-executing function fragment (see
+    /// [`run_fragment`](crate::backend::interp::run_fragment)). Empty outside a
+    /// fragment call; while a fragment runs it holds one entry per env Record
+    /// field, so the fragment's `ValueReadCell { cell: i }` capture reads
+    /// resolve to frame cell `i`. Nested fragment calls save and restore it.
+    pub(crate) active_fragment_cells: Vec<crate::arena::ArenaRef>,
     /// Value outputs of the last processed tick: one counted arena ref per
     /// value output channel, held across ticks (see [`value_outputs`](Self::value_outputs)).
     pub(crate) value_outputs: Vec<Option<crate::arena::ArenaRef>>,
@@ -161,6 +167,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             value_regs,
             value_state,
             cell_stack,
+            active_fragment_cells: Vec::new(),
             value_outputs,
         }
     }
@@ -296,6 +303,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             value_regs,
             value_state,
             cell_stack,
+            active_fragment_cells: Vec::new(),
             value_outputs,
         })
     }

@@ -6,7 +6,8 @@ use crate::ast::{ArithOp, Def, Expr, Param, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
-    BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp, ValueInstr, ValueLayout,
+    BinArith, BuiltinInstance, FragmentIr, FuncSig, Instr, Ir, ParamDef, StateLayout, UnOp,
+    ValueInstr, ValueLayout,
 };
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
@@ -90,6 +91,14 @@ struct Lowerer<'a> {
     /// Recursion guard for typeclass method inlining: resolved (class, type,
     /// method) calls currently on the expansion path.
     method_lifting: HashSet<(String, String, String)>,
+    /// Compiled function bodies (lambda literals), indexed by
+    /// [`ValueInstr::ValueMakeClosure`]'s `fragment` field.
+    fragments: Vec<FragmentIr>,
+    /// Free-variable names of the lambda currently being lowered into a
+    /// fragment (empty at the program level). A `Ref` to one of these inside
+    /// the fragment emits a `ValueReadCell { cell: capture_index }` reading the
+    /// call's env frame.
+    fragment_captures: Vec<String>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -466,6 +475,39 @@ impl<'a> Lowerer<'a> {
                     self.method_lifting.remove(&key);
                     return res;
                 }
+                // Value-function application: `add2 = adder 2.0` — the callee
+                // is a definition whose body lowers to a closure value. Evaluate
+                // the callee and the arguments, then emit a runtime dispatch;
+                // the call's type is the callee's Func result type. (Calls to
+                // named λ-parameter definitions are β-reduced by `reduce`
+                // before lowering and never reach here.)
+                if let Ok((callee_reg, ValueTy::Func(arg_tys, ret_tys))) =
+                    self.lower_value_ref(name, *span)
+                {
+                    if call_args.len() != arg_tys.len() {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{name}` expects {} argument(s), got {}",
+                                arg_tys.len(),
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    let mut arg_regs = Vec::with_capacity(call_args.len());
+                    for a in call_args {
+                        let (ar, _) = self.lower_value(a)?;
+                        arg_regs.push(ar);
+                    }
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueCallFunc {
+                        dst,
+                        closure_slot: callee_reg,
+                        args: arg_regs,
+                    });
+                    let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                    return Ok((dst, ret_ty));
+                }
                 Err(CompileError::Type {
                     msg: format!("`{name}` is not a value constructor in v1"),
                     span: *span,
@@ -508,6 +550,25 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Float))
             }
+            Expr::Lambda { params, body, span } => {
+                // A lambda literal lowers to a FragmentIr (compiled once, shared
+                // across every closure it creates) plus a by-value snapshot of
+                // its free variables in an env Record. The closure references
+                // the env; `ValueCallFunc` dispatches the fragment with the env
+                // fields bound as a temporary cell frame.
+                let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+                let free = self.free_vars(body, &param_names);
+                let (fragment_id, ret_ty) = self.lower_fragment(params, body, &free, *span)?;
+                let env_reg = self.emit_env_snapshot(&free, *span)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueMakeClosure {
+                    dst,
+                    env: env_reg,
+                    fragment: fragment_id,
+                });
+                let arg_tys = params.iter().map(|_| ValueTy::Float).collect();
+                Ok((dst, ValueTy::Func(arg_tys, vec![ret_ty])))
+            }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
                 span: e.span(),
@@ -526,6 +587,16 @@ impl<'a> Lowerer<'a> {
             if let Some(&(reg, ref vty)) = scope.get(name) {
                 return Ok((reg, vty.clone()));
             }
+        }
+        if let Some(idx) = self.fragment_captures.iter().position(|f| f == name) {
+            // A free variable of the enclosing lambda: read it from the call's
+            // env frame. `idx` is the name's position in the fragment's capture
+            // list, which `run_fragment` binds as frame cell `idx` (the env
+            // Record field order == capture order). v1 captures are scalar
+            // values, so the static type is Float.
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueReadCell { dst, cell: idx });
+            return Ok((dst, ValueTy::Float));
         }
         if let Some(&cell) = self.main_cell_locals.get(name) {
             // A main λ-parameter in value position: copy the persistent cell's
@@ -596,6 +667,193 @@ impl<'a> Lowerer<'a> {
                 span,
             }),
         }
+    }
+
+    /// Free variables of `e`: `Ref` names not in `bound` and not shadowed by
+    /// an inner `let`/`match`/`lambda`. Returned in deterministic (encounter)
+    /// order, deduplicated — the order is the env Record field order, which
+    /// doubles as the capture-cell indices in the call frame.
+    fn free_vars(&self, e: &Expr, bound: &HashSet<String>) -> Vec<String> {
+        let mut free = Vec::new();
+        let mut seen = HashSet::new();
+        self.free_vars_impl(e, bound, &mut free, &mut seen);
+        free
+    }
+
+    fn free_vars_impl(
+        &self,
+        e: &Expr,
+        bound: &HashSet<String>,
+        out: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        match e {
+            Expr::Ref(name, _) => {
+                if !bound.contains(name) && seen.insert(name.clone()) {
+                    out.push(name.clone());
+                }
+            }
+            Expr::Int(_, _)
+            | Expr::Float(_, _)
+            | Expr::Imag(_, _)
+            | Expr::Str(_, _)
+            | Expr::Wire(_)
+            | Expr::Cut(_) => {}
+            Expr::Neg(inner, _) => self.free_vars_impl(inner, bound, out, seen),
+            Expr::Apply { args, .. } => {
+                for a in args {
+                    self.free_vars_impl(a, bound, out, seen);
+                }
+            }
+            Expr::Arith { lhs, rhs, .. } => {
+                self.free_vars_impl(lhs, bound, out, seen);
+                self.free_vars_impl(rhs, bound, out, seen);
+            }
+            Expr::Seq(lhs, rhs, _)
+            | Expr::Par(lhs, rhs, _)
+            | Expr::Split(lhs, rhs, _)
+            | Expr::Merge(lhs, rhs, _)
+            | Expr::Loop(lhs, rhs, _)
+            | Expr::Delay(lhs, rhs, _) => {
+                self.free_vars_impl(lhs, bound, out, seen);
+                self.free_vars_impl(rhs, bound, out, seen);
+            }
+            Expr::Let { defs, body, .. } => {
+                // Inner `let` bindings shadow outer names inside the body; the
+                // def bodies themselves may reference outer frees.
+                let mut inner = bound.clone();
+                for d in defs {
+                    inner.insert(d.name().to_string());
+                }
+                for d in defs {
+                    self.free_vars_impl(d.body(), bound, out, seen);
+                }
+                self.free_vars_impl(body, &inner, out, seen);
+            }
+            Expr::Record(fields, _) => {
+                for (_, fe) in fields {
+                    self.free_vars_impl(fe, bound, out, seen);
+                }
+            }
+            Expr::FieldProject { record, .. } => self.free_vars_impl(record, bound, out, seen),
+            Expr::FieldUpdate { record, value, .. } => {
+                self.free_vars_impl(record, bound, out, seen);
+                self.free_vars_impl(value, bound, out, seen);
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.free_vars_impl(scrutinee, bound, out, seen);
+                for (_, params, body) in arms {
+                    let mut inner = bound.clone();
+                    for p in params {
+                        inner.insert(p.name.clone());
+                    }
+                    self.free_vars_impl(body, &inner, out, seen);
+                }
+            }
+            Expr::Lambda { params, body, .. } => {
+                let mut inner = bound.clone();
+                for p in params {
+                    inner.insert(p.name.clone());
+                }
+                self.free_vars_impl(body, &inner, out, seen);
+            }
+            Expr::ActorParam { default, .. } => {
+                if let Some(d) = default {
+                    self.free_vars_impl(d, bound, out, seen);
+                }
+            }
+        }
+    }
+
+    /// Compile a lambda body into a [`FragmentIr`], returning the fragment's
+    /// index and the body's value type.
+    ///
+    /// Fragment-local registers: the body's value instructions use registers
+    /// `0..num_value_regs`, unrelated to the program's register numbering —
+    /// the interpreter offsets them by a per-call base at dispatch. The
+    /// program-level value-track state (`value_instrs`, `next_value_reg`,
+    /// `value_locals`, `fragment_captures`) is saved around the body compile
+    /// and restored afterwards.
+    ///
+    /// Within the fragment: parameters bind to fragment-local registers
+    /// `0..params.len()` (value args are copied in by `run_fragment`); a `Ref`
+    /// to a free name emits `ValueReadCell { cell: capture_index }` where
+    /// `capture_index` is the name's position in `free` (the env Record field
+    /// order, bound by `run_fragment` as temp-frame cells).
+    fn lower_fragment(
+        &mut self,
+        params: &[Param],
+        body: &Expr,
+        free: &[String],
+        _span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_next = self.next_value_reg;
+        let saved_locals = std::mem::take(&mut self.value_locals);
+        let saved_captures = std::mem::take(&mut self.fragment_captures);
+
+        let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+        for (i, p) in params.iter().enumerate() {
+            scope.insert(p.name.clone(), (i, ValueTy::Float));
+        }
+        self.value_locals.push(scope);
+        self.fragment_captures = free.to_vec();
+        self.next_value_reg = params.len();
+
+        let res = self.lower_value(body);
+        let body_result = match res {
+            Ok(r) => r,
+            Err(e) => {
+                self.value_instrs = saved_instrs;
+                self.next_value_reg = saved_next;
+                self.value_locals = saved_locals;
+                self.fragment_captures = saved_captures;
+                return Err(e);
+            }
+        };
+        let (result_reg, result_ty) = body_result;
+        let frag = FragmentIr {
+            value_instrs: std::mem::take(&mut self.value_instrs),
+            steps: Vec::new(),
+            num_value_regs: self.next_value_reg,
+            num_block_regs: 0,
+            output_value_regs: vec![result_reg],
+            output_block_regs: Vec::new(),
+            num_capture_cells: free.len(),
+            sig: FuncSig {
+                value_ins: params.len(),
+                value_outs: 1,
+                signal_ins: 0,
+            },
+        };
+        let id = self.fragments.len();
+        self.fragments.push(frag);
+
+        self.value_instrs = saved_instrs;
+        self.next_value_reg = saved_next;
+        self.value_locals = saved_locals;
+        self.fragment_captures = saved_captures;
+        Ok((id, result_ty))
+    }
+
+    /// Snapshot the current values of `free` into a new env Record, returning
+    /// the record's value register. Each free name is resolved through
+    /// `lower_value_ref`, so a top-level definition inlines its value while a
+    /// name captured by an enclosing lambda reads its env-frame cell.
+    fn emit_env_snapshot(&mut self, free: &[String], span: Span) -> Result<usize, CompileError> {
+        let mut field_regs = Vec::with_capacity(free.len());
+        for name in free {
+            let (r, _) = self.lower_value_ref(name, span)?;
+            field_regs.push(r);
+        }
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueConstructRecord {
+            dst,
+            fields: field_regs,
+        });
+        Ok(dst)
     }
 
     /// Resolve the constructor name of a scrutinee expression when it is
@@ -1803,6 +2061,8 @@ pub fn lower_with_cafs(
         env: &tp.type_env,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
+        fragments: Vec::new(),
+        fragment_captures: Vec::new(),
     };
 
     for (cell_idx, p) in main.params().iter().enumerate() {
@@ -1865,6 +2125,24 @@ pub fn lower_with_cafs(
     // Value-state slots (`ValueStateRead`/`ValueStateWrite`) are not emitted by
     // lowering in v1; when a future task wires `~`/`@` over values, its slot
     // count must join the bound the same way.
+    //
+    // Fragments allocate too: each fragment's own instructions allocate at most
+    // one slot per alloc-producing instruction, and each fragment call binds
+    // `num_capture_cells` temp-frame cells (one independent copy per env field).
+    // The per-fragment totals are summed conservatively — an upper bound on any
+    // single call path (fragments may nest, but the sum over all fragments
+    // bounds the deepest nesting as well).
+    let fragment_capacity = lw
+        .fragments
+        .iter()
+        .map(|f| {
+            f.value_instrs
+                .iter()
+                .filter(|i| is_alloc_producing(i))
+                .count()
+                + f.num_capture_cells
+        })
+        .sum::<usize>();
     let value_capacity = lw
         .value_instrs
         .iter()
@@ -1874,7 +2152,8 @@ pub fn lower_with_cafs(
             .iter()
             .map(|t| lw.subtree_size(t))
             .sum::<usize>()
-        + num_main_cells;
+        + num_main_cells
+        + fragment_capacity;
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
@@ -1893,7 +2172,7 @@ pub fn lower_with_cafs(
         num_value_regs: lw.next_value_reg,
         value_output_regs: lw.value_regs_out,
         value_funcs: lw.value_funcs,
-        fragments: Vec::new(),
+        fragments: lw.fragments,
         value_state: ValueLayout {
             capacity: value_capacity,
             value_state_slots: 0,

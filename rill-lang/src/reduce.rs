@@ -1,8 +1,9 @@
 //! β-reduction: inline user-defined function calls after type inference.
 //!
-//! After this pass, the AST contains no `Apply` nodes targeting user-defined
-//! functions — only builtins, `smooth`, `param`, and combinators remain.
-//! This simplifies lowering: no Anchor handling in `lower_ref`.
+//! After this pass, the AST contains no `Apply` nodes targeting named
+//! λ-parameter definitions — only builtins, `smooth`, `param`, combinators,
+//! and runtime-dispatch `Apply` nodes over closure values (`add2 = adder 2.0`)
+//! remain. This simplifies lowering: no Anchor handling in `lower_ref`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -141,6 +142,27 @@ fn defs_map(defs: &[Def]) -> HashMap<String, Def> {
         .collect()
 }
 
+/// Whether `name` resolves to a closure-valued definition: a `Def::Local`
+/// whose body is a lambda literal or a reference/application chain that
+/// produces one (e.g. `add2 = adder 2.0`). Applying a closure value is a
+/// RUNTIME dispatch (`ValueCallFunc`), so such `Apply` nodes must survive
+/// reduction — inlining a closure body would drop the applied arguments.
+/// Named λ-parameter definitions (`double x = ...`) remain β-reduced.
+fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<String>) -> bool {
+    if !seen.insert(name.to_string()) {
+        return false;
+    }
+    match ctx.get(name) {
+        Some(Def::Local { body, .. }) => match body {
+            Expr::Lambda { .. } => true,
+            Expr::Ref(next, _) => is_closure_def(ctx, next, seen),
+            Expr::Apply { .. } => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Def {
     if def.is_decl() {
         return def.clone();
@@ -192,6 +214,17 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
         }
         Expr::Apply { name, args, span } => {
             let reduced_args: Vec<Expr> = args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect();
+            // Closure-valued applications (`add2 = adder 2.0`) are runtime
+            // dispatches on closure values: leave the Apply in place so
+            // lowering emits a `ValueCallFunc`. β-reducing a closure body would
+            // drop the applied arguments.
+            if is_closure_def(ctx, name, &mut HashSet::new()) {
+                return Expr::Apply {
+                    name: name.clone(),
+                    args: reduced_args,
+                    span: *span,
+                };
+            }
             if let Some(def) = ctx.get(name) {
                 if def.is_decl() {
                     // Type declarations aren't signal definitions — keep the

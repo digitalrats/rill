@@ -47,6 +47,17 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     outputs: &mut [&mut [T]],
 ) {
     push_builtin_params(prog);
+    // Release the previous tick's value outputs BEFORE this tick allocates.
+    // A value output pins its whole subtree across ticks (the output keeps the
+    // root at rc >= 1), and a closure output additionally pins its captured env
+    // record — so the old tree must be freed before the new tick's allocations
+    // can reuse its slots (the build-time capacity bound assumes at most one
+    // tick's live set at a time). The output is re-stored at tick end.
+    for out in &mut prog.value_outputs {
+        if let Some(r) = out.take() {
+            prog.arena.drop_ref(r);
+        }
+    }
     let n = outputs.first().map(|o| o.len()).unwrap_or(0);
     debug_assert!(n <= BUF, "block length {n} exceeds BUF {BUF}");
 
@@ -78,8 +89,8 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     // Copy the value outputs (one per value output channel) into the program's
     // stable `value_outputs` store. Each output is an INDEPENDENT counted owner:
     // `copy` (rc++) so it survives the register clear below, and the previous
-    // tick's output ref is released first — outputs persist across ticks and
-    // must not leak one slot per tick. `clear_value_regs` then drops the
+    // tick's output was already released at the start of this tick (see above)
+    // so nothing leaks across ticks. `clear_value_regs` then drops the
     // register's refs (the per-tick scratch) while the output refs remain live.
     for (i, &r) in prog.ir.value_output_regs.iter().enumerate() {
         if let Some(Some(v)) = prog.value_regs.get(r) {
@@ -142,6 +153,7 @@ fn alloc_owned<T: Transcendental, const BUF: usize>(
     let children: Vec<ArenaRef> = match v {
         Value::Record(ref fields) | Value::Sum(_, ref fields) => fields.clone(),
         Value::Newtype(inner) => vec![inner],
+        Value::Closure(env, _) => vec![env],
         _ => Vec::new(),
     };
     match prog.arena.alloc(v) {
@@ -176,6 +188,9 @@ fn alloc_copy<T: Transcendental, const BUF: usize>(
         }
         Value::Newtype(inner) => {
             _ = prog.arena.copy(*inner);
+        }
+        Value::Closure(env, _) => {
+            _ = prog.arena.copy(*env);
         }
         _ => {}
     }
@@ -252,6 +267,7 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
             }
         }
         Value::Newtype(inner) => prog.arena.drop_ref(*inner),
+        Value::Closure(env, _) => prog.arena.drop_ref(*env),
         _ => {}
     }
 }
@@ -349,7 +365,17 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             prog.value_regs[*dst] = alloc_owned(prog, Value::Void);
         }
         ValueInstr::ValueReadCell { dst, cell } => {
-            match prog.value_regs[*cell] {
+            // Inside a fragment, `cell < active_fragment_cells.len()` is a
+            // CAPTURE index into the current call's env frame (the lambda's
+            // free variables); otherwise `cell` is a value register holding a
+            // cell ref (main-track reads).
+            let capture = if !prog.active_fragment_cells.is_empty() {
+                (*cell < prog.active_fragment_cells.len())
+                    .then_some(prog.active_fragment_cells[*cell])
+            } else {
+                None
+            };
+            match capture.or_else(|| prog.value_regs.get(*cell).copied().flatten()) {
                 Some(cr) => match prog.arena.get(cr) {
                     Some(v) => {
                         // Copy the value OUT of the cell into a fresh slot: a
@@ -552,9 +578,27 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueMakeClosure { dst, env, fragment } => {
             // A closure is a leaf holding the env record ref and the fragment
-            // id. The env register is read by value; an unbound env (v1 named
-            // references) falls back to the dummy ref 0 (a Void slot).
-            let env_ref = prog.value_regs.get(*env).copied().flatten().unwrap_or(0);
+            // id. The env register is read by value; the closure COUNTS the env
+            // as a child (like a Record counts its fields), so the creating
+            // register keeps its own ownership and `drop_ref` releases the env
+            // when the closure is freed. An unbound env (v1 named references)
+            // falls back to a fresh Void slot the closure owns outright.
+            let env_ref = match prog.value_regs.get(*env).copied().flatten() {
+                Some(r) => match prog.arena.copy(r) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        prog.value_regs[*dst] = None;
+                        return;
+                    }
+                },
+                None => match prog.arena.alloc(Value::Void) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        prog.value_regs[*dst] = None;
+                        return;
+                    }
+                },
+            };
             prog.value_regs[*dst] = alloc_owned(prog, Value::Closure(env_ref, *fragment as u32));
         }
         ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src] {
@@ -649,6 +693,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
 /// ([`remap_value_instr`]), then truncates back — the fragment is never
 /// rewritten. Value args are copied (RC++) into the fragment's leading
 /// registers; the caller keeps its own ownership.
+///
+/// Capture scheme: the env Record's fields (the lambda's free variables, in
+/// declaration order) become cells in the temporary frame at indices
+/// `0..n-1`. The fragment's `ValueReadCell { cell: i }` reads frame cell `i`
+/// via `active_fragment_cells`. A capture cell holds an INDEPENDENT copy of
+/// the field's value, so the cell owns it and the env record is untouched.
 fn run_fragment<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     frag: &FragmentIr,
@@ -657,30 +707,39 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     dst: &usize,
 ) {
     // 1. Push a temporary capture frame: each env Record field becomes a cell
-    //    holding the field's value. v1 closures carry a dummy env (a Void slot),
-    //    so the loop is a no-op until real captures land (Task 4).
+    //    holding an INDEPENDENT COPY of the field's value (alloc_copy — the
+    //    cell owns it, the env record is untouched). The cells are exposed as
+    //    `active_fragment_cells` so the fragment's `ValueReadCell { cell: i }`
+    //    capture reads resolve to frame cell i.
     prog.cell_stack.push(Vec::new());
+    let mut cells: Vec<crate::arena::ArenaRef> = Vec::new();
     if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
         // Clone the field refs so the arena can be borrowed mutably while the
         // capture cells are allocated below.
         let fields = fields.clone();
         for f in &fields {
-            let cell = prog.arena.alloc(Value::Void).unwrap_or(0);
-            if let Some(v) = prog.arena.get(*f).cloned() {
-                // Release the Void placeholder and reallocate the field's value
-                // into the freed slot so the frame owns one cell per field.
-                prog.arena.drop_ref(cell);
-                let _ = prog.arena.alloc(v);
-            }
-            if let Some(frame) = prog.cell_stack.last_mut() {
-                frame.push((0, cell));
+            // Clone the field value so the arena borrow ends before the mutable
+            // alloc_copy below (mirrors the outer `fields.clone()`).
+            let cell = match prog.arena.get(*f).cloned() {
+                Some(v) => alloc_copy(prog, &v),
+                None => prog.arena.alloc(Value::Void).ok(),
+            };
+            if let Some(c) = cell {
+                if let Some(frame) = prog.cell_stack.last_mut() {
+                    frame.push((0, c));
+                }
+                cells.push(c);
             }
         }
     }
-    // 2. Append a scratch register slice for the fragment's local registers.
+    // 2. Expose the capture cells for the duration of this call. Save/restore
+    //    so a nested fragment call observes its own cells, not the caller's.
+    let saved_cells = std::mem::take(&mut prog.active_fragment_cells);
+    prog.active_fragment_cells = cells;
+    // 3. Append a scratch register slice for the fragment's local registers.
     let base = prog.value_regs.len();
     prog.value_regs.extend(vec![None; frag.num_value_regs]);
-    // 3. Value args: copy the caller's arg values into the fragment's leading
+    // 4. Value args: copy the caller's arg values into the fragment's leading
     //    registers (the first `sig.value_ins` slice slots). Each copy is a
     //    fresh owner (RC++) so the caller keeps its own ref.
     for (i, a) in args
@@ -692,7 +751,7 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
             prog.value_regs[base + i] = copy_owned(prog, sr);
         }
     }
-    // 4. Run the fragment's value instructions with the register offset.
+    // 5. Run the fragment's value instructions with the register offset.
     let mut drops: Vec<crate::arena::ArenaRef> = Vec::new();
     for instr in &frag.value_instrs {
         let remapped = remap_value_instr(instr, base);
@@ -701,15 +760,17 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     for r in drops {
         prog.arena.drop_ref(r);
     }
-    // 5. Copy the fragment's result into `dst` (a fresh owner via `copy`).
+    // 6. Copy the fragment's result into `dst` (a fresh owner via `copy`).
     if let Some(or) = frag.output_value_regs.first() {
         prog.value_regs[*dst] = match prog.value_regs.get(base + *or).copied().flatten() {
             Some(sr) => copy_owned(prog, sr),
             None => None,
         };
     }
-    // 6. Truncate the scratch slice and pop the capture frame.
+    // 7. Truncate the scratch slice, restore the caller's capture cells, and
+    //    pop the frame (releasing the capture cells' counted refs).
     prog.value_regs.truncate(base);
+    prog.active_fragment_cells = saved_cells;
     if let Some(frame) = prog.cell_stack.pop() {
         for (_, c) in frame {
             prog.arena.drop_ref(c);
@@ -730,8 +791,12 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
         ValueInstr::ValuePopScope => ValueInstr::ValuePopScope,
         ValueInstr::ValueBindCell { dst } => ValueInstr::ValueBindCell { dst: dst + base },
         ValueInstr::ValueReadCell { dst, cell } => ValueInstr::ValueReadCell {
+            // `cell` is a capture index into the call's env frame, NOT a
+            // fragment-local register — leave it unoffset (a main-track read
+            // of a cell register never reaches remap; only fragment instrs are
+            // remapped, and a fragment's ReadCell cells are always captures).
             dst: dst + base,
-            cell: cell + base,
+            cell: *cell,
         },
         ValueInstr::ValueReadMainCell { dst, cell } => ValueInstr::ValueReadMainCell {
             dst: dst + base,
@@ -1112,6 +1177,7 @@ mod closure_dispatch_tests {
                 num_block_regs: 0,
                 output_value_regs: vec![0],
                 output_block_regs: Vec::new(),
+                num_capture_cells: 0,
                 sig: FuncSig {
                     value_ins: 0,
                     value_outs: 1,

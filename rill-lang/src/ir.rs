@@ -199,10 +199,16 @@ pub enum ValueInstr {
     },
     /// Read a variable: copy the value out of the cell into a fresh slot
     /// (the result is a new owner, it does not share the cell's value).
+    ///
+    /// Inside a function fragment, `cell` is a CAPTURE index: a free variable
+    /// of the lambda, read from the call's temporary env frame (see
+    /// [`run_fragment`](crate::backend::interp::run_fragment)) when
+    /// `cell < active_fragment_cells.len()`. Outside a fragment, `cell` is a
+    /// value register holding a cell ref.
     ValueReadCell {
         /// Destination value register.
         dst: usize,
-        /// Value register holding the cell ref.
+        /// Value register holding the cell ref, or the fragment capture index.
         cell: usize,
     },
     /// Read a main λ-parameter cell into a fresh value slot (the result is a
@@ -423,6 +429,10 @@ pub struct FragmentIr {
     pub output_value_regs: Vec<usize>,
     /// Block register(s) holding signal results.
     pub output_block_regs: Vec<usize>,
+    /// Number of env capture cells the call's temporary frame must hold
+    /// (the lambda's free variables, one per env Record field). Drives the
+    /// build-time arena capacity bound.
+    pub num_capture_cells: usize,
     /// Arity.
     pub sig: FuncSig,
 }
