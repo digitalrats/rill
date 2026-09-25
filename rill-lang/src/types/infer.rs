@@ -41,6 +41,9 @@ struct Ctx<'a> {
     sigs: &'a dyn SignatureSource,
     /// The compile-time type environment (aliases, newtypes, data types).
     env: TypeEnv,
+    /// Recursion guard for typeclass method inlining: resolved
+    /// (class, type, method) calls currently on the expansion path.
+    method_lifting: HashSet<(String, String, String)>,
 }
 
 impl Ctx<'_> {
@@ -138,6 +141,91 @@ fn infer_const_value(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ValueTy, CompileErro
     }
 }
 
+/// Infer a typeclass method's argument or body expression (labeled by `what`
+/// for error messages): it must produce a single output channel that is either
+/// a value channel ([`Rate::Value`]) or a bare Float/Int literal (value-
+/// compatible in v1). Genuine signal computations (`sin 1.0`, arithmetic)
+/// cannot flow through the value track, so they are rejected here — at
+/// inference, with a clear message — rather than failing obscurely during
+/// lowering.
+fn infer_method_value_vty(
+    ctx: &mut Ctx<'_>,
+    e: &Expr,
+    what: &str,
+) -> Result<ValueTy, CompileError> {
+    let span = e.span();
+    let t = infer_expr(ctx, e)?;
+    if t.arity_in() != 0 || t.arity_out() != 1 {
+        return Err(CompileError::Type {
+            msg: format!(
+                "expected a constant or value expression, got arity {}->{}",
+                t.arity_in(),
+                t.arity_out()
+            ),
+            span,
+        });
+    }
+    match t.outs[0].rate {
+        Rate::Value => Ok(t.outs[0].vty.clone()),
+        Rate::Signal => match e {
+            Expr::Int(_, _) => Ok(ValueTy::Int),
+            Expr::Float(_, _) => Ok(ValueTy::Float),
+            _ => Err(CompileError::Type {
+                msg: format!(
+                    "typeclass method {what} must be a value expression (found signal channel)"
+                ),
+                span,
+            }),
+        },
+    }
+}
+
+/// Validate every instance's method bodies at compile time, even when the
+/// instance is never called. Each body must infer to a single value channel
+/// (or a bare literal) with its parameter bound to a value of the instance's
+/// bound type. The recursion guard applies here too, so self-inlining bodies
+/// are rejected even when the instance is dead code.
+fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
+    // Clone the (class, type) keys so inference (which mutates ctx) does not
+    // invalidate the iteration borrow.
+    let keys: Vec<(String, String)> = ctx
+        .env
+        .instances
+        .iter()
+        .flat_map(|(class, by_ty)| by_ty.keys().map(|ty_name| (class.clone(), ty_name.clone())))
+        .collect();
+    for (class, ty_name) in keys {
+        let info = ctx
+            .env
+            .instances
+            .get(class.as_str())
+            .and_then(|by_ty| by_ty.get(ty_name.as_str()))
+            .cloned()
+            .unwrap();
+        let param_vty = ctx.env.vty_of_name(&ty_name);
+        for (mname, (param, body)) in &info.methods {
+            let key = (class.clone(), ty_name.clone(), mname.clone());
+            if ctx.method_lifting.contains(&key) {
+                return Err(CompileError::Type {
+                    msg: format!("recursive typeclass method `{mname}` for type `{ty_name}`"),
+                    span: body.span(),
+                });
+            }
+            ctx.method_lifting.insert(key.clone());
+            let saved = ctx.locals.clone();
+            if let Some(p) = param {
+                ctx.locals
+                    .insert(p.clone(), ArrowTy::value_channel(param_vty.clone()));
+            }
+            let res = infer_method_value_vty(ctx, body, "body");
+            ctx.locals = saved;
+            ctx.method_lifting.remove(&key);
+            res?;
+        }
+    }
+    Ok(())
+}
+
 /// Back-compat: infer with no built-ins.
 pub fn infer_program(program: &Program) -> Result<TypedProgram, CompileError> {
     infer_program_with(program, &crate::builtin::NoSigs)
@@ -228,9 +316,17 @@ pub fn infer_program_with(
         locals: HashMap::new(),
         sigs,
         env,
+        method_lifting: HashSet::new(),
     };
 
     infer_def_group(&mut ctx, &program.defs)?;
+
+    // Validate instance method bodies even when the instance is never called:
+    // each body must infer to a single value channel with its parameter bound
+    // to a value of the instance's bound type. This catches garbage bodies
+    // (signal expressions, unknown identifiers, recursive methods) at compile
+    // time rather than leaving them to rot silently.
+    validate_instances(&mut ctx)?;
 
     let main_scheme = ctx
         .defs
@@ -919,7 +1015,7 @@ fn infer_apply(
                 span,
             });
         }
-        let arg_vty = infer_const_value(ctx, &args[0])?;
+        let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
         let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
             Some(t) => t,
             None => {
@@ -940,6 +1036,16 @@ fn infer_apply(
                 });
             }
         };
+        // Recursion guard: a method that inlines itself (directly or
+        // transitively) is a compile error, not a stack overflow.
+        let key = (class_name, ty_name.clone(), name.to_string());
+        if ctx.method_lifting.contains(&key) {
+            return Err(CompileError::Type {
+                msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
+                span,
+            });
+        }
+        ctx.method_lifting.insert(key.clone());
         // Bind the method parameter to the argument's value type and infer the
         // body; the resulting type is the call's value type.
         let saved = ctx.locals.clone();
@@ -947,8 +1053,10 @@ fn infer_apply(
             ctx.locals
                 .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
         }
-        let body_vty = infer_const_value(ctx, &body)?;
+        let body_vty = infer_method_value_vty(ctx, &body, "body");
         ctx.locals = saved;
+        ctx.method_lifting.remove(&key);
+        let body_vty = body_vty?;
         return Ok(ArrowTy::value_channel(body_vty));
     }
     if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {

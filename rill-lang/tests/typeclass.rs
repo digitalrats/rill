@@ -48,3 +48,82 @@ fn typeclass_selects_instance_by_argument_type() {
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(2.5));
 }
+
+#[test]
+fn recursive_typeclass_method_is_compile_error() {
+    // A method body that inlines itself must be a compile error, not a stack
+    // overflow / SIGABRT of the compiler.
+    let src = r#"
+        typeclass Show a where { show: a; }
+        instance Show Float where { show f = show f; }
+        main = show 1.0;
+    "#;
+    let res = compile::<f32>(src);
+    assert!(res.is_err(), "expected a compile error, got success");
+    match res.err().expect("compile failed") {
+        rill_lang::CompileError::Type { msg, .. } => {
+            assert!(
+                msg.contains("recursive typeclass method"),
+                "expected recursive-method message, got: {msg}",
+            );
+        }
+        other => panic!("expected a Type error, got {other:?}"),
+    }
+}
+
+#[test]
+fn transitive_recursive_typeclass_methods_are_compile_error() {
+    // `a` inlines `b` which inlines `a` — the recursion guard must catch the
+    // cycle through the chain, not just a method inlining itself.
+    let src = r#"
+        typeclass C a where { a: a; b: a; }
+        instance C Float where { a f = b f; b f = a f; }
+        main = a 1.0;
+    "#;
+    let res = compile::<f32>(src);
+    assert!(res.is_err(), "expected a compile error, got success");
+    match res.err().expect("compile failed") {
+        rill_lang::CompileError::Type { msg, .. } => {
+            assert!(
+                msg.contains("recursive typeclass method"),
+                "expected recursive-method message, got: {msg}",
+            );
+        }
+        other => panic!("expected a Type error, got {other:?}"),
+    }
+}
+
+#[test]
+fn signal_method_argument_is_compile_error() {
+    // A genuine signal computation (`sin 1.0`) cannot select a typeclass
+    // instance — only value expressions (and bare Float/Int literals) can.
+    let src = r#"
+        typeclass Show a where { show: a; }
+        instance Show Float where { show f = f; }
+        main = show (sin 1.0);
+    "#;
+    let res = compile::<f32>(src);
+    assert!(res.is_err(), "expected a compile error, got success");
+    match res.err().expect("compile failed") {
+        rill_lang::CompileError::Type { msg, .. } => {
+            assert!(
+                msg.contains("value expression"),
+                "expected value-expression message, got: {msg}",
+            );
+        }
+        other => panic!("expected a Type error, got {other:?}"),
+    }
+}
+
+#[test]
+fn invalid_instance_body_is_compile_error() {
+    // An instance body is validated at compile time even when the instance is
+    // never called — a signal-expression body must be rejected.
+    let src = r#"
+        typeclass Show a where { show: a; }
+        instance Show Float where { show f = sin 1.0; }
+        main = 1.0;
+    "#;
+    let res = compile::<f32>(src);
+    assert!(res.is_err(), "expected a compile error, got success");
+}

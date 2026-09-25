@@ -66,6 +66,9 @@ struct Lowerer<'a> {
     env: &'a TypeEnv,
     /// Recursion guard while inlining value definitions.
     value_inline: HashSet<String>,
+    /// Recursion guard for typeclass method inlining: resolved (class, type,
+    /// method) calls currently on the expansion path.
+    method_lifting: HashSet<(String, String, String)>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -420,14 +423,27 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                     };
+                    // Recursion guard: a method that inlines itself (directly
+                    // or transitively) is a compile error, not a stack overflow.
+                    let key = (class_name, ty_name.clone(), name.to_string());
+                    if self.method_lifting.contains(&key) {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "recursive typeclass method `{name}` for type `{ty_name}`"
+                            ),
+                            span: *span,
+                        });
+                    }
+                    self.method_lifting.insert(key.clone());
                     let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
                     if let Some(p) = param {
                         scope.insert(p, (arg_reg, arg_vty.clone()));
                     }
                     self.value_locals.push(scope);
-                    let res = self.lower_value(&body)?;
+                    let res = self.lower_value(&body);
                     self.value_locals.pop();
-                    return Ok(res);
+                    self.method_lifting.remove(&key);
+                    return res;
                 }
                 Err(CompileError::Type {
                     msg: format!("`{name}` is not a value constructor in v1"),
@@ -1615,6 +1631,7 @@ pub fn lower_with_cafs(
         value_locals: Vec::new(),
         env: &tp.type_env,
         value_inline: HashSet::new(),
+        method_lifting: HashSet::new(),
     };
 
     for p in main.params() {
