@@ -448,6 +448,49 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 prog.value_state[*slot] = stored;
             }
         }
+        ValueInstr::ValueMatch { dst, slot, ctor } => {
+            // v1 static dispatch: the scrutinee's constructor is statically
+            // known (a literal sum), so exactly one arm matches. A non-matching
+            // arm (or an unbound scrutinee) writes None into every dst reg — a
+            // detectable no-op. Each dst reg owns its payload ref via a copy
+            // (rc++); the scrutinee keeps its own ownership of the sum.
+            let payload: Option<Vec<ArenaRef>> = match prog.value_regs.get(*slot).copied().flatten()
+            {
+                Some(sr) => match prog.arena.get(sr) {
+                    Some(Value::Sum(c, fields)) if *c == *ctor => Some(fields.clone()),
+                    _ => None,
+                },
+                None => None,
+            };
+            match payload {
+                Some(fields) => {
+                    for (i, d) in dst.iter().enumerate() {
+                        let r = fields
+                            .get(i)
+                            .copied()
+                            .and_then(|fr| prog.arena.copy(fr).ok());
+                        if let Some(reg) = prog.value_regs.get_mut(*d) {
+                            // Release any previous occupant (dst regs are SSA in
+                            // lowering, but re-assignment must not leak).
+                            if let Some(old) = reg.take() {
+                                drops.push(old);
+                            }
+                            *reg = r;
+                        }
+                    }
+                }
+                None => {
+                    for d in dst {
+                        if let Some(reg) = prog.value_regs.get_mut(*d) {
+                            if let Some(old) = reg.take() {
+                                drops.push(old);
+                            }
+                            *reg = None;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -801,5 +844,66 @@ mod value_track_tests {
         assert_eq!(prog.arena.live(), 0);
         MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
         assert_eq!(prog.arena.live(), 0, "second tick leaks nothing");
+    }
+
+    #[test]
+    fn value_match_selects_payload_of_matching_ctor() {
+        // Sum(0, [7]) matched against ctor 0: dst reg 2 receives a shared ref to
+        // the payload (rc++), so both the sum and the dst reg own it.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                ValueInstr::ValueConstructSum {
+                    dst: 1,
+                    ctor: 0,
+                    payload: vec![0],
+                },
+                ValueInstr::ValueMatch {
+                    dst: vec![2],
+                    slot: 1,
+                    ctor: 0,
+                },
+            ],
+            3,
+            0,
+        );
+        run_value_track(&mut prog);
+        let payload = prog.value_regs[2].unwrap();
+        assert_eq!(
+            prog.arena.get(payload).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
+        let sum = prog.value_regs[1].unwrap();
+        assert_eq!(prog.arena.rc(sum), 1);
+        assert_eq!(
+            prog.arena.rc(payload),
+            3,
+            "const reg + sum payload + match dst each own it"
+        );
+    }
+
+    #[test]
+    fn value_match_non_matching_ctor_writes_none() {
+        // Sum(1, [7]) matched against ctor 0: no arm matches, so the dst reg is
+        // written None (a detectable no-op under v1 static dispatch).
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                ValueInstr::ValueConstructSum {
+                    dst: 1,
+                    ctor: 1,
+                    payload: vec![0],
+                },
+                ValueInstr::ValueMatch {
+                    dst: vec![2],
+                    slot: 1,
+                    ctor: 0,
+                },
+            ],
+            3,
+            0,
+        );
+        run_value_track(&mut prog);
+        assert_eq!(prog.value_regs[2], None);
     }
 }

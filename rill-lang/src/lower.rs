@@ -2,11 +2,85 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ArithOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, Param, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
-use crate::ir::{BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp, ValueLayout};
+use crate::ir::{
+    BinArith, BuiltinInstance, Instr, Ir, ParamDef, StateLayout, UnOp, ValueInstr, ValueLayout,
+};
 use crate::types::infer::TypedProgram;
+use crate::types::ty::{Rate, ValueTy};
+
+/// Shape of a declared data type, mirrored from inference (`types::infer`) so
+/// the value-track lowering can resolve field indices and constructor indices
+/// without consulting the inference context.
+#[derive(Debug, Clone)]
+enum DataInfo {
+    /// A product type: field name → value type.
+    Record(Vec<(String, ValueTy)>),
+    /// A sum type: constructor name → payload value types.
+    Sum(Vec<(String, Vec<ValueTy>)>),
+}
+
+/// Map a DSL type name in a `data` declaration to its value type. v1 covers
+/// `Float`/`Int` payloads and other data types; newtypes arrive in a later task.
+fn vty_of_type_name(t: &str) -> ValueTy {
+    match t {
+        "Float" => ValueTy::Float,
+        "Int" => ValueTy::Int,
+        name => ValueTy::Data(name.to_string()),
+    }
+}
+
+/// Whether a value instruction allocates a fresh arena slot when executed.
+///
+/// Drives the v1 `ValueLayout::capacity` heuristic: value registers are per-tick
+/// scratch (cleared at tick end by `clear_value_regs`), so the maximum number of
+/// simultaneously-live slots is bounded by the total number of allocations one
+/// tick can issue. Every instruction below allocates at most one slot per tick;
+/// `ValueUpdateField`'s COW copy is net-zero (a fresh slot replaces the
+/// original), so counting it is a conservative over-approximation that also
+/// covers the transient extra slot mid-COW.
+fn is_alloc_producing(i: &ValueInstr) -> bool {
+    matches!(
+        i,
+        ValueInstr::ValueConstInt { .. }
+            | ValueInstr::ValueConstFloat { .. }
+            | ValueInstr::ValueConstructRecord { .. }
+            | ValueInstr::ValueConstructSum { .. }
+            | ValueInstr::ValueNewtype { .. }
+            | ValueInstr::ValueBindCell { .. }
+            | ValueInstr::ValueReadCell { .. }
+            | ValueInstr::ValueStateRead { .. }
+            | ValueInstr::ValueUpdateField { .. }
+    )
+}
+
+/// Re-derive the data-type environment from the AST's declarations. Declarations
+/// are pure (no recursion), so this is safe to build once at lowering start.
+fn build_data_types(program: &Program) -> HashMap<String, DataInfo> {
+    let mut m = HashMap::new();
+    for def in &program.defs {
+        match def {
+            Def::Data { name, fields, .. } => {
+                let fields_ty = fields
+                    .iter()
+                    .map(|(f, t)| (f.clone(), vty_of_type_name(t)))
+                    .collect();
+                m.insert(name.clone(), DataInfo::Record(fields_ty));
+            }
+            Def::Sum { name, ctors, .. } => {
+                let ctors_ty = ctors
+                    .iter()
+                    .map(|(c, ts)| (c.clone(), ts.iter().map(|t| vty_of_type_name(t)).collect()))
+                    .collect();
+                m.insert(name.clone(), DataInfo::Sum(ctors_ty));
+            }
+            _ => {}
+        }
+    }
+    m
+}
 
 struct Lowerer<'a> {
     defs: HashMap<String, Def>,
@@ -23,6 +97,20 @@ struct Lowerer<'a> {
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
     sample_rate: f32,
+    /// Value-track instructions, executed once per tick (see `run_value_track`).
+    value_instrs: Vec<ValueInstr>,
+    /// Next value register index (SSA value registers are per-tick scratch).
+    next_value_reg: usize,
+    /// Value registers holding the program's value outputs (value-channel main).
+    value_regs_out: Vec<usize>,
+    /// Scope stack of value locals: name → (value reg, value type). Match-arm
+    /// bindings (and, in a later task, `main` λ-params) are aliased by name to
+    /// per-tick value registers — a `Ref` to one returns the register directly.
+    value_locals: Vec<HashMap<String, (usize, ValueTy)>>,
+    /// Data-type environment mirror (field/ctor shapes) for value lowering.
+    data_types: HashMap<String, DataInfo>,
+    /// Recursion guard while inlining value definitions.
+    value_inline: HashSet<String>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -34,6 +122,388 @@ impl<'a> Lowerer<'a> {
 
     fn emit(&mut self, i: Instr) {
         self.instrs.push(i);
+    }
+
+    fn fresh_value_reg(&mut self) -> usize {
+        let r = self.next_value_reg;
+        self.next_value_reg += 1;
+        r
+    }
+
+    fn emit_value(&mut self, i: ValueInstr) {
+        self.value_instrs.push(i);
+    }
+
+    /// Lower a value expression to a value register, returning its static value
+    /// type. Signal expressions lower to block registers through [`Self::lower`];
+    /// value expressions (record/field/match/ctor/literal-in-value-position)
+    /// lower here and the two tracks never mix.
+    ///
+    /// The returned type is the static `ValueTy` of the expression — inference
+    /// keeps value channels monomorphic, so this is exact. It is threaded
+    /// through because field indices (records) and constructor indices (sums)
+    /// depend on the concrete data type of the value.
+    fn lower_value(&mut self, e: &Expr) -> Result<(usize, ValueTy), CompileError> {
+        match e {
+            Expr::Int(v, _) => {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstInt { dst, value: *v });
+                Ok((dst, ValueTy::Int))
+            }
+            Expr::Float(v, _) => {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstFloat { dst, value: *v });
+                Ok((dst, ValueTy::Float))
+            }
+            Expr::Wire(_) => {
+                // v1 has no runtime value inputs: a value wire (`_` in match
+                // position) lowers to an unbound register, so any `ValueMatch`
+                // against it is a detectable non-match (None). The type is
+                // unknown until the surrounding match pins it.
+                let dst = self.fresh_value_reg();
+                Ok((dst, ValueTy::Var(0)))
+            }
+            Expr::Ref(name, span) => self.lower_value_ref(name, *span),
+            Expr::FieldProject {
+                record,
+                field,
+                span,
+            } => {
+                let (rec_reg, rec_vty) = self.lower_value(record)?;
+                let rec_name = match &rec_vty {
+                    ValueTy::Data(n) => n.clone(),
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: "field projection requires a record value".into(),
+                            span: *span,
+                        });
+                    }
+                };
+                let fields = match self.data_types.get(&rec_name) {
+                    Some(DataInfo::Record(fields)) => fields.clone(),
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: format!("`{rec_name}` is not a record type"),
+                            span: *span,
+                        });
+                    }
+                };
+                let field_index = fields.iter().position(|(f, _)| f == field).ok_or_else(|| {
+                    CompileError::Type {
+                        msg: format!("no field `{field}` in `{rec_name}`"),
+                        span: *span,
+                    }
+                })?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueProject {
+                    dst,
+                    slot: rec_reg,
+                    field: field_index,
+                });
+                Ok((dst, fields[field_index].1.clone()))
+            }
+            Expr::FieldUpdate {
+                record,
+                field,
+                value,
+                span,
+            } => {
+                let (rec_reg, rec_vty) = self.lower_value(record)?;
+                let rec_name = match &rec_vty {
+                    ValueTy::Data(n) => n.clone(),
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: "field update requires a data record".into(),
+                            span: *span,
+                        });
+                    }
+                };
+                let fields = match self.data_types.get(&rec_name) {
+                    Some(DataInfo::Record(fields)) => fields.clone(),
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: format!("`{rec_name}` is not a record type"),
+                            span: *span,
+                        });
+                    }
+                };
+                let field_index = fields.iter().position(|(f, _)| f == field).ok_or_else(|| {
+                    CompileError::Type {
+                        msg: format!("no field `{field}` in `{rec_name}`"),
+                        span: *span,
+                    }
+                })?;
+                let (src, _) = self.lower_value(value)?;
+                self.emit_value(ValueInstr::ValueUpdateField {
+                    slot: rec_reg,
+                    field: field_index,
+                    src,
+                });
+                Ok((rec_reg, rec_vty))
+            }
+            Expr::Match {
+                scrutinee,
+                arms,
+                span,
+            } => {
+                let (scrutinee_reg, scrutinee_vty) = self.lower_value(scrutinee)?;
+                // The sum type: a concrete scrutinee type pins it; otherwise the
+                // arm constructors determine it (mirroring inference's
+                // intersection of candidate sum types).
+                let sum_name = match &scrutinee_vty {
+                    ValueTy::Data(n) => n.clone(),
+                    _ => self.resolve_match_sum(arms, *span)?,
+                };
+                let ctors = match self.data_types.get(&sum_name) {
+                    Some(DataInfo::Sum(ctors)) => ctors.clone(),
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: format!("`{sum_name}` is not a sum type"),
+                            span: *span,
+                        });
+                    }
+                };
+                let mut result: Option<(usize, ValueTy)> = None;
+                for (ctor, params, body) in arms {
+                    let ctor_idx = ctors.iter().position(|(c, _)| c == ctor).ok_or_else(|| {
+                        CompileError::Type {
+                            msg: format!("unknown constructor `{ctor}` for `{sum_name}`"),
+                            span: *span,
+                        }
+                    })?;
+                    let payload_tys = &ctors[ctor_idx].1;
+                    let mut payload_regs = Vec::with_capacity(payload_tys.len());
+                    for _ in 0..payload_tys.len() {
+                        payload_regs.push(self.fresh_value_reg());
+                    }
+                    self.emit_value(ValueInstr::ValueMatch {
+                        dst: payload_regs.clone(),
+                        slot: scrutinee_reg,
+                        ctor: ctor_idx as u32,
+                    });
+                    // Bind the arm's payload params to the match's payload regs.
+                    let mut scope = HashMap::new();
+                    for (idx, p) in params.iter().enumerate() {
+                        let pty = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
+                        scope.insert(p.name.clone(), (payload_regs[idx], pty));
+                    }
+                    self.value_locals.push(scope);
+                    let arm = self.lower_value(body);
+                    self.value_locals.pop();
+                    let (arm_reg, arm_vty) = arm?;
+                    if result.is_none() {
+                        result = Some((arm_reg, arm_vty));
+                    }
+                }
+                result.ok_or_else(|| CompileError::Type {
+                    msg: "match requires at least one arm".into(),
+                    span: *span,
+                })
+            }
+            Expr::Apply {
+                name,
+                args: call_args,
+                span,
+            } => {
+                // Record constructor: `Point { x: 1.0 }`.
+                if let Some(info) = self.data_types.get(name).cloned() {
+                    match info {
+                        DataInfo::Record(fields) => {
+                            if call_args.len() != 1 {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "record constructor `{name}` expects one record literal, got {} arguments",
+                                        call_args.len()
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            let fields_expr = match &call_args[0] {
+                                Expr::Record(f, _) => f,
+                                _ => {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "record constructor `{name}` expects a record literal"
+                                        ),
+                                        span: *span,
+                                    });
+                                }
+                            };
+                            // Lower each field value in declared-field order so the
+                            // runtime record matches the type's field layout.
+                            let mut field_regs = Vec::with_capacity(fields.len());
+                            for (fname, _) in &fields {
+                                let fexpr = fields_expr
+                                    .iter()
+                                    .find(|(n, _)| n == fname)
+                                    .map(|(_, e)| e)
+                                    .ok_or_else(|| CompileError::Type {
+                                        msg: format!(
+                                            "missing field `{fname}` in `{name}` constructor"
+                                        ),
+                                        span: *span,
+                                    })?;
+                                let (fr, _) = self.lower_value(fexpr)?;
+                                field_regs.push(fr);
+                            }
+                            let dst = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueConstructRecord {
+                                dst,
+                                fields: field_regs,
+                            });
+                            return Ok((dst, ValueTy::Data(name.clone())));
+                        }
+                        DataInfo::Sum(_) => {
+                            return Err(CompileError::Type {
+                                msg: format!("`{name}` is a sum type; use one of its constructors"),
+                                span: *span,
+                            });
+                        }
+                    }
+                }
+                // Sum constructor: `Circle 1.5`.
+                if let Some((sum_name, ctor_idx, payload)) = self.sum_ctor(name) {
+                    if call_args.len() != payload.len() {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "constructor `{name}` expects {} argument(s), got {}",
+                                payload.len(),
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    let mut payload_regs = Vec::with_capacity(call_args.len());
+                    for a in call_args {
+                        let (pr, _) = self.lower_value(a)?;
+                        payload_regs.push(pr);
+                    }
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueConstructSum {
+                        dst,
+                        ctor: ctor_idx as u32,
+                        payload: payload_regs,
+                    });
+                    return Ok((dst, ValueTy::Data(sum_name)));
+                }
+                Err(CompileError::Type {
+                    msg: format!("`{name}` is not a value constructor in v1"),
+                    span: *span,
+                })
+            }
+            _ => Err(CompileError::Type {
+                msg: "unsupported expression in value position".into(),
+                span: e.span(),
+            }),
+        }
+    }
+
+    /// Resolve a `Ref` in value position: a value local (match-arm binding) or a
+    /// value definition (inlined at each use site).
+    fn lower_value_ref(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        for scope in self.value_locals.iter().rev() {
+            if let Some(&(reg, ref vty)) = scope.get(name) {
+                return Ok((reg, vty.clone()));
+            }
+        }
+        if self.data_types.contains_key(name) {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` is a data type, not a value"),
+                span,
+            });
+        }
+        let def = self
+            .defs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| CompileError::Type {
+                msg: format!("unknown `{name}` in value lowering"),
+                span,
+            })?;
+        match def {
+            Def::Local { body, .. } => {
+                // v1 value bindings are per-tick re-evaluated expressions (no
+                // shared state), so inlining the body at each use site is
+                // semantically identical to lifting it once.
+                if self.value_inline.contains(name) {
+                    return Err(CompileError::Type {
+                        msg: format!("recursive value definition `{name}`"),
+                        span,
+                    });
+                }
+                self.value_inline.insert(name.to_string());
+                let res = self.lower_value(&body);
+                self.value_inline.remove(name);
+                res
+            }
+            _ => Err(CompileError::Type {
+                msg: format!("`{name}` is not a value expression in v1"),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve the sum type of a `match` from its arm constructors, intersecting
+    /// the candidate sum types per constructor (mirrors inference).
+    fn resolve_match_sum(
+        &self,
+        arms: &[(String, Vec<Param>, Expr)],
+        span: Span,
+    ) -> Result<String, CompileError> {
+        let mut candidates: Option<Vec<String>> = None;
+        for (ctor, _, _) in arms {
+            let per_ctor: Vec<String> = self
+                .data_types
+                .iter()
+                .filter_map(|(tname, info)| match info {
+                    DataInfo::Sum(ctors) if ctors.iter().any(|(c, _)| c == ctor) => {
+                        Some(tname.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            if per_ctor.is_empty() {
+                return Err(CompileError::Type {
+                    msg: format!("unknown constructor `{ctor}`"),
+                    span,
+                });
+            }
+            candidates = Some(match candidates {
+                None => per_ctor,
+                Some(acc) => acc.into_iter().filter(|n| per_ctor.contains(n)).collect(),
+            });
+        }
+        match candidates {
+            Some(v) if v.len() == 1 => Ok(v[0].clone()),
+            _ => Err(CompileError::Type {
+                msg: "match arms use constructors of ambiguous or different sum types".into(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve a bare constructor name to `(sum type, ctor index, payload)`.
+    /// Returns `None` when the name is not a constructor or is ambiguous
+    /// (declared in multiple sum types — inference already rejected that).
+    fn sum_ctor(&self, name: &str) -> Option<(String, usize, Vec<ValueTy>)> {
+        let mut found: Option<(String, usize, Vec<ValueTy>)> = None;
+        for (tname, info) in &self.data_types {
+            if let DataInfo::Sum(ctors) = info {
+                for (idx, (c, payload)) in ctors.iter().enumerate() {
+                    if c == name {
+                        if found.is_some() {
+                            return None;
+                        }
+                        found = Some((tname.clone(), idx, payload.clone()));
+                    }
+                }
+            }
+        }
+        found
     }
 
     fn lower(&mut self, e: &Expr, args: &[usize]) -> Result<Vec<usize>, CompileError> {
@@ -146,6 +616,16 @@ impl<'a> Lowerer<'a> {
                     });
                     self.emit(Instr::WriteBlockState { slot, src: y });
                     return Ok(vec![y]);
+                }
+                // A data constructor in a signal position is a type error: value
+                // expressions lower on the value track (see `lower_value`).
+                if self.data_types.contains_key(name.as_str()) || self.sum_ctor(name).is_some() {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "`{name}` is a value constructor; it cannot be used in a signal expression"
+                        ),
+                        span: *span,
+                    });
                 }
                 if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
                     let mut param_values = Vec::new();
@@ -403,15 +883,18 @@ impl<'a> Lowerer<'a> {
                 Ok(vec![dst])
             }
             Expr::FieldProject { span, .. } => Err(CompileError::Type {
-                msg: "field projection is not yet supported by lowering".into(),
+                msg:
+                    "field projection is a value expression; it cannot be used in a signal position"
+                        .into(),
                 span: *span,
             }),
             Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
-                msg: "field update is not yet supported by lowering".into(),
+                msg: "field update is a value expression; it cannot be used in a signal position"
+                    .into(),
                 span: *span,
             }),
             Expr::Match { span, .. } => Err(CompileError::Type {
-                msg: "match expressions are not yet supported by lowering".into(),
+                msg: "match is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
         }
@@ -944,9 +1427,10 @@ impl<'a> Lowerer<'a> {
             Expr::Let { body, .. } => self.arity_with(body, visited)?,
             Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
             Expr::ActorParam { .. } => (0, 1),
-            Expr::FieldProject { record, .. } => self.arity_with(record, visited)?,
-            Expr::FieldUpdate { value, .. } => self.arity_with(value, visited)?,
-            Expr::Match { scrutinee, .. } => self.arity_with(scrutinee, visited)?,
+            // Value expressions are 0→1 value channels: they carry no signal
+            // arity. (A combinator mixing value and signal channels is outside
+            // v1 scope and errors elsewhere in lowering.)
+            Expr::FieldProject { .. } | Expr::FieldUpdate { .. } | Expr::Match { .. } => (0, 1),
         })
     }
 }
@@ -1042,6 +1526,12 @@ pub fn lower_with_cafs(
         params: Vec::new(),
         param_names: HashMap::new(),
         sample_rate,
+        value_instrs: Vec::new(),
+        next_value_reg: 0,
+        value_regs_out: Vec::new(),
+        value_locals: Vec::new(),
+        data_types: build_data_types(program),
+        value_inline: HashSet::new(),
     };
 
     for p in main.params() {
@@ -1060,13 +1550,33 @@ pub fn lower_with_cafs(
         lw.emit(Instr::LoadInput { dst, index });
         main_args.push(dst);
     }
-    let outs = lw.lower(main.body(), &main_args)?;
-    if outs.is_empty() {
+    // Value-output programs lower through the value track; signal-output
+    // programs through the block track. The two tracks never mix — inference
+    // guarantees a value-typed body has arity_in() == 0, so `main_args` is
+    // empty on the value path.
+    let has_value_out = tp.process_ty.outs.iter().any(|c| c.rate == Rate::Value);
+    let outs = if has_value_out {
+        let (vr, _) = lw.lower_value(main.body())?;
+        lw.value_regs_out.push(vr);
+        Vec::new()
+    } else {
+        lw.lower(main.body(), &main_args)?
+    };
+    if outs.is_empty() && lw.value_regs_out.is_empty() {
         return Err(CompileError::Unsupported(
             "body lowered to 0 outputs, expected at least 1".into(),
         ));
     }
     let num_outputs = outs.len();
+    // v1 capacity heuristic: the arena never needs more slots than the number
+    // of allocations one tick can issue (value registers are per-tick scratch,
+    // dropped at tick end), so the count of alloc-producing value instructions
+    // is a strict upper bound on simultaneously-live slots.
+    let value_capacity = lw
+        .value_instrs
+        .iter()
+        .filter(|i| is_alloc_producing(i))
+        .count();
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
@@ -1080,11 +1590,14 @@ pub fn lower_with_cafs(
         },
         builtins: lw.builtins,
         params: lw.params,
-        value_instrs: Vec::new(),
-        num_value_regs: 0,
-        value_output_regs: Vec::new(),
+        value_instrs: lw.value_instrs,
+        num_value_regs: lw.next_value_reg,
+        value_output_regs: lw.value_regs_out,
         value_funcs: Vec::new(),
-        value_state: ValueLayout::default(),
+        value_state: ValueLayout {
+            capacity: value_capacity,
+            value_state_slots: 0,
+        },
     })
 }
 
@@ -1092,6 +1605,7 @@ pub fn lower_with_cafs(
 mod tests {
     use super::*;
     use crate::builtin::BuiltinKind;
+    use crate::ir::ValueInstr;
     use crate::lexer::tokenize;
     use crate::parser::parse;
     use crate::reduce::reduce_with_cafs;
@@ -1367,5 +1881,35 @@ mod tests {
         };
         let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn record_construct_lowers_to_value_track() {
+        let ir = ir_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }");
+        assert!(ir
+            .value_instrs
+            .iter()
+            .any(|i| matches!(i, ValueInstr::ValueConstructRecord { .. })));
+    }
+
+    #[test]
+    fn field_project_lowers_to_value_project() {
+        let ir =
+            ir_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x");
+        assert!(ir
+            .value_instrs
+            .iter()
+            .any(|i| matches!(i, ValueInstr::ValueProject { .. })));
+    }
+
+    #[test]
+    fn match_lowers_to_value_match() {
+        let ir = ir_of(
+            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+        );
+        assert!(ir
+            .value_instrs
+            .iter()
+            .any(|i| matches!(i, ValueInstr::ValueMatch { .. })));
     }
 }

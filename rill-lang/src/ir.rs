@@ -299,6 +299,15 @@ pub enum ValueInstr {
         /// Value register.
         src: usize,
     },
+    /// Dispatch on a sum constructor: yields the payload refs for the matched arm.
+    ValueMatch {
+        /// Destination value registers for the selected arm's payload.
+        dst: Vec<usize>,
+        /// Scrutinee sum value register.
+        slot: usize,
+        /// Constructor index to match.
+        ctor: u32,
+    },
 }
 
 /// Layout for value-track persistent storage.
