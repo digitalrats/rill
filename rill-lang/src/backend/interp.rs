@@ -6,7 +6,7 @@ use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 
 use crate::arena::{ArenaRef, Value};
-use crate::ir::{BinArith, Instr, UnOp, ValueInstr};
+use crate::ir::{BinArith, FragmentIr, Instr, UnOp, ValueInstr};
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
 
@@ -446,17 +446,35 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 None => prog.value_regs[*dst] = None,
             }
         }
-        ValueInstr::ValueCallFunc { .. } => {
-            // No-op in v1: named function calls execute at compile time (β-
-            // reduction), so this instruction is never emitted. Reserved for a
-            // future task that dispatches func values at runtime.
+        ValueInstr::ValueCallFunc {
+            dst,
+            closure_slot,
+            args,
+        } => {
+            // Runtime dispatch: read the closure from `closure_slot`, run the
+            // referenced fragment with a temporary register frame, and copy the
+            // result into `dst`. An unbound slot or a non-closure value yields a
+            // detectable `None`.
+            let slot = prog.value_regs.get(*closure_slot).copied().flatten();
+            match slot.and_then(|s| prog.arena.get(s)) {
+                Some(Value::Closure(env_ref, fragment_id)) => {
+                    // Clone the fragment out of the IR so `prog` can be borrowed
+                    // mutably inside `run_fragment` (the immutable IR borrow ends
+                    // once the owned copy is in hand).
+                    match prog.ir.fragments.get(*fragment_id as usize).cloned() {
+                        Some(frag) => run_fragment(prog, &frag, *env_ref, args, dst),
+                        None => prog.value_regs[*dst] = None,
+                    }
+                }
+                _ => prog.value_regs[*dst] = None,
+            }
         }
-        ValueInstr::ValueMakeFunc { dst, func } => {
-            // A first-class function value is a leaf: a single slot holding
-            // the captured environment record and the registry index of the
-            // referenced definition. The env is a dummy `0` (no capture) until
-            // real closure environments arrive in a later task.
-            prog.value_regs[*dst] = alloc_owned(prog, Value::Closure(0, *func as u32));
+        ValueInstr::ValueMakeClosure { dst, env, fragment } => {
+            // A closure is a leaf holding the env record ref and the fragment
+            // id. The env register is read by value; an unbound env (v1 named
+            // references) falls back to the dummy ref 0 (a Void slot).
+            let env_ref = prog.value_regs.get(*env).copied().flatten().unwrap_or(0);
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Closure(env_ref, *fragment as u32));
         }
         ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src] {
             Some(sr) => {
@@ -535,6 +553,180 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
             }
         }
+    }
+}
+
+/// Execute a function fragment: binds the captured env fields as cells in a
+/// temporary frame, runs the fragment's value instructions against a scratch
+/// register slice appended to `value_regs`, copies the result into `dst`, and
+/// pops the frame.
+///
+/// Register-offset scheme: a fragment's instructions are reused across calls
+/// and reference fragment-local registers `0..num_value_regs`. The interpreter
+/// records `base = value_regs.len()`, appends `num_value_regs` empty slots,
+/// runs each instruction with every register field offset by `base`
+/// ([`remap_value_instr`]), then truncates back — the fragment is never
+/// rewritten. Value args are copied (RC++) into the fragment's leading
+/// registers; the caller keeps its own ownership.
+fn run_fragment<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    frag: &FragmentIr,
+    env_ref: crate::arena::ArenaRef,
+    args: &[usize],
+    dst: &usize,
+) {
+    // 1. Push a temporary capture frame: each env Record field becomes a cell
+    //    holding the field's value. v1 closures carry a dummy env (a Void slot),
+    //    so the loop is a no-op until real captures land (Task 4).
+    prog.cell_stack.push(Vec::new());
+    if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
+        // Clone the field refs so the arena can be borrowed mutably while the
+        // capture cells are allocated below.
+        let fields = fields.clone();
+        for f in &fields {
+            let cell = prog.arena.alloc(Value::Void).unwrap_or(0);
+            if let Some(v) = prog.arena.get(*f).cloned() {
+                // Release the Void placeholder and reallocate the field's value
+                // into the freed slot so the frame owns one cell per field.
+                prog.arena.drop_ref(cell);
+                let _ = prog.arena.alloc(v);
+            }
+            if let Some(frame) = prog.cell_stack.last_mut() {
+                frame.push((0, cell));
+            }
+        }
+    }
+    // 2. Append a scratch register slice for the fragment's local registers.
+    let base = prog.value_regs.len();
+    prog.value_regs.extend(vec![None; frag.num_value_regs]);
+    // 3. Value args: copy the caller's arg values into the fragment's leading
+    //    registers (the first `sig.value_ins` slice slots). Each copy is a
+    //    fresh owner (RC++) so the caller keeps its own ref.
+    for (i, a) in args
+        .iter()
+        .take(frag.sig.value_ins.min(args.len()))
+        .enumerate()
+    {
+        if let Some(sr) = prog.value_regs.get(*a).copied().flatten() {
+            prog.value_regs[base + i] = copy_owned(prog, sr);
+        }
+    }
+    // 4. Run the fragment's value instructions with the register offset.
+    let mut drops: Vec<crate::arena::ArenaRef> = Vec::new();
+    for instr in &frag.value_instrs {
+        let remapped = remap_value_instr(instr, base);
+        exec_value_instr(prog, &remapped, &mut drops);
+    }
+    for r in drops {
+        prog.arena.drop_ref(r);
+    }
+    // 5. Copy the fragment's result into `dst` (a fresh owner via `copy`).
+    if let Some(or) = frag.output_value_regs.first() {
+        prog.value_regs[*dst] = match prog.value_regs.get(base + *or).copied().flatten() {
+            Some(sr) => copy_owned(prog, sr),
+            None => None,
+        };
+    }
+    // 6. Truncate the scratch slice and pop the capture frame.
+    prog.value_regs.truncate(base);
+    if let Some(frame) = prog.cell_stack.pop() {
+        for (_, c) in frame {
+            prog.arena.drop_ref(c);
+        }
+    }
+}
+
+/// Clone `instr`, adding `base` to every fragment-local register field so the
+/// instruction runs against the scratch slice appended by [`run_fragment`].
+///
+/// Only true value-register fields are offset. Store indices that are global to
+/// the program — `ValueReadMainCell::cell` (main-cell store), `ValueStateRead`/
+/// `ValueStateWrite` `slot` (value-state store) — and non-register constants
+/// (`value`, `ctor`, `field`, `fragment`) are left untouched.
+fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
+    match instr {
+        ValueInstr::ValuePushScope => ValueInstr::ValuePushScope,
+        ValueInstr::ValuePopScope => ValueInstr::ValuePopScope,
+        ValueInstr::ValueBindCell { dst } => ValueInstr::ValueBindCell { dst: dst + base },
+        ValueInstr::ValueReadCell { dst, cell } => ValueInstr::ValueReadCell {
+            dst: dst + base,
+            cell: cell + base,
+        },
+        ValueInstr::ValueReadMainCell { dst, cell } => ValueInstr::ValueReadMainCell {
+            dst: dst + base,
+            cell: *cell,
+        },
+        ValueInstr::ValueWriteCell { cell, src } => ValueInstr::ValueWriteCell {
+            cell: cell + base,
+            src: src + base,
+        },
+        ValueInstr::ValueConstInt { dst, value } => ValueInstr::ValueConstInt {
+            dst: dst + base,
+            value: *value,
+        },
+        ValueInstr::ValueConstFloat { dst, value } => ValueInstr::ValueConstFloat {
+            dst: dst + base,
+            value: *value,
+        },
+        ValueInstr::ValueConstructRecord { dst, fields } => ValueInstr::ValueConstructRecord {
+            dst: dst + base,
+            fields: fields.iter().map(|f| f + base).collect(),
+        },
+        ValueInstr::ValueConstructSum { dst, ctor, payload } => ValueInstr::ValueConstructSum {
+            dst: dst + base,
+            ctor: *ctor,
+            payload: payload.iter().map(|p| p + base).collect(),
+        },
+        ValueInstr::ValueProject { dst, slot, field } => ValueInstr::ValueProject {
+            dst: dst + base,
+            slot: slot + base,
+            field: *field,
+        },
+        ValueInstr::ValueUpdateField { slot, field, src } => ValueInstr::ValueUpdateField {
+            slot: slot + base,
+            field: *field,
+            src: src + base,
+        },
+        ValueInstr::ValueNewtype { dst, src } => ValueInstr::ValueNewtype {
+            dst: dst + base,
+            src: src + base,
+        },
+        ValueInstr::ValueUnwrap { dst, src } => ValueInstr::ValueUnwrap {
+            dst: dst + base,
+            src: src + base,
+        },
+        ValueInstr::ValueCallFunc {
+            dst,
+            closure_slot,
+            args,
+        } => ValueInstr::ValueCallFunc {
+            dst: dst + base,
+            closure_slot: closure_slot + base,
+            args: args.iter().map(|a| a + base).collect(),
+        },
+        ValueInstr::ValueMakeClosure { dst, env, fragment } => ValueInstr::ValueMakeClosure {
+            dst: dst + base,
+            env: env + base,
+            fragment: *fragment,
+        },
+        ValueInstr::ValueCopy { dst, src } => ValueInstr::ValueCopy {
+            dst: dst + base,
+            src: src + base,
+        },
+        ValueInstr::ValueDrop { src } => ValueInstr::ValueDrop { src: src + base },
+        ValueInstr::ValueStateRead { dst, slot } => ValueInstr::ValueStateRead {
+            dst: dst + base,
+            slot: *slot,
+        },
+        ValueInstr::ValueStateWrite { slot, src } => ValueInstr::ValueStateWrite {
+            slot: *slot,
+            src: src + base,
+        },
+        ValueInstr::ValueMatch { dst, slot, ctor } => ValueInstr::ValueMatch {
+            dst: dst.iter().map(|d| d + base).collect(),
+            slot: slot + base,
+            ctor: *ctor,
+        },
     }
 }
 
@@ -772,6 +964,69 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
 }
 
 #[cfg(test)]
+mod closure_dispatch_tests {
+    use crate::ir::{FragmentIr, FuncSig, Ir, ValueInstr, ValueLayout};
+    use crate::program::RillProgram;
+    use rill_core::traits::MultichannelAlgorithm;
+
+    #[test]
+    fn call_dispatch_runs_fragment() {
+        // env reg 0 holds a Void cell (dummy env); MakeClosure binds it; the
+        // fragment computes const int 7; CallFunc copies the result to the
+        // output register.
+        let ir = Ir {
+            instrs: Vec::new(),
+            num_regs: 0,
+            output_regs: Vec::new(),
+            num_inputs: 0,
+            num_outputs: 0,
+            state: Default::default(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            num_main_cells: 0,
+            value_instrs: vec![
+                ValueInstr::ValueBindCell { dst: 0 },
+                ValueInstr::ValueMakeClosure {
+                    dst: 1,
+                    env: 0,
+                    fragment: 0,
+                },
+                ValueInstr::ValueCallFunc {
+                    dst: 2,
+                    closure_slot: 1,
+                    args: vec![],
+                },
+            ],
+            num_value_regs: 3,
+            value_output_regs: vec![2],
+            value_funcs: Vec::new(),
+            value_state: ValueLayout {
+                capacity: 16,
+                value_state_slots: 0,
+            },
+            fragments: vec![FragmentIr {
+                value_instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }],
+                steps: Vec::new(),
+                num_value_regs: 1,
+                num_block_regs: 0,
+                output_value_regs: vec![0],
+                output_block_regs: Vec::new(),
+                sig: FuncSig {
+                    value_ins: 0,
+                    value_outs: 1,
+                    signal_ins: 0,
+                },
+            }],
+        };
+        let mut prog = RillProgram::<f32, 256>::new(ir);
+        let mut out = [0.0f32; 2];
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        let v = prog.value_outputs()[0].unwrap();
+        assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(7));
+    }
+}
+
+#[cfg(test)]
 mod value_track_tests {
     use super::*;
     use crate::ir::{Ir, StateLayout, ValueInstr, ValueLayout};
@@ -796,6 +1051,7 @@ mod value_track_tests {
             num_value_regs,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
+            fragments: Vec::new(),
             value_state: ValueLayout {
                 capacity: 16,
                 value_state_slots,

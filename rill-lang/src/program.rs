@@ -534,6 +534,7 @@ mod program_value_tests {
             num_value_regs: 0,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
+            fragments: Vec::new(),
             value_state: ValueLayout {
                 capacity: 4,
                 value_state_slots: 2,
@@ -560,6 +561,7 @@ mod program_value_tests {
             num_value_regs: 0,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
+            fragments: Vec::new(),
             value_state: ValueLayout {
                 capacity: 4,
                 value_state_slots: 1,

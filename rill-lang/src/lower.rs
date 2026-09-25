@@ -33,7 +33,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueReadMainCell { .. }
             | ValueInstr::ValueStateRead { .. }
             | ValueInstr::ValueUpdateField { .. }
-            | ValueInstr::ValueMakeFunc { .. }
+            | ValueInstr::ValueMakeClosure { .. }
     )
 }
 
@@ -69,7 +69,7 @@ struct Lowerer<'a> {
     /// newtype) pins its whole subtree across ticks, so the bound must account
     /// for the output's subtree size, not just one slot per channel.
     value_out_tys: Vec<ValueTy>,
-    /// First-class named-function values referenced by [`ValueInstr::ValueMakeFunc`].
+    /// First-class function values referenced by [`ValueInstr::ValueMakeClosure`].
     /// A bare reference to a user definition in value position allocates a
     /// [`Value::Closure`] referencing the entry's index.
     value_funcs: Vec<crate::ir::ValueFunc>,
@@ -529,23 +529,23 @@ impl<'a> Lowerer<'a> {
                 self.value_inline.remove(name);
                 res
             }
-            Def::Anchor {
-                params,
-                name: def_name,
-                ..
-            } => {
+            Def::Anchor { .. } => {
                 // A bare reference to a user definition with λ-parameters in
                 // value position is a first-class function value: allocate a
-                // `Value::Closure` referencing the definition's registry entry.
-                // (Calls to it are β-reduced at compile time, so no dispatch
-                // instruction is emitted — see `ValueMakeFunc`.)
-                let func = self.value_funcs.len();
-                self.value_funcs.push(crate::ir::ValueFunc {
-                    name: def_name.clone(),
-                    arity: params.len(),
-                });
+                // `Value::Closure` referencing a fragment body. (Calls to it
+                // are β-reduced at compile time in v1, so no dispatch
+                // instruction is emitted — see `ValueMakeClosure`.) Real
+                // fragment bodies for definitions land with lambda literals
+                // (Task 4); v1 named references use the dummy env Void cell and
+                // fragment id 0, and are never dispatched at runtime.
+                let env_reg = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBindCell { dst: env_reg });
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueMakeFunc { dst, func });
+                self.emit_value(ValueInstr::ValueMakeClosure {
+                    dst,
+                    env: env_reg,
+                    fragment: 0,
+                });
                 // A bare named ref has an unknown signature in v1; real
                 // signatures land with lambda literals.
                 Ok((dst, ValueTy::Func(vec![], vec![])))
@@ -1847,6 +1847,7 @@ pub fn lower_with_cafs(
         num_value_regs: lw.next_value_reg,
         value_output_regs: lw.value_regs_out,
         value_funcs: lw.value_funcs,
+        fragments: Vec::new(),
         value_state: ValueLayout {
             capacity: value_capacity,
             value_state_slots: 0,

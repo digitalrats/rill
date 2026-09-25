@@ -282,25 +282,30 @@ pub enum ValueInstr {
         /// Newtype value register.
         src: usize,
     },
-    /// Call a named function reference.
+    /// Call a first-class function value at runtime: dispatches to the
+    /// [`FragmentIr`] referenced by the closure's `fragment` id, binding the
+    /// caller's argument registers and copying the fragment's result into `dst`.
     ValueCallFunc {
         /// Destination value register.
         dst: usize,
-        /// Index into [`Ir::value_funcs`].
-        func: usize,
-        /// Argument value registers.
+        /// Value register holding the [`Value::Closure`] to call.
+        closure_slot: usize,
+        /// Argument value registers (passed by value into the fragment).
         args: Vec<usize>,
     },
-    /// Construct a first-class named-function value: allocates a [`Value::Closure`]
-    /// referencing the [`Ir::value_funcs`] entry. Emitted when a bare user
-    /// definition reference (`f = double`, `main = f`) appears in value
-    /// position. v1 calls the referenced function by β-reducing at compile
-    /// time, so [`ValueCallFunc`] remains a no-op for runtime dispatch.
-    ValueMakeFunc {
+    /// Construct a first-class function value: allocates a [`Value::Closure`]
+    /// referencing an [`Ir::fragments`] body and the env record in `env`.
+    /// Emitted when a function definition reference or lambda literal appears
+    /// in value position. v1 named-reference calls are β-reduced at compile
+    /// time, so runtime dispatch is exercised only by fragment bodies.
+    ValueMakeClosure {
         /// Destination value register.
         dst: usize,
-        /// Index into [`Ir::value_funcs`].
-        func: usize,
+        /// Value register holding the captured environment record ref (a
+        /// dummy `Void` slot when nothing is captured).
+        env: usize,
+        /// Index into [`Ir::fragments`].
+        fragment: usize,
     },
     /// Share a value (RC++).
     ValueCopy {
@@ -346,6 +351,42 @@ pub struct ValueLayout {
     pub capacity: usize,
     /// Number of per-tick value-state slots (feedback/delay of values).
     pub value_state_slots: usize,
+}
+
+/// Value/signal arity of a function fragment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FuncSig {
+    /// Number of value arguments.
+    pub value_ins: usize,
+    /// Number of value results.
+    pub value_outs: usize,
+    /// Number of signal-wire arguments.
+    pub signal_ins: usize,
+}
+
+/// A compiled function body: a fragment of the value/block track.
+///
+/// The fragment's value instructions reference fragment-local registers
+/// `0..num_value_regs`; the interpreter executes them against a temporary
+/// register slice appended to the program's value register store, offsetting
+/// each register field by a per-call base (the instructions are reused across
+/// calls, so they are never rewritten).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FragmentIr {
+    /// Value-track instructions for the body.
+    pub value_instrs: Vec<ValueInstr>,
+    /// Block-track steps (for signal-wire args); empty for pure-value bodies.
+    pub steps: Vec<crate::schedule::Step>,
+    /// Number of value registers (args + temps).
+    pub num_value_regs: usize,
+    /// Number of block registers (signal args + temps).
+    pub num_block_regs: usize,
+    /// Value register(s) holding the result.
+    pub output_value_regs: Vec<usize>,
+    /// Block register(s) holding signal results.
+    pub output_block_regs: Vec<usize>,
+    /// Arity.
+    pub sig: FuncSig,
 }
 
 /// A named function value: reference to a lowering-time definition.
@@ -434,6 +475,9 @@ pub struct Ir {
     pub value_output_regs: Vec<usize>,
     /// Named function values referenced by [`ValueInstr::ValueCallFunc`].
     pub value_funcs: Vec<ValueFunc>,
+    /// Compiled function bodies, indexed by [`ValueInstr::ValueMakeClosure`]'s
+    /// `fragment` field and dispatched by [`ValueInstr::ValueCallFunc`].
+    pub fragments: Vec<FragmentIr>,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
 }
