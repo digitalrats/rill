@@ -33,6 +33,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueReadMainCell { .. }
             | ValueInstr::ValueStateRead { .. }
             | ValueInstr::ValueUpdateField { .. }
+            | ValueInstr::ValueMakeFunc { .. }
     )
 }
 
@@ -63,6 +64,15 @@ struct Lowerer<'a> {
     next_value_reg: usize,
     /// Value registers holding the program's value outputs (value-channel main).
     value_regs_out: Vec<usize>,
+    /// Static value type of each value output, parallel to [`Self::value_regs_out`].
+    /// The arena-capacity heuristic needs it: a compound output (record/sum/
+    /// newtype) pins its whole subtree across ticks, so the bound must account
+    /// for the output's subtree size, not just one slot per channel.
+    value_out_tys: Vec<ValueTy>,
+    /// First-class named-function values referenced by [`ValueInstr::ValueMakeFunc`].
+    /// A bare reference to a user definition in value position allocates a
+    /// [`Value::Func`] referencing the entry's index.
+    value_funcs: Vec<crate::ir::ValueFunc>,
     /// Scope stack of value locals: name → (value reg, value type). Match-arm
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
     /// per-tick value registers — a `Ref` to one returns the register directly.
@@ -519,6 +529,25 @@ impl<'a> Lowerer<'a> {
                 self.value_inline.remove(name);
                 res
             }
+            Def::Anchor {
+                params,
+                name: def_name,
+                ..
+            } => {
+                // A bare reference to a user definition with λ-parameters in
+                // value position is a first-class function value: allocate a
+                // `Value::Func` referencing the definition's registry entry.
+                // (Calls to it are β-reduced at compile time, so no dispatch
+                // instruction is emitted — see `ValueMakeFunc`.)
+                let func = self.value_funcs.len();
+                self.value_funcs.push(crate::ir::ValueFunc {
+                    name: def_name.clone(),
+                    arity: params.len(),
+                });
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueMakeFunc { dst, func });
+                Ok((dst, ValueTy::Func(def_name)))
+            }
             _ => Err(CompileError::Type {
                 msg: format!("`{name}` is not a value expression in v1"),
                 span,
@@ -616,6 +645,74 @@ impl<'a> Lowerer<'a> {
             }
         }
         found
+    }
+
+    /// Number of arena slots a value of the given static type occupies when
+    /// fully allocated: the root slot plus its transitive field/payload
+    /// subtree. Drives the value-arena capacity bound — a compound value
+    /// output pins its whole subtree across ticks (the output keeps the root
+    /// at rc >= 1, so `drop_ref` never reaches 0 on the children), so the
+    /// bound must add the subtree size per output channel, not one slot.
+    ///
+    /// Shapes: a record is `1 + Σ field subtrees`; a sum is `1 + the largest
+    /// ctor's payload subtree` (each ctor's payload subtree is the sum of its
+    /// entries); a newtype is `1 + inner subtree`; scalars, func values and
+    /// unbound variables occupy exactly one slot. Recursive data types are
+    /// cycle-guarded (a re-entered type contributes one slot) — v1 values are
+    /// finite literal constructions, so the bound stays finite and is exact
+    /// for non-recursive shapes.
+    fn subtree_size(&self, vty: &ValueTy) -> usize {
+        self.subtree_size_impl(vty, &mut HashSet::new())
+    }
+
+    fn subtree_size_impl(&self, vty: &ValueTy, visiting: &mut HashSet<String>) -> usize {
+        match vty {
+            ValueTy::Int | ValueTy::Float | ValueTy::Func(_) | ValueTy::Var(_) => 1,
+            ValueTy::Newtype(name) => {
+                if !visiting.insert(name.clone()) {
+                    return 1;
+                }
+                let inner = self
+                    .env
+                    .newtypes
+                    .get(name)
+                    .map(|n| self.env.vty_of_name(n))
+                    .unwrap_or(ValueTy::Float);
+                let s = 1 + self.subtree_size_impl(&inner, visiting);
+                visiting.remove(name);
+                s
+            }
+            ValueTy::Data(name) => {
+                if !visiting.insert(name.clone()) {
+                    return 1;
+                }
+                let s = match self.env.data_types.get(name) {
+                    Some(DataInfo::Record(fields)) => {
+                        1 + fields
+                            .iter()
+                            .map(|(_, t)| self.subtree_size_impl(t, visiting))
+                            .sum::<usize>()
+                    }
+                    Some(DataInfo::Sum(ctors)) => {
+                        // The constructed ctor is a runtime choice; the static
+                        // bound is the largest ctor's full payload subtree.
+                        1 + ctors
+                            .iter()
+                            .map(|(_, payload)| {
+                                payload
+                                    .iter()
+                                    .map(|t| self.subtree_size_impl(t, visiting))
+                                    .sum::<usize>()
+                            })
+                            .max()
+                            .unwrap_or(0)
+                    }
+                    None => 1,
+                };
+                visiting.remove(name);
+                s
+            }
+        }
     }
 
     fn lower(&mut self, e: &Expr, args: &[usize]) -> Result<Vec<usize>, CompileError> {
@@ -1652,6 +1749,8 @@ pub fn lower_with_cafs(
         value_instrs: Vec::new(),
         next_value_reg: 0,
         value_regs_out: Vec::new(),
+        value_out_tys: Vec::new(),
+        value_funcs: Vec::new(),
         value_locals: Vec::new(),
         env: &tp.type_env,
         value_inline: HashSet::new(),
@@ -1672,6 +1771,9 @@ pub fn lower_with_cafs(
         )?;
         lw.main_cell_locals.insert(p.name.clone(), cell_idx);
     }
+    // Every main λ-parameter has exactly one persistent cell (cells are
+    // indexed by param position, so the maps must line up).
+    debug_assert_eq!(lw.main_cell_locals.len(), main.params().len());
 
     let mut main_args = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
@@ -1685,8 +1787,9 @@ pub fn lower_with_cafs(
     // empty on the value path.
     let has_value_out = tp.process_ty.outs.iter().any(|c| c.rate == Rate::Value);
     let outs = if has_value_out {
-        let (vr, _) = lw.lower_value(main.body())?;
+        let (vr, vty) = lw.lower_value(main.body())?;
         lw.value_regs_out.push(vr);
+        lw.value_out_tys.push(vty);
         Vec::new()
     } else {
         lw.lower(main.body(), &main_args)?
@@ -1701,18 +1804,28 @@ pub fn lower_with_cafs(
     // v1 capacity heuristic: the arena never needs more slots than the number
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
-    // is a strict upper bound on simultaneously-live slots — plus one slot per
-    // value output channel, since `value_outputs` holds its ref across ticks
-    // (the previous tick's output is still live while the next tick runs).
-    // Main λ-parameter cells are allocated once at construction and live for
-    // the program's whole lifetime, so they occupy `num_main_cells` permanent
-    // slots on top of the per-tick bound.
+    // is a strict upper bound on simultaneously-live per-tick slots. On top of
+    // that:
+    //   * each value output channel pins its WHOLE subtree across ticks — the
+    //     output keeps the root at rc >= 1, so `drop_ref` never frees the
+    //     children and the previous tick's output tree is still fully live
+    //     while the next tick allocates. The bound therefore adds the static
+    //     subtree size of each output's value type (a scalar adds 1).
+    //   * main λ-parameter cells are allocated once at construction and live
+    //     for the program's whole lifetime, so they occupy `num_main_cells`
+    //     permanent slots.
+    // Value-state slots (`ValueStateRead`/`ValueStateWrite`) are not emitted by
+    // lowering in v1; when a future task wires `~`/`@` over values, its slot
+    // count must join the bound the same way.
     let value_capacity = lw
         .value_instrs
         .iter()
         .filter(|i| is_alloc_producing(i))
         .count()
-        + lw.value_regs_out.len()
+        + lw.value_out_tys
+            .iter()
+            .map(|t| lw.subtree_size(t))
+            .sum::<usize>()
         + num_main_cells;
     Ok(Ir {
         instrs: lw.instrs,
@@ -1731,7 +1844,7 @@ pub fn lower_with_cafs(
         value_instrs: lw.value_instrs,
         num_value_regs: lw.next_value_reg,
         value_output_regs: lw.value_regs_out,
-        value_funcs: Vec::new(),
+        value_funcs: lw.value_funcs,
         value_state: ValueLayout {
             capacity: value_capacity,
             value_state_slots: 0,

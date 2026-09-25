@@ -447,7 +447,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             }
         }
         ValueInstr::ValueCallFunc { .. } => {
-            // No-op in v1: named function calls execute in a later task.
+            // No-op in v1: named function calls execute at compile time (β-
+            // reduction), so this instruction is never emitted. Reserved for a
+            // future task that dispatches func values at runtime.
+        }
+        ValueInstr::ValueMakeFunc { dst, func } => {
+            // A first-class function value is a leaf: a single slot holding
+            // the registry index of the referenced definition.
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Func(*func as u32));
         }
         ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src] {
             Some(sr) => {

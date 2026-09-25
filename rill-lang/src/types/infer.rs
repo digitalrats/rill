@@ -371,6 +371,44 @@ pub fn infer_program_with(
     })
 }
 
+/// Infer a definition body.
+///
+/// λ-parameters are bound as signal channels first. When that fails and the
+/// definition has λ-parameters, retry with the parameters bound as VALUE
+/// channels (fresh unresolved value types): a value function's λ-parameter
+/// (`first p = p.x`) has no signal meaning, so its body only typechecks when
+/// the parameter is a value. The failed attempt's substitution and fresh-var
+/// counter are rolled back so the retry starts from a clean context. A def
+/// with no λ-parameters that fails is genuinely broken and errors.
+fn infer_def_body(ctx: &mut Ctx<'_>, def: &Def) -> Result<ArrowTy, CompileError> {
+    if def.params().is_empty() {
+        ctx.locals.clear();
+        return infer_expr(ctx, def.body());
+    }
+    let saved_subst = ctx.subst.clone();
+    let saved_next = ctx.next;
+    ctx.locals.clear();
+    for p in def.params() {
+        ctx.locals
+            .insert(p.name.clone(), ArrowTy::uniform(0, 1, Scalar::Float));
+    }
+    match infer_expr(ctx, def.body()) {
+        Ok(t) => Ok(t),
+        Err(_) => {
+            ctx.subst = saved_subst;
+            ctx.next = saved_next;
+            ctx.locals.clear();
+            for p in def.params() {
+                let v = ctx.next;
+                ctx.next += 1;
+                ctx.locals
+                    .insert(p.name.clone(), ArrowTy::value_channel(ValueTy::Var(v)));
+            }
+            infer_expr(ctx, def.body())
+        }
+    }
+}
+
 /// Infer a group of mutually-recursive definitions (top-level, where, or let).
 /// Two-phase: first register placeholder schemes for all names, then infer
 /// each body with the full mutual environment.
@@ -417,12 +455,7 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
         if !def.where_defs().is_empty() {
             infer_def_group(ctx, def.where_defs())?;
         }
-        ctx.locals.clear();
-        for p in def.params() {
-            ctx.locals
-                .insert(p.name.clone(), ArrowTy::uniform(0, 1, Scalar::Float));
-        }
-        let body_ty = infer_expr(ctx, def.body())?;
+        let body_ty = infer_def_body(ctx, def)?;
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
@@ -450,12 +483,7 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
         if def.is_decl() {
             continue;
         }
-        ctx.locals.clear();
-        for p in def.params() {
-            ctx.locals
-                .insert(p.name.clone(), ArrowTy::uniform(0, 1, Scalar::Float));
-        }
-        let body_ty = infer_expr(ctx, def.body())?;
+        let body_ty = infer_def_body(ctx, def)?;
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
@@ -585,6 +613,16 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                         span: *span,
                     }),
                 },
+                ValueTy::Var(_) => {
+                    // Deferred record: the record type is not known here (a
+                    // value function's λ-parameter). The projection resolves
+                    // when the function is called with a concrete argument —
+                    // `reduce` β-reduces the call, so lowering sees a concrete
+                    // expression. Return a fresh unresolved field type.
+                    let v = ctx.next;
+                    ctx.next += 1;
+                    Ok(ArrowTy::value_channel(ValueTy::Var(v)))
+                }
                 _ => Err(CompileError::Type {
                     msg: "field projection requires a record value".into(),
                     span: *span,
@@ -630,6 +668,14 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                     // channel whose type matches the declared field type.
                     let vt = infer_const_value(ctx, value)?;
                     unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
+                    Ok(rt)
+                }
+                ValueTy::Var(_) => {
+                    // Deferred record (a value function's λ-parameter): the
+                    // field update resolves when the call is β-reduced with a
+                    // concrete record. Infer the new value and keep the record
+                    // type unresolved.
+                    let _ = infer_const_value(ctx, value)?;
                     Ok(rt)
                 }
                 _ => Err(CompileError::Type {
@@ -829,13 +875,13 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
     }
     if let Some(scheme) = ctx.defs.get(name).cloned() {
         if scheme.lam_count > 0 {
-            return Err(CompileError::Type {
-                msg: format!(
-                    "`{name}` has {} unapplied parameter(s); call it as `{name} arg1 arg2 ...`",
-                    scheme.lam_count
-                ),
-                span,
-            });
+            // A bare reference to a user definition with λ-parameters is a
+            // first-class function value (v1: named references only, no
+            // lambdas/closures). `f = double` binds `f` to
+            // `ValueTy::Func("double")`; calling it dispatches to the
+            // referenced definition (see `infer_apply`). Using it where a
+            // signal is required is rejected by the signal combinators.
+            return Ok(ArrowTy::value_channel(ValueTy::Func(name.into())));
         }
         return Ok(ctx.instantiate(&scheme));
     }
@@ -1218,6 +1264,32 @@ fn infer_apply(
     }
     // User-defined function: λ-params are consumed, signal ports remain open
     if let Some(scheme) = ctx.defs.get(name).cloned() {
+        // Func-value application: `f = double` binds `f` to `ValueTy::Func`,
+        // and `f x` dispatches to the referenced definition by instantiating
+        // its scheme (v1 resolves calls at compile time — `reduce` β-reduces
+        // the body for lowering). The referenced definition's arity must match
+        // the applied arguments.
+        if scheme.ty.outs.len() == 1 && scheme.ty.outs[0].rate == Rate::Value {
+            if let ValueTy::Func(ref_name) = &scheme.ty.outs[0].vty {
+                if let Some(ref_scheme) = ctx.defs.get(ref_name).cloned() {
+                    if args.len() != ref_scheme.lam_count {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{name}` references `{ref_name}`, which expects {} argument(s), got {}",
+                                ref_scheme.lam_count,
+                                args.len()
+                            ),
+                            span,
+                        });
+                    }
+                    let ty = ctx.instantiate(&ref_scheme);
+                    return Ok(ArrowTy {
+                        ins: ty.ins[ref_scheme.lam_count..].to_vec(),
+                        outs: ty.outs,
+                    });
+                }
+            }
+        }
         if args.len() != scheme.lam_count {
             return Err(CompileError::Type {
                 msg: format!(
@@ -1366,6 +1438,7 @@ pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
 }
 
 fn seq(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
+    reject_value_channels(a, span)?;
     if a.arity_out() != b.arity_in() {
         return Err(CompileError::Type {
             msg: format!(
@@ -1393,6 +1466,7 @@ fn split(
     rhs_variadic: bool,
 ) -> Result<ArrowTy, CompileError> {
     let ao = a.arity_out();
+    reject_value_channels(a, span)?;
     let bi = if rhs_variadic { ao } else { b.arity_in() };
     if ao == 0 || bi % ao != 0 {
         return Err(CompileError::Type {
@@ -1429,6 +1503,7 @@ fn merge(
     rhs_variadic: bool,
 ) -> Result<ArrowTy, CompileError> {
     let ao = a.arity_out();
+    reject_value_channels(a, span)?;
     let bi = if rhs_variadic { ao } else { b.arity_in() };
     if bi == 0 || !ao.is_multiple_of(bi) {
         return Err(CompileError::Type {
@@ -1464,6 +1539,8 @@ fn feedback(
     span: Span,
 ) -> Result<ArrowTy, CompileError> {
     let (ai, ao, bi, bo) = (a.arity_in(), a.arity_out(), b.arity_in(), b.arity_out());
+    reject_value_channels(a, span)?;
+    reject_value_channels(b, span)?;
     if bi > ao || bo > ai {
         return Err(CompileError::Type {
             msg: format!(
@@ -1485,6 +1562,7 @@ fn feedback(
 }
 
 fn delay(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
+    reject_value_channels(a, span)?;
     if a.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: format!(
@@ -1508,6 +1586,8 @@ fn delay(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<Arro
 }
 
 fn arith(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
+    reject_value_channels(a, span)?;
+    reject_value_channels(b, span)?;
     if a.arity_out() != 1 || b.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: "arithmetic operands must each produce exactly one wire".into(),
@@ -1524,6 +1604,23 @@ fn arith(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<Arro
 }
 
 fn check_all_numeric(_ctx: &mut Ctx<'_>, _t: &ArrowTy, _span: Span) -> Result<(), CompileError> {
+    Ok(())
+}
+
+/// Reject value-rate output channels from signal combinators.
+///
+/// Value channels are the value-track's arena values (records, sums, func
+/// values); composing one through `:`, `<:`, `:>`, `~`, `@`, or arithmetic has
+/// no block representation — a bare func value (`f = double` used as a signal)
+/// would otherwise typecheck as an Int block and panic in lowering. Value
+/// programs are single expressions, so this never rejects a valid program.
+fn reject_value_channels(t: &ArrowTy, span: Span) -> Result<(), CompileError> {
+    if t.outs.iter().any(|c| c.rate == Rate::Value) {
+        return Err(CompileError::Type {
+            msg: "a value channel cannot be used in a signal combinator".into(),
+            span,
+        });
+    }
     Ok(())
 }
 

@@ -291,6 +291,17 @@ pub enum ValueInstr {
         /// Argument value registers.
         args: Vec<usize>,
     },
+    /// Construct a first-class named-function value: allocates a [`Value::Func`]
+    /// referencing the [`Ir::value_funcs`] entry. Emitted when a bare user
+    /// definition reference (`f = double`, `main = f`) appears in value
+    /// position. v1 calls the referenced function by β-reducing at compile
+    /// time, so [`ValueCallFunc`] remains a no-op for runtime dispatch.
+    ValueMakeFunc {
+        /// Destination value register.
+        dst: usize,
+        /// Index into [`Ir::value_funcs`].
+        func: usize,
+    },
     /// Share a value (RC++).
     ValueCopy {
         /// Destination value register (same slot).

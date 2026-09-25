@@ -315,7 +315,13 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// cannot fail in a correctly-lowered program.
     fn alloc_main_cells(arena: &mut Arena, count: usize) -> Vec<Option<crate::arena::ArenaRef>> {
         (0..count)
-            .map(|_| arena.alloc(crate::arena::Value::Void).ok())
+            .map(|_| {
+                Some(
+                    arena
+                        .alloc(crate::arena::Value::Void)
+                        .expect("main-cell allocation exceeds build-time capacity bound"),
+                )
+            })
             .collect()
     }
 
@@ -380,7 +386,11 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             self.arena.drop_ref(old);
         }
         let v = crate::backend::interp::param_to_f64(value);
-        self.main_cells[cell] = self.arena.alloc(crate::arena::Value::Float(v)).ok();
+        self.main_cells[cell] = Some(
+            self.arena
+                .alloc(crate::arena::Value::Float(v))
+                .expect("main-cell rewrite must fit the build-time capacity bound"),
+        );
     }
 
     /// Current value of a parameter by index.
