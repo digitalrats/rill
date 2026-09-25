@@ -127,6 +127,15 @@ pub enum Expr {
         /// Span.
         span: Span,
     },
+    /// Lambda literal `fn p1 p2 ... -> body`.
+    Lambda {
+        /// Parameters.
+        params: Vec<Param>,
+        /// Body expression.
+        body: Box<Expr>,
+        /// Span.
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -154,7 +163,8 @@ impl Expr {
             | Expr::ActorParam { span, .. }
             | Expr::FieldProject { span, .. }
             | Expr::FieldUpdate { span, .. }
-            | Expr::Match { span, .. } => *span,
+            | Expr::Match { span, .. }
+            | Expr::Lambda { span, .. } => *span,
         }
     }
 }

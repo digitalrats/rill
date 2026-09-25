@@ -530,6 +530,25 @@ impl<'a> Parser<'a> {
                     span: t.span,
                 })
             }
+            Tok::KwFn => {
+                self.bump();
+                let mut params = Vec::new();
+                while let Tok::Ident(_) = self.peek().tok {
+                    let (pname, pspan) = self.expect_ident()?;
+                    params.push(Param {
+                        name: pname,
+                        span: pspan,
+                    });
+                }
+                self.eat(&Tok::FatArrow)?;
+                let body = self.parse_expr(0, true)?;
+                let span = t.span.merge(body.span());
+                Ok(Expr::Lambda {
+                    params,
+                    body: Box::new(body),
+                    span,
+                })
+            }
             Tok::Ident(name) => {
                 let start = t.span.start;
                 self.bump();
@@ -1116,5 +1135,19 @@ mod tests {
             }
             other => panic!("expected Apply, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_lambda_literal() {
+        let p = prog("double = fn x -> x * 2.0; main = double");
+        let d = p.defs.iter().find(|d| d.name() == "double").unwrap();
+        assert!(matches!(d.body(), Expr::Lambda { .. }));
+    }
+
+    #[test]
+    fn parses_nested_lambda() {
+        let p = prog("adder = fn n -> fn x -> x + n; main = adder 2.0");
+        let d = p.defs.iter().find(|d| d.name() == "adder").unwrap();
+        assert!(matches!(d.body(), Expr::Lambda { .. }));
     }
 }

@@ -1109,6 +1109,10 @@ impl<'a> Lowerer<'a> {
                 msg: "match is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
+            Expr::Lambda { span, .. } => Err(CompileError::Type {
+                msg: "lambda is a value expression; it cannot be used in a signal position".into(),
+                span: *span,
+            }),
         }
     }
 
@@ -1652,6 +1656,7 @@ impl<'a> Lowerer<'a> {
             // arity. (A combinator mixing value and signal channels is outside
             // v1 scope and errors elsewhere in lowering.)
             Expr::FieldProject { .. } | Expr::FieldUpdate { .. } | Expr::Match { .. } => (0, 1),
+            Expr::Lambda { .. } => (0, 1),
         })
     }
 }

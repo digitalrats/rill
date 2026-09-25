@@ -109,6 +109,21 @@ fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 span: *span,
             }
         }
+        Expr::Lambda { params, body, span } => {
+            // A lambda rebinds its parameters inside the body: drop them from
+            // the substitution so an outer binding of the same spelling is not
+            // inlined into the lambda. Free names substituted before the lambda
+            // become by-value captures (correct for the env-snapshot model).
+            let mut inner = subst.clone();
+            for p in params {
+                inner.remove(&p.name);
+            }
+            Expr::Lambda {
+                params: params.clone(),
+                body: Box::new(substitute(body, &inner)),
+                span: *span,
+            }
+        }
         Expr::Record(fields, span) => Expr::Record(
             fields
                 .iter()
@@ -282,6 +297,11 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             span: *span,
         },
         Expr::Neg(inner, span) => Expr::Neg(Box::new(reduce_expr(inner, ctx, cafs)), *span),
+        Expr::Lambda { params, body, span } => Expr::Lambda {
+            params: params.clone(),
+            body: Box::new(reduce_expr(body, ctx, cafs)),
+            span: *span,
+        },
         _ => e.clone(),
     }
 }

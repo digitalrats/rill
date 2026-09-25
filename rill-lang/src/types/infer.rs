@@ -57,6 +57,12 @@ impl Ctx<'_> {
         Scalar::Var(v)
     }
 
+    fn fresh_vty(&mut self) -> ValueTy {
+        let v = self.next;
+        self.next += 1;
+        ValueTy::Var(v)
+    }
+
     fn instantiate(&mut self, scheme: &Scheme) -> ArrowTy {
         let mut remap: HashMap<TypeVarId, Scalar> = HashMap::new();
         for v in &scheme.vars {
@@ -816,6 +822,29 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 }
             }
             Ok(result.unwrap_or(ArrowTy::value_channel(ValueTy::Float)))
+        }
+        Expr::Lambda { params, body, span } => {
+            // Bind the parameters as value channels and infer the body; the
+            // result type is the function type. v1 lambda parameters are
+            // untyped value scalars (`ValueTy::Float`); signal-wire parameters
+            // and value-typed parameters land in a later task.
+            let saved = ctx.locals.clone();
+            for p in params {
+                let pty = ctx.fresh_vty();
+                ctx.locals
+                    .insert(p.name.clone(), ArrowTy::value_channel(pty));
+            }
+            let bt = infer_expr(ctx, body)?;
+            ctx.locals = saved;
+            if bt.arity_out() != 1 {
+                return Err(CompileError::Type {
+                    msg: "lambda body must produce one value".into(),
+                    span: *span,
+                });
+            }
+            let arg_tys: Vec<ValueTy> = params.iter().map(|_| ValueTy::Float).collect();
+            let ret_ty = bt.outs[0].vty.clone();
+            Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
         }
     }
 }
@@ -2012,5 +2041,20 @@ mod tests {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
         assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+    }
+
+    #[test]
+    fn lambda_def_infers_as_func() {
+        // A Def::Local whose body is a lambda literal infers to a Func value
+        // channel via the normal def-body inference path.
+        let t = ty_of("double = fn x -> x; main = double").unwrap();
+        assert_eq!(t.process_ty.outs.len(), 1);
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert!(matches!(t.process_ty.outs[0].vty, ValueTy::Func(_, _)));
+    }
+
+    #[test]
+    fn lambda_body_arity_mismatch_is_error() {
+        assert!(ty_of("main = fn x -> (x , x)").is_err());
     }
 }

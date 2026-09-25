@@ -69,6 +69,8 @@ pub enum Tok {
     KwMatch,
     /// `of` keyword — separator in `match x of { .. }`.
     KwOf,
+    /// `fn` keyword — lambda literal `fn p1 p2 ... -> body`.
+    KwFn,
     /// `=>` fat arrow — match arm separator.
     FatArrow,
     /// `|` — sum-type constructor separator.
@@ -154,6 +156,14 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             });
             continue;
         }
+        if c == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::FatArrow,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
         if c.is_ascii_digit() {
             let mut is_float = false;
             while i < bytes.len()
@@ -229,6 +239,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "instance" if !followed_by_paren => Tok::KwInstance,
                 "match" if !followed_by_paren => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
+                "fn" if !followed_by_paren => Tok::KwFn,
                 _ => Tok::Ident(text.to_string()),
             };
             out.push(Token { tok, span });
@@ -471,6 +482,36 @@ mod tests {
                 Tok::RParen,
                 Tok::Ident("data".into()),
                 Tok::LParen,
+                Tok::Ident("y".into()),
+                Tok::RParen,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_fn_keyword_and_lambda_arrow() {
+        assert_eq!(
+            kinds("fn x -> x"),
+            vec![
+                Tok::KwFn,
+                Tok::Ident("x".into()),
+                Tok::FatArrow,
+                Tok::Ident("x".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn fn_is_not_keyword_when_followed_by_paren() {
+        assert_eq!(
+            kinds("fn(x, y)"),
+            vec![
+                Tok::Ident("fn".into()),
+                Tok::LParen,
+                Tok::Ident("x".into()),
+                Tok::Comma,
                 Tok::Ident("y".into()),
                 Tok::RParen,
                 Tok::Eof,
