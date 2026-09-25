@@ -92,8 +92,12 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
             ..
         } => {
             write!(buf, "{pad}instance {class} {ty} where {{ ").ok();
-            for (mname, body) in method_bodies {
-                write!(buf, "{mname} = ").ok();
+            for (mname, param, body) in method_bodies {
+                write!(buf, "{mname}").ok();
+                if let Some(p) = param {
+                    write!(buf, " {}", p.name).ok();
+                }
+                write!(buf, " = ").ok();
                 render_expr(body, buf, 0);
                 write!(buf, "; ").ok();
             }

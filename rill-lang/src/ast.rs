@@ -244,14 +244,16 @@ pub enum Def {
         /// Span.
         span: Span,
     },
-    /// `instance C T where { m = body; }` — concrete instance.
+    /// `instance C T where { m p = body; }` — concrete instance. A method body
+    /// optionally binds one parameter (`show f = f`), β-substituted at each
+    /// call site at compile time.
     Instance {
         /// Class name.
         class: String,
         /// Concrete type the instance is for.
         ty: TypeName,
-        /// Method bodies: (method name, body expr).
-        method_bodies: Vec<(String, Expr)>,
+        /// Method bodies: (method name, optional parameter binding, body expr).
+        method_bodies: Vec<(String, Option<Param>, Expr)>,
         /// Span.
         span: Span,
     },

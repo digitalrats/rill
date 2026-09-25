@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use crate::ast::Expr;
+
 /// A unification variable identifier.
 pub type TypeVarId = u32;
 
@@ -165,7 +167,29 @@ pub enum DataInfo {
     Sum(Vec<(String, Vec<ValueTy>)>),
 }
 
-/// The compile-time type environment: aliases, newtypes, and data-type shapes.
+/// A `typeclass` declaration: its type variable and method dictionary.
+#[derive(Debug, Clone)]
+pub struct TypeclassInfo {
+    /// The class type variable (e.g. `a` in `typeclass Show a`).
+    pub var: String,
+    /// Method dictionary: method name → declared argument type name.
+    pub methods: Vec<(String, String)>,
+}
+
+/// A concrete `instance` declaration: which class it implements, the concrete
+/// type bound to the class variable, and the method bodies it provides.
+#[derive(Debug, Clone)]
+pub struct InstanceInfo {
+    /// The class this instance implements.
+    pub class: String,
+    /// The concrete type name bound to the class variable.
+    pub ty: String,
+    /// Method bodies: method name → (optional parameter binding, body).
+    pub methods: HashMap<String, (Option<String>, Expr)>,
+}
+
+/// The compile-time type environment: aliases, newtypes, data-type shapes, and
+/// the typeclass/instance dictionary.
 ///
 /// Built once during inference and carried to lowering so both phases resolve
 /// type names identically (no order dependence, no duplicated resolution).
@@ -177,6 +201,10 @@ pub struct TypeEnv {
     pub newtypes: HashMap<String, String>,
     /// Data type declarations: name → shape.
     pub data_types: HashMap<String, DataInfo>,
+    /// Typeclass declarations: class name → method dictionary.
+    pub typeclasses: HashMap<String, TypeclassInfo>,
+    /// Instances grouped by class, then by bound type name.
+    pub instances: HashMap<String, HashMap<String, InstanceInfo>>,
 }
 
 impl TypeEnv {
@@ -203,6 +231,60 @@ impl TypeEnv {
                 }
             }
         }
+    }
+
+    /// Find the class whose method dictionary declares `method`. Returns
+    /// `None` when no class declares it (the name may be a definition or
+    /// builtin) and when several classes declare the same method name
+    /// (ambiguous — the caller reports it as unresolvable).
+    pub fn class_of_method(&self, method: &str) -> Option<String> {
+        let mut found: Option<String> = None;
+        for (cname, info) in &self.typeclasses {
+            if info.methods.iter().any(|(m, _)| m == method) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(cname.clone());
+            }
+        }
+        found
+    }
+
+    /// The DSL type name of a concrete value type, used to look up instances
+    /// (`Float`, `Int`, a data type name, a newtype name). `None` for
+    /// unresolved type variables — a method call over such an argument cannot
+    /// select an instance at compile time.
+    pub fn type_name_of_vty(&self, v: &ValueTy) -> Option<String> {
+        match v {
+            ValueTy::Int => Some("Int".to_string()),
+            ValueTy::Float => Some("Float".to_string()),
+            ValueTy::Data(n) => Some(n.clone()),
+            ValueTy::Newtype(n) => Some(n.clone()),
+            _ => None,
+        }
+    }
+
+    /// Resolve a typeclass method call: the class declaring `method`, the
+    /// concrete type name `ty_name`, and the matching instance's method body
+    /// `(parameter binding, body)`. Returns `None` when no class declares
+    /// `method` or no instance binds `ty_name`.
+    pub fn resolve_method(
+        &self,
+        method: &str,
+        ty_name: &str,
+    ) -> Option<(String, Option<String>, Expr)> {
+        if let Some(cname) = self.class_of_method(method) {
+            if let Some(instance) = self
+                .instances
+                .get(cname.as_str())
+                .and_then(|by_ty| by_ty.get(ty_name))
+            {
+                if let Some((param, body)) = instance.methods.get(method).cloned() {
+                    return Some((cname, param, body));
+                }
+            }
+        }
+        None
     }
 }
 

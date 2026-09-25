@@ -339,7 +339,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `instance C T where { m = body; }` — concrete instance.
+    /// `instance C T where { m p = body; }` — concrete instance. Each method
+    /// optionally binds a single parameter (`show f = f`).
     fn parse_instance_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (class, _) = self.expect_ident()?;
@@ -349,9 +350,19 @@ impl<'a> Parser<'a> {
         let mut method_bodies = Vec::new();
         while self.peek().tok != Tok::RBrace {
             let (mname, _) = self.expect_ident()?;
+            // Optional single parameter binding before `=`: `show f = f`.
+            let param = if matches!(self.peek().tok, Tok::Ident(_)) {
+                let (pname, pspan) = self.expect_ident()?;
+                Some(Param {
+                    name: pname,
+                    span: pspan,
+                })
+            } else {
+                None
+            };
             self.eat(&Tok::Eq)?;
             let body = self.parse_expr(0, true)?;
-            method_bodies.push((mname, body));
+            method_bodies.push((mname, param, body));
             self.eat(&Tok::Semi)?;
         }
         self.eat(&Tok::RBrace)?;

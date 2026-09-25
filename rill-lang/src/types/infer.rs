@@ -7,7 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::ty::{
-    ArrowTy, Block, Channel, DataInfo, Rate, Scalar, Scheme, Subst, TypeEnv, TypeVarId, ValueTy,
+    ArrowTy, Block, Channel, DataInfo, InstanceInfo, Rate, Scalar, Scheme, Subst, TypeEnv,
+    TypeVarId, TypeclassInfo, ValueTy,
 };
 use super::unify::{unify_scalar, unify_value};
 use crate::ast::{Def, Expr, Program};
@@ -151,10 +152,11 @@ pub fn infer_program_with(
     sigs: &dyn SignatureSource,
 ) -> Result<TypedProgram, CompileError> {
     // Build the type environment in two phases so declaration ORDER does not
-    // matter. Phase 1 registers the pure name-mapping declarations (synonyms
-    // and newtypes); phase 2 resolves data-type field/payload types against
-    // the COMPLETE alias/newtype environment. A single-pass registration would
-    // wrongly reject `data P = { x: Angles }; type Angles = Float; ...`.
+    // matter. Phase 1 registers the pure name-mapping declarations (synonyms,
+    // newtypes, typeclasses, instances); phase 2 resolves data-type
+    // field/payload types against the COMPLETE alias/newtype environment. A
+    // single-pass registration would wrongly reject
+    // `data P = { x: Angles }; type Angles = Float; ...`.
     let mut env = TypeEnv::default();
     for def in &program.defs {
         match def {
@@ -164,8 +166,36 @@ pub fn infer_program_with(
             Def::Newtype { name, target, .. } => {
                 env.newtypes.insert(name.clone(), target.clone());
             }
-            Def::Typeclass { .. } | Def::Instance { .. } => {
-                // Task 12 registers these.
+            Def::Typeclass {
+                name, var, methods, ..
+            } => {
+                env.typeclasses.insert(
+                    name.clone(),
+                    TypeclassInfo {
+                        var: var.clone(),
+                        methods: methods.clone(),
+                    },
+                );
+            }
+            Def::Instance {
+                class,
+                ty,
+                method_bodies,
+                ..
+            } => {
+                let mut methods: HashMap<String, (Option<String>, Expr)> = HashMap::new();
+                for (mname, param, body) in method_bodies {
+                    let binding = param.clone().map(|p| p.name.clone());
+                    methods.insert(mname.clone(), (binding, body.clone()));
+                }
+                env.instances.entry(class.clone()).or_default().insert(
+                    ty.clone(),
+                    InstanceInfo {
+                        class: class.clone(),
+                        ty: ty.clone(),
+                        methods,
+                    },
+                );
             }
             _ => {}
         }
@@ -667,6 +697,14 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
         };
         return Err(CompileError::Type { msg, span });
     }
+    // A bare typeclass method reference is an unapplied method call: `show`
+    // needs an argument to select the instance.
+    if let Some(class_name) = ctx.env.class_of_method(name) {
+        return Err(CompileError::Type {
+            msg: format!("method `{name}` of `{class_name}` requires an argument"),
+            span,
+        });
+    }
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
         let s = ctx.fresh();
         return Ok(ArrowTy::uniform(2, 1, s));
@@ -864,6 +902,54 @@ fn infer_apply(
             unify_value(&vt, pty, &mut ctx.subst, e.span())?;
         }
         return Ok(ArrowTy::value_channel(ValueTy::Data(sum_name)));
+    }
+    // Typeclass method call: `show x` resolves at compile time to the instance
+    // of the class declaring `show` for the concrete type of `x` (v1 requires
+    // a concrete argument type — an unresolved variable cannot select an
+    // instance). The instance's body is β-reduced in place of the call; its
+    // inferred type is the method's return type (v1 drops the declared return
+    // signature).
+    if let Some(class_name) = ctx.env.class_of_method(name) {
+        if args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                    args.len()
+                ),
+                span,
+            });
+        }
+        let arg_vty = infer_const_value(ctx, &args[0])?;
+        let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
+            Some(t) => t,
+            None => {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                    ),
+                    span: args[0].span(),
+                });
+            }
+        };
+        let (_, param, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
+            Some(r) => r,
+            None => {
+                return Err(CompileError::Type {
+                    msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                    span,
+                });
+            }
+        };
+        // Bind the method parameter to the argument's value type and infer the
+        // body; the resulting type is the call's value type.
+        let saved = ctx.locals.clone();
+        if let Some(p) = param {
+            ctx.locals
+                .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
+        }
+        let body_vty = infer_const_value(ctx, &body)?;
+        ctx.locals = saved;
+        return Ok(ArrowTy::value_channel(body_vty));
     }
     if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {
         let min = sig.min_args();

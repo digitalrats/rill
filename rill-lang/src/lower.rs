@@ -385,6 +385,50 @@ impl<'a> Lowerer<'a> {
                     self.emit_value(ValueInstr::ValueNewtype { dst, src });
                     return Ok((dst, ValueTy::Newtype(name.clone())));
                 }
+                // Typeclass method call: the argument's static type selects the
+                // instance, and the method body is inlined with the parameter
+                // bound to the argument's register — β-substitution at compile
+                // time, zero runtime dispatch.
+                if let Some(class_name) = self.env.class_of_method(name) {
+                    if call_args.len() != 1 {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    let (arg_reg, arg_vty) = self.lower_value(&call_args[0])?;
+                    let ty_name = match self.env.type_name_of_vty(&arg_vty) {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                                ),
+                                span: call_args[0].span(),
+                            });
+                        }
+                    };
+                    let (_, param, body) = match self.env.resolve_method(name, ty_name.as_str()) {
+                        Some(r) => r,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                                span: *span,
+                            });
+                        }
+                    };
+                    let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    if let Some(p) = param {
+                        scope.insert(p, (arg_reg, arg_vty.clone()));
+                    }
+                    self.value_locals.push(scope);
+                    let res = self.lower_value(&body)?;
+                    self.value_locals.pop();
+                    return Ok(res);
+                }
                 Err(CompileError::Type {
                     msg: format!("`{name}` is not a value constructor in v1"),
                     span: *span,
