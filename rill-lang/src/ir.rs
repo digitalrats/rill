@@ -187,7 +187,8 @@ pub enum ValueInstr {
         /// Destination value register (holds the cell ref).
         dst: usize,
     },
-    /// Read a variable: cell ref -> value ref (RC++ on result).
+    /// Read a variable: copy the value out of the cell into a fresh slot
+    /// (the result is a new owner, it does not share the cell's value).
     ValueReadCell {
         /// Destination value register.
         dst: usize,

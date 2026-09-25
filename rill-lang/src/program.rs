@@ -291,6 +291,19 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         }
     }
 
+    /// Drop the previous tick's value-state refs.
+    ///
+    /// The value-state is single-buffered in v1: each tick `ValueStateWrite`
+    /// stores a fresh (copied) ref and every read already copies; this clears
+    /// ownership at tick end so a slot never leaks into the next tick.
+    pub(crate) fn swap_value_state(&mut self) {
+        for v in &mut self.value_state {
+            if let Some(r) = v.take() {
+                self.arena.drop_ref(r);
+            }
+        }
+    }
+
     /// Index of a named parameter, if present.
     pub fn param_index(&self, name: &str) -> Option<usize> {
         self.params_meta.iter().position(|p| p.name == name)
