@@ -256,6 +256,75 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// The arithmetic operator of a [`ValueInstr::ValueAdd`]-family instruction.
+#[derive(Debug, Clone, Copy)]
+enum ValueArith {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+/// Read a scalar value as `f64`: a Float reads directly, an Int widens.
+/// Non-numeric values (records, sums, closures, `Void`) read as `None`.
+fn value_to_f64(v: &Value) -> Option<f64> {
+    match v {
+        Value::Float(f) => Some(*f),
+        Value::Int(i) => Some(*i as f64),
+        _ => None,
+    }
+}
+
+/// Execute one value-track arithmetic instruction: read the two operand values
+/// as scalars (an unbound or non-numeric operand reads as `0.0`), compute the
+/// Float result, and store it as a freshly allocated slot in `dst`.
+///
+/// The operands are read BEFORE any `dst` occupant is released, so `dst` may
+/// alias an operand (`dst == a` or `dst == b`) without losing its value.
+/// Lowering emits SSA registers (dst is always fresh), but the aliasing-safe
+/// order keeps hand-written IR correct. The old occupant, when present, is
+/// taken out of the register and queued, so the per-tick register clear cannot
+/// drop it a second time.
+fn exec_value_arith<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    op: ValueArith,
+    dst: usize,
+    a: usize,
+    b: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    let av = prog
+        .value_regs
+        .get(a)
+        .copied()
+        .flatten()
+        .and_then(|r| match prog.arena.get(r) {
+            Some(v) => value_to_f64(v),
+            None => None,
+        })
+        .unwrap_or(0.0);
+    let bv = prog
+        .value_regs
+        .get(b)
+        .copied()
+        .flatten()
+        .and_then(|r| match prog.arena.get(r) {
+            Some(v) => value_to_f64(v),
+            None => None,
+        })
+        .unwrap_or(0.0);
+    if let Some(r) = prog.value_regs.get_mut(dst).and_then(|r| r.take()) {
+        drops.push(r);
+    }
+    let result = match op {
+        ValueArith::Add => av + bv,
+        ValueArith::Sub => av - bv,
+        ValueArith::Mul => av * bv,
+        ValueArith::Div => av / bv,
+    };
+    prog.value_regs[dst] = alloc_owned(prog, Value::Float(result));
+}
+
 fn exec_value_instr<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     instr: &ValueInstr,
@@ -335,6 +404,18 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueConstFloat { dst, value } => {
             prog.value_regs[*dst] = alloc_owned(prog, Value::Float(*value));
+        }
+        ValueInstr::ValueAdd { dst, a, b } => {
+            exec_value_arith(prog, ValueArith::Add, *dst, *a, *b, drops)
+        }
+        ValueInstr::ValueSub { dst, a, b } => {
+            exec_value_arith(prog, ValueArith::Sub, *dst, *a, *b, drops)
+        }
+        ValueInstr::ValueMul { dst, a, b } => {
+            exec_value_arith(prog, ValueArith::Mul, *dst, *a, *b, drops)
+        }
+        ValueInstr::ValueDiv { dst, a, b } => {
+            exec_value_arith(prog, ValueArith::Div, *dst, *a, *b, drops)
         }
         ValueInstr::ValueConstructRecord { dst, fields } => {
             prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, fields) {
@@ -667,6 +748,26 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
         ValueInstr::ValueConstFloat { dst, value } => ValueInstr::ValueConstFloat {
             dst: dst + base,
             value: *value,
+        },
+        ValueInstr::ValueAdd { dst, a, b } => ValueInstr::ValueAdd {
+            dst: dst + base,
+            a: a + base,
+            b: b + base,
+        },
+        ValueInstr::ValueSub { dst, a, b } => ValueInstr::ValueSub {
+            dst: dst + base,
+            a: a + base,
+            b: b + base,
+        },
+        ValueInstr::ValueMul { dst, a, b } => ValueInstr::ValueMul {
+            dst: dst + base,
+            a: a + base,
+            b: b + base,
+        },
+        ValueInstr::ValueDiv { dst, a, b } => ValueInstr::ValueDiv {
+            dst: dst + base,
+            a: a + base,
+            b: b + base,
         },
         ValueInstr::ValueConstructRecord { dst, fields } => ValueInstr::ValueConstructRecord {
             dst: dst + base,
@@ -1159,6 +1260,48 @@ mod value_track_tests {
         assert_eq!(prog.arena.live(), 0);
         MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
         assert_eq!(prog.arena.live(), 0, "second tick leaks nothing");
+    }
+
+    #[test]
+    fn value_arith_computes_float_result() {
+        // Int and Float operands widen to f64; the result is always Float.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 3 },
+                ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
+                ValueInstr::ValueAdd { dst: 2, a: 0, b: 1 },
+                ValueInstr::ValueMul { dst: 3, a: 1, b: 2 },
+                ValueInstr::ValueDiv { dst: 4, a: 3, b: 1 },
+            ],
+            5,
+            0,
+        );
+        run_value_track(&mut prog);
+        let get = |r: usize| prog.arena.get(prog.value_regs[r].unwrap()).unwrap().clone();
+        assert_eq!(get(2), crate::arena::Value::Float(5.0), "3 + 2.0");
+        assert_eq!(get(3), crate::arena::Value::Float(10.0), "2.0 * 5.0");
+        assert_eq!(get(4), crate::arena::Value::Float(5.0), "10.0 / 2.0");
+    }
+
+    #[test]
+    fn value_arith_reassignment_drops_old_occupant() {
+        // dst 0 is reused: the previous Int(42) ref must be released (deferred
+        // drop), not leaked — the arena holds exactly the two live slots.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: 42 },
+                ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
+                ValueInstr::ValueMul { dst: 0, a: 0, b: 1 },
+            ],
+            2,
+            0,
+        );
+        run_value_track(&mut prog);
+        assert_eq!(
+            prog.arena.get(prog.value_regs[0].unwrap()).unwrap(),
+            &crate::arena::Value::Float(84.0)
+        );
+        assert_eq!(prog.arena.live(), 2, "old dst occupant must be dropped");
     }
 
     #[test]

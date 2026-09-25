@@ -1501,6 +1501,36 @@ fn infer_arith(
 ) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
+    // Value-track arithmetic: a value operand (a lambda parameter, a value
+    // function, a field projection, ...) combined with another value operand
+    // or a bare Float/Int literal lowers on the value track and yields a Float
+    // value channel — this is what makes lambda bodies like `fn x -> x * 2.0`
+    // meaningful. A value channel mixed with a genuine signal computation
+    // (`sin _`, a wire, a combinator) is still rejected.
+    let a_value = a.outs.iter().any(|c| c.rate == Rate::Value);
+    let b_value = b.outs.iter().any(|c| c.rate == Rate::Value);
+    if a_value || b_value {
+        // A value operand must be a numeric scalar (Float/Int, or an as-yet
+        // unresolved Var such as a lambda parameter). Func values, records and
+        // newtypes cannot take part in arithmetic (spec: no arithmetic on
+        // closures); a bare Float/Int literal is value-compatible.
+        let scalar_vty = |v: &ValueTy| matches!(v, ValueTy::Float | ValueTy::Int | ValueTy::Var(_));
+        let value_operand = |t: &ArrowTy, e: &Expr| -> bool {
+            t.arity_in() == 0
+                && t.arity_out() == 1
+                && match t.outs[0].rate {
+                    Rate::Value => scalar_vty(&t.outs[0].vty),
+                    Rate::Signal => matches!(e, Expr::Int(_, _) | Expr::Float(_, _)),
+                }
+        };
+        if value_operand(&a, lhs) && value_operand(&b, rhs) {
+            return Ok(ArrowTy::value_channel(ValueTy::Float));
+        }
+        return Err(CompileError::Type {
+            msg: "value-channel arithmetic requires numeric value operands".into(),
+            span,
+        });
+    }
     arith(ctx, &a, &b, span)
 }
 
@@ -2056,5 +2086,19 @@ mod tests {
     #[test]
     fn lambda_body_arity_mismatch_is_error() {
         assert!(ty_of("main = fn x -> (x , x)").is_err());
+    }
+
+    #[test]
+    fn value_channel_arithmetic_infers() {
+        // double = fn x -> x * 2.0  -> lambda body is value arithmetic over
+        // value params, inferred as Func([Float], [Float]).
+        let t = ty_of("double = fn x -> x * 2.0; main = double").unwrap();
+        match &t.process_ty.outs[0].vty {
+            ValueTy::Func(arg_tys, ret_tys) => {
+                assert_eq!(arg_tys.len(), 1);
+                assert_eq!(ret_tys, &vec![ValueTy::Float]);
+            }
+            other => panic!("expected Func type, got {other:?}"),
+        }
     }
 }

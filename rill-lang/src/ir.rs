@@ -234,6 +234,44 @@ pub enum ValueInstr {
         /// The value.
         value: f64,
     },
+    /// Element-wise arithmetic on two value channels: reads the Float (or Int)
+    /// payloads of the value registers `a` and `b`, allocates the Float result
+    /// into `dst`. Unbound operands read as `0.0`.
+    ValueAdd {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// See [`ValueInstr::ValueAdd`].
+    ValueSub {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// See [`ValueInstr::ValueAdd`].
+    ValueMul {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// See [`ValueInstr::ValueAdd`].
+    ValueDiv {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
     /// Construct a record: alloc + write field refs.
     ValueConstructRecord {
         /// Destination value register.

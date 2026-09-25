@@ -25,6 +25,10 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
         i,
         ValueInstr::ValueConstInt { .. }
             | ValueInstr::ValueConstFloat { .. }
+            | ValueInstr::ValueAdd { .. }
+            | ValueInstr::ValueSub { .. }
+            | ValueInstr::ValueMul { .. }
+            | ValueInstr::ValueDiv { .. }
             | ValueInstr::ValueConstructRecord { .. }
             | ValueInstr::ValueConstructSum { .. }
             | ValueInstr::ValueNewtype { .. }
@@ -466,6 +470,43 @@ impl<'a> Lowerer<'a> {
                     msg: format!("`{name}` is not a value constructor in v1"),
                     span: *span,
                 })
+            }
+            Expr::Arith { op, lhs, rhs, span } => {
+                // Value-track arithmetic: lower both operands as values, emit
+                // the matching element-wise instruction, and yield a Float
+                // value register (v1 always produces Float scalars here).
+                let (a_reg, _a_ty) = self.lower_value(lhs)?;
+                let (b_reg, _b_ty) = self.lower_value(rhs)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(match op {
+                    ArithOp::Add => ValueInstr::ValueAdd {
+                        dst,
+                        a: a_reg,
+                        b: b_reg,
+                    },
+                    ArithOp::Sub => ValueInstr::ValueSub {
+                        dst,
+                        a: a_reg,
+                        b: b_reg,
+                    },
+                    ArithOp::Mul => ValueInstr::ValueMul {
+                        dst,
+                        a: a_reg,
+                        b: b_reg,
+                    },
+                    ArithOp::Div => ValueInstr::ValueDiv {
+                        dst,
+                        a: a_reg,
+                        b: b_reg,
+                    },
+                    ArithOp::Rem => {
+                        return Err(CompileError::Type {
+                            msg: "value `%` is not supported".into(),
+                            span: *span,
+                        });
+                    }
+                });
+                Ok((dst, ValueTy::Float))
             }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
