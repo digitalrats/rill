@@ -114,7 +114,7 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                 // lowering can lift it once instead of duplicating state here.
                 e.clone()
             } else if let Some(def) = ctx.get(name) {
-                if def.params().is_empty() {
+                if def.params().is_empty() && !def.is_decl() {
                     // Local binding with no params — inline the body
                     reduce_expr(def.body(), ctx, cafs)
                 } else {
@@ -433,5 +433,22 @@ mod tests {
             }
             other => panic!("expected Seq, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn decl_ref_does_not_panic() {
+        // A bare reference to a type declaration must not be inlined as a
+        // signal body (declarations have no body to inline) — it stays a Ref.
+        let tokens = tokenize("data Point = { x: Float }; main = Point").unwrap();
+        let program = parser::parse(
+            &tokens,
+            "data Point = { x: Float }; main = Point".as_bytes(),
+        )
+        .unwrap();
+        let reduced = reduce(&program);
+        assert!(matches!(
+            reduced.main_def().unwrap().body(),
+            Expr::Ref(name, _) if name == "Point"
+        ));
     }
 }
