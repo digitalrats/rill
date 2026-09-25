@@ -872,6 +872,25 @@ dispatch (methods resolve at compile time), value-state persistence beyond
 per-tick scratch, and `strict`/`complete` compiler modes (the acyclicity and
 capacity checks above are the foundation of the `strict` contract).
 
+### Known v1 limitations
+
+- **No value arithmetic** — value expressions are constructors, projections,
+  updates, and `match`; `w + h` over payloads is a signal combinator and is
+  rejected. Use a signal function when arithmetic is needed.
+- **Single value output** — `main` exposes one value channel; `main = p, p`
+  (multi-value fan-out) and mixed signal+value outputs are rejected at
+  lowering.
+- **Nullary constructors** — `data Color = Red | Green` cannot be constructed
+  in v1 (`Red` requires an argument); declare a payload, e.g.
+  `data Color = Red Float | Green Float`.
+- **Value functions are untyped at the boundary** — arguments are not unified
+  against the λ-parameter type; type errors surface at lowering with the
+  argument's span.
+- **β-substitution gaps** — `substitute` does not descend into `let` /
+  `ActorParam`, and reduction does not run inside `match` / field
+  project/update / record bodies; a user-def call in those positions errors at
+  lowering.
+
 ## Status
 
 The language is feature-complete for signal authoring: a block-arrow model
