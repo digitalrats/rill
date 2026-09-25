@@ -290,10 +290,36 @@ automatically gets a probe at its output:
 Probe data flows through `rill-telemetry`'s `CollectorThread` and can be inspected
 via `rill-analyzer`. Zero overhead when the feature is disabled.
 
+## First-class data (`data`/`type`/`newtype`/`typeclass`)
+
+Beyond signals, a program can carry **value channels** — one arena value per
+tick, typed and processed in a per-tick value-track phase:
+
+```faust
+data Point = { x: Float, y: Float };          // record type
+data Shape = Circle Float | Rect Float Float; // sum type
+newtype Hz  = Float;                          // distinct wrapper
+type Angles = Float;                          // synonym
+typeclass Show a where { show: a; }           // ad-hoc polymorphism
+instance Show Float where { show f = f; }
+
+p = Point { x: 2.0, y: 3.0 };
+main = p.x;                                    // field projection -> Float(2.0)
+```
+
+Values live in a **fixed-capacity arena** with reference counting and
+copy-on-write mutation (`p.x := 3.0`). Local variables — including `main`'s
+λ-parameters — are persistent runtime-stack cells that `SetParameter` writes
+into directly. Data types are acyclic by construction (compile-time check),
+and the arena capacity is a static bound. `typeclass` methods resolve at
+compile time (no runtime dispatch); named function references are β-inlined.
+
 ## Status
 
 MVP. Deferred to follow-on work: the Cranelift `jit` feature, foreign references
-to existing rill DSP primitives, and a SIMD-aware IR.
+to existing rill DSP primitives, a SIMD-aware IR, closures (only named function
+references), runtime typeclass dispatch, and `strict`/`complete` compiler
+modes.
 
 ## License
 
