@@ -161,6 +161,16 @@ pub enum Instr {
         /// Index into [`Ir::params`].
         param_idx: usize,
     },
+    /// Read a main λ-parameter cell, materialising its float value into a
+    /// block register. The cell is persistent (allocated once at program
+    /// construction), so a `SetParameter` write survives across ticks and the
+    /// block track reads the current value directly each block.
+    ReadMainCell {
+        /// Destination register.
+        dst: Reg,
+        /// Index into the persistent main-cell store ([`Ir::num_main_cells`]).
+        cell: usize,
+    },
     /// A debug probe point that passes a signal through unchanged.
     /// The runtime debug engine can latch this value for inspection.
     #[cfg(feature = "debug")]
@@ -193,6 +203,14 @@ pub enum ValueInstr {
         /// Destination value register.
         dst: usize,
         /// Value register holding the cell ref.
+        cell: usize,
+    },
+    /// Read a main λ-parameter cell into a fresh value slot (the result is a
+    /// new owner; a `Void` cell reads as `Float(0.0)`).
+    ValueReadMainCell {
+        /// Destination value register.
+        dst: usize,
+        /// Index into the persistent main-cell store.
         cell: usize,
     },
     /// Write a variable: value ref into a cell.
@@ -392,6 +410,11 @@ pub struct Ir {
     pub builtins: Vec<BuiltinInstance>,
     /// Named parameter definitions, indexed by [`Instr::ReadParam::idx`].
     pub params: Vec<ParamDef>,
+    /// Number of persistent main λ-parameter cells (see
+    /// [`RillProgram::main_cells`](crate::program::RillProgram)). Main λ-params
+    /// are the first `num_main_cells` entries of [`Ir::params`] — `set_param`
+    /// on the program writes into the cell for exactly these indices.
+    pub num_main_cells: usize,
     /// Value-track instructions (per-tick).
     pub value_instrs: Vec<ValueInstr>,
     /// Number of value registers required.

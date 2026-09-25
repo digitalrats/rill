@@ -35,7 +35,8 @@ fn instr_dst(instr: &Instr) -> Option<usize> {
         | Instr::Move { dst, .. }
         | Instr::CallBlock { dst, .. }
         | Instr::ReadParam { dst, .. }
-        | Instr::ReadActorParam { dst, .. } => Some(dst),
+        | Instr::ReadActorParam { dst, .. }
+        | Instr::ReadMainCell { dst, .. } => Some(dst),
         Instr::WriteBlockState { .. } | Instr::WriteDelay { .. } => None,
         #[cfg(feature = "debug")]
         Instr::ProbePoint { dst, .. } => Some(dst),

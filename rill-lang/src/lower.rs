@@ -30,6 +30,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueNewtype { .. }
             | ValueInstr::ValueBindCell { .. }
             | ValueInstr::ValueReadCell { .. }
+            | ValueInstr::ValueReadMainCell { .. }
             | ValueInstr::ValueStateRead { .. }
             | ValueInstr::ValueUpdateField { .. }
     )
@@ -49,6 +50,12 @@ struct Lowerer<'a> {
     builtins: Vec<BuiltinInstance>,
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
+    /// main λ-parameter cells: name → persistent cell index. These are NOT
+    /// per-tick value bindings — the cells are allocated once at program
+    /// construction ([`Ir::num_main_cells`]), so `SetParameter` writes persist
+    /// across ticks. Block-track reads materialise the cell's float via
+    /// [`Instr::ReadMainCell`]; value-track reads via `ValueReadMainCell`.
+    main_cell_locals: HashMap<String, usize>,
     sample_rate: f32,
     /// Value-track instructions, executed once per tick (see `run_value_track`).
     value_instrs: Vec<ValueInstr>,
@@ -468,6 +475,13 @@ impl<'a> Lowerer<'a> {
             if let Some(&(reg, ref vty)) = scope.get(name) {
                 return Ok((reg, vty.clone()));
             }
+        }
+        if let Some(&cell) = self.main_cell_locals.get(name) {
+            // A main λ-parameter in value position: copy the persistent cell's
+            // value into a fresh slot (a `Void` cell reads as `Float(0.0)`).
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueReadMainCell { dst, cell });
+            return Ok((dst, ValueTy::Float));
         }
         if self.env.data_types.contains_key(name) {
             return Err(CompileError::Type {
@@ -1140,6 +1154,15 @@ impl<'a> Lowerer<'a> {
             });
             return Ok(vec![dst]);
         }
+        if let Some(&cell) = self.main_cell_locals.get(name) {
+            // A main λ-parameter: materialise the persistent cell's float
+            // value into a block register. The cell is read directly — it is
+            // persistent, so the value set by `SetParameter` on the control
+            // thread is visible here on the next block.
+            let dst = self.fresh_reg();
+            self.emit(Instr::ReadMainCell { dst, cell });
+            return Ok(vec![dst]);
+        }
         if let Some(&idx) = self.param_names.get(name) {
             let dst = self.fresh_reg();
             self.emit(Instr::ReadParam { dst, idx });
@@ -1624,6 +1647,7 @@ pub fn lower_with_cafs(
         builtins: Vec::new(),
         params: Vec::new(),
         param_names: HashMap::new(),
+        main_cell_locals: HashMap::new(),
         sample_rate,
         value_instrs: Vec::new(),
         next_value_reg: 0,
@@ -1634,7 +1658,11 @@ pub fn lower_with_cafs(
         method_lifting: HashSet::new(),
     };
 
-    for p in main.params() {
+    for (cell_idx, p) in main.params().iter().enumerate() {
+        // A main λ-param is both a named parameter (metadata + `param_index`/
+        // `set_param` dispatch) and a persistent runtime cell (the actual
+        // storage the signal/value tracks read). The cell index matches the
+        // params index because main params are interned first.
         lw.intern_param(
             p.name.clone(),
             0.0,
@@ -1642,6 +1670,7 @@ pub fn lower_with_cafs(
             f64::INFINITY,
             p.span,
         )?;
+        lw.main_cell_locals.insert(p.name.clone(), cell_idx);
     }
 
     let mut main_args = Vec::with_capacity(num_inputs);
@@ -1668,18 +1697,23 @@ pub fn lower_with_cafs(
         ));
     }
     let num_outputs = outs.len();
+    let num_main_cells = lw.main_cell_locals.len();
     // v1 capacity heuristic: the arena never needs more slots than the number
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
     // is a strict upper bound on simultaneously-live slots — plus one slot per
     // value output channel, since `value_outputs` holds its ref across ticks
     // (the previous tick's output is still live while the next tick runs).
+    // Main λ-parameter cells are allocated once at construction and live for
+    // the program's whole lifetime, so they occupy `num_main_cells` permanent
+    // slots on top of the per-tick bound.
     let value_capacity = lw
         .value_instrs
         .iter()
         .filter(|i| is_alloc_producing(i))
         .count()
-        + lw.value_regs_out.len();
+        + lw.value_regs_out.len()
+        + num_main_cells;
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
@@ -1693,6 +1727,7 @@ pub fn lower_with_cafs(
         },
         builtins: lw.builtins,
         params: lw.params,
+        num_main_cells,
         value_instrs: lw.value_instrs,
         num_value_regs: lw.next_value_reg,
         value_output_regs: lw.value_regs_out,
@@ -1819,6 +1854,27 @@ mod tests {
         .unwrap();
         let tp = infer_program(&p).unwrap();
         assert!(lower(&tp).is_err());
+    }
+
+    #[test]
+    fn main_param_lowers_to_cell_binding() {
+        // main's λ-param `gain` becomes a persistent runtime-stack cell: the
+        // signal context reads it via `Instr::ReadMainCell`, not a named
+        // `ReadParam` (which would route through the params vec instead).
+        let ir = ir_of("main gain = _ * gain");
+        assert_eq!(ir.num_main_cells, 1);
+        assert!(
+            ir.instrs
+                .iter()
+                .any(|i| matches!(i, Instr::ReadMainCell { cell: 0, .. })),
+            "expected a ReadMainCell instruction for `gain`"
+        );
+        assert!(
+            !ir.instrs
+                .iter()
+                .any(|i| matches!(i, Instr::ReadParam { .. })),
+            "main λ-params must not lower to ReadParam"
+        );
     }
 
     #[test]

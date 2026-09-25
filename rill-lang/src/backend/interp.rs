@@ -10,7 +10,7 @@ use crate::ir::{BinArith, Instr, UnOp, ValueInstr};
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
 
-fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
+pub(crate) fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     match pv {
         rill_core::traits::ParamValue::Float(v) => *v as f64,
         rill_core::traits::ParamValue::Int(v) => *v as f64,
@@ -298,6 +298,24 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 None => prog.value_regs[*dst] = None,
             }
         }
+        ValueInstr::ValueReadMainCell { dst, cell } => {
+            // Read a persistent main λ-parameter cell (see `ReadMainCell` in the
+            // block track). The result is a new owner; a `Void` cell reads 0.0.
+            match prog.main_cells[*cell] {
+                Some(cr) => match prog.arena.get(cr) {
+                    Some(v) => {
+                        let out = if matches!(v, Value::Void) {
+                            Value::Float(0.0)
+                        } else {
+                            v.clone()
+                        };
+                        prog.value_regs[*dst] = alloc_copy(prog, &out);
+                    }
+                    None => prog.value_regs[*dst] = None,
+                },
+                _ => prog.value_regs[*dst] = None,
+            }
+        }
         ValueInstr::ValueWriteCell { cell, src } => {
             if let (Some(cr), Some(sr)) = (prog.value_regs[*cell], prog.value_regs[*src]) {
                 let sv = prog.arena.get(sr).cloned();
@@ -577,6 +595,20 @@ fn exec_block_op<T: Transcendental, const BUF: usize>(
             let v = T::from_f64(param_to_f64(&prog.params[*param_idx]));
             prog.block_regs[*dst][..n].fill(v);
         }
+        Instr::ReadMainCell { dst, cell } => {
+            // Materialise the persistent main λ-parameter cell's float value.
+            // The cell was allocated at construction and survives across ticks,
+            // so a value written by `SetParameter` on the control thread is
+            // read here on every subsequent block. A `Void` (unset) cell is 0.0.
+            let v = match prog.main_cells[*cell] {
+                Some(r) => match prog.arena.get(r) {
+                    Some(crate::arena::Value::Float(f)) => *f,
+                    _ => 0.0,
+                },
+                _ => 0.0,
+            };
+            prog.block_regs[*dst][..n].fill(T::from_f64(v));
+        }
         Instr::CallBlock { .. } => {
             unreachable!("block built-in scheduled as a block op (should be ForeignBlock)")
         }
@@ -750,6 +782,7 @@ mod value_track_tests {
             state: StateLayout::default(),
             builtins: Vec::new(),
             params: Vec::new(),
+            num_main_cells: 0,
             value_instrs,
             num_value_regs,
             value_output_regs: Vec::new(),
