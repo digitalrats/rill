@@ -297,11 +297,21 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             span: *span,
         },
         Expr::Neg(inner, span) => Expr::Neg(Box::new(reduce_expr(inner, ctx, cafs)), *span),
-        Expr::Lambda { params, body, span } => Expr::Lambda {
-            params: params.clone(),
-            body: Box::new(reduce_expr(body, ctx, cafs)),
-            span: *span,
-        },
+        Expr::Lambda { params, body, span } => {
+            // A lambda rebinds its parameters inside the body: drop them from
+            // the reduction context so an outer definition of the same spelling
+            // is not inlined into the lambda (mirrors the shadowing in
+            // `substitute`'s Lambda arm).
+            let mut inner_ctx = ctx.clone();
+            for p in params {
+                inner_ctx.remove(&p.name);
+            }
+            Expr::Lambda {
+                params: params.clone(),
+                body: Box::new(reduce_expr(body, &inner_ctx, cafs)),
+                span: *span,
+            }
+        }
         _ => e.clone(),
     }
 }
@@ -540,5 +550,23 @@ mod tests {
             reduced.main_def().unwrap().body(),
             Expr::Ref(name, _) if name == "Point"
         ));
+    }
+
+    #[test]
+    fn lambda_param_shadows_local_def() {
+        // x = _ * 0.5; main = fn x -> x  →  the outer `x` must NOT be inlined
+        // into the lambda body (the param shadows it).
+        let body = reduced_body("x = _ * 0.5; main = fn x -> x");
+        match &body {
+            Expr::Lambda {
+                params,
+                body: inner,
+                ..
+            } => {
+                assert_eq!(params.len(), 1);
+                assert!(matches!(inner.as_ref(), Expr::Ref(name, _) if name == "x"));
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
     }
 }
