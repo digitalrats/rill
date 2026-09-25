@@ -145,6 +145,7 @@ pub fn infer_program_with(
                 .filter(|s| s.lam_count == 0 && s.ty.ins.is_empty())
                 .map(|_| name.clone()),
             Def::Anchor { .. } => None,
+            _ => None,
         })
         .collect();
 
@@ -165,6 +166,9 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
 
     // Phase 1: placeholder schemes for all names
     for def in defs {
+        if def.is_decl() {
+            continue;
+        }
         if ctx.defs.contains_key(def.name()) {
             return Err(CompileError::Type {
                 msg: format!("duplicate definition `{}`", def.name()),
@@ -192,6 +196,9 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
 
     // Phase 2: infer bodies with placeholder visibility
     for def in defs {
+        if def.is_decl() {
+            continue;
+        }
         if !def.where_defs().is_empty() {
             infer_def_group(ctx, def.where_defs())?;
         }
@@ -225,6 +232,9 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
 
     // Second pass: re-infer with actual schemes for correct signal port counts
     for def in defs {
+        if def.is_decl() {
+            continue;
+        }
         ctx.locals.clear();
         for p in def.params() {
             ctx.locals
@@ -327,6 +337,18 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             }
             Ok(ArrowTy::uniform(0, 1, Scalar::Float))
         }
+        Expr::FieldProject { span, .. } => Err(CompileError::Type {
+            msg: "field projection is not yet supported by type inference".into(),
+            span: *span,
+        }),
+        Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
+            msg: "field update is not yet supported by type inference".into(),
+            span: *span,
+        }),
+        Expr::Match { span, .. } => Err(CompileError::Type {
+            msg: "match expressions are not yet supported by type inference".into(),
+            span: *span,
+        }),
     }
 }
 

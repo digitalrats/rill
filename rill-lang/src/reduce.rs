@@ -77,6 +77,9 @@ fn defs_map(defs: &[Def]) -> HashMap<String, Def> {
 }
 
 fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Def {
+    if def.is_decl() {
+        return def.clone();
+    }
     let reduced_body = reduce_expr(def.body(), ctx, cafs);
     let reduced_where: Vec<Def> = def
         .where_defs()
@@ -99,6 +102,7 @@ fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             where_defs: reduced_where,
             span: *span,
         },
+        _ => def.clone(),
     }
 }
 
@@ -124,16 +128,26 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
         Expr::Apply { name, args, span } => {
             let reduced_args: Vec<Expr> = args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect();
             if let Some(def) = ctx.get(name) {
-                // β-reduce: substitute args for params in the definition's body
-                let mut subst = HashMap::new();
-                for (idx, p) in def.params().iter().enumerate() {
-                    if p.name != "_" {
-                        subst.insert(p.name.clone(), reduced_args[idx].clone());
+                if def.is_decl() {
+                    // Type declarations aren't signal definitions — keep the
+                    // application as-is rather than inlining a sentinel body.
+                    Expr::Apply {
+                        name: name.clone(),
+                        args: reduced_args,
+                        span: *span,
                     }
+                } else {
+                    // β-reduce: substitute args for params in the definition's body
+                    let mut subst = HashMap::new();
+                    for (idx, p) in def.params().iter().enumerate() {
+                        if p.name != "_" {
+                            subst.insert(p.name.clone(), reduced_args[idx].clone());
+                        }
+                    }
+                    let inlined = substitute(def.body(), &subst);
+                    // Recursively reduce the inlined body (may contain more calls)
+                    reduce_expr(&inlined, ctx, cafs)
                 }
-                let inlined = substitute(def.body(), &subst);
-                // Recursively reduce the inlined body (may contain more calls)
-                reduce_expr(&inlined, ctx, cafs)
             } else {
                 // Builtin, math, or unknown — leave as-is
                 Expr::Apply {

@@ -5,6 +5,9 @@ use crate::error::Span;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// A type name reference in a declaration (`Float`, `Hz`, `Point`, ...).
+pub type TypeName = String;
+
 /// Arithmetic operators (elementwise, 2→1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -95,6 +98,35 @@ pub enum Expr {
         /// Source span.
         span: Span,
     },
+    /// Field projection `record.field`.
+    FieldProject {
+        /// Record expression.
+        record: Box<Expr>,
+        /// Field name.
+        field: String,
+        /// Span.
+        span: Span,
+    },
+    /// COW field mutation `record.field := value`.
+    FieldUpdate {
+        /// Record expression.
+        record: Box<Expr>,
+        /// Field name.
+        field: String,
+        /// New value expression.
+        value: Box<Expr>,
+        /// Span.
+        span: Span,
+    },
+    /// Pattern matching over a sum value.
+    Match {
+        /// Scrutinee expression.
+        scrutinee: Box<Expr>,
+        /// Arms: (ctor name, bindings, body).
+        arms: Vec<(String, Vec<Param>, Expr)>,
+        /// Span.
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -119,7 +151,10 @@ impl Expr {
             | Expr::Arith { span, .. }
             | Expr::Let { span, .. }
             | Expr::Record(_, span)
-            | Expr::ActorParam { span, .. } => *span,
+            | Expr::ActorParam { span, .. }
+            | Expr::FieldProject { span, .. }
+            | Expr::FieldUpdate { span, .. }
+            | Expr::Match { span, .. } => *span,
         }
     }
 }
@@ -162,6 +197,64 @@ pub enum Def {
         /// Span of the whole definition.
         span: Span,
     },
+    /// `data Name = { f1: T1, f2: T2 }` — product type.
+    Data {
+        /// Type name.
+        name: String,
+        /// Fields: (field name, type name).
+        fields: Vec<(String, TypeName)>,
+        /// Span.
+        span: Span,
+    },
+    /// `data Name = C1 T1 | C2 T2 T3` — sum type with constructors.
+    Sum {
+        /// Type name.
+        name: String,
+        /// Constructors: (ctor name, payload type names).
+        ctors: Vec<(String, Vec<TypeName>)>,
+        /// Span.
+        span: Span,
+    },
+    /// `type Name = T` — synonym (pure substitution).
+    TypeAlias {
+        /// Alias name.
+        name: String,
+        /// Target type name.
+        target: TypeName,
+        /// Span.
+        span: Span,
+    },
+    /// `newtype Name = T` — distinct wrapper.
+    Newtype {
+        /// Wrapper name.
+        name: String,
+        /// Inner type name.
+        target: TypeName,
+        /// Span.
+        span: Span,
+    },
+    /// `typeclass C a where { m: sig; }` — method dictionary.
+    Typeclass {
+        /// Class name.
+        name: String,
+        /// Type variable (e.g. `a`).
+        var: String,
+        /// Methods: (method name, signature type name).
+        methods: Vec<(String, TypeName)>,
+        /// Span.
+        span: Span,
+    },
+    /// `instance C T where { m = body; }` — concrete instance.
+    Instance {
+        /// Class name.
+        class: String,
+        /// Concrete type the instance is for.
+        ty: TypeName,
+        /// Method bodies: (method name, body expr).
+        method_bodies: Vec<(String, Expr)>,
+        /// Span.
+        span: Span,
+    },
 }
 
 impl Def {
@@ -170,14 +263,24 @@ impl Def {
         match self {
             Def::Anchor { name, .. } => name,
             Def::Local { name, .. } => name,
+            Def::Data { name, .. } => name,
+            Def::Sum { name, .. } => name,
+            Def::TypeAlias { name, .. } => name,
+            Def::Newtype { name, .. } => name,
+            Def::Typeclass { name, .. } => name,
+            Def::Instance { class, .. } => class,
         }
     }
 
     /// Returns the body expression of this definition.
+    ///
+    /// Declaration variants (`is_decl()`) carry no expression body — callers
+    /// must skip them via [`Def::is_decl`] before calling this.
     pub fn body(&self) -> &Expr {
         match self {
             Def::Anchor { body, .. } => body,
             Def::Local { body, .. } => body,
+            _ => unreachable!("declaration variant has no body"),
         }
     }
 
@@ -185,7 +288,7 @@ impl Def {
     pub fn params(&self) -> &[Param] {
         match self {
             Def::Anchor { params, .. } => params,
-            Def::Local { .. } => &[],
+            _ => &[],
         }
     }
 
@@ -194,7 +297,24 @@ impl Def {
         match self {
             Def::Anchor { where_defs, .. } => where_defs,
             Def::Local { where_defs, .. } => where_defs,
+            _ => &[],
         }
+    }
+
+    /// Whether this definition is a type declaration (`data`, `type`,
+    /// `newtype`, `typeclass`, `instance`) rather than a signal expression
+    /// definition. Declaration variants carry no inferable body — the
+    /// inference/lowering pipeline skips them via this flag.
+    pub fn is_decl(&self) -> bool {
+        matches!(
+            self,
+            Def::Data { .. }
+                | Def::Sum { .. }
+                | Def::TypeAlias { .. }
+                | Def::Newtype { .. }
+                | Def::Typeclass { .. }
+                | Def::Instance { .. }
+        )
     }
 }
 

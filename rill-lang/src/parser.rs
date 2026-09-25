@@ -173,6 +173,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_top_def(&mut self) -> Result<Def, CompileError> {
+        let t = self.peek().clone();
+        match t.tok {
+            Tok::KwData => return self.parse_data_def(),
+            Tok::KwType => return self.parse_type_alias_def(),
+            Tok::KwNewtype => return self.parse_newtype_def(),
+            Tok::KwTypeclass => return self.parse_typeclass_def(),
+            Tok::KwInstance => return self.parse_instance_def(),
+            _ => {}
+        }
         let start = self.peek().span.start;
         let name = match &self.peek().tok {
             Tok::Ident(n) => {
@@ -231,6 +240,127 @@ impl<'a> Parser<'a> {
 
     fn parse_def(&mut self) -> Result<Def, CompileError> {
         self.parse_top_def()
+    }
+
+    /// `data Name = ...` — product or sum type declaration.
+    fn parse_data_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.bump().span.start;
+        let (name, _) = self.expect_ident()?;
+        self.eat(&Tok::Eq)?;
+        if self.peek().tok == Tok::LBrace {
+            // product: { f1: T1, f2: T2 }
+            self.bump();
+            let mut fields = Vec::new();
+            while self.peek().tok != Tok::RBrace {
+                let (fname, _) = self.expect_ident()?;
+                self.eat(&Tok::Colon)?;
+                let (tname, _) = self.expect_ident()?;
+                fields.push((fname, tname));
+                if self.peek().tok == Tok::Comma {
+                    self.bump();
+                }
+            }
+            self.eat(&Tok::RBrace)?;
+            Ok(Def::Data {
+                name,
+                fields,
+                span: self.span_from(start),
+            })
+        } else {
+            // sum: C1 T1 | C2 T2 T3
+            let mut ctors = Vec::new();
+            while self.peek().tok != Tok::Semi && self.peek().tok != Tok::Eof {
+                let (cname, _) = self.expect_ident()?;
+                let mut payload = Vec::new();
+                while let Tok::Ident(_) = self.peek().tok {
+                    let (tname, _) = self.expect_ident()?;
+                    payload.push(tname);
+                }
+                ctors.push((cname, payload));
+                if self.peek().tok == Tok::Pipe {
+                    self.bump();
+                }
+            }
+            Ok(Def::Sum {
+                name,
+                ctors,
+                span: self.span_from(start),
+            })
+        }
+    }
+
+    /// `type Name = T` — synonym (pure substitution).
+    fn parse_type_alias_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.bump().span.start;
+        let (name, _) = self.expect_ident()?;
+        self.eat(&Tok::Eq)?;
+        let (target, _) = self.expect_ident()?;
+        Ok(Def::TypeAlias {
+            name,
+            target,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `newtype Name = T` — distinct wrapper.
+    fn parse_newtype_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.bump().span.start;
+        let (name, _) = self.expect_ident()?;
+        self.eat(&Tok::Eq)?;
+        let (target, _) = self.expect_ident()?;
+        Ok(Def::Newtype {
+            name,
+            target,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `typeclass C a where { m: sig; }` — method dictionary.
+    fn parse_typeclass_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.bump().span.start;
+        let (name, _) = self.expect_ident()?;
+        let (var, _) = self.expect_ident()?;
+        self.eat(&Tok::KwWhere)?;
+        self.eat(&Tok::LBrace)?;
+        let mut methods = Vec::new();
+        while self.peek().tok != Tok::RBrace {
+            let (mname, _) = self.expect_ident()?;
+            self.eat(&Tok::Colon)?;
+            let (sig, _) = self.expect_ident()?;
+            methods.push((mname, sig));
+            self.eat(&Tok::Semi)?;
+        }
+        self.eat(&Tok::RBrace)?;
+        Ok(Def::Typeclass {
+            name,
+            var,
+            methods,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `instance C T where { m = body; }` — concrete instance.
+    fn parse_instance_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.bump().span.start;
+        let (class, _) = self.expect_ident()?;
+        let (ty, _) = self.expect_ident()?;
+        self.eat(&Tok::KwWhere)?;
+        self.eat(&Tok::LBrace)?;
+        let mut method_bodies = Vec::new();
+        while self.peek().tok != Tok::RBrace {
+            let (mname, _) = self.expect_ident()?;
+            self.eat(&Tok::Eq)?;
+            let body = self.parse_expr(0, true)?;
+            method_bodies.push((mname, body));
+            self.eat(&Tok::Semi)?;
+        }
+        self.eat(&Tok::RBrace)?;
+        Ok(Def::Instance {
+            class,
+            ty,
+            method_bodies,
+            span: self.span_from(start),
+        })
     }
 
     fn parse_where_block(&mut self) -> Result<Vec<Def>, CompileError> {
@@ -359,9 +489,42 @@ impl<'a> Parser<'a> {
                 let span = t.span.merge(inner.span());
                 Ok(Expr::Neg(Box::new(inner), span))
             }
-            Tok::Ident(name) => {
+            Tok::KwMatch => {
                 self.bump();
-                if is_atom_start(&self.peek().tok) {
+                let scrutinee = self.parse_expr(0, false)?;
+                self.eat(&Tok::KwOf)?;
+                self.eat(&Tok::LBrace)?;
+                let mut arms = Vec::new();
+                while self.peek().tok != Tok::RBrace {
+                    let (ctor, _) = self.expect_ident()?;
+                    let mut params = Vec::new();
+                    while let Tok::Ident(_) = self.peek().tok {
+                        let (pname, pspan) = self.expect_ident()?;
+                        params.push(Param {
+                            name: pname,
+                            span: pspan,
+                        });
+                    }
+                    self.eat(&Tok::FatArrow)?;
+                    let body = self.parse_expr(0, true)?;
+                    arms.push((ctor, params, body));
+                    if self.peek().tok == Tok::Semi {
+                        self.bump();
+                    }
+                }
+                self.eat(&Tok::RBrace)?;
+                Ok(Expr::Match {
+                    scrutinee: Box::new(scrutinee),
+                    arms,
+                    span: t.span,
+                })
+            }
+            Tok::Ident(name) => {
+                let start = t.span.start;
+                self.bump();
+                if self.peek().tok == Tok::Dot {
+                    self.parse_field(Expr::Ref(name, t.span), start)
+                } else if is_atom_start(&self.peek().tok) {
                     let mut args = Vec::new();
                     while is_atom_start(&self.peek().tok) {
                         args.push(self.parse_atom()?);
@@ -373,6 +536,29 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => self.parse_atom(),
+        }
+    }
+
+    /// Parse a `.field` or `.field := value` postfix after a leading record
+    /// expression. `self.peek()` must be the `.` token.
+    fn parse_field(&mut self, record: Expr, start: usize) -> Result<Expr, CompileError> {
+        self.bump();
+        let (field, _) = self.expect_ident()?;
+        if self.peek().tok == Tok::ColonEq {
+            self.bump();
+            let value = self.parse_expr(0, false)?;
+            Ok(Expr::FieldUpdate {
+                record: Box::new(record),
+                field,
+                value: Box::new(value),
+                span: self.span_from(start),
+            })
+        } else {
+            Ok(Expr::FieldProject {
+                record: Box::new(record),
+                field,
+                span: self.span_from(start),
+            })
         }
     }
 
@@ -436,7 +622,13 @@ impl<'a> Parser<'a> {
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
             Tok::Slash => Ok(Expr::Ref("/".into(), t.span)),
             Tok::Percent => Ok(Expr::Ref("%".into(), t.span)),
-            Tok::Ident(name) => Ok(Expr::Ref(name, t.span)),
+            Tok::Ident(name) => {
+                if self.peek().tok == Tok::Dot {
+                    self.parse_field(Expr::Ref(name, t.span), t.span.start)
+                } else {
+                    Ok(Expr::Ref(name, t.span))
+                }
+            }
             Tok::LParen => {
                 let inner = self.parse_expr(0, false)?;
                 self.eat(&Tok::RParen)?;
@@ -844,5 +1036,74 @@ mod tests {
         is_complex(&body("main = -3.0 + 4.0i"), -3.0, 4.0);
         is_complex(&body("main = -1.0 - 2.0i"), -1.0, -2.0);
         is_complex(&body("main = -5 + 7i"), -5.0, 7.0);
+    }
+
+    #[test]
+    fn parses_data_record_declaration() {
+        let p = prog("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }");
+        assert!(p.defs.iter().any(|d| matches!(d, Def::Data { .. })));
+    }
+
+    #[test]
+    fn parses_data_sum_declaration() {
+        let p = prog("data Shape = Circle Float | Rect Float Float; main = Circle 1.0");
+        assert!(p.defs.iter().any(|d| matches!(d, Def::Sum { .. })));
+    }
+
+    #[test]
+    fn parses_type_and_newtype() {
+        let p = prog("type Angles = Float; newtype Hz = Float; main = Hz 440.0");
+        assert!(p.defs.iter().any(|d| matches!(d, Def::TypeAlias { .. })));
+        assert!(p.defs.iter().any(|d| matches!(d, Def::Newtype { .. })));
+    }
+
+    #[test]
+    fn parses_typeclass_declaration() {
+        let p = prog("typeclass Envelope a where { slope: a; }; main = _");
+        assert!(p.defs.iter().any(|d| matches!(d, Def::Typeclass { .. })));
+    }
+
+    #[test]
+    fn parses_instance_declaration() {
+        let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
+        assert!(p.defs.iter().any(|d| matches!(d, Def::Instance { .. })));
+    }
+
+    #[test]
+    fn parses_match_expression() {
+        let p = prog("area x = match x of { Circle r => r; Rect w h => w; }; main = area");
+        let area = p.defs.iter().find(|d| d.name() == "area").unwrap();
+        assert!(matches!(area.body(), Expr::Match { .. }));
+    }
+
+    #[test]
+    fn parses_field_projection() {
+        let p = prog("main = p.x");
+        assert!(matches!(
+            p.main_def().unwrap().body(),
+            Expr::FieldProject { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_field_update() {
+        let p = prog("main = p.x := 1.0");
+        assert!(matches!(
+            p.main_def().unwrap().body(),
+            Expr::FieldUpdate { .. }
+        ));
+    }
+
+    #[test]
+    fn parses_field_access_as_argument() {
+        let p = prog("main = f p.x");
+        match p.main_def().unwrap().body() {
+            Expr::Apply { name, args, .. } => {
+                assert_eq!(name, "f");
+                assert_eq!(args.len(), 1);
+                assert!(matches!(&args[0], Expr::FieldProject { .. }));
+            }
+            other => panic!("expected Apply, got {other:?}"),
+        }
     }
 }

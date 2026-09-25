@@ -402,6 +402,18 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok(vec![dst])
             }
+            Expr::FieldProject { span, .. } => Err(CompileError::Type {
+                msg: "field projection is not yet supported by lowering".into(),
+                span: *span,
+            }),
+            Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
+                msg: "field update is not yet supported by lowering".into(),
+                span: *span,
+            }),
+            Expr::Match { span, .. } => Err(CompileError::Type {
+                msg: "match expressions are not yet supported by lowering".into(),
+                span: *span,
+            }),
         }
     }
 
@@ -602,6 +614,10 @@ impl<'a> Lowerer<'a> {
                 }
                 self.lower(body, args)
             }
+            _ => Err(CompileError::Type {
+                msg: format!("`{name}` is a type declaration, not a signal definition"),
+                span: _span,
+            }),
         }
     }
 
@@ -867,7 +883,10 @@ impl<'a> Lowerer<'a> {
                     if let Some(sig) = self.sigs.builtin_sig(name) {
                         (sig.signal_ins(), sig.signal_outs)
                     } else if let Some(def) = self.defs.get(name) {
-                        if visited.contains(name) {
+                        if def.is_decl() {
+                            // Type declarations have no signal arity.
+                            (0, 1)
+                        } else if visited.contains(name) {
                             (0, 1)
                         } else {
                             visited.insert(name.clone());
@@ -925,6 +944,9 @@ impl<'a> Lowerer<'a> {
             Expr::Let { body, .. } => self.arity_with(body, visited)?,
             Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
             Expr::ActorParam { .. } => (0, 1),
+            Expr::FieldProject { record, .. } => self.arity_with(record, visited)?,
+            Expr::FieldUpdate { value, .. } => self.arity_with(value, visited)?,
+            Expr::Match { scrutinee, .. } => self.arity_with(scrutinee, visited)?,
         })
     }
 }

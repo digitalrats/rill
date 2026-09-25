@@ -48,6 +48,57 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
             write!(buf, "{pad}{name} = ").ok();
             render_expr(body, buf, 0);
         }
+        Def::Data { name, fields, .. } => {
+            write!(buf, "{pad}data {name} = {{ ").ok();
+            for (i, (fname, tname)) in fields.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, ", ").ok();
+                }
+                write!(buf, "{fname}: {tname}").ok();
+            }
+            write!(buf, " }}").ok();
+        }
+        Def::Sum { name, ctors, .. } => {
+            write!(buf, "{pad}data {name} = ").ok();
+            for (i, (cname, payload)) in ctors.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, " | ").ok();
+                }
+                write!(buf, "{cname}").ok();
+                for tname in payload {
+                    write!(buf, " {tname}").ok();
+                }
+            }
+        }
+        Def::TypeAlias { name, target, .. } => {
+            write!(buf, "{pad}type {name} = {target}").ok();
+        }
+        Def::Newtype { name, target, .. } => {
+            write!(buf, "{pad}newtype {name} = {target}").ok();
+        }
+        Def::Typeclass {
+            name, var, methods, ..
+        } => {
+            write!(buf, "{pad}typeclass {name} {var} where {{ ").ok();
+            for (mname, sig) in methods {
+                write!(buf, "{mname}: {sig}; ").ok();
+            }
+            write!(buf, "}}").ok();
+        }
+        Def::Instance {
+            class,
+            ty,
+            method_bodies,
+            ..
+        } => {
+            write!(buf, "{pad}instance {class} {ty} where {{ ").ok();
+            for (mname, body) in method_bodies {
+                write!(buf, "{mname} = ").ok();
+                render_expr(body, buf, 0);
+                write!(buf, "; ").ok();
+            }
+            write!(buf, "}}").ok();
+        }
     }
 }
 
@@ -130,6 +181,37 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                 write!(buf, "=").ok();
                 render_expr(d, buf, 0);
             }
+        }
+        Expr::FieldProject { record, field, .. } => {
+            render_expr(record, buf, 20);
+            write!(buf, ".{field}").ok();
+        }
+        Expr::FieldUpdate {
+            record,
+            field,
+            value,
+            ..
+        } => {
+            render_expr(record, buf, 20);
+            write!(buf, ".{field} := ").ok();
+            render_expr(value, buf, 0);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            write!(buf, "match ").ok();
+            render_expr(scrutinee, buf, 0);
+            write!(buf, " of {{ ").ok();
+            for (ctor, params, body) in arms {
+                write!(buf, "{ctor}").ok();
+                for p in params {
+                    write!(buf, " {}", p.name).ok();
+                }
+                write!(buf, " => ").ok();
+                render_expr(body, buf, 0);
+                write!(buf, "; ").ok();
+            }
+            write!(buf, "}}").ok();
         }
     }
 }
