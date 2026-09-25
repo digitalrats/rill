@@ -679,6 +679,12 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
             }
         }
     }
+    if ctx.newtypes.contains_key(name) {
+        return Err(CompileError::Type {
+            msg: format!("newtype constructor `{name}` requires one argument"),
+            span,
+        });
+    }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {
         // A bare constructor must be applied to its payload. If the ctor name
@@ -847,6 +853,22 @@ fn infer_apply(
                 });
             }
         }
+    }
+    // Newtype constructor: `Hz 440.0` wraps its single argument in the wrapper.
+    if let Some(inner_name) = ctx.newtypes.get(name).cloned() {
+        if args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "newtype constructor `{name}` expects 1 argument, got {}",
+                    args.len()
+                ),
+                span,
+            });
+        }
+        let vt = infer_const_value(ctx, &args[0])?;
+        let inner = type_name_to_vty(ctx, &inner_name);
+        unify_value(&vt, &inner, &mut ctx.subst, args[0].span())?;
+        return Ok(ArrowTy::value_channel(ValueTy::Newtype(name.to_string())));
     }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {

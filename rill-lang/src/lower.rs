@@ -22,16 +22,93 @@ enum DataInfo {
     Sum(Vec<(String, Vec<ValueTy>)>),
 }
 
-/// Map a DSL type name in a `data` declaration to its value type. v1 covers
-/// `Float`/`Int` payloads and other data types; newtypes arrive in a later task.
-fn vty_of_type_name(t: &str) -> ValueTy {
-    match t {
+/// Map a DSL type name in a `data` declaration to its value type, following
+/// type synonyms (`type A = B`) and newtype wrappers (mirrors
+/// `types::infer::type_name_to_vty` so the lowering mirror stays consistent
+/// with inference).
+fn vty_of_type_name(
+    aliases: &HashMap<String, String>,
+    newtypes: &HashMap<String, String>,
+    t: &str,
+) -> ValueTy {
+    let mut cur = t.to_string();
+    for _ in 0..=aliases.len() {
+        match aliases.get(&cur) {
+            Some(target) => cur = target.clone(),
+            None => break,
+        }
+    }
+    match cur.as_str() {
         "Float" => ValueTy::Float,
         "Int" => ValueTy::Int,
-        name => ValueTy::Data(name.to_string()),
+        name => {
+            if newtypes.contains_key(name) {
+                ValueTy::Newtype(name.to_string())
+            } else {
+                ValueTy::Data(name.to_string())
+            }
+        }
     }
 }
 
+/// Re-derive the data-type environment from the AST's declarations. Declarations
+/// are pure (no recursion), so this is safe to build once at lowering start.
+fn build_data_types(
+    program: &Program,
+    aliases: &HashMap<String, String>,
+    newtypes: &HashMap<String, String>,
+) -> HashMap<String, DataInfo> {
+    let mut m = HashMap::new();
+    for def in &program.defs {
+        match def {
+            Def::Data { name, fields, .. } => {
+                let fields_ty = fields
+                    .iter()
+                    .map(|(f, t)| (f.clone(), vty_of_type_name(aliases, newtypes, t)))
+                    .collect();
+                m.insert(name.clone(), DataInfo::Record(fields_ty));
+            }
+            Def::Sum { name, ctors, .. } => {
+                let ctors_ty = ctors
+                    .iter()
+                    .map(|(c, ts)| {
+                        (
+                            c.clone(),
+                            ts.iter()
+                                .map(|t| vty_of_type_name(aliases, newtypes, t))
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                m.insert(name.clone(), DataInfo::Sum(ctors_ty));
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
+/// Type synonyms (alias name → target) declared in the program.
+fn build_type_aliases(program: &Program) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    for def in &program.defs {
+        if let Def::TypeAlias { name, target, .. } = def {
+            m.insert(name.clone(), target.clone());
+        }
+    }
+    m
+}
+
+/// Newtype wrappers (wrapper name → inner type name) declared in the program.
+fn build_newtypes(program: &Program) -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    for def in &program.defs {
+        if let Def::Newtype { name, target, .. } = def {
+            m.insert(name.clone(), target.clone());
+        }
+    }
+    m
+}
 /// Whether a value instruction allocates a fresh arena slot when executed.
 ///
 /// Drives the v1 `ValueLayout::capacity` heuristic: value registers are per-tick
@@ -54,32 +131,6 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueStateRead { .. }
             | ValueInstr::ValueUpdateField { .. }
     )
-}
-
-/// Re-derive the data-type environment from the AST's declarations. Declarations
-/// are pure (no recursion), so this is safe to build once at lowering start.
-fn build_data_types(program: &Program) -> HashMap<String, DataInfo> {
-    let mut m = HashMap::new();
-    for def in &program.defs {
-        match def {
-            Def::Data { name, fields, .. } => {
-                let fields_ty = fields
-                    .iter()
-                    .map(|(f, t)| (f.clone(), vty_of_type_name(t)))
-                    .collect();
-                m.insert(name.clone(), DataInfo::Record(fields_ty));
-            }
-            Def::Sum { name, ctors, .. } => {
-                let ctors_ty = ctors
-                    .iter()
-                    .map(|(c, ts)| (c.clone(), ts.iter().map(|t| vty_of_type_name(t)).collect()))
-                    .collect();
-                m.insert(name.clone(), DataInfo::Sum(ctors_ty));
-            }
-            _ => {}
-        }
-    }
-    m
 }
 
 struct Lowerer<'a> {
@@ -109,6 +160,9 @@ struct Lowerer<'a> {
     value_locals: Vec<HashMap<String, (usize, ValueTy)>>,
     /// Data-type environment mirror (field/ctor shapes) for value lowering.
     data_types: HashMap<String, DataInfo>,
+    /// Newtype wrappers mirror (wrapper name → inner type name) for the
+    /// newtype-constructor lowering path.
+    newtypes: HashMap<String, String>,
     /// Recursion guard while inlining value definitions.
     value_inline: HashSet<String>,
 }
@@ -414,6 +468,22 @@ impl<'a> Lowerer<'a> {
                     });
                     return Ok((dst, ValueTy::Data(sum_name)));
                 }
+                // Newtype constructor: `Hz 440.0` wraps its single argument.
+                if self.newtypes.contains_key(name) {
+                    if call_args.len() != 1 {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "newtype constructor `{name}` expects 1 argument, got {}",
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    let (src, _) = self.lower_value(&call_args[0])?;
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueNewtype { dst, src });
+                    return Ok((dst, ValueTy::Newtype(name.clone())));
+                }
                 Err(CompileError::Type {
                     msg: format!("`{name}` is not a value constructor in v1"),
                     span: *span,
@@ -441,6 +511,12 @@ impl<'a> Lowerer<'a> {
         if self.data_types.contains_key(name) {
             return Err(CompileError::Type {
                 msg: format!("`{name}` is a data type, not a value"),
+                span,
+            });
+        }
+        if self.newtypes.contains_key(name) {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` is a newtype; use its constructor `{name} <value>`"),
                 span,
             });
         }
@@ -1571,6 +1647,8 @@ pub fn lower_with_cafs(
     }
 
     let num_inputs = tp.process_ty.arity_in();
+    let type_aliases = build_type_aliases(&tp.program);
+    let newtypes = build_newtypes(&tp.program);
     let mut lw = Lowerer {
         defs,
         sigs,
@@ -1590,7 +1668,8 @@ pub fn lower_with_cafs(
         next_value_reg: 0,
         value_regs_out: Vec::new(),
         value_locals: Vec::new(),
-        data_types: build_data_types(program),
+        data_types: build_data_types(&tp.program, &type_aliases, &newtypes),
+        newtypes,
         value_inline: HashSet::new(),
     };
 
@@ -1963,6 +2042,26 @@ mod tests {
             .value_instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueProject { .. })));
+    }
+
+    #[test]
+    fn newtype_construct_lowers_to_value_newtype() {
+        let ir = ir_of("newtype Hz = Float; main = Hz 440.0");
+        assert!(ir
+            .value_instrs
+            .iter()
+            .any(|i| matches!(i, ValueInstr::ValueNewtype { .. })));
+    }
+
+    #[test]
+    fn newtype_bare_ref_is_compile_error() {
+        // `Hz` alone is not a value — the constructor requires its argument.
+        let p = parse(
+            &tokenize("newtype Hz = Float; main = Hz").unwrap(),
+            "newtype Hz = Float; main = Hz".as_bytes(),
+        )
+        .unwrap();
+        assert!(infer_program(&p).is_err());
     }
 
     #[test]
