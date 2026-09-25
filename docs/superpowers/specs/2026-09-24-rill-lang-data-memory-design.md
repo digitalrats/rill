@@ -304,6 +304,30 @@ source → lexer → parser → AST (data/type/newtype/typeclass/instance/method
 - Typeclass runtime dispatch (dictionaries as values).
 - Sum-type `:>` merge.
 
+## 9.1 Follow-on: `strict` / `complete` compiler modes (RT contract)
+
+Hard-RT forbids heap allocation and cannot tolerate reference cycles (RC
+leaks cycles). The current design documents RT-path allocation as a v1 trade-off
+(arena pre-allocation, per-tick value-track Vecs). A follow-on stage introduces
+module-level compiler modifiers (Haskell-style pragma) `strict` and `complete`:
+
+- **`strict` mode** — the compiler must **prove at compile time** that the
+  program is safe for the hard-RT path:
+  1. **Acyclicity** — the value graph is acyclic by construction (recursive or
+     self-referential record/loop constructs are rejected), even at the cost of
+     Turing completeness. With no cycles, RC is sound.
+  2. **Zero allocations** — the arena never exhausts: capacity is derived
+     statically from the IR (a fixed bound on simultaneously-live slots), and
+     value flow is restricted to direct propagation (compile-time folding) plus
+     lazy capture of actor-arriving values (`SetParameter` → cells — the current
+     behavior). No dynamic growth, no runtime allocation.
+- **`complete` mode** — full generality: cycles and runtime allocation allowed
+  (requires cycle detection / GC or arena growth).
+
+The current arena+RC+COW implementation is the foundation for `strict`: static
+capacity computation from the IR and a compile-time acyclicity check are the
+`strict` contract. Not implemented in this stage; recorded as a decision.
+
 ## 10. Implementation phases
 
 | # | Phase | Scope |
