@@ -254,6 +254,12 @@ impl TypeEnv {
         ]
         .into_iter()
         .collect();
+        // NOTE: the `Var(1)`/`Var(2)` ids below are NOT unification variables —
+        // they are placeholder parameter positions inside the builtin type
+        // shapes (`Maybe a`, `Pair a b`, `Either a b`). They collide with the
+        // live inference var space (`Ctx::next` counts from 0), so any Phase
+        // 7/8 consumer that resolves these shapes MUST instantiate them with
+        // fresh ids before unifying against a live `Subst`.
         let data_types = HashMap::from([
             (
                 "Maybe".to_string(),
