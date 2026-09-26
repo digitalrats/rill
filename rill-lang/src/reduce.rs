@@ -234,6 +234,17 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                         args: reduced_args,
                         span: *span,
                     }
+                } else if reduced_args.len() < def.params().len() {
+                    // Partial application (`add5 = add2 5.0` where `add2` takes
+                    // two λ-params) is a RUNTIME dispatch over a closure value:
+                    // keep the Apply so lowering emits a curry closure.
+                    // β-reducing it would substitute the applied args and leave
+                    // the remaining parameters dangling in the body.
+                    Expr::Apply {
+                        name: name.clone(),
+                        args: reduced_args,
+                        span: *span,
+                    }
                 } else {
                     // β-reduce: substitute args for params in the definition's body
                     let np = def.params().len();

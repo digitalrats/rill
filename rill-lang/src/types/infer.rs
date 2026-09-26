@@ -1379,7 +1379,53 @@ fn infer_apply(
                         )
                 });
                 if apply_by_signature {
-                    if args.len() != arg_tys.len() {
+                    // Signal-wire application: a trailing `_` wire argument binds
+                    // to the callee's LAST parameter as a signal input (positional
+                    // wire-capture at the call site, zero-copy block register).
+                    // The leading args are value args unified against the leading
+                    // parameter types; the trailing wire contributes one signal
+                    // input. The lambda's body compiles on the block track with
+                    // the wire bound to a block register. v1 contract: exactly
+                    // one trailing wire, and it must exactly complete the value
+                    // arity (`amp 2.0 _`; `amp _` or `amp2 0.5 _` are rejected).
+                    if let Some(Expr::Wire(_)) = args.last() {
+                        let value_args = &args[..args.len() - 1];
+                        if value_args.len() + 1 != arg_tys.len() {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "`{name}` expects {} value argument(s) plus one signal wire, \
+                                     got {} value argument(s) and a wire",
+                                    arg_tys.len() - 1,
+                                    value_args.len()
+                                ),
+                                span,
+                            });
+                        }
+                        for (a, pty) in value_args.iter().zip(arg_tys.iter()) {
+                            let vt = infer_method_value_vty(ctx, a, "argument")?;
+                            unify_value(&vt, pty, &mut ctx.subst, a.span())?;
+                        }
+                        let result_scalar = match ret_tys.first() {
+                            Some(ValueTy::Int) => Scalar::Int,
+                            _ => Scalar::Float,
+                        };
+                        return Ok(ArrowTy::uniform(1, 1, result_scalar));
+                    }
+                    // Partial application (currying): fewer args than the
+                    // signature produce a function over the remaining parameters.
+                    // `add3 = add 3.0` types as `Func([Float], [Float])`.
+                    if args.len() < arg_tys.len() {
+                        for (a, pty) in args.iter().zip(arg_tys.iter()) {
+                            let vt = infer_method_value_vty(ctx, a, "argument")?;
+                            unify_value(&vt, pty, &mut ctx.subst, a.span())?;
+                        }
+                        let remaining: Vec<ValueTy> = arg_tys[args.len()..].to_vec();
+                        return Ok(ArrowTy::value_channel(ValueTy::Func(
+                            remaining,
+                            ret_tys.clone(),
+                        )));
+                    }
+                    if args.len() > arg_tys.len() {
                         return Err(CompileError::Type {
                             msg: format!(
                                 "`{name}` expects {} argument(s), got {}",
@@ -1416,6 +1462,22 @@ fn infer_apply(
             }
         }
         if args.len() != scheme.lam_count {
+            // Partial application of a named definition (`add5 = add2 5.0` where
+            // `add2` takes two λ-params): the remaining λ-params become the
+            // value arguments of a first-class function value. The applied args
+            // must be value scalars, unified against Float (v1 λ-params are
+            // Float-typed).
+            if args.len() < scheme.lam_count {
+                let remaining = scheme.lam_count - args.len();
+                for a in args {
+                    let vt = infer_const_value(ctx, a)?;
+                    unify_value(&vt, &ValueTy::Float, &mut ctx.subst, a.span())?;
+                }
+                return Ok(ArrowTy::value_channel(ValueTy::Func(
+                    vec![ValueTy::Float; remaining],
+                    vec![ValueTy::Float],
+                )));
+            }
             return Err(CompileError::Type {
                 msg: format!(
                     "`{name}` expects {} argument(s), got {}",
@@ -2155,5 +2217,40 @@ mod tests {
             }
             other => panic!("expected Func type, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn partial_application_types_as_remaining_func() {
+        // add3 = add 3.0 (partial application of a two-arg lambda) types as
+        // Func([Float], [Float]); fully applying it yields a Float.
+        let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3").unwrap();
+        assert_eq!(
+            t.process_ty.outs[0].vty,
+            ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float])
+        );
+        let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+    }
+
+    #[test]
+    fn named_def_partial_application_types_as_func() {
+        // add5 = add2 5.0 (partial application of a named def) types as
+        // Func([Float], [Float]).
+        let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+    }
+
+    #[test]
+    fn signal_wire_application_types_as_signal() {
+        // amp = fn g x -> x * g; main = amp 2.0 _  -> the trailing wire is a
+        // signal input; the result is a 1->1 signal channel.
+        let t = ty_of("amp = fn g x -> x * g; main = amp 2.0 _").unwrap();
+        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert_eq!(t.process_ty.outs[0].rate, Rate::Signal);
+        // A wire application that does not exactly complete the value arity is
+        // rejected (`amp _` is missing the value gain).
+        assert!(ty_of("amp = fn g x -> x * g; main = amp _").is_err());
     }
 }

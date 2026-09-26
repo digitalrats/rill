@@ -112,11 +112,11 @@ fn direct_bare_ref_produces_func_value() {
 }
 
 #[test]
-fn named_ref_closure_does_not_alias_lambda_fragment() {
-    // A bare named reference (`f = double`) has no compiled fragment body in
-    // v1, so its `Value::Closure` must NOT alias a real lambda fragment (index
-    // 0 is the first lambda body when one is present). Dispatch of a
-    // named-ref closure is a safe no-op returning `None`.
+fn named_ref_closure_references_real_fragment() {
+    // A bare named reference (`f = double`) compiles `double`'s body into a
+    // REAL fragment (Task 5: anchor bodies compile to fragments so named-def
+    // currying works). The closure must NOT reference the old
+    // `usize::MAX` sentinel no-op fragment.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -124,8 +124,9 @@ fn named_ref_closure_does_not_alias_lambda_fragment() {
     match prog.arena().get(v).unwrap() {
         &rill_lang::arena::Value::Closure(_, frag) => {
             assert_ne!(
-                frag, 0,
-                "named-ref closure must not alias lambda fragment 0"
+                frag,
+                u32::MAX,
+                "named-ref closure must reference a real fragment, not the sentinel no-op"
             );
         }
         other => panic!("expected Closure value, got {other:?}"),
