@@ -58,3 +58,25 @@ fn nested_capture_produces_constant_output() {
     // later task), not a silent wrong value.
     assert!(compile::<f32>("addn = fn n -> fn x -> x + n; main = addn 3.0 4.0").is_err());
 }
+
+#[test]
+fn closure_call_does_not_leak_across_ticks() {
+    // Repeated dispatch must not exhaust the fixed arena: every `ValueCallFunc`
+    // allocates fragment-local scratch registers (value args + body temps) that
+    // hold counted arena refs. If `run_fragment` removes those slots without
+    // dropping the refs, each tick leaks a few slots and a long-running
+    // program panics with "value arena capacity exhausted". Run 20+ ticks.
+    let mut prog =
+        compile::<f32>("adder = fn n -> fn x -> x + n; add2 = adder 2.0; main = add2 3.0").unwrap();
+    let mut out = [0.0f32; 4];
+    for _ in 0..20 {
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    }
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(5.0)
+    );
+    // Arena live count must not grow unboundedly across ticks.
+    assert!(prog.arena().live() < 32);
+}

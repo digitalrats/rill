@@ -42,6 +42,14 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
     )
 }
 
+/// Sentinel fragment id for v1 named-reference closures (`f = double`): a bare
+/// reference to a definition with λ-parameters has no compiled fragment body in
+/// v1, so its `Value::Closure` must never alias a real lambda fragment.
+/// `ValueCallFunc` treats an out-of-range fragment id as a no-op (an unbound
+/// result), so dispatching such a closure is structurally safe. Task 5/6 will
+/// compile anchor bodies to real fragments and drop the sentinel.
+const ANCHOR_REF_SENTINEL_FRAGMENT: usize = usize::MAX;
+
 struct Lowerer<'a> {
     defs: HashMap<String, Def>,
     sigs: &'a dyn SignatureSource,
@@ -646,17 +654,21 @@ impl<'a> Lowerer<'a> {
                 // value position is a first-class function value: allocate a
                 // `Value::Closure` referencing a fragment body. (Calls to it
                 // are β-reduced at compile time in v1, so no dispatch
-                // instruction is emitted — see `ValueMakeClosure`.) Real
-                // fragment bodies for definitions land with lambda literals
-                // (Task 4); v1 named references use the dummy env Void cell and
-                // fragment id 0, and are never dispatched at runtime.
+                // instruction is emitted — see `ValueMakeClosure`.) Named
+                // references use the dummy env Void cell and the sentinel
+                // fragment id [`ANCHOR_REF_SENTINEL_FRAGMENT`] — a real lambda
+                // body produces a real fragment, so hard-coding fragment 0
+                // would alias the first lambda's body if the closure ever
+                // reached dispatch. Dispatch of the sentinel is a safe no-op
+                // (`ValueCallFunc` treats an out-of-range id as an unbound
+                // result).
                 let env_reg = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueBindCell { dst: env_reg });
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
                     dst,
                     env: env_reg,
-                    fragment: 0,
+                    fragment: ANCHOR_REF_SENTINEL_FRAGMENT,
                 });
                 // A bare named ref has an unknown signature in v1; real
                 // signatures land with lambda literals.
@@ -700,7 +712,15 @@ impl<'a> Lowerer<'a> {
             | Expr::Wire(_)
             | Expr::Cut(_) => {}
             Expr::Neg(inner, _) => self.free_vars_impl(inner, bound, out, seen),
-            Expr::Apply { args, .. } => {
+            Expr::Apply { name, args, .. } => {
+                // The applied callee is a reference too: `fn x -> f x` applies
+                // a closure `f` from an enclosing scope, and the name is a free
+                // variable even though it only appears in callee position
+                // (without this, the env snapshot would miss it and lowering
+                // would report "unknown `f` in value lowering").
+                if !bound.contains(name) && seen.insert(name.clone()) {
+                    out.push(name.clone());
+                }
                 for a in args {
                     self.free_vars_impl(a, bound, out, seen);
                 }
@@ -2245,6 +2265,74 @@ mod tests {
             type_env: typed.type_env.clone(),
         };
         lower_with_cafs(&tp, &TestSigs, 44_100.0, &tp.cafs).unwrap()
+    }
+
+    /// Build a `Lowerer` for testing lowering helpers (`free_vars`) directly on
+    /// a parsed AST, bypassing inference (which rejects higher-order programs
+    /// that `free_vars` must still handle correctly).
+    fn lw<'a>(env: &'a TypeEnv, cafs: &'a HashSet<String>) -> Lowerer<'a> {
+        Lowerer {
+            defs: HashMap::new(),
+            sigs: &TestSigs,
+            cafs,
+            caf_cache: HashMap::new(),
+            caf_lifting: HashSet::new(),
+            instrs: Vec::new(),
+            next_reg: 0,
+            block_state_slots: 0,
+            delay_lens: Vec::new(),
+            locals: Vec::new(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            param_names: HashMap::new(),
+            main_cell_locals: HashMap::new(),
+            sample_rate: 44_100.0,
+            value_instrs: Vec::new(),
+            next_value_reg: 0,
+            value_regs_out: Vec::new(),
+            value_out_tys: Vec::new(),
+            value_funcs: Vec::new(),
+            value_locals: Vec::new(),
+            env,
+            value_inline: HashSet::new(),
+            method_lifting: HashSet::new(),
+            fragments: Vec::new(),
+            fragment_captures: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn free_vars_walks_apply_callee() {
+        // `outer = fn f -> fn x -> f x`: the inner lambda applies the closure
+        // `f` from the ENCLOSING lambda. `f` appears only as the callee NAME of
+        // an `Apply`, but it is a free variable of the body and must be
+        // captured — otherwise the env snapshot misses it and lowering reports
+        // "unknown `f` in value lowering" (Task 6 nested-HOF).
+        let p = parse(
+            &tokenize("outer = fn f -> fn x -> f x; main = 1.0").unwrap(),
+            "outer = fn f -> fn x -> f x; main = 1.0".as_bytes(),
+        )
+        .unwrap();
+        let outer = p.defs.iter().find(|d| d.name() == "outer").unwrap();
+        let Expr::Lambda { body: inner, .. } = outer.body() else {
+            panic!("outer body must be a lambda");
+        };
+        let Expr::Lambda { body: apply, .. } = inner.as_ref() else {
+            panic!("outer body must be a nested lambda");
+        };
+        let apply = apply.as_ref();
+        assert!(matches!(apply, Expr::Apply { .. }));
+
+        let env = TypeEnv::default();
+        let empty = HashSet::new();
+        let lw = lw(&env, &empty);
+        let mut bound = HashSet::new();
+        bound.insert("x".to_string());
+        assert_eq!(
+            lw.free_vars(apply, &bound),
+            vec!["f".to_string()],
+            "the applied closure name `f` must be captured as a free variable"
+        );
     }
 
     #[test]

@@ -112,6 +112,27 @@ fn direct_bare_ref_produces_func_value() {
 }
 
 #[test]
+fn named_ref_closure_does_not_alias_lambda_fragment() {
+    // A bare named reference (`f = double`) has no compiled fragment body in
+    // v1, so its `Value::Closure` must NOT alias a real lambda fragment (index
+    // 0 is the first lambda body when one is present). Dispatch of a
+    // named-ref closure is a safe no-op returning `None`.
+    let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        &rill_lang::arena::Value::Closure(_, frag) => {
+            assert_ne!(
+                frag, 0,
+                "named-ref closure must not alias lambda fragment 0"
+            );
+        }
+        other => panic!("expected Closure value, got {other:?}"),
+    }
+}
+
+#[test]
 fn value_function_with_match_body_calls_correct_arm() {
     // A value function whose body is a `match` on its value λ-parameter:
     // substitution must descend into the match arms (with arm bindings

@@ -767,9 +767,15 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
             None => None,
         };
     }
-    // 7. Truncate the scratch slice, restore the caller's capture cells, and
+    // 7. Drain the scratch slice (dropping every fragment-local register's
+    //    counted ref — value args and body temps own arena slots, so removing
+    //    the slots without `drop_ref` would leak them on EVERY call and exhaust
+    //    the fixed arena across ticks), restore the caller's capture cells, and
     //    pop the frame (releasing the capture cells' counted refs).
-    prog.value_regs.truncate(base);
+    for r in prog.value_regs.drain(base..) {
+        let Some(r) = r else { continue };
+        prog.arena.drop_ref(r);
+    }
     prog.active_fragment_cells = saved_cells;
     if let Some(frame) = prog.cell_stack.pop() {
         for (_, c) in frame {
