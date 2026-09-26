@@ -312,14 +312,39 @@ copy-on-write mutation (`p.x := 3.0`). Local variables — including `main`'s
 λ-parameters — are persistent runtime-stack cells that `SetParameter` writes
 into directly. Data types are acyclic by construction (compile-time check),
 and the arena capacity is a static bound. `typeclass` methods resolve at
-compile time (no runtime dispatch); named function references are β-inlined.
+compile time (no runtime dispatch).
+
+## First-class functions and closures
+
+Functions are first-class values: a **lambda literal** `fn p -> body` compiles
+to a `Value::Closure` (a by-value environment snapshot plus a compiled body
+fragment), and `ValueCallFunc` performs real runtime dispatch:
+
+```faust
+adder = fn n -> fn x -> x + n;   // a function returning a closure
+add2  = adder 2.0;               // partial application (currying)
+main  = add2 3.0;                // -> Float(5.0)
+
+twice  = fn f x -> f (f x);      // a higher-order combinator
+double = fn x -> x * 2.0;
+main   = twice double 3.0;       // -> Float(12.0)
+
+amp = fn g x -> x * g;           // trailing `_` is a signal-wire argument
+main = amp 2.0 _;                // input block scaled by 2.0
+```
+
+- Lambda parameters can themselves be functions (HOF), flow through records
+  and projections, and are typed structurally (`ValueTy::Func(arg_tys, ret_tys)`).
+- **Recursion is forbidden**: a definition that transitively calls itself is
+  rejected at compile time. Because calls cannot recur, the runtime call depth
+  is a static bound and the interpreter pre-allocates the dispatch register
+  frames — `ValueCallFunc` performs **no heap allocation** on the RT path.
 
 ## Status
 
 MVP. Deferred to follow-on work: the Cranelift `jit` feature, foreign references
-to existing rill DSP primitives, a SIMD-aware IR, closures (only named function
-references), runtime typeclass dispatch, and `strict`/`complete` compiler
-modes.
+to existing rill DSP primitives, a SIMD-aware IR, runtime typeclass dispatch,
+and `strict`/`complete` compiler modes.
 
 ## License
 

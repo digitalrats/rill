@@ -847,7 +847,8 @@ phase of the interpreter (the signal track stays whole-buffer SIMD).
 | `type Angles = Float` | type synonym (pure substitution) |
 | `newtype Hz = Float` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
 | `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Float where { show f = ...; }` |
-| `f = double; main = f 21.0` | named function references (β-inlined at compile time) |
+| `fn x -> x * 2.0` | first-class function (lambda literal); see below |
+| `f = double; main = f 21.0` | named function references (function values) |
 
 Value expressions: record/sum/newtype constructors, field projection `p.x`,
 COW field update `p.x := 3.0`, `match` pattern matching, and method calls.
@@ -867,25 +868,65 @@ Acyclicity is guaranteed at compile time: a `data`/`newtype` type that
 computed from the value instructions and the static subtree sizes of value
 outputs, so a well-formed program never exhausts the arena.
 
-Deferred: closures (only named function references), runtime typeclass
-dispatch (methods resolve at compile time), value-state persistence beyond
-per-tick scratch, and `strict`/`complete` compiler modes (the acyclicity and
-capacity checks above are the foundation of the `strict` contract).
+### First-class functions and closures
+
+Functions are first-class values: a **lambda literal** `fn p1 p2 -> body` is a
+function value, stored as a `Value::Closure` (a captured environment record
+plus a compiled body fragment). Closures capture their free variables **by
+value** — an environment snapshot at creation time — so
+`adder = fn n -> fn x -> x + n` binds `n` into the closure returned for `x`:
+
+```faust
+adder = fn n -> fn x -> x + n;   // a function returning a closure
+add2  = adder 2.0;               // partial application: a closure over `x`
+main  = add2 3.0;                // -> Float(5.0)
+```
+
+- **Currying** — applying fewer arguments than the signature produces a
+  closure over the remaining parameters (`add3 = add 3.0; main = add3 4.0` →
+  `Float(7.0)`). Named λ-parameter definitions curry too
+  (`add5 = add2 5.0`).
+- **Higher-order functions** — a lambda parameter can itself be a function:
+  `twice = fn f x -> f (f x); double = fn x -> x * 2.0; main = twice double 3.0`
+  → `Float(12.0)`. Function values flow through records and projections, so a
+  combinator can map over a fixed-shape container:
+  `pair_map = fn f p -> Pair { x: f p.x, y: f p.y }`.
+- **Signal-wire arguments** — a trailing `_` wire binds to the callee's LAST
+  parameter as a signal input: `amp = fn g x -> x * g; main = amp 2.0 _`
+  scales the input block by `2.0` (positional wire-capture at the call site).
+- **Recursion is forbidden** — the acyclic contract requires every dispatch
+  chain to terminate: a definition that (transitively) calls itself is rejected
+  at compile time with a `recursive function call` error. Because calls cannot
+  recur, the runtime call depth is a static bound: the interpreter
+  pre-allocates one value-register frame per compiled fragment, so `ValueCallFunc`
+  dispatch performs **no heap allocation** on the RT path.
+
+The type of a function value is structural — `ValueTy::Func(arg_tys, ret_tys)` —
+over its value parameters and results. Signal-wire parameters are positional
+wire-captures at the call site and are not part of the type. A lambda parameter
+used as a callee (`f (f x)`) is inferred as a `Func`, and a record parameter is
+inferred as its `Data` type, so lowering resolves field projections and dispatch
+arities at compile time.
+
+Deferred: runtime typeclass dispatch (methods resolve at compile time),
+value-state persistence beyond per-tick scratch, and `strict`/`complete`
+compiler modes (the acyclicity and capacity checks above are the foundation of
+the `strict` contract).
 
 ### Known v1 limitations
 
-- **No value arithmetic** — value expressions are constructors, projections,
-  updates, and `match`; `w + h` over payloads is a signal combinator and is
-  rejected. Use a signal function when arithmetic is needed.
 - **Single value output** — `main` exposes one value channel; `main = p, p`
   (multi-value fan-out) and mixed signal+value outputs are rejected at
   lowering.
 - **Nullary constructors** — `data Color = Red | Green` cannot be constructed
   in v1 (`Red` requires an argument); declare a payload, e.g.
   `data Color = Red Float | Green Float`.
-- **Value functions are untyped at the boundary** — arguments are not unified
-  against the λ-parameter type; type errors surface at lowering with the
-  argument's span.
+- **No signal parameters in the `Func` type** — a lambda's signal-wire
+  parameters are positional wire-captures, not part of the function value type
+  (the trailing `_` wire must exactly complete the value arity).
+- **Higher-order parameters are monomorphic** — a lambda parameter's `Func`
+  signature is fixed at its first call site; v1 does not generalize a function
+  parameter over multiple call shapes.
 - **β-substitution gaps** — `substitute` does not descend into `let` /
   `ActorParam`, and reduction does not run inside `match` / field
   project/update / record bodies; a user-def call in those positions errors at
@@ -903,7 +944,10 @@ mixer/EQ, analog, spectral, complex, lofi), RT-safe named parameters (`param()`
 and `?name`), records for built-in configuration, multi-IO via
 `MultichannelAlgorithm`, graph compilation (`compile_graph()` →
 `CompiledGraphEngine`), and first-class data (`data`/`type`/`newtype`/
-`typeclass`, value channels, arena+RC+COW memory, runtime-stack cells).
+`typeclass`, value channels, arena+RC+COW memory, runtime-stack cells,
+element-wise value arithmetic, first-class functions with closures and
+runtime dispatch, currying, higher-order combinators, and signal-wire
+arguments).
 
 Deferred to follow-on work:
 
@@ -913,7 +957,7 @@ Deferred to follow-on work:
 - **signal-rate** (per-sample) modulation of imported built-in parameters
   (current parameter modulation is control-rate/per-block);
 - composed expressions as built-in arguments;
-- closures, runtime typeclass dispatch, cross-node value ports, and the
+- runtime typeclass dispatch, cross-node value ports, and the
   `strict`/`complete` compiler-mode contract.
 
 [`RillLangDef`]: https://docs.rs/rill-lang

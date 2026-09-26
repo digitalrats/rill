@@ -29,6 +29,12 @@ pub struct TypedProgram {
     /// The compile-time type environment (aliases, newtypes, data types),
     /// built once here and shared with lowering.
     pub type_env: TypeEnv,
+    /// Resolved λ-parameter value types of every named lambda-literal definition,
+    /// keyed by definition name. Lowering types fragment-local parameter
+    /// registers with these so a higher-order parameter is a `Func`, a record
+    /// parameter is its `Data` type, and field projection / function dispatch
+    /// resolve at compile time.
+    pub fn_param_tys: HashMap<String, Vec<ValueTy>>,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -168,6 +174,218 @@ fn is_const_value_ref(ctx: &Ctx<'_>, e: &Expr) -> bool {
         }
     }
     false
+}
+
+/// Resolve a definition name to the fragment-valued definition it dispatches
+/// to, following func-value alias chains (`fref = f` where `f` is a lambda
+/// literal). Returns `None` when the name is not a fragment-valued definition.
+///
+/// A name is fragment-valued when its body is a lambda literal, an Anchor with
+/// λ-parameters (compiled to a fragment when referenced as a value), an
+/// application that produces a closure (`add3 = add 3.0`), or a reference chain
+/// that reaches one. This mirrors `is_closure_def` in `reduce.rs` (which keeps
+/// such applications un-β-reduced for runtime dispatch).
+fn fragment_target(
+    defs: &HashMap<String, Def>,
+    name: &str,
+    seen: &mut HashSet<String>,
+) -> Option<String> {
+    if !seen.insert(name.to_string()) {
+        return None;
+    }
+    match defs.get(name) {
+        Some(Def::Local { body, .. }) => match body {
+            Expr::Lambda { .. } => Some(name.to_string()),
+            Expr::Apply { .. } => Some(name.to_string()),
+            Expr::Ref(next, _) => fragment_target(defs, next, seen),
+            _ => None,
+        },
+        Some(Def::Anchor { params, .. }) if !params.is_empty() => Some(name.to_string()),
+        _ => None,
+    }
+}
+
+/// Collect the names of fragment-valued definitions reachable from `defs`
+/// (top-level defs and their nested `where` defs).
+fn fragment_valued_names(defs: &[Def]) -> HashSet<String> {
+    let mut all: Vec<&Def> = Vec::new();
+    for d in defs {
+        all.push(d);
+        for wd in d.where_defs() {
+            all.push(wd);
+        }
+    }
+    let mut map: HashMap<String, Def> = HashMap::new();
+    for d in all {
+        map.insert(d.name().to_string(), d.clone());
+    }
+    let mut names = HashSet::new();
+    for d in map.values() {
+        if fragment_target(&map, d.name(), &mut HashSet::new()).is_some() {
+            names.insert(d.name().to_string());
+        }
+    }
+    names
+}
+
+/// Descend `e` (a fragment-valued definition's body) collecting the
+/// fragment-valued definitions it STATICALLY calls: an `Apply` whose callee is
+/// an unshadowed reference to a fragment-valued name yields the edge
+/// `src → callee`. Nested lambda/let/match bindings shadow outer names,
+/// mirroring the scope rules; the walk still descends into them so a
+/// self-reference through an anonymous inner lambda
+/// (`a = fn x -> (fn y -> a y) 1.0`) is caught.
+fn collect_static_calls(
+    e: &Expr,
+    src: &str,
+    bound: &HashSet<String>,
+    nodes: &HashSet<String>,
+    out: &mut Vec<(String, String)>,
+) {
+    match e {
+        Expr::Apply { name, args, .. } => {
+            if !bound.contains(name) && nodes.contains(name) {
+                out.push((src.to_string(), name.clone()));
+            }
+            for a in args {
+                collect_static_calls(a, src, bound, nodes, out);
+            }
+        }
+        Expr::Ref(_, _)
+        | Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Imag(_, _)
+        | Expr::Str(_, _)
+        | Expr::Wire(_)
+        | Expr::Cut(_) => {}
+        Expr::Neg(inner, _) => collect_static_calls(inner, src, bound, nodes, out),
+        Expr::Arith { lhs, rhs, .. } => {
+            collect_static_calls(lhs, src, bound, nodes, out);
+            collect_static_calls(rhs, src, bound, nodes, out);
+        }
+        Expr::Seq(lhs, rhs, _)
+        | Expr::Par(lhs, rhs, _)
+        | Expr::Split(lhs, rhs, _)
+        | Expr::Merge(lhs, rhs, _)
+        | Expr::Loop(lhs, rhs, _)
+        | Expr::Delay(lhs, rhs, _) => {
+            collect_static_calls(lhs, src, bound, nodes, out);
+            collect_static_calls(rhs, src, bound, nodes, out);
+        }
+        Expr::Let { defs, body, .. } => {
+            let mut inner = bound.clone();
+            for d in defs {
+                inner.insert(d.name().to_string());
+            }
+            for d in defs {
+                collect_static_calls(d.body(), src, bound, nodes, out);
+            }
+            collect_static_calls(body, src, &inner, nodes, out);
+        }
+        Expr::Record(fields, _) => {
+            for (_, fe) in fields {
+                collect_static_calls(fe, src, bound, nodes, out);
+            }
+        }
+        Expr::FieldProject { record, .. } => collect_static_calls(record, src, bound, nodes, out),
+        Expr::FieldUpdate { record, value, .. } => {
+            collect_static_calls(record, src, bound, nodes, out);
+            collect_static_calls(value, src, bound, nodes, out);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_static_calls(scrutinee, src, bound, nodes, out);
+            for (_, params, body) in arms {
+                let mut inner = bound.clone();
+                for p in params {
+                    inner.insert(p.name.clone());
+                }
+                collect_static_calls(body, src, &inner, nodes, out);
+            }
+        }
+        Expr::Lambda { params, body, .. } => {
+            let mut inner = bound.clone();
+            for p in params {
+                inner.insert(p.name.clone());
+            }
+            collect_static_calls(body, src, &inner, nodes, out);
+        }
+        Expr::ActorParam { default, .. } => {
+            if let Some(d) = default {
+                collect_static_calls(d, src, bound, nodes, out);
+            }
+        }
+    }
+}
+
+/// Reject recursion between first-class function definitions.
+///
+/// v1's strict contract forbids recursive calls: every runtime dispatch chain
+/// must terminate, so the runtime call stack is statically bounded. This
+/// syntactic pass builds the static call graph over fragment-valued
+/// definitions (lambda literals, λ-parameter anchors, and closure-producing
+/// applications like partial application) — an edge `A → B` when `A`'s body
+/// calls `B` by name — and rejects any cycle with a compile error. Only
+/// STATIC named calls are tracked: a higher-order parameter (`f` in
+/// `twice = fn f x -> f (f x)`) dispatches whatever closure the caller
+/// passes, and is not itself a recursion source.
+fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
+    let nodes = fragment_valued_names(defs);
+    let mut edges: Vec<(String, String)> = Vec::new();
+    for d in defs {
+        let name = d.name();
+        if !nodes.contains(name) {
+            continue;
+        }
+        let bound = HashSet::new();
+        collect_static_calls(d.body(), name, &bound, &nodes, &mut edges);
+        // Self-recursion is a self-loop; report it directly for a clear message.
+        if edges.iter().any(|(src, dst)| src == name && dst == name) {
+            return Err(CompileError::Type {
+                msg: format!("recursive function call: `{name}` calls itself"),
+                span: d.body().span(),
+            });
+        }
+    }
+    // DFS over the call graph; a back edge into a node still being visited is
+    // a cycle.
+    let mut visiting = HashSet::new();
+    let mut visited = HashSet::new();
+    fn dfs(
+        n: &str,
+        edges: &Vec<(String, String)>,
+        visiting: &mut HashSet<String>,
+        visited: &mut HashSet<String>,
+    ) -> Result<(), CompileError> {
+        if visited.contains(n) {
+            return Ok(());
+        }
+        visiting.insert(n.to_string());
+        for (src, dst) in edges {
+            if src == n {
+                if visiting.contains(dst.as_str()) {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "recursive function call: `{n}` calls `{dst}` (cyclic call graph)"
+                        ),
+                        span: Span::new(0, 0),
+                    });
+                }
+                dfs(dst.as_str(), edges, visiting, visited)?;
+            }
+        }
+        visiting.remove(n);
+        visited.insert(n.to_string());
+        Ok(())
+    }
+    for n in defs
+        .iter()
+        .filter_map(|d| nodes.contains(d.name()).then_some(d.name().to_string()))
+    {
+        dfs(n.as_str(), &edges, &mut visiting, &mut visited)?;
+    }
+    Ok(())
 }
 
 /// Infer a typeclass method's argument or body expression (labeled by `what`
@@ -345,6 +563,11 @@ pub fn infer_program_with(
     // runtime (spec §9.1).
     env.check_acyclic()?;
 
+    // Reject recursive function definitions (v1's acyclic call contract): a
+    // runtime dispatch chain must terminate, so the call stack is statically
+    // bounded (see `check_recursion`).
+    check_recursion(&program.defs)?;
+
     let mut ctx = Ctx {
         next: 0,
         subst: Subst::default(),
@@ -400,11 +623,37 @@ pub fn infer_program_with(
         })
         .collect();
 
+    // Resolve each named lambda-literal definition's λ-parameter value types
+    // through the final substitution. Lowering types fragment-local parameter
+    // registers with these: a higher-order parameter must be a `Func` (so the
+    // callee dispatches), a record parameter its `Data` type (so field
+    // projection resolves indices), and a scalar parameter whatever the body
+    // constrained it to (an unconstrained parameter stays a structural `Var`,
+    // which lowering treats as an untyped scalar).
+    let mut fn_param_tys: HashMap<String, Vec<ValueTy>> = HashMap::new();
+    for def in &program.defs {
+        if let Def::Local { name, body, .. } = def {
+            if matches!(body, Expr::Lambda { .. }) {
+                let scheme = ctx.defs.get(name).cloned();
+                if let Some(s) = scheme {
+                    if let Some(out) = s.ty.outs.first() {
+                        if let ValueTy::Func(arg_tys, _) = &out.vty {
+                            let resolved =
+                                arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
+                            fn_param_tys.insert(name.to_string(), resolved);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(TypedProgram {
         program: program.clone(),
         process_ty: main_scheme.ty,
         cafs,
         type_env: ctx.env.clone(),
+        fn_param_tys,
     })
 }
 
@@ -845,11 +1094,17 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
         Expr::Lambda { params, body, span } => {
             // Bind the parameters as value channels and infer the body; the
             // result type is the function type. v1 lambda parameters are
-            // untyped value scalars (`ValueTy::Float`); signal-wire parameters
-            // and value-typed parameters land in a later task.
+            // structural value types: the returned `Func` signature carries the
+            // parameter variables (NOT hardcoded `Float`), so a call site can
+            // unify a concrete argument against them — a higher-order parameter
+            // (`f` in `twice = fn f x -> f (f x)`) becomes a `Func`, a record
+            // parameter (`p` in `pair_map`) becomes its `Data` type. Signal-wire
+            // parameters are a later task.
             let saved = ctx.locals.clone();
+            let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(params.len());
             for p in params {
                 let pty = ctx.fresh_vty();
+                arg_tys.push(pty.clone());
                 ctx.locals
                     .insert(p.name.clone(), ArrowTy::value_channel(pty));
             }
@@ -861,7 +1116,6 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                     span: *span,
                 });
             }
-            let arg_tys: Vec<ValueTy> = params.iter().map(|_| ValueTy::Float).collect();
             let ret_ty = bt.outs[0].vty.clone();
             Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
         }
@@ -940,13 +1194,11 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
     if let Some(scheme) = ctx.defs.get(name).cloned() {
         if scheme.lam_count > 0 {
             // A bare reference to a user definition with λ-parameters is a
-            // first-class function value (v1: named references only, no
-            // lambdas/closures). `f = double` binds `f` to
-            // `ValueTy::Func([], [])`; calling it dispatches to the
-            // referenced definition (see `infer_apply`). Using it where a
-            // signal is required is rejected by the signal combinators.
-            // A bare named ref has an unknown signature, so v1 types it as
-            // `Func([], [])`; real signatures land with lambda literals.
+            // first-class function value: `f = double` binds `f` to
+            // `ValueTy::Func([], [])` (an unknown signature — a bare named
+            // ref's arity is resolved when it is applied, see `infer_apply`).
+            // Using it where a signal is required is rejected by the signal
+            // combinators.
             return Ok(ArrowTy::value_channel(ValueTy::Func(vec![], vec![])));
         }
         return Ok(ctx.instantiate(&scheme));
@@ -1493,6 +1745,49 @@ fn infer_apply(
             outs: ty.outs,
         });
     }
+    // A first-class function value bound to a LOCAL (a lambda parameter, a
+    // let/match binding): `f x` where `f` is a `Func`. The local's value type
+    // is unified with a fresh `Func` signature of the applied arity — this both
+    // type-checks the arguments AND binds an as-yet unresolved lambda parameter
+    // to a `Func` (value variables record through `subst.value_map`). A local
+    // already resolved to a concrete `Func` (a HOF parameter applied twice)
+    // applies against that signature, so an arity inconsistency is rejected.
+    if let Some(local) = ctx.locals.get(name).cloned() {
+        if local.arity_out() == 1 && local.outs[0].rate == Rate::Value {
+            let lty = &local.outs[0].vty;
+            let resolved = ctx.subst.resolve_value(lty);
+            let arg_tys: Vec<ValueTy>;
+            let ret_tys: Vec<ValueTy>;
+            match resolved {
+                ValueTy::Func(a, r) => {
+                    arg_tys = a;
+                    ret_tys = r;
+                }
+                _ => {
+                    arg_tys = (0..args.len()).map(|_| ctx.fresh_vty()).collect();
+                    ret_tys = vec![ctx.fresh_vty()];
+                }
+            }
+            let func_ty = ValueTy::Func(arg_tys.clone(), ret_tys.clone());
+            if args.len() != arg_tys.len() {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "`{name}` expects {} argument(s), got {}",
+                        arg_tys.len(),
+                        args.len()
+                    ),
+                    span,
+                });
+            }
+            unify_value(lty, &func_ty, &mut ctx.subst, span)?;
+            for (a, pty) in args.iter().zip(arg_tys.iter()) {
+                let vt = infer_method_value_vty(ctx, a, "argument")?;
+                unify_value(&vt, pty, &mut ctx.subst, a.span())?;
+            }
+            let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+            return Ok(ArrowTy::value_channel(ret_ty));
+        }
+    }
     // Fallback: builtin reference (abs, sin, +, etc.) applied to signal args
     let mut combined: Option<ArrowTy> = None;
     for arg in args {
@@ -1629,24 +1924,33 @@ fn infer_arith(
         // definition (`k = 2.0`) is value-compatible — the latter is a common
         // lambda free variable, captured by value into the closure env.
         let scalar_vty = |v: &ValueTy| matches!(v, ValueTy::Float | ValueTy::Int | ValueTy::Var(_));
-        let value_operand = |t: &ArrowTy, e: &Expr| -> bool {
-            t.arity_in() == 0
-                && t.arity_out() == 1
-                && match t.outs[0].rate {
-                    Rate::Value => scalar_vty(&t.outs[0].vty),
-                    Rate::Signal => {
-                        matches!(e, Expr::Int(_, _) | Expr::Float(_, _))
-                            || is_const_value_ref(ctx, e)
+        let mut unify_operand = |t: &ArrowTy, e: &Expr| -> Result<(), CompileError> {
+            if t.arity_in() == 0 && t.arity_out() == 1 {
+                if t.outs[0].rate == Rate::Value {
+                    if scalar_vty(&t.outs[0].vty) {
+                        // A structural parameter variable in arithmetic is a
+                        // numeric scalar: bind it to Float so the lambda's
+                        // Func signature resolves concretely (`fn x -> x * 2`
+                        // types `x` as Float, not an unconstrained Var).
+                        if matches!(&t.outs[0].vty, ValueTy::Var(_)) {
+                            unify_value(&t.outs[0].vty, &ValueTy::Float, &mut ctx.subst, e.span())?;
+                        }
+                        return Ok(());
                     }
+                } else if matches!(e, Expr::Int(_, _) | Expr::Float(_, _))
+                    || is_const_value_ref(ctx, e)
+                {
+                    return Ok(());
                 }
+            }
+            Err(CompileError::Type {
+                msg: "value-channel arithmetic requires numeric value operands".into(),
+                span: e.span(),
+            })
         };
-        if value_operand(&a, lhs) && value_operand(&b, rhs) {
-            return Ok(ArrowTy::value_channel(ValueTy::Float));
-        }
-        return Err(CompileError::Type {
-            msg: "value-channel arithmetic requires numeric value operands".into(),
-            span,
-        });
+        unify_operand(&a, lhs)?;
+        unify_operand(&b, rhs)?;
+        return Ok(ArrowTy::value_channel(ValueTy::Float));
     }
     arith(ctx, &a, &b, span)
 }

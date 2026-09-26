@@ -108,6 +108,16 @@ struct Lowerer<'a> {
     /// the fragment emits a `ValueReadCell { cell: capture_index }` reading the
     /// call's env frame.
     fragment_captures: Vec<String>,
+    /// Resolved λ-parameter value types of every named lambda-literal
+    /// definition (from inference). Lowering types fragment-local parameter
+    /// registers with these: a higher-order parameter is a `Func` (so the
+    /// callee dispatches), a record parameter its `Data` type (so field
+    /// projection resolves indices).
+    fn_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Parameter types for the lambda literal currently being lowered, when it
+    /// is a NAMED lambda-literal definition. Consumed by the `Expr::Lambda`
+    /// arm; anonymous lambdas leave it unset and default to `Float`.
+    pending_param_tys: Option<Vec<ValueTy>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -493,61 +503,81 @@ impl<'a> Lowerer<'a> {
                 // than the signature is partial application: the result is a
                 // curry closure that captures the function and the applied
                 // args, re-applying them with the remaining args on call.
-                if let Ok((callee_reg, ValueTy::Func(arg_tys, ret_tys))) =
-                    self.lower_value_ref(name, *span)
-                {
-                    if call_args.len() > arg_tys.len() {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "`{name}` expects {} argument(s), got {}",
-                                arg_tys.len(),
-                                call_args.len()
-                            ),
-                            span: *span,
-                        });
-                    }
-                    let mut arg_regs = Vec::with_capacity(call_args.len());
-                    for a in call_args {
-                        let (ar, _) = self.lower_value(a)?;
-                        arg_regs.push(ar);
-                    }
-                    let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
-                    if call_args.len() < arg_tys.len() {
-                        // Partial application → a curry closure. Its env captures
-                        // `[func, arg0, arg1, ...]` by value; on call it reads
-                        // them out and dispatches `ValueCallFunc` with
-                        // `(captured..., remaining...)`.
-                        let remaining = arg_tys.len() - call_args.len();
-                        let fragment_id = self.apply_partial(arg_regs.len(), remaining, *span)?;
-                        let env_reg = self.fresh_value_reg();
-                        let mut fields = Vec::with_capacity(1 + arg_regs.len());
-                        fields.push(callee_reg);
-                        fields.extend(arg_regs.iter().copied());
-                        self.emit_value(ValueInstr::ValueConstructRecord {
-                            dst: env_reg,
-                            fields,
-                        });
+                let callee_res = self.lower_value_ref(name, *span);
+                let (callee_reg, callee_ty) = callee_res?;
+                match &callee_ty {
+                    ValueTy::Func(arg_tys, ret_tys) => {
+                        if call_args.len() > arg_tys.len() {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "`{name}` expects {} argument(s), got {}",
+                                    arg_tys.len(),
+                                    call_args.len()
+                                ),
+                                span: *span,
+                            });
+                        }
+                        let mut arg_regs = Vec::with_capacity(call_args.len());
+                        for a in call_args {
+                            let (ar, _) = self.lower_value(a)?;
+                            arg_regs.push(ar);
+                        }
+                        let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                        if call_args.len() < arg_tys.len() {
+                            // Partial application → a curry closure. Its env captures
+                            // `[func, arg0, arg1, ...]` by value; on call it reads
+                            // them out and dispatches `ValueCallFunc` with
+                            // `(captured..., remaining...)`.
+                            let remaining = arg_tys.len() - call_args.len();
+                            let fragment_id =
+                                self.apply_partial(arg_regs.len(), remaining, *span)?;
+                            let env_reg = self.fresh_value_reg();
+                            let mut fields = Vec::with_capacity(1 + arg_regs.len());
+                            fields.push(callee_reg);
+                            fields.extend(arg_regs.iter().copied());
+                            self.emit_value(ValueInstr::ValueConstructRecord {
+                                dst: env_reg,
+                                fields,
+                            });
+                            let dst = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueMakeClosure {
+                                dst,
+                                env: env_reg,
+                                fragment: fragment_id,
+                            });
+                            let remaining_arg_tys: Vec<ValueTy> =
+                                arg_tys[call_args.len()..].to_vec();
+                            return Ok((dst, ValueTy::Func(remaining_arg_tys, vec![ret_ty])));
+                        }
                         let dst = self.fresh_value_reg();
-                        self.emit_value(ValueInstr::ValueMakeClosure {
+                        self.emit_value(ValueInstr::ValueCallFunc {
                             dst,
-                            env: env_reg,
-                            fragment: fragment_id,
+                            closure_slot: callee_reg,
+                            args: arg_regs,
                         });
-                        let remaining_arg_tys: Vec<ValueTy> = arg_tys[call_args.len()..].to_vec();
-                        return Ok((dst, ValueTy::Func(remaining_arg_tys, vec![ret_ty])));
+                        Ok((dst, ret_ty))
                     }
-                    let dst = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueCallFunc {
-                        dst,
-                        closure_slot: callee_reg,
-                        args: arg_regs,
-                    });
-                    return Ok((dst, ret_ty));
+                    _ => {
+                        // A higher-order function parameter (a `Func` whose
+                        // static signature inference kept structural, or an
+                        // unresolved parameter) applied at runtime: inference
+                        // already validated the arity against the real `Func`
+                        // type, so this is a full-application dispatch. v1
+                        // function results are Float scalars.
+                        let mut arg_regs = Vec::with_capacity(call_args.len());
+                        for a in call_args {
+                            let (ar, _) = self.lower_value(a)?;
+                            arg_regs.push(ar);
+                        }
+                        let dst = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueCallFunc {
+                            dst,
+                            closure_slot: callee_reg,
+                            args: arg_regs,
+                        });
+                        Ok((dst, ValueTy::Float))
+                    }
                 }
-                Err(CompileError::Type {
-                    msg: format!("`{name}` is not a value constructor in v1"),
-                    span: *span,
-                })
             }
             Expr::Arith { op, lhs, rhs, span } => {
                 // Value-track arithmetic: lower both operands as values, emit
@@ -594,7 +624,15 @@ impl<'a> Lowerer<'a> {
                 // fields bound as a temporary cell frame.
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
                 let free = self.free_vars(body, &param_names);
-                let (fragment_id, ret_ty) = self.lower_fragment(params, body, &free, *span)?;
+                // A named lambda-literal definition carries its resolved
+                // parameter types from inference (set by `lower_value_ref`); an
+                // anonymous lambda defaults to Float parameters.
+                let param_tys: Vec<ValueTy> = self
+                    .pending_param_tys
+                    .take()
+                    .unwrap_or_else(|| vec![ValueTy::Float; params.len()]);
+                let (fragment_id, ret_ty) =
+                    self.lower_fragment(params, body, &free, &param_tys, *span)?;
                 let env_reg = self.emit_env_snapshot(&free, *span)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
@@ -602,8 +640,7 @@ impl<'a> Lowerer<'a> {
                     env: env_reg,
                     fragment: fragment_id,
                 });
-                let arg_tys = params.iter().map(|_| ValueTy::Float).collect();
-                Ok((dst, ValueTy::Func(arg_tys, vec![ret_ty])))
+                Ok((dst, ValueTy::Func(param_tys, vec![ret_ty])))
             }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
@@ -673,7 +710,12 @@ impl<'a> Lowerer<'a> {
                     });
                 }
                 self.value_inline.insert(name.to_string());
+                // A named lambda-literal definition lowers with its resolved
+                // parameter types (threaded through `pending_param_tys`).
+                let saved_pending = self.pending_param_tys.take();
+                self.pending_param_tys = self.fn_param_tys.get(name).cloned();
                 let res = self.lower_value(&body);
+                self.pending_param_tys = saved_pending;
                 self.value_inline.remove(name);
                 res
             }
@@ -694,8 +736,9 @@ impl<'a> Lowerer<'a> {
                 let param_names: HashSet<String> =
                     def_params.iter().map(|p| p.name.clone()).collect();
                 let free = self.free_vars(&body, &param_names);
+                let param_tys = vec![ValueTy::Float; def_params.len()];
                 let (fragment_id, ret_ty) =
-                    self.lower_fragment(&def_params, &body, &free, dspan)?;
+                    self.lower_fragment(&def_params, &body, &free, &param_tys, dspan)?;
                 let env_reg = self.emit_env_snapshot(&free, dspan)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
@@ -749,9 +792,17 @@ impl<'a> Lowerer<'a> {
                 // a closure `f` from an enclosing scope, and the name is a free
                 // variable even though it only appears in callee position
                 // (without this, the env snapshot would miss it and lowering
-                // would report "unknown `f` in value lowering").
+                // would report "unknown `f` in value lowering"). Type and
+                // constructor names (`Pair { ... }`, `Circle 1.5`) are NOT free
+                // variables — a lambda body constructs data types without
+                // capturing them.
                 if !bound.contains(name) && seen.insert(name.clone()) {
-                    out.push(name.clone());
+                    let is_ctor = self.env.data_types.contains_key(name)
+                        || self.env.newtypes.contains_key(name)
+                        || self.sum_ctor(name).is_some();
+                    if !is_ctor {
+                        out.push(name.clone());
+                    }
                 }
                 for a in args {
                     self.free_vars_impl(a, bound, out, seen);
@@ -830,8 +881,9 @@ impl<'a> Lowerer<'a> {
     /// and restored afterwards.
     ///
     /// Within the fragment: parameters bind to fragment-local registers
-    /// `0..params.len()` (value args are copied in by `run_fragment`); a `Ref`
-    /// to a free name emits `ValueReadCell { cell: capture_index }` where
+    /// `0..params.len()` (value args are copied in by `run_fragment`), typed
+    /// with the λ-parameter types threaded from inference; a `Ref` to a free
+    /// name emits `ValueReadCell { cell: capture_index }` where
     /// `capture_index` is the name's position in `free` (the env Record field
     /// order, bound by `run_fragment` as temp-frame cells).
     fn lower_fragment(
@@ -839,6 +891,7 @@ impl<'a> Lowerer<'a> {
         params: &[Param],
         body: &Expr,
         free: &[String],
+        param_tys: &[ValueTy],
         _span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
         let saved_instrs = std::mem::take(&mut self.value_instrs);
@@ -848,7 +901,8 @@ impl<'a> Lowerer<'a> {
 
         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
         for (i, p) in params.iter().enumerate() {
-            scope.insert(p.name.clone(), (i, ValueTy::Float));
+            let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+            scope.insert(p.name.clone(), (i, ty));
         }
         self.value_locals.push(scope);
         self.fragment_captures = free.to_vec();
@@ -2238,6 +2292,8 @@ pub fn lower_with_cafs(
         method_lifting: HashSet::new(),
         fragments: Vec::new(),
         fragment_captures: Vec::new(),
+        fn_param_tys: tp.fn_param_tys.clone(),
+        pending_param_tys: None,
     };
 
     for (cell_idx, p) in main.params().iter().enumerate() {
@@ -2332,6 +2388,19 @@ pub fn lower_with_cafs(
             .sum::<usize>()
         + num_main_cells
         + fragment_capacity;
+    // Pre-allocated function-call scratch: the runtime call stack never holds
+    // more than one frame per fragment (recursion is rejected at inference, so
+    // no fragment can recur on a dispatch chain), so the total fragment count
+    // is a strict upper bound on the deepest nesting. Each frame needs at most
+    // `max_fragment_regs` value-register slots, giving the product below.
+    let max_call_depth = lw.fragments.len();
+    let max_fragment_regs = lw
+        .fragments
+        .iter()
+        .map(|f| f.num_value_regs)
+        .max()
+        .unwrap_or(0);
+    let max_call_regs = max_call_depth * max_fragment_regs;
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
@@ -2351,6 +2420,7 @@ pub fn lower_with_cafs(
         value_output_regs: lw.value_regs_out,
         value_funcs: lw.value_funcs,
         fragments: lw.fragments,
+        max_call_regs,
         value_state: ValueLayout {
             capacity: value_capacity,
             value_state_slots: 0,
@@ -2421,6 +2491,7 @@ mod tests {
             process_ty: typed.process_ty,
             cafs,
             type_env: typed.type_env.clone(),
+            fn_param_tys: typed.fn_param_tys.clone(),
         };
         lower_with_cafs(&tp, &TestSigs, 44_100.0, &tp.cafs).unwrap()
     }
@@ -2456,6 +2527,8 @@ mod tests {
             method_lifting: HashSet::new(),
             fragments: Vec::new(),
             fragment_captures: Vec::new(),
+            fn_param_tys: HashMap::new(),
+            pending_param_tys: None,
         }
     }
 
@@ -2656,6 +2729,7 @@ mod tests {
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
+            fn_param_tys: typed.fn_param_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -2678,6 +2752,7 @@ mod tests {
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
+            fn_param_tys: typed.fn_param_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -2701,6 +2776,7 @@ mod tests {
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
+            fn_param_tys: typed.fn_param_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -2729,6 +2805,7 @@ mod tests {
             process_ty: typed.process_ty,
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
+            fn_param_tys: typed.fn_param_tys.clone(),
         };
         let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
         assert!(res.is_err());

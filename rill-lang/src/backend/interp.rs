@@ -121,18 +121,25 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
 /// deferred to the end of the track so a drop cannot free a slot mid-track
 /// that a later instruction reuses, and the release order is deterministic.
 pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>) {
-    let mut drops: Vec<ArenaRef> = Vec::new();
     // Move the instruction list out of `prog` so we can borrow `prog`'s value
     // registers mutably while iterating (`mem::take` leaves an empty `Vec`
-    // behind — no allocation on the RT path).
+    // behind — no allocation on the RT path). Drops queue on the shared,
+    // pre-sized `drops_scratch`, moved out ONCE here and threaded through the
+    // whole dispatch tree (`exec_value_instr` → `run_fragment` → ...) as a
+    // separate parameter, so every fragment at every nesting depth reuses the
+    // same reserved buffer — no allocation in the RT path. The mark/drain
+    // discipline keeps each frame's pending drops below its own mark.
+    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let mark = drops.len();
     let value_instrs = std::mem::take(&mut prog.ir.value_instrs);
     for instr in &value_instrs {
         exec_value_instr(prog, instr, &mut drops);
     }
     prog.ir.value_instrs = value_instrs;
-    for r in drops {
+    for r in drops.drain(mark..) {
         prog.arena.drop_ref(r);
     }
+    prog.drops_scratch = drops;
 }
 
 /// Allocate a slot holding `v`, taking over the ownership of `v`'s child refs.
@@ -365,13 +372,13 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             prog.value_regs[*dst] = alloc_owned(prog, Value::Void);
         }
         ValueInstr::ValueReadCell { dst, cell } => {
-            // Inside a fragment, `cell < active_fragment_cells.len()` is a
-            // CAPTURE index into the current call's env frame (the lambda's
-            // free variables); otherwise `cell` is a value register holding a
-            // cell ref (main-track reads).
-            let capture = if !prog.active_fragment_cells.is_empty() {
-                (*cell < prog.active_fragment_cells.len())
-                    .then_some(prog.active_fragment_cells[*cell])
+            // Inside a fragment (`frag_cells_base < frag_cells.len()`), `cell`
+            // is a CAPTURE index into the current call's env frame — the
+            // lambda's free variables, resolved at `frag_cells_base + cell`.
+            // Otherwise `cell` is a value register holding a cell ref
+            // (main-track reads).
+            let capture = if prog.frag_cells_base < prog.frag_cells.len() {
+                Some(prog.frag_cells[prog.frag_cells_base + *cell])
             } else {
                 None
             };
@@ -569,7 +576,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     // mutably inside `run_fragment` (the immutable IR borrow ends
                     // once the owned copy is in hand).
                     match prog.ir.fragments.get(*fragment_id as usize).cloned() {
-                        Some(frag) => run_fragment(prog, &frag, *env_ref, args, dst),
+                        Some(frag) => run_fragment(prog, &frag, *env_ref, args, dst, drops),
                         None => prog.value_regs[*dst] = None,
                     }
                 }
@@ -683,36 +690,38 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
 
 /// Execute a function fragment: binds the captured env fields as cells in a
 /// temporary frame, runs the fragment's value instructions against a scratch
-/// register slice appended to `value_regs`, copies the result into `dst`, and
-/// pops the frame.
+/// register slice in the pre-allocated tail of `value_regs`, copies the result
+/// into `dst`, and pops the frame.
 ///
 /// Register-offset scheme: a fragment's instructions are reused across calls
 /// and reference fragment-local registers `0..num_value_regs`. The interpreter
-/// records `base = value_regs.len()`, appends `num_value_regs` empty slots,
-/// runs each instruction with every register field offset by `base`
-/// ([`remap_value_instr`]), then truncates back — the fragment is never
-/// rewritten. Value args are copied (RC++) into the fragment's leading
-/// registers; the caller keeps its own ownership.
+/// records `base = value_regs_top`, runs each instruction with every register
+/// field offset by `base` ([`remap_value_instr`]), and unwinds the watermark —
+/// the store is pre-sized to `num_value_regs + max_call_regs` at construction,
+/// so no growth or reallocation happens on the RT path. Value args are copied
+/// (RC++) into the fragment's leading registers; the caller keeps its own
+/// ownership.
 ///
 /// Capture scheme: the env Record's fields (the lambda's free variables, in
-/// declaration order) become cells in the temporary frame at indices
-/// `0..n-1`. The fragment's `ValueReadCell { cell: i }` reads frame cell `i`
-/// via `active_fragment_cells`. A capture cell holds an INDEPENDENT copy of
-/// the field's value, so the cell owns it and the env record is untouched.
+/// declaration order) become cells in the shared `frag_cells` store at the
+/// current top; `frag_cells_base` marks the active frame so the fragment's
+/// `ValueReadCell { cell: i }` resolves to `frag_cells[frag_cells_base + i]`.
+/// A capture cell holds an INDEPENDENT copy of the field's value, so the cell
+/// owns it and the env record is untouched. Deferred drops queue on the
+/// pre-sized `drops` scratch threaded from the value track — every nesting
+/// depth reuses the same reserved buffer.
 fn run_fragment<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     frag: &FragmentIr,
     env_ref: crate::arena::ArenaRef,
     args: &[usize],
     dst: &usize,
+    drops: &mut Vec<crate::arena::ArenaRef>,
 ) {
-    // 1. Push a temporary capture frame: each env Record field becomes a cell
-    //    holding an INDEPENDENT COPY of the field's value (alloc_copy — the
-    //    cell owns it, the env record is untouched). The cells are exposed as
-    //    `active_fragment_cells` so the fragment's `ValueReadCell { cell: i }`
-    //    capture reads resolve to frame cell i.
-    prog.cell_stack.push(Vec::new());
-    let mut cells: Vec<crate::arena::ArenaRef> = Vec::new();
+    // 1. Bind each env Record field as a capture cell: an INDEPENDENT copy of
+    //    the field's value appended to the shared capture-cell store (pre-sized
+    //    at construction — no allocation). The env record is untouched.
+    let cell_base = prog.frag_cells.len();
     if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
         // Clone the field refs so the arena can be borrowed mutably while the
         // capture cells are allocated below.
@@ -725,21 +734,23 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
                 None => prog.arena.alloc(Value::Void).ok(),
             };
             if let Some(c) = cell {
-                if let Some(frame) = prog.cell_stack.last_mut() {
-                    frame.push((0, c));
-                }
-                cells.push(c);
+                prog.frag_cells.push(c);
             }
         }
     }
-    // 2. Expose the capture cells for the duration of this call. Save/restore
-    //    so a nested fragment call observes its own cells, not the caller's.
-    let saved_cells = std::mem::take(&mut prog.active_fragment_cells);
-    prog.active_fragment_cells = cells;
-    // 3. Append a scratch register slice for the fragment's local registers.
-    let base = prog.value_regs.len();
-    prog.value_regs.extend(vec![None; frag.num_value_regs]);
-    // 4. Value args: copy the caller's arg values into the fragment's leading
+    let saved_cells_base = prog.frag_cells_base;
+    prog.frag_cells_base = cell_base;
+    // 2. Borrow the pre-allocated call-scratch slice for the fragment's local
+    //    registers. The watermark grows into the reserved tail; the pre-sized
+    //    store guarantees `max_call_regs` slots are available for any nesting.
+    let base = prog.value_regs_top;
+    let top = base + frag.num_value_regs;
+    debug_assert!(
+        top <= prog.value_regs.len(),
+        "call scratch exceeds pre-allocated max_call_regs (lowering bound broken)"
+    );
+    prog.value_regs_top = top;
+    // 3. Value args: copy the caller's arg values into the fragment's leading
     //    registers (the first `sig.value_ins` slice slots). Each copy is a
     //    fresh owner (RC++) so the caller keeps its own ref.
     for (i, a) in args
@@ -751,36 +762,38 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
             prog.value_regs[base + i] = copy_owned(prog, sr);
         }
     }
-    // 5. Run the fragment's value instructions with the register offset.
-    let mut drops: Vec<crate::arena::ArenaRef> = Vec::new();
+    // 4. Run the fragment's value instructions with the register offset.
+    //    Drops queue on the threaded scratch above this call's mark and are
+    //    drained below, so a nested dispatch's drops never collide.
+    let drops_mark = drops.len();
     for instr in &frag.value_instrs {
         let remapped = remap_value_instr(instr, base);
-        exec_value_instr(prog, &remapped, &mut drops);
+        exec_value_instr(prog, &remapped, drops);
     }
-    for r in drops {
+    for r in drops.drain(drops_mark..) {
         prog.arena.drop_ref(r);
     }
-    // 6. Copy the fragment's result into `dst` (a fresh owner via `copy`).
+    // 5. Copy the fragment's result into `dst` (a fresh owner via `copy`).
     if let Some(or) = frag.output_value_regs.first() {
         prog.value_regs[*dst] = match prog.value_regs.get(base + *or).copied().flatten() {
             Some(sr) => copy_owned(prog, sr),
             None => None,
         };
     }
-    // 7. Drain the scratch slice (dropping every fragment-local register's
+    // 6. Drain the scratch slice (dropping every fragment-local register's
     //    counted ref — value args and body temps own arena slots, so removing
     //    the slots without `drop_ref` would leak them on EVERY call and exhaust
-    //    the fixed arena across ticks), restore the caller's capture cells, and
-    //    pop the frame (releasing the capture cells' counted refs).
-    for r in prog.value_regs.drain(base..) {
-        let Some(r) = r else { continue };
-        prog.arena.drop_ref(r);
-    }
-    prog.active_fragment_cells = saved_cells;
-    if let Some(frame) = prog.cell_stack.pop() {
-        for (_, c) in frame {
-            prog.arena.drop_ref(c);
+    //    the fixed arena across ticks), unwind the watermark, release the
+    //    capture cells, and restore the caller's frame.
+    for i in base..prog.value_regs_top {
+        if let Some(r) = prog.value_regs[i].take() {
+            prog.arena.drop_ref(r);
         }
+    }
+    prog.value_regs_top = base;
+    prog.frag_cells_base = saved_cells_base;
+    for c in prog.frag_cells.drain(cell_base..) {
+        prog.arena.drop_ref(c);
     }
 }
 
@@ -1172,6 +1185,7 @@ mod closure_dispatch_tests {
             num_value_regs: 3,
             value_output_regs: vec![2],
             value_funcs: Vec::new(),
+            max_call_regs: 2,
             value_state: ValueLayout {
                 capacity: 16,
                 value_state_slots: 0,
@@ -1225,6 +1239,7 @@ mod value_track_tests {
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 16,
                 value_state_slots,

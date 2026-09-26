@@ -2,9 +2,10 @@
 //! type `ValueTy::Func([], [])`. A bare func value as a program output is a
 //! `Value::Closure`; calling it dispatches to the referenced definition.
 //!
-//! v1 scope: only NAMED references (no lambdas/closures). Calls are resolved
-//! at compile time by β-reduction, so `ValueCallFunc` stays a documented
-//! no-op reserved for a future runtime-dispatch task.
+//! Named references to λ-parameter definitions are β-reduced at compile time
+//! (see `reduce.rs`), so `ValueCallFunc` runtime dispatch is exercised by
+//! closure-valued calls (lambdas, partial application, HOFs — see
+//! `tests/closures.rs`, `tests/currying_wires.rs`, `tests/hof.rs`).
 
 use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;

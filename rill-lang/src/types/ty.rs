@@ -154,11 +154,19 @@ pub struct Scheme {
     pub ty: ArrowTy,
 }
 
-/// A substitution mapping type variables to scalars.
+/// A substitution mapping type variables to scalars (signal element types)
+/// and value types (arena value types).
 #[derive(Debug, Clone, Default)]
 pub struct Subst {
-    /// The mapping.
+    /// The scalar mapping (signal element types).
     pub map: HashMap<TypeVarId, Scalar>,
+    /// The value-type mapping (arena value types). Value-type variables
+    /// resolve structurally: unifying `Var(v)` with a concrete `ValueTy`
+    /// (e.g. a `Func` signature for a lambda parameter used as a callee)
+    /// records the binding here, so HOF parameter types stay concrete by the
+    /// time lowering needs them (record projection needs the Data type, a
+    /// function parameter needs its Func signature).
+    pub value_map: HashMap<TypeVarId, ValueTy>,
 }
 
 /// Shape of a declared data type.
@@ -386,13 +394,29 @@ impl Subst {
             _ => s.clone(),
         }
     }
+    /// Follow the substitution chain for a single value type to its
+    /// representative, resolving variables inside `Func` signatures too.
+    pub fn resolve_value(&self, t: &ValueTy) -> ValueTy {
+        match t {
+            ValueTy::Var(v) => match self.value_map.get(v) {
+                Some(inner) => self.resolve_value(inner),
+                None => t.clone(),
+            },
+            ValueTy::Func(args, rets) => ValueTy::Func(
+                args.iter().map(|a| self.resolve_value(a)).collect(),
+                rets.iter().map(|r| self.resolve_value(r)).collect(),
+            ),
+            _ => t.clone(),
+        }
+    }
     /// Apply the substitution across a whole type.
     ///
-    /// Value-rate channels carry concrete value types (`vty`) that are not
-    /// quantified in v1, so they pass through unchanged.
+    /// Signal-rate channels resolve their scalar element type; value-rate
+    /// channels resolve their value type (lambda-parameter variables become
+    /// the concrete types bound by call-site unification).
     pub fn apply(&self, t: &ArrowTy) -> ArrowTy {
         let block = |b: &Channel| match b.rate {
-            Rate::Value => Channel::value(b.vty.clone()),
+            Rate::Value => Channel::value(self.resolve_value(&b.vty)),
             Rate::Signal => Channel::signal(self.resolve_scalar(&b.elem)),
         };
         ArrowTy {

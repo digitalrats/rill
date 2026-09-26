@@ -340,8 +340,7 @@ pub enum ValueInstr {
     /// Construct a first-class function value: allocates a [`Value::Closure`]
     /// referencing an [`Ir::fragments`] body and the env record in `env`.
     /// Emitted when a function definition reference or lambda literal appears
-    /// in value position. v1 named-reference calls are β-reduced at compile
-    /// time, so runtime dispatch is exercised only by fragment bodies.
+    /// in value position.
     ValueMakeClosure {
         /// Destination value register.
         dst: usize,
@@ -526,6 +525,16 @@ pub struct Ir {
     /// Compiled function bodies, indexed by [`ValueInstr::ValueMakeClosure`]'s
     /// `fragment` field and dispatched by [`ValueInstr::ValueCallFunc`].
     pub fragments: Vec<FragmentIr>,
+    /// Number of value-register slots pre-allocated for the runtime function
+    /// call stack: `max_call_depth × max_fragment_regs`, where
+    /// `max_call_depth` is the total fragment count (a strict upper bound on
+    /// the number of concurrently-active fragment frames — the acyclic
+    /// contract forbids any fragment from recursing) and `max_fragment_regs`
+    /// is the largest `FragmentIr::num_value_regs`. [`RillProgram`](crate::program::RillProgram)
+    /// sizes its per-tick value-register store to `num_value_regs + max_call_regs`
+    /// so [`run_fragment`](crate::backend::interp::run_fragment) never grows it
+    /// on the RT path.
+    pub max_call_regs: usize,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
 }
