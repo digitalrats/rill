@@ -1174,12 +1174,16 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
         return Err(CompileError::Type { msg, span });
     }
     // A bare typeclass method reference is an unapplied method call: `show`
-    // needs an argument to select the instance.
-    if let Some(class_name) = ctx.env.class_of_method(name) {
-        return Err(CompileError::Type {
-            msg: format!("method `{name}` of `{class_name}` requires an argument"),
-            span,
-        });
+    // needs an argument to select the instance. User definitions shadow class
+    // methods (a user `eq`/`lt` is a plain function, not the builtin Eq/Ord
+    // method), so this only fires when no def/local of that name exists.
+    if !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
+        if let Some(class_name) = ctx.env.class_of_method(name) {
+            return Err(CompileError::Type {
+                msg: format!("method `{name}` of `{class_name}` requires an argument"),
+                span,
+            });
+        }
     }
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
         let s = ctx.fresh();
@@ -1414,60 +1418,63 @@ fn infer_apply(
     // a concrete argument type — an unresolved variable cannot select an
     // instance). The instance's body is β-reduced in place of the call; its
     // inferred type is the method's return type (v1 drops the declared return
-    // signature).
-    if let Some(class_name) = ctx.env.class_of_method(name) {
-        if args.len() != 1 {
-            return Err(CompileError::Type {
-                msg: format!(
-                    "method `{name}` of `{class_name}` expects 1 argument, got {}",
-                    args.len()
-                ),
-                span,
-            });
-        }
-        let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
-        let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
-            Some(t) => t,
-            None => {
+    // signature). User definitions shadow class methods, so this only fires
+    // when no def/local of that name exists.
+    if !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
+        if let Some(class_name) = ctx.env.class_of_method(name) {
+            if args.len() != 1 {
                 return Err(CompileError::Type {
+                    msg: format!(
+                        "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                        args.len()
+                    ),
+                    span,
+                });
+            }
+            let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
+            let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
+                Some(t) => t,
+                None => {
+                    return Err(CompileError::Type {
                     msg: format!(
                         "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
                     ),
                     span: args[0].span(),
                 });
-            }
-        };
-        let (_, param, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
-            Some(r) => r,
-            None => {
+                }
+            };
+            let (_, param, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
+                Some(r) => r,
+                None => {
+                    return Err(CompileError::Type {
+                        msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                        span,
+                    });
+                }
+            };
+            // Recursion guard: a method that inlines itself (directly or
+            // transitively) is a compile error, not a stack overflow.
+            let key = (class_name, ty_name.clone(), name.to_string());
+            if ctx.method_lifting.contains(&key) {
                 return Err(CompileError::Type {
-                    msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                    msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
                     span,
                 });
             }
-        };
-        // Recursion guard: a method that inlines itself (directly or
-        // transitively) is a compile error, not a stack overflow.
-        let key = (class_name, ty_name.clone(), name.to_string());
-        if ctx.method_lifting.contains(&key) {
-            return Err(CompileError::Type {
-                msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
-                span,
-            });
+            ctx.method_lifting.insert(key.clone());
+            // Bind the method parameter to the argument's value type and infer the
+            // body; the resulting type is the call's value type.
+            let saved = ctx.locals.clone();
+            if let Some(p) = param {
+                ctx.locals
+                    .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
+            }
+            let body_vty = infer_method_value_vty(ctx, &body, "body");
+            ctx.locals = saved;
+            ctx.method_lifting.remove(&key);
+            let body_vty = body_vty?;
+            return Ok(ArrowTy::value_channel(body_vty));
         }
-        ctx.method_lifting.insert(key.clone());
-        // Bind the method parameter to the argument's value type and infer the
-        // body; the resulting type is the call's value type.
-        let saved = ctx.locals.clone();
-        if let Some(p) = param {
-            ctx.locals
-                .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
-        }
-        let body_vty = infer_method_value_vty(ctx, &body, "body");
-        ctx.locals = saved;
-        ctx.method_lifting.remove(&key);
-        let body_vty = body_vty?;
-        return Ok(ArrowTy::value_channel(body_vty));
     }
     if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {
         let min = sig.min_args();

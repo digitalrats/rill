@@ -127,3 +127,21 @@ fn invalid_instance_body_is_compile_error() {
     let res = compile::<f32>(src);
     assert!(res.is_err(), "expected a compile error, got success");
 }
+
+#[test]
+fn user_def_shadows_builtin_eq_ord_method_names() {
+    // The builtin `Eq`/`Ord` typeclasses declare `eq`/`lt` methods, but a user
+    // definition with the same name is a plain function and must compile.
+    let src = r#"
+        lt = fn a b -> a * b;
+        main = lt 2.0 3.0;
+    "#;
+    let mut prog = compile::<f32>(src).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(6.0)
+    );
+}
