@@ -39,9 +39,10 @@ pub fn default_var(v: TypeVarId, subst: &mut Subst) {
 
 /// Whether the (resolved) value type `ty` transitively contains `Var(v)` — the
 /// occurs-check. A `Var` chain is followed (with a visited set, so a
-/// pre-existing cyclic binding cannot loop), and `Func` signatures are walked
-/// structurally. `Data`/`Newtype`/`Int`/`Float` never carry vars in v1 but are
-/// handled as leaves.
+/// pre-existing cyclic binding cannot loop), and compound types (`Func`,
+/// `Data`, `Newtype`, `App`) are walked structurally. `Bool`/`String`/`Cap`
+/// are leaves; a nested `TyConVar` is walked through `resolve_value` before the
+/// match.
 fn value_contains_var(subst: &Subst, ty: &ValueTy, v: TypeVarId) -> bool {
     let mut seen = HashSet::new();
     value_contains_var_impl(subst, ty, v, &mut seen)
