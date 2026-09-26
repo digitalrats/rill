@@ -102,7 +102,7 @@ struct Lowerer<'a> {
     method_lifting: HashSet<(String, String, String)>,
     /// Compiled function bodies (lambda literals), indexed by
     /// [`ValueInstr::ValueMakeClosure`]'s `fragment` field.
-    fragments: Vec<FragmentIr>,
+    fragments: Vec<std::sync::Arc<FragmentIr>>,
     /// Free-variable names of the lambda currently being lowered into a
     /// fragment (empty at the program level). A `Ref` to one of these inside
     /// the fragment emits a `ValueReadCell { cell: capture_index }` reading the
@@ -935,7 +935,7 @@ impl<'a> Lowerer<'a> {
             },
         };
         let id = self.fragments.len();
-        self.fragments.push(frag);
+        self.fragments.push(std::sync::Arc::new(frag));
 
         self.value_instrs = saved_instrs;
         self.next_value_reg = saved_next;
@@ -1024,7 +1024,7 @@ impl<'a> Lowerer<'a> {
             },
         };
         let id = self.fragments.len();
-        self.fragments.push(frag);
+        self.fragments.push(std::sync::Arc::new(frag));
 
         self.value_instrs = saved_instrs;
         self.next_value_reg = saved_next;

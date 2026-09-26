@@ -572,9 +572,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             let slot = prog.value_regs.get(*closure_slot).copied().flatten();
             match slot.and_then(|s| prog.arena.get(s)) {
                 Some(Value::Closure(env_ref, fragment_id)) => {
-                    // Clone the fragment out of the IR so `prog` can be borrowed
-                    // mutably inside `run_fragment` (the immutable IR borrow ends
-                    // once the owned copy is in hand).
+                    // Share the fragment via `Arc` so `prog` can be borrowed
+                    // mutably inside `run_fragment` without cloning the body
+                    // (an atomic refcount bump, no heap allocation on the RT
+                    // path). The `Arc::clone` ends the immutable IR borrow.
                     match prog.ir.fragments.get(*fragment_id as usize).cloned() {
                         Some(frag) => run_fragment(prog, &frag, *env_ref, args, dst, drops),
                         None => prog.value_regs[*dst] = None,
@@ -712,7 +713,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
 /// depth reuses the same reserved buffer.
 fn run_fragment<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
-    frag: &FragmentIr,
+    frag: &std::sync::Arc<FragmentIr>,
     env_ref: crate::arena::ArenaRef,
     args: &[usize],
     dst: &usize,
@@ -1190,7 +1191,7 @@ mod closure_dispatch_tests {
                 capacity: 16,
                 value_state_slots: 0,
             },
-            fragments: vec![FragmentIr {
+            fragments: vec![std::sync::Arc::new(FragmentIr {
                 value_instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }],
                 steps: Vec::new(),
                 num_value_regs: 1,
@@ -1203,7 +1204,7 @@ mod closure_dispatch_tests {
                     value_outs: 1,
                     signal_ins: 0,
                 },
-            }],
+            })],
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);
         let mut out = [0.0f32; 2];

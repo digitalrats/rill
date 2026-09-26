@@ -524,7 +524,10 @@ pub struct Ir {
     pub value_funcs: Vec<ValueFunc>,
     /// Compiled function bodies, indexed by [`ValueInstr::ValueMakeClosure`]'s
     /// `fragment` field and dispatched by [`ValueInstr::ValueCallFunc`].
-    pub fragments: Vec<FragmentIr>,
+    /// Function bodies: fragments of the value/block track, dispatched by
+    /// [`ValueInstr::ValueCallFunc`]. Shared via `Arc` so a dispatch shares the
+    /// fragment without cloning it (no heap allocation on the RT path).
+    pub fragments: Vec<std::sync::Arc<FragmentIr>>,
     /// Number of value-register slots pre-allocated for the runtime function
     /// call stack: `max_call_depth × max_fragment_regs`, where
     /// `max_call_depth` is the total fragment count (a strict upper bound on
