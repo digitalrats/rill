@@ -1135,11 +1135,14 @@ impl<'a> Lowerer<'a> {
     /// Shapes: a record is `1 + Σ field subtrees`; a sum is `1 + the largest
     /// ctor's payload subtree` (each ctor's payload subtree is the sum of its
     /// entries); a newtype is `1 + inner subtree`; scalars, func values and
-    /// unbound variables occupy exactly one slot. Recursive data types are
-    /// cycle-guarded (a re-entered type contributes one slot) — v1 values are
-    /// finite literal constructions, so the bound stays finite. Constructor
-    /// applications (`App`) count as one slot until Task 2.3 computes exact
-    /// container sizes.
+    /// unbound variables occupy exactly one slot. Builtin collections are
+    /// exact too: `List`/`Set` are `1 + cap × elem subtree`, `Map` is
+    /// `1 + cap × (key subtree + value subtree)`, `Pair` is `1 + both
+    /// subtrees`, `Maybe` is `1 + the inner subtree` and `Either` is
+    /// `1 + the larger arm's subtree` (the smaller arm can hold no value at
+    /// runtime). Recursive data types are cycle-guarded (a re-entered type
+    /// contributes one slot) — v1 values are finite literal constructions, so
+    /// the bound stays finite.
     fn subtree_size(&self, vty: &ValueTy) -> usize {
         self.subtree_size_impl(vty, &mut HashSet::new())
     }
@@ -1154,10 +1157,52 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
             | ValueTy::TyConVar(_) => 1,
-            // Temporary placeholder until Task 2.3 computes exact container
-            // sizes: a constructor application counts as ONE slot (an
-            // under-estimate — a 16-element `List` needs 17 slots, not 1).
-            ValueTy::App(..) => 1,
+            ValueTy::App(name, args) => match name.as_str() {
+                "Maybe" => {
+                    1 + args
+                        .first()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .unwrap_or(1)
+                }
+                "Pair" => {
+                    1 + args
+                        .iter()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .sum::<usize>()
+                }
+                "Either" => {
+                    1 + args
+                        .iter()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .max()
+                        .unwrap_or(1)
+                }
+                "List" | "Set" => {
+                    let elem = &args[0];
+                    let cap = match &args[1] {
+                        ValueTy::Cap(n) => *n,
+                        _ => 0,
+                    };
+                    1 + cap * self.subtree_size_impl(elem, visiting)
+                }
+                "Map" => {
+                    let k = &args[0];
+                    let v = &args[1];
+                    let cap = match &args[2] {
+                        ValueTy::Cap(n) => *n,
+                        _ => 0,
+                    };
+                    1 + cap
+                        * (self.subtree_size_impl(k, visiting)
+                            + self.subtree_size_impl(v, visiting))
+                }
+                _ => {
+                    1 + args
+                        .iter()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .sum::<usize>()
+                }
+            },
             ValueTy::Newtype(name, _) => {
                 if !visiting.insert(name.clone()) {
                     return 1;
@@ -2925,5 +2970,51 @@ mod tests {
             .filter(|i| matches!(i, ValueInstr::ValueMatch { .. }))
             .count();
         assert_eq!(matches, 1);
+    }
+
+    #[test]
+    fn collection_subtree_sizes_are_exact() {
+        let env = TypeEnv::default();
+        let empty = HashSet::new();
+        let lw = lw(&env, &empty);
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "List".into(),
+                vec![ValueTy::Float, ValueTy::Cap(16)]
+            )),
+            1 + 16
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(4)]
+            )),
+            1 + 4 * 2
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Set".into(),
+                vec![ValueTy::Int, ValueTy::Cap(8)]
+            )),
+            1 + 8
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App("Maybe".into(), vec![ValueTy::Float])),
+            2
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Pair".into(),
+                vec![ValueTy::Float, ValueTy::Int]
+            )),
+            3
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Either".into(),
+                vec![ValueTy::Float, ValueTy::Int]
+            )),
+            2
+        );
     }
 }
