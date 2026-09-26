@@ -18,11 +18,12 @@ use crate::error::{CompileError, Span};
 /// A unification variable identifier.
 pub type TypeVarId = u32;
 
-/// Upper bound on `resolve_value` chain-following depth. Legitimate nested
-/// function types (`Func([Func([...])], ...)`) stay well below this; a value
-/// type deeper than this is either a cyclic binding or a pathological program,
-/// and resolving it must degrade to the unresolved var — never a stack
-/// overflow. The occurs-check in `unify_value` rejects cycles at the source.
+/// Upper bound on `resolve_value` chain-following depth. Legitimate nesting —
+/// function types (`Func([Func([...])], ...)`) and the argument lists of
+/// `App`/`Data`/`Newtype` applications — stays well below this; a value type
+/// deeper than this is either a cyclic binding or a pathological program, and
+/// resolving it must degrade to the unresolved var — never a stack overflow.
+/// The occurs-check in `unify_value` rejects cycles at the source.
 pub(crate) const MAX_VALUE_RESOLVE_DEPTH: usize = 64;
 
 /// The scalar (element) type of a sample.

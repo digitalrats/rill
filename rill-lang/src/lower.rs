@@ -1137,8 +1137,9 @@ impl<'a> Lowerer<'a> {
     /// entries); a newtype is `1 + inner subtree`; scalars, func values and
     /// unbound variables occupy exactly one slot. Recursive data types are
     /// cycle-guarded (a re-entered type contributes one slot) — v1 values are
-    /// finite literal constructions, so the bound stays finite and is exact
-    /// for non-recursive shapes.
+    /// finite literal constructions, so the bound stays finite. Constructor
+    /// applications (`App`) count as one slot until Task 2.3 computes exact
+    /// container sizes.
     fn subtree_size(&self, vty: &ValueTy) -> usize {
         self.subtree_size_impl(vty, &mut HashSet::new())
     }
@@ -1153,8 +1154,9 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
             | ValueTy::TyConVar(_) => 1,
-            // Task 2.3 computes exact sizes for `App` (collections); until then
-            // treat a constructor application conservatively as one slot.
+            // Temporary placeholder until Task 2.3 computes exact container
+            // sizes: a constructor application counts as ONE slot (an
+            // under-estimate — a 16-element `List` needs 17 slots, not 1).
             ValueTy::App(..) => 1,
             ValueTy::Newtype(name, _) => {
                 if !visiting.insert(name.clone()) {

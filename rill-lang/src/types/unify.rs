@@ -37,12 +37,11 @@ pub fn default_var(v: TypeVarId, subst: &mut Subst) {
     subst.map.entry(v).or_insert(Scalar::Float);
 }
 
-/// Whether the (resolved) value type `ty` transitively contains `Var(v)` — the
-/// occurs-check. A `Var` chain is followed (with a visited set, so a
-/// pre-existing cyclic binding cannot loop), and compound types (`Func`,
-/// `Data`, `Newtype`, `App`) are walked structurally. `Bool`/`String`/`Cap`
-/// are leaves; a nested `TyConVar` is walked through `resolve_value` before the
-/// match.
+/// Whether the (resolved) value type `ty` transitively contains the variable
+/// `v` (a `Var` or `TyConVar` id) — the occurs-check. A variable chain is
+/// followed (with a visited set, so a pre-existing cyclic binding cannot loop),
+/// and compound types (`Func`, `Data`, `Newtype`, `App`) are walked
+/// structurally. `Bool`/`String`/`Cap` are leaves.
 fn value_contains_var(subst: &Subst, ty: &ValueTy, v: TypeVarId) -> bool {
     let mut seen = HashSet::new();
     value_contains_var_impl(subst, ty, v, &mut seen)
@@ -56,7 +55,7 @@ fn value_contains_var_impl(
 ) -> bool {
     let resolved = subst.resolve_value(ty);
     match &resolved {
-        ValueTy::Var(w) => {
+        ValueTy::Var(w) | ValueTy::TyConVar(w) => {
             if *w == v {
                 return true;
             }
@@ -106,6 +105,35 @@ pub fn unify_value(
     let a = subst.resolve_value(a);
     let b = subst.resolve_value(b);
     match (&a, &b) {
+        (ValueTy::TyConVar(v), ValueTy::TyConVar(w)) => {
+            if v == w {
+                return Ok(());
+            }
+            // Union-find by lower id, exactly like the Var↔Var arm: kind
+            // variables chain in `value_map`, so `TyConVar(7) ~ TyConVar(3)`
+            // followed by `TyConVar(3) ~ App(..)` makes `TyConVar(7)` resolve
+            // to the concrete constructor. Kind-aware unification (which would
+            // reject a kind variable chained to a plain `*` variable) is
+            // refined in Phase 8.
+            if *v < *w {
+                subst.value_map.insert(*w, ValueTy::TyConVar(*v));
+            } else {
+                subst.value_map.insert(*v, ValueTy::TyConVar(*w));
+            }
+            Ok(())
+        }
+        // Cross-kind chaining: `Var` and `TyConVar` draw ids from the same
+        // counter, so a value variable may share a union-find chain with a
+        // kind variable. Chain by lower id as above; kind-aware unification
+        // (distinguishing `*` from `* -> *` variables) is refined in Phase 8.
+        (ValueTy::Var(v), ValueTy::TyConVar(w)) | (ValueTy::TyConVar(w), ValueTy::Var(v)) => {
+            if *v < *w {
+                subst.value_map.insert(*w, ValueTy::Var(*v));
+            } else {
+                subst.value_map.insert(*v, ValueTy::TyConVar(*w));
+            }
+            Ok(())
+        }
         (ValueTy::Var(v), other) | (other, ValueTy::Var(v)) => {
             match other {
                 ValueTy::Var(w) => {
@@ -300,6 +328,59 @@ mod tests {
         assert_eq!(
             s.resolve_value(&ValueTy::TyConVar(10)),
             ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)])
+        );
+    }
+
+    #[test]
+    fn recursive_kind_is_rejected_by_occurs_check() {
+        // TyConVar(5) unified with App("List", [TyConVar(5)]) is a recursive
+        // kind: `f = List f`. The occurs-check must catch the TyConVar nested
+        // inside the App argument list.
+        let mut s = Subst::default();
+        assert!(unify_value(
+            &ValueTy::TyConVar(5),
+            &ValueTy::App("List".into(), vec![ValueTy::TyConVar(5)]),
+            &mut s,
+            sp(),
+        )
+        .is_err());
+        // ... and the recursive binding must not have been recorded.
+        assert_eq!(s.resolve_value(&ValueTy::TyConVar(5)), ValueTy::TyConVar(5));
+    }
+
+    #[test]
+    fn tyconvar_union_find_chains_to_concrete() {
+        let mut s = Subst::default();
+        unify_value(&ValueTy::TyConVar(7), &ValueTy::TyConVar(3), &mut s, sp()).unwrap();
+        unify_value(
+            &ValueTy::TyConVar(3),
+            &ValueTy::App("Maybe".into(), vec![ValueTy::Float]),
+            &mut s,
+            sp(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.resolve_value(&ValueTy::TyConVar(7)),
+            ValueTy::App("Maybe".into(), vec![ValueTy::Float])
+        );
+    }
+
+    #[test]
+    fn var_tyconvar_cross_kind_chains() {
+        // `Var` and `TyConVar` share one id counter, so a value variable and a
+        // kind variable can chain in the same union-find.
+        let mut s = Subst::default();
+        unify_value(&ValueTy::Var(4), &ValueTy::TyConVar(6), &mut s, sp()).unwrap();
+        unify_value(
+            &ValueTy::TyConVar(6),
+            &ValueTy::App("List".into(), vec![ValueTy::Int]),
+            &mut s,
+            sp(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.resolve_value(&ValueTy::Var(4)),
+            ValueTy::App("List".into(), vec![ValueTy::Int])
         );
     }
 
