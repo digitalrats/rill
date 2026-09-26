@@ -217,6 +217,14 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             }
             write!(buf, "}}").ok();
         }
+        Expr::Lambda { params, body, .. } => {
+            write!(buf, "fn").ok();
+            for p in params {
+                write!(buf, " {}", p.name).ok();
+            }
+            write!(buf, " -> ").ok();
+            render_expr(body, buf, 0);
+        }
     }
 }
 
@@ -322,5 +330,31 @@ mod tests {
         };
         let dsl = render(&prog);
         assert_eq!(dsl, "main gain = _ * gain");
+    }
+
+    #[test]
+    fn render_lambda() {
+        let prog = Program {
+            defs: vec![Def::Local {
+                name: "double".into(),
+                body: Expr::Lambda {
+                    params: vec![crate::ast::Param {
+                        name: "x".into(),
+                        span: span(),
+                    }],
+                    body: Box::new(Expr::Arith {
+                        op: ArithOp::Mul,
+                        lhs: Box::new(Expr::Ref("x".into(), span())),
+                        rhs: Box::new(Expr::Float(2.0, span())),
+                        span: span(),
+                    }),
+                    span: span(),
+                },
+                where_defs: vec![],
+                span: span(),
+            }],
+        };
+        let dsl = render(&prog);
+        assert_eq!(dsl, "double = fn x -> x * 2.0");
     }
 }

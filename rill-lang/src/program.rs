@@ -61,12 +61,38 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// ticks. The block track (`Instr::ReadMainCell`) and value track
     /// (`ValueReadMainCell`) read these directly.
     pub(crate) main_cells: Vec<Option<crate::arena::ArenaRef>>,
-    /// Per-tick value registers.
+    /// Per-tick value registers. The store is pre-sized to
+    /// `ir.num_value_regs + ir.max_call_regs`: the leading `num_value_regs`
+    /// slots are the program's own registers, the tail is the pre-allocated
+    /// function-call scratch that [`run_fragment`](crate::backend::interp::run_fragment)
+    /// borrows per dispatch (see [`Self::value_regs_top`]). No reallocation on
+    /// the RT path.
     pub(crate) value_regs: Vec<Option<crate::arena::ArenaRef>>,
+    /// Watermark for the pre-allocated call scratch: the index one past the
+    /// last occupied value register. Equals `ir.num_value_regs` outside a
+    /// fragment dispatch and grows into the pre-allocated tail for the
+    /// duration of each (possibly nested) call.
+    pub(crate) value_regs_top: usize,
     /// Per-tick value-state slots (feedback/delay of values).
     pub(crate) value_state: Vec<Option<crate::arena::ArenaRef>>,
     /// Current runtime cell-stack frames (bindings).
     pub(crate) cell_stack: Vec<Vec<(u32, crate::arena::ArenaRef)>>,
+    /// Shared capture-cell store for function fragments (see
+    /// [`run_fragment`](crate::backend::interp::run_fragment)). Each dispatch
+    /// appends its env-field capture cells at the current top; the fragment's
+    /// `ValueReadCell { cell: i }` capture reads resolve to
+    /// `frag_cells[frag_cells_base + i]` while a frame is active. Pre-sized at
+    /// construction to the build-time cell bound so the RT path never
+    /// reallocates.
+    pub(crate) frag_cells: Vec<crate::arena::ArenaRef>,
+    /// Base index of the currently-executing fragment's capture cells in
+    /// [`Self::frag_cells`]; equals `frag_cells.len()` outside a dispatch.
+    pub(crate) frag_cells_base: usize,
+    /// Shared deferred-drop scratch: arena refs queued by value instructions
+    /// and released at a well-defined point (end of the value track, end of a
+    /// fragment dispatch). Pre-sized at construction; used as a stack (nested
+    /// dispatches append above the caller's mark and drain on return).
+    pub(crate) drops_scratch: Vec<crate::arena::ArenaRef>,
     /// Value outputs of the last processed tick: one counted arena ref per
     /// value output channel, held across ticks (see [`value_outputs`](Self::value_outputs)).
     pub(crate) value_outputs: Vec<Option<crate::arena::ArenaRef>>,
@@ -141,9 +167,14 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let params_dirty = vec![false; params.len()];
         let mut arena = Arena::with_capacity(ir.value_state.capacity);
         let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
-        let value_regs = vec![None; ir.num_value_regs];
+        // Pre-allocate the value-register store: the program's own registers
+        // plus the function-call scratch (see `Ir::max_call_regs`).
+        let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
+        let value_regs_top = ir.num_value_regs;
         let value_state = vec![None; ir.value_state.value_state_slots];
         let cell_stack = Vec::new();
+        let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
+        let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
         let value_outputs = vec![None; ir.value_output_regs.len()];
         Self {
             ir,
@@ -159,8 +190,12 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             arena,
             main_cells,
             value_regs,
+            value_regs_top,
             value_state,
             cell_stack,
+            frag_cells,
+            frag_cells_base: 0,
+            drops_scratch,
             value_outputs,
         }
     }
@@ -276,9 +311,14 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let params_dirty = vec![false; params.len()];
         let mut arena = Arena::with_capacity(ir.value_state.capacity);
         let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
-        let value_regs = vec![None; ir.num_value_regs];
+        // Pre-allocate the value-register store: the program's own registers
+        // plus the function-call scratch (see `Ir::max_call_regs`).
+        let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
+        let value_regs_top = ir.num_value_regs;
         let value_state = vec![None; ir.value_state.value_state_slots];
         let cell_stack = Vec::new();
+        let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
+        let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
         let value_outputs = vec![None; ir.value_output_regs.len()];
         Ok(Self {
             ir,
@@ -294,8 +334,12 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             arena,
             main_cells,
             value_regs,
+            value_regs_top,
             value_state,
             cell_stack,
+            frag_cells,
+            frag_cells_base: 0,
+            drops_scratch,
             value_outputs,
         })
     }
@@ -325,16 +369,44 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .collect()
     }
 
+    /// Upper bound on the shared fragment capture-cell store: the worst-case
+    /// call stack holds one frame per fragment (recursion is rejected), and
+    /// each frame needs at most its fragment's capture cells, so the sum over
+    /// all fragments bounds the deepest nesting.
+    fn max_frag_cells(ir: &Ir) -> usize {
+        ir.fragments
+            .iter()
+            .map(|f| f.num_capture_cells)
+            .sum::<usize>()
+    }
+
+    /// Upper bound on the shared deferred-drop scratch: the deepest call stack
+    /// queues at most one drop per value instruction of each frame, so the sum
+    /// over the main track and every fragment's instructions is a strict bound.
+    fn max_drops(ir: &Ir) -> usize {
+        ir.value_instrs.len()
+            + ir.fragments
+                .iter()
+                .map(|f| f.value_instrs.len())
+                .sum::<usize>()
+    }
+
     /// Release this tick's per-tick value registers.
     ///
     /// Value registers are per-tick scratch: every occupied register holds a
     /// counted arena ref that must be released before the next tick (otherwise
     /// a multi-tick value program leaks one slot per register per tick and
     /// exhausts the fixed arena). Called at the very end of a tick, after the
-    /// value outputs have been read. Mirrors the value_regs cleanup in
-    /// [`Algorithm::reset`](Self::reset).
+    /// value outputs have been read. Only the program's own registers
+    /// (`0..ir.num_value_regs`) are cleared — the pre-allocated call scratch
+    /// is drained by `run_fragment` on every dispatch return, so its slots are
+    /// already `None`.
     pub(crate) fn clear_value_regs(&mut self) {
-        for r in &mut self.value_regs {
+        debug_assert!(
+            self.value_regs_top == self.ir.num_value_regs,
+            "call scratch watermark not unwound at tick end"
+        );
+        for r in self.value_regs.iter_mut().take(self.ir.num_value_regs) {
             if let Some(r) = r.take() {
                 self.arena.drop_ref(r);
             }
@@ -485,6 +557,19 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
             }
         }
         self.cell_stack.clear();
+        self.value_regs_top = self.ir.num_value_regs;
+        // The shared fragment-capture cells and deferred-drop scratch are
+        // drained by every dispatch, but reset must still empty them (a reset
+        // may be issued mid-dispatch is impossible — the signal thread is the
+        // only dispatcher — yet a defensive clear keeps the RC accounting
+        // sound if a future control-path dispatch ever appears).
+        for c in self.frag_cells.drain(..) {
+            self.arena.drop_ref(c);
+        }
+        self.frag_cells_base = 0;
+        for r in self.drops_scratch.drain(..) {
+            self.arena.drop_ref(r);
+        }
     }
 }
 
@@ -534,6 +619,8 @@ mod program_value_tests {
             num_value_regs: 0,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
                 value_state_slots: 2,
@@ -560,6 +647,8 @@ mod program_value_tests {
             num_value_regs: 0,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
                 value_state_slots: 1,

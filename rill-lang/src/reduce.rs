@@ -1,8 +1,9 @@
 //! β-reduction: inline user-defined function calls after type inference.
 //!
-//! After this pass, the AST contains no `Apply` nodes targeting user-defined
-//! functions — only builtins, `smooth`, `param`, and combinators remain.
-//! This simplifies lowering: no Anchor handling in `lower_ref`.
+//! After this pass, the AST contains no `Apply` nodes targeting named
+//! λ-parameter definitions — only builtins, `smooth`, `param`, combinators,
+//! and runtime-dispatch `Apply` nodes over closure values (`add2 = adder 2.0`)
+//! remain. This simplifies lowering: no Anchor handling in `lower_ref`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -109,6 +110,21 @@ fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 span: *span,
             }
         }
+        Expr::Lambda { params, body, span } => {
+            // A lambda rebinds its parameters inside the body: drop them from
+            // the substitution so an outer binding of the same spelling is not
+            // inlined into the lambda. Free names substituted before the lambda
+            // become by-value captures (correct for the env-snapshot model).
+            let mut inner = subst.clone();
+            for p in params {
+                inner.remove(&p.name);
+            }
+            Expr::Lambda {
+                params: params.clone(),
+                body: Box::new(substitute(body, &inner)),
+                span: *span,
+            }
+        }
         Expr::Record(fields, span) => Expr::Record(
             fields
                 .iter()
@@ -124,6 +140,27 @@ fn defs_map(defs: &[Def]) -> HashMap<String, Def> {
     defs.iter()
         .map(|d| (d.name().to_string(), d.clone()))
         .collect()
+}
+
+/// Whether `name` resolves to a closure-valued definition: a `Def::Local`
+/// whose body is a lambda literal or a reference/application chain that
+/// produces one (e.g. `add2 = adder 2.0`). Applying a closure value is a
+/// RUNTIME dispatch (`ValueCallFunc`), so such `Apply` nodes must survive
+/// reduction — inlining a closure body would drop the applied arguments.
+/// Named λ-parameter definitions (`double x = ...`) remain β-reduced.
+fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<String>) -> bool {
+    if !seen.insert(name.to_string()) {
+        return false;
+    }
+    match ctx.get(name) {
+        Some(Def::Local { body, .. }) => match body {
+            Expr::Lambda { .. } => true,
+            Expr::Ref(next, _) => is_closure_def(ctx, next, seen),
+            Expr::Apply { .. } => true,
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Def {
@@ -177,10 +214,32 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
         }
         Expr::Apply { name, args, span } => {
             let reduced_args: Vec<Expr> = args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect();
+            // Closure-valued applications (`add2 = adder 2.0`) are runtime
+            // dispatches on closure values: leave the Apply in place so
+            // lowering emits a `ValueCallFunc`. β-reducing a closure body would
+            // drop the applied arguments.
+            if is_closure_def(ctx, name, &mut HashSet::new()) {
+                return Expr::Apply {
+                    name: name.clone(),
+                    args: reduced_args,
+                    span: *span,
+                };
+            }
             if let Some(def) = ctx.get(name) {
                 if def.is_decl() {
                     // Type declarations aren't signal definitions — keep the
                     // application as-is rather than inlining a sentinel body.
+                    Expr::Apply {
+                        name: name.clone(),
+                        args: reduced_args,
+                        span: *span,
+                    }
+                } else if reduced_args.len() < def.params().len() {
+                    // Partial application (`add5 = add2 5.0` where `add2` takes
+                    // two λ-params) is a RUNTIME dispatch over a closure value:
+                    // keep the Apply so lowering emits a curry closure.
+                    // β-reducing it would substitute the applied args and leave
+                    // the remaining parameters dangling in the body.
                     Expr::Apply {
                         name: name.clone(),
                         args: reduced_args,
@@ -282,6 +341,21 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             span: *span,
         },
         Expr::Neg(inner, span) => Expr::Neg(Box::new(reduce_expr(inner, ctx, cafs)), *span),
+        Expr::Lambda { params, body, span } => {
+            // A lambda rebinds its parameters inside the body: drop them from
+            // the reduction context so an outer definition of the same spelling
+            // is not inlined into the lambda (mirrors the shadowing in
+            // `substitute`'s Lambda arm).
+            let mut inner_ctx = ctx.clone();
+            for p in params {
+                inner_ctx.remove(&p.name);
+            }
+            Expr::Lambda {
+                params: params.clone(),
+                body: Box::new(reduce_expr(body, &inner_ctx, cafs)),
+                span: *span,
+            }
+        }
         _ => e.clone(),
     }
 }
@@ -520,5 +594,23 @@ mod tests {
             reduced.main_def().unwrap().body(),
             Expr::Ref(name, _) if name == "Point"
         ));
+    }
+
+    #[test]
+    fn lambda_param_shadows_local_def() {
+        // x = _ * 0.5; main = fn x -> x  →  the outer `x` must NOT be inlined
+        // into the lambda body (the param shadows it).
+        let body = reduced_body("x = _ * 0.5; main = fn x -> x");
+        match &body {
+            Expr::Lambda {
+                params,
+                body: inner,
+                ..
+            } => {
+                assert_eq!(params.len(), 1);
+                assert!(matches!(inner.as_ref(), Expr::Ref(name, _) if name == "x"));
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
     }
 }

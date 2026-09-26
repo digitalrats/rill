@@ -1,5 +1,7 @@
 //! Scalar unification with occurs check.
 
+use std::collections::HashSet;
+
 use super::ty::{Scalar, Subst, TypeVarId, ValueTy};
 use crate::error::{CompileError, Span};
 
@@ -35,29 +37,123 @@ pub fn default_var(v: TypeVarId, subst: &mut Subst) {
     subst.map.entry(v).or_insert(Scalar::Float);
 }
 
+/// Whether the (resolved) value type `ty` transitively contains `Var(v)` — the
+/// occurs-check. A `Var` chain is followed (with a visited set, so a
+/// pre-existing cyclic binding cannot loop), and `Func` signatures are walked
+/// structurally. `Data`/`Newtype`/`Int`/`Float` never carry vars in v1 but are
+/// handled as leaves.
+fn value_contains_var(subst: &Subst, ty: &ValueTy, v: TypeVarId) -> bool {
+    let mut seen = HashSet::new();
+    value_contains_var_impl(subst, ty, v, &mut seen)
+}
+
+fn value_contains_var_impl(
+    subst: &Subst,
+    ty: &ValueTy,
+    v: TypeVarId,
+    seen: &mut HashSet<TypeVarId>,
+) -> bool {
+    let resolved = subst.resolve_value(ty);
+    match &resolved {
+        ValueTy::Var(w) => {
+            if *w == v {
+                return true;
+            }
+            // The resolved representative is normally unbound; follow its
+            // direct binding anyway (guarded against revisits) so a chain cut
+            // short by the resolve depth guard still terminates.
+            if !seen.insert(*w) {
+                return false;
+            }
+            match subst.value_map.get(w) {
+                Some(inner) => value_contains_var_impl(subst, inner, v, seen),
+                None => false,
+            }
+        }
+        ValueTy::Func(args, rets) => {
+            args.iter()
+                .any(|a| value_contains_var_impl(subst, a, v, seen))
+                || rets
+                    .iter()
+                    .any(|r| value_contains_var_impl(subst, r, v, seen))
+        }
+        _ => false,
+    }
+}
+
 /// Unify two value types.
 ///
-/// Value-type variables resolve structurally (v1: concrete types only; Task 6
-/// typeclass constraints extend this to bind through `subst`).
+/// Value-type variables resolve structurally and RECORD their bindings in
+/// `subst.value_map`: unifying a `Var` with a concrete type binds it (a lambda
+/// parameter used as a higher-order-function callee becomes a `Func`; a record
+/// parameter becomes its `Data` type), so lowering sees concrete parameter
+/// types. A `Var` unified with another `Var` chains the bindings (union-find by
+/// variable id keeps the chains acyclic). Binding a `Var` to a COMPOUND type
+/// that (transitively) contains it is an **occurs-check** violation — it would
+/// construct an infinite type (`f f` makes `f = Func([f], [r])`) — and is
+/// rejected with a clean compile error instead of a cyclic binding.
 pub fn unify_value(
     a: &ValueTy,
     b: &ValueTy,
-    _subst: &mut Subst,
+    subst: &mut Subst,
     span: Span,
 ) -> Result<(), CompileError> {
-    match (a, b) {
+    let a = subst.resolve_value(a);
+    let b = subst.resolve_value(b);
+    match (&a, &b) {
         (ValueTy::Var(v), other) | (other, ValueTy::Var(v)) => {
-            if let ValueTy::Var(w) = other {
-                if v == w {
-                    return Ok(());
+            match other {
+                ValueTy::Var(w) => {
+                    if v == w {
+                        return Ok(());
+                    }
+                    // Union-find: point the HIGHER variable id at the lower one
+                    // so binding chains stay acyclic (a later reverse unification
+                    // cannot create a cycle).
+                    if *v < *w {
+                        subst.value_map.insert(*w, ValueTy::Var(*v));
+                    } else {
+                        subst.value_map.insert(*v, ValueTy::Var(*w));
+                    }
+                    Ok(())
+                }
+                _ => {
+                    // Occurs-check: a compound type containing this var would be
+                    // self-referential (an infinite type).
+                    if value_contains_var(subst, other, *v) {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "recursive function type: type variable {} cannot unify with \
+                                 the self-referential type {other:?}",
+                                *v
+                            ),
+                            span,
+                        });
+                    }
+                    subst.value_map.insert(*v, other.clone());
+                    Ok(())
                 }
             }
-            Ok(())
         }
         (ValueTy::Int, ValueTy::Int) | (ValueTy::Float, ValueTy::Float) => Ok(()),
         (ValueTy::Data(x), ValueTy::Data(y)) if x == y => Ok(()),
         (ValueTy::Newtype(x), ValueTy::Newtype(y)) if x == y => Ok(()),
-        (ValueTy::Func(x), ValueTy::Func(y)) if x == y => Ok(()),
+        (ValueTy::Func(ax, rx), ValueTy::Func(by, sy)) => {
+            if ax.len() == by.len() && rx.len() == sy.len() {
+                for i in 0..ax.len() {
+                    unify_value(&ax[i], &by[i], subst, span)?;
+                }
+                for i in 0..rx.len() {
+                    unify_value(&rx[i], &sy[i], subst, span)?;
+                }
+                Ok(())
+            } else {
+                Err(CompileError::Type {
+                    msg: format!("cannot unify value type {a:?} with {b:?}"),
+                    span,
+                })
+            }
+        }
         _ => Err(CompileError::Type {
             msg: format!("cannot unify value type {a:?} with {b:?}"),
             span,
@@ -108,13 +204,35 @@ mod tests {
     }
 
     #[test]
-    fn value_var_against_concrete_ok() {
-        // Value-type vars are structural in v1: unifying against a concrete
-        // type records nothing yet (resolution lands with the `Subst` value
-        // map in Task 6), so this only checks that no error is produced.
+    fn value_var_records_binding_against_concrete() {
+        // Value-type vars RECORD their bindings (Task 6): unifying against a
+        // concrete type binds it in `subst.value_map`, so a later resolve sees
+        // the concrete type (a lambda parameter used as an HOF callee).
         let mut s = Subst::default();
         unify_value(&ValueTy::Var(0), &ValueTy::Float, &mut s, sp()).unwrap();
+        assert_eq!(s.resolve_value(&ValueTy::Var(0)), ValueTy::Float);
         unify_value(&ValueTy::Var(1), &ValueTy::Var(0), &mut s, sp()).unwrap();
+        assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Float);
         unify_value(&ValueTy::Int, &ValueTy::Int, &mut s, sp()).unwrap();
+        // A Func binds structurally: var 2 -> Func([Float],[Float]).
+        unify_value(
+            &ValueTy::Var(2),
+            &ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float]),
+            &mut s,
+            sp(),
+        )
+        .unwrap();
+        assert_eq!(
+            s.resolve_value(&ValueTy::Var(2)),
+            ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float])
+        );
+        // Arity mismatch through a bound var is still rejected.
+        assert!(unify_value(
+            &ValueTy::Var(2),
+            &ValueTy::Func(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]),
+            &mut s,
+            sp(),
+        )
+        .is_err());
     }
 }

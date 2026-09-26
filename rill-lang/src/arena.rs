@@ -23,8 +23,8 @@ pub enum ValueKind {
     Sum,
     /// `newtype`-wrapped inner value.
     Newtype,
-    /// Named function reference.
-    Func,
+    /// First-class function: captured environment record + body fragment id.
+    Closure,
     /// The unit value.
     Void,
 }
@@ -42,8 +42,13 @@ pub enum Value {
     Sum(u32, Vec<ArenaRef>),
     /// A single inner value wrapped by a `newtype`.
     Newtype(ArenaRef),
-    /// Named function reference (compile-time registry index).
-    Func(u32),
+    /// A first-class function: captured environment record + body fragment id.
+    ///
+    /// A closure OWNS its env record the way a record owns its field refs:
+    /// `drop_ref` releases the env when the last closure reference is dropped,
+    /// and `ValueMakeClosure` recounts the env so both the creating register
+    /// and the closure are balanced owners.
+    Closure(ArenaRef, u32),
     /// The unit value.
     Void,
 }
@@ -57,7 +62,7 @@ impl Value {
             Value::Record(_) => ValueKind::Record,
             Value::Sum(_, _) => ValueKind::Sum,
             Value::Newtype(_) => ValueKind::Newtype,
-            Value::Func(_) => ValueKind::Func,
+            Value::Closure(_, _) => ValueKind::Closure,
             Value::Void => ValueKind::Void,
         }
     }
@@ -180,6 +185,7 @@ impl Arena {
                 }
             }
             Value::Newtype(inner) => self.drop_ref(inner),
+            Value::Closure(env, _) => self.drop_ref(env),
             _ => {}
         }
         self.free.push_front(r);
@@ -212,6 +218,9 @@ impl Arena {
             }
             Value::Newtype(inner) => {
                 self.copy(*inner)?;
+            }
+            Value::Closure(env, _) => {
+                self.copy(*env)?;
             }
             _ => {}
         }

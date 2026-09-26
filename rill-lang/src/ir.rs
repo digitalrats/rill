@@ -199,10 +199,16 @@ pub enum ValueInstr {
     },
     /// Read a variable: copy the value out of the cell into a fresh slot
     /// (the result is a new owner, it does not share the cell's value).
+    ///
+    /// Inside a function fragment, `cell` is a CAPTURE index: a free variable
+    /// of the lambda, read from the call's temporary env frame (see
+    /// [`run_fragment`](crate::backend::interp::run_fragment)) when
+    /// `cell < active_fragment_cells.len()`. Outside a fragment, `cell` is a
+    /// value register holding a cell ref.
     ValueReadCell {
         /// Destination value register.
         dst: usize,
-        /// Value register holding the cell ref.
+        /// Value register holding the cell ref, or the fragment capture index.
         cell: usize,
     },
     /// Read a main λ-parameter cell into a fresh value slot (the result is a
@@ -233,6 +239,44 @@ pub enum ValueInstr {
         dst: usize,
         /// The value.
         value: f64,
+    },
+    /// Element-wise arithmetic on two value channels: reads the Float (or Int)
+    /// payloads of the value registers `a` and `b`, allocates the Float result
+    /// into `dst`. Unbound operands read as `0.0`.
+    ValueAdd {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// See [`ValueInstr::ValueAdd`].
+    ValueSub {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// See [`ValueInstr::ValueAdd`].
+    ValueMul {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// See [`ValueInstr::ValueAdd`].
+    ValueDiv {
+        /// Destination value register (the Float result).
+        dst: usize,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
     },
     /// Construct a record: alloc + write field refs.
     ValueConstructRecord {
@@ -282,25 +326,29 @@ pub enum ValueInstr {
         /// Newtype value register.
         src: usize,
     },
-    /// Call a named function reference.
+    /// Call a first-class function value at runtime: dispatches to the
+    /// [`FragmentIr`] referenced by the closure's `fragment` id, binding the
+    /// caller's argument registers and copying the fragment's result into `dst`.
     ValueCallFunc {
         /// Destination value register.
         dst: usize,
-        /// Index into [`Ir::value_funcs`].
-        func: usize,
-        /// Argument value registers.
+        /// Value register holding the [`Value::Closure`] to call.
+        closure_slot: usize,
+        /// Argument value registers (passed by value into the fragment).
         args: Vec<usize>,
     },
-    /// Construct a first-class named-function value: allocates a [`Value::Func`]
-    /// referencing the [`Ir::value_funcs`] entry. Emitted when a bare user
-    /// definition reference (`f = double`, `main = f`) appears in value
-    /// position. v1 calls the referenced function by β-reducing at compile
-    /// time, so [`ValueCallFunc`] remains a no-op for runtime dispatch.
-    ValueMakeFunc {
+    /// Construct a first-class function value: allocates a [`Value::Closure`]
+    /// referencing an [`Ir::fragments`] body and the env record in `env`.
+    /// Emitted when a function definition reference or lambda literal appears
+    /// in value position.
+    ValueMakeClosure {
         /// Destination value register.
         dst: usize,
-        /// Index into [`Ir::value_funcs`].
-        func: usize,
+        /// Value register holding the captured environment record ref (a
+        /// dummy `Void` slot when nothing is captured).
+        env: usize,
+        /// Index into [`Ir::fragments`].
+        fragment: usize,
     },
     /// Share a value (RC++).
     ValueCopy {
@@ -346,6 +394,46 @@ pub struct ValueLayout {
     pub capacity: usize,
     /// Number of per-tick value-state slots (feedback/delay of values).
     pub value_state_slots: usize,
+}
+
+/// Value/signal arity of a function fragment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FuncSig {
+    /// Number of value arguments.
+    pub value_ins: usize,
+    /// Number of value results.
+    pub value_outs: usize,
+    /// Number of signal-wire arguments.
+    pub signal_ins: usize,
+}
+
+/// A compiled function body: a fragment of the value/block track.
+///
+/// The fragment's value instructions reference fragment-local registers
+/// `0..num_value_regs`; the interpreter executes them against a temporary
+/// register slice appended to the program's value register store, offsetting
+/// each register field by a per-call base (the instructions are reused across
+/// calls, so they are never rewritten).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FragmentIr {
+    /// Value-track instructions for the body.
+    pub value_instrs: Vec<ValueInstr>,
+    /// Block-track steps (for signal-wire args); empty for pure-value bodies.
+    pub steps: Vec<crate::schedule::Step>,
+    /// Number of value registers (args + temps).
+    pub num_value_regs: usize,
+    /// Number of block registers (signal args + temps).
+    pub num_block_regs: usize,
+    /// Value register(s) holding the result.
+    pub output_value_regs: Vec<usize>,
+    /// Block register(s) holding signal results.
+    pub output_block_regs: Vec<usize>,
+    /// Number of env capture cells the call's temporary frame must hold
+    /// (the lambda's free variables, one per env Record field). Drives the
+    /// build-time arena capacity bound.
+    pub num_capture_cells: usize,
+    /// Arity.
+    pub sig: FuncSig,
 }
 
 /// A named function value: reference to a lowering-time definition.
@@ -434,6 +522,22 @@ pub struct Ir {
     pub value_output_regs: Vec<usize>,
     /// Named function values referenced by [`ValueInstr::ValueCallFunc`].
     pub value_funcs: Vec<ValueFunc>,
+    /// Compiled function bodies, indexed by [`ValueInstr::ValueMakeClosure`]'s
+    /// `fragment` field and dispatched by [`ValueInstr::ValueCallFunc`].
+    /// Function bodies: fragments of the value/block track, dispatched by
+    /// [`ValueInstr::ValueCallFunc`]. Shared via `Arc` so a dispatch shares the
+    /// fragment without cloning it (no heap allocation on the RT path).
+    pub fragments: Vec<std::sync::Arc<FragmentIr>>,
+    /// Number of value-register slots pre-allocated for the runtime function
+    /// call stack: `max_call_depth × max_fragment_regs`, where
+    /// `max_call_depth` is the total fragment count (a strict upper bound on
+    /// the number of concurrently-active fragment frames — the acyclic
+    /// contract forbids any fragment from recursing) and `max_fragment_regs`
+    /// is the largest `FragmentIr::num_value_regs`. [`RillProgram`](crate::program::RillProgram)
+    /// sizes its per-tick value-register store to `num_value_regs + max_call_regs`
+    /// so [`run_fragment`](crate::backend::interp::run_fragment) never grows it
+    /// on the RT path.
+    pub max_call_regs: usize,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
 }

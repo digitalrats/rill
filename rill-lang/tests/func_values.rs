@@ -1,10 +1,11 @@
 //! First-class named function references (v1): `f = double` binds a value of
-//! type `ValueTy::Func("double")`. A bare func value as a program output is a
-//! `Value::Func`; calling it dispatches to the referenced definition.
+//! type `ValueTy::Func([], [])`. A bare func value as a program output is a
+//! `Value::Closure`; calling it dispatches to the referenced definition.
 //!
-//! v1 scope: only NAMED references (no lambdas/closures). Calls are resolved
-//! at compile time by β-reduction, so `ValueCallFunc` stays a documented
-//! no-op reserved for a future runtime-dispatch task.
+//! Named references to λ-parameter definitions are β-reduced at compile time
+//! (see `reduce.rs`), so `ValueCallFunc` runtime dispatch is exercised by
+//! closure-valued calls (lambdas, partial application, HOFs — see
+//! `tests/closures.rs`, `tests/currying_wires.rs`, `tests/hof.rs`).
 
 use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
@@ -15,7 +16,7 @@ fn function_reference_calls_signal_definition() {
     // chain at compile time to the signal computation `21.0 * 2.0`, so the
     // program's BLOCK output is 42.0. A func value over a signal function
     // collapses to the block track — only the value-track form (below) yields
-    // a `Value::Func`/value-channel output.
+    // a `Value::Closure`/value-channel output.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f 21.0").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -50,7 +51,7 @@ fn function_reference_calls_value_definition() {
 #[test]
 fn func_value_as_output() {
     // `main = f` where `f = double` produces a first-class function value
-    // output: a `Value::Func` referencing the named definition `double`.
+    // output: a `Value::Closure` referencing the named definition `double`.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -58,22 +59,22 @@ fn func_value_as_output() {
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
     match prog.arena().get(v).unwrap() {
-        &rill_lang::arena::Value::Func(_) => {}
-        other => panic!("expected Func value, got {other:?}"),
+        &rill_lang::arena::Value::Closure(_, _) => {}
+        other => panic!("expected Closure value, got {other:?}"),
     }
 }
 
 #[test]
 fn func_value_as_output_survives_ticks() {
-    // A Func value output pins no subtree (a single slot), but the output must
+    // A Closure value output pins no subtree (a single slot), but the output must
     // still survive across ticks without exhausting the fixed arena.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
     let mut out = [0.0f32; 4];
     for _ in 0..3 {
         MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
         match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
-            &rill_lang::arena::Value::Func(_) => {}
-            other => panic!("expected Func value, got {other:?}"),
+            &rill_lang::arena::Value::Closure(_, _) => {}
+            other => panic!("expected Closure value, got {other:?}"),
         }
     }
 }
@@ -106,8 +107,30 @@ fn direct_bare_ref_produces_func_value() {
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
-        &rill_lang::arena::Value::Func(_) => {}
-        other => panic!("expected Func value, got {other:?}"),
+        &rill_lang::arena::Value::Closure(_, _) => {}
+        other => panic!("expected Closure value, got {other:?}"),
+    }
+}
+
+#[test]
+fn named_ref_closure_references_real_fragment() {
+    // A bare named reference (`f = double`) compiles `double`'s body into a
+    // REAL fragment (Task 5: anchor bodies compile to fragments so named-def
+    // currying works). The closure must NOT reference the old
+    // `usize::MAX` sentinel no-op fragment.
+    let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        &rill_lang::arena::Value::Closure(_, frag) => {
+            assert_ne!(
+                frag,
+                u32::MAX,
+                "named-ref closure must reference a real fragment, not the sentinel no-op"
+            );
+        }
+        other => panic!("expected Closure value, got {other:?}"),
     }
 }
 
