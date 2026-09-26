@@ -2557,4 +2557,14 @@ mod tests {
         // rejected (`amp _` is missing the value gain).
         assert!(ty_of("amp = fn g x -> x * g; main = amp _").is_err());
     }
+
+    #[test]
+    fn self_application_type_is_rejected() {
+        // `f f` — self-application unifies `f`'s type with a `Func` whose
+        // argument IS `f`, which would construct an infinite type. The
+        // occurs-check must reject it with a clean type error (regression:
+        // it recorded a cyclic binding and overflowed the stack).
+        let res = ty_of("main = fn f -> f f");
+        assert!(res.is_err());
+    }
 }

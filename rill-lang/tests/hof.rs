@@ -35,6 +35,17 @@ fn mutual_recursion_is_rejected() {
 }
 
 #[test]
+fn omega_combinator_is_compile_error() {
+    // make = fn f -> f f  — the omega combinator: transitively self-recursive
+    // through its parameter (no NAMED recursion, not even a call). The acyclic
+    // contract must reject it with a clean compile error, never a compiler
+    // crash (regression: self-application cycled the value unification and
+    // overflowed the stack).
+    let res = compile::<f32>("make = fn f -> f f; main = 1.0");
+    assert!(res.is_err());
+}
+
+#[test]
 fn map_combinator_over_fixed_shape() {
     // map over a 2-field record: apply f to each element -> a 2-field result.
     // pair_map = fn f p -> Pair (f p.x) (f p.y)

@@ -18,6 +18,13 @@ use crate::error::{CompileError, Span};
 /// A unification variable identifier.
 pub type TypeVarId = u32;
 
+/// Upper bound on `resolve_value` chain-following depth. Legitimate nested
+/// function types (`Func([Func([...])], ...)`) stay well below this; a value
+/// type deeper than this is either a cyclic binding or a pathological program,
+/// and resolving it must degrade to the unresolved var — never a stack
+/// overflow. The occurs-check in `unify_value` rejects cycles at the source.
+pub(crate) const MAX_VALUE_RESOLVE_DEPTH: usize = 64;
+
 /// The scalar (element) type of a sample.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scalar {
@@ -396,15 +403,32 @@ impl Subst {
     }
     /// Follow the substitution chain for a single value type to its
     /// representative, resolving variables inside `Func` signatures too.
+    ///
+    /// Bounded by [`MAX_VALUE_RESOLVE_DEPTH`]: a (lowering-bug or
+    /// already-rejected) cyclic binding degrades to the unresolved var rather
+    /// than overflowing the stack. The occurs-check in `unify_value` rejects
+    /// cycles at the source, so this is pure defense-in-depth.
     pub fn resolve_value(&self, t: &ValueTy) -> ValueTy {
+        self.resolve_value_depth(t, 0)
+    }
+
+    /// Depth-bounded core of [`Self::resolve_value`].
+    fn resolve_value_depth(&self, t: &ValueTy, depth: usize) -> ValueTy {
+        if depth > MAX_VALUE_RESOLVE_DEPTH {
+            return t.clone();
+        }
         match t {
             ValueTy::Var(v) => match self.value_map.get(v) {
-                Some(inner) => self.resolve_value(inner),
+                Some(inner) => self.resolve_value_depth(inner, depth + 1),
                 None => t.clone(),
             },
             ValueTy::Func(args, rets) => ValueTy::Func(
-                args.iter().map(|a| self.resolve_value(a)).collect(),
-                rets.iter().map(|r| self.resolve_value(r)).collect(),
+                args.iter()
+                    .map(|a| self.resolve_value_depth(a, depth + 1))
+                    .collect(),
+                rets.iter()
+                    .map(|r| self.resolve_value_depth(r, depth + 1))
+                    .collect(),
             ),
             _ => t.clone(),
         }

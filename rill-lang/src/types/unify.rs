@@ -1,5 +1,7 @@
 //! Scalar unification with occurs check.
 
+use std::collections::HashSet;
+
 use super::ty::{Scalar, Subst, TypeVarId, ValueTy};
 use crate::error::{CompileError, Span};
 
@@ -35,13 +37,61 @@ pub fn default_var(v: TypeVarId, subst: &mut Subst) {
     subst.map.entry(v).or_insert(Scalar::Float);
 }
 
+/// Whether the (resolved) value type `ty` transitively contains `Var(v)` — the
+/// occurs-check. A `Var` chain is followed (with a visited set, so a
+/// pre-existing cyclic binding cannot loop), and `Func` signatures are walked
+/// structurally. `Data`/`Newtype`/`Int`/`Float` never carry vars in v1 but are
+/// handled as leaves.
+fn value_contains_var(subst: &Subst, ty: &ValueTy, v: TypeVarId) -> bool {
+    let mut seen = HashSet::new();
+    value_contains_var_impl(subst, ty, v, &mut seen)
+}
+
+fn value_contains_var_impl(
+    subst: &Subst,
+    ty: &ValueTy,
+    v: TypeVarId,
+    seen: &mut HashSet<TypeVarId>,
+) -> bool {
+    let resolved = subst.resolve_value(ty);
+    match &resolved {
+        ValueTy::Var(w) => {
+            if *w == v {
+                return true;
+            }
+            // The resolved representative is normally unbound; follow its
+            // direct binding anyway (guarded against revisits) so a chain cut
+            // short by the resolve depth guard still terminates.
+            if !seen.insert(*w) {
+                return false;
+            }
+            match subst.value_map.get(w) {
+                Some(inner) => value_contains_var_impl(subst, inner, v, seen),
+                None => false,
+            }
+        }
+        ValueTy::Func(args, rets) => {
+            args.iter()
+                .any(|a| value_contains_var_impl(subst, a, v, seen))
+                || rets
+                    .iter()
+                    .any(|r| value_contains_var_impl(subst, r, v, seen))
+        }
+        _ => false,
+    }
+}
+
 /// Unify two value types.
 ///
 /// Value-type variables resolve structurally and RECORD their bindings in
 /// `subst.value_map`: unifying a `Var` with a concrete type binds it (a lambda
 /// parameter used as a higher-order-function callee becomes a `Func`; a record
 /// parameter becomes its `Data` type), so lowering sees concrete parameter
-/// types. A `Var` unified with another `Var` chains the bindings.
+/// types. A `Var` unified with another `Var` chains the bindings (union-find by
+/// variable id keeps the chains acyclic). Binding a `Var` to a COMPOUND type
+/// that (transitively) contains it is an **occurs-check** violation — it would
+/// construct an infinite type (`f f` makes `f = Func([f], [r])`) — and is
+/// rejected with a clean compile error instead of a cyclic binding.
 pub fn unify_value(
     a: &ValueTy,
     b: &ValueTy,
@@ -68,6 +118,18 @@ pub fn unify_value(
                     Ok(())
                 }
                 _ => {
+                    // Occurs-check: a compound type containing this var would be
+                    // self-referential (an infinite type).
+                    if value_contains_var(subst, other, *v) {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "recursive function type: type variable {} cannot unify with \
+                                 the self-referential type {other:?}",
+                                *v
+                            ),
+                            span,
+                        });
+                    }
                     subst.value_map.insert(*v, other.clone());
                     Ok(())
                 }
