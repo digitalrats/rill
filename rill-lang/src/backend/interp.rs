@@ -161,6 +161,9 @@ fn alloc_owned<T: Transcendental, const BUF: usize>(
         Value::Record(ref fields) | Value::Sum(_, ref fields) => fields.clone(),
         Value::Newtype(inner) => vec![inner],
         Value::Closure(env, _) => vec![env],
+        Value::List { ref elems, .. } => elems.clone(),
+        Value::Map { ref pairs, .. } => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
+        Value::Set { ref elems, .. } => elems.clone(),
         _ => Vec::new(),
     };
     match prog.arena.alloc(v) {
@@ -198,6 +201,22 @@ fn alloc_copy<T: Transcendental, const BUF: usize>(
         }
         Value::Closure(env, _) => {
             _ = prog.arena.copy(*env);
+        }
+        Value::List { elems, .. } => {
+            for e in elems {
+                _ = prog.arena.copy(*e);
+            }
+        }
+        Value::Map { pairs, .. } => {
+            for (k, v) in pairs {
+                _ = prog.arena.copy(*k);
+                _ = prog.arena.copy(*v);
+            }
+        }
+        Value::Set { elems, .. } => {
+            for e in elems {
+                _ = prog.arena.copy(*e);
+            }
         }
         _ => {}
     }
@@ -275,6 +294,22 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
         }
         Value::Newtype(inner) => prog.arena.drop_ref(*inner),
         Value::Closure(env, _) => prog.arena.drop_ref(*env),
+        Value::List { elems, .. } => {
+            for e in elems {
+                prog.arena.drop_ref(*e);
+            }
+        }
+        Value::Map { pairs, .. } => {
+            for (k, v) in pairs {
+                prog.arena.drop_ref(*k);
+                prog.arena.drop_ref(*v);
+            }
+        }
+        Value::Set { elems, .. } => {
+            for e in elems {
+                prog.arena.drop_ref(*e);
+            }
+        }
         _ => {}
     }
 }

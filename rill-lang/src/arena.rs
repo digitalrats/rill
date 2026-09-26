@@ -17,6 +17,10 @@ pub enum ValueKind {
     Int,
     /// Floating-point value.
     Float,
+    /// Boolean value.
+    Bool,
+    /// String value.
+    String,
     /// Record with named fields stored as arena refs.
     Record,
     /// Sum-type constructor invocation with a payload of arena refs.
@@ -25,6 +29,12 @@ pub enum ValueKind {
     Newtype,
     /// First-class function: captured environment record + body fragment id.
     Closure,
+    /// First-class list of element arena refs.
+    List,
+    /// First-class map of sorted (key, value) arena ref pairs.
+    Map,
+    /// First-class set of sorted element arena refs.
+    Set,
     /// The unit value.
     Void,
 }
@@ -36,6 +46,10 @@ pub enum Value {
     Int(i64),
     /// Floating-point payload.
     Float(f64),
+    /// Boolean payload.
+    Bool(bool),
+    /// String payload.
+    String(String),
     /// Record fields, one arena ref per field.
     Record(Vec<ArenaRef>),
     /// Constructor index plus one arena ref per constructor argument.
@@ -49,6 +63,27 @@ pub enum Value {
     /// and `ValueMakeClosure` recounts the env so both the creating register
     /// and the closure are balanced owners.
     Closure(ArenaRef, u32),
+    /// A first-class list: element refs, current length = `elems.len()`, cap.
+    List {
+        /// Element arena refs; the current length is `elems.len()`.
+        elems: Vec<ArenaRef>,
+        /// Allocated capacity for the list.
+        cap: usize,
+    },
+    /// A first-class map: sorted (key, value) ref pairs.
+    Map {
+        /// Sorted (key, value) arena ref pairs.
+        pairs: Vec<(ArenaRef, ArenaRef)>,
+        /// Allocated capacity for the map.
+        cap: usize,
+    },
+    /// A first-class set: sorted element refs.
+    Set {
+        /// Sorted element arena refs.
+        elems: Vec<ArenaRef>,
+        /// Allocated capacity for the set.
+        cap: usize,
+    },
     /// The unit value.
     Void,
 }
@@ -59,10 +94,15 @@ impl Value {
         match self {
             Value::Int(_) => ValueKind::Int,
             Value::Float(_) => ValueKind::Float,
+            Value::Bool(_) => ValueKind::Bool,
+            Value::String(_) => ValueKind::String,
             Value::Record(_) => ValueKind::Record,
             Value::Sum(_, _) => ValueKind::Sum,
             Value::Newtype(_) => ValueKind::Newtype,
             Value::Closure(_, _) => ValueKind::Closure,
+            Value::List { .. } => ValueKind::List,
+            Value::Map { .. } => ValueKind::Map,
+            Value::Set { .. } => ValueKind::Set,
             Value::Void => ValueKind::Void,
         }
     }
@@ -186,6 +226,22 @@ impl Arena {
             }
             Value::Newtype(inner) => self.drop_ref(inner),
             Value::Closure(env, _) => self.drop_ref(env),
+            Value::List { elems, .. } => {
+                for e in elems {
+                    self.drop_ref(e);
+                }
+            }
+            Value::Map { pairs, .. } => {
+                for (k, v) in pairs {
+                    self.drop_ref(k);
+                    self.drop_ref(v);
+                }
+            }
+            Value::Set { elems, .. } => {
+                for e in elems {
+                    self.drop_ref(e);
+                }
+            }
             _ => {}
         }
         self.free.push_front(r);
@@ -221,6 +277,22 @@ impl Arena {
             }
             Value::Closure(env, _) => {
                 self.copy(*env)?;
+            }
+            Value::List { elems, .. } => {
+                for e in elems {
+                    self.copy(*e)?;
+                }
+            }
+            Value::Map { pairs, .. } => {
+                for (k, v) in pairs {
+                    self.copy(*k)?;
+                    self.copy(*v)?;
+                }
+            }
+            Value::Set { elems, .. } => {
+                for e in elems {
+                    self.copy(*e)?;
+                }
             }
             _ => {}
         }
@@ -337,5 +409,60 @@ mod tests {
             }
             _ => panic!("surviving copy must still be a record"),
         }
+    }
+
+    #[test]
+    fn list_and_map_rc_cow() {
+        let mut a = Arena::with_capacity(16);
+        let e0 = a.alloc(Value::Float(1.0)).unwrap();
+        let e1 = a.alloc(Value::Float(2.0)).unwrap();
+        let l = a
+            .alloc(Value::List {
+                elems: vec![e0, e1],
+                cap: 4,
+            })
+            .unwrap();
+        // COW copies the list and recounts its elements.
+        let l2 = a.copy(l).unwrap();
+        let out = a.mutate(l).unwrap();
+        assert_ne!(out, l2);
+        assert_eq!(a.rc(e0), 2, "both list copies own the element");
+        // `out` is the COW copy; `l` is the original (l2 == l). Dropping both
+        // list copies frees the shared element.
+        a.drop_ref(l);
+        a.drop_ref(out);
+        assert_eq!(a.rc(e0), 0, "element freed when both lists dropped");
+    }
+
+    #[test]
+    fn drop_recurses_into_map_and_set() {
+        let mut a = Arena::with_capacity(16);
+        let k = a.alloc(Value::String("a".into())).unwrap();
+        let v = a.alloc(Value::Float(1.0)).unwrap();
+        let m = a
+            .alloc(Value::Map {
+                pairs: vec![(k, v)],
+                cap: 4,
+            })
+            .unwrap();
+        let s = a
+            .alloc(Value::Set {
+                elems: vec![k],
+                cap: 4,
+            })
+            .unwrap();
+        a.drop_ref(m);
+        assert_eq!(a.rc(v), 0);
+        a.drop_ref(s);
+        assert_eq!(a.rc(k), 0);
+    }
+
+    #[test]
+    fn bool_string_are_leaf_values() {
+        let mut a = Arena::with_capacity(4);
+        let b = a.alloc(Value::Bool(true)).unwrap();
+        let s = a.alloc(Value::String("hi".into())).unwrap();
+        assert_eq!(a.get(b).unwrap(), &Value::Bool(true));
+        assert_eq!(a.get(s).unwrap(), &Value::String("hi".into()));
     }
 }
