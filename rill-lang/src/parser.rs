@@ -1200,6 +1200,23 @@ mod tests {
                 assert_eq!(var, "f");
                 assert_eq!(methods.len(), 1);
                 assert_eq!(methods[0].0, "fmap");
+                // Pin the flat-curried signature shape: `(a -> b) -> f a -> f b`.
+                assert_eq!(
+                    methods[0].1,
+                    TypeExpr::TFunc(
+                        vec![
+                            TypeExpr::TFunc(
+                                vec![TypeExpr::TName("a".into())],
+                                Box::new(TypeExpr::TName("b".into()))
+                            ),
+                            TypeExpr::TApp("f".into(), vec![TypeExpr::TName("a".into())]),
+                        ],
+                        Box::new(TypeExpr::TApp(
+                            "f".into(),
+                            vec![TypeExpr::TName("b".into())]
+                        ))
+                    )
+                );
             }
             other => panic!("expected Typeclass, got {other:?}"),
         }
