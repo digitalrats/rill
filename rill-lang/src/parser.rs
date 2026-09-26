@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{ArithOp, Def, Expr, Param, Program};
+use crate::ast::{ArithOp, Def, Expr, Param, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 
@@ -255,7 +255,7 @@ impl<'a> Parser<'a> {
                 let (fname, _) = self.expect_ident()?;
                 self.eat(&Tok::Colon)?;
                 let (tname, _) = self.expect_ident()?;
-                fields.push((fname, tname));
+                fields.push((fname, TypeExpr::TName(tname)));
                 if self.peek().tok == Tok::Comma {
                     self.bump();
                 }
@@ -263,6 +263,7 @@ impl<'a> Parser<'a> {
             self.eat(&Tok::RBrace)?;
             Ok(Def::Data {
                 name,
+                tyvars: vec![],
                 fields,
                 span: self.span_from(start),
             })
@@ -274,7 +275,7 @@ impl<'a> Parser<'a> {
                 let mut payload = Vec::new();
                 while let Tok::Ident(_) = self.peek().tok {
                     let (tname, _) = self.expect_ident()?;
-                    payload.push(tname);
+                    payload.push(TypeExpr::TName(tname));
                 }
                 ctors.push((cname, payload));
                 if self.peek().tok == Tok::Pipe {
@@ -283,6 +284,7 @@ impl<'a> Parser<'a> {
             }
             Ok(Def::Sum {
                 name,
+                tyvars: vec![],
                 ctors,
                 span: self.span_from(start),
             })
@@ -327,7 +329,7 @@ impl<'a> Parser<'a> {
             let (mname, _) = self.expect_ident()?;
             self.eat(&Tok::Colon)?;
             let (sig, _) = self.expect_ident()?;
-            methods.push((mname, sig));
+            methods.push((mname, TypeExpr::TName(sig)));
             self.eat(&Tok::Semi)?;
         }
         self.eat(&Tok::RBrace)?;

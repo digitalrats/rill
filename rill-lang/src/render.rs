@@ -4,7 +4,7 @@
 //! string. The renderer is used for round-trip tests that verify
 //! isomorphism between JSON and DSL representations.
 
-use crate::ast::{ArithOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, Program, TypeExpr};
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
@@ -48,25 +48,45 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
             write!(buf, "{pad}{name} = ").ok();
             render_expr(body, buf, 0);
         }
-        Def::Data { name, fields, .. } => {
-            write!(buf, "{pad}data {name} = {{ ").ok();
+        Def::Data {
+            name,
+            tyvars,
+            fields,
+            ..
+        } => {
+            write!(buf, "{pad}data {name}").ok();
+            for tv in tyvars {
+                write!(buf, " {tv}").ok();
+            }
+            write!(buf, " = {{ ").ok();
             for (i, (fname, tname)) in fields.iter().enumerate() {
                 if i > 0 {
                     write!(buf, ", ").ok();
                 }
-                write!(buf, "{fname}: {tname}").ok();
+                write!(buf, "{fname}: ").ok();
+                render_type_expr(tname, buf);
             }
             write!(buf, " }}").ok();
         }
-        Def::Sum { name, ctors, .. } => {
-            write!(buf, "{pad}data {name} = ").ok();
+        Def::Sum {
+            name,
+            tyvars,
+            ctors,
+            ..
+        } => {
+            write!(buf, "{pad}data {name}").ok();
+            for tv in tyvars {
+                write!(buf, " {tv}").ok();
+            }
+            write!(buf, " = ").ok();
             for (i, (cname, payload)) in ctors.iter().enumerate() {
                 if i > 0 {
                     write!(buf, " | ").ok();
                 }
                 write!(buf, "{cname}").ok();
-                for tname in payload {
-                    write!(buf, " {tname}").ok();
+                for t in payload {
+                    write!(buf, " ").ok();
+                    render_type_expr(t, buf);
                 }
             }
         }
@@ -81,7 +101,9 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
         } => {
             write!(buf, "{pad}typeclass {name} {var} where {{ ").ok();
             for (mname, sig) in methods {
-                write!(buf, "{mname}: {sig}; ").ok();
+                write!(buf, "{mname}: ").ok();
+                render_type_expr(sig, buf);
+                write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
         }
@@ -102,6 +124,38 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+        }
+    }
+}
+
+/// Render a type expression in a declaration (name, application, function
+/// type, or capacity literal).
+fn render_type_expr(t: &TypeExpr, buf: &mut String) {
+    match t {
+        TypeExpr::TName(n) => {
+            write!(buf, "{n}").ok();
+        }
+        TypeExpr::TApp(head, args) => {
+            write!(buf, "{head}").ok();
+            for a in args {
+                write!(buf, " ").ok();
+                render_type_expr(a, buf);
+            }
+        }
+        TypeExpr::TFunc(args, ret) => {
+            write!(buf, "(").ok();
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, " -> ").ok();
+                }
+                render_type_expr(a, buf);
+            }
+            write!(buf, " -> ").ok();
+            render_type_expr(ret, buf);
+            write!(buf, ")").ok();
+        }
+        TypeExpr::TCap(n) => {
+            write!(buf, "{n}").ok();
         }
     }
 }

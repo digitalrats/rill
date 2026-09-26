@@ -8,6 +8,31 @@ use serde::{Deserialize, Serialize};
 /// A type name reference in a declaration (`Float`, `Hz`, `Point`, ...).
 pub type TypeName = String;
 
+/// A type expression in a declaration: concrete names, type variables,
+/// constructor application, function types, and capacity literals.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum TypeExpr {
+    /// A concrete type or type variable name (`Float`, `a`).
+    TName(String),
+    /// Constructor application: `f a`, `List Float 16`.
+    TApp(String, Vec<TypeExpr>),
+    /// Curried function type: `(a -> b) -> f a -> f b`.
+    TFunc(Vec<TypeExpr>, Box<TypeExpr>),
+    /// Capacity literal (a `Nat` argument): `16` in `List Float 16`.
+    TCap(usize),
+}
+
+/// The head name of a type expression, used where a declaration stores a full
+/// signature but a consumer only reads the leading name (`TName`/`TApp`).
+pub(crate) fn sig_name(t: &TypeExpr) -> String {
+    match t {
+        TypeExpr::TName(n) => n.clone(),
+        TypeExpr::TApp(n, _) => n.clone(),
+        TypeExpr::TCap(_) | TypeExpr::TFunc(..) => String::new(),
+    }
+}
+
 /// Arithmetic operators (elementwise, 2→1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -207,21 +232,25 @@ pub enum Def {
         /// Span of the whole definition.
         span: Span,
     },
-    /// `data Name = { f1: T1, f2: T2 }` — product type.
+    /// `data Name tv1 tv2 = { f1: T1, f2: T2 }` — product type.
     Data {
         /// Type name.
         name: String,
-        /// Fields: (field name, type name).
-        fields: Vec<(String, TypeName)>,
+        /// Type parameters (e.g. `a` in `data Box a`).
+        tyvars: Vec<String>,
+        /// Fields: (field name, type expression).
+        fields: Vec<(String, TypeExpr)>,
         /// Span.
         span: Span,
     },
-    /// `data Name = C1 T1 | C2 T2 T3` — sum type with constructors.
+    /// `data Name tv = C1 T1 | C2 T2 T3` — sum type with constructors.
     Sum {
         /// Type name.
         name: String,
-        /// Constructors: (ctor name, payload type names).
-        ctors: Vec<(String, Vec<TypeName>)>,
+        /// Type parameters (e.g. `a` in `data Box a`).
+        tyvars: Vec<String>,
+        /// Constructors: (ctor name, payload type expressions).
+        ctors: Vec<(String, Vec<TypeExpr>)>,
         /// Span.
         span: Span,
     },
@@ -249,8 +278,8 @@ pub enum Def {
         name: String,
         /// Type variable (e.g. `a`).
         var: String,
-        /// Methods: (method name, signature type name).
-        methods: Vec<(String, TypeName)>,
+        /// Methods: (method name, signature type expression).
+        methods: Vec<(String, TypeExpr)>,
         /// Span.
         span: Span,
     },
@@ -343,5 +372,22 @@ impl Program {
     /// Returns the `main` definition, if present.
     pub fn main_def(&self) -> Option<&Def> {
         self.defs.iter().find(|d| d.name() == "main")
+    }
+}
+
+#[cfg(test)]
+mod type_expr_tests {
+    use super::*;
+
+    #[test]
+    fn type_expr_variants_construct() {
+        let t = TypeExpr::TFunc(
+            vec![TypeExpr::TName("a".into())],
+            Box::new(TypeExpr::TApp(
+                "List".into(),
+                vec![TypeExpr::TName("a".into()), TypeExpr::TCap(16)],
+            )),
+        );
+        assert!(matches!(t, TypeExpr::TFunc(..)));
     }
 }

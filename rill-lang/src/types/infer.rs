@@ -11,7 +11,7 @@ use super::ty::{
     TypeVarId, TypeclassInfo, ValueTy,
 };
 use super::unify::{unify_scalar, unify_value};
-use crate::ast::{Def, Expr, Program};
+use crate::ast::{sig_name, Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 
@@ -508,7 +508,10 @@ pub fn infer_program_with(
                     name.clone(),
                     TypeclassInfo {
                         var: var.clone(),
-                        methods: methods.clone(),
+                        methods: methods
+                            .iter()
+                            .map(|(m, sig)| (m.clone(), sig_name(sig)))
+                            .collect(),
                     },
                 );
             }
@@ -540,7 +543,7 @@ pub fn infer_program_with(
             Def::Data { name, fields, .. } => {
                 let fields_ty = fields
                     .iter()
-                    .map(|(f, t)| (f.clone(), env.vty_of_name(t)))
+                    .map(|(f, t)| (f.clone(), env.vty_of_name(&sig_name(t))))
                     .collect();
                 env.data_types
                     .insert(name.clone(), DataInfo::Record(fields_ty));
@@ -548,7 +551,12 @@ pub fn infer_program_with(
             Def::Sum { name, ctors, .. } => {
                 let ctors_ty = ctors
                     .iter()
-                    .map(|(c, ts)| (c.clone(), ts.iter().map(|t| env.vty_of_name(t)).collect()))
+                    .map(|(c, ts)| {
+                        (
+                            c.clone(),
+                            ts.iter().map(|t| env.vty_of_name(&sig_name(t))).collect(),
+                        )
+                    })
                     .collect();
                 env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
             }
