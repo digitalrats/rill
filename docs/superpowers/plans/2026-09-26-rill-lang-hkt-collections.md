@@ -45,7 +45,7 @@ mod type_expr_tests {
     fn type_expr_variants_construct() {
         let t = TypeExpr::TFunc(
             vec![TypeExpr::TName("a".into())],
-            TypeExpr::TApp("List".into(), vec![TypeExpr::TName("a".into()), TypeExpr::TCap(16)]),
+            Box::new(TypeExpr::TApp("List".into(), vec![TypeExpr::TName("a".into()), TypeExpr::TCap(16)])),
         );
         assert!(matches!(t, TypeExpr::TFunc(..)));
     }
@@ -72,7 +72,7 @@ pub enum TypeExpr {
     /// Constructor application: `f a`, `List Float 16`.
     TApp(String, Vec<TypeExpr>),
     /// Curried function type: `(a -> b) -> f a -> f b`.
-    TFunc(Vec<TypeExpr>, TypeExpr),
+    TFunc(Vec<TypeExpr>, Box<TypeExpr>),
     /// Capacity literal (a `Nat` argument): `16` in `List Float 16`.
     TCap(usize),
 }
@@ -207,7 +207,7 @@ Add a method to `Parser` (place it after `parse_data_def`):
                 }
                 self.eat(&Tok::RParen)?;
                 let ret = args.pop().expect("function type needs a result");
-                Ok(TypeExpr::TFunc(args, ret))
+                Ok(TypeExpr::TFunc(args, Box::new(ret)))
             }
             Tok::Ident(name) => {
                 self.bump();
@@ -775,7 +775,7 @@ Add `typeclasses` entries in `with_builtins` (after the data shapes):
                 arity: 0,
                 methods: vec![("eq".to_string(), crate::ast::TypeExpr::TFunc(
                     vec![crate::ast::TypeExpr::TName("a".into())],
-                    crate::ast::TypeExpr::TName("Bool".into()),
+                    Box::new(crate::ast::TypeExpr::TName("Bool".into())),
                 ))],
             },
         );
@@ -786,7 +786,7 @@ Add `typeclasses` entries in `with_builtins` (after the data shapes):
                 arity: 0,
                 methods: vec![("lt".to_string(), crate::ast::TypeExpr::TFunc(
                     vec![crate::ast::TypeExpr::TName("a".into())],
-                    crate::ast::TypeExpr::TName("Bool".into()),
+                    Box::new(crate::ast::TypeExpr::TName("Bool".into())),
                 ))],
             },
         );
