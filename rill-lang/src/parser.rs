@@ -246,6 +246,11 @@ impl<'a> Parser<'a> {
     fn parse_data_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (name, _) = self.expect_ident()?;
+        let mut tyvars = Vec::new();
+        while matches!(self.peek().tok, Tok::Ident(_)) {
+            let (tv, _) = self.expect_ident()?;
+            tyvars.push(tv);
+        }
         self.eat(&Tok::Eq)?;
         if self.peek().tok == Tok::LBrace {
             // product: { f1: T1, f2: T2 }
@@ -254,8 +259,8 @@ impl<'a> Parser<'a> {
             while self.peek().tok != Tok::RBrace {
                 let (fname, _) = self.expect_ident()?;
                 self.eat(&Tok::Colon)?;
-                let (tname, _) = self.expect_ident()?;
-                fields.push((fname, TypeExpr::TName(tname)));
+                let t = self.parse_type_expr()?;
+                fields.push((fname, t));
                 if self.peek().tok == Tok::Comma {
                     self.bump();
                 }
@@ -263,7 +268,7 @@ impl<'a> Parser<'a> {
             self.eat(&Tok::RBrace)?;
             Ok(Def::Data {
                 name,
-                tyvars: vec![],
+                tyvars,
                 fields,
                 span: self.span_from(start),
             })
@@ -273,9 +278,8 @@ impl<'a> Parser<'a> {
             while self.peek().tok != Tok::Semi && self.peek().tok != Tok::Eof {
                 let (cname, _) = self.expect_ident()?;
                 let mut payload = Vec::new();
-                while let Tok::Ident(_) = self.peek().tok {
-                    let (tname, _) = self.expect_ident()?;
-                    payload.push(TypeExpr::TName(tname));
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_)) {
+                    payload.push(self.parse_type_single()?);
                 }
                 ctors.push((cname, payload));
                 if self.peek().tok == Tok::Pipe {
@@ -284,10 +288,84 @@ impl<'a> Parser<'a> {
             }
             Ok(Def::Sum {
                 name,
-                tyvars: vec![],
+                tyvars,
                 ctors,
                 span: self.span_from(start),
             })
+        }
+    }
+
+    /// Parse a single, non-absorbing type atom: a bare type or type-variable
+    /// name, a capacity int, or a parenthesized type expression. It does not
+    /// consume following juxtaposed atoms — the caller's application and
+    /// currying loops collect those.
+    fn parse_type_single(&mut self) -> Result<TypeExpr, CompileError> {
+        let t = self.peek().clone();
+        match t.tok {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(TypeExpr::TCap(n as usize))
+            }
+            Tok::LParen => {
+                self.bump();
+                let inner = self.parse_type_expr()?;
+                self.eat(&Tok::RParen)?;
+                Ok(inner)
+            }
+            Tok::Ident(name) => {
+                self.bump();
+                Ok(TypeExpr::TName(name))
+            }
+            other => Err(self.error(&format!("expected type expression, found {other:?}"))),
+        }
+    }
+
+    /// Parse a type atom: a single atom, or a name applied to juxtaposed atoms
+    /// (`List Float 16`, `f a`). Juxtaposed arguments stay flat — each is one
+    /// non-absorbing [`Parser::parse_type_single`].
+    fn parse_type_atom(&mut self) -> Result<TypeExpr, CompileError> {
+        let t = self.peek().clone();
+        match t.tok {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(TypeExpr::TCap(n as usize))
+            }
+            Tok::LParen => {
+                self.bump();
+                let inner = self.parse_type_expr()?;
+                self.eat(&Tok::RParen)?;
+                Ok(inner)
+            }
+            Tok::Ident(name) => {
+                self.bump();
+                let mut args = Vec::new();
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::LParen) {
+                    args.push(self.parse_type_single()?);
+                }
+                if args.is_empty() {
+                    Ok(TypeExpr::TName(name))
+                } else {
+                    Ok(TypeExpr::TApp(name, args))
+                }
+            }
+            other => Err(self.error(&format!("expected type expression, found {other:?}"))),
+        }
+    }
+
+    /// Parse a type expression: a chain of juxta-applied type names and type
+    /// variables, `(T -> U -> V)` curried function types, and capacity ints.
+    fn parse_type_expr(&mut self) -> Result<TypeExpr, CompileError> {
+        let first = self.parse_type_atom()?;
+        if self.peek().tok == Tok::FatArrow {
+            let mut args = vec![first];
+            while self.peek().tok == Tok::FatArrow {
+                self.bump();
+                args.push(self.parse_type_atom()?);
+            }
+            let ret = args.pop().expect("function type needs a result");
+            Ok(TypeExpr::TFunc(args, Box::new(ret)))
+        } else {
+            Ok(first)
         }
     }
 
@@ -328,8 +406,8 @@ impl<'a> Parser<'a> {
         while self.peek().tok != Tok::RBrace {
             let (mname, _) = self.expect_ident()?;
             self.eat(&Tok::Colon)?;
-            let (sig, _) = self.expect_ident()?;
-            methods.push((mname, TypeExpr::TName(sig)));
+            let sig = self.parse_type_expr()?;
+            methods.push((mname, sig));
             self.eat(&Tok::Semi)?;
         }
         self.eat(&Tok::RBrace)?;
@@ -1093,6 +1171,55 @@ mod tests {
     fn parses_typeclass_declaration() {
         let p = prog("typeclass Envelope a where { slope: a; }; main = _");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Typeclass { .. })));
+    }
+
+    #[test]
+    fn parses_parameterized_data_and_typeclass() {
+        let p = prog("data Box a = { value: a }; typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }; main = _");
+        match &p.defs[0] {
+            Def::Data {
+                name,
+                tyvars,
+                fields,
+                ..
+            } => {
+                assert_eq!(name, "Box");
+                assert_eq!(tyvars, &vec!["a".to_string()]);
+                assert_eq!(
+                    fields[0],
+                    ("value".to_string(), TypeExpr::TName("a".into()))
+                );
+            }
+            other => panic!("expected Data, got {other:?}"),
+        }
+        match &p.defs[1] {
+            Def::Typeclass {
+                name, var, methods, ..
+            } => {
+                assert_eq!(name, "Functor");
+                assert_eq!(var, "f");
+                assert_eq!(methods.len(), 1);
+                assert_eq!(methods[0].0, "fmap");
+            }
+            other => panic!("expected Typeclass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_capacity_in_type_application() {
+        let p = prog("data V = { xs: List Float 16 }; main = _");
+        match &p.defs[0] {
+            Def::Data { fields, .. } => {
+                assert_eq!(
+                    fields[0].1,
+                    TypeExpr::TApp(
+                        "List".into(),
+                        vec![TypeExpr::TName("Float".into()), TypeExpr::TCap(16)]
+                    )
+                );
+            }
+            other => panic!("expected Data, got {other:?}"),
+        }
     }
 
     #[test]
