@@ -235,9 +235,64 @@ pub struct TypeEnv {
     pub typeclasses: HashMap<String, TypeclassInfo>,
     /// Instances grouped by class, then by bound type name.
     pub instances: HashMap<String, HashMap<String, InstanceInfo>>,
+    /// Builtin type constructors: name → (value arity, whether the final
+    /// argument is a capacity). `List a n` has arity 2, has-cap true.
+    pub ctor_kinds: HashMap<String, (usize, bool)>,
 }
 
 impl TypeEnv {
+    /// A `TypeEnv` with the builtin constructor table and the builtin
+    /// `Maybe`/`Pair`/`Either` type shapes registered.
+    pub fn with_builtins() -> Self {
+        let ctor_kinds = [
+            ("List".to_string(), (2usize, true)),
+            ("Maybe".to_string(), (1usize, false)),
+            ("Set".to_string(), (2usize, true)),
+            ("Map".to_string(), (3usize, true)),
+            ("Pair".to_string(), (2usize, false)),
+            ("Either".to_string(), (2usize, false)),
+        ]
+        .into_iter()
+        .collect();
+        let data_types = HashMap::from([
+            (
+                "Maybe".to_string(),
+                DataInfo::Sum(vec![
+                    ("Just".to_string(), vec![ValueTy::Var(1)]),
+                    ("Nothing".to_string(), vec![]),
+                ]),
+            ),
+            (
+                "Pair".to_string(),
+                DataInfo::Record(vec![
+                    ("first".to_string(), ValueTy::Var(1)),
+                    ("second".to_string(), ValueTy::Var(2)),
+                ]),
+            ),
+            (
+                "Either".to_string(),
+                DataInfo::Sum(vec![
+                    ("Left".to_string(), vec![ValueTy::Var(1)]),
+                    ("Right".to_string(), vec![ValueTy::Var(2)]),
+                ]),
+            ),
+        ]);
+        TypeEnv {
+            ctor_kinds,
+            data_types,
+            ..TypeEnv::default()
+        }
+    }
+
+    /// Value arity of a builtin constructor (`None` if not a builtin).
+    pub fn ctor_arity(&self, name: &str) -> Option<usize> {
+        self.ctor_kinds.get(name).map(|(a, _)| *a)
+    }
+    /// Whether the final argument of the constructor is a capacity.
+    pub fn ctor_has_cap(&self, name: &str) -> Option<bool> {
+        self.ctor_kinds.get(name).map(|(_, c)| *c)
+    }
+
     /// Resolve a DSL type name to a value type, following type synonyms and
     /// newtype wrappers. Alias chains resolve iteratively with a bounded loop
     /// (cycle-safe): each pass follows one link and there are at most
@@ -535,5 +590,24 @@ mod channel_tests {
         let r = s.apply(&t);
         assert_eq!(r.ins[0].rate, Rate::Value);
         assert_eq!(r.ins[0].vty, ValueTy::Int);
+    }
+}
+
+#[cfg(test)]
+mod ctor_table_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_ctor_kinds_and_capacity_flags() {
+        let env = TypeEnv::with_builtins();
+        assert!(env.ctor_arity("List") == Some(2)); // elem + cap
+        assert!(env.ctor_has_cap("List") == Some(true));
+        assert!(env.ctor_arity("Maybe") == Some(1));
+        assert!(env.ctor_has_cap("Maybe") == Some(false));
+        assert!(env.ctor_arity("Map") == Some(3));
+        assert!(env.ctor_has_cap("Map") == Some(true));
+        assert!(env.ctor_arity("Pair") == Some(2));
+        assert!(env.ctor_arity("Either") == Some(2));
+        assert!(env.ctor_arity("Nope") == None);
     }
 }
