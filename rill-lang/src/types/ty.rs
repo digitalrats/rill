@@ -52,16 +52,27 @@ pub enum ValueTy {
     Int,
     /// Floating point value.
     Float,
-    /// A named data record.
-    Data(String),
+    /// Boolean value type (value track only).
+    Bool,
+    /// String value type (value track only).
+    String,
+    /// A named data record, parameterized by its type arguments.
+    Data(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
-    Newtype(String),
+    Newtype(String, Vec<ValueTy>),
+    /// Builtin constructor application: `List Float 16`.
+    App(String, Vec<ValueTy>),
+    /// Capacity literal (`Nat` argument).
+    Cap(usize),
     /// Function type: value-argument types and value-result types. Signal-wire
     /// arguments are positional wire-captures at the call site, not part of the
     /// type.
     Func(Vec<ValueTy>, Vec<ValueTy>),
     /// Unresolved value-type unification variable.
     Var(TypeVarId),
+    /// Type-constructor variable (kind `* -> *` or higher), bound by a
+    /// typeclass class variable.
+    TyConVar(TypeVarId),
 }
 
 /// A signal or value channel.
@@ -243,9 +254,9 @@ impl TypeEnv {
             "Int" => ValueTy::Int,
             n => {
                 if self.newtypes.contains_key(n) {
-                    ValueTy::Newtype(n.to_string())
+                    ValueTy::Newtype(n.to_string(), vec![])
                 } else {
-                    ValueTy::Data(n.to_string())
+                    ValueTy::Data(n.to_string(), vec![])
                 }
             }
         }
@@ -276,8 +287,8 @@ impl TypeEnv {
         match v {
             ValueTy::Int => Some("Int".to_string()),
             ValueTy::Float => Some("Float".to_string()),
-            ValueTy::Data(n) => Some(n.clone()),
-            ValueTy::Newtype(n) => Some(n.clone()),
+            ValueTy::Data(n, _) => Some(n.clone()),
+            ValueTy::Newtype(n, _) => Some(n.clone()),
             _ => None,
         }
     }
@@ -316,8 +327,10 @@ impl TypeEnv {
             Some(DataInfo::Record(fields)) => {
                 for (_, t) in fields {
                     match t {
-                        ValueTy::Data(inner) => self.check_acyclic_name(inner, visiting)?,
-                        ValueTy::Newtype(inner) => self.check_acyclic_newtype(inner, visiting)?,
+                        ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
+                        ValueTy::Newtype(inner, _) => {
+                            self.check_acyclic_newtype(inner, visiting)?
+                        }
                         _ => {}
                     }
                 }
@@ -326,8 +339,8 @@ impl TypeEnv {
                 for (_, payload) in ctors {
                     for t in payload {
                         match t {
-                            ValueTy::Data(inner) => self.check_acyclic_name(inner, visiting)?,
-                            ValueTy::Newtype(inner) => {
+                            ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
+                            ValueTy::Newtype(inner, _) => {
                                 self.check_acyclic_newtype(inner, visiting)?
                             }
                             _ => {}
@@ -356,8 +369,8 @@ impl TypeEnv {
         }
         let res = match self.newtypes.get(name) {
             Some(inner) => match self.vty_of_name(inner) {
-                ValueTy::Data(data_name) => self.check_acyclic_name(&data_name, visiting),
-                ValueTy::Newtype(nw_name) => self.check_acyclic_newtype(&nw_name, visiting),
+                ValueTy::Data(data_name, _) => self.check_acyclic_name(&data_name, visiting),
+                ValueTy::Newtype(nw_name, _) => self.check_acyclic_newtype(&nw_name, visiting),
                 _ => Ok(()),
             },
             None => Ok(()),
@@ -422,6 +435,10 @@ impl Subst {
                 Some(inner) => self.resolve_value_depth(inner, depth + 1),
                 None => t.clone(),
             },
+            ValueTy::TyConVar(v) => match self.value_map.get(v) {
+                Some(inner) => self.resolve_value_depth(inner, depth + 1),
+                None => t.clone(),
+            },
             ValueTy::Func(args, rets) => ValueTy::Func(
                 args.iter()
                     .map(|a| self.resolve_value_depth(a, depth + 1))
@@ -430,6 +447,17 @@ impl Subst {
                     .map(|r| self.resolve_value_depth(r, depth + 1))
                     .collect(),
             ),
+            ValueTy::Data(name, args) | ValueTy::Newtype(name, args) | ValueTy::App(name, args) => {
+                let resolved: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| self.resolve_value_depth(a, depth + 1))
+                    .collect();
+                match t {
+                    ValueTy::Data(..) => ValueTy::Data(name.clone(), resolved),
+                    ValueTy::Newtype(..) => ValueTy::Newtype(name.clone(), resolved),
+                    _ => ValueTy::App(name.clone(), resolved),
+                }
+            }
             _ => t.clone(),
         }
     }
@@ -467,13 +495,30 @@ mod funcsig_tests {
 }
 
 #[cfg(test)]
+mod hkt_value_ty_tests {
+    use super::*;
+
+    #[test]
+    fn app_and_cap_construct() {
+        let t = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(16)]);
+        assert!(matches!(t, ValueTy::App(..)));
+    }
+
+    #[test]
+    fn bool_string_are_leaves() {
+        assert_ne!(ValueTy::Bool, ValueTy::Float);
+        assert_ne!(ValueTy::String, ValueTy::Bool);
+    }
+}
+
+#[cfg(test)]
 mod channel_tests {
     use super::*;
 
     #[test]
     fn channel_rates_are_distinct() {
         let sig = Channel::signal(Scalar::Float);
-        let val = Channel::value(ValueTy::Data("Point".into()));
+        let val = Channel::value(ValueTy::Data("Point".into(), vec![]));
         assert_eq!(sig.rate, Rate::Signal);
         assert_eq!(val.rate, Rate::Value);
         assert_eq!(sig.vty, ValueTy::Int);

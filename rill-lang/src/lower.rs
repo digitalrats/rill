@@ -178,7 +178,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 let (rec_reg, rec_vty) = self.lower_value(record)?;
                 let rec_name = match &rec_vty {
-                    ValueTy::Data(n) => n.clone(),
+                    ValueTy::Data(n, _) => n.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field projection requires a record value".into(),
@@ -217,7 +217,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 let (rec_reg, rec_vty) = self.lower_value(record)?;
                 let rec_name = match &rec_vty {
-                    ValueTy::Data(n) => n.clone(),
+                    ValueTy::Data(n, _) => n.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field update requires a data record".into(),
@@ -258,7 +258,7 @@ impl<'a> Lowerer<'a> {
                 // arm constructors determine it (mirroring inference's
                 // intersection of candidate sum types).
                 let sum_name = match &scrutinee_vty {
-                    ValueTy::Data(n) => n.clone(),
+                    ValueTy::Data(n, _) => n.clone(),
                     _ => self.resolve_match_sum(arms, *span)?,
                 };
                 let ctors = match self.env.data_types.get(&sum_name) {
@@ -386,7 +386,7 @@ impl<'a> Lowerer<'a> {
                                 dst,
                                 fields: field_regs,
                             });
-                            return Ok((dst, ValueTy::Data(name.clone())));
+                            return Ok((dst, ValueTy::Data(name.clone(), vec![])));
                         }
                         DataInfo::Sum(_) => {
                             return Err(CompileError::Type {
@@ -419,7 +419,7 @@ impl<'a> Lowerer<'a> {
                         ctor: ctor_idx as u32,
                         payload: payload_regs,
                     });
-                    return Ok((dst, ValueTy::Data(sum_name)));
+                    return Ok((dst, ValueTy::Data(sum_name, vec![])));
                 }
                 // Newtype constructor: `Hz 440.0` wraps its single argument.
                 if self.env.newtypes.contains_key(name) {
@@ -435,7 +435,7 @@ impl<'a> Lowerer<'a> {
                     let (src, _) = self.lower_value(&call_args[0])?;
                     let dst = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueNewtype { dst, src });
-                    return Ok((dst, ValueTy::Newtype(name.clone())));
+                    return Ok((dst, ValueTy::Newtype(name.clone(), vec![])));
                 }
                 // Typeclass method call: the argument's static type selects the
                 // instance, and the method body is inlined with the parameter
@@ -1145,8 +1145,18 @@ impl<'a> Lowerer<'a> {
 
     fn subtree_size_impl(&self, vty: &ValueTy, visiting: &mut HashSet<String>) -> usize {
         match vty {
-            ValueTy::Int | ValueTy::Float | ValueTy::Func(_, _) | ValueTy::Var(_) => 1,
-            ValueTy::Newtype(name) => {
+            ValueTy::Int
+            | ValueTy::Float
+            | ValueTy::Bool
+            | ValueTy::String
+            | ValueTy::Cap(_)
+            | ValueTy::Func(_, _)
+            | ValueTy::Var(_)
+            | ValueTy::TyConVar(_) => 1,
+            // Task 2.3 computes exact sizes for `App` (collections); until then
+            // treat a constructor application conservatively as one slot.
+            ValueTy::App(..) => 1,
+            ValueTy::Newtype(name, _) => {
                 if !visiting.insert(name.clone()) {
                     return 1;
                 }
@@ -1160,7 +1170,7 @@ impl<'a> Lowerer<'a> {
                 visiting.remove(name);
                 s
             }
-            ValueTy::Data(name) => {
+            ValueTy::Data(name, _) => {
                 if !visiting.insert(name.clone()) {
                     return 1;
                 }

@@ -892,7 +892,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             match &t.outs[0].vty {
-                ValueTy::Data(name) => match ctx.env.data_types.get(name.as_str()) {
+                ValueTy::Data(name, _) => match ctx.env.data_types.get(name.as_str()) {
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
                             .iter()
@@ -941,7 +941,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             match &rt.outs[0].vty {
-                ValueTy::Data(name) => {
+                ValueTy::Data(name, _) => {
                     let fty = ctx
                         .env
                         .data_types
@@ -1007,7 +1007,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             }
             let scrutinee_vty = st.outs[0].vty.clone();
             let scrutinee_sum = match &scrutinee_vty {
-                ValueTy::Data(name) => Some(name.clone()),
+                ValueTy::Data(name, _) => Some(name.clone()),
                 _ => None,
             };
             // Derive the sum type name: every arm's constructor must belong to
@@ -1050,7 +1050,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             // Pin the scrutinee's value type to the arm-derived sum type.
             unify_value(
                 &scrutinee_vty,
-                &ValueTy::Data(sum_name.clone()),
+                &ValueTy::Data(sum_name.clone(), vec![]),
                 &mut ctx.subst,
                 *span,
             )?;
@@ -1136,7 +1136,9 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
     // `Circle` must be applied to its payload.
     if let Some(info) = ctx.env.data_types.get(name) {
         match info {
-            DataInfo::Record(_) => return Ok(ArrowTy::value_channel(ValueTy::Data(name.into()))),
+            DataInfo::Record(_) => {
+                return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])))
+            }
             DataInfo::Sum(_) => {
                 return Err(CompileError::Type {
                     msg: format!("`{name}` is a sum type; use one of its constructors"),
@@ -1334,7 +1336,7 @@ fn infer_apply(
                             let vt = infer_const_value(ctx, e)?;
                             unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
                         }
-                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into())));
+                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
                     }
                     _ => {
                         return Err(CompileError::Type {
@@ -1369,7 +1371,10 @@ fn infer_apply(
         let vt = infer_const_value(ctx, &args[0])?;
         let inner = ctx.env.vty_of_name(&inner_name);
         unify_value(&vt, &inner, &mut ctx.subst, args[0].span())?;
-        return Ok(ArrowTy::value_channel(ValueTy::Newtype(name.to_string())));
+        return Ok(ArrowTy::value_channel(ValueTy::Newtype(
+            name.to_string(),
+            vec![],
+        )));
     }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {
@@ -1396,7 +1401,7 @@ fn infer_apply(
             let vt = infer_const_value(ctx, e)?;
             unify_value(&vt, pty, &mut ctx.subst, e.span())?;
         }
-        return Ok(ArrowTy::value_channel(ValueTy::Data(sum_name)));
+        return Ok(ArrowTy::value_channel(ValueTy::Data(sum_name, vec![])));
     }
     // Typeclass method call: `show x` resolves at compile time to the instance
     // of the class declaring `show` for the concrete type of `x` (v1 requires
@@ -2379,7 +2384,10 @@ mod tests {
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
         assert_eq!(t.process_ty.outs.len(), 1);
         assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+        assert_eq!(
+            t.process_ty.outs[0].vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]
@@ -2408,7 +2416,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+        assert_eq!(
+            t.process_ty.outs[0].vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]
@@ -2458,7 +2469,7 @@ mod tests {
         // Registration must be order-independent (two-phase: aliases first).
         let t = ty_of("data P = { x: Angles }; type Angles = Float; main = P { x: 1.0 }").unwrap();
         assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -2467,7 +2478,7 @@ mod tests {
         // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
         // it requires the explicit `Hz 440.0` wrapper.
         let t = ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: Hz 440.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
         // Newtypes are distinct wrappers: a bare Float does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
         // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
@@ -2478,7 +2489,7 @@ mod tests {
     fn chained_alias_resolves() {
         let t =
             ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -2499,7 +2510,10 @@ mod tests {
     fn acyclic_data_type_still_compiles() {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+        assert_eq!(
+            t.process_ty.outs[0].vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]

@@ -77,6 +77,10 @@ fn value_contains_var_impl(
                     .iter()
                     .any(|r| value_contains_var_impl(subst, r, v, seen))
         }
+        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => args
+            .iter()
+            .any(|a| value_contains_var_impl(subst, a, v, seen)),
+        ValueTy::Bool | ValueTy::String | ValueTy::Cap(_) => false,
         _ => false,
     }
 }
@@ -136,8 +140,40 @@ pub fn unify_value(
             }
         }
         (ValueTy::Int, ValueTy::Int) | (ValueTy::Float, ValueTy::Float) => Ok(()),
-        (ValueTy::Data(x), ValueTy::Data(y)) if x == y => Ok(()),
-        (ValueTy::Newtype(x), ValueTy::Newtype(y)) if x == y => Ok(()),
+        (ValueTy::Bool, ValueTy::Bool) => Ok(()),
+        (ValueTy::String, ValueTy::String) => Ok(()),
+        (ValueTy::Cap(x), ValueTy::Cap(y)) if x == y => Ok(()),
+        (ValueTy::Data(x, ax), ValueTy::Data(y, ay))
+        | (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay))
+            if x == y && ax.len() == ay.len() =>
+        {
+            for (m, n) in ax.iter().zip(ay.iter()) {
+                unify_value(m, n, subst, span)?;
+            }
+            Ok(())
+        }
+        (ValueTy::App(cx, ax), ValueTy::App(cy, ay)) if cx == cy && ax.len() == ay.len() => {
+            for (x, y) in ax.iter().zip(ay.iter()) {
+                unify_value(x, y, subst, span)?;
+            }
+            Ok(())
+        }
+        // A class-var (kind variable) unifies with a concrete constructor
+        // application head, checking nothing here beyond the binding — arity is
+        // checked at instance-resolution time (Phase 8).
+        (ValueTy::TyConVar(f), other @ ValueTy::App(..))
+        | (other @ ValueTy::App(..), ValueTy::TyConVar(f)) => {
+            if value_contains_var(subst, other, *f) {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "recursive kind: type-constructor variable {f} cannot unify with {other:?}"
+                    ),
+                    span,
+                });
+            }
+            subst.value_map.insert(*f, other.clone());
+            Ok(())
+        }
         (ValueTy::Func(ax, rx), ValueTy::Func(by, sy)) => {
             if ax.len() == by.len() && rx.len() == sy.len() {
                 for i in 0..ax.len() {
@@ -199,7 +235,7 @@ mod tests {
     #[test]
     fn value_matching_data_unifies() {
         let mut s = Subst::default();
-        let p = ValueTy::Data("Point".into());
+        let p = ValueTy::Data("Point".into(), vec![]);
         unify_value(&p, &p, &mut s, sp()).unwrap();
     }
 
@@ -234,5 +270,51 @@ mod tests {
             sp(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn unifies_app_with_matching_ctor() {
+        let mut s = Subst::default();
+        let a = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let b = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        unify_value(&a, &b, &mut s, sp()).unwrap();
+    }
+
+    #[test]
+    fn unifies_app_with_cap_var_binding() {
+        let mut s = Subst::default();
+        let a = ValueTy::App("List".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
+        let b = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        unify_value(&a, &b, &mut s, sp()).unwrap();
+        assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Float);
+        assert_eq!(s.resolve_value(&ValueTy::Var(2)), ValueTy::Cap(4));
+    }
+
+    #[test]
+    fn unifies_tyconvar_with_ctor_head() {
+        let mut s = Subst::default();
+        let pat = ValueTy::TyConVar(10);
+        let ctor = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        unify_value(&pat, &ctor, &mut s, sp()).unwrap();
+        assert_eq!(
+            s.resolve_value(&ValueTy::TyConVar(10)),
+            ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)])
+        );
+    }
+
+    #[test]
+    fn bool_string_unify_are_leaves() {
+        let mut s = Subst::default();
+        unify_value(&ValueTy::Bool, &ValueTy::Bool, &mut s, sp()).unwrap();
+        unify_value(&ValueTy::String, &ValueTy::String, &mut s, sp()).unwrap();
+        assert!(unify_value(&ValueTy::Bool, &ValueTy::Float, &mut s, sp()).is_err());
+    }
+
+    #[test]
+    fn app_ctor_head_mismatch_errors() {
+        let mut s = Subst::default();
+        let a = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let b = ValueTy::App("Map".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        assert!(unify_value(&a, &b, &mut s, sp()).is_err());
     }
 }
