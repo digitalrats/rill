@@ -604,10 +604,21 @@ mod ctor_table_tests {
         assert!(env.ctor_has_cap("List") == Some(true));
         assert!(env.ctor_arity("Maybe") == Some(1));
         assert!(env.ctor_has_cap("Maybe") == Some(false));
+        assert!(env.ctor_arity("Set") == Some(2));
+        assert!(env.ctor_has_cap("Set") == Some(true));
         assert!(env.ctor_arity("Map") == Some(3));
         assert!(env.ctor_has_cap("Map") == Some(true));
         assert!(env.ctor_arity("Pair") == Some(2));
+        assert!(env.ctor_has_cap("Pair") == Some(false));
         assert!(env.ctor_arity("Either") == Some(2));
+        assert!(env.ctor_has_cap("Either") == Some(false));
         assert!(env.ctor_arity("Nope") == None);
+    }
+
+    #[test]
+    fn builtin_shapes_are_acyclic() {
+        // The injected Maybe/Pair/Either shapes must satisfy the v1 acyclicity
+        // contract (the arena-capacity bound depends on it).
+        TypeEnv::with_builtins().check_acyclic().unwrap();
     }
 }
