@@ -178,14 +178,24 @@ fn parses_capacity_in_type_application() {
 Run: `cargo test -p rill-lang parses_parameterized_data_and_typeclass`
 Expected: FAIL — `Def::Data` pattern no longer matches (`tyvars`/`fields` shape changed), or parse error.
 
-- [ ] **Step 3: Add `parse_type_expr` and update declaration parsers**
+- [ ] **Step 3: Add the type-expression grammar and update declaration parsers**
 
-Add a method to `Parser` (place it after `parse_data_def`):
+> **Implementation note (from the task run):** the originally-planned single
+> `parse_type_expr` is buggy — its recursive `Ident` branch absorbs a following
+> `Int`/`Ident` into the inner application, producing nested `TApp` for
+> `List Float 16` instead of the flat `TApp("List", [Float, Cap(16)])` the test
+> asserts, and its `LParen` branch cannot handle the unparenthesized trailing
+> chain of `(a -> b) -> f a -> f b`. The landed version uses a **3-tier
+> grammar** (landed commit `33ddb7e`). Use this grammar:
+
+Add three methods to `Parser` (place them after `parse_data_def`):
 
 ```rust
-    /// Parse a type expression: a chain of juxta-applied type names and type
-    /// variables, `(T -> U -> V)` curried function types, and capacity ints.
-    fn parse_type_expr(&mut self) -> Result<TypeExpr, CompileError> {
+    /// Parse a single, non-absorbing type atom: a bare type or type-variable
+    /// name, a capacity int, or a parenthesized type expression. It does not
+    /// consume following juxtaposed atoms — the caller's application and
+    /// currying loops collect those.
+    fn parse_type_single(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
         match t.tok {
             Tok::Int(n) => {
@@ -194,26 +204,39 @@ Add a method to `Parser` (place it after `parse_data_def`):
             }
             Tok::LParen => {
                 self.bump();
-                let mut args = Vec::new();
-                loop {
-                    let arg = self.parse_type_expr()?;
-                    if self.peek().tok == Tok::FatArrow {
-                        args.push(arg);
-                        self.bump();
-                    } else {
-                        args.push(arg);
-                        break;
-                    }
-                }
+                let inner = self.parse_type_expr()?;
                 self.eat(&Tok::RParen)?;
-                let ret = args.pop().expect("function type needs a result");
-                Ok(TypeExpr::TFunc(args, Box::new(ret)))
+                Ok(inner)
+            }
+            Tok::Ident(name) => {
+                self.bump();
+                Ok(TypeExpr::TName(name))
+            }
+            other => Err(self.error(&format!("expected type expression, found {other:?}"))),
+        }
+    }
+
+    /// Parse a type atom: a single atom, or a name applied to juxtaposed atoms
+    /// (`List Float 16`, `f a`). Juxtaposed arguments stay flat — each is one
+    /// non-absorbing [`Parser::parse_type_single`].
+    fn parse_type_atom(&mut self) -> Result<TypeExpr, CompileError> {
+        let t = self.peek().clone();
+        match t.tok {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(TypeExpr::TCap(n as usize))
+            }
+            Tok::LParen => {
+                self.bump();
+                let inner = self.parse_type_expr()?;
+                self.eat(&Tok::RParen)?;
+                Ok(inner)
             }
             Tok::Ident(name) => {
                 self.bump();
                 let mut args = Vec::new();
-                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_)) {
-                    args.push(self.parse_type_expr()?);
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::LParen) {
+                    args.push(self.parse_type_single()?);
                 }
                 if args.is_empty() {
                     Ok(TypeExpr::TName(name))
@@ -221,12 +244,31 @@ Add a method to `Parser` (place it after `parse_data_def`):
                     Ok(TypeExpr::TApp(name, args))
                 }
             }
-            other => Err(self.error(format!("expected type expression, found {other:?}"))),
+            other => Err(self.error(&format!("expected type expression, found {other:?}"))),
+        }
+    }
+
+    /// Parse a type expression: a chain of juxta-applied type names and type
+    /// variables, `(T -> U -> V)` curried function types, and capacity ints.
+    fn parse_type_expr(&mut self) -> Result<TypeExpr, CompileError> {
+        let first = self.parse_type_atom()?;
+        if self.peek().tok == Tok::FatArrow {
+            let mut args = vec![first];
+            while self.peek().tok == Tok::FatArrow {
+                self.bump();
+                args.push(self.parse_type_atom()?);
+            }
+            let ret = args.pop().expect("function type needs a result");
+            Ok(TypeExpr::TFunc(args, Box::new(ret)))
+        } else {
+            Ok(first)
         }
     }
 ```
 
-Update `parse_data_def` — parse tyvars after the name, and type expressions for fields/payloads:
+Update `parse_data_def` — parse tyvars after the name, type expressions for
+fields, and single atoms for sum payloads (payload types stay flat so
+`Rect Float Float` remains `[Float, Float]`):
 
 ```rust
     fn parse_data_def(&mut self) -> Result<Def, CompileError> {
@@ -258,7 +300,7 @@ Update `parse_data_def` — parse tyvars after the name, and type expressions fo
                 let (cname, _) = self.expect_ident()?;
                 let mut payload = Vec::new();
                 while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_)) {
-                    payload.push(self.parse_type_expr()?);
+                    payload.push(self.parse_type_single()?);
                 }
                 ctors.push((cname, payload));
                 if self.peek().tok == Tok::Pipe {
