@@ -48,7 +48,14 @@ struct Lowerer<'a> {
     defs: HashMap<String, Def>,
     sigs: &'a dyn SignatureSource,
     cafs: &'a HashSet<String>,
-    caf_cache: HashMap<String, Vec<usize>>,
+    /// Lowered registers of each lifted CAF, keyed by `(name, call-site args)`.
+    /// Task 5 threads the caller's signal args into a value-CAF's body (a
+    /// signal-lambda macro), so the lowered body is SITE-DEPENDENT: two sites
+    /// applying the same CAF to different wires must each lower with their own
+    /// wire. Genuine signal CAFs (empty signal-ins) never consume the threaded
+    /// args, so identical-args sites share the entry; distinct-arg sites get
+    /// separate (still correct) copies.
+    caf_cache: HashMap<(String, Vec<usize>), Vec<usize>>,
     caf_lifting: HashSet<String>,
     instrs: Vec<Instr>,
     next_reg: usize,
@@ -1752,7 +1759,18 @@ impl<'a> Lowerer<'a> {
                     return out;
                 }
                 if self.cafs.contains(name) {
-                    if let Some(regs) = self.caf_cache.get(name) {
+                    // The cache is keyed by (name, call-site args): Task 5
+                    // threads the caller's signal args into a value-CAF's body
+                    // (a signal-lambda macro), so the lowered body is
+                    // SITE-DEPENDENT. Two sites applying the same CAF to
+                    // different wires must each lower with their own wire
+                    // (`main = (amp2 _) , (amp2 _)`), not reuse the first
+                    // site's registers. Genuine signal CAFs (empty signal-ins)
+                    // never consume the threaded args, so identical args reuse
+                    // the shared entry and only distinct-arg sites duplicate
+                    // the (still correct) body.
+                    let key = (name.to_string(), args.to_vec());
+                    if let Some(regs) = self.caf_cache.get(&key) {
                         return Ok(regs.clone());
                     }
                     if self.caf_lifting.contains(name) {
@@ -1773,7 +1791,7 @@ impl<'a> Lowerer<'a> {
                     let res = self.lower(body, args);
                     self.caf_lifting.remove(name);
                     let out = res?;
-                    self.caf_cache.insert(name.to_string(), out.clone());
+                    self.caf_cache.insert(key, out.clone());
                     return Ok(out);
                 }
                 self.lower(body, args)

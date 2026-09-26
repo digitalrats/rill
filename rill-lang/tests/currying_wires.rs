@@ -76,3 +76,24 @@ fn partial_application_captures_free_variable() {
         &rill_lang::arena::Value::Float(13.0)
     );
 }
+
+#[test]
+fn caf_applied_at_two_sites_with_different_wires() {
+    // The value-CAF `amp2 = amp 2.0` applied to two DIFFERENT signal wires
+    // (`main = (amp2 _) , (amp2 _)` is a 2-in/2-out program): each call site
+    // must lower with ITS OWN wire, not reuse the first site's lowered body
+    // (regression: the CAF cache was keyed by name only).
+    let mut prog =
+        compile::<f32>("amp = fn g x -> x * g; amp2 = amp 2.0; main = (amp2 _) , (amp2 _)")
+            .unwrap();
+    let mut l = [0.0f32; 4];
+    let mut r = [0.0f32; 4];
+    MultichannelAlgorithm::process(
+        &mut prog,
+        &[&[1.0, 2.0, 3.0, 4.0], &[3.0, 4.0, 5.0, 6.0]],
+        &mut [&mut l, &mut r],
+    )
+    .unwrap();
+    assert_eq!(l, [2.0, 4.0, 6.0, 8.0], "left  = input[0] * 2.0");
+    assert_eq!(r, [6.0, 8.0, 10.0, 12.0], "right = input[1] * 2.0");
+}
