@@ -492,7 +492,7 @@ pub fn infer_program_with(
     // field/payload types against the COMPLETE alias/newtype environment. A
     // single-pass registration would wrongly reject
     // `data P = { x: Angles }; type Angles = Float; ...`.
-    let mut env = TypeEnv::default();
+    let mut env = TypeEnv::with_builtins();
     for def in &program.defs {
         match def {
             Def::TypeAlias { name, target, .. } => {
@@ -508,10 +508,12 @@ pub fn infer_program_with(
                     name.clone(),
                     TypeclassInfo {
                         var: var.clone(),
-                        methods: methods
+                        arity: methods
                             .iter()
-                            .map(|(m, sig)| (m.clone(), sig_name(sig)))
-                            .collect(),
+                            .map(|(_, sig)| TypeEnv::class_var_arity(var, sig))
+                            .max()
+                            .unwrap_or(0),
+                        methods: methods.clone(),
                     },
                 );
             }
@@ -575,6 +577,10 @@ pub fn infer_program_with(
     // runtime dispatch chain must terminate, so the call stack is statically
     // bounded (see `check_recursion`).
     check_recursion(&program.defs)?;
+
+    // Derive `Eq`/`Ord` instances for every concrete data type (user + builtin)
+    // and the scalar leaves, keeping any user-written instances intact.
+    env.derive_eq_ord();
 
     let mut ctx = Ctx {
         next: 0,

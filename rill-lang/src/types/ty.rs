@@ -202,8 +202,11 @@ pub enum DataInfo {
 pub struct TypeclassInfo {
     /// The class type variable (e.g. `a` in `typeclass Show a`).
     pub var: String,
-    /// Method dictionary: method name → declared argument type name.
-    pub methods: Vec<(String, String)>,
+    /// Kind arity of the class variable, inferred from its use in method
+    /// signatures (`f a` -> 1, `f a b` -> 2, bare `a` -> 0).
+    pub arity: usize,
+    /// Method dictionary: method name → signature type expression.
+    pub methods: Vec<(String, crate::ast::TypeExpr)>,
 }
 
 /// A concrete `instance` declaration: which class it implements, the concrete
@@ -283,10 +286,87 @@ impl TypeEnv {
                 ]),
             ),
         ]);
+        let typeclasses = HashMap::from([
+            (
+                "Eq".to_string(),
+                TypeclassInfo {
+                    var: "a".to_string(),
+                    arity: 0,
+                    methods: vec![(
+                        "eq".to_string(),
+                        crate::ast::TypeExpr::TFunc(
+                            vec![crate::ast::TypeExpr::TName("a".into())],
+                            Box::new(crate::ast::TypeExpr::TName("Bool".into())),
+                        ),
+                    )],
+                },
+            ),
+            (
+                "Ord".to_string(),
+                TypeclassInfo {
+                    var: "a".to_string(),
+                    arity: 0,
+                    methods: vec![(
+                        "lt".to_string(),
+                        crate::ast::TypeExpr::TFunc(
+                            vec![crate::ast::TypeExpr::TName("a".into())],
+                            Box::new(crate::ast::TypeExpr::TName("Bool".into())),
+                        ),
+                    )],
+                },
+            ),
+        ]);
         TypeEnv {
             ctor_kinds,
             data_types,
+            typeclasses,
             ..TypeEnv::default()
+        }
+    }
+
+    /// The kind arity of a class variable as used in a method signature: the
+    /// max number of type arguments applied to the variable (`f a` -> 1,
+    /// `f a b` -> 2, bare `a` -> 0). Used to typecheck `instance` heads.
+    pub(crate) fn class_var_arity(var: &str, sig: &crate::ast::TypeExpr) -> usize {
+        fn depth(var: &str, te: &crate::ast::TypeExpr) -> usize {
+            match te {
+                crate::ast::TypeExpr::TName(n) if n == var => 0,
+                crate::ast::TypeExpr::TApp(head, args) if head == var => args.len(),
+                crate::ast::TypeExpr::TApp(_, args) => {
+                    args.iter().map(|a| depth(var, a)).max().unwrap_or(0)
+                }
+                crate::ast::TypeExpr::TFunc(args, ret) => args
+                    .iter()
+                    .map(|a| depth(var, a))
+                    .chain(std::iter::once(depth(var, ret)))
+                    .max()
+                    .unwrap_or(0),
+                _ => 0,
+            }
+        }
+        depth(var, sig)
+    }
+
+    /// Register a derived (structural) `Eq`/`Ord` instance for every concrete
+    /// data type currently in the env, plus the scalar leaves. `Func` types
+    /// get no instance. Derived instances are markers: their method bodies are
+    /// not run — the interpreter's `value_cmp` implements the order.
+    pub fn derive_eq_ord(&mut self) {
+        let mut names: Vec<String> = self.data_types.keys().cloned().collect();
+        names.extend(
+            ["Int", "Float", "Bool", "String"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        for class in ["Eq", "Ord"] {
+            let by_ty = self.instances.entry(class.to_string()).or_default();
+            for n in &names {
+                by_ty.entry(n.clone()).or_insert_with(|| InstanceInfo {
+                    class: class.to_string(),
+                    ty: n.clone(),
+                    methods: HashMap::new(), // derived marker — empty body
+                });
+            }
         }
     }
 
@@ -626,5 +706,37 @@ mod ctor_table_tests {
         // The injected Maybe/Pair/Either shapes must satisfy the v1 acyclicity
         // contract (the arena-capacity bound depends on it).
         TypeEnv::with_builtins().check_acyclic().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod eq_ord_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_eq_ord_registered_and_derived() {
+        let mut env = TypeEnv::with_builtins();
+        env.data_types.insert(
+            "Point".to_string(),
+            DataInfo::Record(vec![("x".to_string(), ValueTy::Float)]),
+        );
+        env.data_types.insert(
+            "List".to_string(),
+            DataInfo::Sum(vec![
+                ("Cons".to_string(), vec![ValueTy::Var(1), ValueTy::Var(2)]),
+                ("Nil".to_string(), vec![]),
+            ]),
+        );
+        env.derive_eq_ord();
+        assert!(env.typeclasses.contains_key("Eq"));
+        assert!(env.typeclasses.contains_key("Ord"));
+        let by_ty = &env.instances["Ord"];
+        assert!(by_ty.contains_key("Float"));
+        assert!(by_ty.contains_key("Int"));
+        assert!(by_ty.contains_key("Bool"));
+        assert!(by_ty.contains_key("String"));
+        assert!(by_ty.contains_key("Point"));
+        assert!(by_ty.contains_key("List"));
+        assert!(!by_ty.contains_key("Func"), "Func has no derived Ord");
     }
 }
