@@ -439,6 +439,9 @@ mod tests {
         let mut a = Arena::with_capacity(16);
         let k = a.alloc(Value::String("a".into())).unwrap();
         let v = a.alloc(Value::Float(1.0)).unwrap();
+        // `k` is logically owned by BOTH `m` and `s` but starts at rc 1: `alloc`
+        // does not recount its children, so aliasing containers share the ref
+        // until one of them is dropped (which must therefore happen first).
         let m = a
             .alloc(Value::Map {
                 pairs: vec![(k, v)],
