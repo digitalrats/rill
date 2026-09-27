@@ -5,7 +5,7 @@ use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 
-use crate::arena::{ArenaRef, Value};
+use crate::arena::{Arena, ArenaRef, Value};
 use crate::ir::{BinArith, FragmentIr, Instr, UnOp, ValueInstr};
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
@@ -311,6 +311,105 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
             }
         }
         _ => {}
+    }
+}
+
+/// Structural total order over acyclic arena values (the derived `Eq`/`Ord`).
+/// Returns `< 0`, `== 0`, or `> 0`.
+///
+/// Leaves compare by value; a `Sum` by constructor index then payload; a
+/// `Record` by field order; a `Newtype` by its inner value; `List`/`Set`
+/// lexicographically over elements; `Map` lexicographically over the sorted
+/// (key, value) pairs. Mixed kinds fall back to [`kind_rank`], so any two
+/// acyclic values are comparable — this total cross-kind order is what makes
+/// arbitrary-typed `Map` keys work.
+///
+/// `Closure` values are unordered — reaching one is a lowering bug (the type
+/// checker rejects `Ord` over functions).
+///
+/// Wired into the value-track dispatcher (`ValueCompare`, Map/Set ops) in
+/// Task 6.3/6.4; until then only the unit tests reach it.
+#[allow(dead_code)]
+fn value_cmp(arena: &Arena, a: ArenaRef, b: ArenaRef) -> i8 {
+    match (arena.get(a), arena.get(b)) {
+        (Some(va), Some(vb)) => value_cmp_ref(arena, va, vb),
+        _ => 0,
+    }
+}
+
+#[allow(dead_code)] // wired with `value_cmp` in Task 6.3/6.4
+fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
+    use Value::*;
+    match (a, b) {
+        (Int(x), Int(y)) => x.cmp(y) as i8,
+        // `partial_cmp` returns `None` for NaN; the `Equal` fallback keeps the
+        // comparator total (a strict weak ordering), so NaN keys in maps and
+        // sets stay well-defined even though `NaN != NaN`.
+        (Float(x), Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal) as i8,
+        (Bool(x), Bool(y)) => x.cmp(y) as i8,
+        (String(x), String(y)) => x.cmp(y) as i8,
+        (Newtype(x), Newtype(y)) => value_cmp(arena, *x, *y),
+        (Sum(i, px), Sum(j, py)) => {
+            let c = i.cmp(j) as i8;
+            if c != 0 {
+                return c;
+            }
+            cmp_ref_slices(arena, px, py)
+        }
+        (Record(fx), Record(fy)) => cmp_ref_slices(arena, fx, fy),
+        (List { elems: ex, .. }, List { elems: ey, .. }) => cmp_ref_slices(arena, ex, ey),
+        (Set { elems: ex, .. }, Set { elems: ey, .. }) => cmp_ref_slices(arena, ex, ey),
+        (Map { pairs: px, .. }, Map { pairs: py, .. }) => {
+            for (i, (kx, vx)) in px.iter().enumerate() {
+                let Some((ky, vy)) = py.get(i) else {
+                    return 1;
+                };
+                let c = value_cmp(arena, *kx, *ky);
+                if c != 0 {
+                    return c;
+                }
+                let c = value_cmp(arena, *vx, *vy);
+                if c != 0 {
+                    return c;
+                }
+            }
+            (px.len() as i8).cmp(&(py.len() as i8)) as i8
+        }
+        (Closure(..), Closure(..)) => 0, // unreachable for Ord-typed keys
+        _ => kind_rank(a).cmp(&kind_rank(b)) as i8,
+    }
+}
+
+#[allow(dead_code)] // wired with `value_cmp` in Task 6.3/6.4
+fn cmp_ref_slices(arena: &Arena, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 {
+    for (i, x) in xs.iter().enumerate() {
+        let Some(y) = ys.get(i) else {
+            return 1;
+        };
+        let c = value_cmp(arena, *x, *y);
+        if c != 0 {
+            return c;
+        }
+    }
+    (xs.len() as i8).cmp(&(ys.len() as i8)) as i8
+}
+
+#[allow(dead_code)] // wired with `value_cmp` in Task 6.3/6.4
+fn kind_rank(v: &Value) -> i8 {
+    use Value::*;
+    match v {
+        Bool(_) => 0,
+        Int(_) => 1,
+        Float(_) => 2,
+        String(_) => 3,
+        Record(_) => 4,
+        Sum(..) => 5,
+        Newtype(_) => 6,
+        List { .. } => 7,
+        Map { .. } => 8,
+        Set { .. } => 9,
+        Closure(..) => 10,
+        Void => 11,
     }
 }
 
@@ -1531,5 +1630,26 @@ mod value_track_tests {
         );
         run_value_track(&mut prog);
         assert_eq!(prog.value_regs[2], None);
+    }
+}
+
+#[cfg(test)]
+mod value_cmp_tests {
+    use super::*;
+
+    #[test]
+    fn value_cmp_orders_structural() {
+        use crate::arena::{Arena, Value};
+        let mut a = Arena::with_capacity(16);
+        let r1 = a.alloc(Value::Float(1.0)).unwrap();
+        let r2 = a.alloc(Value::Float(2.0)).unwrap();
+        assert!(value_cmp(&a, r1, r2) < 0);
+        assert_eq!(value_cmp(&a, r1, r1), 0);
+        assert!(value_cmp(&a, r2, r1) > 0);
+        let s1 = a.alloc(Value::String("a".into())).unwrap();
+        let s2 = a.alloc(Value::String("b".into())).unwrap();
+        assert!(value_cmp(&a, s1, s2) < 0);
+        let b = a.alloc(Value::Bool(true)).unwrap();
+        assert!(value_cmp(&a, b, r1) < 0, "Bool sorts before Int");
     }
 }
