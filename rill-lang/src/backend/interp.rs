@@ -342,10 +342,12 @@ fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
     use Value::*;
     match (a, b) {
         (Int(x), Int(y)) => x.cmp(y) as i8,
-        // `partial_cmp` returns `None` for NaN; the `Equal` fallback keeps the
-        // comparator total (a strict weak ordering), so NaN keys in maps and
-        // sets stay well-defined even though `NaN != NaN`.
-        (Float(x), Float(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal) as i8,
+        // `total_cmp` is a genuine total order: NaN sorts greatest and NaN ≡
+        // NaN, so NaN keys in maps and sets stay well-defined and the ordering
+        // is transitive. A `partial_cmp`-with-`Equal`-fallback would be an
+        // intransitive equivalence (NaN ≈ 3.0 but 3.0 < 5.0), breaking the
+        // sorted Map/Set binary search.
+        (Float(x), Float(y)) => x.total_cmp(y) as i8,
         (Bool(x), Bool(y)) => x.cmp(y) as i8,
         (String(x), String(y)) => x.cmp(y) as i8,
         (Newtype(x), Newtype(y)) => value_cmp(arena, *x, *y),
@@ -373,7 +375,7 @@ fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
                     return c;
                 }
             }
-            (px.len() as i8).cmp(&(py.len() as i8)) as i8
+            px.len().cmp(&py.len()) as i8
         }
         (Closure(..), Closure(..)) => 0, // unreachable for Ord-typed keys
         _ => kind_rank(a).cmp(&kind_rank(b)) as i8,
@@ -391,7 +393,7 @@ fn cmp_ref_slices(arena: &Arena, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 {
             return c;
         }
     }
-    (xs.len() as i8).cmp(&(ys.len() as i8)) as i8
+    xs.len().cmp(&ys.len()) as i8
 }
 
 #[allow(dead_code)] // wired with `value_cmp` in Task 6.3/6.4
@@ -1651,5 +1653,117 @@ mod value_cmp_tests {
         assert!(value_cmp(&a, s1, s2) < 0);
         let b = a.alloc(Value::Bool(true)).unwrap();
         assert!(value_cmp(&a, b, r1) < 0, "Bool sorts before Int");
+    }
+
+    fn int_list(a: &mut Arena, len: usize) -> ArenaRef {
+        let elems: Vec<ArenaRef> = (0..len).map(|_| a.alloc(Value::Int(0)).unwrap()).collect();
+        a.alloc(Value::List { elems, cap: len }).unwrap()
+    }
+
+    #[test]
+    fn value_cmp_orders_containers() {
+        use crate::arena::{Arena, Value};
+        let mut a = Arena::with_capacity(32);
+        let f1 = a.alloc(Value::Float(1.0)).unwrap();
+        let f2 = a.alloc(Value::Float(2.0)).unwrap();
+
+        // Sum: constructor index first, then payload.
+        let s_1_1 = a.alloc(Value::Sum(0, vec![f1])).unwrap();
+        let s_1_2 = a.alloc(Value::Sum(0, vec![f2])).unwrap();
+        let s_2_0 = a.alloc(Value::Sum(1, vec![])).unwrap();
+        assert!(value_cmp(&a, s_1_1, s_1_2) < 0, "same ctor, payload orders");
+        assert!(
+            value_cmp(&a, s_1_2, s_2_0) < 0,
+            "ctor index dominates payload"
+        );
+
+        // Record: field order.
+        let r1 = a.alloc(Value::Record(vec![f1])).unwrap();
+        let r2 = a.alloc(Value::Record(vec![f2])).unwrap();
+        assert!(value_cmp(&a, r1, r2) < 0, "record field order");
+
+        // Newtype: unwraps to the inner value.
+        let n1 = a.alloc(Value::Newtype(f1)).unwrap();
+        let n2 = a.alloc(Value::Newtype(f2)).unwrap();
+        assert!(value_cmp(&a, n1, n2) < 0, "newtype compares by inner value");
+
+        // List: lexicographic, shorter is less when prefixes match.
+        let l1 = a
+            .alloc(Value::List {
+                elems: vec![f1],
+                cap: 2,
+            })
+            .unwrap();
+        let l12 = a
+            .alloc(Value::List {
+                elems: vec![f1, f2],
+                cap: 2,
+            })
+            .unwrap();
+        assert!(
+            value_cmp(&a, l1, l12) < 0,
+            "list lexicographic, shorter first"
+        );
+
+        // Map: key equal, value differs; then key differs.
+        let ka = a.alloc(Value::String("a".into())).unwrap();
+        let kb = a.alloc(Value::String("b".into())).unwrap();
+        let m_a1 = a
+            .alloc(Value::Map {
+                pairs: vec![(ka, f1)],
+                cap: 1,
+            })
+            .unwrap();
+        let m_a2 = a
+            .alloc(Value::Map {
+                pairs: vec![(ka, f2)],
+                cap: 1,
+            })
+            .unwrap();
+        let m_b1 = a
+            .alloc(Value::Map {
+                pairs: vec![(kb, f1)],
+                cap: 1,
+            })
+            .unwrap();
+        assert!(value_cmp(&a, m_a1, m_a2) < 0, "map value differs");
+        assert!(value_cmp(&a, m_a1, m_b1) < 0, "map key differs");
+    }
+
+    #[test]
+    fn value_cmp_length_tiebreak_survives_large_containers() {
+        use crate::arena::Arena;
+        // 200 identical elements compare equal across two lists; a 201-element
+        // list with the same prefix orders after. The length tiebreak must not
+        // wrap at i8 (127+ elements would otherwise invert the order).
+        let mut a = Arena::with_capacity(900);
+        let l200a = int_list(&mut a, 200);
+        let l200b = int_list(&mut a, 200);
+        let l201 = int_list(&mut a, 201);
+        assert_eq!(
+            value_cmp(&a, l200a, l200b),
+            0,
+            "identical prefixes, equal length"
+        );
+        assert!(
+            value_cmp(&a, l200a, l201) < 0,
+            "200-elem list sorts before 201-elem"
+        );
+        assert!(
+            value_cmp(&a, l201, l200a) > 0,
+            "201-elem list sorts after 200-elem"
+        );
+
+        // The wrap that motivated the fix: 127 must not order above 128/200.
+        let l127 = int_list(&mut a, 127);
+        let l128 = int_list(&mut a, 128);
+        assert!(
+            value_cmp(&a, l127, l128) < 0,
+            "127 < 128 across the i8 wrap"
+        );
+        assert!(
+            value_cmp(&a, l127, l200a) < 0,
+            "127 < 200 across the i8 wrap"
+        );
     }
 }
