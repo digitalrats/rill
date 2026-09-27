@@ -859,13 +859,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             prog.value_regs[*dst] = if let (Some(ks), Some(vs)) =
                 (read_field_refs(prog, keys), read_field_refs(prog, vals))
             {
-                alloc_owned(
-                    prog,
-                    Value::Map {
-                        pairs: ks.into_iter().zip(vs).collect(),
-                        cap: *cap,
-                    },
-                )
+                // Map entries are kept SORTED by the derived key order (the
+                // insert/lookup/member binary search relies on it), so a map
+                // literal written out of order is normalised here.
+                let mut pairs: Vec<(ArenaRef, ArenaRef)> = ks.into_iter().zip(vs).collect();
+                pairs.sort_by(|a, b| value_cmp(&prog.arena, a.0, b.0).cmp(&0));
+                alloc_owned(prog, Value::Map { pairs, cap: *cap })
             } else {
                 None
             };

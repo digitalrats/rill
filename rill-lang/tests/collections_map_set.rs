@@ -122,3 +122,18 @@ fn tail_shared_source_elements_survive_across_ticks() {
         }
     }
 }
+
+#[test]
+fn map_literal_entries_are_sorted_regardless_of_write_order() {
+    // Out-of-order multi-key literals must be normalised to sorted order so the
+    // binary-search invariant of insert/lookup/member holds.
+    let mut prog = compile::<f32>("main = member \"a\" { \"b\": 1.0, \"a\": 2.0 };").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Bool(true),
+        "lookup of a key written out of order must still find it"
+    );
+}
