@@ -4,9 +4,10 @@ use rill_core::buffer::FixedBuffer;
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
+use rill_core::traits::ProcessError;
 
 use crate::arena::{Arena, ArenaRef, Value};
-use crate::ir::{BinArith, FragmentIr, Instr, UnOp, ValueInstr};
+use crate::ir::{BinArith, CmpOp, FragmentIr, Instr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr};
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
 
@@ -40,12 +41,13 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
 }
 
 /// Run one block via the schedule. Every step is a whole-buffer operation.
-/// Supports N inputs → M outputs.
+/// Supports N inputs → M outputs. Returns a `ProcessError` when the value track
+/// latched one (a collection capacity overflow — a user error, not a build bug).
 pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     inputs: &[&[T]],
     outputs: &mut [&mut [T]],
-) {
+) -> Result<(), ProcessError> {
     push_builtin_params(prog);
     // Release the previous tick's value outputs BEFORE this tick allocates.
     // A value output pins its whole subtree across ticks (the output keeps the
@@ -73,8 +75,12 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
     prog.schedule.steps = steps;
 
-    // Value-track phase (per-tick): allocate/free the program's values.
-    run_value_track(prog);
+    // Value-track phase (per-tick): allocate/free the program's values. A
+    // latched value error (a collection capacity overflow) is propagated only
+    // AFTER the tick-end cleanup below — the registers, block-state swap and
+    // output release all still run, so a repeatedly erroring program cannot
+    // leak the fixed arena or desync its feedback state.
+    let value_res = run_value_track(prog);
 
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
@@ -109,6 +115,7 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     // store, and `ValueStateWrite` already drops the previous ref when
     // overwriting a slot.
     prog.clear_value_regs();
+    value_res
 }
 
 /// Execute the per-tick value track: run every [`ValueInstr`] once per block,
@@ -120,7 +127,9 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
 /// (RC++); a store that MOVES a ref clears the source (`None`). Drops are
 /// deferred to the end of the track so a drop cannot free a slot mid-track
 /// that a later instruction reuses, and the release order is deterministic.
-pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>) {
+pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+) -> Result<(), ProcessError> {
     // Move the instruction list out of `prog` so we can borrow `prog`'s value
     // registers mutably while iterating (`mem::take` leaves an empty `Vec`
     // behind — no allocation on the RT path). Drops queue on the shared,
@@ -140,6 +149,13 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(prog: &mut Ri
         prog.arena.drop_ref(r);
     }
     prog.drops_scratch = drops;
+    // The value-error latch: a collection op (e.g. `cons` past capacity) sets
+    // it and the tick fails with a user-facing `ProcessError` rather than a
+    // silent `None` (that channel is reserved for build-time arena exhaustion).
+    if let Some(err) = prog.value_error.take() {
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Allocate a slot holding `v`, taking over the ownership of `v`'s child refs.
@@ -326,10 +342,6 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
 ///
 /// `Closure` values are unordered — reaching one is a lowering bug (the type
 /// checker rejects `Ord` over functions).
-///
-/// Wired into the value-track dispatcher (`ValueCompare`, Map/Set ops) in
-/// Task 6.3/6.4; until then only the unit tests reach it.
-#[allow(dead_code)]
 fn value_cmp(arena: &Arena, a: ArenaRef, b: ArenaRef) -> i8 {
     match (arena.get(a), arena.get(b)) {
         (Some(va), Some(vb)) => value_cmp_ref(arena, va, vb),
@@ -337,7 +349,6 @@ fn value_cmp(arena: &Arena, a: ArenaRef, b: ArenaRef) -> i8 {
     }
 }
 
-#[allow(dead_code)] // wired with `value_cmp` in Task 6.3/6.4
 fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
     use Value::*;
     match (a, b) {
@@ -382,7 +393,6 @@ fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
     }
 }
 
-#[allow(dead_code)] // wired with `value_cmp` in Task 6.3/6.4
 fn cmp_ref_slices(arena: &Arena, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 {
     for (i, x) in xs.iter().enumerate() {
         let Some(y) = ys.get(i) else {
@@ -396,7 +406,6 @@ fn cmp_ref_slices(arena: &Arena, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 {
     xs.len().cmp(&ys.len()) as i8
 }
 
-#[allow(dead_code)] // wired with `value_cmp` in Task 6.3/6.4
 fn kind_rank(v: &Value) -> i8 {
     use Value::*;
     match v {
@@ -822,11 +831,266 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
             }
         }
-        // Phase 6.1 literals/comparisons/logic/collection-ops are opaque until
-        // the dispatcher lands (Tasks 6.2/6.3); ignore them here so the match
-        // stays exhaustive.
-        _ => {}
+        ValueInstr::ValueBool { dst, value } => {
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Bool(*value));
+        }
+        ValueInstr::ValueConstString { dst, value } => {
+            prog.value_regs[*dst] = alloc_owned(prog, Value::String(value.clone()));
+        }
+        ValueInstr::ValueListLit { dst, elems, cap } => {
+            prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, elems) {
+                alloc_owned(
+                    prog,
+                    Value::List {
+                        elems: refs,
+                        cap: *cap,
+                    },
+                )
+            } else {
+                None
+            };
+        }
+        ValueInstr::ValueMapLit {
+            dst,
+            keys,
+            vals,
+            cap,
+        } => {
+            prog.value_regs[*dst] = if let (Some(ks), Some(vs)) =
+                (read_field_refs(prog, keys), read_field_refs(prog, vals))
+            {
+                alloc_owned(
+                    prog,
+                    Value::Map {
+                        pairs: ks.into_iter().zip(vs).collect(),
+                        cap: *cap,
+                    },
+                )
+            } else {
+                None
+            };
+        }
+        ValueInstr::ValueCompare { dst, op, a, b } => {
+            let res = match (prog.value_regs[*a], prog.value_regs[*b]) {
+                (Some(x), Some(y)) => {
+                    let c = value_cmp(&prog.arena, x, y);
+                    let b = match op {
+                        CmpOp::Eq => c == 0,
+                        CmpOp::Ne => c != 0,
+                        CmpOp::Lt => c < 0,
+                        CmpOp::Gt => c > 0,
+                        CmpOp::Le => c <= 0,
+                        CmpOp::Ge => c >= 0,
+                    };
+                    Some(Value::Bool(b))
+                }
+                _ => None,
+            };
+            prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
+        }
+        ValueInstr::ValueLogic { dst, op, a, b } => {
+            let res = match (prog.value_regs[*a], prog.value_regs[*b]) {
+                (Some(x), Some(y)) => {
+                    let (ax, ay) = match (prog.arena.get(x), prog.arena.get(y)) {
+                        (Some(Value::Bool(p)), Some(Value::Bool(q))) => (*p, *q),
+                        _ => (false, false),
+                    };
+                    Some(Value::Bool(match op {
+                        LogicOp::And => ax && ay,
+                        LogicOp::Or => ax || ay,
+                    }))
+                }
+                _ => None,
+            };
+            prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
+        }
+        ValueInstr::ValueCallBuiltin { dst, op, args } => {
+            exec_value_call_builtin(prog, *op, args, *dst, drops);
+        }
     }
+}
+
+/// Dispatch a collection operation (`ValueCallBuiltin`).
+///
+/// Container reads copy (RC++) any child refs the result claims so both the
+/// source and the new container own them. A capacity overflow latches a
+/// `ProcessError` on `prog.value_error` instead of a silent `None` — the
+/// register-`Option` channel is reserved for build-time arena exhaustion.
+fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    op: ValueBuiltinOp,
+    args: &[usize],
+    dst: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    use ValueBuiltinOp::*;
+    match op {
+        Cons => {
+            // cons x xs: build a new List sharing the source elems, append x.
+            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            match xs {
+                Some(Value::List { mut elems, cap }) => {
+                    if elems.len() >= cap {
+                        prog.value_error = Some(ProcessError::processing("list capacity exceeded"));
+                        return;
+                    }
+                    let x = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok());
+                    match x {
+                        Some(xr) => {
+                            elems.push(xr);
+                            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems, cap });
+                        }
+                        None => prog.value_regs[dst] = None,
+                    }
+                }
+                _ => prog.value_regs[dst] = None,
+            }
+        }
+        Length => {
+            let n = prog.value_regs[args[0]]
+                .and_then(|r| prog.arena.get(r))
+                .map(|v| match v {
+                    Value::List { elems, .. } => elems.len() as i64,
+                    _ => 0,
+                })
+                .unwrap_or(0);
+            prog.value_regs[dst] = alloc_owned(prog, Value::Int(n));
+        }
+        Head => {
+            let r = prog.value_regs[args[0]].and_then(|r| prog.arena.get(r).cloned());
+            let m = match r {
+                Some(Value::List { elems, .. }) => elems.first().copied(),
+                _ => None,
+            };
+            prog.value_regs[dst] = match m {
+                // `Just e`: the Sum owns a counted ref on the element (the list
+                // keeps its own ownership). `Nothing`: an empty sum payload.
+                Some(e) => match copy_owned(prog, e) {
+                    Some(ce) => alloc_owned(prog, Value::Sum(0, vec![ce])),
+                    None => None,
+                },
+                None => alloc_owned(prog, Value::Sum(1, vec![])),
+            };
+        }
+        Map => {
+            // map f xs: dispatch f per element via a one-arg closure call.
+            let f = prog.value_regs[args[0]];
+            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(_), Some(Value::List { elems, cap })) = (f, xs) {
+                let mut out = Vec::with_capacity(elems.len());
+                for e in &elems {
+                    let out_e = call_closure_single(prog, args[0], *e, dst, drops);
+                    if let Some(o) = out_e {
+                        out.push(o);
+                    }
+                }
+                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out, cap });
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        Fold => {
+            // fold f z xs: seed the accumulator with a copy of z, then for each
+            // element call f with (acc, elem); the result becomes the new acc.
+            let f = prog.value_regs[args[0]];
+            let acc = prog.value_regs[args[1]];
+            let xs = prog.value_regs[args[2]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(_), Some(accr), Some(Value::List { elems, .. })) = (f, acc, xs) {
+                let mut cur = match copy_owned(prog, accr) {
+                    Some(c) => c,
+                    None => {
+                        prog.value_regs[dst] = None;
+                        return;
+                    }
+                };
+                let mut failed = false;
+                for e in &elems {
+                    let pair = [cur, *e];
+                    let next = call_closure_args(prog, args[0], &pair, dst, drops);
+                    match next {
+                        Some(n) => {
+                            // Replace the previous accumulator copy with the
+                            // fresh result: exactly one owner lives.
+                            prog.arena.drop_ref(cur);
+                            cur = n;
+                        }
+                        None => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if failed {
+                    prog.arena.drop_ref(cur);
+                    prog.value_regs[dst] = None;
+                } else {
+                    prog.value_regs[dst] = Some(cur);
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        // Tail, Filter, ListEmpty, InsertMap, Lookup, Member, InsertSet,
+        // MapEmpty, SetEmpty — wired with the remaining ops in Task 6.4.
+        _ => prog.value_regs[dst] = None,
+    }
+}
+
+/// Bind `elem` as the fragment's single argument register, run the closure, and
+/// return the copied result ref (or `None` when the slot holds no closure).
+///
+/// Thin wrapper over [`call_closure_args`].
+fn call_closure_single<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    closure_reg: usize,
+    elem: ArenaRef,
+    result_reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    call_closure_args(
+        prog,
+        closure_reg,
+        std::slice::from_ref(&elem),
+        result_reg,
+        drops,
+    )
+}
+
+/// Bind `args` as a closure call's argument registers and run the fragment,
+/// returning the copied result ref (or `None` on any unbound/errored step).
+///
+/// The arg refs are placed in the pre-allocated call-scratch slots as raw
+/// borrows — `run_fragment` copies each (RC++) into the same slots before
+/// running and drains them on return, so the source containers keep their own
+/// ownership and the borrow never leaks. `result_reg` is a program-level
+/// register (below the scratch watermark), so the drained range cannot reclaim
+/// it; its previous occupant is dropped first, because `run_fragment`
+/// overwrites `dst` without releasing the old ref.
+fn call_closure_args<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    closure_reg: usize,
+    args: &[ArenaRef],
+    result_reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let (env_ref, fragment_id) = match prog.value_regs.get(closure_reg).copied().flatten() {
+        Some(r) => match prog.arena.get(r) {
+            Some(Value::Closure(env, fid)) => (*env, *fid),
+            _ => return None,
+        },
+        None => return None,
+    };
+    let frag = prog.ir.fragments.get(fragment_id as usize).cloned()?;
+    let base = prog.value_regs_top;
+    for (i, e) in args.iter().enumerate() {
+        prog.value_regs[base + i] = Some(*e);
+    }
+    if let Some(old) = prog.value_regs.get_mut(result_reg).and_then(|r| r.take()) {
+        drops.push(old);
+    }
+    let arg_regs: Vec<usize> = (0..args.len()).map(|i| base + i).collect();
+    run_fragment(prog, &frag, env_ref, &arg_regs, &result_reg, drops);
+    prog.value_regs.get_mut(result_reg).and_then(|r| r.take())
 }
 
 /// Execute a function fragment: binds the captured env fields as cells in a
@@ -1443,7 +1707,7 @@ mod value_track_tests {
         // Drive the value track directly (the full tick additionally clears
         // the per-tick registers at the end) so the registers and arena can be
         // inspected mid-tick.
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         assert_eq!(prog.value_regs[0], Some(0));
         let slot0 = prog.arena.get(0).unwrap().clone();
         assert_eq!(slot0, crate::arena::Value::Int(42));
@@ -1465,7 +1729,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         let cell = prog.value_regs[1].unwrap();
         let val = prog.arena.get(cell).unwrap();
         assert_eq!(val, &crate::arena::Value::Int(7));
@@ -1545,7 +1809,7 @@ mod value_track_tests {
             5,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         let get = |r: usize| prog.arena.get(prog.value_regs[r].unwrap()).unwrap().clone();
         assert_eq!(get(2), crate::arena::Value::Float(5.0), "3 + 2.0");
         assert_eq!(get(3), crate::arena::Value::Float(10.0), "2.0 * 5.0");
@@ -1565,7 +1829,7 @@ mod value_track_tests {
             2,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         assert_eq!(
             prog.arena.get(prog.value_regs[0].unwrap()).unwrap(),
             &crate::arena::Value::Float(84.0)
@@ -1594,7 +1858,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         let payload = prog.value_regs[2].unwrap();
         assert_eq!(
             prog.arena.get(payload).unwrap(),
@@ -1630,7 +1894,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         assert_eq!(prog.value_regs[2], None);
     }
 }

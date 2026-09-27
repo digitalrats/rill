@@ -6,8 +6,8 @@ use crate::ast::{ArithOp, Def, Expr, Param, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
-    BinArith, BuiltinInstance, FragmentIr, FuncSig, Instr, Ir, ParamDef, StateLayout, UnOp,
-    ValueInstr, ValueLayout,
+    BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
+    StateLayout, UnOp, ValueBuiltinOp, ValueInstr, ValueLayout,
 };
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
@@ -41,7 +41,47 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueUpdateField { .. }
             | ValueInstr::ValueMakeClosure { .. }
             | ValueInstr::ValueCallFunc { .. }
+            | ValueInstr::ValueBool { .. }
+            | ValueInstr::ValueConstString { .. }
+            | ValueInstr::ValueListLit { .. }
+            | ValueInstr::ValueMapLit { .. }
+            | ValueInstr::ValueCompare { .. }
+            | ValueInstr::ValueLogic { .. }
+            | ValueInstr::ValueCallBuiltin { .. }
     )
+}
+
+/// The type arguments of a `List` value type (`[elem, Cap(n)]`), if `t` is one.
+fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
+    match t {
+        ValueTy::App(name, inner) if name == "List" => Some(inner),
+        _ => None,
+    }
+}
+
+/// Map a parsed comparison operator to its IR form (the two enums share their
+/// variant names, so the match is mechanical).
+fn cmp_op_from_ast(op: crate::ast::CmpOp) -> CmpOp {
+    use crate::ast::CmpOp as A;
+    use crate::ir::CmpOp as I;
+    match op {
+        A::Eq => I::Eq,
+        A::Ne => I::Ne,
+        A::Lt => I::Lt,
+        A::Gt => I::Gt,
+        A::Le => I::Le,
+        A::Ge => I::Ge,
+    }
+}
+
+/// Map a parsed logic operator to its IR form.
+fn logic_op_from_ast(op: crate::ast::LogicOp) -> LogicOp {
+    use crate::ast::LogicOp as A;
+    use crate::ir::LogicOp as I;
+    match op {
+        A::And => I::And,
+        A::Or => I::Or,
+    }
 }
 
 struct Lowerer<'a> {
@@ -340,6 +380,29 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // Collection operation (`length`, `cons`, `head`, `tail`, `map`,
+                // `fold`, `filter`, `list`, `insert`, `lookup`, `member`,
+                // `empty_map`, `empty_set`): a reserved name dispatched by
+                // `ValueCallBuiltin`. Checked before the record/sum/newtype/
+                // method/user-def resolution so a collection op can never be
+                // shadowed by a definition of the same name.
+                if let Some(op) = self.value_builtin(name, call_args.len()) {
+                    let mut arg_regs = Vec::with_capacity(call_args.len());
+                    let mut arg_tys = Vec::with_capacity(call_args.len());
+                    for a in call_args {
+                        let (r, t) = self.lower_value(a)?;
+                        arg_regs.push(r);
+                        arg_tys.push(t);
+                    }
+                    let ret = self.value_builtin_ty(name, &arg_tys, *span)?;
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueCallBuiltin {
+                        dst,
+                        op,
+                        args: arg_regs,
+                    });
+                    return Ok((dst, ret));
+                }
                 // Record constructor: `Point { x: 1.0 }`.
                 if let Some(info) = self.env.data_types.get(name).cloned() {
                     match info {
@@ -649,18 +712,194 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Func(param_tys, vec![ret_ty])))
             }
-            Expr::Bool(_, _)
-            | Expr::ListLit(_, _)
-            | Expr::MapLit(_, _)
-            | Expr::Cmp { .. }
-            | Expr::Logic { .. } => Err(CompileError::Unsupported(
-                "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
-                    .into(),
-            )),
+            Expr::Bool(b, _) => {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBool { dst, value: *b });
+                Ok((dst, ValueTy::Bool))
+            }
+            Expr::Str(s, _) => {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstString {
+                    dst,
+                    value: s.clone(),
+                });
+                Ok((dst, ValueTy::String))
+            }
+            Expr::ListLit(elems, _) => {
+                let mut regs = Vec::with_capacity(elems.len());
+                let mut elem_ty = ValueTy::Float;
+                for e in elems {
+                    let (r, t) = self.lower_value(e)?;
+                    regs.push(r);
+                    elem_ty = t;
+                }
+                let cap = regs.len();
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueListLit {
+                    dst,
+                    elems: regs,
+                    cap,
+                });
+                Ok((
+                    dst,
+                    ValueTy::App("List".into(), vec![elem_ty, ValueTy::Cap(cap)]),
+                ))
+            }
+            Expr::MapLit(entries, _) => {
+                let mut keys = Vec::with_capacity(entries.len());
+                let mut vals = Vec::with_capacity(entries.len());
+                for (k, v) in entries {
+                    let (kr, _) = self.lower_value(&Expr::Str(k.clone(), Span::new(0, 0)))?;
+                    let (vr, vt) = self.lower_value(v)?;
+                    keys.push(kr);
+                    vals.push(vr);
+                    if !matches!(vt, ValueTy::Float | ValueTy::Int) {
+                        // v1 MapLit value type is pinned to Float; the per-entry
+                        // type is recorded only as a future refinement hook.
+                    }
+                }
+                let cap = keys.len();
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueMapLit {
+                    dst,
+                    keys,
+                    vals,
+                    cap,
+                });
+                Ok((
+                    dst,
+                    ValueTy::App(
+                        "Map".into(),
+                        vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(cap)],
+                    ),
+                ))
+            }
+            Expr::Cmp { op, lhs, rhs, .. } => {
+                let (a, _) = self.lower_value(lhs)?;
+                let (b, _) = self.lower_value(rhs)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueCompare {
+                    dst,
+                    op: cmp_op_from_ast(*op),
+                    a,
+                    b,
+                });
+                Ok((dst, ValueTy::Bool))
+            }
+            Expr::Logic { op, lhs, rhs, .. } => {
+                let (a, _) = self.lower_value(lhs)?;
+                let (b, _) = self.lower_value(rhs)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueLogic {
+                    dst,
+                    op: logic_op_from_ast(*op),
+                    a,
+                    b,
+                });
+                Ok((dst, ValueTy::Bool))
+            }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
                 span: e.span(),
             }),
+        }
+    }
+
+    /// Resolve a collection-operation name to its IR op by arity. `insert`
+    /// dispatches on argument count: 3 → map, 2 → set. Returns `None` for a
+    /// non-collection name (the collection op names are reserved).
+    fn value_builtin(&self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
+        use ValueBuiltinOp::*;
+        Some(match (name, nargs) {
+            ("cons", _) => Cons,
+            ("head", _) => Head,
+            ("tail", _) => Tail,
+            ("length", _) => Length,
+            ("map", _) => Map,
+            ("fold", _) => Fold,
+            ("filter", _) => Filter,
+            ("list", _) => ListEmpty,
+            ("insert", 3) => InsertMap,
+            ("insert", 2) => InsertSet,
+            ("lookup", _) => Lookup,
+            ("member", _) => Member,
+            ("empty_map", _) => MapEmpty,
+            ("empty_set", _) => SetEmpty,
+            _ => return None,
+        })
+    }
+
+    /// Result static type of a collection op applied to the given argument
+    /// types. Element/value types are read from the container argument; the
+    /// capacity in the result is a conservative `Cap(0)` placeholder refined
+    /// by the cap-flow pass (Task 8.2).
+    fn value_builtin_ty(
+        &self,
+        name: &str,
+        args: &[ValueTy],
+        span: Span,
+    ) -> Result<ValueTy, CompileError> {
+        match name {
+            "cons" | "filter" => match args.get(1).and_then(list_type_args) {
+                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                _ => Err(CompileError::Type {
+                    msg: format!("{name} expects a List, got {:?}", args.get(1)),
+                    span,
+                }),
+            },
+            "tail" => match args.first().and_then(list_type_args) {
+                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                _ => Err(CompileError::Type {
+                    msg: format!("{name} expects a List, got {:?}", args.first()),
+                    span,
+                }),
+            },
+            "head" => {
+                let elem = match args.first().and_then(list_type_args) {
+                    Some(inner) => inner[0].clone(),
+                    _ => ValueTy::Float,
+                };
+                Ok(ValueTy::App("Maybe".into(), vec![elem]))
+            }
+            "length" => Ok(ValueTy::Int),
+            "map" => {
+                let elem = match args.get(1).and_then(list_type_args) {
+                    Some(inner) => inner[0].clone(),
+                    _ => ValueTy::Float,
+                };
+                Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(0)]))
+            }
+            "fold" => Ok(args.first().cloned().unwrap_or(ValueTy::Float)),
+            "list" => Ok(ValueTy::App(
+                "List".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            )),
+            "insert" => match args.len() {
+                3 => Ok(ValueTy::App("Map".into(), args.to_vec())),
+                _ => Ok(ValueTy::App(
+                    "Set".into(),
+                    vec![args[0].clone(), ValueTy::Cap(0)],
+                )),
+            },
+            "lookup" => {
+                let v = match args.get(1) {
+                    Some(ValueTy::App(name, inner)) if name == "Map" => inner[1].clone(),
+                    _ => ValueTy::Float,
+                };
+                Ok(ValueTy::App("Maybe".into(), vec![v]))
+            }
+            "member" => Ok(ValueTy::Bool),
+            "empty_map" => Ok(ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
+            )),
+            "empty_set" => Ok(ValueTy::App(
+                "Set".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            )),
+            _ => Err(CompileError::Unsupported(format!(
+                "unknown collection op {name}"
+            ))),
         }
     }
 

@@ -861,10 +861,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             Ok(t)
         }
         Expr::Apply { name, args, span } => infer_apply(ctx, name, args, *span),
-        Expr::Str(_, span) => Err(CompileError::Type {
-            msg: "string literal is only valid as a parameter name".into(),
-            span: *span,
-        }),
+        Expr::Str(_, _) => Ok(ArrowTy::value_channel(ValueTy::String)),
         Expr::Seq(lhs, rhs, span) => infer_seq(ctx, lhs, rhs, *span),
         Expr::Par(lhs, rhs, span) => infer_par(ctx, lhs, rhs, *span),
         Expr::Split(lhs, rhs, span) => infer_split(ctx, lhs, rhs, *span),
@@ -1148,14 +1145,52 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             let ret_ty = bt.outs[0].vty.clone();
             Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
         }
-        Expr::Bool(_, _)
-        | Expr::ListLit(_, _)
-        | Expr::MapLit(_, _)
-        | Expr::Cmp { .. }
-        | Expr::Logic { .. } => Err(CompileError::Unsupported(
-            "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
-                .into(),
-        )),
+        Expr::Bool(_, _) => Ok(ArrowTy::value_channel(ValueTy::Bool)),
+        Expr::ListLit(elems, _) => {
+            // Homogeneous list literal: every element is a value constant of the
+            // same type; the literal's capacity is its length (a strict
+            // type-carried bound — consing past it is a runtime overflow error).
+            let mut elem_ty: Option<ValueTy> = None;
+            for e in elems {
+                let et = infer_const_value(ctx, e)?;
+                if let Some(prev) = &elem_ty {
+                    unify_value(prev, &et, &mut ctx.subst, e.span())?;
+                } else {
+                    elem_ty = Some(et);
+                }
+            }
+            let elem_ty = elem_ty
+                .map(|t| ctx.subst.resolve_value(&t))
+                .unwrap_or(ValueTy::Float);
+            Ok(ArrowTy::value_channel(ValueTy::App(
+                "List".into(),
+                vec![elem_ty, ValueTy::Cap(elems.len())],
+            )))
+        }
+        Expr::MapLit(entries, _) => {
+            // Map literal with string keys: v1 pins the value type to Float
+            // (mirrors lowering); capacity = entry count.
+            for (_, ve) in entries {
+                let _ = infer_const_value(ctx, ve)?;
+            }
+            Ok(ArrowTy::value_channel(ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(entries.len())],
+            )))
+        }
+        Expr::Cmp { lhs, rhs, .. } => {
+            // Value-track comparison: both sides are value constants (any
+            // types — the interpreter's `value_cmp` is a cross-kind total
+            // order). The result is a Bool value channel.
+            let _ = infer_const_value(ctx, lhs)?;
+            let _ = infer_const_value(ctx, rhs)?;
+            Ok(ArrowTy::value_channel(ValueTy::Bool))
+        }
+        Expr::Logic { lhs, rhs, .. } => {
+            let _ = infer_const_value(ctx, lhs)?;
+            let _ = infer_const_value(ctx, rhs)?;
+            Ok(ArrowTy::value_channel(ValueTy::Bool))
+        }
     }
 }
 
@@ -1314,6 +1349,18 @@ fn infer_apply(
     }
     if name == "param" {
         return infer_param(args, span);
+    }
+    // Collection operations (value track): reserved names dispatched by the
+    // interpreter's `ValueCallBuiltin`. They take precedence over user
+    // definitions/builtins (mirrors lowering), so a collection op can never be
+    // shadowed by a definition of the same name.
+    match name {
+        "length" | "cons" | "head" | "tail" | "map" | "fold" | "filter" | "list" | "insert"
+        | "lookup" | "member" | "empty_map" | "empty_set" => {
+            let ret = infer_collection_call(ctx, name, args, span)?;
+            return Ok(ArrowTy::value_channel(ret));
+        }
+        _ => {}
     }
     // Data-type constructors take priority over builtins and user definitions:
     // ctor names (`Circle`, `Point`) are never builtins.
@@ -1850,6 +1897,176 @@ fn infer_apply(
     match combined {
         Some(args_ty) => seq(ctx, &args_ty, &callee, span),
         None => Ok(callee),
+    }
+}
+
+/// Infer a collection-operation call (`length`, `cons`, `head`, `tail`, `map`,
+/// `fold`, `filter`, `list`, `insert`, `lookup`, `member`, `empty_map`,
+/// `empty_set`): validates the argument arity and container types, returning
+/// the result value type. Mirrors the lowerer's `value_builtin_ty` signatures
+/// (Task 6.3).
+fn infer_collection_call(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    args: &[Expr],
+    span: Span,
+) -> Result<ValueTy, CompileError> {
+    let arity_err = |expected: &str, got: usize| CompileError::Type {
+        msg: format!("`{name}` expects {expected} argument(s), got {got}"),
+        span,
+    };
+    let arg_vty = |ctx: &mut Ctx<'_>, i: usize| -> Result<ValueTy, CompileError> {
+        match args.get(i) {
+            Some(e) => infer_const_value(ctx, e),
+            None => Err(arity_err(&(i + 1).to_string(), args.len())),
+        }
+    };
+    // The (element, capacity) of a `List` value type; Float/0 for a non-list.
+    let list_shape = |t: &ValueTy| -> (ValueTy, usize) {
+        match t {
+            ValueTy::App(n, inner) if n == "List" => {
+                let elem = inner.first().cloned().unwrap_or(ValueTy::Float);
+                let cap = match inner.get(1) {
+                    Some(ValueTy::Cap(c)) => *c,
+                    _ => 0,
+                };
+                (elem, cap)
+            }
+            _ => (ValueTy::Float, 0),
+        }
+    };
+    let list_of = |t: &ValueTy| {
+        let (elem, cap) = list_shape(t);
+        ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)])
+    };
+    match name {
+        "length" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            Ok(ValueTy::Int)
+        }
+        "cons" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let xt = arg_vty(ctx, 0)?;
+            let lt = arg_vty(ctx, 1)?;
+            let (elem, cap) = list_shape(&lt);
+            unify_value(&xt, &elem, &mut ctx.subst, args[0].span())?;
+            Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
+        }
+        "head" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let lt = arg_vty(ctx, 0)?;
+            let (elem, _) = list_shape(&lt);
+            Ok(ValueTy::App("Maybe".into(), vec![elem]))
+        }
+        "tail" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let lt = arg_vty(ctx, 0)?;
+            Ok(list_of(&lt))
+        }
+        "map" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            let lt = arg_vty(ctx, 1)?;
+            Ok(list_of(&lt))
+        }
+        "fold" => {
+            if args.len() != 3 {
+                return Err(arity_err("3", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            let zt = arg_vty(ctx, 1)?;
+            let _ = arg_vty(ctx, 2)?;
+            Ok(zt)
+        }
+        "filter" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            let lt = arg_vty(ctx, 1)?;
+            Ok(list_of(&lt))
+        }
+        "list" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            Ok(ValueTy::App(
+                "List".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            ))
+        }
+        "insert" => match args.len() {
+            3 => {
+                let kt = arg_vty(ctx, 0)?;
+                let vt = arg_vty(ctx, 1)?;
+                let _ = arg_vty(ctx, 2)?;
+                Ok(ValueTy::App("Map".into(), vec![kt, vt, ValueTy::Cap(0)]))
+            }
+            2 => {
+                let kt = arg_vty(ctx, 0)?;
+                let _ = arg_vty(ctx, 1)?;
+                Ok(ValueTy::App("Set".into(), vec![kt, ValueTy::Cap(0)]))
+            }
+            _ => Err(arity_err("2 or 3", args.len())),
+        },
+        "lookup" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            let mt = arg_vty(ctx, 1)?;
+            let v = match &mt {
+                ValueTy::App(n, inner) if n == "Map" => {
+                    inner.get(1).cloned().unwrap_or(ValueTy::Float)
+                }
+                _ => ValueTy::Float,
+            };
+            Ok(ValueTy::App("Maybe".into(), vec![v]))
+        }
+        "member" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            let _ = arg_vty(ctx, 1)?;
+            Ok(ValueTy::Bool)
+        }
+        "empty_map" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            Ok(ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
+            ))
+        }
+        "empty_set" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            Ok(ValueTy::App(
+                "Set".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            ))
+        }
+        _ => Err(CompileError::Type {
+            msg: format!("unknown collection op `{name}`"),
+            span,
+        }),
     }
 }
 

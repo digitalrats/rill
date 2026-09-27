@@ -6,7 +6,7 @@ use rill_core::buffer::FixedBuffer;
 use rill_core::builtin::MultichannelBlockBuiltin;
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
-use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
+use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
 
 use crate::arena::Arena;
 use crate::builtin::BlockBuiltin;
@@ -96,6 +96,9 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Value outputs of the last processed tick: one counted arena ref per
     /// value output channel, held across ticks (see [`value_outputs`](Self::value_outputs)).
     pub(crate) value_outputs: Vec<Option<crate::arena::ArenaRef>>,
+    /// Runtime value-track error (capacity overflow), set by a collection op
+    /// and consumed at the end of the value phase. Cleared each tick.
+    pub(crate) value_error: Option<ProcessError>,
 }
 
 /// A fixed-length ring buffer for one `@` delay site, processed whole-block.
@@ -197,6 +200,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             frag_cells_base: 0,
             drops_scratch,
             value_outputs,
+            value_error: None,
         }
     }
 
@@ -341,6 +345,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             frag_cells_base: 0,
             drops_scratch,
             value_outputs,
+            value_error: None,
         })
     }
 
@@ -507,8 +512,7 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
     fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
         let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
         let mut outs: [&mut [T]; 1] = [output];
-        crate::backend::interp::run_block_mimo(self, inputs, &mut outs);
-        Ok(())
+        crate::backend::interp::run_block_mimo(self, inputs, &mut outs)
     }
 
     fn reset(&mut self) {
@@ -583,8 +587,7 @@ impl<T: Transcendental, const BUF: usize> MultichannelAlgorithm<T> for RillProgr
     }
 
     fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
-        crate::backend::interp::run_block_mimo(self, inputs, outputs);
-        Ok(())
+        crate::backend::interp::run_block_mimo(self, inputs, outputs)
     }
 
     fn reset(&mut self) {
