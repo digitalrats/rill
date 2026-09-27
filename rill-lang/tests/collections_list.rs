@@ -186,25 +186,3 @@ fn list_negative_capacity_does_not_explode() {
         other => panic!("expected a List, got {other:?}"),
     }
 }
-
-#[test]
-fn unimplemented_collection_ops_fail_at_compile_time() {
-    // tail/filter/lookup/member/insert/empty_map/empty_set are wired in Task
-    // 6.4; until then a program using them must fail to compile instead of
-    // silently producing a `None` value output.
-    for src in [
-        "main = tail [1.0, 2.0];",
-        "main = filter (fn a -> a > 0.0) [1.0, 2.0];",
-        "main = lookup \"k\" [(\"k\", 1.0)];",
-        "main = member 1.0 [1.0, 2.0];",
-        "main = insert \"k\" 1.0 (empty_map 4);",
-        "main = empty_map 4;",
-        "main = empty_set 4;",
-    ] {
-        let res = compile::<f32>(src);
-        assert!(
-            res.is_err(),
-            "`{src}` must fail to compile until the op is wired (Task 6.4)"
-        );
-    }
-}

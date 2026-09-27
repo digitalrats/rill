@@ -910,6 +910,46 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// The sorted position at which `key` belongs among the sorted `keys`, via
+/// binary search over the total `value_cmp` order — the first index whose key
+/// is not less than `key` (a lower bound). Map/Set entries are kept sorted by
+/// this derived order, so `insert` splices here, and `lookup`/`member` test
+/// `value_cmp(key, keys[pos]) == 0` to distinguish hit from insert point.
+fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    key: ArenaRef,
+    keys: &[ArenaRef],
+) -> usize {
+    let mut lo = 0;
+    let mut hi = keys.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if value_cmp(&prog.arena, key, keys[mid]) > 0 {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Read an Int value register as a non-negative capacity (clamped), 0 when the
+/// register holds no Int (a negative Int must not wrap into a huge `usize`).
+fn int_cap_arg<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    reg: usize,
+) -> usize {
+    prog.value_regs
+        .get(reg)
+        .copied()
+        .flatten()
+        .and_then(|r| match prog.arena.get(r) {
+            Some(Value::Int(n)) => Some((*n).max(0) as usize),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
 /// Dispatch a collection operation (`ValueCallBuiltin`).
 ///
 /// Container reads copy (RC++) any child refs the result claims so both the
@@ -1042,16 +1082,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         ListEmpty => {
             // list n: an empty List with capacity n. The capacity is read from
             // the runtime Int argument (`list 4`).
-            let cap = prog
-                .value_regs
-                .get(args[0])
-                .copied()
-                .flatten()
-                .and_then(|r| match prog.arena.get(r) {
-                    Some(Value::Int(n)) => Some((*n).max(0) as usize),
-                    _ => None,
-                })
-                .unwrap_or(0);
+            let cap = int_cap_arg(prog, args[0]);
             prog.value_regs[dst] = alloc_owned(
                 prog,
                 Value::List {
@@ -1060,9 +1091,258 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 },
             );
         }
-        // Tail, Filter, InsertMap, Lookup, Member, InsertSet, MapEmpty,
-        // SetEmpty — wired with the remaining ops in Task 6.4.
-        _ => prog.value_regs[dst] = None,
+        Tail => {
+            // tail xs: the source without its head, capacity preserved. The
+            // result claims elems[1..]: recount (RC++) every element the source
+            // owns, allocate the tail list over the kept slice, then release
+            // the extra count on the removed head — the source keeps its single
+            // claim, and the head is never freed mid-tick (its slot cannot be
+            // recycled while the source list still references it). An empty
+            // list is its own tail.
+            let xs = prog.value_regs[args[0]].and_then(|r| prog.arena.get(r).cloned());
+            match xs {
+                Some(Value::List { elems, cap }) => {
+                    if elems.is_empty() {
+                        prog.value_regs[dst] = alloc_owned(
+                            prog,
+                            Value::List {
+                                elems: Vec::new(),
+                                cap,
+                            },
+                        );
+                        return;
+                    }
+                    for e in &elems {
+                        _ = prog.arena.copy(*e);
+                    }
+                    let kept: Vec<ArenaRef> = elems[1..].to_vec();
+                    let head = elems[0];
+                    prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept, cap });
+                    prog.arena.drop_ref(head);
+                }
+                _ => prog.value_regs[dst] = None,
+            }
+        }
+        Filter => {
+            // filter p xs: keep the elements for which the unary predicate
+            // returns Bool(true). A kept element is recounted (RC++) into the
+            // result list so both the source and the result own it; the
+            // predicate's Bool result is released after each call.
+            let p = prog.value_regs[args[0]];
+            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(_), Some(Value::List { elems, cap })) = (p, xs) {
+                let mut kept: Vec<ArenaRef> = Vec::with_capacity(elems.len());
+                for e in &elems {
+                    let pred = call_closure_single(prog, args[0], *e, dst, drops);
+                    let is_keep = match pred {
+                        Some(pr) => match prog.arena.get(pr) {
+                            Some(Value::Bool(b)) => *b,
+                            _ => false,
+                        },
+                        None => false,
+                    };
+                    if is_keep {
+                        if let Ok(c) = prog.arena.copy(*e) {
+                            kept.push(c);
+                        }
+                    }
+                    if let Some(pr) = pred {
+                        prog.arena.drop_ref(pr);
+                    }
+                }
+                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept, cap });
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        InsertMap => {
+            // insert k v m: COW-insert (k, v) into the sorted map, or
+            // COW-replace the value when an equal key already exists. The
+            // capacity is a strict bound: a NEW key past capacity latches a
+            // runtime `ProcessError`. Every ref the result map claims is
+            // recounted (RC++) so the source keeps its own ownership.
+            let k = prog.value_regs[args[0]];
+            let v = prog.value_regs[args[1]];
+            let m = prog.value_regs[args[2]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(vr), Some(Value::Map { pairs, cap })) = (k, v, m) {
+                let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
+                let pos = sorted_insert_pos(prog, kr, &keys);
+                let dup = pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0;
+                if dup {
+                    // Replace-on-duplicate: recount every pair ref, swap in the
+                    // new value (counted once for the map), and release the
+                    // replaced value's extra count — the source keeps its own
+                    // claim, so the replaced value is never freed mid-tick.
+                    let mut new_pairs = pairs.clone();
+                    for (pk, pv) in &new_pairs {
+                        _ = prog.arena.copy(*pk);
+                        _ = prog.arena.copy(*pv);
+                    }
+                    let old_val = new_pairs[pos].1;
+                    new_pairs[pos].1 = vr;
+                    _ = prog.arena.copy(vr);
+                    prog.arena.drop_ref(old_val);
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Map {
+                            pairs: new_pairs,
+                            cap,
+                        },
+                    );
+                } else if pairs.len() >= cap {
+                    prog.value_error = Some(ProcessError::processing("map capacity exceeded"));
+                } else {
+                    // Insert at the sorted position: splice (k, v) into the
+                    // cloned pair list, then recount every key and value the
+                    // new map claims (the source and the result each own them).
+                    let mut new_pairs: Vec<(ArenaRef, ArenaRef)> =
+                        Vec::with_capacity(pairs.len() + 1);
+                    for (i, (pk, pv)) in pairs.iter().enumerate() {
+                        if i == pos {
+                            new_pairs.push((kr, vr));
+                        }
+                        new_pairs.push((*pk, *pv));
+                    }
+                    if new_pairs.len() == pairs.len() {
+                        new_pairs.push((kr, vr));
+                    }
+                    for (pk, pv) in &new_pairs {
+                        _ = prog.arena.copy(*pk);
+                        _ = prog.arena.copy(*pv);
+                    }
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Map {
+                            pairs: new_pairs,
+                            cap,
+                        },
+                    );
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        Lookup => {
+            // lookup k m: binary search the sorted map for the key; `Just v`
+            // when found, `Nothing` otherwise (the same Sum encoding as
+            // `head`). The found value ref is counted (RC++) so the Sum owns
+            // it independently of the map.
+            let k = prog.value_regs[args[0]];
+            let m = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(Value::Map { pairs, .. })) = (k, m) {
+                let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
+                let pos = sorted_insert_pos(prog, kr, &keys);
+                if pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0 {
+                    match copy_owned(prog, pairs[pos].1) {
+                        Some(cv) => {
+                            prog.value_regs[dst] = alloc_owned(prog, Value::Sum(0, vec![cv]))
+                        }
+                        None => prog.value_regs[dst] = None,
+                    }
+                } else {
+                    prog.value_regs[dst] = alloc_owned(prog, Value::Sum(1, vec![]));
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        Member => {
+            // member k c: a shared op — the container's variant tells map
+            // membership (among the sorted keys) from set membership (among
+            // the sorted elements). A non-container reads as `false`.
+            let k = prog.value_regs[args[0]];
+            let c = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(cv)) = (k, c) {
+                let found = match cv {
+                    Value::Map { pairs, .. } => {
+                        let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
+                        let pos = sorted_insert_pos(prog, kr, &keys);
+                        pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0
+                    }
+                    Value::Set { elems, .. } => {
+                        let pos = sorted_insert_pos(prog, kr, &elems);
+                        pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0
+                    }
+                    _ => false,
+                };
+                prog.value_regs[dst] = alloc_owned(prog, Value::Bool(found));
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        InsertSet => {
+            // insert k s: COW-insert the element into the sorted set; a
+            // duplicate leaves the set unchanged (a fresh COW copy). The
+            // capacity is a strict bound: a NEW element past capacity latches
+            // a runtime `ProcessError`.
+            let k = prog.value_regs[args[0]];
+            let s = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(Value::Set { elems, cap })) = (k, s) {
+                let pos = sorted_insert_pos(prog, kr, &elems);
+                let dup = pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0;
+                if dup {
+                    let new_elems = elems.clone();
+                    for e in &new_elems {
+                        _ = prog.arena.copy(*e);
+                    }
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Set {
+                            elems: new_elems,
+                            cap,
+                        },
+                    );
+                } else if elems.len() >= cap {
+                    prog.value_error = Some(ProcessError::processing("set capacity exceeded"));
+                } else {
+                    let mut new_elems: Vec<ArenaRef> = Vec::with_capacity(elems.len() + 1);
+                    for (i, e) in elems.iter().enumerate() {
+                        if i == pos {
+                            new_elems.push(kr);
+                        }
+                        new_elems.push(*e);
+                    }
+                    if new_elems.len() == elems.len() {
+                        new_elems.push(kr);
+                    }
+                    for e in &new_elems {
+                        _ = prog.arena.copy(*e);
+                    }
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Set {
+                            elems: new_elems,
+                            cap,
+                        },
+                    );
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        MapEmpty => {
+            // empty_map n: an empty Map with capacity n (the strict bound for
+            // later inserts).
+            let cap = int_cap_arg(prog, args[0]);
+            prog.value_regs[dst] = alloc_owned(
+                prog,
+                Value::Map {
+                    pairs: Vec::new(),
+                    cap,
+                },
+            );
+        }
+        SetEmpty => {
+            // empty_set n: an empty Set with capacity n.
+            let cap = int_cap_arg(prog, args[0]);
+            prog.value_regs[dst] = alloc_owned(
+                prog,
+                Value::Set {
+                    elems: Vec::new(),
+                    cap,
+                },
+            );
+        }
     }
 }
 

@@ -59,20 +59,12 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
-/// Whether the interpreter wires `op` at runtime. Ops still stubbed in
-/// `exec_value_call_builtin` silently yield a `None` value output, so they are
-/// rejected at lowering — a program using them fails to compile instead of
-/// silently producing nothing. Task 6.4 wires the remaining ops.
-fn collection_op_implemented(op: ValueBuiltinOp) -> bool {
-    matches!(
-        op,
-        ValueBuiltinOp::Cons
-            | ValueBuiltinOp::Head
-            | ValueBuiltinOp::Length
-            | ValueBuiltinOp::Map
-            | ValueBuiltinOp::Fold
-            | ValueBuiltinOp::ListEmpty
-    )
+/// Whether the interpreter wires `op` at runtime. Every collection op has a
+/// concrete arm in `exec_value_call_builtin` (Task 6.4), so lowering accepts
+/// them all — a program using one compiles and runs instead of silently
+/// producing nothing.
+fn collection_op_implemented(_op: ValueBuiltinOp) -> bool {
+    true
 }
 
 /// Map a parsed comparison operator to its IR form (the two enums share their
