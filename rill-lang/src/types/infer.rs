@@ -444,28 +444,12 @@ fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
     Ok(())
 }
 
-/// The index of the argument in a method signature whose type applies the
-/// class variable (`f a` in `fmap: (a -> b) -> f a -> f b`). The instance is
-/// selected by that argument's concrete type. `None` for arity-0 signatures
-/// (bare class var).
-fn class_var_arg_index(sig: &crate::ast::TypeExpr, class_var: &str) -> Option<usize> {
-    match sig {
-        crate::ast::TypeExpr::TFunc(args, _) => args
-            .iter()
-            .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),
-        _ => None,
-    }
-}
-
 /// Build the class-var signature pattern for the container argument: `f a`
 /// becomes `App("f", [fresh])` so `match_ctor_pattern` unifies the type-var
-/// slots against the concrete constructor application.
-fn class_var_pattern(
-    ctx: &mut Ctx<'_>,
-    sig: &crate::ast::TypeExpr,
-    idx: usize,
-    class_var: &str,
-) -> ValueTy {
+/// slots against the concrete constructor application. The caller computed
+/// `idx` via [`TypeEnv::class_var_arg_index`], so the argument is always a
+/// `TApp` headed by the class variable.
+fn class_var_pattern(ctx: &mut Ctx<'_>, sig: &crate::ast::TypeExpr, idx: usize) -> ValueTy {
     let container_te = match sig {
         crate::ast::TypeExpr::TFunc(args, _) => args.get(idx).cloned(),
         _ => None,
@@ -475,7 +459,9 @@ fn class_var_pattern(
             let fresh: Vec<ValueTy> = type_args.iter().map(|_| ctx.fresh_vty()).collect();
             ValueTy::App(head, fresh)
         }
-        _ => ValueTy::App(class_var.to_string(), vec![ctx.fresh_vty()]),
+        _ => unreachable!(
+            "class_var_pattern requires a TApp at container_idx (class_var_arg_index guarantees it)"
+        ),
     }
 }
 
@@ -792,9 +778,17 @@ pub fn infer_program_with(
                     })
                     .collect();
                 env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
-                if !tyvars.is_empty() {
-                    env.data_arities.insert(name.clone(), tyvars.len());
-                }
+                // NOTE: parameterized user SUMS are intentionally NOT registered
+                // in `data_arities` (only parameterized RECORDS are). A sum's
+                // match-pin and ctor-construction paths stay monomorphic
+                // `Data(name, [])`, so a parameterized sum as a typeclass
+                // instance would fail instance-body validation with the
+                // confusing `Data("Opt", [Var(_)])` vs `Data("Opt", [])` unify
+                // error. Leaving sums out of the table makes `instance` fail
+                // the kind check in `validate_instances` with a clean "not a
+                // type constructor" / arity message. Sums still work as
+                // ordinary data types (construction + match); they just cannot
+                // be instances in v1. See `TypeEnv::data_arities`.
             }
             _ => {}
         }
@@ -2025,14 +2019,14 @@ fn infer_apply(
             // concrete type selects the instance by constructor. Infer every
             // argument's value type, match the class-var pattern against the
             // container, then bind all method params to the call-site types.
-            let container_idx =
-                class_var_arg_index(sig.as_ref().unwrap(), &class_var).ok_or_else(|| {
-                    CompileError::Type {
-                        msg: format!(
-                            "method `{name}` of `{class_name}` has no class-var-applied argument"
-                        ),
-                        span,
-                    }
+            let container_idx = ctx
+                .env
+                .class_var_arg_index(sig.as_ref().unwrap(), &class_var)
+                .ok_or_else(|| CompileError::Type {
+                    msg: format!(
+                        "method `{name}` of `{class_name}` has no class-var-applied argument"
+                    ),
+                    span,
                 })?;
             let n_sig_args = match sig.as_ref().unwrap() {
                 crate::ast::TypeExpr::TFunc(as_, _) => as_.len(),
@@ -2053,7 +2047,7 @@ fn infer_apply(
             }
             // Build the class-var pattern (`f a` → `App("f", [fresh])`) from the
             // container argument's signature type.
-            let pattern = class_var_pattern(ctx, sig.as_ref().unwrap(), container_idx, &class_var);
+            let pattern = class_var_pattern(ctx, sig.as_ref().unwrap(), container_idx);
             let ctor = match ctx.env.match_ctor_pattern(
                 &class_var,
                 &pattern,

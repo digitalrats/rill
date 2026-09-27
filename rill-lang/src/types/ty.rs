@@ -246,6 +246,15 @@ pub struct TypeEnv {
     /// User-declared parameterized data types: name → number of type
     /// parameters (`data Box a` → 1). Used to kind-check constructor instances
     /// against a class's arity (`Functor f` needs `Box a`, not `Pair a b`).
+    ///
+    /// v1 registers only parameterized RECORDS here, not sums. A parameterized
+    /// user sum (`data Opt a = Some a | None`) works as an ordinary data type
+    /// (construction + match both stay monomorphic `Data(name, [])`), but its
+    /// match-pin path is not slot-carrying like a record's field projection, so
+    /// an instance body would hit the confusing `Data("Opt", [Var(_)])` vs
+    /// `Data("Opt", [])` unify error. Leaving sums out of this table makes such
+    /// an instance fail the kind check with a clean "not a type constructor"
+    /// / arity message instead. See `validate_instances`.
     pub data_arities: HashMap<String, usize>,
 }
 
@@ -351,6 +360,23 @@ impl TypeEnv {
             }
         }
         depth(var, sig)
+    }
+
+    /// The index of the argument in a method signature whose type applies the
+    /// class variable (`f a` in `fmap: (a -> b) -> f a -> f b`). The instance
+    /// is selected by that argument's concrete type. `None` for arity-0
+    /// signatures (bare class var).
+    pub(crate) fn class_var_arg_index(
+        &self,
+        sig: &crate::ast::TypeExpr,
+        class_var: &str,
+    ) -> Option<usize> {
+        match sig {
+            crate::ast::TypeExpr::TFunc(args, _) => args
+                .iter()
+                .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),
+            _ => None,
+        }
     }
 
     /// Register a derived (structural) `Eq`/`Ord` instance for every concrete
@@ -486,6 +512,15 @@ impl TypeEnv {
                         return None;
                     }
                     pi += 1;
+                }
+                // A pattern that applies MORE type args than the concrete's
+                // non-Cap slots is not a match (`f a b` vs `App("List", [t])`).
+                // The kind check normally rejects this up front, but the guard
+                // keeps the pattern matcher total. Partial subst bindings from
+                // the unified prefix are acceptable on failure — unification
+                // here is speculative (a later step returns None anyway).
+                if pi != p_args.len() {
+                    return None;
                 }
                 return Some(c.clone());
             }
@@ -708,6 +743,42 @@ mod hkt_value_ty_tests {
     fn bool_string_are_leaves() {
         assert_ne!(ValueTy::Bool, ValueTy::Float);
         assert_ne!(ValueTy::String, ValueTy::Bool);
+    }
+
+    #[test]
+    fn match_ctor_pattern_rejects_extra_pattern_args() {
+        let env = TypeEnv::with_builtins();
+        let mut subst = Subst::default();
+        // Pattern `f a b` (two type args) against `App("List", [Float, Cap(4)])`
+        // (one non-Cap slot): the extra `b` slot must reject the match. Without
+        // the trailing-arg guard this silently returned `Some("List")`, leaving
+        // the `b` slot unbound.
+        let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0), ValueTy::Var(1)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        assert_eq!(
+            env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
+            None
+        );
+    }
+
+    #[test]
+    fn match_ctor_pattern_matches_consumed_pattern_args() {
+        let env = TypeEnv::with_builtins();
+        let mut subst = Subst::default();
+        // `f a` (one arg) against a List (one non-Cap slot + Cap) still matches.
+        let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        assert_eq!(
+            env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
+            Some("List".to_string())
+        );
+        // `f a b` (two args) against a Pair (two non-Cap slots) matches.
+        let pat2 = ValueTy::App("f".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
+        let concrete2 = ValueTy::App("Pair".into(), vec![ValueTy::Float, ValueTy::Int]);
+        assert_eq!(
+            env.match_ctor_pattern("f", &pat2, &concrete2, &mut subst),
+            Some("Pair".to_string())
+        );
     }
 }
 

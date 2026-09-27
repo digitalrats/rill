@@ -59,19 +59,6 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
-/// The index of the argument in a method signature whose type applies the
-/// class variable (`f a` in `fmap: (a -> b) -> f a -> f b`). The instance is
-/// selected by that argument's concrete constructor head. `None` for arity-0
-/// signatures (bare class var).
-fn class_var_arg_index(sig: &crate::ast::TypeExpr, class_var: &str) -> Option<usize> {
-    match sig {
-        crate::ast::TypeExpr::TFunc(args, _) => args
-            .iter()
-            .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),
-        _ => None,
-    }
-}
-
 /// Whether the interpreter wires `op` at runtime. Every collection op has a
 /// concrete arm in `exec_value_call_builtin` (Task 6.4), so lowering accepts
 /// them all — a program using one compiles and runs instead of silently
@@ -649,11 +636,10 @@ impl<'a> Lowerer<'a> {
                         // Constructor class: the class-var-applied argument's
                         // concrete type head selects the instance. Lower all
                         // args, then bind each method param to its register.
-                        let container_idx = class_var_arg_index(
-                            sig.as_ref().unwrap(),
-                            &class_var,
-                        )
-                        .ok_or_else(|| CompileError::Type {
+                        let container_idx = self
+                            .env
+                            .class_var_arg_index(sig.as_ref().unwrap(), &class_var)
+                            .ok_or_else(|| CompileError::Type {
                             msg: format!(
                                 "method `{name}` of `{class_name}` has no class-var-applied argument"
                             ),
@@ -1535,8 +1521,9 @@ impl<'a> Lowerer<'a> {
                         .find(|(m, _)| m == name)
                         .map(|(_, s)| s.clone());
                     if class_info.arity >= 1 {
-                        if let Some(container_idx) =
-                            class_var_arg_index(sig.as_ref().unwrap(), &class_info.var)
+                        if let Some(container_idx) = self
+                            .env
+                            .class_var_arg_index(sig.as_ref().unwrap(), &class_info.var)
                         {
                             // The container argument's static constructor selects
                             // the instance: `fmap g (Just 1.0)` → `Just` → the
