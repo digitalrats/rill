@@ -309,7 +309,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "newtype" if !followed_by_paren => Tok::KwNewtype,
                 "typeclass" if !followed_by_paren => Tok::KwTypeclass,
                 "instance" if !followed_by_paren => Tok::KwInstance,
-                "match" if !followed_by_paren => Tok::KwMatch,
+                "match" => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "fn" if !followed_by_paren => Tok::KwFn,
                 "true" if !followed_by_paren => Tok::KwTrue,
@@ -550,11 +550,14 @@ mod tests {
     }
 
     #[test]
-    fn new_keywords_not_reserved_when_followed_by_paren() {
+    fn paren_following_keyword_is_not_a_call_for_match() {
+        // `match` is exclusively a keyword (`match (Nothing) of { ... }`), so a
+        // parenthesized scrutinee must NOT re-lex it as a function name. Other
+        // keywords stay paren-guarded (`data(y)` is a call-style identifier).
         assert_eq!(
             kinds(r#"match(x) data(y)"#),
             vec![
-                Tok::Ident("match".into()),
+                Tok::KwMatch,
                 Tok::LParen,
                 Tok::Ident("x".into()),
                 Tok::RParen,

@@ -15,11 +15,7 @@ fn list_literal_length_and_head() {
     );
 }
 
-// Phase 7: `match`/`Nothing`/`Just` over the builtin `Maybe` shapes (and the
-// `list` op's `ListEmpty` dispatch, Task 6.4) land after the value-collection
-// lowering of Task 6.3. Keep the test as a documented target for those tasks.
 #[test]
-#[ignore = "Phase 7"]
 fn cons_builds_list_and_head_is_maybe() {
     let mut prog = compile::<f32>(
         "main = match (head (cons 1.0 (list 4))) of { Nothing => 0.0; Just x => x; };",

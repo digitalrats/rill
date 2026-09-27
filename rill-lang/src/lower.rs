@@ -227,6 +227,8 @@ impl<'a> Lowerer<'a> {
                 let (rec_reg, rec_vty) = self.lower_value(record)?;
                 let rec_name = match &rec_vty {
                     ValueTy::Data(n, _) => n.clone(),
+                    // Builtin records (`Pair a b`) are parameterized as `App`.
+                    ValueTy::App(n, _) if self.env.ctor_arity(n).is_some() => n.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field projection requires a record value".into(),
@@ -266,6 +268,8 @@ impl<'a> Lowerer<'a> {
                 let (rec_reg, rec_vty) = self.lower_value(record)?;
                 let rec_name = match &rec_vty {
                     ValueTy::Data(n, _) => n.clone(),
+                    // Builtin records (`Pair a b`) are parameterized as `App`.
+                    ValueTy::App(n, _) if self.env.ctor_arity(n).is_some() => n.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field update requires a data record".into(),
@@ -970,6 +974,19 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
+        // Nullary sum constructor: a bare `Nothing` / `Red` in value position is
+        // a complete value of its sum type — construct the empty sum directly.
+        if let Some((sum_name, ctor_idx, payload)) = self.sum_ctor(name) {
+            if payload.is_empty() {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstructSum {
+                    dst,
+                    ctor: ctor_idx as u32,
+                    payload: vec![],
+                });
+                return Ok((dst, ValueTy::Data(sum_name, vec![])));
+            }
+        }
         let def = self
             .defs
             .get(name)
@@ -1343,7 +1360,40 @@ impl<'a> Lowerer<'a> {
         visited: &mut HashSet<String>,
     ) -> Option<String> {
         match e {
-            Expr::Apply { name, .. } => self.sum_ctor(name).map(|_| name.clone()),
+            Expr::Apply { name, args, .. } => {
+                if self.sum_ctor(name).is_some() {
+                    return Some(name.clone());
+                }
+                // Builtin Maybe-returning ops resolve statically on concrete
+                // inputs: `head` of a non-empty list and `lookup` of a present
+                // key are `Just`; an empty list / absent key is `Nothing`.
+                match name.as_str() {
+                    "head" => args
+                        .first()
+                        .and_then(|xs| self.static_list_nonempty(xs, visited))
+                        .map(|ne| {
+                            if ne {
+                                "Just".to_string()
+                            } else {
+                                "Nothing".to_string()
+                            }
+                        }),
+                    "lookup" => {
+                        if let (Some(Expr::Str(k, _)), Some(map)) = (args.first(), args.get(1)) {
+                            self.static_map_has_key(map, k, visited).map(|present| {
+                                if present {
+                                    "Just".to_string()
+                                } else {
+                                    "Nothing".to_string()
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
             Expr::Ref(name, _) => {
                 if visited.contains(name) {
                     return None;
@@ -1351,6 +1401,85 @@ impl<'a> Lowerer<'a> {
                 if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
                     visited.insert(name.clone());
                     let r = self.static_scrutinee_ctor_impl(&body, visited);
+                    visited.remove(name);
+                    return r;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Statically determine a list expression's emptiness: `Some(true)` when
+    /// non-empty, `Some(false)` when empty, `None` when unknown. Follows
+    /// inlined value definitions (the visit guard breaks cycles).
+    fn static_list_nonempty(&self, e: &Expr, visited: &mut HashSet<String>) -> Option<bool> {
+        match e {
+            Expr::ListLit(elems, _) => Some(!elems.is_empty()),
+            Expr::Apply { name, args, .. } => match name.as_str() {
+                // `cons x xs` always yields a non-empty list; `list n` always an
+                // empty one. `map` preserves the source length; `tail` of an
+                // empty list stays empty (a non-empty source may still produce
+                // an empty tail, so that case is unknown).
+                "cons" => Some(true),
+                "list" => Some(false),
+                "map" => args
+                    .get(1)
+                    .and_then(|xs| self.static_list_nonempty(xs, visited)),
+                "tail" => match args
+                    .first()
+                    .and_then(|xs| self.static_list_nonempty(xs, visited))
+                {
+                    Some(false) => Some(false),
+                    _ => None,
+                },
+                _ => None,
+            },
+            Expr::Ref(name, _) => {
+                if visited.contains(name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    visited.insert(name.clone());
+                    let r = self.static_list_nonempty(&body, visited);
+                    visited.remove(name);
+                    return r;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Statically determine whether a map expression contains `key`:
+    /// `Some(true)`/`Some(false)` when the keys are statically known, `None`
+    /// otherwise. Follows inlined value definitions and `insert`/`empty_map`
+    /// chains.
+    fn static_map_has_key(
+        &self,
+        e: &Expr,
+        key: &str,
+        visited: &mut HashSet<String>,
+    ) -> Option<bool> {
+        match e {
+            Expr::MapLit(entries, _) => {
+                let present = entries.iter().any(|(k, _)| k == key);
+                Some(present)
+            }
+            Expr::Apply { name, args, .. } if name == "insert" && args.len() == 3 => {
+                match &args[0] {
+                    Expr::Str(k, _) if k == key => Some(true),
+                    _ => self.static_map_has_key(&args[2], key, visited),
+                }
+            }
+            Expr::Apply { name, .. } if name == "empty_map" => Some(false),
+            Expr::Ref(name, _) => {
+                if visited.contains(name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    visited.insert(name.clone());
+                    let r = self.static_map_has_key(&body, key, visited);
                     visited.remove(name);
                     return r;
                 }

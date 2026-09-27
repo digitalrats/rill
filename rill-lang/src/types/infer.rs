@@ -127,6 +127,21 @@ fn sum_ctor_payload(ctx: &Ctx<'_>, sum_name: &str, ctor: &str) -> Option<Vec<Val
     }
 }
 
+/// The value type of a value of sum type `sum_name`: builtin sums are
+/// parameterized (`Maybe a`, `Either a b`) and compare/construct as `App`,
+/// while user sums are monomorphic `Data`. A fresh live value variable fills
+/// each builtin type parameter (the shape's `Var(1)`/`Var(2)` placeholders are
+/// NOT live unification vars — see [`TypeEnv::with_builtins`]).
+fn fresh_sum_vty(ctx: &mut Ctx<'_>, sum_name: &str) -> ValueTy {
+    match ctx.env.ctor_arity(sum_name) {
+        Some(arity) => {
+            let args = (0..arity).map(|_| ctx.fresh_vty()).collect();
+            ValueTy::App(sum_name.into(), args)
+        }
+        None => ValueTy::Data(sum_name.into(), vec![]),
+    }
+}
+
 /// Infer an expression that must yield exactly one output and no inputs — a
 /// constant or a per-block value. Signal-rate constants (literals) are coerced
 /// to their value type; returns the resulting `ValueTy`.
@@ -929,6 +944,35 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                         span: *span,
                     }),
                 },
+                ValueTy::App(name, args) if ctx.env.ctor_arity(name.as_str()).is_some() => {
+                    // Builtin record (`Pair a b`): field types are the
+                    // placeholder `Var(1)`/`Var(2)` positions, resolved against
+                    // the concrete type args.
+                    match ctx.env.data_types.get(name.as_str()) {
+                        Some(DataInfo::Record(fields)) => {
+                            match fields.iter().position(|(f, _)| f == field) {
+                                Some(idx) => {
+                                    let fty = match &fields[idx].1 {
+                                        ValueTy::Var(k) => args
+                                            .get(k.saturating_sub(1) as usize)
+                                            .cloned()
+                                            .unwrap_or(ValueTy::Float),
+                                        t => t.clone(),
+                                    };
+                                    Ok(ArrowTy::value_channel(fty))
+                                }
+                                None => Err(CompileError::Type {
+                                    msg: format!("no field `{field}` in `{name}`"),
+                                    span: *span,
+                                }),
+                            }
+                        }
+                        _ => Err(CompileError::Type {
+                            msg: format!("`{name}` is not a record type"),
+                            span: *span,
+                        }),
+                    }
+                }
                 ValueTy::Var(_) => {
                     // Deferred record: the record type is not known here (a
                     // value function's λ-parameter). The projection resolves
@@ -986,6 +1030,40 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                     unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
                     Ok(rt)
                 }
+                ValueTy::App(name, args) if ctx.env.ctor_arity(name.as_str()).is_some() => {
+                    // Builtin record (`Pair a b`): the field type is a
+                    // placeholder `Var(k)` position resolved against the
+                    // concrete type args.
+                    let fty = ctx
+                        .env
+                        .data_types
+                        .get(name.as_str())
+                        .and_then(|info| match info {
+                            DataInfo::Record(fields) => fields
+                                .iter()
+                                .position(|(f, _)| f == field)
+                                .map(|idx| match &fields[idx].1 {
+                                    ValueTy::Var(k) => args
+                                        .get(k.saturating_sub(1) as usize)
+                                        .cloned()
+                                        .unwrap_or(ValueTy::Float),
+                                    t => t.clone(),
+                                }),
+                            _ => None,
+                        });
+                    let fty = match fty {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no field `{field}` in `{name}`"),
+                                span: *span,
+                            });
+                        }
+                    };
+                    let vt = infer_const_value(ctx, value)?;
+                    unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
+                    Ok(rt)
+                }
                 ValueTy::Var(_) => {
                     // Deferred record (a value function's λ-parameter): the
                     // field update resolves when the call is β-reduced with a
@@ -1024,8 +1102,21 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             let scrutinee_vty = st.outs[0].vty.clone();
+            // Builtin sums are parameterized (`Maybe a`, `Either a b`):
+            // `Nothing` infers as `App("Maybe", [..])` and `head`/`lookup` as
+            // `App("Maybe", [t])`, while user sums stay `Data(name, [])`. The
+            // scrutinee's sum name is the `App` head (when it is a builtin Sum)
+            // or the `Data` name.
             let scrutinee_sum = match &scrutinee_vty {
                 ValueTy::Data(name, _) => Some(name.clone()),
+                ValueTy::App(name, _)
+                    if matches!(
+                        ctx.env.data_types.get(name.as_str()),
+                        Some(DataInfo::Sum(_))
+                    ) =>
+                {
+                    Some(name.clone())
+                }
                 _ => None,
             };
             // Derive the sum type name: every arm's constructor must belong to
@@ -1066,12 +1157,32 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 }
             };
             // Pin the scrutinee's value type to the arm-derived sum type.
-            unify_value(
-                &scrutinee_vty,
-                &ValueTy::Data(sum_name.clone(), vec![]),
-                &mut ctx.subst,
-                *span,
-            )?;
+            // Builtin sums keep their concrete type args (fresh when the
+            // scrutinee carries none); user sums pin to the monomorphic `Data`.
+            let pin_ty = match ctx.env.ctor_arity(&sum_name) {
+                Some(arity) => {
+                    let mut args: Vec<ValueTy> = match &scrutinee_vty {
+                        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                        _ => vec![],
+                    };
+                    while args.len() < arity {
+                        args.push(ctx.fresh_vty());
+                    }
+                    ValueTy::App(sum_name.clone(), args)
+                }
+                None => ValueTy::Data(sum_name.clone(), vec![]),
+            };
+            unify_value(&scrutinee_vty, &pin_ty, &mut ctx.subst, *span)?;
+            // Resolve the scrutinee's type args AFTER the pin: for a nullary
+            // `Nothing` the fresh element unifies with the arm results below;
+            // for `head`/`lookup` it is the concrete element type. Builtin arm
+            // payloads reference placeholder positions (`Var(1)`, `Var(2)`) that
+            // map onto these args by position.
+            let scrutinee_args: Vec<ValueTy> = match ctx.subst.resolve_value(&scrutinee_vty) {
+                ValueTy::App(_, a) | ValueTy::Data(_, a) => a,
+                _ => vec![],
+            };
+            let is_builtin_sum = ctx.env.ctor_arity(&sum_name).is_some();
             let mut result: Option<ArrowTy> = None;
             for (ctor, params, body) in arms {
                 let payload = match sum_ctor_payload(ctx, &sum_name, ctor) {
@@ -1089,6 +1200,23 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                         span: body.span(),
                     });
                 }
+                // Builtin payloads carry placeholder type params; resolve them
+                // against the scrutinee args (a fresh var when the scrutinee has
+                // none — e.g. `Just x` matched against `Nothing`).
+                let payload: Vec<ValueTy> = if is_builtin_sum {
+                    payload
+                        .iter()
+                        .map(|pt| match pt {
+                            ValueTy::Var(k) => scrutinee_args
+                                .get(k.saturating_sub(1) as usize)
+                                .cloned()
+                                .unwrap_or_else(|| ctx.fresh_vty()),
+                            t => t.clone(),
+                        })
+                        .collect()
+                } else {
+                    payload
+                };
                 let saved = ctx.locals.clone();
                 for (idx, p) in params.iter().enumerate() {
                     let pty = payload.get(idx).cloned().unwrap_or(ValueTy::Float);
@@ -1097,20 +1225,40 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 }
                 let bt = infer_expr(ctx, body)?;
                 ctx.locals = saved;
-                // Each arm body must be a value expression (0→1 value channel).
-                if bt.arity_in() != 0 || bt.arity_out() != 1 || bt.outs[0].rate != Rate::Value {
+                // Each arm body must be a value expression: a value channel, or
+                // a bare Float/Int literal (value-compatible in v1, like other
+                // value positions).
+                if bt.arity_in() != 0 || bt.arity_out() != 1 {
                     return Err(CompileError::Type {
                         msg: "match arm must be a value expression (0→1 value channel)".into(),
                         span: body.span(),
                     });
                 }
+                let arm_vty = match bt.outs[0].rate {
+                    Rate::Value => bt.outs[0].vty.clone(),
+                    Rate::Signal => match body {
+                        Expr::Int(_, _) => ValueTy::Int,
+                        Expr::Float(_, _) => ValueTy::Float,
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: "match arm must be a value expression (0→1 value channel)"
+                                    .into(),
+                                span: body.span(),
+                            });
+                        }
+                    },
+                };
+                let bt = ArrowTy::value_channel(arm_vty);
+                // Unify (not strict-compare) the arm result types: a `Nothing`
+                // arm's Float result and a `Just x` arm's as-yet-unresolved
+                // element type must agree.
                 if let Some(ref acc) = result {
-                    if acc.outs[0].vty != bt.outs[0].vty {
-                        return Err(CompileError::Type {
-                            msg: "match arms must produce the same value type".into(),
-                            span: body.span(),
-                        });
-                    }
+                    unify_value(
+                        &acc.outs[0].vty,
+                        &bt.outs[0].vty,
+                        &mut ctx.subst,
+                        body.span(),
+                    )?;
                 } else {
                     result = Some(bt);
                 }
@@ -1219,6 +1367,17 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
     }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {
+        // A bare constructor is normally an error ("requires arguments"), but a
+        // NULLARY constructor (`Nothing`, `Red`) needs no payload: the bare
+        // reference is a complete value of its sum type.
+        if ctor_sums.len() == 1 {
+            let sum_name = &ctor_sums[0];
+            if let Some(payload) = sum_ctor_payload(ctx, sum_name, name) {
+                if payload.is_empty() {
+                    return Ok(ArrowTy::value_channel(fresh_sum_vty(ctx, sum_name)));
+                }
+            }
+        }
         // A bare constructor must be applied to its payload. If the ctor name
         // is shared, the ambiguity is reported rather than resolved by map order.
         let msg = if ctor_sums.len() == 1 {
@@ -1416,6 +1575,28 @@ fn infer_apply(
                             let vt = infer_const_value(ctx, e)?;
                             unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
                         }
+                        // Builtin records (`Pair a b`) carry PLACEHOLDER type
+                        // parameters (`Var(1)`, `Var(2)`): build the
+                        // parameterized result `App("Pair", [a, b])` from the
+                        // actual field types in DECLARED order.
+                        if ctx.env.ctor_arity(name).is_some() {
+                            let mut arg_tys = Vec::with_capacity(fields.len());
+                            for (fname, fty) in &fields {
+                                let fexpr = fields_expr
+                                    .iter()
+                                    .find(|(n, _)| n == fname)
+                                    .map(|(_, e)| e)
+                                    .expect("every declared field was checked present");
+                                let actual = match fty {
+                                    ValueTy::Var(_) => ctx.fresh_vty(),
+                                    t => t.clone(),
+                                };
+                                let vt = infer_const_value(ctx, fexpr)?;
+                                unify_value(&vt, &actual, &mut ctx.subst, fexpr.span())?;
+                                arg_tys.push(ctx.subst.resolve_value(&actual));
+                            }
+                            return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
+                        }
                         return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
                     }
                     _ => {
@@ -1476,6 +1657,26 @@ fn infer_apply(
                 ),
                 span,
             });
+        }
+        // Builtin sums (`Maybe`, `Either`) carry PLACEHOLDER type parameters
+        // (`Var(1)`, `Var(2)`) that are NOT live unification vars. Instantiate
+        // each with a fresh live var, unify the arguments against it, and build
+        // the parameterized result `App("Maybe", [elem])` from the actual
+        // argument types.
+        if ctx.env.ctor_arity(&sum_name).is_some() {
+            let mut fresh: Vec<ValueTy> = Vec::with_capacity(payload.len());
+            for pt in &payload {
+                fresh.push(match pt {
+                    ValueTy::Var(_) => ctx.fresh_vty(),
+                    t => t.clone(),
+                });
+            }
+            for (e, pty) in args.iter().zip(fresh.iter()) {
+                let vt = infer_const_value(ctx, e)?;
+                unify_value(&vt, pty, &mut ctx.subst, e.span())?;
+            }
+            let arg_tys: Vec<ValueTy> = fresh.iter().map(|t| ctx.subst.resolve_value(t)).collect();
+            return Ok(ArrowTy::value_channel(ValueTy::App(sum_name, arg_tys)));
         }
         for (e, pty) in args.iter().zip(payload.iter()) {
             let vt = infer_const_value(ctx, e)?;
@@ -2704,8 +2905,13 @@ mod tests {
     }
 
     #[test]
-    fn match_arms_must_be_value_channels() {
-        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r => 1.0 }").is_err());
+    fn match_arms_must_be_value_expressions() {
+        // A bare literal arm body is value-compatible (Phase 7:
+        // `Nothing => 42.0`); a genuine signal computation (a wire) is not.
+        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r => 1.0 }").is_ok());
+        assert!(
+            ty_of("data Shape = Circle Float; main = match _ of { Circle r => _ * 2.0 }").is_err()
+        );
     }
 
     #[test]

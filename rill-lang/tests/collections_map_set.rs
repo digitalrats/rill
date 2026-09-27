@@ -4,11 +4,7 @@ use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
-#[ignore = "Phase 7"]
 fn map_insert_lookup_member() {
-    // `match ... of { Nothing => ...; Just x => ... }` over the builtin `Maybe`
-    // lowers in Phase 7; until then `lookup`'s Just/Nothing sum cannot be
-    // destructured at the source level. Kept as a documented target.
     let mut prog = compile::<f32>(
         "m = { \"a\": 1.0, \"b\": 2.0 }; main = match (lookup \"a\" m) of { Nothing => 0.0; Just x => x; };",
     )
