@@ -68,3 +68,17 @@ fn either_ctors_and_match() {
         &rill_lang::arena::Value::Float(5.0)
     );
 }
+
+#[test]
+fn right_ctor_places_payload_in_second_slot() {
+    // `Right b` binds the payload to the second type-var slot of `Either a b`.
+    let mut prog =
+        compile::<f32>("main = match (Right 7.0) of { Left x => 0.0; Right y => y; };").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(7.0)
+    );
+}
