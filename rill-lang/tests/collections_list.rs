@@ -63,6 +63,42 @@ fn cons_overflow_is_runtime_process_error() {
 }
 
 #[test]
+fn cons_list_fold_sum() {
+    // End-to-end: `list 4` gives an empty List of capacity 4; cons builds
+    // 9 : 1 : [] and `fold (+)` reduces it to 10.0.
+    let mut prog =
+        compile::<f32>("main = fold (fn a b -> a + b) 0.0 (cons 9.0 (cons 1.0 (list 4)));")
+            .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(10.0)
+    );
+}
+
+#[test]
+fn cons_prepends_new_head() {
+    // `cons x xs = x : xs` — the new element becomes the head. `head` of
+    // `cons 9.0 (cons 1.0 (list 4))` must be `Just 9.0`; append semantics would
+    // leave the old head 1.0 first.
+    let mut prog = compile::<f32>("main = head (cons 9.0 (cons 1.0 (list 4)));").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Sum(0, payload) => {
+            assert_eq!(
+                prog.arena().get(payload[0]).unwrap(),
+                &rill_lang::arena::Value::Float(9.0)
+            );
+        }
+        other => panic!("expected Just 9.0, got {other:?}"),
+    }
+}
+
+#[test]
 fn repeated_cons_overflow_ticks_do_not_leak_arena() {
     // A cons overflow latches a runtime error; the tick must still release its
     // per-tick registers so a graph that keeps calling `process` while the

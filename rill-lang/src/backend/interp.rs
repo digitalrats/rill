@@ -926,7 +926,10 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     use ValueBuiltinOp::*;
     match op {
         Cons => {
-            // cons x xs: build a new List sharing the source elems, append x.
+            // cons x xs: build a new List whose head is x followed by the
+            // source elems (`x : xs`). The result recounts (RC++) the source
+            // elems and the new element so both the source container and the
+            // result own them (the source register is dropped at tick end).
             let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
             match xs {
                 Some(Value::List { mut elems, cap }) => {
@@ -937,7 +940,13 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     let x = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok());
                     match x {
                         Some(xr) => {
-                            elems.push(xr);
+                            // The result shares the source elems' refs: recount
+                            // each so the source list keeps its own ownership
+                            // until it is dropped and the result's refs survive.
+                            for e in &elems {
+                                _ = prog.arena.copy(*e);
+                            }
+                            elems.insert(0, xr);
                             prog.value_regs[dst] = alloc_owned(prog, Value::List { elems, cap });
                         }
                         None => prog.value_regs[dst] = None,
@@ -1030,8 +1039,29 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 prog.value_regs[dst] = None;
             }
         }
-        // Tail, Filter, ListEmpty, InsertMap, Lookup, Member, InsertSet,
-        // MapEmpty, SetEmpty — wired with the remaining ops in Task 6.4.
+        ListEmpty => {
+            // list n: an empty List with capacity n. The capacity is read from
+            // the runtime Int argument (`list 4`).
+            let cap = prog
+                .value_regs
+                .get(args[0])
+                .copied()
+                .flatten()
+                .and_then(|r| match prog.arena.get(r) {
+                    Some(Value::Int(n)) => Some(*n as usize),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            prog.value_regs[dst] = alloc_owned(
+                prog,
+                Value::List {
+                    elems: Vec::new(),
+                    cap,
+                },
+            );
+        }
+        // Tail, Filter, InsertMap, Lookup, Member, InsertSet, MapEmpty,
+        // SetEmpty — wired with the remaining ops in Task 6.4.
         _ => prog.value_regs[dst] = None,
     }
 }
