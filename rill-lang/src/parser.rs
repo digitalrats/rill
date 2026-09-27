@@ -76,6 +76,9 @@ fn is_atom_start(tok: &Tok) -> bool {
             | Tok::Str(_)
             | Tok::LParen
             | Tok::LBrace
+            | Tok::LBracket
+            | Tok::KwTrue
+            | Tok::KwFalse
             | Tok::Minus
             | Tok::Question
     )

@@ -85,6 +85,30 @@ pub enum Tok {
     RBrace,
     /// `?`
     Question,
+    /// `[`
+    LBracket,
+    /// `]`
+    RBracket,
+    /// `==`
+    EqEq,
+    /// `!=`
+    NotEq,
+    /// `<`
+    Lt,
+    /// `>`
+    Gt,
+    /// `<=`
+    Le,
+    /// `>=`
+    Ge,
+    /// `&&`
+    AndAnd,
+    /// `||`
+    OrOr,
+    /// `true` keyword.
+    KwTrue,
+    /// `false` keyword.
+    KwFalse,
     /// End of input.
     Eof,
     /// Imaginary literal, e.g. `3i`, `2.5i`.
@@ -160,6 +184,54 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             i += 2;
             out.push(Token {
                 tok: Tok::FatArrow,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b'=' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::EqEq,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::NotEq,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::Le,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b'>' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::Ge,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b'&' && i + 1 < bytes.len() && bytes[i + 1] == b'&' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::AndAnd,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::OrOr,
                 span: Span::new(start, i),
             });
             continue;
@@ -240,6 +312,8 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "match" if !followed_by_paren => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "fn" if !followed_by_paren => Tok::KwFn,
+                "true" if !followed_by_paren => Tok::KwTrue,
+                "false" if !followed_by_paren => Tok::KwFalse,
                 _ => Tok::Ident(text.to_string()),
             };
             out.push(Token { tok, span });
@@ -280,6 +354,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             b')' => Tok::RParen,
             b'{' => Tok::LBrace,
             b'}' => Tok::RBrace,
+            b'[' => Tok::LBracket,
+            b']' => Tok::RBracket,
+            b'<' => Tok::Lt,
+            b'>' => Tok::Gt,
             b'=' => Tok::Eq,
             b';' => Tok::Semi,
             b'|' => Tok::Pipe,
@@ -498,6 +576,28 @@ mod tests {
                 Tok::Ident("x".into()),
                 Tok::FatArrow,
                 Tok::Ident("x".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_collection_and_comparison_tokens() {
+        assert_eq!(
+            kinds("[ ] == != < > <= >= && || true false"),
+            vec![
+                Tok::LBracket,
+                Tok::RBracket,
+                Tok::EqEq,
+                Tok::NotEq,
+                Tok::Lt,
+                Tok::Gt,
+                Tok::Le,
+                Tok::Ge,
+                Tok::AndAnd,
+                Tok::OrOr,
+                Tok::KwTrue,
+                Tok::KwFalse,
                 Tok::Eof,
             ]
         );
