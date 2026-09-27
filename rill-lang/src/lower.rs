@@ -59,6 +59,20 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
+/// The capacity field of a container value type (`List`, `Map`, `Set`), read
+/// from its trailing `Cap(n)` argument; 0 for a non-container.
+fn container_cap(t: &ValueTy) -> usize {
+    match t {
+        ValueTy::App(name, inner) if matches!(name.as_str(), "List" | "Map" | "Set") => {
+            match inner.last() {
+                Some(ValueTy::Cap(n)) => *n,
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
 /// Whether the interpreter wires `op` at runtime. Every collection op has a
 /// concrete arm in `exec_value_call_builtin` (Task 6.4), so lowering accepts
 /// them all — a program using one compiles and runs instead of silently
@@ -131,6 +145,14 @@ struct Lowerer<'a> {
     /// newtype) pins its whole subtree across ticks, so the bound must account
     /// for the output's subtree size, not just one slot per channel.
     value_out_tys: Vec<ValueTy>,
+    /// Static types of every container-typed value subexpression (`List`,
+    /// `Map`, `Set`) produced during lowering. A container pins its element
+    /// slots while it lives, so the arena bound must sum each container's
+    /// subtree size (the `is_alloc_producing` count alone credits one slot per
+    /// op and undercounts `map`/`filter`/`cons`/literal containers by their
+    /// element slots). With `value_builtin_ty` propagating source caps, these
+    /// types carry the exact capacities the runtime allocates.
+    container_tys: Vec<ValueTy>,
     /// First-class function values referenced by [`ValueInstr::ValueMakeClosure`].
     /// A bare reference to a user definition in value position allocates a
     /// [`Value::Closure`] referencing the entry's index.
@@ -193,6 +215,18 @@ impl<'a> Lowerer<'a> {
 
     fn emit_value(&mut self, i: ValueInstr) {
         self.value_instrs.push(i);
+    }
+
+    /// Record a container-typed subexpression (`List`/`Map`/`Set`) for the
+    /// arena-capacity heuristic: the container pins its element slots while it
+    /// lives, so the bound must include its full subtree size.
+    fn note_container(&mut self, vty: &ValueTy) {
+        if matches!(
+            vty,
+            ValueTy::App(name, _) if matches!(name.as_str(), "List" | "Map" | "Set")
+        ) {
+            self.container_tys.push(vty.clone());
+        }
     }
 
     /// Lower a value expression to a value register, returning its static value
@@ -450,6 +484,7 @@ impl<'a> Lowerer<'a> {
                         arg_tys.push(t);
                     }
                     let ret = self.value_builtin_ty(name, &arg_tys, *span)?;
+                    self.note_container(&ret);
                     let dst = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueCallBuiltin {
                         dst,
@@ -900,10 +935,9 @@ impl<'a> Lowerer<'a> {
                     elems: regs,
                     cap,
                 });
-                Ok((
-                    dst,
-                    ValueTy::App("List".into(), vec![elem_ty, ValueTy::Cap(cap)]),
-                ))
+                let ret = ValueTy::App("List".into(), vec![elem_ty, ValueTy::Cap(cap)]);
+                self.note_container(&ret);
+                Ok((dst, ret))
             }
             Expr::MapLit(entries, _) => {
                 let mut keys = Vec::with_capacity(entries.len());
@@ -926,13 +960,12 @@ impl<'a> Lowerer<'a> {
                     vals,
                     cap,
                 });
-                Ok((
-                    dst,
-                    ValueTy::App(
-                        "Map".into(),
-                        vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(cap)],
-                    ),
-                ))
+                let ret = ValueTy::App(
+                    "Map".into(),
+                    vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(cap)],
+                );
+                self.note_container(&ret);
+                Ok((dst, ret))
             }
             Expr::Cmp { op, lhs, rhs, .. } => {
                 let (a, _) = self.lower_value(lhs)?;
@@ -1023,11 +1056,16 @@ impl<'a> Lowerer<'a> {
             }
             "length" => Ok(ValueTy::Int),
             "map" => {
+                // The result list's capacity is the SOURCE list's cap: map
+                // allocates cap(source) element slots + the result container in
+                // one op, so a Cap(0) result type would undercount the arena
+                // bound by n element slots.
                 let elem = match args.get(1).and_then(list_type_args) {
                     Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
                     _ => ValueTy::Float,
                 };
-                Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(0)]))
+                let cap = args.get(1).map(container_cap).unwrap_or(0);
+                Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
             }
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
@@ -1041,14 +1079,17 @@ impl<'a> Lowerer<'a> {
                     vec![
                         args.first().cloned().unwrap_or(ValueTy::Float),
                         args.get(1).cloned().unwrap_or(ValueTy::Float),
-                        ValueTy::Cap(0),
+                        // The result map carries the SOURCE map's capacity (the
+                        // COW insert keeps the source bound): a Cap(0) result
+                        // type would undercount the arena bound.
+                        ValueTy::Cap(args.get(2).map(container_cap).unwrap_or(0)),
                     ],
                 )),
                 _ => Ok(ValueTy::App(
                     "Set".into(),
                     vec![
                         args.first().cloned().unwrap_or(ValueTy::Float),
-                        ValueTy::Cap(0),
+                        ValueTy::Cap(args.get(1).map(container_cap).unwrap_or(0)),
                     ],
                 )),
             },
@@ -3122,6 +3163,7 @@ pub fn lower_with_cafs(
         next_value_reg: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
+        container_tys: Vec::new(),
         value_funcs: Vec::new(),
         value_locals: Vec::new(),
         value_local_ctors: Vec::new(),
@@ -3215,6 +3257,19 @@ pub fn lower_with_cafs(
                 + f.sig.value_outs
         })
         .sum::<usize>();
+    // Container-typed subexpressions pin their element slots while live, so
+    // each contributes its full subtree size (1 + cap × elem slots) to the
+    // bound. `value_builtin_ty` propagates the source cap for map/filter/cons/
+    // tail/insert, so these types carry the exact capacities the runtime
+    // allocates (a Cap(0) map/filter result type would undercount by cap(elem)
+    // element slots). Empty `list`/`empty_map`/`empty_set` legitimately have
+    // Cap(0): the empty container occupies one slot and element slots are
+    // allocated by the cons/insert ops themselves, each already counted.
+    let container_capacity = lw
+        .container_tys
+        .iter()
+        .map(|t| lw.subtree_size(t))
+        .sum::<usize>();
     let value_capacity = lw
         .value_instrs
         .iter()
@@ -3224,6 +3279,7 @@ pub fn lower_with_cafs(
             .iter()
             .map(|t| lw.subtree_size(t))
             .sum::<usize>()
+        + container_capacity
         + num_main_cells
         + fragment_capacity;
     // Pre-allocated function-call scratch: the runtime call stack never holds
@@ -3358,6 +3414,7 @@ mod tests {
             next_value_reg: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
+            container_tys: Vec::new(),
             value_funcs: Vec::new(),
             value_locals: Vec::new(),
             value_local_ctors: Vec::new(),
