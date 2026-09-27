@@ -328,6 +328,20 @@ impl<'a> Lowerer<'a> {
                         span: *span,
                     });
                 }
+                // Builtin sums are parameterized (`Maybe a`, `Either a b`): the
+                // arm payload shapes carry placeholder `Var(k)` type params that
+                // resolve against the scrutinee's concrete type args by position
+                // (mirroring inference). Lowering gives a direct builtin-sum
+                // construction (`Just x`) the type `Data(name, [])`, so the args
+                // are recovered from the constructor application when the static
+                // type carries none.
+                let is_builtin_sum = self.env.ctor_arity(&sum_name).is_some();
+                let scrutinee_args: Vec<ValueTy> = match &scrutinee_vty {
+                    ValueTy::App(_, args) => args.clone(),
+                    ValueTy::Data(_, args) if !args.is_empty() => args.clone(),
+                    _ if is_builtin_sum => self.builtin_sum_scrutinee_args(scrutinee),
+                    _ => vec![],
+                };
                 // v1 static dispatch: v1 has no runtime control flow, so the
                 // match selects its arm at compile time. When the scrutinee's
                 // ctor is statically known (a literal sum or an inlined value
@@ -371,9 +385,25 @@ impl<'a> Lowerer<'a> {
                         ctor: ctor_idx as u32,
                     });
                     // Bind the arm's payload params to the match's payload regs.
+                    // Builtin-sum payload shapes carry placeholder type params;
+                    // resolve them against the scrutinee's concrete type args
+                    // (`Var(k)` → `scrutinee_args[k-1]`, mirroring inference) so
+                    // a compound payload (`Just (Pair {..})`) binds to its
+                    // record type.
                     let mut scope = HashMap::new();
                     for (idx, p) in params.iter().enumerate() {
-                        let pty = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
+                        let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
+                        let pty = if is_builtin_sum {
+                            match raw {
+                                ValueTy::Var(k) => scrutinee_args
+                                    .get(k.saturating_sub(1) as usize)
+                                    .cloned()
+                                    .unwrap_or(ValueTy::Float),
+                                t => t,
+                            }
+                        } else {
+                            raw
+                        };
                         scope.insert(p.name.clone(), (payload_regs[idx], pty));
                     }
                     self.value_locals.push(scope);
@@ -1404,6 +1434,14 @@ impl<'a> Lowerer<'a> {
                     visited.remove(name);
                     return r;
                 }
+                // A bare nullary constructor (`Nothing`, `Red`) is a complete
+                // sum value: its constructor is statically known even though it
+                // is not a `Def::Local` body.
+                if let Some((_, _, payload)) = self.sum_ctor(name) {
+                    if payload.is_empty() {
+                        return Some(name.clone());
+                    }
+                }
                 None
             }
             _ => None,
@@ -1467,9 +1505,19 @@ impl<'a> Lowerer<'a> {
                 Some(present)
             }
             Expr::Apply { name, args, .. } if name == "insert" && args.len() == 3 => {
-                match &args[0] {
-                    Expr::Str(k, _) if k == key => Some(true),
-                    _ => self.static_map_has_key(&args[2], key, visited),
+                // Resolve the insert key through the same Ref inlining used for
+                // the map argument: a let-bound key (`k = "a"`) is a concrete
+                // string the analysis can compare. A genuinely non-literal key
+                // is unknown — the analysis must not claim it present/absent.
+                match self.static_string_literal(&args[0], visited) {
+                    Some(k) => {
+                        if k == key {
+                            Some(true)
+                        } else {
+                            self.static_map_has_key(&args[2], key, visited)
+                        }
+                    }
+                    None => None,
                 }
             }
             Expr::Apply { name, .. } if name == "empty_map" => Some(false),
@@ -1487,6 +1535,113 @@ impl<'a> Lowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Resolve an expression to a string literal, following inlined value
+    /// definitions (cycle-guarded). `Some(s)` when the string is statically
+    /// known, `None` otherwise.
+    fn static_string_literal(&self, e: &Expr, visited: &mut HashSet<String>) -> Option<String> {
+        match e {
+            Expr::Str(s, _) => Some(s.clone()),
+            Expr::Ref(name, _) => {
+                if visited.contains(name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    visited.insert(name.clone());
+                    let r = self.static_string_literal(&body, visited);
+                    visited.remove(name);
+                    return r;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Concrete type arguments of a builtin-sum scrutinee that is a direct
+    /// constructor application (`Just x`, `Left x`, `Right x`), following
+    /// inlined value definitions. Lowering gives such a scrutinee the static
+    /// type `Data(name, [])`, so the placeholder payload types in the builtin
+    /// shape must be resolved against the constructor arguments' concrete
+    /// types (mirroring inference). The arguments are lowered in a sandbox —
+    /// their instructions are discarded — to recover their static types.
+    /// Returns an empty vector when the scrutinee is not a resolvable builtin
+    /// construction (user sums already carry concrete payloads).
+    fn builtin_sum_scrutinee_args(&mut self, scrutinee: &Expr) -> Vec<ValueTy> {
+        self.builtin_sum_scrutinee_args_impl(scrutinee, &mut HashSet::new())
+    }
+
+    fn builtin_sum_scrutinee_args_impl(
+        &mut self,
+        e: &Expr,
+        seen: &mut HashSet<String>,
+    ) -> Vec<ValueTy> {
+        match e {
+            Expr::Ref(name, _) => {
+                if !seen.insert(name.clone()) {
+                    return vec![];
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    let r = self.builtin_sum_scrutinee_args_impl(&body, seen);
+                    seen.remove(name);
+                    return r;
+                }
+                vec![]
+            }
+            Expr::Apply { name, args, .. } => {
+                let Some((sum_name, _, payload)) = self.sum_ctor(name) else {
+                    return vec![];
+                };
+                if self.env.ctor_arity(&sum_name).is_none() {
+                    // User sum — its payloads are already concrete.
+                    return vec![];
+                }
+                // Placeholder payloads reference type-param positions
+                // (`Var(k)` ↔ k-th type arg); the ctor's argument at that
+                // payload slot supplies the concrete type.
+                let mut out: Vec<ValueTy> = vec![];
+                for (i, pt) in payload.iter().enumerate() {
+                    let ValueTy::Var(k) = pt else {
+                        continue;
+                    };
+                    let Some(arg) = args.get(i) else {
+                        continue;
+                    };
+                    let Some(ty) = self.sandbox_value_ty(arg) else {
+                        return vec![];
+                    };
+                    let idx = k.saturating_sub(1) as usize;
+                    while out.len() <= idx {
+                        out.push(ValueTy::Float);
+                    }
+                    out[idx] = ty;
+                }
+                out
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Recover an expression's static value type by lowering it in a sandbox:
+    /// the emitted instructions are discarded. Used to resolve builtin-sum
+    /// scrutinee payload types that `lower_value` does not carry on the
+    /// returned scrutinee type (`Data(name, [])`).
+    fn sandbox_value_ty(&mut self, e: &Expr) -> Option<ValueTy> {
+        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_next = self.next_value_reg;
+        let saved_locals = std::mem::take(&mut self.value_locals);
+        let saved_captures = std::mem::take(&mut self.fragment_captures);
+        let saved_inline = std::mem::take(&mut self.value_inline);
+        let saved_pending = std::mem::take(&mut self.pending_param_tys);
+        let r = self.lower_value(e).ok();
+        self.value_instrs = saved_instrs;
+        self.next_value_reg = saved_next;
+        self.value_locals = saved_locals;
+        self.fragment_captures = saved_captures;
+        self.value_inline = saved_inline;
+        self.pending_param_tys = saved_pending;
+        r.map(|(_, ty)| ty.clone())
     }
 
     /// Resolve the sum type of a `match` from its arm constructors, intersecting
