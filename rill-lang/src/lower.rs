@@ -59,6 +59,22 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
+/// Whether the interpreter wires `op` at runtime. Ops still stubbed in
+/// `exec_value_call_builtin` silently yield a `None` value output, so they are
+/// rejected at lowering — a program using them fails to compile instead of
+/// silently producing nothing. Task 6.4 wires the remaining ops.
+fn collection_op_implemented(op: ValueBuiltinOp) -> bool {
+    matches!(
+        op,
+        ValueBuiltinOp::Cons
+            | ValueBuiltinOp::Head
+            | ValueBuiltinOp::Length
+            | ValueBuiltinOp::Map
+            | ValueBuiltinOp::Fold
+            | ValueBuiltinOp::ListEmpty
+    )
+}
+
 /// Map a parsed comparison operator to its IR form (the two enums share their
 /// variant names, so the match is mechanical).
 fn cmp_op_from_ast(op: crate::ast::CmpOp) -> CmpOp {
@@ -387,6 +403,11 @@ impl<'a> Lowerer<'a> {
                 // method/user-def resolution so a collection op can never be
                 // shadowed by a definition of the same name.
                 if let Some(op) = self.value_builtin(name, call_args.len()) {
+                    if !collection_op_implemented(op) {
+                        return Err(CompileError::Unsupported(format!(
+                            "collection op `{name}` not yet implemented (Phase 6.4)"
+                        )));
+                    }
                     let mut arg_regs = Vec::with_capacity(call_args.len());
                     let mut arg_tys = Vec::with_capacity(call_args.len());
                     for a in call_args {
@@ -856,7 +877,7 @@ impl<'a> Lowerer<'a> {
             },
             "head" => {
                 let elem = match args.first().and_then(list_type_args) {
-                    Some(inner) => inner[0].clone(),
+                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
                     _ => ValueTy::Float,
                 };
                 Ok(ValueTy::App("Maybe".into(), vec![elem]))
@@ -864,26 +885,39 @@ impl<'a> Lowerer<'a> {
             "length" => Ok(ValueTy::Int),
             "map" => {
                 let elem = match args.get(1).and_then(list_type_args) {
-                    Some(inner) => inner[0].clone(),
+                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
                     _ => ValueTy::Float,
                 };
                 Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(0)]))
             }
-            "fold" => Ok(args.first().cloned().unwrap_or(ValueTy::Float)),
+            // fold's result is the accumulator/seed type (mirrors inference).
+            "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
             "list" => Ok(ValueTy::App(
                 "List".into(),
                 vec![ValueTy::Float, ValueTy::Cap(0)],
             )),
             "insert" => match args.len() {
-                3 => Ok(ValueTy::App("Map".into(), args.to_vec())),
+                3 => Ok(ValueTy::App(
+                    "Map".into(),
+                    vec![
+                        args.first().cloned().unwrap_or(ValueTy::Float),
+                        args.get(1).cloned().unwrap_or(ValueTy::Float),
+                        ValueTy::Cap(0),
+                    ],
+                )),
                 _ => Ok(ValueTy::App(
                     "Set".into(),
-                    vec![args[0].clone(), ValueTy::Cap(0)],
+                    vec![
+                        args.first().cloned().unwrap_or(ValueTy::Float),
+                        ValueTy::Cap(0),
+                    ],
                 )),
             },
             "lookup" => {
                 let v = match args.get(1) {
-                    Some(ValueTy::App(name, inner)) if name == "Map" => inner[1].clone(),
+                    Some(ValueTy::App(name, inner)) if name == "Map" => {
+                        inner.get(1).cloned().unwrap_or(ValueTy::Float)
+                    }
                     _ => ValueTy::Float,
                 };
                 Ok(ValueTy::App("Maybe".into(), vec![v]))

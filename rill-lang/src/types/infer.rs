@@ -1921,6 +1921,26 @@ fn infer_collection_call(
             None => Err(arity_err(&(i + 1).to_string(), args.len())),
         }
     };
+    // Validate the first argument is a function value of the value-arity the op
+    // dispatches (map/filter call it with one element, fold with (acc, elem)).
+    // A `Func([], _)` is an unknown signature (a bare named function ref whose
+    // arity resolves at runtime dispatch), so it is allowed; a lambda literal's
+    // structural signature must match the expected arity exactly — a wrong-arity
+    // closure would otherwise pass `value_ins` to the pre-sized call scratch and
+    // panic the runtime path.
+    let expect_closure = |ctx: &mut Ctx<'_>, want: usize, what: &str| -> Result<(), CompileError> {
+        let ft = arg_vty(ctx, 0)?;
+        let ok =
+            matches!(&ft, ValueTy::Func(arg_tys, _) if arg_tys.is_empty() || arg_tys.len() == want);
+        if ok {
+            Ok(())
+        } else {
+            Err(CompileError::Type {
+                msg: format!("`{name}` expects a {what} function"),
+                span,
+            })
+        }
+    };
     // The (element, capacity) of a `List` value type; Float/0 for a non-list.
     let list_shape = |t: &ValueTy| -> (ValueTy, usize) {
         match t {
@@ -1976,7 +1996,7 @@ fn infer_collection_call(
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            expect_closure(ctx, 1, "unary")?;
             let lt = arg_vty(ctx, 1)?;
             Ok(list_of(&lt))
         }
@@ -1984,7 +2004,7 @@ fn infer_collection_call(
             if args.len() != 3 {
                 return Err(arity_err("3", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            expect_closure(ctx, 2, "binary")?;
             let zt = arg_vty(ctx, 1)?;
             let _ = arg_vty(ctx, 2)?;
             Ok(zt)
@@ -1993,7 +2013,7 @@ fn infer_collection_call(
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            expect_closure(ctx, 1, "unary")?;
             let lt = arg_vty(ctx, 1)?;
             Ok(list_of(&lt))
         }

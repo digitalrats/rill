@@ -1048,7 +1048,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 .copied()
                 .flatten()
                 .and_then(|r| match prog.arena.get(r) {
-                    Some(Value::Int(n)) => Some(*n as usize),
+                    Some(Value::Int(n)) => Some((*n).max(0) as usize),
                     _ => None,
                 })
                 .unwrap_or(0);
@@ -1112,13 +1112,23 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
     };
     let frag = prog.ir.fragments.get(fragment_id as usize).cloned()?;
     let base = prog.value_regs_top;
-    for (i, e) in args.iter().enumerate() {
+    // Bounds-guard: the pre-sized call scratch reserves `max_call_regs` slots,
+    // so a wrong-arity closure (e.g. `fold (fn a -> a) ...`) could pass more
+    // args than the fragment declares and write the raw borrows past the store.
+    // Clamp to `frag.sig.value_ins` and the store's tail; the type checker
+    // rejects wrong-arity closures at compile time, this is belt-and-suspenders
+    // so a bad closure cannot crash the RT path.
+    let n = args
+        .len()
+        .min(frag.sig.value_ins)
+        .min(prog.value_regs.len().saturating_sub(base));
+    for (i, e) in args.iter().take(n).enumerate() {
         prog.value_regs[base + i] = Some(*e);
     }
     if let Some(old) = prog.value_regs.get_mut(result_reg).and_then(|r| r.take()) {
         drops.push(old);
     }
-    let arg_regs: Vec<usize> = (0..args.len()).map(|i| base + i).collect();
+    let arg_regs: Vec<usize> = (0..n).map(|i| base + i).collect();
     run_fragment(prog, &frag, env_ref, &arg_regs, &result_reg, drops);
     prog.value_regs.get_mut(result_reg).and_then(|r| r.take())
 }
@@ -1865,6 +1875,28 @@ mod value_track_tests {
             &crate::arena::Value::Float(84.0)
         );
         assert_eq!(prog.arena.live(), 2, "old dst occupant must be dropped");
+    }
+
+    #[test]
+    fn list_empty_clamps_negative_int_capacity() {
+        // A negative Int capacity must clamp to 0, not wrap into a huge `usize`.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: -3 },
+                ValueInstr::ValueCallBuiltin {
+                    dst: 1,
+                    op: ValueBuiltinOp::ListEmpty,
+                    args: vec![0],
+                },
+            ],
+            2,
+            0,
+        );
+        run_value_track(&mut prog).unwrap();
+        match prog.arena.get(prog.value_regs[1].unwrap()).unwrap() {
+            crate::arena::Value::List { cap, .. } => assert_eq!(*cap, 0),
+            other => panic!("expected a List, got {other:?}"),
+        }
     }
 
     #[test]

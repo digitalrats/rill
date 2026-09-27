@@ -112,3 +112,99 @@ fn repeated_cons_overflow_ticks_do_not_leak_arena() {
         assert_eq!(prog.arena().live(), 0, "erroring tick must leak nothing");
     }
 }
+
+#[test]
+fn fold_rejects_wrong_arity_closure_at_compile_time() {
+    // `fold` calls its closure with (acc, elem), so a unary closure is a type
+    // error. It used to compile and then panic the runtime path with an
+    // index-out-of-bounds in `call_closure_args`.
+    let err = match compile::<f32>("main = fold (fn a -> a) 0.0 [1.0, 2.0, 3.0];") {
+        Ok(_) => panic!("wrong-arity fold closure must not compile"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err:?}").contains("binary function"),
+        "expected a closure-arity message, got {err:?}"
+    );
+}
+
+#[test]
+fn map_rejects_wrong_arity_closure_at_compile_time() {
+    // `map` calls its closure with one element, so a binary closure is a type
+    // error. It used to compile and silently produce an empty list.
+    let err = match compile::<f32>("main = map (fn a b -> b) [1.0, 2.0];") {
+        Ok(_) => panic!("wrong-arity map closure must not compile"),
+        Err(e) => e,
+    };
+    assert!(
+        format!("{err:?}").contains("unary function"),
+        "expected a closure-arity message, got {err:?}"
+    );
+}
+
+#[test]
+fn consed_list_shares_source_elements_across_ticks() {
+    // The CAF `l = cons 1.0 (cons 2.0 (list 4))` is [1.0, 2.0]; main's output
+    // `cons 9.0 l` is [9.0, 1.0, 2.0], sharing l's elements 1.0/2.0. Each tick
+    // rebuilds and then clears the source list at tick end, so the Cons arm
+    // MUST recount (RC++) the shared source elements or the pinned output's
+    // refs dangle and read None on the next tick.
+    let mut prog = compile::<f32>("l = cons 1.0 (cons 2.0 (list 4)); main = cons 9.0 l;").unwrap();
+    let mut out = [0.0f32; 4];
+    for tick in 0..3 {
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        let v = prog.value_outputs()[0].unwrap();
+        match prog.arena().get(v).unwrap() {
+            rill_lang::arena::Value::List { elems, .. } => {
+                assert_eq!(
+                    prog.arena().get(elems[1]).unwrap(),
+                    &rill_lang::arena::Value::Float(1.0),
+                    "tick {tick}: shared source element [1] must survive the tick-end clear"
+                );
+                assert_eq!(
+                    prog.arena().get(elems[2]).unwrap(),
+                    &rill_lang::arena::Value::Float(2.0),
+                    "tick {tick}: shared source element [2] must survive the tick-end clear"
+                );
+            }
+            other => panic!("tick {tick}: expected a List, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn list_negative_capacity_does_not_explode() {
+    // A negative capacity input must not wrap into a huge `usize` (the interp
+    // clamps Int capacities; a non-Int input falls back to 0). Regression guard
+    // for the defensive `max(0)` clamp in the ListEmpty arm.
+    let mut prog = compile::<f32>("main = list (0 - 3);").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::List { cap, .. } => assert_eq!(*cap, 0),
+        other => panic!("expected a List, got {other:?}"),
+    }
+}
+
+#[test]
+fn unimplemented_collection_ops_fail_at_compile_time() {
+    // tail/filter/lookup/member/insert/empty_map/empty_set are wired in Task
+    // 6.4; until then a program using them must fail to compile instead of
+    // silently producing a `None` value output.
+    for src in [
+        "main = tail [1.0, 2.0];",
+        "main = filter (fn a -> a > 0.0) [1.0, 2.0];",
+        "main = lookup \"k\" [(\"k\", 1.0)];",
+        "main = member 1.0 [1.0, 2.0];",
+        "main = insert \"k\" 1.0 (empty_map 4);",
+        "main = empty_map 4;",
+        "main = empty_set 4;",
+    ] {
+        let res = compile::<f32>(src);
+        assert!(
+            res.is_err(),
+            "`{src}` must fail to compile until the op is wired (Task 6.4)"
+        );
+    }
+}
