@@ -1558,8 +1558,26 @@ fn infer_apply(
                                 });
                             }
                         }
+                        // Builtin records (`Pair a b`) carry PLACEHOLDER type
+                        // parameters (`Var(1)`, `Var(2)`) that are NOT live
+                        // unification vars. Freshen each placeholder to a fresh
+                        // live var BEFORE unifying the fields: unifying the raw
+                        // ids would bind them in the live subst, colliding with
+                        // subsequently freshened ids (`Pair { first: 1.0,
+                        // second: 2 }` failed on the second field).
+                        let is_builtin = ctx.env.ctor_arity(name).is_some();
+                        let field_tys: Vec<(String, ValueTy)> = fields
+                            .iter()
+                            .map(|(fname, fty)| {
+                                let fty = match fty {
+                                    ValueTy::Var(_) => ctx.fresh_vty(),
+                                    t => t.clone(),
+                                };
+                                (fname.to_string(), fty)
+                            })
+                            .collect();
                         for (f, e) in fields_expr {
-                            let fty = fields
+                            let fty = field_tys
                                 .iter()
                                 .find(|(fname, _)| fname == f)
                                 .map(|(_, t)| t.clone());
@@ -1575,26 +1593,11 @@ fn infer_apply(
                             let vt = infer_const_value(ctx, e)?;
                             unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
                         }
-                        // Builtin records (`Pair a b`) carry PLACEHOLDER type
-                        // parameters (`Var(1)`, `Var(2)`): build the
-                        // parameterized result `App("Pair", [a, b])` from the
-                        // actual field types in DECLARED order.
-                        if ctx.env.ctor_arity(name).is_some() {
-                            let mut arg_tys = Vec::with_capacity(fields.len());
-                            for (fname, fty) in &fields {
-                                let fexpr = fields_expr
-                                    .iter()
-                                    .find(|(n, _)| n == fname)
-                                    .map(|(_, e)| e)
-                                    .expect("every declared field was checked present");
-                                let actual = match fty {
-                                    ValueTy::Var(_) => ctx.fresh_vty(),
-                                    t => t.clone(),
-                                };
-                                let vt = infer_const_value(ctx, fexpr)?;
-                                unify_value(&vt, &actual, &mut ctx.subst, fexpr.span())?;
-                                arg_tys.push(ctx.subst.resolve_value(&actual));
-                            }
+                        if is_builtin {
+                            let arg_tys: Vec<ValueTy> = field_tys
+                                .iter()
+                                .map(|(_, t)| ctx.subst.resolve_value(t))
+                                .collect();
                             return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
                         }
                         return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
@@ -1660,22 +1663,40 @@ fn infer_apply(
         }
         // Builtin sums (`Maybe`, `Either`) carry PLACEHOLDER type parameters
         // (`Var(1)`, `Var(2)`) that are NOT live unification vars. Instantiate
-        // each with a fresh live var, unify the arguments against it, and build
-        // the parameterized result `App("Maybe", [elem])` from the actual
-        // argument types.
-        if ctx.env.ctor_arity(&sum_name).is_some() {
-            let mut fresh: Vec<ValueTy> = Vec::with_capacity(payload.len());
-            for pt in &payload {
-                fresh.push(match pt {
+        // each payload placeholder with a fresh live var, unify the argument
+        // against it, and build the parameterized result `App(sum_name, ...)`
+        // with the FULL `arity` type args: each payload type lands at its
+        // placeholder position (`Var(k)` → arg k-1), the rest stay fresh
+        // (`Left 5.0` is `App("Either", [Float, ?])`). The match pin pads the
+        // scrutinee to `arity`, so the arities must agree.
+        if let Some(arity) = ctx.env.ctor_arity(&sum_name) {
+            let mut slots: Vec<Option<ValueTy>> = Vec::with_capacity(arity);
+            for _ in 0..arity {
+                slots.push(None);
+            }
+            for (i, pt) in payload.iter().enumerate() {
+                let pty = match pt {
                     ValueTy::Var(_) => ctx.fresh_vty(),
                     t => t.clone(),
-                });
-            }
-            for (e, pty) in args.iter().zip(fresh.iter()) {
+                };
+                let e = &args[i];
                 let vt = infer_const_value(ctx, e)?;
-                unify_value(&vt, pty, &mut ctx.subst, e.span())?;
+                unify_value(&vt, &pty, &mut ctx.subst, e.span())?;
+                let idx = match pt {
+                    ValueTy::Var(k) => k.saturating_sub(1) as usize,
+                    _ => i,
+                };
+                if let Some(slot) = slots.get_mut(idx) {
+                    *slot = Some(ctx.subst.resolve_value(&pty));
+                }
             }
-            let arg_tys: Vec<ValueTy> = fresh.iter().map(|t| ctx.subst.resolve_value(t)).collect();
+            let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(arity);
+            for s in slots {
+                match s {
+                    Some(t) => arg_tys.push(t),
+                    None => arg_tys.push(ctx.fresh_vty()),
+                }
+            }
             return Ok(ArrowTy::value_channel(ValueTy::App(sum_name, arg_tys)));
         }
         for (e, pty) in args.iter().zip(payload.iter()) {

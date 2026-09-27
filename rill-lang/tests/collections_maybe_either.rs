@@ -42,3 +42,29 @@ fn pair_projection_and_either() {
         &rill_lang::arena::Value::Float(2.0)
     );
 }
+
+#[test]
+fn pair_heterogeneous_fields() {
+    let mut prog = compile::<f32>("p = Pair { first: 1.0, second: 2 }; main = p.second;").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    // p.second : Int(2) — heterogeneous Pair fields must typecheck.
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2)
+    );
+}
+
+#[test]
+fn either_ctors_and_match() {
+    let mut prog =
+        compile::<f32>("main = match (Left 5.0) of { Left x => x; Right y => 0.0; };").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(5.0)
+    );
+}
