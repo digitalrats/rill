@@ -649,6 +649,14 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Func(param_tys, vec![ret_ty])))
             }
+            Expr::Bool(_, _)
+            | Expr::ListLit(_, _)
+            | Expr::MapLit(_, _)
+            | Expr::Cmp { .. }
+            | Expr::Logic { .. } => Err(CompileError::Unsupported(
+                "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
+                    .into(),
+            )),
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
                 span: e.span(),
@@ -873,6 +881,21 @@ impl<'a> Lowerer<'a> {
                 if let Some(d) = default {
                     self.free_vars_impl(d, bound, out, seen);
                 }
+            }
+            Expr::Bool(_, _) => {}
+            Expr::ListLit(elems, _) => {
+                for el in elems {
+                    self.free_vars_impl(el, bound, out, seen);
+                }
+            }
+            Expr::MapLit(entries, _) => {
+                for (_, ve) in entries {
+                    self.free_vars_impl(ve, bound, out, seen);
+                }
+            }
+            Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
+                self.free_vars_impl(lhs, bound, out, seen);
+                self.free_vars_impl(rhs, bound, out, seen);
             }
         }
     }
@@ -1653,6 +1676,14 @@ impl<'a> Lowerer<'a> {
                 msg: "lambda is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
+            Expr::Bool(_, _)
+            | Expr::ListLit(_, _)
+            | Expr::MapLit(_, _)
+            | Expr::Cmp { .. }
+            | Expr::Logic { .. } => Err(CompileError::Unsupported(
+                "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
+                    .into(),
+            )),
         }
     }
 
@@ -2247,7 +2278,14 @@ impl<'a> Lowerer<'a> {
             // Value expressions are 0→1 value channels: they carry no signal
             // arity. (A combinator mixing value and signal channels is outside
             // v1 scope and errors elsewhere in lowering.)
-            Expr::FieldProject { .. } | Expr::FieldUpdate { .. } | Expr::Match { .. } => (0, 1),
+            Expr::FieldProject { .. }
+            | Expr::FieldUpdate { .. }
+            | Expr::Match { .. }
+            | Expr::Bool(..)
+            | Expr::ListLit(..)
+            | Expr::MapLit(..)
+            | Expr::Cmp { .. }
+            | Expr::Logic { .. } => (0, 1),
             Expr::Lambda { .. } => (0, 1),
         })
     }

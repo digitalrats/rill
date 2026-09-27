@@ -4,7 +4,7 @@
 //! string. The renderer is used for round-trip tests that verify
 //! isomorphism between JSON and DSL representations.
 
-use crate::ast::{ArithOp, Def, Expr, Program, TypeExpr};
+use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Program, TypeExpr};
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
@@ -279,6 +279,32 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             write!(buf, " -> ").ok();
             render_expr(body, buf, 0);
         }
+        Expr::Bool(v, _) => {
+            write!(buf, "{}", if *v { "true" } else { "false" }).ok();
+        }
+        Expr::ListLit(elems, _) => {
+            write!(buf, "[").ok();
+            for (i, e) in elems.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, ", ").ok();
+                }
+                render_expr(e, buf, 0);
+            }
+            write!(buf, "]").ok();
+        }
+        Expr::MapLit(entries, _) => {
+            write!(buf, "{{ ").ok();
+            for (i, (k, v)) in entries.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, ", ").ok();
+                }
+                write!(buf, "\"{k}\": ").ok();
+                render_expr(v, buf, 0);
+            }
+            write!(buf, " }}").ok();
+        }
+        Expr::Cmp { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, cmp_info(op)),
+        Expr::Logic { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, logic_info(op)),
     }
 }
 
@@ -308,6 +334,24 @@ fn arith_info(op: &ArithOp) -> (u8, u8, u8, &'static str) {
         ArithOp::Mul => (13, 13, 14, "*"),
         ArithOp::Div => (13, 13, 14, "/"),
         ArithOp::Rem => (13, 13, 14, "%"),
+    }
+}
+
+fn cmp_info(op: &CmpOp) -> (u8, u8, u8, &'static str) {
+    match op {
+        CmpOp::Eq => (3, 3, 4, "=="),
+        CmpOp::Ne => (3, 3, 4, "!="),
+        CmpOp::Lt => (3, 3, 4, "<"),
+        CmpOp::Gt => (3, 3, 4, ">"),
+        CmpOp::Le => (3, 3, 4, "<="),
+        CmpOp::Ge => (3, 3, 4, ">="),
+    }
+}
+
+fn logic_info(op: &LogicOp) -> (u8, u8, u8, &'static str) {
+    match op {
+        LogicOp::And => (1, 1, 2, "&&"),
+        LogicOp::Or => (1, 1, 2, "||"),
     }
 }
 

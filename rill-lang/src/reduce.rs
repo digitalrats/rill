@@ -132,6 +132,30 @@ fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 .collect(),
             *span,
         ),
+        Expr::Bool(_, _) => e.clone(),
+        Expr::ListLit(elems, span) => Expr::ListLit(
+            elems.iter().map(|el| substitute(el, subst)).collect(),
+            *span,
+        ),
+        Expr::MapLit(entries, span) => Expr::MapLit(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), substitute(v, subst)))
+                .collect(),
+            *span,
+        ),
+        Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
+            op: *op,
+            lhs: Box::new(substitute(lhs, subst)),
+            rhs: Box::new(substitute(rhs, subst)),
+            span: *span,
+        },
+        Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
+            op: *op,
+            lhs: Box::new(substitute(lhs, subst)),
+            rhs: Box::new(substitute(rhs, subst)),
+            span: *span,
+        },
         _ => e.clone(),
     }
 }
@@ -356,6 +380,29 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                 span: *span,
             }
         }
+        Expr::ListLit(elems, span) => Expr::ListLit(
+            elems.iter().map(|el| reduce_expr(el, ctx, cafs)).collect(),
+            *span,
+        ),
+        Expr::MapLit(entries, span) => Expr::MapLit(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), reduce_expr(v, ctx, cafs)))
+                .collect(),
+            *span,
+        ),
+        Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
+            op: *op,
+            lhs: Box::new(reduce_expr(lhs, ctx, cafs)),
+            rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
+            span: *span,
+        },
+        Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
+            op: *op,
+            lhs: Box::new(reduce_expr(lhs, ctx, cafs)),
+            rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
+            span: *span,
+        },
         _ => e.clone(),
     }
 }

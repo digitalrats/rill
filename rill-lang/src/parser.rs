@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{ArithOp, Def, Expr, Param, Program, TypeExpr};
+use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Param, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 
@@ -18,6 +18,14 @@ enum InfixOp {
     Mul,
     Div,
     Rem,
+    CmpEq,
+    CmpNe,
+    CmpLt,
+    CmpGt,
+    CmpLe,
+    CmpGe,
+    LogicAnd,
+    LogicOr,
 }
 
 impl InfixOp {
@@ -38,6 +46,42 @@ impl InfixOp {
             _ => unreachable!("not an arithmetic operator"),
         }
     }
+
+    fn is_logic(self) -> bool {
+        matches!(self, InfixOp::LogicAnd | InfixOp::LogicOr)
+    }
+
+    fn to_logic(self) -> LogicOp {
+        match self {
+            InfixOp::LogicAnd => LogicOp::And,
+            InfixOp::LogicOr => LogicOp::Or,
+            _ => unreachable!("not a logic operator"),
+        }
+    }
+
+    fn is_cmp(self) -> bool {
+        matches!(
+            self,
+            InfixOp::CmpEq
+                | InfixOp::CmpNe
+                | InfixOp::CmpLt
+                | InfixOp::CmpGt
+                | InfixOp::CmpLe
+                | InfixOp::CmpGe
+        )
+    }
+
+    fn to_cmp(self) -> CmpOp {
+        match self {
+            InfixOp::CmpEq => CmpOp::Eq,
+            InfixOp::CmpNe => CmpOp::Ne,
+            InfixOp::CmpLt => CmpOp::Lt,
+            InfixOp::CmpGt => CmpOp::Gt,
+            InfixOp::CmpLe => CmpOp::Le,
+            InfixOp::CmpGe => CmpOp::Ge,
+            _ => unreachable!("not a comparison operator"),
+        }
+    }
 }
 
 struct Parser<'a> {
@@ -50,7 +94,15 @@ struct Parser<'a> {
 fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
     Some(match t {
         Tok::Tilde => (InfixOp::Loop, 1, 2),
+        Tok::AndAnd => (InfixOp::LogicAnd, 1, 2),
+        Tok::OrOr => (InfixOp::LogicOr, 1, 2),
         Tok::Colon => (InfixOp::Seq, 3, 4),
+        Tok::EqEq => (InfixOp::CmpEq, 3, 4),
+        Tok::NotEq => (InfixOp::CmpNe, 3, 4),
+        Tok::Lt => (InfixOp::CmpLt, 3, 4),
+        Tok::Gt => (InfixOp::CmpGt, 3, 4),
+        Tok::Le => (InfixOp::CmpLe, 3, 4),
+        Tok::Ge => (InfixOp::CmpGe, 3, 4),
         Tok::Merge => (InfixOp::Merge, 5, 6),
         Tok::Split => (InfixOp::Split, 7, 8),
         Tok::Comma => (InfixOp::Par, 9, 10),
@@ -547,6 +599,20 @@ impl<'a> Parser<'a> {
                     rhs: Box::new(rhs),
                     span,
                 }
+            } else if op.is_logic() {
+                Expr::Logic {
+                    op: op.to_logic(),
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
+                }
+            } else if op.is_cmp() {
+                Expr::Cmp {
+                    op: op.to_cmp(),
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
+                }
             } else {
                 match op {
                     InfixOp::Seq => Expr::Seq(Box::new(lhs), Box::new(rhs), span),
@@ -675,21 +741,33 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_record(&mut self) -> Result<Expr, CompileError> {
+    fn parse_record_or_map(&mut self) -> Result<Expr, CompileError> {
         let start = self.eat(&Tok::LBrace)?.span.start;
-        let mut fields = Vec::new();
-
         if self.peek().tok == Tok::RBrace {
             self.bump();
-            return Ok(Expr::Record(fields, self.span_from(start)));
+            return Ok(Expr::Record(Vec::new(), self.span_from(start)));
         }
-
+        // A string literal key makes this a Map literal.
+        let is_map = matches!(self.peek().tok, Tok::Str(_));
+        let mut fields = Vec::new();
+        let mut entries = Vec::new();
         loop {
-            let (key, _) = self.expect_ident()?;
-            self.eat(&Tok::Colon)?;
-            let val = self.parse_expr(0, true)?;
-            fields.push((key, val));
-
+            if is_map {
+                let k = match self.bump().tok {
+                    Tok::Str(s) => s,
+                    other => {
+                        return Err(self.error(&format!("expected string map key, found {other:?}")))
+                    }
+                };
+                self.eat(&Tok::Colon)?;
+                let v = self.parse_expr(0, true)?;
+                entries.push((k, v));
+            } else {
+                let (key, _) = self.expect_ident()?;
+                self.eat(&Tok::Colon)?;
+                let val = self.parse_expr(0, true)?;
+                fields.push((key, val));
+            }
             if self.peek().tok == Tok::Comma {
                 self.bump();
                 if self.peek().tok == Tok::RBrace {
@@ -698,12 +776,15 @@ impl<'a> Parser<'a> {
             } else if self.peek().tok == Tok::RBrace {
                 break;
             } else {
-                return Err(self.error("expected ',' or '}' in record literal"));
+                return Err(self.error("expected ',' or '}' in literal"));
             }
         }
-
         self.eat(&Tok::RBrace)?;
-        Ok(Expr::Record(fields, self.span_from(start)))
+        if is_map {
+            Ok(Expr::MapLit(entries, self.span_from(start)))
+        } else {
+            Ok(Expr::Record(fields, self.span_from(start)))
+        }
     }
 
     fn parse_atom(&mut self) -> Result<Expr, CompileError> {
@@ -748,10 +829,35 @@ impl<'a> Parser<'a> {
                 Ok(inner)
             }
             Tok::LBrace => {
-                // rewind — parse_record handles the opening brace
+                // rewind — parse_record_or_map handles the opening brace
                 self.pos -= 1;
-                self.parse_record()
+                self.parse_record_or_map()
             }
+            Tok::LBracket => {
+                let start = t.span.start;
+                if self.peek().tok == Tok::RBracket {
+                    self.bump();
+                    return Ok(Expr::ListLit(Vec::new(), self.span_from(start)));
+                }
+                let mut elems = Vec::new();
+                loop {
+                    elems.push(self.parse_expr(0, true)?);
+                    if self.peek().tok == Tok::Comma {
+                        self.bump();
+                        if self.peek().tok == Tok::RBracket {
+                            break;
+                        }
+                    } else if self.peek().tok == Tok::RBracket {
+                        break;
+                    } else {
+                        return Err(self.error("expected ',' or ']' in list literal"));
+                    }
+                }
+                self.eat(&Tok::RBracket)?;
+                Ok(Expr::ListLit(elems, self.span_from(start)))
+            }
+            Tok::KwTrue => Ok(Expr::Bool(true, t.span)),
+            Tok::KwFalse => Ok(Expr::Bool(false, t.span)),
             other => Err(CompileError::Parse {
                 msg: format!("unexpected token {other:?}"),
                 span: t.span,
@@ -1298,5 +1404,47 @@ mod tests {
         let p = prog("adder = fn n -> fn x -> x + n; main = adder 2.0");
         let d = p.defs.iter().find(|d| d.name() == "adder").unwrap();
         assert!(matches!(d.body(), Expr::Lambda { .. }));
+    }
+
+    #[test]
+    fn parses_list_map_bool_cmp_logic() {
+        match body("main = [1.0, 2.0]") {
+            Expr::ListLit(elems, _) => assert_eq!(elems.len(), 2),
+            other => panic!("expected ListLit, got {other:?}"),
+        }
+        match body("main = { \"a\": 1.0 }") {
+            Expr::MapLit(entries, _) => assert_eq!(entries.len(), 1),
+            other => panic!("expected MapLit, got {other:?}"),
+        }
+        match body("main = true") {
+            Expr::Bool(true, _) => {}
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        match body("main = 1.0 < 2.0 && 3.0 > 1.0") {
+            Expr::Logic { .. } => {}
+            other => panic!("expected Logic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comparison_binds_tighter_than_logic() {
+        match body("main = a < b || c > d") {
+            Expr::Logic { lhs, rhs, .. } => {
+                assert!(matches!(lhs.as_ref(), Expr::Cmp { .. }));
+                assert!(matches!(rhs.as_ref(), Expr::Cmp { .. }));
+            }
+            other => panic!("expected Logic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arithmetic_binds_tighter_than_comparison() {
+        match body("main = 1.0 + 2.0 < 4.0") {
+            Expr::Cmp { lhs, rhs, .. } => {
+                assert!(matches!(lhs.as_ref(), Expr::Arith { .. }));
+                assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 4.0));
+            }
+            other => panic!("expected Cmp, got {other:?}"),
+        }
     }
 }

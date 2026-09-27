@@ -287,6 +287,21 @@ fn collect_static_calls(
                 collect_static_calls(fe, src, bound, nodes, out);
             }
         }
+        Expr::ListLit(elems, _) => {
+            for el in elems {
+                collect_static_calls(el, src, bound, nodes, out);
+            }
+        }
+        Expr::MapLit(entries, _) => {
+            for (_, ve) in entries {
+                collect_static_calls(ve, src, bound, nodes, out);
+            }
+        }
+        Expr::Bool(_, _) => {}
+        Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
+            collect_static_calls(lhs, src, bound, nodes, out);
+            collect_static_calls(rhs, src, bound, nodes, out);
+        }
         Expr::FieldProject { record, .. } => collect_static_calls(record, src, bound, nodes, out),
         Expr::FieldUpdate { record, value, .. } => {
             collect_static_calls(record, src, bound, nodes, out);
@@ -1133,6 +1148,14 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             let ret_ty = bt.outs[0].vty.clone();
             Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
         }
+        Expr::Bool(_, _)
+        | Expr::ListLit(_, _)
+        | Expr::MapLit(_, _)
+        | Expr::Cmp { .. }
+        | Expr::Logic { .. } => Err(CompileError::Unsupported(
+            "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
+                .into(),
+        )),
     }
 }
 

@@ -49,6 +49,34 @@ pub enum ArithOp {
     Rem,
 }
 
+/// A value-track comparison operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum CmpOp {
+    /// `==`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `<`
+    Lt,
+    /// `>`
+    Gt,
+    /// `<=`
+    Le,
+    /// `>=`
+    Ge,
+}
+
+/// A value-track boolean logic operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum LogicOp {
+    /// `&&`
+    And,
+    /// `||`
+    Or,
+}
+
 /// A rill-lang expression node.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -161,6 +189,34 @@ pub enum Expr {
         /// Span.
         span: Span,
     },
+    /// Boolean literal `true` / `false`.
+    Bool(bool, Span),
+    /// List literal `[e1, e2]`.
+    ListLit(Vec<Expr>, Span),
+    /// Map literal `{ "k": v, ... }` (string keys).
+    MapLit(Vec<(String, Expr)>, Span),
+    /// Value-track comparison `a < b` (only valid in value position).
+    Cmp {
+        /// The operator.
+        op: CmpOp,
+        /// Left operand.
+        lhs: Box<Expr>,
+        /// Right operand.
+        rhs: Box<Expr>,
+        /// Full span.
+        span: Span,
+    },
+    /// Value-track logic `a && b` / `a || b`.
+    Logic {
+        /// The operator.
+        op: LogicOp,
+        /// Left operand.
+        lhs: Box<Expr>,
+        /// Right operand.
+        rhs: Box<Expr>,
+        /// Full span.
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -189,7 +245,12 @@ impl Expr {
             | Expr::FieldProject { span, .. }
             | Expr::FieldUpdate { span, .. }
             | Expr::Match { span, .. }
-            | Expr::Lambda { span, .. } => *span,
+            | Expr::Lambda { span, .. }
+            | Expr::Bool(_, span)
+            | Expr::ListLit(_, span)
+            | Expr::MapLit(_, span)
+            | Expr::Cmp { span, .. }
+            | Expr::Logic { span, .. } => *span,
         }
     }
 }
