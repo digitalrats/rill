@@ -11,7 +11,7 @@ use super::ty::{
     TypeVarId, TypeclassInfo, ValueTy,
 };
 use super::unify::{unify_scalar, unify_value};
-use crate::ast::{sig_name, Def, Expr, Program};
+use crate::ast::{Def, Expr, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 
@@ -124,6 +124,32 @@ fn sum_ctor_payload(ctx: &Ctx<'_>, sum_name: &str, ctor: &str) -> Option<Vec<Val
             .find(|(c, _)| c == ctor)
             .map(|(_, payload)| payload.clone()),
         _ => None,
+    }
+}
+
+/// Convert a data-declaration field/payload type expression into a value type,
+/// substituting type-variable names with placeholder positions (`data Box a` →
+/// field `value: a` becomes `Var(1)`, mirroring the builtin `Maybe`/`Pair`
+/// shapes). Concrete type names resolve through [`TypeEnv::vty_of_name`].
+fn data_field_vty(env: &TypeEnv, tyvars: &[String], te: &crate::ast::TypeExpr) -> ValueTy {
+    match te {
+        crate::ast::TypeExpr::TName(n) => match tyvars.iter().position(|t| t == n) {
+            Some(k) => ValueTy::Var((k + 1) as u32),
+            None => env.vty_of_name(n),
+        },
+        crate::ast::TypeExpr::TApp(head, args) => ValueTy::App(
+            head.clone(),
+            args.iter()
+                .map(|a| data_field_vty(env, tyvars, a))
+                .collect(),
+        ),
+        crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Func(
+            args.iter()
+                .map(|a| data_field_vty(env, tyvars, a))
+                .collect(),
+            vec![data_field_vty(env, tyvars, ret)],
+        ),
+        crate::ast::TypeExpr::TCap(n) => ValueTy::Cap(*n),
     }
 }
 
@@ -418,6 +444,41 @@ fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
     Ok(())
 }
 
+/// The index of the argument in a method signature whose type applies the
+/// class variable (`f a` in `fmap: (a -> b) -> f a -> f b`). The instance is
+/// selected by that argument's concrete type. `None` for arity-0 signatures
+/// (bare class var).
+fn class_var_arg_index(sig: &crate::ast::TypeExpr, class_var: &str) -> Option<usize> {
+    match sig {
+        crate::ast::TypeExpr::TFunc(args, _) => args
+            .iter()
+            .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),
+        _ => None,
+    }
+}
+
+/// Build the class-var signature pattern for the container argument: `f a`
+/// becomes `App("f", [fresh])` so `match_ctor_pattern` unifies the type-var
+/// slots against the concrete constructor application.
+fn class_var_pattern(
+    ctx: &mut Ctx<'_>,
+    sig: &crate::ast::TypeExpr,
+    idx: usize,
+    class_var: &str,
+) -> ValueTy {
+    let container_te = match sig {
+        crate::ast::TypeExpr::TFunc(args, _) => args.get(idx).cloned(),
+        _ => None,
+    };
+    match container_te {
+        Some(crate::ast::TypeExpr::TApp(head, type_args)) => {
+            let fresh: Vec<ValueTy> = type_args.iter().map(|_| ctx.fresh_vty()).collect();
+            ValueTy::App(head, fresh)
+        }
+        _ => ValueTy::App(class_var.to_string(), vec![ctx.fresh_vty()]),
+    }
+}
+
 /// Infer a typeclass method's argument or body expression (labeled by `what`
 /// for error messages): it must produce a single output channel that is either
 /// a value channel ([`Rate::Value`]) or a bare Float/Int literal (value-
@@ -457,11 +518,92 @@ fn infer_method_value_vty(
     }
 }
 
+/// Convert a typeclass method signature's curried argument types into concrete
+/// parameter `ValueTy`s, substituting the class variable with the concrete
+/// constructor (or concrete type name for arity-0 classes). Type variables in
+/// the signature (`a`, `b`) map to fresh unification vars, shared by name so
+/// `g : a -> b` and `xs : f a` agree on `a`. Used to validate instance method
+/// bodies against the class contract.
+fn signature_param_tys(
+    ctx: &mut Ctx<'_>,
+    class_var: &str,
+    ctor: &str,
+    sig: &crate::ast::TypeExpr,
+) -> Vec<ValueTy> {
+    let mut vars: HashMap<String, ValueTy> = HashMap::new();
+    fn conv(
+        ctx: &mut Ctx<'_>,
+        class_var: &str,
+        ctor: &str,
+        vars: &mut HashMap<String, ValueTy>,
+        te: &crate::ast::TypeExpr,
+    ) -> ValueTy {
+        match te {
+            crate::ast::TypeExpr::TName(n) if n == class_var => ctx.env.vty_of_name(ctor),
+            crate::ast::TypeExpr::TName(n) => {
+                if matches!(n.as_str(), "Float" | "Int" | "Bool" | "String")
+                    || ctx.env.data_types.contains_key(n)
+                    || ctx.env.newtypes.contains_key(n)
+                    || ctx.env.ctor_kinds.contains_key(n)
+                    || ctx.env.type_aliases.contains_key(n)
+                {
+                    ctx.env.vty_of_name(n)
+                } else {
+                    vars.entry(n.clone())
+                        .or_insert_with(|| ctx.fresh_vty())
+                        .clone()
+                }
+            }
+            crate::ast::TypeExpr::TApp(head, args) if head == class_var => {
+                let vargs: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| conv(ctx, class_var, ctor, vars, a))
+                    .collect();
+                if let Some((arity, has_cap)) = ctx.env.ctor_kinds.get(ctor) {
+                    let mut full = vargs;
+                    if *has_cap {
+                        full.push(ValueTy::Cap(0));
+                    }
+                    debug_assert_eq!(full.len(), *arity);
+                    ValueTy::App(ctor.to_string(), full)
+                } else if ctx.env.data_arities.contains_key(ctor) {
+                    ValueTy::Data(ctor.to_string(), vargs)
+                } else {
+                    ctx.env.vty_of_name(ctor)
+                }
+            }
+            crate::ast::TypeExpr::TApp(head, args) => ValueTy::App(
+                head.clone(),
+                args.iter()
+                    .map(|a| conv(ctx, class_var, ctor, vars, a))
+                    .collect(),
+            ),
+            crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Func(
+                args.iter()
+                    .map(|a| conv(ctx, class_var, ctor, vars, a))
+                    .collect(),
+                vec![conv(ctx, class_var, ctor, vars, ret)],
+            ),
+            crate::ast::TypeExpr::TCap(n) => ValueTy::Cap(*n),
+        }
+    }
+    match sig {
+        crate::ast::TypeExpr::TFunc(args, _) => args
+            .iter()
+            .map(|a| conv(ctx, class_var, ctor, &mut vars, a))
+            .collect(),
+        other => vec![conv(ctx, class_var, ctor, &mut vars, other)],
+    }
+}
+
 /// Validate every instance's method bodies at compile time, even when the
 /// instance is never called. Each body must infer to a single value channel
-/// (or a bare literal) with its parameter bound to a value of the instance's
-/// bound type. The recursion guard applies here too, so self-inlining bodies
-/// are rejected even when the instance is dead code.
+/// (or a bare literal) with its parameters bound to values of the class
+/// signature's types (the class var substituted by the concrete constructor).
+/// Constructor instances are kind-checked: a builtin constructor's value arity
+/// must match the class variable's arity (`Pair` is arity 2, so it cannot be a
+/// `Functor`, which needs arity 1). The recursion guard applies here too, so
+/// self-inlining bodies are rejected even when the instance is dead code.
 fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
     // Clone the (class, type) keys so inference (which mutates ctx) does not
     // invalidate the iteration borrow.
@@ -472,6 +614,33 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
         .flat_map(|(class, by_ty)| by_ty.keys().map(|ty_name| (class.clone(), ty_name.clone())))
         .collect();
     for (class, ty_name) in keys {
+        // Kind check: a constructor-class instance (`Functor f`) must bind a
+        // constructor whose value arity equals the class variable's arity.
+        if let Some(class_info) = ctx.env.typeclasses.get(&class).cloned() {
+            if class_info.arity >= 1 {
+                match ctx.env.ctor_value_arity(&ty_name) {
+                    Some(got) if got != class_info.arity => {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{ty_name}` has arity {got}, but `{class}` expects arity {}",
+                                class_info.arity
+                            ),
+                            span: Span::new(0, 0),
+                        });
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{ty_name}` is not a type constructor (arity {} expected)",
+                                class_info.arity
+                            ),
+                            span: Span::new(0, 0),
+                        });
+                    }
+                }
+            }
+        }
         let info = ctx
             .env
             .instances
@@ -479,8 +648,7 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
             .and_then(|by_ty| by_ty.get(ty_name.as_str()))
             .cloned()
             .unwrap();
-        let param_vty = ctx.env.vty_of_name(&ty_name);
-        for (mname, (param, body)) in &info.methods {
+        for (mname, (params, body)) in &info.methods {
             let key = (class.clone(), ty_name.clone(), mname.clone());
             if ctx.method_lifting.contains(&key) {
                 return Err(CompileError::Type {
@@ -490,9 +658,26 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
             }
             ctx.method_lifting.insert(key.clone());
             let saved = ctx.locals.clone();
-            if let Some(p) = param {
+            // Bind each parameter to the signature-derived type (class var →
+            // concrete constructor). Falls back to the instance's bound type for
+            // a param count that does not match the signature.
+            let (class_var, method_sig) = {
+                let class_info = ctx.env.typeclasses.get(&class);
+                match class_info.and_then(|c| c.methods.iter().find(|(m, _)| m == mname)) {
+                    Some((_, sig)) => (class_info.map(|c| c.var.clone()), Some(sig.clone())),
+                    None => (class_info.map(|c| c.var.clone()), None),
+                }
+            };
+            let param_tys = match (class_var, method_sig) {
+                (Some(cv), Some(sig)) => signature_param_tys(ctx, &cv, &ty_name, &sig),
+                _ => params
+                    .iter()
+                    .map(|_| ctx.env.vty_of_name(&ty_name))
+                    .collect(),
+            };
+            for (p, pt) in params.iter().zip(param_tys.iter()) {
                 ctx.locals
-                    .insert(p.clone(), ArrowTy::value_channel(param_vty.clone()));
+                    .insert(p.clone(), ArrowTy::value_channel(pt.clone()));
             }
             let res = infer_method_value_vty(ctx, body, "body");
             ctx.locals = saved;
@@ -553,10 +738,10 @@ pub fn infer_program_with(
                 method_bodies,
                 ..
             } => {
-                let mut methods: HashMap<String, (Option<String>, Expr)> = HashMap::new();
-                for (mname, param, body) in method_bodies {
-                    let binding = param.clone().map(|p| p.name.clone());
-                    methods.insert(mname.clone(), (binding, body.clone()));
+                let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
+                for (mname, params, body) in method_bodies {
+                    let bindings = params.iter().map(|p| p.name.clone()).collect();
+                    methods.insert(mname.clone(), (bindings, body.clone()));
                 }
                 env.instances.entry(class.clone()).or_default().insert(
                     ty.clone(),
@@ -572,25 +757,44 @@ pub fn infer_program_with(
     }
     for def in &program.defs {
         match def {
-            Def::Data { name, fields, .. } => {
+            Def::Data {
+                name,
+                tyvars,
+                fields,
+                ..
+            } => {
                 let fields_ty = fields
                     .iter()
-                    .map(|(f, t)| (f.clone(), env.vty_of_name(&sig_name(t))))
+                    .map(|(f, t)| {
+                        let ft = data_field_vty(&env, tyvars, t);
+                        (f.clone(), ft)
+                    })
                     .collect();
                 env.data_types
                     .insert(name.clone(), DataInfo::Record(fields_ty));
+                if !tyvars.is_empty() {
+                    env.data_arities.insert(name.clone(), tyvars.len());
+                }
             }
-            Def::Sum { name, ctors, .. } => {
+            Def::Sum {
+                name,
+                tyvars,
+                ctors,
+                ..
+            } => {
                 let ctors_ty = ctors
                     .iter()
                     .map(|(c, ts)| {
                         (
                             c.clone(),
-                            ts.iter().map(|t| env.vty_of_name(&sig_name(t))).collect(),
+                            ts.iter().map(|t| data_field_vty(&env, tyvars, t)).collect(),
                         )
                     })
                     .collect();
                 env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
+                if !tyvars.is_empty() {
+                    env.data_arities.insert(name.clone(), tyvars.len());
+                }
             }
             _ => {}
         }
@@ -925,13 +1129,22 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             match &t.outs[0].vty {
-                ValueTy::Data(name, _) => match ctx.env.data_types.get(name.as_str()) {
+                ValueTy::Data(name, args) => match ctx.env.data_types.get(name.as_str()) {
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
                             .iter()
                             .find(|(f, _)| f == field)
                             .map(|(_, t)| t.clone());
                         match fty {
+                            // Parameterized user data (`data Box a = { value: a }`):
+                            // placeholder `Var(k)` maps to the k-th type arg.
+                            Some(ValueTy::Var(k)) if !args.is_empty() => {
+                                Ok(ArrowTy::value_channel(
+                                    args.get(k.saturating_sub(1) as usize)
+                                        .cloned()
+                                        .unwrap_or(ValueTy::Float),
+                                ))
+                            }
                             Some(ft) => Ok(ArrowTy::value_channel(ft)),
                             None => Err(CompileError::Type {
                                 msg: format!("no field `{field}` in `{name}`"),
@@ -1600,6 +1813,31 @@ fn infer_apply(
                                 .collect();
                             return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
                         }
+                        // Parameterized user data (`data Box a = { value: a }`):
+                        // carry the resolved type args so field projection and
+                        // constructor instances resolve the placeholder slots.
+                        if let Some(arity) = ctx.env.data_arities.get(name) {
+                            if *arity > 0 {
+                                let mut slots: Vec<Option<ValueTy>> = vec![None; *arity];
+                                for (i, (_, fty)) in fields.iter().enumerate() {
+                                    let idx = match fty {
+                                        ValueTy::Var(k) => k.saturating_sub(1) as usize,
+                                        _ => i,
+                                    };
+                                    if idx < slots.len() {
+                                        slots[idx] = Some(ctx.subst.resolve_value(&field_tys[i].1));
+                                    }
+                                }
+                                let arg_tys: Vec<ValueTy> = slots
+                                    .into_iter()
+                                    .map(|s| s.unwrap_or_else(|| ctx.fresh_vty()))
+                                    .collect();
+                                return Ok(ArrowTy::value_channel(ValueTy::Data(
+                                    name.into(),
+                                    arg_tys,
+                                )));
+                            }
+                        }
                         return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
                     }
                     _ => {
@@ -1712,54 +1950,158 @@ fn infer_apply(
     // inferred type is the method's return type (v1 drops the declared return
     // signature). User definitions shadow class methods, so this only fires
     // when no def/local of that name exists.
+    //
+    // Two resolution modes coexist:
+    //   - arity-0 classes (`Show a`, `Eq a`): the argument's concrete type
+    //     NAME selects the instance (`show 1.0` → `Show Float`).
+    //   - constructor classes (`Functor f`, arity ≥ 1): the class-var-applied
+    //     argument (`f a` in `fmap: (a -> b) -> f a -> f b`) selects the
+    //     instance by constructor via `match_ctor_pattern` (`f a` matches
+    //     `App("List", [..])` → the `List` instance).
     if !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
         if let Some(class_name) = ctx.env.class_of_method(name) {
-            if args.len() != 1 {
+            let class_info = ctx.env.typeclasses.get(&class_name).cloned().unwrap();
+            let class_var = class_info.var.clone();
+            let sig = class_info
+                .methods
+                .iter()
+                .find(|(m, _)| m == name)
+                .map(|(_, s)| s.clone());
+            if class_info.arity == 0 {
+                if args.len() != 1 {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                            args.len()
+                        ),
+                        span,
+                    });
+                }
+                let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
+                let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
+                    Some(t) => t,
+                    None => {
+                        return Err(CompileError::Type {
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                        ),
+                        span: args[0].span(),
+                    });
+                    }
+                };
+                let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
+                    Some(r) => r,
+                    None => {
+                        return Err(CompileError::Type {
+                            msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                            span,
+                        });
+                    }
+                };
+                // Recursion guard: a method that inlines itself (directly or
+                // transitively) is a compile error, not a stack overflow.
+                let key = (class_name, ty_name.clone(), name.to_string());
+                if ctx.method_lifting.contains(&key) {
+                    return Err(CompileError::Type {
+                        msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
+                        span,
+                    });
+                }
+                ctx.method_lifting.insert(key.clone());
+                // Bind the method parameter to the argument's value type and infer the
+                // body; the resulting type is the call's value type.
+                let saved = ctx.locals.clone();
+                if let Some(p) = params.first() {
+                    ctx.locals
+                        .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
+                }
+                let body_vty = infer_method_value_vty(ctx, &body, "body");
+                ctx.locals = saved;
+                ctx.method_lifting.remove(&key);
+                let body_vty = body_vty?;
+                return Ok(ArrowTy::value_channel(body_vty));
+            }
+            // Constructor class (arity ≥ 1): the class-var-applied argument's
+            // concrete type selects the instance by constructor. Infer every
+            // argument's value type, match the class-var pattern against the
+            // container, then bind all method params to the call-site types.
+            let container_idx =
+                class_var_arg_index(sig.as_ref().unwrap(), &class_var).ok_or_else(|| {
+                    CompileError::Type {
+                        msg: format!(
+                            "method `{name}` of `{class_name}` has no class-var-applied argument"
+                        ),
+                        span,
+                    }
+                })?;
+            let n_sig_args = match sig.as_ref().unwrap() {
+                crate::ast::TypeExpr::TFunc(as_, _) => as_.len(),
+                _ => 1,
+            };
+            if args.len() != n_sig_args {
                 return Err(CompileError::Type {
                     msg: format!(
-                        "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                        "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
                         args.len()
                     ),
                     span,
                 });
             }
-            let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
-            let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
-                Some(t) => t,
+            let mut arg_vtys = Vec::with_capacity(args.len());
+            for a in args {
+                arg_vtys.push(infer_method_value_vty(ctx, a, "argument")?);
+            }
+            // Build the class-var pattern (`f a` → `App("f", [fresh])`) from the
+            // container argument's signature type.
+            let pattern = class_var_pattern(ctx, sig.as_ref().unwrap(), container_idx, &class_var);
+            let ctor = match ctx.env.match_ctor_pattern(
+                &class_var,
+                &pattern,
+                &arg_vtys[container_idx],
+                &mut ctx.subst,
+            ) {
+                Some(c) => c,
                 None => {
                     return Err(CompileError::Type {
-                    msg: format!(
-                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
-                    ),
-                    span: args[0].span(),
-                });
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: the argument type \
+                             does not apply `{class_var}`"
+                        ),
+                        span: args[container_idx].span(),
+                    });
                 }
             };
-            let (_, param, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
+            let (_, params, body) = match ctx.env.resolve_method(name, ctor.as_str()) {
                 Some(r) => r,
                 None => {
                     return Err(CompileError::Type {
-                        msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                        msg: format!("no instance of `{class_name}` for constructor `{ctor}`"),
                         span,
                     });
                 }
             };
-            // Recursion guard: a method that inlines itself (directly or
-            // transitively) is a compile error, not a stack overflow.
-            let key = (class_name, ty_name.clone(), name.to_string());
+            if params.len() != args.len() {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "method `{name}` of `{class_name}` expects {} argument(s), got {}",
+                        params.len(),
+                        args.len()
+                    ),
+                    span,
+                });
+            }
+            let key = (class_name, ctor.clone(), name.to_string());
             if ctx.method_lifting.contains(&key) {
                 return Err(CompileError::Type {
-                    msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
+                    msg: format!("recursive typeclass method `{name}` for type `{ctor}`"),
                     span,
                 });
             }
             ctx.method_lifting.insert(key.clone());
-            // Bind the method parameter to the argument's value type and infer the
-            // body; the resulting type is the call's value type.
             let saved = ctx.locals.clone();
-            if let Some(p) = param {
+            for (p, av) in params.iter().zip(arg_vtys.iter()) {
                 ctx.locals
-                    .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
+                    .insert(p.clone(), ArrowTy::value_channel(av.clone()));
             }
             let body_vty = infer_method_value_vty(ctx, &body, "body");
             ctx.locals = saved;

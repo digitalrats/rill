@@ -23,16 +23,6 @@ pub enum TypeExpr {
     TCap(usize),
 }
 
-/// The head name of a type expression, used where a declaration stores a full
-/// signature but a consumer only reads the leading name (`TName`/`TApp`).
-pub(crate) fn sig_name(t: &TypeExpr) -> String {
-    match t {
-        TypeExpr::TName(n) => n.clone(),
-        TypeExpr::TApp(n, _) => n.clone(),
-        TypeExpr::TCap(_) | TypeExpr::TFunc(..) => String::new(),
-    }
-}
-
 /// Arithmetic operators (elementwise, 2→1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -344,16 +334,16 @@ pub enum Def {
         /// Span.
         span: Span,
     },
-    /// `instance C T where { m p = body; }` — concrete instance. A method body
-    /// optionally binds one parameter (`show f = f`), β-substituted at each
-    /// call site at compile time.
+    /// `instance C T where { m p1 p2 = body; }` — concrete instance. A method
+    /// body binds zero or more parameters (`show f = f`, `fmap g xs = ...`),
+    /// β-substituted at each call site at compile time.
     Instance {
         /// Class name.
         class: String,
         /// Concrete type the instance is for.
         ty: TypeName,
-        /// Method bodies: (method name, optional parameter binding, body expr).
-        method_bodies: Vec<(String, Option<Param>, Expr)>,
+        /// Method bodies: (method name, parameter bindings, body expr).
+        method_bodies: Vec<(String, Vec<Param>, Expr)>,
         /// Span.
         span: Span,
     },

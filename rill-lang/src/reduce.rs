@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{ArithOp, Def, Expr, Program};
 use crate::error::Span;
 
-fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
+pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
     match e {
         Expr::Ref(name, _) => {
             // CAF references are not inlined during substitution: they pass

@@ -474,8 +474,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `instance C T where { m p = body; }` — concrete instance. Each method
-    /// optionally binds a single parameter (`show f = f`).
+    /// `instance C T where { m p1 p2 = body; }` — concrete instance. Each
+    /// method optionally binds one or more parameters (`show f = f`,
+    /// `fmap g xs = map g xs`), β-substituted at each call site.
     fn parse_instance_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (class, _) = self.expect_ident()?;
@@ -485,19 +486,19 @@ impl<'a> Parser<'a> {
         let mut method_bodies = Vec::new();
         while self.peek().tok != Tok::RBrace {
             let (mname, _) = self.expect_ident()?;
-            // Optional single parameter binding before `=`: `show f = f`.
-            let param = if matches!(self.peek().tok, Tok::Ident(_)) {
+            // Zero or more parameter bindings before `=`: `show f = f`,
+            // `fmap g xs = map g xs`.
+            let mut params = Vec::new();
+            while matches!(self.peek().tok, Tok::Ident(_)) {
                 let (pname, pspan) = self.expect_ident()?;
-                Some(Param {
+                params.push(Param {
                     name: pname,
                     span: pspan,
-                })
-            } else {
-                None
-            };
+                });
+            }
             self.eat(&Tok::Eq)?;
             let body = self.parse_expr(0, true)?;
-            method_bodies.push((mname, param, body));
+            method_bodies.push((mname, params, body));
             self.eat(&Tok::Semi)?;
         }
         self.eat(&Tok::RBrace)?;
@@ -824,9 +825,14 @@ impl<'a> Parser<'a> {
                 }
             }
             Tok::LParen => {
+                let start = t.span.start;
                 let inner = self.parse_expr(0, false)?;
                 self.eat(&Tok::RParen)?;
-                Ok(inner)
+                if self.peek().tok == Tok::Dot {
+                    self.parse_field(inner, start)
+                } else {
+                    Ok(inner)
+                }
             }
             Tok::LBrace => {
                 // rewind — parse_record_or_map handles the opening brace

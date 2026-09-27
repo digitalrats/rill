@@ -59,6 +59,19 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
+/// The index of the argument in a method signature whose type applies the
+/// class variable (`f a` in `fmap: (a -> b) -> f a -> f b`). The instance is
+/// selected by that argument's concrete constructor head. `None` for arity-0
+/// signatures (bare class var).
+fn class_var_arg_index(sig: &crate::ast::TypeExpr, class_var: &str) -> Option<usize> {
+    match sig {
+        crate::ast::TypeExpr::TFunc(args, _) => args
+            .iter()
+            .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),
+        _ => None,
+    }
+}
+
 /// Whether the interpreter wires `op` at runtime. Every collection op has a
 /// concrete arm in `exec_value_call_builtin` (Task 6.4), so lowering accepts
 /// them all — a program using one compiles and runs instead of silently
@@ -139,6 +152,12 @@ struct Lowerer<'a> {
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
     /// per-tick value registers — a `Ref` to one returns the register directly.
     value_locals: Vec<HashMap<String, (usize, ValueTy)>>,
+    /// Statically-known constructor of each value local, parallel to the scope
+    /// stack [`Self::value_locals`]: a method param bound to `Just 1.0` records
+    /// `Some("Just")`, so a `match` over the param's `Ref` selects its arm at
+    /// compile time (v1 static dispatch). `None` when the local's ctor is not
+    /// statically known.
+    value_local_ctors: Vec<HashMap<String, Option<String>>>,
     /// The shared compile-time type environment (aliases, newtypes, data-type
     /// shapes) carried from inference — the single source of truth for name
     /// resolution in both infer and lower.
@@ -407,8 +426,10 @@ impl<'a> Lowerer<'a> {
                         scope.insert(p.name.clone(), (payload_regs[idx], pty));
                     }
                     self.value_locals.push(scope);
+                    self.value_local_ctors.push(HashMap::new());
                     let (arm_reg, arm_vty) = self.lower_value(body)?;
                     self.value_locals.pop();
+                    self.value_local_ctors.pop();
                     result = Some((arm_reg, arm_vty));
                     break;
                 }
@@ -548,65 +569,171 @@ impl<'a> Lowerer<'a> {
                     return Ok((dst, ValueTy::Newtype(name.clone(), vec![])));
                 }
                 // Typeclass method call: the argument's static type selects the
-                // instance, and the method body is inlined with the parameter
-                // bound to the argument's register — β-substitution at compile
+                // instance, and the method body is inlined with the parameters
+                // bound to the argument's registers — β-substitution at compile
                 // time, zero runtime dispatch. User definitions shadow class
                 // methods (a user `eq`/`lt` is a plain function), so this only
-                // fires when no user def of that name exists.
+                // fires when no user def of that name exists. Constructor
+                // classes (`Functor f`) resolve by the class-var-applied
+                // argument's constructor head (`App("List", ..)` → `List`).
                 if !self.defs.contains_key(name) {
                     if let Some(class_name) = self.env.class_of_method(name) {
-                        if call_args.len() != 1 {
+                        let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
+                        let class_var = class_info.var.clone();
+                        let sig = class_info
+                            .methods
+                            .iter()
+                            .find(|(m, _)| m == name)
+                            .map(|(_, s)| s.clone());
+                        if class_info.arity == 0 {
+                            if call_args.len() != 1 {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                                        call_args.len()
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            let (arg_reg, arg_vty) = self.lower_value(&call_args[0])?;
+                            let ty_name = match self.env.type_name_of_vty(&arg_vty) {
+                                Some(t) => t,
+                                None => {
+                                    return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                                    ),
+                                    span: call_args[0].span(),
+                                });
+                                }
+                            };
+                            let (_, params, body) =
+                                match self.env.resolve_method(name, ty_name.as_str()) {
+                                    Some(r) => r,
+                                    None => {
+                                        return Err(CompileError::Type {
+                                            msg: format!(
+                                            "no instance of `{class_name}` for type `{ty_name}`"
+                                        ),
+                                            span: *span,
+                                        });
+                                    }
+                                };
+                            // Recursion guard: a method that inlines itself (directly
+                            // or transitively) is a compile error, not a stack overflow.
+                            let key = (class_name, ty_name.clone(), name.to_string());
+                            if self.method_lifting.contains(&key) {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "recursive typeclass method `{name}` for type `{ty_name}`"
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            self.method_lifting.insert(key.clone());
+                            let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                            let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                            if let Some(p) = params.first() {
+                                scope.insert(p.clone(), (arg_reg, arg_vty.clone()));
+                                ctor_scope
+                                    .insert(p.clone(), self.static_scrutinee_ctor(&call_args[0]));
+                            }
+                            self.value_locals.push(scope);
+                            self.value_local_ctors.push(ctor_scope);
+                            let res = self.lower_value(&body);
+                            self.value_locals.pop();
+                            self.value_local_ctors.pop();
+                            self.method_lifting.remove(&key);
+                            return res;
+                        }
+                        // Constructor class: the class-var-applied argument's
+                        // concrete type head selects the instance. Lower all
+                        // args, then bind each method param to its register.
+                        let container_idx = class_var_arg_index(
+                            sig.as_ref().unwrap(),
+                            &class_var,
+                        )
+                        .ok_or_else(|| CompileError::Type {
+                            msg: format!(
+                                "method `{name}` of `{class_name}` has no class-var-applied argument"
+                            ),
+                            span: *span,
+                        })?;
+                        let n_sig_args = match sig.as_ref().unwrap() {
+                            crate::ast::TypeExpr::TFunc(as_, _) => as_.len(),
+                            _ => 1,
+                        };
+                        if call_args.len() != n_sig_args {
                             return Err(CompileError::Type {
                                 msg: format!(
-                                    "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                                    "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
                                     call_args.len()
                                 ),
                                 span: *span,
                             });
                         }
-                        let (arg_reg, arg_vty) = self.lower_value(&call_args[0])?;
-                        let ty_name = match self.env.type_name_of_vty(&arg_vty) {
-                            Some(t) => t,
-                            None => {
+                        let mut arg_regs = Vec::with_capacity(call_args.len());
+                        let mut arg_vtys = Vec::with_capacity(call_args.len());
+                        for a in call_args {
+                            let (r, t) = self.lower_value(a)?;
+                            arg_regs.push(r);
+                            arg_vtys.push(t);
+                        }
+                        let ctor = match &arg_vtys[container_idx] {
+                            ValueTy::App(c, _) | ValueTy::Data(c, _) => c.clone(),
+                            _ => {
                                 return Err(CompileError::Type {
-                                msg: format!(
-                                    "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
-                                ),
-                                span: call_args[0].span(),
-                            });
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not a constructor application"
+                                    ),
+                                    span: call_args[container_idx].span(),
+                                });
                             }
                         };
-                        let (_, param, body) = match self.env.resolve_method(name, ty_name.as_str())
-                        {
+                        let (_, params, body) = match self.env.resolve_method(name, ctor.as_str()) {
                             Some(r) => r,
                             None => {
                                 return Err(CompileError::Type {
                                     msg: format!(
-                                        "no instance of `{class_name}` for type `{ty_name}`"
+                                        "no instance of `{class_name}` for constructor `{ctor}`"
                                     ),
                                     span: *span,
                                 });
                             }
                         };
-                        // Recursion guard: a method that inlines itself (directly
-                        // or transitively) is a compile error, not a stack overflow.
-                        let key = (class_name, ty_name.clone(), name.to_string());
+                        if params.len() != call_args.len() {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "method `{name}` of `{class_name}` expects {} argument(s), got {}",
+                                    params.len(),
+                                    call_args.len()
+                                ),
+                                span: *span,
+                            });
+                        }
+                        let key = (class_name, ctor.clone(), name.to_string());
                         if self.method_lifting.contains(&key) {
                             return Err(CompileError::Type {
                                 msg: format!(
-                                    "recursive typeclass method `{name}` for type `{ty_name}`"
+                                    "recursive typeclass method `{name}` for type `{ctor}`"
                                 ),
                                 span: *span,
                             });
                         }
                         self.method_lifting.insert(key.clone());
                         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
-                        if let Some(p) = param {
-                            scope.insert(p, (arg_reg, arg_vty.clone()));
+                        let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                        for (p, (r, t)) in params.iter().zip(arg_regs.into_iter().zip(arg_vtys)) {
+                            scope.insert(p.clone(), (r, t));
+                        }
+                        for (p, a) in params.iter().zip(call_args) {
+                            ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
                         }
                         self.value_locals.push(scope);
+                        self.value_local_ctors.push(ctor_scope);
                         let res = self.lower_value(&body);
                         self.value_locals.pop();
+                        self.value_local_ctors.pop();
                         self.method_lifting.remove(&key);
                         return res;
                     }
@@ -1247,6 +1374,7 @@ impl<'a> Lowerer<'a> {
             scope.insert(p.name.clone(), (i, ty));
         }
         self.value_locals.push(scope);
+        self.value_local_ctors.push(HashMap::new());
         self.fragment_captures = free.to_vec();
         self.next_value_reg = params.len();
 
@@ -1257,6 +1385,7 @@ impl<'a> Lowerer<'a> {
                 self.value_instrs = saved_instrs;
                 self.next_value_reg = saved_next;
                 self.value_locals = saved_locals;
+                self.value_local_ctors.pop();
                 self.fragment_captures = saved_captures;
                 return Err(e);
             }
@@ -1282,6 +1411,7 @@ impl<'a> Lowerer<'a> {
         self.value_instrs = saved_instrs;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
+        self.value_local_ctors.pop();
         self.fragment_captures = saved_captures;
         Ok((id, result_ty))
     }
@@ -1394,6 +1524,40 @@ impl<'a> Lowerer<'a> {
                 if self.sum_ctor(name).is_some() {
                     return Some(name.clone());
                 }
+                // A typeclass method call whose result constructor is statically
+                // known: resolve the instance via the class-var-applied argument
+                // (constructor classes) and inline the body.
+                if let Some(class_name) = self.env.class_of_method(name) {
+                    let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
+                    let sig = class_info
+                        .methods
+                        .iter()
+                        .find(|(m, _)| m == name)
+                        .map(|(_, s)| s.clone());
+                    if class_info.arity >= 1 {
+                        if let Some(container_idx) =
+                            class_var_arg_index(sig.as_ref().unwrap(), &class_info.var)
+                        {
+                            // The container argument's static constructor selects
+                            // the instance: `fmap g (Just 1.0)` → `Just` → the
+                            // `Maybe` instance.
+                            let container_ctor =
+                                self.static_scrutinee_ctor_impl(args.get(container_idx)?, visited)?;
+                            let ty_name = self.instance_type_of_ctor(&container_ctor)?;
+                            if let Some((_, params, body)) = self.env.resolve_method(name, &ty_name)
+                            {
+                                // β-substitute the call args into the body and
+                                // resolve the result's constructor.
+                                let mut subst: HashMap<String, Expr> = HashMap::new();
+                                for (p, a) in params.iter().zip(args.iter()) {
+                                    subst.insert(p.clone(), a.clone());
+                                }
+                                let inlined = crate::reduce::substitute(&body, &subst);
+                                return self.static_scrutinee_ctor_impl(&inlined, visited);
+                            }
+                        }
+                    }
+                }
                 // Builtin Maybe-returning ops resolve statically on concrete
                 // inputs: `head` of a non-empty list and `lookup` of a present
                 // key are `Just`; an empty list / absent key is `Nothing`.
@@ -1434,6 +1598,14 @@ impl<'a> Lowerer<'a> {
                     visited.remove(name);
                     return r;
                 }
+                // A value local bound to a statically-known constructor (a
+                // method parameter bound to `Just 1.0`): a `match` over the
+                // param's `Ref` selects its arm at compile time.
+                for scope in self.value_local_ctors.iter().rev() {
+                    if let Some(ctor) = scope.get(name) {
+                        return ctor.clone();
+                    }
+                }
                 // A bare nullary constructor (`Nothing`, `Red`) is a complete
                 // sum value: its constructor is statically known even though it
                 // is not a `Def::Local` body.
@@ -1444,8 +1616,35 @@ impl<'a> Lowerer<'a> {
                 }
                 None
             }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                // A statically-known scrutinee constructor selects the arm at
+                // compile time; the arm's body's constructor is the match's
+                // result constructor.
+                let scrut_ctor = self.static_scrutinee_ctor_impl(scrutinee, visited)?;
+                for (ctor, _, body) in arms {
+                    if ctor == &scrut_ctor {
+                        return self.static_scrutinee_ctor_impl(body, visited);
+                    }
+                }
+                None
+            }
             _ => None,
         }
+    }
+
+    /// The type name bound to the class variable for a value constructor
+    /// (`Just`/`Nothing` → `Maybe`; a builtin ctor like `List` maps to itself).
+    fn instance_type_of_ctor(&self, ctor: &str) -> Option<String> {
+        if let Some((sum_name, _, _)) = self.sum_ctor(ctor) {
+            return Some(sum_name);
+        }
+        // A type constructor name used directly (`List`, `Box`, `Maybe`).
+        if self.env.ctor_arity(ctor).is_some() || self.env.data_arities.contains_key(ctor) {
+            return Some(ctor.to_string());
+        }
+        None
     }
 
     /// Statically determine a list expression's emptiness: `Some(true)` when
@@ -2938,6 +3137,7 @@ pub fn lower_with_cafs(
         value_out_tys: Vec::new(),
         value_funcs: Vec::new(),
         value_locals: Vec::new(),
+        value_local_ctors: Vec::new(),
         env: &tp.type_env,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
@@ -3173,6 +3373,7 @@ mod tests {
             value_out_tys: Vec::new(),
             value_funcs: Vec::new(),
             value_locals: Vec::new(),
+            value_local_ctors: Vec::new(),
             env,
             value_inline: HashSet::new(),
             method_lifting: HashSet::new(),

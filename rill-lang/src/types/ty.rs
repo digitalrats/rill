@@ -15,6 +15,8 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::Expr;
 use crate::error::{CompileError, Span};
 
+use super::unify::unify_value;
+
 /// A unification variable identifier.
 pub type TypeVarId = u32;
 
@@ -217,8 +219,8 @@ pub struct InstanceInfo {
     pub class: String,
     /// The concrete type name bound to the class variable.
     pub ty: String,
-    /// Method bodies: method name → (optional parameter binding, body).
-    pub methods: HashMap<String, (Option<String>, Expr)>,
+    /// Method bodies: method name → (parameter bindings, body).
+    pub methods: HashMap<String, (Vec<String>, Expr)>,
 }
 
 /// The compile-time type environment: aliases, newtypes, data-type shapes, and
@@ -241,6 +243,10 @@ pub struct TypeEnv {
     /// Builtin type constructors: name → (value arity, whether the final
     /// argument is a capacity). `List a n` has arity 2, has-cap true.
     pub ctor_kinds: HashMap<String, (usize, bool)>,
+    /// User-declared parameterized data types: name → number of type
+    /// parameters (`data Box a` → 1). Used to kind-check constructor instances
+    /// against a class's arity (`Functor f` needs `Box a`, not `Pair a b`).
+    pub data_arities: HashMap<String, usize>,
 }
 
 impl TypeEnv {
@@ -378,6 +384,15 @@ impl TypeEnv {
     pub fn ctor_has_cap(&self, name: &str) -> Option<bool> {
         self.ctor_kinds.get(name).map(|(_, c)| *c)
     }
+    /// The number of VALUE arguments a constructor takes, excluding a capacity
+    /// slot. Builtin constructors come from [`Self::ctor_kinds`]; user
+    /// parameterized data types (`data Box a`) from [`Self::data_arities`].
+    pub fn ctor_value_arity(&self, name: &str) -> Option<usize> {
+        if let Some((a, cap)) = self.ctor_kinds.get(name) {
+            return Some(*a - usize::from(*cap));
+        }
+        self.data_arities.get(name).copied()
+    }
 
     /// Resolve a DSL type name to a value type, following type synonyms and
     /// newtype wrappers. Alias chains resolve iteratively with a bounded loop
@@ -433,6 +448,49 @@ impl TypeEnv {
             ValueTy::Newtype(n, _) => Some(n.clone()),
             _ => None,
         }
+    }
+
+    /// Match a class-var signature pattern against a concrete value type.
+    /// `f a` (pattern head is the class var) matches `App("List", [Int, Cap 4])`
+    /// by binding the class var to the constructor and unifying the remaining
+    /// pattern args with the concrete's non-Cap args (the Cap slot is carried
+    /// through unchanged — capacity flows argument → result).
+    /// Returns the bound constructor name on success.
+    pub fn match_ctor_pattern(
+        &self,
+        class_var: &str,
+        pat: &ValueTy,
+        concrete: &ValueTy,
+        subst: &mut Subst,
+    ) -> Option<String> {
+        if let ValueTy::App(f, p_args) = pat {
+            if f == class_var {
+                // The concrete side is either a builtin constructor
+                // (`App("List", [..])` / `App("Maybe", [t])`) or a user data
+                // type (`Data("Box", [..])`).
+                let (c, c_args) = match concrete {
+                    ValueTy::App(c, a) | ValueTy::Data(c, a) => (c, a),
+                    _ => return None,
+                };
+                // Match the non-Cap args positionally; the Cap slot unifies
+                // or is left free.
+                let mut pi = 0;
+                for ca in c_args {
+                    if let ValueTy::Cap(_) = ca {
+                        continue;
+                    }
+                    if pi >= p_args.len() {
+                        return None;
+                    }
+                    if unify_value(&p_args[pi], ca, subst, Span::new(0, 0)).is_err() {
+                        return None;
+                    }
+                    pi += 1;
+                }
+                return Some(c.clone());
+            }
+        }
+        None
     }
 
     /// Validate that all data types and newtypes are acyclic. A data type that
@@ -523,21 +581,21 @@ impl TypeEnv {
 
     /// Resolve a typeclass method call: the class declaring `method`, the
     /// concrete type name `ty_name`, and the matching instance's method body
-    /// `(parameter binding, body)`. Returns `None` when no class declares
+    /// `(parameter bindings, body)`. Returns `None` when no class declares
     /// `method` or no instance binds `ty_name`.
     pub fn resolve_method(
         &self,
         method: &str,
         ty_name: &str,
-    ) -> Option<(String, Option<String>, Expr)> {
+    ) -> Option<(String, Vec<String>, Expr)> {
         if let Some(cname) = self.class_of_method(method) {
             if let Some(instance) = self
                 .instances
                 .get(cname.as_str())
                 .and_then(|by_ty| by_ty.get(ty_name))
             {
-                if let Some((param, body)) = instance.methods.get(method).cloned() {
-                    return Some((cname, param, body));
+                if let Some((params, body)) = instance.methods.get(method).cloned() {
+                    return Some((cname, params, body));
                 }
             }
         }
