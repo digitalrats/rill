@@ -184,6 +184,65 @@ pub enum Instr {
     },
 }
 
+/// A value-track collection operation dispatched by the interpreter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueBuiltinOp {
+    /// Prepend an element to a list.
+    Cons,
+    /// Read the first element of a list (a `Maybe`).
+    Head,
+    /// Drop the first element of a list.
+    Tail,
+    /// Count the elements of a list/set/map.
+    Length,
+    /// Map a function over a list.
+    Map,
+    /// Left-fold a function over a list.
+    Fold,
+    /// Keep the elements of a list satisfying a predicate.
+    Filter,
+    /// Allocate an empty list with a capacity.
+    ListEmpty,
+    /// Insert a (key, value) pair into a map.
+    InsertMap,
+    /// Look up a key in a map (a `Maybe`).
+    Lookup,
+    /// Test whether an element belongs to a map/set.
+    Member,
+    /// Insert an element into a set.
+    InsertSet,
+    /// Allocate an empty map with a capacity.
+    MapEmpty,
+    /// Allocate an empty set with a capacity.
+    SetEmpty,
+}
+
+/// Value-track comparison operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    /// Equal to.
+    Eq,
+    /// Not equal to.
+    Ne,
+    /// Less than.
+    Lt,
+    /// Greater than.
+    Gt,
+    /// Less than or equal to.
+    Le,
+    /// Greater than or equal to.
+    Ge,
+}
+
+/// Value-track boolean logic operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicOp {
+    /// Boolean conjunction.
+    And,
+    /// Boolean disjunction.
+    Or,
+}
+
 /// A per-tick value instruction. Executed once per block in the value-track
 /// phase, alongside the whole-buffer block instructions.
 #[derive(Debug, Clone, PartialEq)]
@@ -385,6 +444,71 @@ pub enum ValueInstr {
         /// Constructor index to match.
         ctor: u32,
     },
+    /// Boolean literal.
+    ValueBool {
+        /// Destination value register.
+        dst: usize,
+        /// The value.
+        value: bool,
+    },
+    /// String literal.
+    ValueConstString {
+        /// Destination value register.
+        dst: usize,
+        /// The value.
+        value: String,
+    },
+    /// List literal: alloc the container + element refs.
+    ValueListLit {
+        /// Destination value register.
+        dst: usize,
+        /// Element value registers (refs).
+        elems: Vec<usize>,
+        /// Allocated capacity for the list.
+        cap: usize,
+    },
+    /// Map literal with string keys.
+    ValueMapLit {
+        /// Destination value register.
+        dst: usize,
+        /// Key value registers (refs).
+        keys: Vec<usize>,
+        /// Value value registers (refs).
+        vals: Vec<usize>,
+        /// Allocated capacity for the map.
+        cap: usize,
+    },
+    /// Value-track comparison.
+    ValueCompare {
+        /// Destination value register.
+        dst: usize,
+        /// Comparison operator.
+        op: CmpOp,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// Value-track boolean logic.
+    ValueLogic {
+        /// Destination value register.
+        dst: usize,
+        /// Boolean logic operator.
+        op: LogicOp,
+        /// Left operand value register.
+        a: usize,
+        /// Right operand value register.
+        b: usize,
+    },
+    /// Dispatch a collection operation.
+    ValueCallBuiltin {
+        /// Destination value register.
+        dst: usize,
+        /// Collection operation.
+        op: ValueBuiltinOp,
+        /// Argument value registers.
+        args: Vec<usize>,
+    },
 }
 
 /// Layout for value-track persistent storage.
@@ -551,5 +675,31 @@ mod value_ir_tests {
         let l = ValueLayout::default();
         assert_eq!(l.capacity, 0);
         assert_eq!(l.value_state_slots, 0);
+    }
+}
+
+#[cfg(test)]
+mod value_builtin_tests {
+    use super::*;
+
+    #[test]
+    fn value_builtin_ops_exist() {
+        let ops = [
+            ValueBuiltinOp::Cons,
+            ValueBuiltinOp::Head,
+            ValueBuiltinOp::Tail,
+            ValueBuiltinOp::Length,
+            ValueBuiltinOp::Map,
+            ValueBuiltinOp::Fold,
+            ValueBuiltinOp::Filter,
+            ValueBuiltinOp::ListEmpty,
+            ValueBuiltinOp::InsertMap,
+            ValueBuiltinOp::Lookup,
+            ValueBuiltinOp::Member,
+            ValueBuiltinOp::InsertSet,
+            ValueBuiltinOp::MapEmpty,
+            ValueBuiltinOp::SetEmpty,
+        ];
+        assert_eq!(ops.len(), 14);
     }
 }

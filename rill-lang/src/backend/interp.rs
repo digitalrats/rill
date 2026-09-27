@@ -721,6 +721,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
             }
         }
+        // Phase 6.1 literals/comparisons/logic/collection-ops are opaque until
+        // the dispatcher lands (Tasks 6.2/6.3); ignore them here so the match
+        // stays exhaustive.
+        _ => {}
     }
 }
 
@@ -947,6 +951,47 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             dst: dst.iter().map(|d| d + base).collect(),
             slot: slot + base,
             ctor: *ctor,
+        },
+        ValueInstr::ValueBool { dst, value } => ValueInstr::ValueBool {
+            dst: dst + base,
+            value: *value,
+        },
+        ValueInstr::ValueConstString { dst, value } => ValueInstr::ValueConstString {
+            dst: dst + base,
+            value: value.clone(),
+        },
+        ValueInstr::ValueListLit { dst, elems, cap } => ValueInstr::ValueListLit {
+            dst: dst + base,
+            elems: elems.iter().map(|e| e + base).collect(),
+            cap: *cap,
+        },
+        ValueInstr::ValueMapLit {
+            dst,
+            keys,
+            vals,
+            cap,
+        } => ValueInstr::ValueMapLit {
+            dst: dst + base,
+            keys: keys.iter().map(|k| k + base).collect(),
+            vals: vals.iter().map(|v| v + base).collect(),
+            cap: *cap,
+        },
+        ValueInstr::ValueCompare { dst, op, a, b } => ValueInstr::ValueCompare {
+            dst: dst + base,
+            op: *op,
+            a: a + base,
+            b: b + base,
+        },
+        ValueInstr::ValueLogic { dst, op, a, b } => ValueInstr::ValueLogic {
+            dst: dst + base,
+            op: *op,
+            a: a + base,
+            b: b + base,
+        },
+        ValueInstr::ValueCallBuiltin { dst, op, args } => ValueInstr::ValueCallBuiltin {
+            dst: dst + base,
+            op: *op,
+            args: args.iter().map(|a| a + base).collect(),
         },
     }
 }
