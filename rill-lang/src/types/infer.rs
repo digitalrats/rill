@@ -14,7 +14,7 @@ use super::unify::{unify_scalar, unify_value};
 use crate::ast::{Def, Expr, Param, Pattern, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
-use crate::reduce::pattern_vars;
+use crate::reduce::{pattern_vars, unguarded_arm_body};
 
 /// The typed result of inference: the program's definitions plus the resolved
 /// type of the output and the final substitution.
@@ -1435,7 +1435,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                         },
                     })
                     .collect();
-                let body = &arm.guards[0].1;
+                let body = unguarded_arm_body(arm)?;
                 let payload = match sum_ctor_payload(ctx, &sum_name, &ctor) {
                     Some(p) => p,
                     None => {
@@ -3413,6 +3413,25 @@ mod tests {
     #[test]
     fn match_too_many_arm_bindings_is_error() {
         assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r s => r }").is_err());
+    }
+
+    #[test]
+    fn guarded_match_arm_is_rejected_until_guards_support() {
+        // A guarded ctor arm (`Circle r | r > 0.0 => r`) must fail LOUD until
+        // guards land (Task 6), not silently drop the guard and compile.
+        let res = ty_of(
+            "data Shape = Circle Float | Rect Float Float; \
+             main = match Circle 1.0 of { Circle r | r > 0.0 => r; };",
+        );
+        let err = match res {
+            Err(e) => e,
+            Ok(_) => panic!("guarded match arm must be a compile error, not silently compiled"),
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not yet supported"),
+            "expected a 'not yet supported' error, got: {msg}"
+        );
     }
 
     #[test]

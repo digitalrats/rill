@@ -2,24 +2,28 @@
 //!
 //! Converts a parsed [`crate::ast::Program`] back into a rill-lang source
 //! string. The renderer is used for round-trip tests that verify
-//! isomorphism between JSON and DSL representations.
+//! isomorphism between JSON and DSL representations. Rendering fails with a
+//! compile error when a construct cannot yet be faithfully represented (guarded
+//! match arms, until Tasks 6/8).
 
 use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Pattern, Program, TypeExpr};
+use crate::error::CompileError;
+use crate::reduce::unguarded_arm_body;
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
-pub fn render(program: &Program) -> String {
+pub fn render(program: &Program) -> Result<String, CompileError> {
     let mut buf = String::new();
     for (i, def) in program.defs.iter().enumerate() {
         if i > 0 {
             buf.push('\n');
         }
-        render_def(def, &mut buf, 0);
+        render_def(def, &mut buf, 0)?;
     }
-    buf
+    Ok(buf)
 }
 
-fn render_def(def: &Def, buf: &mut String, indent: usize) {
+fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileError> {
     let pad = " ".repeat(indent);
     match def {
         Def::Anchor {
@@ -34,19 +38,21 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 write!(buf, " {}", p.name).ok();
             }
             write!(buf, " = ").ok();
-            render_expr(body, buf, 3);
+            render_expr(body, buf, 3)?;
             if !where_defs.is_empty() {
                 writeln!(buf, " where {{").ok();
                 for wd in where_defs {
-                    render_def(wd, buf, indent + 4);
+                    render_def(wd, buf, indent + 4)?;
                     writeln!(buf, ";").ok();
                 }
                 write!(buf, "{pad}}}").ok();
             }
+            Ok(())
         }
         Def::Local { name, body, .. } => {
             write!(buf, "{pad}{name} = ").ok();
-            render_expr(body, buf, 0);
+            render_expr(body, buf, 0)?;
+            Ok(())
         }
         Def::Data {
             name,
@@ -67,6 +73,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 render_type_expr(tname, buf);
             }
             write!(buf, " }}").ok();
+            Ok(())
         }
         Def::Sum {
             name,
@@ -89,12 +96,15 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                     render_type_expr(t, buf);
                 }
             }
+            Ok(())
         }
         Def::TypeAlias { name, target, .. } => {
             write!(buf, "{pad}type {name} = {target}").ok();
+            Ok(())
         }
         Def::Newtype { name, target, .. } => {
             write!(buf, "{pad}newtype {name} = {target}").ok();
+            Ok(())
         }
         Def::Typeclass {
             name, var, methods, ..
@@ -106,6 +116,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+            Ok(())
         }
         Def::Instance {
             class,
@@ -120,10 +131,11 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                     write!(buf, " {}", p.name).ok();
                 }
                 write!(buf, " = ").ok();
-                render_expr(body, buf, 0);
+                render_expr(body, buf, 0)?;
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+            Ok(())
         }
     }
 }
@@ -160,10 +172,11 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
     }
 }
 
-fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
+fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), CompileError> {
     match expr {
         Expr::Int(v, _) => {
             write!(buf, "{v}").ok();
+            Ok(())
         }
         Expr::Float(v, _) => {
             if *v == *v as i64 as f64 && v.is_finite() {
@@ -171,32 +184,40 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             } else {
                 write!(buf, "{}", v).ok();
             }
+            Ok(())
         }
         Expr::Imag(v, _) => {
             write!(buf, "{v}i").ok();
+            Ok(())
         }
         Expr::Wire(_) => {
             write!(buf, "_").ok();
+            Ok(())
         }
         Expr::Cut(_) => {
             write!(buf, "!").ok();
+            Ok(())
         }
         Expr::Str(s, _) => {
             write!(buf, "\"{s}\"").ok();
+            Ok(())
         }
         Expr::Ref(name, _) => {
             write!(buf, "{name}").ok();
+            Ok(())
         }
         Expr::Apply { name, args, .. } => {
             write!(buf, "{name}").ok();
             for a in args {
                 write!(buf, " ").ok();
-                render_expr(a, buf, 20); // application args are tight
+                render_expr(a, buf, 20)?; // application args are tight
             }
+            Ok(())
         }
         Expr::Neg(inner, _) => {
             write!(buf, "-").ok();
-            render_expr(inner, buf, 15);
+            render_expr(inner, buf, 15)?;
+            Ok(())
         }
         Expr::Seq(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (3, 3, 4, ":")),
         Expr::Split(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (5, 5, 6, "<:")),
@@ -210,17 +231,18 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             if defs.len() > 1 {
                 write!(buf, "{{ ").ok();
                 for d in defs {
-                    render_def(d, buf, 0);
+                    render_def(d, buf, 0)?;
                     write!(buf, "; ").ok();
                 }
                 write!(buf, "}} in ").ok();
             } else {
                 for d in defs {
-                    render_def(d, buf, 0);
+                    render_def(d, buf, 0)?;
                 }
                 write!(buf, " in ").ok();
             }
-            render_expr(body, buf, 0);
+            render_expr(body, buf, 0)?;
+            Ok(())
         }
         Expr::Record(fields, _) => {
             write!(buf, "{{ ").ok();
@@ -229,20 +251,23 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                     write!(buf, ", ").ok();
                 }
                 write!(buf, "{name}: ").ok();
-                render_expr(val, buf, 0);
+                render_expr(val, buf, 0)?;
             }
             write!(buf, " }}").ok();
+            Ok(())
         }
         Expr::ActorParam { name, default, .. } => {
             write!(buf, "?{name}").ok();
             if let Some(d) = default {
                 write!(buf, "=").ok();
-                render_expr(d, buf, 0);
+                render_expr(d, buf, 0)?;
             }
+            Ok(())
         }
         Expr::FieldProject { record, field, .. } => {
-            render_expr(record, buf, 20);
+            render_expr(record, buf, 20)?;
             write!(buf, ".{field}").ok();
+            Ok(())
         }
         Expr::FieldUpdate {
             record,
@@ -250,33 +275,36 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             value,
             ..
         } => {
-            render_expr(record, buf, 20);
+            render_expr(record, buf, 20)?;
             write!(buf, ".{field} := ").ok();
-            render_expr(value, buf, 0);
+            render_expr(value, buf, 0)?;
+            Ok(())
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             write!(buf, "match ").ok();
-            render_expr(scrutinee, buf, 0);
+            render_expr(scrutinee, buf, 0)?;
             write!(buf, " of {{ ").ok();
             for arm in arms {
                 render_pattern(&arm.pattern, buf);
                 write!(buf, " => ").ok();
-                render_expr(&arm.guards[0].1, buf, 0);
+                render_expr(unguarded_arm_body(arm)?, buf, 0)?;
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+            Ok(())
         }
         Expr::If {
             cond, then, els, ..
         } => {
             write!(buf, "if ").ok();
-            render_expr(cond, buf, 0);
+            render_expr(cond, buf, 0)?;
             write!(buf, " then ").ok();
-            render_expr(then, buf, 0);
+            render_expr(then, buf, 0)?;
             write!(buf, " else ").ok();
-            render_expr(els, buf, 0);
+            render_expr(els, buf, 0)?;
+            Ok(())
         }
         Expr::Lambda { params, body, .. } => {
             write!(buf, "fn").ok();
@@ -284,10 +312,12 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                 write!(buf, " {}", p.name).ok();
             }
             write!(buf, " -> ").ok();
-            render_expr(body, buf, 0);
+            render_expr(body, buf, 0)?;
+            Ok(())
         }
         Expr::Bool(v, _) => {
             write!(buf, "{}", if *v { "true" } else { "false" }).ok();
+            Ok(())
         }
         Expr::ListLit(elems, _) => {
             write!(buf, "[").ok();
@@ -295,9 +325,10 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                 if i > 0 {
                     write!(buf, ", ").ok();
                 }
-                render_expr(e, buf, 0);
+                render_expr(e, buf, 0)?;
             }
             write!(buf, "]").ok();
+            Ok(())
         }
         Expr::MapLit(entries, _) => {
             write!(buf, "{{ ").ok();
@@ -306,9 +337,10 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                     write!(buf, ", ").ok();
                 }
                 write!(buf, "\"{k}\": ").ok();
-                render_expr(v, buf, 0);
+                render_expr(v, buf, 0)?;
             }
             write!(buf, " }}").ok();
+            Ok(())
         }
         Expr::Cmp { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, cmp_info(op)),
         Expr::Logic { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, logic_info(op)),
@@ -322,16 +354,17 @@ fn render_bin(
     buf: &mut String,
     outer_bp: u8,
     (prec, l_bp, r_bp, sym): (u8, u8, u8, &'static str),
-) {
+) -> Result<(), CompileError> {
     if outer_bp > prec {
         write!(buf, "(").ok();
     }
-    render_expr(lhs, buf, l_bp);
+    render_expr(lhs, buf, l_bp)?;
     write!(buf, " {sym} ").ok();
-    render_expr(rhs, buf, r_bp);
+    render_expr(rhs, buf, r_bp)?;
     if outer_bp > prec {
         write!(buf, ")").ok();
     }
+    Ok(())
 }
 
 fn arith_info(op: &ArithOp) -> (u8, u8, u8, &'static str) {
@@ -417,7 +450,7 @@ mod tests {
                 where_defs: vec![],
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "main = sine 440.0 0.5");
     }
 
@@ -440,7 +473,7 @@ mod tests {
                 where_defs: vec![],
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "main = _ : lowpass 1000.0 0.7");
     }
 
@@ -463,7 +496,7 @@ mod tests {
                 where_defs: vec![],
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "main gain = _ * gain");
     }
 
@@ -489,7 +522,7 @@ mod tests {
                 span: span(),
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "double = fn x -> x * 2.0");
     }
 }

@@ -429,7 +429,7 @@ impl<'a> Lowerer<'a> {
                             ));
                         }
                     };
-                    let body = &arm.guards[0].1;
+                    let body = crate::reduce::unguarded_arm_body(arm)?;
                     let params: Vec<Param> = args
                         .iter()
                         .map(|a| match a {
@@ -1772,7 +1772,13 @@ impl<'a> Lowerer<'a> {
                 for arm in arms {
                     if let Pattern::Ctor(c, _) = &arm.pattern {
                         if c == &scrut_ctor {
-                            return self.static_scrutinee_ctor_impl(&arm.guards[0].1, visited);
+                            // A guarded arm's result constructor is NOT
+                            // statically known (the guard may fail at runtime),
+                            // and guards land only in Tasks 6/8 — do not claim a
+                            // statically-known result for it.
+                            return crate::reduce::unguarded_arm_body(arm)
+                                .ok()
+                                .and_then(|body| self.static_scrutinee_ctor_impl(body, visited));
                         }
                     }
                 }
