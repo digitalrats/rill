@@ -1023,9 +1023,12 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Result static type of a collection op applied to the given argument
-    /// types. Element/value types are read from the container argument; the
-    /// capacity in the result is a conservative `Cap(0)` placeholder refined
-    /// by the cap-flow pass (Task 8.2).
+    /// types. Element/value types are read from the container argument, and
+    /// the result capacity mirrors the SOURCE container's `Cap` (the runtime
+    /// ops preserve the source cap, so the static type is exact). The
+    /// empty-container constructors (`list`/`empty_map`/`empty_set`) carry
+    /// `Cap(0)`: their value is a single container slot, and element slots are
+    /// allocated per cons/insert/map op (each counted by `is_alloc_producing`).
     fn value_builtin_ty(
         &self,
         name: &str,
