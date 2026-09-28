@@ -94,7 +94,7 @@ code.
 
 ### 3.1 `if`
 
-```faust
+```haskell
 if cond then a else b        // Haskell-style; `else` mandatory (expression)
 ```
 
@@ -104,7 +104,7 @@ atom/continuation, so `parse_expr` stops before it (verify `is_atom_start`).
 
 ### 3.2 `match`
 
-```faust
+```haskell
 match x of {
     Circle r => r;                       // constructor pattern + bindings
     0 => "zero"; _ => "other";           // literal + wildcard
