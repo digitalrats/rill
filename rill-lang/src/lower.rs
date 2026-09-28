@@ -398,13 +398,28 @@ impl<'a> Lowerer<'a> {
                 // first arm's ctor returned a wrong value when the runtime
                 // value was a different constructor.
                 let selected_arm = match self.static_scrutinee_ctor(scrutinee.as_ref()) {
-                    Some(cname) => arms
-                        .iter()
-                        .position(|arm| matches!(&arm.pattern, Pattern::Ctor(c, _) if c == &cname))
-                        .ok_or_else(|| CompileError::Type {
-                            msg: format!("match over `{cname}` has no matching arm"),
-                            span: *span,
-                        })?,
+                    Some(cname) => {
+                        // A wildcard/literal/variable arm would match at runtime
+                        // but the mechanical static dispatch (pre-Tasks 6/8)
+                        // cannot handle it — reject loudly rather than the
+                        // misleading "no matching arm".
+                        if arms
+                            .iter()
+                            .any(|arm| !matches!(&arm.pattern, Pattern::Ctor(_, _)))
+                        {
+                            return Err(CompileError::Unsupported(
+                                crate::reduce::NON_CTOR_PATTERN_MSG.into(),
+                            ));
+                        }
+                        arms.iter()
+                            .position(
+                                |arm| matches!(&arm.pattern, Pattern::Ctor(c, _) if c == &cname),
+                            )
+                            .ok_or_else(|| CompileError::Type {
+                                msg: format!("match over `{cname}` has no matching arm"),
+                                span: *span,
+                            })?
+                    }
                     None => {
                         return Err(CompileError::Unsupported(
                             "match scrutinee is not statically resolvable in v1".into(),
@@ -424,8 +439,7 @@ impl<'a> Lowerer<'a> {
                         Pattern::Ctor(c, args) => (c.clone(), args),
                         _ => {
                             return Err(CompileError::Unsupported(
-                                "non-constructor match patterns are not yet supported in lowering"
-                                    .into(),
+                                crate::reduce::NON_CTOR_PATTERN_MSG.into(),
                             ));
                         }
                     };
@@ -2009,7 +2023,7 @@ impl<'a> Lowerer<'a> {
                 Pattern::Ctor(c, _) => c,
                 _ => {
                     return Err(CompileError::Unsupported(
-                        "non-constructor match patterns are not yet supported in lowering".into(),
+                        crate::reduce::NON_CTOR_PATTERN_MSG.into(),
                     ));
                 }
             };

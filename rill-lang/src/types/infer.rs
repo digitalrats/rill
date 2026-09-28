@@ -14,7 +14,7 @@ use super::unify::{unify_scalar, unify_value};
 use crate::ast::{Def, Expr, Param, Pattern, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
-use crate::reduce::{pattern_vars, unguarded_arm_body};
+use crate::reduce::{pattern_vars, unguarded_arm_body, NON_CTOR_PATTERN_MSG};
 
 /// The typed result of inference: the program's definitions plus the resolved
 /// type of the output and the final substitution.
@@ -1345,13 +1345,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             for arm in arms {
                 let ctor = match &arm.pattern {
                     Pattern::Ctor(c, _) => c.clone(),
-                    _ => {
-                        return Err(CompileError::Unsupported(
-                            "non-constructor match patterns (literals, variables, wildcards) are \
-                             not yet supported in inference"
-                                .into(),
-                        ));
-                    }
+                    _ => return Err(CompileError::Unsupported(NON_CTOR_PATTERN_MSG.into())),
                 };
                 let mut per_ctor = sum_types_with_ctor(ctx, &ctor);
                 if let Some(sn) = &scrutinee_sum {

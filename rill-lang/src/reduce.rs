@@ -26,6 +26,12 @@ pub(crate) fn pattern_vars(p: &Pattern) -> Vec<String> {
     out
 }
 
+/// Shared "not yet supported" message for non-constructor match patterns
+/// (literal, variable, wildcard). Tasks 6/8 land real semantics; until then
+/// inference and lowering must agree so tests can rely on the exact string.
+pub(crate) const NON_CTOR_PATTERN_MSG: &str =
+    "non-constructor match patterns are not yet supported";
+
 /// The mechanically-usable body of a match arm until Tasks 6/8: only a bare
 /// `pattern => body` (exactly one alternative whose guard is `true`) can be
 /// consumed by the pre-guard render/infer/lower paths. A guarded arm is

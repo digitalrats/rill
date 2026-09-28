@@ -767,7 +767,7 @@ impl<'a> Parser<'a> {
                             guards.push((g, b));
                         }
                     }
-                    let arm_span = t.span.merge(guards.last().unwrap().1.span());
+                    let arm_span = pat_span.merge(guards.last().unwrap().1.span());
                     arms.push(MatchArm {
                         pattern,
                         guards,
@@ -778,10 +778,13 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.eat(&Tok::RBrace)?;
+                // Span from the `match` keyword through the last arm (an empty
+                // arm list falls back to the keyword alone).
+                let span = arms.last().map(|a| t.span.merge(a.span)).unwrap_or(t.span);
                 Ok(Expr::Match {
                     scrutinee: Box::new(scrutinee),
                     arms,
-                    span: t.span,
+                    span,
                 })
             }
             Tok::KwFn => {
@@ -1484,8 +1487,28 @@ mod tests {
             "data Shape = Circle Float | Rect Float Float; \
              main = match s of { Circle r => r; 0 => 0.0; _ => 1.0; n | n > 0 => n; };",
         );
-        // The parser accepts mixed ctor/literal/wildcard arms and guards.
-        let _ = p;
+        let Expr::Match { arms, .. } = p.main_def().unwrap().body() else {
+            panic!("expected a match expression");
+        };
+        assert_eq!(arms.len(), 4, "mixed ctor/literal/wildcard/var arms");
+        assert!(matches!(
+            &arms[0].pattern,
+            Pattern::Ctor(c, args)
+                if c == "Circle"
+                    && args.len() == 1
+                    && matches!(&args[0], Pattern::Var(v) if v == "r")
+        ));
+        assert!(
+            matches!(arms[0].guards[0].0, Expr::Bool(true, _)),
+            "a bare `Circle r => r` arm's first guard is `true`"
+        );
+        assert!(matches!(arms[1].pattern, Pattern::LitInt(0)));
+        assert!(matches!(arms[2].pattern, Pattern::Wild));
+        assert!(matches!(&arms[3].pattern, Pattern::Var(v) if v == "n"));
+        assert!(
+            matches!(arms[3].guards[0].0, Expr::Cmp { .. }),
+            "a guarded arm's first alternative is the written guard (`n > 0`)"
+        );
     }
 
     #[test]
