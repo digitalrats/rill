@@ -835,7 +835,7 @@ mod ctor_table_tests {
         assert!(env.ctor_has_cap("Pair") == Some(false));
         assert!(env.ctor_arity("Either") == Some(2));
         assert!(env.ctor_has_cap("Either") == Some(false));
-        assert!(env.ctor_arity("Nope") == None);
+        assert!(env.ctor_arity("Nope").is_none());
     }
 
     #[test]
