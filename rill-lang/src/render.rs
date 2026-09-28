@@ -2,13 +2,11 @@
 //!
 //! Converts a parsed [`crate::ast::Program`] back into a rill-lang source
 //! string. The renderer is used for round-trip tests that verify
-//! isomorphism between JSON and DSL representations. Rendering fails with a
-//! compile error when a construct cannot yet be faithfully represented (guarded
-//! match arms, until Tasks 6/8).
+//! isomorphism between JSON and DSL representations. Rendering is total:
+//! `if` and `match` render every arm, including guarded alternatives.
 
 use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Pattern, Program, TypeExpr};
 use crate::error::CompileError;
-use crate::reduce::unguarded_arm_body;
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
@@ -288,8 +286,20 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, " of {{ ").ok();
             for arm in arms {
                 render_pattern(&arm.pattern, buf);
-                write!(buf, " => ").ok();
-                render_expr(unguarded_arm_body(arm)?, buf, 0)?;
+                for (g, body) in &arm.guards {
+                    // A bare arm's first alternative has the synthetic `true`
+                    // guard, which must render without a `| guard` prefix to
+                    // round-trip as the bare form; every other alternative
+                    // carries its written guard.
+                    if matches!(g, Expr::Bool(true, _)) {
+                        write!(buf, " => ").ok();
+                    } else {
+                        write!(buf, " | ").ok();
+                        render_expr(g, buf, 0)?;
+                        write!(buf, " => ").ok();
+                    }
+                    render_expr(body, buf, 0)?;
+                }
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
@@ -524,5 +534,56 @@ mod tests {
         };
         let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "double = fn x -> x * 2.0");
+    }
+
+    /// Render `main` from `src`, re-parse the rendered text, render again, and
+    /// assert the two renderings are identical. Comparing render→parse→render
+    /// strings sidesteps span differences that a direct AST comparison would
+    /// flag after re-parsing.
+    fn roundtrip_main(src: &str) -> String {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
+        let main_program = Program {
+            defs: vec![program.main_def().unwrap().clone()],
+        };
+        let first = render(&main_program).unwrap();
+        let tokens2 = crate::lexer::tokenize(&first).unwrap();
+        let reparsed = crate::parser::parse(&tokens2, first.as_bytes()).unwrap();
+        let second = render(&reparsed).unwrap();
+        assert_eq!(
+            first, second,
+            "render → parse → render is not idempotent for: {src}\nfirst: {first}\nsecond: {second}"
+        );
+        first
+    }
+
+    #[test]
+    fn render_roundtrip_if() {
+        let dsl = roundtrip_main("main = if true then 1.0 else 2.0;");
+        assert_eq!(dsl, "main = if true then 1.0 else 2.0");
+    }
+
+    #[test]
+    fn render_roundtrip_match_bare_ctor_arms() {
+        let dsl = roundtrip_main(
+            "data Shape = Circle Float | Rect Float Float; \
+             main = match s of { Circle r => r; Rect w h => w; };",
+        );
+        assert_eq!(dsl, "main = match s of { Circle r => r; Rect w h => w; }");
+    }
+
+    #[test]
+    fn render_roundtrip_match_guarded_arm() {
+        let dsl = roundtrip_main("main = match n of { n | n > 0 => 1.0; _ => 0.0; };");
+        assert_eq!(dsl, "main = match n of { n | n > 0 => 1.0; _ => 0.0; }");
+    }
+
+    #[test]
+    fn render_roundtrip_match_nested_pattern_literal_wildcard() {
+        let dsl = roundtrip_main("main = match x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; };");
+        assert_eq!(
+            dsl,
+            "main = match x of { Just Left y => y; 0 => 0.0; _ => 1.0; }"
+        );
     }
 }
