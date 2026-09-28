@@ -44,7 +44,7 @@ Refactor the value track from a flat instruction list to blocks. **No behavior c
 - Modify: `src/program.rs` (`max_drops`)
 - Modify: `src/render.rs` (any `value_instrs` references — none expected; skip if clean)
 
-- [ ] **Step 1: Add IR types**
+- [x] **Step 1: Add IR types**
 
 In `src/ir.rs`, add before `pub enum ValueInstr`:
 
@@ -109,7 +109,7 @@ Replace in `FragmentIr` (`src/ir.rs:549-555`):
     pub entry: usize,
 ```
 
-- [ ] **Step 2: Fix `Ir`/`FragmentIr` construction sites in tests and interp**
+- [x] **Step 2: Fix `Ir`/`FragmentIr` construction sites in tests and interp**
 
 In `src/backend/interp.rs` (unit-test fixtures at ~1955, ~1977, ~2006-2021), replace every `value_instrs: vec![...]` with:
 
@@ -123,7 +123,7 @@ value_entry: 0,
 
 and every `value_instrs: Vec::new()` with `value_blocks: Vec::new(), value_entry: 0,`. Update the `FragmentIr` literal at ~1976 to `value_blocks: vec![ValueBlock { instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }], term: ValueTerm::Halt }], entry: 0,`. Update the helper struct at ~2006 and its `new` at ~2020 to carry `value_blocks`/`value_entry` instead of `value_instrs`.
 
-- [ ] **Step 3: Update `max_drops` in `program.rs`**
+- [x] **Step 3: Update `max_drops` in `program.rs`**
 
 Replace `fn max_drops` (`src/program.rs:388-397`):
 
@@ -140,7 +140,7 @@ Replace `fn max_drops` (`src/program.rs:388-397`):
 
 Add `use crate::ir::ValueBlock;` to the imports. Also fix the other `value_instrs` references at `program.rs:392,395` (they are inside `max_drops`), and the `vec![]` constructors at `program.rs:621,649` → `value_blocks: Vec::new(), value_entry: 0,`.
 
-- [ ] **Step 4: Rewire lowering emission to blocks**
+- [x] **Step 4: Rewire lowering emission to blocks**
 
 In `src/lower.rs`:
 - Replace field `value_instrs: Vec<ValueInstr>` (line 131) with:
@@ -213,7 +213,7 @@ In `src/lower.rs`:
 
 - The `let mut lw = lw(&env, &empty);`-style unit tests in `lower.rs` that read `lw.value_instrs` (e.g. ~3776-3841) must switch to `lw.value_blocks[i].instrs` (inspect `[0]`). At each such test, replace `.value_instrs` with `.value_blocks[0].instrs`.
 
-- [ ] **Step 5: Trampoline in `run_value_track`**
+- [x] **Step 5: Trampoline in `run_value_track`**
 
 Replace the loop in `run_value_track` (`src/backend/interp.rs:143-147`) with:
 
@@ -290,7 +290,7 @@ Add `ValueMove` to `remap_value_instr` (~1648 area, mirroring `ValueCopy`):
         },
 ```
 
-- [ ] **Step 6: Trampoline in `run_fragment`**
+- [x] **Step 6: Trampoline in `run_fragment`**
 
 Replace the fragment loop (`src/backend/interp.rs:1506-1510`) with:
 
@@ -324,7 +324,7 @@ Replace the fragment loop (`src/backend/interp.rs:1506-1510`) with:
 
 `fallthrough`/branch targets are fragment-local block ids — never offset.
 
-- [ ] **Step 7: Add a trampoline unit test (branch + move + ctor dispatch)**
+- [x] **Step 7: Add a trampoline unit test (branch + move + ctor dispatch)**
 
 In `src/backend/interp.rs` (the existing `#[cfg(test)]` module), add a test that builds a 3-block program directly and runs it:
 
@@ -358,12 +358,12 @@ In `src/backend/interp.rs` (the existing `#[cfg(test)]` module), add a test that
 
 Use the existing fixture helpers in the interp test module (`test_program` / `make_program` patterns) to run the tick; assert the arena value in register 2.
 
-- [ ] **Step 8: Run the full suite**
+- [x] **Step 8: Run the full suite**
 
 Run: `cargo test -p rill-lang`
 Expected: all existing tests PASS (this is a pure refactor). Fix any remaining `value_instrs` compile errors (search: `rg "value_instrs" src/`).
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A

@@ -7,7 +7,7 @@ use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
     BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
-    StateLayout, UnOp, ValueBuiltinOp, ValueInstr, ValueLayout,
+    StateLayout, UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueLayout, ValueTerm,
 };
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
@@ -127,8 +127,12 @@ struct Lowerer<'a> {
     /// [`Instr::ReadMainCell`]; value-track reads via `ValueReadMainCell`.
     main_cell_locals: HashMap<String, usize>,
     sample_rate: f32,
-    /// Value-track instructions, executed once per tick (see `run_value_track`).
-    value_instrs: Vec<ValueInstr>,
+    /// Value-track blocks, executed once per tick (see `run_value_track`).
+    value_blocks: Vec<ValueBlock>,
+    /// The block currently being appended to.
+    cur_value_block: usize,
+    /// Entry block of the program's value track (always 0).
+    value_entry: usize,
     /// Next value register index (SSA value registers are per-tick scratch).
     next_value_reg: usize,
     /// Value registers holding the program's value outputs (value-channel main).
@@ -207,7 +211,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit_value(&mut self, i: ValueInstr) {
-        self.value_instrs.push(i);
+        self.value_blocks[self.cur_value_block].instrs.push(i);
+    }
+
+    fn new_value_block(&mut self) -> usize {
+        self.value_blocks.push(ValueBlock::default());
+        self.value_blocks.len() - 1
+    }
+
+    fn set_value_term(&mut self, block: usize, term: ValueTerm) {
+        self.value_blocks[block].term = term;
     }
 
     /// Record a container-typed subexpression (`List`/`Map`/`Set`) for the
@@ -1434,9 +1447,9 @@ impl<'a> Lowerer<'a> {
     /// Fragment-local registers: the body's value instructions use registers
     /// `0..num_value_regs`, unrelated to the program's register numbering —
     /// the interpreter offsets them by a per-call base at dispatch. The
-    /// program-level value-track state (`value_instrs`, `next_value_reg`,
-    /// `value_locals`, `fragment_captures`) is saved around the body compile
-    /// and restored afterwards.
+    /// program-level value-track state (`value_blocks`, `cur_value_block`,
+    /// `next_value_reg`, `value_locals`, `fragment_captures`) is saved around
+    /// the body compile and restored afterwards.
     ///
     /// Within the fragment: parameters bind to fragment-local registers
     /// `0..params.len()` (value args are copied in by `run_fragment`), typed
@@ -1452,7 +1465,9 @@ impl<'a> Lowerer<'a> {
         param_tys: &[ValueTy],
         _span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
-        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
@@ -1471,7 +1486,8 @@ impl<'a> Lowerer<'a> {
         let body_result = match res {
             Ok(r) => r,
             Err(e) => {
-                self.value_instrs = saved_instrs;
+                self.value_blocks = saved_blocks;
+                self.cur_value_block = saved_cur;
                 self.next_value_reg = saved_next;
                 self.value_locals = saved_locals;
                 self.value_local_ctors.pop();
@@ -1481,7 +1497,8 @@ impl<'a> Lowerer<'a> {
         };
         let (result_reg, result_ty) = body_result;
         let frag = FragmentIr {
-            value_instrs: std::mem::take(&mut self.value_instrs),
+            value_blocks: std::mem::take(&mut self.value_blocks),
+            entry: 0,
             steps: Vec::new(),
             num_value_regs: self.next_value_reg,
             num_block_regs: 0,
@@ -1497,7 +1514,8 @@ impl<'a> Lowerer<'a> {
         let id = self.fragments.len();
         self.fragments.push(std::sync::Arc::new(frag));
 
-        self.value_instrs = saved_instrs;
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
         self.value_local_ctors.pop();
@@ -1541,7 +1559,9 @@ impl<'a> Lowerer<'a> {
         remaining_arity: usize,
         _span: Span,
     ) -> Result<usize, CompileError> {
-        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
@@ -1571,7 +1591,8 @@ impl<'a> Lowerer<'a> {
         });
 
         let frag = FragmentIr {
-            value_instrs: std::mem::take(&mut self.value_instrs),
+            value_blocks: std::mem::take(&mut self.value_blocks),
+            entry: 0,
             steps: Vec::new(),
             num_value_regs,
             num_block_regs: 0,
@@ -1587,7 +1608,8 @@ impl<'a> Lowerer<'a> {
         let id = self.fragments.len();
         self.fragments.push(std::sync::Arc::new(frag));
 
-        self.value_instrs = saved_instrs;
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
         self.fragment_captures = saved_captures;
@@ -1917,14 +1939,17 @@ impl<'a> Lowerer<'a> {
     /// scrutinee payload types that `lower_value` does not carry on the
     /// returned scrutinee type (`Data(name, [])`).
     fn sandbox_value_ty(&mut self, e: &Expr) -> Option<ValueTy> {
-        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
         let saved_inline = std::mem::take(&mut self.value_inline);
         let saved_pending = std::mem::take(&mut self.pending_param_tys);
         let r = self.lower_value(e).ok();
-        self.value_instrs = saved_instrs;
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
         self.fragment_captures = saved_captures;
@@ -3221,7 +3246,9 @@ pub fn lower_with_cafs(
         param_names: HashMap::new(),
         main_cell_locals: HashMap::new(),
         sample_rate,
-        value_instrs: Vec::new(),
+        value_blocks: vec![ValueBlock::default()],
+        cur_value_block: 0,
+        value_entry: 0,
         next_value_reg: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
@@ -3310,8 +3337,9 @@ pub fn lower_with_cafs(
         .fragments
         .iter()
         .map(|f| {
-            f.value_instrs
+            f.value_blocks
                 .iter()
+                .flat_map(|b| &b.instrs)
                 .filter(|i| is_alloc_producing(i))
                 .count()
                 + f.num_capture_cells
@@ -3333,8 +3361,9 @@ pub fn lower_with_cafs(
         .map(|t| lw.subtree_size(t))
         .sum::<usize>();
     let value_capacity = lw
-        .value_instrs
+        .value_blocks
         .iter()
+        .flat_map(|b| &b.instrs)
         .filter(|i| is_alloc_producing(i))
         .count()
         + lw.value_out_tys
@@ -3357,6 +3386,9 @@ pub fn lower_with_cafs(
         .max()
         .unwrap_or(0);
     let max_call_regs = max_call_depth * max_fragment_regs;
+    // Terminate the program's value track: the entry block's fallthrough chain
+    // ends here. Every existing program is a single block ending in `Halt`.
+    lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
@@ -3371,7 +3403,8 @@ pub fn lower_with_cafs(
         builtins: lw.builtins,
         params: lw.params,
         num_main_cells,
-        value_instrs: lw.value_instrs,
+        value_blocks: std::mem::take(&mut lw.value_blocks),
+        value_entry: lw.value_entry,
         num_value_regs: lw.next_value_reg,
         value_output_regs: lw.value_regs_out,
         value_funcs: lw.value_funcs,
@@ -3472,7 +3505,9 @@ mod tests {
             param_names: HashMap::new(),
             main_cell_locals: HashMap::new(),
             sample_rate: 44_100.0,
-            value_instrs: Vec::new(),
+            value_blocks: vec![ValueBlock::default()],
+            cur_value_block: 0,
+            value_entry: 0,
             next_value_reg: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
@@ -3772,8 +3807,8 @@ mod tests {
     #[test]
     fn record_construct_lowers_to_value_track() {
         let ir = ir_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }");
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueConstructRecord { .. })));
     }
@@ -3782,8 +3817,8 @@ mod tests {
     fn field_project_lowers_to_value_project() {
         let ir =
             ir_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x");
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueProject { .. })));
     }
@@ -3791,8 +3826,8 @@ mod tests {
     #[test]
     fn newtype_construct_lowers_to_value_newtype() {
         let ir = ir_of("newtype Hz = Float; main = Hz 440.0");
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueNewtype { .. })));
     }
@@ -3813,8 +3848,8 @@ mod tests {
         let ir = ir_of(
             "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Circle r => r; Rect w h => w; }",
         );
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueMatch { .. })));
     }
@@ -3828,8 +3863,8 @@ mod tests {
         let ir = ir_of(
             "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Rect w h => w; Circle r => r; }",
         );
-        let matches = ir
-            .value_instrs
+        let matches = ir.value_blocks[0]
+            .instrs
             .iter()
             .filter(|i| matches!(i, ValueInstr::ValueMatch { .. }))
             .count();
@@ -3837,8 +3872,8 @@ mod tests {
             matches, 1,
             "static dispatch must emit exactly one ValueMatch"
         );
-        let vm = ir
-            .value_instrs
+        let vm = ir.value_blocks[0]
+            .instrs
             .iter()
             .find(|i| matches!(i, ValueInstr::ValueMatch { .. }))
             .unwrap();

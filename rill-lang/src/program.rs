@@ -11,7 +11,7 @@ use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
 use crate::arena::Arena;
 use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
-use crate::ir::{Ir, ParamDef};
+use crate::ir::{Ir, ParamDef, ValueBlock};
 use crate::schedule::{build_schedule, Schedule};
 
 /// Upper bound on a single `@ n` delay line, in samples.
@@ -389,10 +389,11 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// queues at most one drop per value instruction of each frame, so the sum
     /// over the main track and every fragment's instructions is a strict bound.
     fn max_drops(ir: &Ir) -> usize {
-        ir.value_instrs.len()
+        let instrs = |b: &ValueBlock| b.instrs.len();
+        ir.value_blocks.iter().map(instrs).sum::<usize>()
             + ir.fragments
                 .iter()
-                .map(|f| f.value_instrs.len())
+                .map(|f| f.value_blocks.iter().map(instrs).sum::<usize>())
                 .sum::<usize>()
     }
 
@@ -618,7 +619,8 @@ mod program_value_tests {
             builtins: Vec::new(),
             params: Vec::new(),
             num_main_cells: 0,
-            value_instrs: Vec::new(),
+            value_blocks: Vec::new(),
+            value_entry: 0,
             num_value_regs: 0,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
@@ -646,7 +648,8 @@ mod program_value_tests {
             builtins: Vec::new(),
             params: Vec::new(),
             num_main_cells: 0,
-            value_instrs: Vec::new(),
+            value_blocks: Vec::new(),
+            value_entry: 0,
             num_value_regs: 0,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
