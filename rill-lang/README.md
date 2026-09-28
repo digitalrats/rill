@@ -314,6 +314,73 @@ into directly. Data types are acyclic by construction (compile-time check),
 and the arena capacity is a static bound. `typeclass` methods resolve at
 compile time (no runtime dispatch).
 
+### Builtin value types and type constructors
+
+The value track ships scalar value types and builtin **type constructors**
+applied by juxtaposition (`List Float 16` — the capacity is a `Nat` argument):
+
+| Type | Kind | Meaning |
+|---|---|---|
+| `Bool`, `String` | `*` | scalar value types (value track only) |
+| `List a n`, `Set a n` | `* → Nat → *` | ordered list / unordered set, capacity `n` |
+| `Map k v n` | `* → * → Nat → *` | key→value map, capacity `n` |
+| `Maybe a` | `* → *` | optional `a` (`Just a` / `Nothing`) |
+| `Pair a b` | `* → * → *` | pair (`{ first, second }`) |
+| `Either a b` | `* → * → *` | sum (`Left a` / `Right b`) |
+
+### First-class collections
+
+`List`/`Map`/`Set` are first-class arena containers with Haskell-style ops.
+Capacities are **strict bounds** carried in the type — a growing operation
+(`cons`, `insert` of a new key, a literal) past capacity is a runtime
+`ProcessError::Processing`; `map`/`filter`/`tail` preserve the capacity.
+`map`/`fold`/`filter` take the function **first**; `cons` **prepends**
+(Haskell `x : xs`); empty containers are `list n` / `empty_map n` /
+`empty_set n`; `insert` is overloaded by arity (Map 3-arg, Set 2-arg);
+`not` is a prefix builtin.
+
+```faust
+xs  = [1.0, 2.0, 3.0];            // List Float 3
+ys  = cons 10.0 (list 4);         // prepend -> List Float 4
+h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
+n   = length xs;                  // Int
+z   = map (fn x -> x * 2.0) xs;   // function first
+s   = fold (fn a b -> a + b) 0.0 xs;   // Float
+f   = filter (fn x -> x > 1.0) xs;     // List Float 3
+
+m  = { "a": 1.0, "b": 2.0 };      // Map String Float 2
+m1 = insert "a" 9.0 m;            // replace-on-duplicate
+v  = lookup "a" m;                // Maybe Float
+b  = member "a" m;                // Bool
+st = insert 1 (empty_set 8);      // Set Int 8
+```
+
+Map keys and set elements can be **any acyclic value type**: the compiler
+derives `Eq`/`Ord` instances for every data type (except `Func`) — a structural
+total order, used to keep entries sorted for O(log n) `lookup`/`member`. A
+function-typed key is a compile error.
+
+### Higher-kinded types (HKT)
+
+`data` can take type parameters and `typeclass` can range over a type
+**constructor** (kind `* → *` / `* → * → *`). Resolution is compile-time
+**inline** — `fmap` over a `List` compiles directly to the `map` builtin, with
+zero runtime dispatch; capacities flow from argument to result through the
+instance, so `fmap` preserves the list capacity:
+
+```faust
+data Box a = { value: a };
+typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
+instance Functor List where { fmap g xs = map g xs; }
+instance Functor Maybe where {
+    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+}
+main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
+```
+
+Kind arity is inferred from method signatures and checked — `instance Functor
+Pair` (Pair has arity 2) is a kind error.
+
 ## First-class functions and closures
 
 Functions are first-class values: a **lambda literal** `fn p -> body` compiles
@@ -342,9 +409,14 @@ main = amp 2.0 _;                // input block scaled by 2.0
 
 ## Status
 
-MVP. Deferred to follow-on work: the Cranelift `jit` feature, foreign references
-to existing rill DSP primitives, a SIMD-aware IR, runtime typeclass dispatch,
-and `strict`/`complete` compiler modes.
+MVP. The value track ships first-class Haskell-style collections
+(`List`/`Map`/`Set` with strict type-carried capacities, `Maybe`/`Pair`/
+`Either`, `Bool`/`String` value types) and higher-kinded types (parameterized
+`data`, kind polymorphism over type constructors, compile-time inline
+resolution). Deferred to follow-on work: the Cranelift `jit` feature, foreign
+references to existing rill DSP primitives, a SIMD-aware IR, runtime typeclass
+dispatch, user-written `Eq`/`Ord` instances and hash-based containers, and
+`strict`/`complete` compiler modes.
 
 ## License
 

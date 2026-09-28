@@ -846,6 +846,9 @@ phase of the interpreter (the signal track stays whole-buffer SIMD).
 | `data Shape = Circle Float \| Rect Float Float` | sum type with constructors; match with `match s of { Circle r => ...; Rect w h => ...; }` |
 | `type Angles = Float` | type synonym (pure substitution) |
 | `newtype Hz = Float` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
+| `Bool`, `String` | scalar value types (value track only); literals `true`/`false`, `"text"` |
+| `List a n`, `Map k v n`, `Set a n` | builtin containers; capacity `n` is a strict bound (exceeding it is a runtime `ProcessError::Processing`) |
+| `Maybe a`, `Pair a b`, `Either a b` | builtin data types: `Maybe a = Just a \| Nothing`, `Pair a b = { first, second }`, `Either a b = Left a \| Right b` |
 | `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Float where { show f = ...; }` |
 | `fn x -> x * 2.0` | first-class function (lambda literal); see below |
 | `f = double; main = f 21.0` | named function references (function values) |
@@ -853,6 +856,150 @@ phase of the interpreter (the signal track stays whole-buffer SIMD).
 Value expressions: record/sum/newtype constructors, field projection `p.x`,
 COW field update `p.x := 3.0`, `match` pattern matching, and method calls.
 A `data` value output is inspected via `RillProgram::value_outputs()`.
+
+#### Builtin type constructors and kinds
+
+The builtin containers and data types are **type constructors**: they take
+type arguments, applied by **juxtaposition** (consistent with the DSL) — e.g.
+`List Float 16` is `List` applied to `Float` and the capacity literal `16`.
+Container capacities are a `Nat` pseudo-type carried as a constructor argument.
+`Bool`/`String` are leaf value types (kind `*`).
+
+| Constructor | Kind | Meaning |
+|---|---|---|
+| `List a n` | `* → Nat → *` | ordered sequence of `a`, capacity `n` |
+| `Set a n` | `* → Nat → *` | unordered set of `a`, capacity `n` |
+| `Map k v n` | `* → * → Nat → *` | key→value map, capacity `n` |
+| `Maybe a` | `* → *` | optional `a` |
+| `Pair a b` | `* → * → *` | pair of `a` and `b` |
+| `Either a b` | `* → * → *` | sum of `a` or `b` |
+
+`List`/`Map`/`Set` are opaque arena containers (see below); `Maybe`/`Pair`/
+`Either` are builtin `data` declarations reusing the existing record/sum/match
+machinery — they are injected into the type environment at compile time.
+
+### First-class collections
+
+Lists, maps, and sets are first-class arena values with Haskell-style
+operations. Collection **capacities are strict bounds** carried in the type:
+an operation that grows a container (`cons`, `insert` of a new key, a literal)
+requires `len < n` at runtime; exceeding it is a runtime user error surfaced as
+`ProcessError::Processing` ("`list capacity exceeded`", "`map capacity
+exceeded`", "`set capacity exceeded`") — `process()` returns the error and the
+per-tick arena is released. `map`, `filter`, and `tail` preserve the capacity;
+`length` needs none. Replacing a duplicate key (map) or inserting a duplicate
+element (set) does not count toward the bound.
+
+```faust
+xs  = [1.0, 2.0, 3.0];          // List Float 3 — capacity from literal length
+e   = list 4;                   // empty List a 4
+ys  = cons 10.0 e;              // List Float 4 — prepends; 1 element ≤ 4
+h   = head xs;                  // Maybe Float: Just 1.0 / Nothing
+t   = tail xs;                  // List Float 3 — capacity preserved
+n   = length xs;                // Int
+z   = map (fn x -> x * 2.0) xs;           // List Float 3 — function first
+s   = fold (fn a b -> a + b) 0.0 xs;      // Float
+f   = filter (fn x -> x > 1.0) xs;        // List Float 3
+bad = cons 9.0 xs;              // runtime error: len 3 ≥ cap 3
+
+m  = { "a": 1.0, "b": 2.0 };   // Map String Float 2
+m1 = insert "a" 9.0 m;         // replace-on-duplicate; len stays 2
+m2 = empty_map 8;              // empty Map k v 8 (`map` is the HOF builtin)
+v  = lookup "a" m;             // Maybe Float
+b  = member "a" m;             // Bool
+
+st = empty_set 8;              // empty Set a 8
+s1 = insert 1 st;              // Set Int 8
+b2 = member 1 s1;              // Bool
+```
+
+| Operation | Signature | Meaning |
+|---|---|---|
+| `cons x xs` | `a → List a n → List a n` | prepend `x` (Haskell `x : xs`); error if `len = n` |
+| `head xs` | `List a n → Maybe a` | first element, or `Nothing` for the empty list |
+| `tail xs` | `List a n → List a n` | drop the first element (capacity preserved) |
+| `length xs` | `List a n → Int` | element count |
+| `map f xs` | `(a → b) → List a n → List b n` | apply `f` to each element |
+| `fold f z xs` | `(a → b → b) → b → List a n → b` | left fold — accumulator first |
+| `filter p xs` | `(a → Bool) → List a n → List a n` | keep elements satisfying `p` |
+| `list n` | `Nat → List a n` | empty list of capacity `n` |
+| `empty_map n` | `Nat → Map k v n` | empty map of capacity `n` |
+| `empty_set n` | `Nat → Set a n` | empty set of capacity `n` |
+| `insert k v m` / `insert k s` | `k → v → Map k v n → Map k v n` / `k → Set a n → Set a n` | insert (replace-on-duplicate); overloaded by arity |
+| `lookup k m` | `k → Map k v n → Maybe v` | value for key, or `Nothing` |
+| `member k c` | `k → Map k v n → Bool` / `a → Set a n → Bool` | membership test |
+
+List literals `[e1, e2, …]` are `List T n` with `n` = literal length; map
+literals `{ "k": v, … }` are `Map String T n`. Bool literals `true`/`false`,
+value-track comparisons `==` `!=` `<` `>` `<=` `>=`, and logic `&&` `||`
+(`not` is a prefix builtin — `!` stays the wire-cut combinator) are available
+in value position only; the signal track is untouched.
+
+Collections are compiled and processed through the same `RillProgram` API as
+any value-track program:
+
+```rust,no_run
+use rill_lang::compile;
+use rill_core::traits::MultichannelAlgorithm;
+
+// fold (acc, elem) over map (x * 2) of [1.0, 2.0, 3.0] -> 12.0
+let mut prog = compile::<f32>(
+    "main = fold (fn a b -> a + b) 0.0 (map (fn x -> x * 2.0) [1.0, 2.0, 3.0]);",
+).unwrap();
+let mut out = [0.0f32; 4];
+MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+assert_eq!(
+    prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+    &rill_lang::arena::Value::Float(12.0)
+);
+```
+
+#### Map/Set keys and derived `Eq`/`Ord`
+
+Map keys and set elements can be **any acyclic value type** — scalars, strings,
+lists, records, and builtin data types. The compiler derives an `Ord` instance
+for every concrete value type (Haskell `deriving`; `Func` is excluded): a
+structural order — leaves by value, sums by constructor index then payload,
+records by field order, lists lexicographically, maps/sets over their entries.
+`Map`/`Set` keep entries sorted by this derived order, so `lookup`/`member`
+are O(log n) binary search. A function-typed key has no derived `Ord` instance
+and is a **compile error**.
+
+### Higher-kinded types (HKT)
+
+A `data` declaration can take **type parameters**, and a `typeclass` can range
+over a type **constructor** (kind `* → *` or `* → * → *`) — higher-kinded
+polymorphism with compile-time resolution:
+
+```faust
+data Box a = { value: a };          // parameterized user record type
+
+typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
+instance Functor List where { fmap g xs = map g xs; }
+instance Functor Maybe where {
+    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+}
+
+main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
+```
+
+- **Kinds** — three kinds in v1: `*` (types), `* → *` (unary constructors),
+  `* → * → *` (binary constructors). The class variable's **arity** is inferred
+  from its use in method signatures (`f a` → 1, `f a b` → 2, bare `a` → 0) and
+  checked against the instance: `instance Functor Pair` (Pair has arity 2) is a
+  **kind error**.
+- **Capacity flow** — a kind variable matches the **head constructor**, ignoring
+  `Nat` capacity arguments. Unifying `f a` with `List Float 16` binds `f :=
+  List`, `a := Float`, and the capacity flows from argument to result — `fmap`
+  over a `List` preserves its capacity.
+- **Compile-time inline resolution** — `fmap g xs` unifies the method signature
+  with the argument type, instantiates the instance body, β-substitutes the
+  arguments, and inlines the result. `fmap` over `List` compiles directly to the
+  `map` builtin call — **zero runtime dispatch, no dictionaries**, preserving the
+  existing typeclass property.
+- Parameterized user **sums** are not registered as type constructors in v1:
+  `data Opt a = Some a | None` works as an ordinary (monomorphic) data type
+  (construction + match) but cannot be a typeclass instance.
 
 ### Memory model: arena + RC + COW
 
@@ -918,9 +1065,6 @@ the `strict` contract).
 - **Single value output** — `main` exposes one value channel; `main = p, p`
   (multi-value fan-out) and mixed signal+value outputs are rejected at
   lowering.
-- **Nullary constructors** — `data Color = Red | Green` cannot be constructed
-  in v1 (`Red` requires an argument); declare a payload, e.g.
-  `data Color = Red Float | Green Float`.
 - **No signal parameters in the `Func` type** — a lambda's signal-wire
   parameters are positional wire-captures, not part of the function value type
   (the trailing `_` wire must exactly complete the value arity).
@@ -931,6 +1075,22 @@ the `strict` contract).
   `ActorParam`, and reduction does not run inside `match` / field
   project/update / record bodies; a user-def call in those positions errors at
   lowering.
+
+Deferred:
+
+- **User-written `Eq`/`Ord` instances** — instances are compiler-derived for
+  all data types (except `Func`); a custom `instance Ord` is not yet
+  supported.
+- **`Hashable` / hash maps** — `Map`/`Set` are binary-search structures over
+  the derived total order; no hash-based containers.
+- **Length-indexed lists** — the type carries capacity, not length, so the
+  runtime capacity check cannot yet be eliminated statically.
+- **String operations beyond equality** — `String` supports construction,
+  map keys, and `==`/`!=`; no `concat`, formatting, or `show`.
+- **List `concat`/`append`/`reverse`; Set `union`/`intersection`** — the
+  current collection operations are the subset in the table above.
+- **Signal-track `Bool`** — comparisons and logic are value-track only;
+  `Scalar` (signal elements) is untouched.
 
 ## Status
 
@@ -947,7 +1107,13 @@ and `?name`), records for built-in configuration, multi-IO via
 `typeclass`, value channels, arena+RC+COW memory, runtime-stack cells,
 element-wise value arithmetic, first-class functions with closures and
 runtime dispatch, currying, higher-order combinators, and signal-wire
-arguments).
+arguments). The value track also supports **higher-kinded types**
+(parameterized `data`/`typeclass`/`instance`, kinds `*` / `* → *` /
+`* → * → *`, compile-time inline typeclass resolution over constructors) and
+**first-class Haskell-style collections** (`List`/`Map`/`Set` with strict
+type-carried capacities and a runtime `ProcessError` on overflow, `Maybe`/
+`Pair`/`Either`, `Bool`/`String` value types, derived `Eq`/`Ord` for Map/Set
+keys, list/map literals, value-track comparisons and logic).
 
 Deferred to follow-on work:
 
@@ -958,6 +1124,8 @@ Deferred to follow-on work:
   (current parameter modulation is control-rate/per-block);
 - composed expressions as built-in arguments;
 - runtime typeclass dispatch, cross-node value ports, and the
-  `strict`/`complete` compiler-mode contract.
+  `strict`/`complete` compiler-mode contract;
+- user-written `Eq`/`Ord` instances and hash-based containers (see
+  [Known v1 limitations](#known-v1-limitations)).
 
 [`RillLangDef`]: https://docs.rs/rill-lang
