@@ -145,7 +145,12 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
     let mark = drops.len();
     let blocks = std::mem::take(&mut prog.ir.value_blocks);
     let mut cur = prog.ir.value_entry;
-    while let Some(b) = blocks.get(cur) {
+    loop {
+        debug_assert!(
+            cur < blocks.len(),
+            "value-track fall-off-the-end: block {cur} does not exist"
+        );
+        let Some(b) = blocks.get(cur) else { break };
         for i in &b.instrs {
             exec_value_instr(prog, i, &mut drops);
         }
@@ -824,7 +829,15 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             None => prog.value_regs[*dst] = None,
         },
         ValueInstr::ValueMove { dst, src } => {
-            prog.value_regs[*dst] = prog.value_regs[*src].take();
+            // A move overwrites `dst`, so release any previous occupant (dst
+            // regs are SSA in lowering, but re-assignment must not leak) — and
+            // a self-move (`dst == src`) is a no-op, never a clear.
+            if *dst != *src {
+                if let Some(old) = prog.value_regs[*dst].take() {
+                    drops.push(old);
+                }
+                prog.value_regs[*dst] = prog.value_regs[*src].take();
+            }
         }
         ValueInstr::ValueDrop { src } => {
             if let Some(r) = prog.value_regs[*src].take() {
@@ -1570,7 +1583,14 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     //    so a nested dispatch's drops never collide.
     let drops_mark = drops.len();
     let mut cur = frag.entry;
-    while let Some(b) = frag.value_blocks.get(cur) {
+    loop {
+        debug_assert!(
+            cur < frag.value_blocks.len(),
+            "fragment value-track fall-off-the-end: block {cur} does not exist"
+        );
+        let Some(b) = frag.value_blocks.get(cur) else {
+            break;
+        };
         for i in &b.instrs {
             let remapped = remap_value_instr(i, base);
             exec_value_instr(prog, &remapped, drops);
@@ -2400,13 +2420,14 @@ mod value_track_tests {
 
     #[test]
     fn trampoline_branch_and_move() {
-        // A 4-block CFG: block 0 loads Bool(true) and two floats, moves the
+        // A 5-block CFG: block 0 loads Bool(true) and two floats, moves the
         // then-path value into reg 3, then Branches on the Bool. Block 1 (the
         // `then` target) moves the else-path value into the out reg 4 and
         // falls through to Halt; block 2 (the `els` target) would overwrite
-        // reg 4 with 999.0 if the branch dispatched wrongly. The trampoline
-        // must select block 1, so the out reg holds the moved Float(0.0) and
-        // every ValueMove source reg is `None` (ownership transferred).
+        // reg 4 with 999.0 if the branch dispatched wrongly. Block 3 is the
+        // Halt block; block 4 is a SENTINEL after it that writes reg 5 —
+        // reaching it means Halt was ignored (fall-off past the terminator),
+        // so reg 5 must stay `None` after the tick.
         let mut prog = prog_with(
             vec![
                 ValueBlock {
@@ -2440,9 +2461,17 @@ mod value_track_tests {
                     instrs: vec![],
                     term: ValueTerm::Halt,
                 },
+                // Sentinel: must never run.
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat {
+                        dst: 5,
+                        value: 777.0,
+                    }],
+                    term: ValueTerm::Halt,
+                },
             ],
             0,
-            5,
+            6,
             0,
         );
         run_value_track(&mut prog).unwrap();
@@ -2457,6 +2486,73 @@ mod value_track_tests {
             prog.arena.get(prog.value_regs[4].unwrap()).unwrap(),
             &crate::arena::Value::Float(0.0),
             "the Branch selected the then block, not the else (999.0)"
+        );
+        assert_eq!(
+            prog.value_regs[5], None,
+            "the sentinel block after Halt must never execute"
+        );
+    }
+
+    #[test]
+    fn trampoline_branch_false_takes_els() {
+        // A `Branch` with a `Bool(false)` condition must run the `els` block,
+        // not the `then` block: block 0 loads Bool(false); block 1 (`then`)
+        // would write 999.0 into reg 3, block 2 (`els`) writes 0.0. The sentinel
+        // block after Halt must stay `None` (reg 4).
+        let mut prog = prog_with(
+            vec![
+                ValueBlock {
+                    instrs: vec![
+                        ValueInstr::ValueBool {
+                            dst: 0,
+                            value: false,
+                        },
+                        ValueInstr::ValueConstFloat { dst: 1, value: 1.0 },
+                        ValueInstr::ValueConstFloat { dst: 2, value: 0.0 },
+                    ],
+                    term: ValueTerm::Branch {
+                        cond: 0,
+                        then: 1,
+                        els: 2,
+                    },
+                },
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat {
+                        dst: 3,
+                        value: 999.0,
+                    }],
+                    term: ValueTerm::Fallthrough(3),
+                },
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat { dst: 3, value: 0.0 }],
+                    term: ValueTerm::Fallthrough(3),
+                },
+                ValueBlock {
+                    instrs: vec![],
+                    term: ValueTerm::Halt,
+                },
+                // Sentinel: must never run.
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat {
+                        dst: 4,
+                        value: 777.0,
+                    }],
+                    term: ValueTerm::Halt,
+                },
+            ],
+            0,
+            5,
+            0,
+        );
+        run_value_track(&mut prog).unwrap();
+        assert_eq!(
+            prog.arena.get(prog.value_regs[3].unwrap()).unwrap(),
+            &crate::arena::Value::Float(0.0),
+            "the false Branch ran the els block, not the then (999.0)"
+        );
+        assert_eq!(
+            prog.value_regs[4], None,
+            "the sentinel block after Halt must never execute"
         );
     }
 }
