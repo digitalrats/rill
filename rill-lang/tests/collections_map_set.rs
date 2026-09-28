@@ -162,3 +162,89 @@ fn compound_data_key_is_accepted() {
         &rill_lang::arena::Value::Int(2)
     );
 }
+
+#[test]
+fn newtype_key_has_derived_ord() {
+    // spec §2.5 derives Eq/Ord for newtypes by their inner: a Map keyed by Hz
+    // must compile (the runtime value_cmp unwraps newtypes).
+    let mut prog = compile::<f32>(
+        "newtype Hz = Float; k = Hz 440.0; m = insert k 1.0 (empty_map 4); main = length [1.0];",
+    )
+    .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(1)
+    );
+}
+
+#[test]
+fn length_of_map_and_set() {
+    // The IR doc says Length covers list/set/map — Map and Set must report
+    // their entry counts, not silently return 0.
+    let mut prog = compile::<f32>("main = length { \"a\": 1.0, \"b\": 2.0 };").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2)
+    );
+
+    let mut prog =
+        compile::<f32>("main = length (insert 1.0 (insert 2.0 (empty_set 4)));").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2)
+    );
+}
+
+#[test]
+fn map_literal_value_type_matches_lookup() {
+    // A Float-valued map literal: lookup must yield the entry's value in the
+    // Just arm.
+    let mut prog = compile::<f32>(
+        "main = match (lookup \"a\" { \"a\": 1.0, \"b\": 2.0 }) of { Nothing => 0.0; Just x => x; };",
+    )
+    .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(1.0)
+    );
+}
+
+#[test]
+fn map_literal_value_type_is_actual_entry_type() {
+    // The map literal's value type must be the ACTUAL entry type (a record),
+    // not a pinned Float: projecting the looked-up record's field works.
+    let mut prog = compile::<f32>(
+        "data P = { x: Float, y: Float }; main = match (lookup \"a\" { \"a\": P { x: 1.0, y: 2.0 } }) of { Nothing => 0.0; Just p => p.x; };",
+    )
+    .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(1.0)
+    );
+}
+
+#[test]
+fn map_literal_mixed_value_types_are_compile_error() {
+    // A map literal's entries must share one value type: `{ "a": 1.0, "b": [1.0] }`
+    // mixes Float and List and must not compile.
+    let res = compile::<f32>("main = { \"a\": 1.0, \"b\": [1.0] };");
+    assert!(
+        res.is_err(),
+        "a map literal with mixed value types must be a compile error"
+    );
+}

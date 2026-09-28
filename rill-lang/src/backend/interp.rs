@@ -1005,10 +1005,14 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             }
         }
         Length => {
+            // The IR doc says Length covers list/set/map: each container
+            // reports its entry count.
             let n = prog.value_regs[args[0]]
                 .and_then(|r| prog.arena.get(r))
                 .map(|v| match v {
                     Value::List { elems, .. } => elems.len() as i64,
+                    Value::Map { pairs, .. } => pairs.len() as i64,
+                    Value::Set { elems, .. } => elems.len() as i64,
                     _ => 0,
                 })
                 .unwrap_or(0);

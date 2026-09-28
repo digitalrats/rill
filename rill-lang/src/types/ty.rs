@@ -383,12 +383,14 @@ impl TypeEnv {
     /// data type currently in the env — user data types, the builtin shapes
     /// (`Maybe`/`Pair`/`Either`) and the builtin ctor kinds (`List`/`Set`/`Map`,
     /// whose structural order the interpreter's `value_cmp` implements) — plus
-    /// the scalar leaves. `Func` types get no instance. Derived instances are
-    /// markers: their method bodies are not run — the interpreter's `value_cmp`
-    /// implements the order.
+    /// newtypes (derived by their inner, spec §2.5; `value_cmp` unwraps them)
+    /// and the scalar leaves. `Func` types get no instance. Derived instances
+    /// are markers: their method bodies are not run — the interpreter's
+    /// `value_cmp` implements the order.
     pub fn derive_eq_ord(&mut self) {
         let mut names: Vec<String> = self.data_types.keys().cloned().collect();
         names.extend(self.ctor_kinds.keys().cloned());
+        names.extend(self.newtypes.keys().cloned());
         names.extend(
             ["Int", "Float", "Bool", "String"]
                 .iter()

@@ -182,3 +182,70 @@ fn list_negative_capacity_does_not_explode() {
         other => panic!("expected a List, got {other:?}"),
     }
 }
+
+#[test]
+fn map_result_element_type_comes_from_closure_return() {
+    // `map (fn x -> x + 0.5) [1, 2, 3]` over an INT list must be typed
+    // `List Float` (the closure's RETURN type), not `List Int` (the source
+    // element type): a later `cons 4.0` must typecheck — it used to fail with a
+    // spurious "cannot unify Int with Float".
+    assert!(
+        compile::<f32>("main = cons 4.0 (map (fn x -> x + 0.5) [1, 2, 3]);").is_ok(),
+        "a type-changing map followed by a Float cons must compile"
+    );
+    // End-to-end length 4: the source needs spare capacity for the cons (map
+    // preserves the source cap).
+    let mut prog = compile::<f32>(
+        "main = length (cons 4.0 (map (fn x -> x + 0.5) (cons 3.0 (cons 2.0 (cons 1.0 (list 4))))));",
+    )
+    .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(4)
+    );
+}
+
+#[test]
+fn map_preserves_type_when_closure_returns_same_type() {
+    // A same-type closure (`x * 2.0` : Float -> Float) keeps the map result a
+    // `List Float` — the common case must keep typechecking.
+    let mut prog =
+        compile::<f32>("main = length (map (fn x -> x * 2.0) [1.0, 2.0, 3.0]);").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(3)
+    );
+}
+
+#[test]
+fn list_capacity_arg_must_be_int() {
+    // `list "foo"` — a non-Int capacity argument — must be a COMPILE error,
+    // not a silent `Cap(0)`.
+    assert!(compile::<f32>("main = list \"foo\";").is_err());
+}
+
+#[test]
+fn match_over_non_analyzable_scrutinee_is_compile_error() {
+    // `head (filter ...)` is not statically resolvable in v1: the old lowering
+    // silently picked arm 0 (Nothing) even when the runtime head is Just — a
+    // silent wrong value. It must now be a COMPILE error.
+    let res = compile::<f32>(
+        "main = match (head (filter (fn x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing => 0.0; Just x => x; };",
+    );
+    assert!(
+        res.is_err(),
+        "a match over a non-statically-resolvable scrutinee must not compile"
+    );
+    if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
+        assert!(
+            msg.contains("statically resolvable"),
+            "expected a 'statically resolvable' message, got: {msg}"
+        );
+    }
+}

@@ -1523,14 +1523,25 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             )))
         }
         Expr::MapLit(entries, _) => {
-            // Map literal with string keys: v1 pins the value type to Float
-            // (mirrors lowering); capacity = entry count.
+            // Map literal with string keys: every entry's value must share ONE
+            // type (mirroring the homogeneous List literal); that type is the
+            // map's value type. A mixed-type literal is a compile error, and a
+            // non-Float value type (a List, a record) is carried accurately.
+            let mut val_ty: Option<ValueTy> = None;
             for (_, ve) in entries {
-                let _ = infer_const_value(ctx, ve)?;
+                let vt = infer_const_value(ctx, ve)?;
+                if let Some(prev) = &val_ty {
+                    unify_value(prev, &vt, &mut ctx.subst, ve.span())?;
+                } else {
+                    val_ty = Some(vt);
+                }
             }
+            let val_ty = val_ty
+                .map(|t| ctx.subst.resolve_value(&t))
+                .unwrap_or(ValueTy::Float);
             Ok(ArrowTy::value_channel(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(entries.len())],
+                vec![ValueTy::String, val_ty, ValueTy::Cap(entries.len())],
             )))
         }
         Expr::Cmp { lhs, rhs, .. } => {
@@ -2600,8 +2611,24 @@ fn infer_collection_call(
                 return Err(arity_err("2", args.len()));
             }
             expect_closure(ctx, 1, "unary")?;
+            // The result list's ELEMENT type is the closure's RETURN type
+            // (`map : (a -> b) -> List a n -> List b n`), not the source list's
+            // element type — a type-changing map must be typed `List b`.
+            // Resolve the closure's structural `Func` signature so an
+            // as-yet-unresolved signature var becomes its concrete return type;
+            // a closure with no known return falls back to the source element.
+            let ft0 = arg_vty(ctx, 0)?;
+            let ft = ctx.subst.resolve_value(&ft0);
+            let ret_ty = match &ft {
+                ValueTy::Func(_, rets) => {
+                    let r = rets.first().cloned().unwrap_or(ValueTy::Float);
+                    ctx.subst.resolve_value(&r)
+                }
+                _ => ValueTy::Float,
+            };
             let lt = arg_vty(ctx, 1)?;
-            Ok(list_of(&lt))
+            let (_, cap) = list_shape(&lt);
+            Ok(ValueTy::App("List".into(), vec![ret_ty, ValueTy::Cap(cap)]))
         }
         "fold" => {
             if args.len() != 3 {
@@ -2624,7 +2651,11 @@ fn infer_collection_call(
             if args.len() != 1 {
                 return Err(arity_err("1", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            // The capacity argument must be an Int value (`list 4`); a fresh
+            // variable unifies to Int, a Float/string/list literal is a type
+            // error (a non-Int capacity used to read as `Cap(0)` silently).
+            let ct = arg_vty(ctx, 0)?;
+            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
             Ok(ValueTy::App(
                 "List".into(),
                 vec![ValueTy::Float, ValueTy::Cap(0)],
@@ -2674,7 +2705,8 @@ fn infer_collection_call(
             if args.len() != 1 {
                 return Err(arity_err("1", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            let ct = arg_vty(ctx, 0)?;
+            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
             Ok(ValueTy::App(
                 "Map".into(),
                 vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
@@ -2684,7 +2716,8 @@ fn infer_collection_call(
             if args.len() != 1 {
                 return Err(arity_err("1", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            let ct = arg_vty(ctx, 0)?;
+            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
             Ok(ValueTy::App(
                 "Set".into(),
                 vec![ValueTy::Float, ValueTy::Cap(0)],

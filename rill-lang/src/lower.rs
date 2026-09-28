@@ -74,14 +74,6 @@ fn container_cap(t: &ValueTy) -> usize {
     }
 }
 
-/// Whether the interpreter wires `op` at runtime. Every collection op has a
-/// concrete arm in `exec_value_call_builtin` (Task 6.4), so lowering accepts
-/// them all — a program using one compiles and runs instead of silently
-/// producing nothing.
-fn collection_op_implemented(_op: ValueBuiltinOp) -> bool {
-    true
-}
-
 /// Map a parsed comparison operator to its IR form (the two enums share their
 /// variant names, so the match is mechanical).
 fn cmp_op_from_ast(op: crate::ast::CmpOp) -> CmpOp {
@@ -388,9 +380,10 @@ impl<'a> Lowerer<'a> {
                 // ctor is statically known (a literal sum or an inlined value
                 // def that is one), lower ONLY the matching arm — emitting the
                 // other arms would run dead bodies and select a None register.
-                // An unbound scrutinee (`_`) assumes the first arm's ctor: the
-                // value arrives constructed per the first arm in v1's static
-                // world (no runtime value inputs).
+                // A scrutinee whose ctor is NOT statically analyzable (`head
+                // (filter ...)`) is a compile error: silently assuming the
+                // first arm's ctor returned a wrong value when the runtime
+                // value was a different constructor.
                 let selected_arm = match self.static_scrutinee_ctor(scrutinee.as_ref()) {
                     Some(cname) => {
                         arms.iter()
@@ -400,7 +393,11 @@ impl<'a> Lowerer<'a> {
                                 span: *span,
                             })?
                     }
-                    None => 0,
+                    None => {
+                        return Err(CompileError::Unsupported(
+                            "match scrutinee is not statically resolvable in v1".into(),
+                        ));
+                    }
                 };
                 // Lower the selected arm only, binding its params to the match's
                 // payload regs.
@@ -492,11 +489,6 @@ impl<'a> Lowerer<'a> {
                 // method/user-def resolution so a collection op can never be
                 // shadowed by a definition of the same name.
                 if let Some(op) = self.value_builtin(name, call_args.len()) {
-                    if !collection_op_implemented(op) {
-                        return Err(CompileError::Unsupported(format!(
-                            "collection op `{name}` not yet implemented (Phase 6.4)"
-                        )));
-                    }
                     let mut arg_regs = Vec::with_capacity(call_args.len());
                     let mut arg_tys = Vec::with_capacity(call_args.len());
                     for a in call_args {
@@ -963,15 +955,16 @@ impl<'a> Lowerer<'a> {
             Expr::MapLit(entries, _) => {
                 let mut keys = Vec::with_capacity(entries.len());
                 let mut vals = Vec::with_capacity(entries.len());
+                // Inference already unified every entry's value type, so the
+                // entries share one static value type; it is carried on the
+                // result Map (a List/record value is NOT pinned to Float).
+                let mut val_ty = ValueTy::Float;
                 for (k, v) in entries {
                     let (kr, _) = self.lower_value(&Expr::Str(k.clone(), Span::new(0, 0)))?;
                     let (vr, vt) = self.lower_value(v)?;
                     keys.push(kr);
                     vals.push(vr);
-                    if !matches!(vt, ValueTy::Float | ValueTy::Int) {
-                        // v1 MapLit value type is pinned to Float; the per-entry
-                        // type is recorded only as a future refinement hook.
-                    }
+                    val_ty = vt;
                 }
                 let cap = keys.len();
                 let dst = self.fresh_value_reg();
@@ -983,7 +976,7 @@ impl<'a> Lowerer<'a> {
                 });
                 let ret = ValueTy::App(
                     "Map".into(),
-                    vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(cap)],
+                    vec![ValueTy::String, val_ty, ValueTy::Cap(cap)],
                 );
                 self.note_container(&ret);
                 Ok((dst, ret))
@@ -1109,13 +1102,19 @@ impl<'a> Lowerer<'a> {
             }
             "length" => Ok(ValueTy::Int),
             "map" => {
-                // The result list's capacity is the SOURCE list's cap: map
-                // allocates cap(source) element slots + the result container in
-                // one op, so a Cap(0) result type would undercount the arena
-                // bound by n element slots.
-                let elem = match args.get(1).and_then(list_type_args) {
-                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
-                    _ => ValueTy::Float,
+                // The result list's ELEMENT type is the closure's RETURN type
+                // (`map : (a -> b) -> List a n -> List b n`), read from the
+                // lowered `Func` signature of `args[0]`; a closure with no
+                // known return falls back to the source element type. The
+                // capacity mirrors the SOURCE list's cap: map allocates
+                // cap(source) element slots + the result container in one op,
+                // so a Cap(0) result type would undercount the arena bound.
+                let elem = match args.first() {
+                    Some(ValueTy::Func(_, rets)) => rets.first().cloned().unwrap_or(ValueTy::Float),
+                    _ => match args.get(1).and_then(list_type_args) {
+                        Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
+                        _ => ValueTy::Float,
+                    },
                 };
                 let cap = args.get(1).map(container_cap).unwrap_or(0);
                 Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
@@ -3812,7 +3811,7 @@ mod tests {
     #[test]
     fn match_lowers_to_value_match() {
         let ir = ir_of(
-            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+            "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Circle r => r; Rect w h => w; }",
         );
         assert!(ir
             .value_instrs
@@ -3859,19 +3858,29 @@ mod tests {
     }
 
     #[test]
-    fn match_wire_uses_first_arm() {
-        // An unbound `_` scrutinee has no static ctor: v1 static dispatch
-        // assumes the value is constructed per the first arm's ctor, so exactly
-        // one ValueMatch is emitted.
-        let ir = ir_of(
-            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
-        );
-        let matches = ir
-            .value_instrs
-            .iter()
-            .filter(|i| matches!(i, ValueInstr::ValueMatch { .. }))
-            .count();
-        assert_eq!(matches, 1);
+    fn match_wire_scrutinee_is_compile_error() {
+        // An unbound `_` scrutinee has no statically-known constructor: v1
+        // static dispatch must reject it, not silently assume the first arm's
+        // ctor (which returned a wrong value when the runtime value was a
+        // different constructor).
+        let p = parse(
+            &tokenize(
+                "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+            )
+            .unwrap(),
+            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }"
+                .as_bytes(),
+        )
+        .unwrap();
+        let tp = infer_program(&p).unwrap();
+        let res = lower(&tp);
+        assert!(res.is_err());
+        if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
+            assert!(
+                msg.contains("statically resolvable"),
+                "expected a 'statically resolvable' message, got: {msg}"
+            );
+        }
     }
 
     #[test]
