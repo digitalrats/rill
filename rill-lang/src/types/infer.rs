@@ -11,10 +11,10 @@ use super::ty::{
     TypeVarId, TypeclassInfo, ValueTy,
 };
 use super::unify::{unify_scalar, unify_value};
-use crate::ast::{Def, Expr, Param, Pattern, Program};
+use crate::ast::{Def, Expr, MatchArm, Pattern, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
-use crate::reduce::{pattern_vars, unguarded_arm_body, NON_CTOR_PATTERN_MSG};
+use crate::reduce::pattern_vars;
 
 /// The typed result of inference: the program's definitions plus the resolved
 /// type of the output and the final substitution.
@@ -1052,6 +1052,271 @@ fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> 
     Ok(())
 }
 
+/// Resolve an arm/branch body's result value type: a value channel directly,
+/// or a bare `Int`/`Float` literal (signal-rate in v1 but value-compatible in
+/// value positions).
+fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, CompileError> {
+    if bt.arity_in() != 0 || bt.arity_out() != 1 {
+        return Err(CompileError::Type {
+            msg: "branch must be a value expression (0->1 value channel)".into(),
+            span,
+        });
+    }
+    match bt.outs[0].rate {
+        Rate::Value => Ok(bt.outs[0].vty.clone()),
+        Rate::Signal => match body {
+            Expr::Int(_, _) => Ok(ValueTy::Int),
+            Expr::Float(_, _) => Ok(ValueTy::Float),
+            _ => Err(CompileError::Type {
+                msg: "branch must be a value expression (0->1 value channel)".into(),
+                span,
+            }),
+        },
+    }
+}
+
+/// Bind a pattern's variables into `ctx.locals` and type-check the pattern
+/// against `vty` (recursively for nested constructor patterns).
+fn bind_pattern(
+    ctx: &mut Ctx<'_>,
+    pattern: &Pattern,
+    vty: &ValueTy,
+    sum_name: &str,
+    is_builtin: bool,
+    scrutinee_args: &[ValueTy],
+    arm_span: Span,
+) -> Result<(), CompileError> {
+    match pattern {
+        Pattern::Var(name) => {
+            ctx.locals
+                .insert(name.clone(), ArrowTy::value_channel(vty.clone()));
+            Ok(())
+        }
+        Pattern::Wild => Ok(()),
+        Pattern::Ctor(name, args) => {
+            let payload = match sum_ctor_payload(ctx, sum_name, name) {
+                Some(p) => p,
+                None => {
+                    return Err(CompileError::Type {
+                        msg: format!("unknown constructor `{name}` for `{sum_name}`"),
+                        span: arm_span,
+                    });
+                }
+            };
+            if args.len() != payload.len() {
+                return Err(CompileError::Type {
+                    msg: format!("wrong number of patterns for constructor `{name}`"),
+                    span: arm_span,
+                });
+            }
+            for (arg, pt) in args.iter().zip(payload.iter()) {
+                // Builtin payloads carry placeholder type params; resolve them
+                // against the scrutinee args (a fresh var when the scrutinee has
+                // none — e.g. `Just x` matched against `Nothing`).
+                let resolved = if is_builtin {
+                    match pt {
+                        ValueTy::Var(k) => scrutinee_args
+                            .get(k.saturating_sub(1) as usize)
+                            .cloned()
+                            .unwrap_or_else(|| ctx.fresh_vty()),
+                        t => t.clone(),
+                    }
+                } else {
+                    pt.clone()
+                };
+                bind_pattern(
+                    ctx,
+                    arg,
+                    &resolved,
+                    sum_name,
+                    is_builtin,
+                    scrutinee_args,
+                    arm_span,
+                )?;
+            }
+            Ok(())
+        }
+        Pattern::LitInt(_) | Pattern::LitFloat(_) | Pattern::LitBool(_) | Pattern::LitStr(_) => {
+            Err(CompileError::Type {
+                msg: "literal pattern requires a scalar scrutinee".into(),
+                span: arm_span,
+            })
+        }
+    }
+}
+
+/// Type-check every arm against the (already pinned) sum scrutinee: patterns,
+/// guards (Bool), and unified bodies. The pattern is bound into `ctx.locals`
+/// BEFORE the guards and bodies are inferred, because a guard references the
+/// pattern's bound variables (`n | n > 0 => ...` needs `n`). Returns the
+/// unified arm-body result value type.
+fn check_match_arms(
+    ctx: &mut Ctx<'_>,
+    sum_name: &str,
+    scrutinee_vty: &ValueTy,
+    arms: &[MatchArm],
+    span: Span,
+) -> Result<ValueTy, CompileError> {
+    let scrutinee_args: Vec<ValueTy> = match &scrutinee_vty {
+        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+        _ => vec![],
+    };
+    let is_builtin = ctx.env.ctor_arity(sum_name).is_some();
+    let mut result: Option<ValueTy> = None;
+    for arm in arms {
+        let saved = ctx.locals.clone();
+        bind_pattern(
+            ctx,
+            &arm.pattern,
+            scrutinee_vty,
+            sum_name,
+            is_builtin,
+            &scrutinee_args,
+            arm.span,
+        )?;
+        for (g, body) in &arm.guards {
+            if !matches!(g, Expr::Bool(true, _)) {
+                let gt = infer_expr(ctx, g)?;
+                if gt.arity_out() != 1
+                    || gt.outs[0].rate != Rate::Value
+                    || !matches!(ctx.subst.resolve_value(&gt.outs[0].vty), ValueTy::Bool)
+                {
+                    return Err(CompileError::Type {
+                        msg: "match guard must be a Bool value".into(),
+                        span: g.span(),
+                    });
+                }
+            }
+            let bt = infer_expr(ctx, body)?;
+            let bv = arm_result_vty(bt, body, body.span())?;
+            if let Some(ref acc) = result {
+                unify_value(acc, &bv, &mut ctx.subst, body.span())?;
+            } else {
+                result = Some(bv);
+            }
+        }
+        ctx.locals = saved;
+    }
+    check_exhaustive_sum(ctx, sum_name, arms, span)?;
+    Ok(result.unwrap_or(ValueTy::Float))
+}
+
+/// Pin a literal pattern's type to the scrutinee type (so a `Wire` scrutinee
+/// infers `Int` from a `0` arm) and bind variable patterns.
+fn check_scalar_pattern(
+    ctx: &mut Ctx<'_>,
+    pattern: &Pattern,
+    scrutinee_vty: &ValueTy,
+    arm_span: Span,
+) -> Result<(), CompileError> {
+    match pattern {
+        Pattern::Var(name) => {
+            ctx.locals
+                .insert(name.clone(), ArrowTy::value_channel(scrutinee_vty.clone()));
+            Ok(())
+        }
+        Pattern::Wild => Ok(()),
+        Pattern::LitInt(_) => unify_value(scrutinee_vty, &ValueTy::Int, &mut ctx.subst, arm_span),
+        Pattern::LitFloat(_) => {
+            unify_value(scrutinee_vty, &ValueTy::Float, &mut ctx.subst, arm_span)
+        }
+        Pattern::LitBool(_) => unify_value(scrutinee_vty, &ValueTy::Bool, &mut ctx.subst, arm_span),
+        Pattern::LitStr(_) => {
+            unify_value(scrutinee_vty, &ValueTy::String, &mut ctx.subst, arm_span)
+        }
+        Pattern::Ctor(_, _) => Err(CompileError::Type {
+            msg: "constructor pattern requires a sum scrutinee".into(),
+            span: arm_span,
+        }),
+    }
+}
+
+/// Scalar totality: a `Wild`/`Var` arm, or (for Bool) both literals.
+fn check_exhaustive_scalar(
+    ctx: &Ctx<'_>,
+    arms: &[MatchArm],
+    scrutinee_vty: &ValueTy,
+    span: Span,
+) -> Result<(), CompileError> {
+    let is_bool = matches!(ctx.subst.resolve_value(scrutinee_vty), ValueTy::Bool);
+    let mut has_wild = false;
+    let mut has_true = false;
+    let mut has_false = false;
+    for a in arms {
+        let guarded =
+            a.guards.len() > 1 || !matches!(a.guards.first(), Some((Expr::Bool(true, _), _)));
+        if guarded {
+            continue;
+        }
+        match &a.pattern {
+            Pattern::Wild | Pattern::Var(_) => has_wild = true,
+            Pattern::LitBool(b) => {
+                if *b {
+                    has_true = true;
+                } else {
+                    has_false = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    let ok = has_wild || (is_bool && has_true && has_false);
+    if ok {
+        return Ok(());
+    }
+    Err(CompileError::Type {
+        msg: "non-exhaustive match: a scalar match needs a `_` (or variable) arm".into(),
+        span,
+    })
+}
+
+/// Compile-time totality for sums: every constructor is covered by an
+/// unguarded arm, or an unguarded Wild/Var arm exists.
+fn check_exhaustive_sum(
+    ctx: &Ctx<'_>,
+    sum_name: &str,
+    arms: &[MatchArm],
+    span: Span,
+) -> Result<(), CompileError> {
+    let ctors: Vec<String> = match ctx.env.data_types.get(sum_name) {
+        Some(DataInfo::Sum(cs)) => cs.iter().map(|(n, _)| n.clone()).collect(),
+        _ => return Ok(()),
+    };
+    let mut covered: HashSet<&str> = HashSet::new();
+    let mut has_wild = false;
+    for a in arms {
+        let guarded =
+            a.guards.len() > 1 || !matches!(a.guards.first(), Some((Expr::Bool(true, _), _)));
+        if guarded {
+            continue;
+        }
+        match &a.pattern {
+            Pattern::Ctor(name, _) => {
+                covered.insert(name.as_str());
+            }
+            Pattern::Wild | Pattern::Var(_) => has_wild = true,
+            _ => {}
+        }
+    }
+    if has_wild {
+        return Ok(());
+    }
+    let missing: Vec<String> = ctors
+        .into_iter()
+        .filter(|c| !covered.contains(c.as_str()))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(CompileError::Type {
+        msg: format!(
+            "non-exhaustive match: missing constructor(s) {}",
+            missing.join(", ")
+        ),
+        span,
+    })
+}
+
 /// Infer the diagram type of an expression, synthesizing concrete arities.
 fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
     match e {
@@ -1301,9 +1566,15 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             arms,
             span,
         } => {
+            if arms.is_empty() {
+                return Err(CompileError::Type {
+                    msg: "match requires at least one arm".into(),
+                    span: *span,
+                });
+            }
             // `_` in match-scrutinee position is the identity value wire: it is
             // a Value channel with a fresh value type, pinned to the arm-derived
-            // sum type below by unification.
+            // sum type (or a literal arm's scalar type) below by unification.
             let st = match scrutinee.as_ref() {
                 Expr::Wire(_) => {
                     let v = ctx.next;
@@ -1312,20 +1583,22 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 }
                 _ => infer_expr(ctx, scrutinee)?,
             };
-            // The scrutinee must be a sum value.
+            // The scrutinee must be a single value channel.
             if st.arity_out() != 1 || st.outs[0].rate != Rate::Value {
                 return Err(CompileError::Type {
-                    msg: "match scrutinee must be a sum value".into(),
+                    msg: "match scrutinee must be a value".into(),
                     span: *span,
                 });
             }
             let scrutinee_vty = st.outs[0].vty.clone();
+            // Sum or scalar? Resolve the scrutinee type enough to decide.
             // Builtin sums are parameterized (`Maybe a`, `Either a b`):
             // `Nothing` infers as `App("Maybe", [..])` and `head`/`lookup` as
             // `App("Maybe", [t])`, while user sums stay `Data(name, [])`. The
             // scrutinee's sum name is the `App` head (when it is a builtin Sum)
             // or the `Data` name.
-            let scrutinee_sum = match &scrutinee_vty {
+            let resolved = ctx.subst.resolve_value(&scrutinee_vty);
+            let scrutinee_sum = match &resolved {
                 ValueTy::Data(name, _) => Some(name.clone()),
                 ValueTy::App(name, _)
                     if matches!(
@@ -1337,182 +1610,131 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 }
                 _ => None,
             };
-            // Derive the sum type name: every arm's constructor must belong to
-            // the same sum type. A concrete scrutinee type disambiguates ctor
-            // names shared across sum types; otherwise an ambiguous or unknown
-            // constructor is a deterministic error (no HashMap-order hazard).
-            let mut candidates: Option<Vec<String>> = None;
-            for arm in arms {
-                let ctor = match &arm.pattern {
-                    Pattern::Ctor(c, _) => c.clone(),
-                    _ => return Err(CompileError::Unsupported(NON_CTOR_PATTERN_MSG.into())),
+            if arms
+                .iter()
+                .any(|a| matches!(a.pattern, Pattern::Ctor(_, _)))
+            {
+                // A constructor pattern requires a sum scrutinee. Derive the
+                // sum name from the scrutinee, else from the constructor
+                // intersection (a concrete scrutinee type disambiguates ctor
+                // names shared across sum types; otherwise an ambiguous or
+                // unknown constructor is a deterministic error).
+                let sum_name = match &scrutinee_sum {
+                    Some(n) => n.clone(),
+                    None => {
+                        let mut candidates: Option<Vec<String>> = None;
+                        for a in arms {
+                            if let Pattern::Ctor(name, _) = &a.pattern {
+                                let per_ctor = sum_types_with_ctor(ctx, name);
+                                if per_ctor.is_empty() {
+                                    return Err(CompileError::Type {
+                                        msg: format!("unknown constructor `{name}`"),
+                                        span: a.span,
+                                    });
+                                }
+                                candidates = Some(match candidates {
+                                    None => per_ctor,
+                                    Some(acc) => {
+                                        acc.into_iter().filter(|n| per_ctor.contains(n)).collect()
+                                    }
+                                });
+                            }
+                        }
+                        match candidates {
+                            Some(v) if v.len() == 1 => v[0].clone(),
+                            _ => {
+                                return Err(CompileError::Type {
+                                    msg: "match arms use constructors of ambiguous or different sum types"
+                                        .into(),
+                                    span: *span,
+                                });
+                            }
+                        }
+                    }
                 };
-                let mut per_ctor = sum_types_with_ctor(ctx, &ctor);
-                if let Some(sn) = &scrutinee_sum {
-                    per_ctor.retain(|n| n == sn);
+                // Pin the scrutinee's value type to the arm-derived sum type.
+                // Builtin sums keep their concrete type args (fresh when the
+                // scrutinee carries none); user sums pin to the monomorphic
+                // `Data`.
+                let pin_ty = match ctx.env.ctor_arity(&sum_name) {
+                    Some(arity) => {
+                        let mut args: Vec<ValueTy> = match &scrutinee_vty {
+                            ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                            _ => vec![],
+                        };
+                        while args.len() < arity {
+                            args.push(ctx.fresh_vty());
+                        }
+                        ValueTy::App(sum_name.clone(), args)
+                    }
+                    None => ValueTy::Data(sum_name.clone(), vec![]),
+                };
+                unify_value(&scrutinee_vty, &pin_ty, &mut ctx.subst, *span)?;
+                let result = check_match_arms(ctx, &sum_name, &pin_ty, arms, *span)?;
+                Ok(ArrowTy::value_channel(result))
+            } else {
+                // Scalar (or unknown) match: literal/Var/Wild patterns only.
+                // Pin literal patterns to the scrutinee type; require totality.
+                let mut result: Option<ValueTy> = None;
+                for a in arms {
+                    let saved = ctx.locals.clone();
+                    check_scalar_pattern(ctx, &a.pattern, &scrutinee_vty, a.span)?;
+                    for (g, body) in &a.guards {
+                        if !matches!(g, Expr::Bool(true, _)) {
+                            let gt = infer_expr(ctx, g)?;
+                            if gt.arity_out() != 1
+                                || gt.outs[0].rate != Rate::Value
+                                || !matches!(
+                                    ctx.subst.resolve_value(&gt.outs[0].vty),
+                                    ValueTy::Bool
+                                )
+                            {
+                                return Err(CompileError::Type {
+                                    msg: "match guard must be a Bool value".into(),
+                                    span: g.span(),
+                                });
+                            }
+                        }
+                        let bt = infer_expr(ctx, body)?;
+                        let bv = arm_result_vty(bt, body, body.span())?;
+                        if let Some(ref acc) = result {
+                            unify_value(acc, &bv, &mut ctx.subst, body.span())?;
+                        } else {
+                            result = Some(bv);
+                        }
+                    }
+                    ctx.locals = saved;
                 }
-                if per_ctor.is_empty() {
-                    return Err(CompileError::Type {
-                        msg: format!("unknown constructor `{ctor}`"),
-                        span: *span,
-                    });
-                }
-                candidates = Some(match candidates {
-                    None => per_ctor,
-                    Some(acc) => acc.into_iter().filter(|n| per_ctor.contains(n)).collect(),
+                check_exhaustive_scalar(ctx, arms, &scrutinee_vty, *span)?;
+                Ok(ArrowTy::value_channel(result.unwrap_or(ValueTy::Float)))
+            }
+        }
+        Expr::If {
+            cond,
+            then,
+            els,
+            span,
+        } => {
+            let ct = infer_expr(ctx, cond)?;
+            if ct.arity_out() != 1 || ct.outs[0].rate != Rate::Value {
+                return Err(CompileError::Type {
+                    msg: "if condition must be a Bool value".into(),
+                    span: cond.span(),
                 });
             }
-            let sum_name = match candidates {
-                Some(v) if v.len() == 1 => v[0].clone(),
-                Some(_) => {
-                    return Err(CompileError::Type {
-                        msg: "match arms use constructors of ambiguous or different sum types"
-                            .into(),
-                        span: *span,
-                    });
-                }
-                None => {
-                    return Err(CompileError::Type {
-                        msg: "match requires at least one arm".into(),
-                        span: *span,
-                    });
-                }
-            };
-            // Pin the scrutinee's value type to the arm-derived sum type.
-            // Builtin sums keep their concrete type args (fresh when the
-            // scrutinee carries none); user sums pin to the monomorphic `Data`.
-            let pin_ty = match ctx.env.ctor_arity(&sum_name) {
-                Some(arity) => {
-                    let mut args: Vec<ValueTy> = match &scrutinee_vty {
-                        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
-                        _ => vec![],
-                    };
-                    while args.len() < arity {
-                        args.push(ctx.fresh_vty());
-                    }
-                    ValueTy::App(sum_name.clone(), args)
-                }
-                None => ValueTy::Data(sum_name.clone(), vec![]),
-            };
-            unify_value(&scrutinee_vty, &pin_ty, &mut ctx.subst, *span)?;
-            // Resolve the scrutinee's type args AFTER the pin: for a nullary
-            // `Nothing` the fresh element unifies with the arm results below;
-            // for `head`/`lookup` it is the concrete element type. Builtin arm
-            // payloads reference placeholder positions (`Var(1)`, `Var(2)`) that
-            // map onto these args by position.
-            let scrutinee_args: Vec<ValueTy> = match ctx.subst.resolve_value(&scrutinee_vty) {
-                ValueTy::App(_, a) | ValueTy::Data(_, a) => a,
-                _ => vec![],
-            };
-            let is_builtin_sum = ctx.env.ctor_arity(&sum_name).is_some();
-            let mut result: Option<ArrowTy> = None;
-            for arm in arms {
-                // Mechanical adaptation until Task 6: treat each arm as a flat
-                // `Ctor(ctor, [Var ...])` pattern + its first body. All arms are
-                // ctor patterns (non-ctor patterns were rejected above).
-                let (ctor, args) = match &arm.pattern {
-                    Pattern::Ctor(c, args) => (c.clone(), args),
-                    _ => unreachable!("all arms are ctor patterns (checked above)"),
-                };
-                let params: Vec<Param> = args
-                    .iter()
-                    .map(|a| match a {
-                        Pattern::Var(name) => Param {
-                            name: name.clone(),
-                            span: arm.span,
-                        },
-                        // Nested/non-variable argument patterns bind nothing in
-                        // the mechanical adaptation (Task 6 binds them properly).
-                        _ => Param {
-                            name: "_".into(),
-                            span: arm.span,
-                        },
-                    })
-                    .collect();
-                let body = unguarded_arm_body(arm)?;
-                let payload = match sum_ctor_payload(ctx, &sum_name, &ctor) {
-                    Some(p) => p,
-                    None => {
-                        return Err(CompileError::Type {
-                            msg: format!("unknown constructor `{ctor}` for `{sum_name}`"),
-                            span: *span,
-                        });
-                    }
-                };
-                if params.len() > payload.len() {
-                    return Err(CompileError::Type {
-                        msg: format!("too many bindings for constructor `{ctor}`"),
-                        span: body.span(),
-                    });
-                }
-                // Builtin payloads carry placeholder type params; resolve them
-                // against the scrutinee args (a fresh var when the scrutinee has
-                // none — e.g. `Just x` matched against `Nothing`).
-                let payload: Vec<ValueTy> = if is_builtin_sum {
-                    payload
-                        .iter()
-                        .map(|pt| match pt {
-                            ValueTy::Var(k) => scrutinee_args
-                                .get(k.saturating_sub(1) as usize)
-                                .cloned()
-                                .unwrap_or_else(|| ctx.fresh_vty()),
-                            t => t.clone(),
-                        })
-                        .collect()
-                } else {
-                    payload
-                };
-                let saved = ctx.locals.clone();
-                for (idx, p) in params.iter().enumerate() {
-                    let pty = payload.get(idx).cloned().unwrap_or(ValueTy::Float);
-                    ctx.locals
-                        .insert(p.name.clone(), ArrowTy::value_channel(pty));
-                }
-                let bt = infer_expr(ctx, body)?;
-                ctx.locals = saved;
-                // Each arm body must be a value expression: a value channel, or
-                // a bare Float/Int literal (value-compatible in v1, like other
-                // value positions).
-                if bt.arity_in() != 0 || bt.arity_out() != 1 {
-                    return Err(CompileError::Type {
-                        msg: "match arm must be a value expression (0→1 value channel)".into(),
-                        span: body.span(),
-                    });
-                }
-                let arm_vty = match bt.outs[0].rate {
-                    Rate::Value => bt.outs[0].vty.clone(),
-                    Rate::Signal => match body {
-                        Expr::Int(_, _) => ValueTy::Int,
-                        Expr::Float(_, _) => ValueTy::Float,
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: "match arm must be a value expression (0→1 value channel)"
-                                    .into(),
-                                span: body.span(),
-                            });
-                        }
-                    },
-                };
-                let bt = ArrowTy::value_channel(arm_vty);
-                // Unify (not strict-compare) the arm result types: a `Nothing`
-                // arm's Float result and a `Just x` arm's as-yet-unresolved
-                // element type must agree.
-                if let Some(ref acc) = result {
-                    unify_value(
-                        &acc.outs[0].vty,
-                        &bt.outs[0].vty,
-                        &mut ctx.subst,
-                        body.span(),
-                    )?;
-                } else {
-                    result = Some(bt);
-                }
+            if !matches!(ctx.subst.resolve_value(&ct.outs[0].vty), ValueTy::Bool) {
+                return Err(CompileError::Type {
+                    msg: "if condition must be a Bool value".into(),
+                    span: cond.span(),
+                });
             }
-            Ok(result.unwrap_or(ArrowTy::value_channel(ValueTy::Float)))
+            let tt = infer_expr(ctx, then)?;
+            let et = infer_expr(ctx, els)?;
+            let tv = arm_result_vty(tt, then, *span)?;
+            let ev = arm_result_vty(et, els, *span)?;
+            unify_value(&tv, &ev, &mut ctx.subst, *span)?;
+            Ok(ArrowTy::value_channel(tv))
         }
-        Expr::If { .. } => Err(CompileError::Unsupported(
-            "`if` is not yet supported in inference (Task 6)".into(),
-        )),
         Expr::Lambda { params, body, span } => {
             // Bind the parameters as value channels and infer the body; the
             // result type is the function type. v1 lambda parameters are
@@ -3410,21 +3632,39 @@ mod tests {
     }
 
     #[test]
-    fn guarded_match_arm_is_rejected_until_guards_support() {
-        // A guarded ctor arm (`Circle r | r > 0.0 => r`) must fail LOUD until
-        // guards land (Task 6), not silently drop the guard and compile.
+    fn guarded_match_arm_type_checks_and_is_non_exhaustive_alone() {
+        // A guarded ctor arm (`Circle r | r > 0.0 => r`) type-checks its guard
+        // as a Bool value, but a guarded arm does NOT cover its constructor for
+        // exhaustiveness: without a wildcard the match must fail loudly, not
+        // silently drop the guard.
         let res = ty_of(
             "data Shape = Circle Float | Rect Float Float; \
              main = match Circle 1.0 of { Circle r | r > 0.0 => r; };",
         );
         let err = match res {
             Err(e) => e,
-            Ok(_) => panic!("guarded match arm must be a compile error, not silently compiled"),
+            Ok(_) => panic!("a guarded match without a wildcard must be non-exhaustive"),
         };
         let msg = format!("{err}");
         assert!(
-            msg.contains("not yet supported"),
-            "expected a 'not yet supported' error, got: {msg}"
+            msg.contains("non-exhaustive"),
+            "expected a non-exhaustive error, got: {msg}"
+        );
+        // A wildcard arm makes the guarded match exhaustive; the guard is
+        // type-checked as a Bool value.
+        assert!(ty_of(
+            "data Shape = Circle Float | Rect Float Float; \
+             main = match Circle 1.0 of { Circle r | r > 0.0 => r; _ => 0.0; };"
+        )
+        .is_ok());
+        // A non-Bool guard is a type error.
+        let res = ty_of(
+            "data Shape = Circle Float | Rect Float Float; \
+             main = match Circle 1.0 of { Circle r | r + 1.0 => r; _ => 0.0; };",
+        );
+        assert!(
+            res.is_err(),
+            "a non-Bool guard must be a compile error, not silently compiled"
         );
     }
 
@@ -3439,6 +3679,25 @@ mod tests {
             "data Point = { x: Float, y: Float }; main = Point { x: 1.0, x: 2.0, y: 3.0 }"
         )
         .is_err());
+    }
+
+    #[test]
+    fn if_infers_bool_condition_and_branch_types() {
+        let t = ty_of("main = if 1.0 < 2.0 then 1.0 else 2.0").unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert!(ty_of("main = if 1.0 then 1.0 else 2.0").is_err());
+        assert!(ty_of("main = if 1.0 < 2.0 then 1 else 2").is_ok());
+        let t2 = ty_of("main = if 1.0 < 2.0 then 1 else 2").unwrap();
+        assert_eq!(t2.process_ty.outs[0].vty, ValueTy::Int);
+    }
+
+    #[test]
+    fn scalar_match_infers_literal_patterns_and_totality() {
+        let t = ty_of("main = match _ of { 0 => 1.0; _ => 2.0; }").unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert!(ty_of("main = match _ of { 0 => 1.0 }").is_err());
+        let t2 = ty_of("main = match true of { true => 1.0; false => 2.0 }").unwrap();
+        assert_eq!(t2.process_ty.outs[0].vty, ValueTy::Float);
     }
 
     #[test]
