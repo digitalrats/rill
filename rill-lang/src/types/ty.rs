@@ -380,11 +380,15 @@ impl TypeEnv {
     }
 
     /// Register a derived (structural) `Eq`/`Ord` instance for every concrete
-    /// data type currently in the env, plus the scalar leaves. `Func` types
-    /// get no instance. Derived instances are markers: their method bodies are
-    /// not run — the interpreter's `value_cmp` implements the order.
+    /// data type currently in the env — user data types, the builtin shapes
+    /// (`Maybe`/`Pair`/`Either`) and the builtin ctor kinds (`List`/`Set`/`Map`,
+    /// whose structural order the interpreter's `value_cmp` implements) — plus
+    /// the scalar leaves. `Func` types get no instance. Derived instances are
+    /// markers: their method bodies are not run — the interpreter's `value_cmp`
+    /// implements the order.
     pub fn derive_eq_ord(&mut self) {
         let mut names: Vec<String> = self.data_types.keys().cloned().collect();
+        names.extend(self.ctor_kinds.keys().cloned());
         names.extend(
             ["Int", "Float", "Bool", "String"]
                 .iter()
@@ -463,15 +467,19 @@ impl TypeEnv {
     }
 
     /// The DSL type name of a concrete value type, used to look up instances
-    /// (`Float`, `Int`, a data type name, a newtype name). `None` for
-    /// unresolved type variables — a method call over such an argument cannot
-    /// select an instance at compile time.
+    /// (`Float`, `Int`, a data type name, a newtype name, a builtin ctor
+    /// application's head like `List`/`Map`). `None` for unresolved type
+    /// variables and function types — a method call or Ord-constrained key
+    /// over such an argument cannot select an instance at compile time.
     pub fn type_name_of_vty(&self, v: &ValueTy) -> Option<String> {
         match v {
             ValueTy::Int => Some("Int".to_string()),
             ValueTy::Float => Some("Float".to_string()),
+            ValueTy::Bool => Some("Bool".to_string()),
+            ValueTy::String => Some("String".to_string()),
             ValueTy::Data(n, _) => Some(n.clone()),
             ValueTy::Newtype(n, _) => Some(n.clone()),
+            ValueTy::App(n, _) => Some(n.clone()),
             _ => None,
         }
     }

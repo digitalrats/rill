@@ -133,3 +133,32 @@ fn map_literal_entries_are_sorted_regardless_of_write_order() {
         "lookup of a key written out of order must still find it"
     );
 }
+
+#[test]
+fn func_key_is_compile_error() {
+    // `Func` has no derived Ord instance — a Map with a function key must not compile.
+    let src = "f = fn x -> x; main = lookup f { \"a\": 1.0 };";
+    let res = compile::<f32>(src);
+    assert!(res.is_err(), "function-typed map key must be rejected");
+    if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
+        assert!(
+            msg.contains("Ord") || msg.contains("key"),
+            "expected an Ord/key message, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn compound_data_key_is_accepted() {
+    // A List key is a concrete data type with a derived Ord instance.
+    let mut prog =
+        compile::<f32>("k = [1, 2]; m = insert k 1.0 (empty_map 4); main = length [1.0, 2.0];")
+            .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2)
+    );
+}

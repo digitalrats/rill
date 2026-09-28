@@ -2479,6 +2479,35 @@ fn infer_collection_call(
             None => Err(arity_err(&(i + 1).to_string(), args.len())),
         }
     };
+    // Enforce the `Ord` constraint on Map/Set keys (and Set elements): every
+    // concrete key type must have a derived `Ord` instance (see
+    // `derive_eq_ord`). `Func` gets no instance, so a function-typed key is a
+    // compile error; an unresolved type var cannot select an instance either.
+    let check_ord = |ctx: &mut Ctx<'_>, ty: &ValueTy, what: &str| -> Result<(), CompileError> {
+        let ty = ctx.subst.resolve_value(ty);
+        match ctx.env.type_name_of_vty(&ty) {
+            Some(name) => {
+                let has = ctx
+                    .env
+                    .instances
+                    .get("Ord")
+                    .map(|by_ty| by_ty.contains_key(name.as_str()))
+                    .unwrap_or(false);
+                if has {
+                    Ok(())
+                } else {
+                    Err(CompileError::Type {
+                        msg: format!("no Ord instance for {what} type `{name}`"),
+                        span,
+                    })
+                }
+            }
+            None => Err(CompileError::Type {
+                msg: format!("no Ord instance for {what} type (function or unresolved type)"),
+                span,
+            }),
+        }
+    };
     // Validate the first argument is a function value of the value-arity the op
     // dispatches (map/filter call it with one element, fold with (acc, elem)).
     // A `Func([], _)` is an unknown signature (a bare named function ref whose
@@ -2590,11 +2619,13 @@ fn infer_collection_call(
                 let kt = arg_vty(ctx, 0)?;
                 let vt = arg_vty(ctx, 1)?;
                 let _ = arg_vty(ctx, 2)?;
+                check_ord(ctx, &kt, "key")?;
                 Ok(ValueTy::App("Map".into(), vec![kt, vt, ValueTy::Cap(0)]))
             }
             2 => {
                 let kt = arg_vty(ctx, 0)?;
                 let _ = arg_vty(ctx, 1)?;
+                check_ord(ctx, &kt, "element")?;
                 Ok(ValueTy::App("Set".into(), vec![kt, ValueTy::Cap(0)]))
             }
             _ => Err(arity_err("2 or 3", args.len())),
@@ -2603,7 +2634,8 @@ fn infer_collection_call(
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            let kt = arg_vty(ctx, 0)?;
+            check_ord(ctx, &kt, "key")?;
             let mt = arg_vty(ctx, 1)?;
             let v = match &mt {
                 ValueTy::App(n, inner) if n == "Map" => {
@@ -2617,7 +2649,8 @@ fn infer_collection_call(
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            let kt = arg_vty(ctx, 0)?;
+            check_ord(ctx, &kt, "key")?;
             let _ = arg_vty(ctx, 1)?;
             Ok(ValueTy::Bool)
         }

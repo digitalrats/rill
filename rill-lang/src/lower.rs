@@ -1035,6 +1035,35 @@ impl<'a> Lowerer<'a> {
         args: &[ValueTy],
         span: Span,
     ) -> Result<ValueTy, CompileError> {
+        // Enforce the `Ord` constraint on Map/Set keys (and Set elements): every
+        // concrete key type must have a derived `Ord` instance (see
+        // `derive_eq_ord`). `Func` gets no instance, so a function-typed key is
+        // a compile error. Mirrors the infer-side check; lowering runs after
+        // inference, so this is defense-in-depth for direct lower-only paths.
+        let check_ord = |ty: &ValueTy, what: &str| -> Result<(), CompileError> {
+            match self.env.type_name_of_vty(ty) {
+                Some(name) => {
+                    let has = self
+                        .env
+                        .instances
+                        .get("Ord")
+                        .map(|by_ty| by_ty.contains_key(name.as_str()))
+                        .unwrap_or(false);
+                    if has {
+                        Ok(())
+                    } else {
+                        Err(CompileError::Type {
+                            msg: format!("no Ord instance for {what} type `{name}`"),
+                            span,
+                        })
+                    }
+                }
+                None => Err(CompileError::Type {
+                    msg: format!("no Ord instance for {what} type (function or unresolved type)"),
+                    span,
+                }),
+            }
+        };
         match name {
             "cons" | "filter" => match args.get(1).and_then(list_type_args) {
                 Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
@@ -1077,26 +1106,33 @@ impl<'a> Lowerer<'a> {
                 vec![ValueTy::Float, ValueTy::Cap(0)],
             )),
             "insert" => match args.len() {
-                3 => Ok(ValueTy::App(
-                    "Map".into(),
-                    vec![
-                        args.first().cloned().unwrap_or(ValueTy::Float),
-                        args.get(1).cloned().unwrap_or(ValueTy::Float),
-                        // The result map carries the SOURCE map's capacity (the
-                        // COW insert keeps the source bound): a Cap(0) result
-                        // type would undercount the arena bound.
-                        ValueTy::Cap(args.get(2).map(container_cap).unwrap_or(0)),
-                    ],
-                )),
-                _ => Ok(ValueTy::App(
-                    "Set".into(),
-                    vec![
-                        args.first().cloned().unwrap_or(ValueTy::Float),
-                        ValueTy::Cap(args.get(1).map(container_cap).unwrap_or(0)),
-                    ],
-                )),
+                3 => {
+                    check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                    Ok(ValueTy::App(
+                        "Map".into(),
+                        vec![
+                            args.first().cloned().unwrap_or(ValueTy::Float),
+                            args.get(1).cloned().unwrap_or(ValueTy::Float),
+                            // The result map carries the SOURCE map's capacity (the
+                            // COW insert keeps the source bound): a Cap(0) result
+                            // type would undercount the arena bound.
+                            ValueTy::Cap(args.get(2).map(container_cap).unwrap_or(0)),
+                        ],
+                    ))
+                }
+                _ => {
+                    check_ord(args.first().unwrap_or(&ValueTy::Float), "element")?;
+                    Ok(ValueTy::App(
+                        "Set".into(),
+                        vec![
+                            args.first().cloned().unwrap_or(ValueTy::Float),
+                            ValueTy::Cap(args.get(1).map(container_cap).unwrap_or(0)),
+                        ],
+                    ))
+                }
             },
             "lookup" => {
+                check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
                 let v = match args.get(1) {
                     Some(ValueTy::App(name, inner)) if name == "Map" => {
                         inner.get(1).cloned().unwrap_or(ValueTy::Float)
@@ -1105,7 +1141,10 @@ impl<'a> Lowerer<'a> {
                 };
                 Ok(ValueTy::App("Maybe".into(), vec![v]))
             }
-            "member" => Ok(ValueTy::Bool),
+            "member" => {
+                check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                Ok(ValueTy::Bool)
+            }
             "empty_map" => Ok(ValueTy::App(
                 "Map".into(),
                 vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
