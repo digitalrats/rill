@@ -1075,6 +1075,44 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
     }
 }
 
+/// Infer one arm's guards (each must be a Bool value) and unify all its bodies
+/// into the running result type. The arm's pattern vars must already be bound
+/// in `ctx.locals`.
+fn infer_guarded_arm_body(
+    ctx: &mut Ctx<'_>,
+    arm: &MatchArm,
+    result: &mut Option<ValueTy>,
+) -> Result<(), CompileError> {
+    for (g, body) in &arm.guards {
+        if !matches!(g, Expr::Bool(true, _)) {
+            let gt = infer_expr(ctx, g)?;
+            if gt.arity_out() != 1
+                || gt.outs[0].rate != Rate::Value
+                || !matches!(ctx.subst.resolve_value(&gt.outs[0].vty), ValueTy::Bool)
+            {
+                return Err(CompileError::Type {
+                    msg: "match guard must be a Bool value".into(),
+                    span: g.span(),
+                });
+            }
+        }
+        let bt = infer_expr(ctx, body)?;
+        let bv = arm_result_vty(bt, body, body.span())?;
+        if let Some(acc) = result {
+            unify_value(acc, &bv, &mut ctx.subst, body.span())?;
+        } else {
+            *result = Some(bv);
+        }
+    }
+    Ok(())
+}
+
+/// An arm is "guarded" if it has more than one alternative or its first
+/// alternative is not the bare `=> body` form (guard `true`).
+fn arm_is_guarded(arm: &MatchArm) -> bool {
+    arm.guards.len() > 1 || !matches!(arm.guards.first(), Some((Expr::Bool(true, _), _)))
+}
+
 /// Bind a pattern's variables into `ctx.locals` and type-check the pattern
 /// against `vty` (recursively for nested constructor patterns).
 ///
@@ -1174,27 +1212,7 @@ fn check_match_arms(
     for arm in arms {
         let saved = ctx.locals.clone();
         bind_pattern(ctx, &arm.pattern, scrutinee_vty, sum_name, arm.span)?;
-        for (g, body) in &arm.guards {
-            if !matches!(g, Expr::Bool(true, _)) {
-                let gt = infer_expr(ctx, g)?;
-                if gt.arity_out() != 1
-                    || gt.outs[0].rate != Rate::Value
-                    || !matches!(ctx.subst.resolve_value(&gt.outs[0].vty), ValueTy::Bool)
-                {
-                    return Err(CompileError::Type {
-                        msg: "match guard must be a Bool value".into(),
-                        span: g.span(),
-                    });
-                }
-            }
-            let bt = infer_expr(ctx, body)?;
-            let bv = arm_result_vty(bt, body, body.span())?;
-            if let Some(ref acc) = result {
-                unify_value(acc, &bv, &mut ctx.subst, body.span())?;
-            } else {
-                result = Some(bv);
-            }
-        }
+        infer_guarded_arm_body(ctx, arm, &mut result)?;
         ctx.locals = saved;
     }
     check_exhaustive_sum(ctx, sum_name, arms, span)?;
@@ -1243,9 +1261,7 @@ fn check_exhaustive_scalar(
     let mut has_true = false;
     let mut has_false = false;
     for a in arms {
-        let guarded =
-            a.guards.len() > 1 || !matches!(a.guards.first(), Some((Expr::Bool(true, _), _)));
-        if guarded {
+        if arm_is_guarded(a) {
             continue;
         }
         match &a.pattern {
@@ -1285,9 +1301,7 @@ fn check_exhaustive_sum(
     let mut covered: HashSet<&str> = HashSet::new();
     let mut has_wild = false;
     for a in arms {
-        let guarded =
-            a.guards.len() > 1 || !matches!(a.guards.first(), Some((Expr::Bool(true, _), _)));
-        if guarded {
+        if arm_is_guarded(a) {
             continue;
         }
         match &a.pattern {
@@ -1683,30 +1697,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 for a in arms {
                     let saved = ctx.locals.clone();
                     check_scalar_pattern(ctx, &a.pattern, &scrutinee_vty, a.span)?;
-                    for (g, body) in &a.guards {
-                        if !matches!(g, Expr::Bool(true, _)) {
-                            let gt = infer_expr(ctx, g)?;
-                            if gt.arity_out() != 1
-                                || gt.outs[0].rate != Rate::Value
-                                || !matches!(
-                                    ctx.subst.resolve_value(&gt.outs[0].vty),
-                                    ValueTy::Bool
-                                )
-                            {
-                                return Err(CompileError::Type {
-                                    msg: "match guard must be a Bool value".into(),
-                                    span: g.span(),
-                                });
-                            }
-                        }
-                        let bt = infer_expr(ctx, body)?;
-                        let bv = arm_result_vty(bt, body, body.span())?;
-                        if let Some(ref acc) = result {
-                            unify_value(acc, &bv, &mut ctx.subst, body.span())?;
-                        } else {
-                            result = Some(bv);
-                        }
-                    }
+                    infer_guarded_arm_body(ctx, a, &mut result)?;
                     ctx.locals = saved;
                 }
                 check_exhaustive_scalar(ctx, arms, &scrutinee_vty, *span)?;
@@ -1734,8 +1725,8 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             }
             let tt = infer_expr(ctx, then)?;
             let et = infer_expr(ctx, els)?;
-            let tv = arm_result_vty(tt, then, *span)?;
-            let ev = arm_result_vty(et, els, *span)?;
+            let tv = arm_result_vty(tt, then, then.span())?;
+            let ev = arm_result_vty(et, els, els.span())?;
             unify_value(&tv, &ev, &mut ctx.subst, *span)?;
             Ok(ArrowTy::value_channel(tv))
         }
