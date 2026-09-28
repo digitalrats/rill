@@ -4,7 +4,7 @@
 //! string. The renderer is used for round-trip tests that verify
 //! isomorphism between JSON and DSL representations.
 
-use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Program, TypeExpr};
+use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Pattern, Program, TypeExpr};
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
@@ -260,16 +260,23 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             write!(buf, "match ").ok();
             render_expr(scrutinee, buf, 0);
             write!(buf, " of {{ ").ok();
-            for (ctor, params, body) in arms {
-                write!(buf, "{ctor}").ok();
-                for p in params {
-                    write!(buf, " {}", p.name).ok();
-                }
+            for arm in arms {
+                render_pattern(&arm.pattern, buf);
                 write!(buf, " => ").ok();
-                render_expr(body, buf, 0);
+                render_expr(&arm.guards[0].1, buf, 0);
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            write!(buf, "if ").ok();
+            render_expr(cond, buf, 0);
+            write!(buf, " then ").ok();
+            render_expr(then, buf, 0);
+            write!(buf, " else ").ok();
+            render_expr(els, buf, 0);
         }
         Expr::Lambda { params, body, .. } => {
             write!(buf, "fn").ok();
@@ -352,6 +359,36 @@ fn logic_info(op: &LogicOp) -> (u8, u8, u8, &'static str) {
     match op {
         LogicOp::And => (1, 1, 2, "&&"),
         LogicOp::Or => (1, 1, 2, "||"),
+    }
+}
+
+fn render_pattern(p: &Pattern, buf: &mut String) {
+    match p {
+        Pattern::Wild => {
+            write!(buf, "_").ok();
+        }
+        Pattern::Var(n) => {
+            write!(buf, "{n}").ok();
+        }
+        Pattern::LitInt(v) => {
+            write!(buf, "{v}").ok();
+        }
+        Pattern::LitFloat(v) => {
+            write!(buf, "{v}").ok();
+        }
+        Pattern::LitBool(v) => {
+            write!(buf, "{v}").ok();
+        }
+        Pattern::LitStr(s) => {
+            write!(buf, "\"{s}\"").ok();
+        }
+        Pattern::Ctor(n, args) => {
+            write!(buf, "{n}").ok();
+            for a in args {
+                write!(buf, " ").ok();
+                render_pattern(a, buf);
+            }
+        }
     }
 }
 

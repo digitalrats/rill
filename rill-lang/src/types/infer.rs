@@ -11,9 +11,10 @@ use super::ty::{
     TypeVarId, TypeclassInfo, ValueTy,
 };
 use super::unify::{unify_scalar, unify_value};
-use crate::ast::{Def, Expr, Program};
+use crate::ast::{Def, Expr, Param, Pattern, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
+use crate::reduce::pattern_vars;
 
 /// The typed result of inference: the program's definitions plus the resolved
 /// type of the output and the final substitution.
@@ -352,13 +353,23 @@ fn collect_static_calls(
             scrutinee, arms, ..
         } => {
             collect_static_calls(scrutinee, src, bound, nodes, out);
-            for (_, params, body) in arms {
+            for arm in arms {
                 let mut inner = bound.clone();
-                for p in params {
-                    inner.insert(p.name.clone());
+                for v in pattern_vars(&arm.pattern) {
+                    inner.insert(v);
                 }
-                collect_static_calls(body, src, &inner, nodes, out);
+                for (g, b) in &arm.guards {
+                    collect_static_calls(g, src, &inner, nodes, out);
+                    collect_static_calls(b, src, &inner, nodes, out);
+                }
             }
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            collect_static_calls(cond, src, bound, nodes, out);
+            collect_static_calls(then, src, bound, nodes, out);
+            collect_static_calls(els, src, bound, nodes, out);
         }
         Expr::Lambda { params, body, .. } => {
             let mut inner = bound.clone();
@@ -1331,8 +1342,18 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             // names shared across sum types; otherwise an ambiguous or unknown
             // constructor is a deterministic error (no HashMap-order hazard).
             let mut candidates: Option<Vec<String>> = None;
-            for (ctor, _, _) in arms {
-                let mut per_ctor = sum_types_with_ctor(ctx, ctor);
+            for arm in arms {
+                let ctor = match &arm.pattern {
+                    Pattern::Ctor(c, _) => c.clone(),
+                    _ => {
+                        return Err(CompileError::Unsupported(
+                            "non-constructor match patterns (literals, variables, wildcards) are \
+                             not yet supported in inference"
+                                .into(),
+                        ));
+                    }
+                };
+                let mut per_ctor = sum_types_with_ctor(ctx, &ctor);
                 if let Some(sn) = &scrutinee_sum {
                     per_ctor.retain(|n| n == sn);
                 }
@@ -1391,8 +1412,31 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             };
             let is_builtin_sum = ctx.env.ctor_arity(&sum_name).is_some();
             let mut result: Option<ArrowTy> = None;
-            for (ctor, params, body) in arms {
-                let payload = match sum_ctor_payload(ctx, &sum_name, ctor) {
+            for arm in arms {
+                // Mechanical adaptation until Task 6: treat each arm as a flat
+                // `Ctor(ctor, [Var ...])` pattern + its first body. All arms are
+                // ctor patterns (non-ctor patterns were rejected above).
+                let (ctor, args) = match &arm.pattern {
+                    Pattern::Ctor(c, args) => (c.clone(), args),
+                    _ => unreachable!("all arms are ctor patterns (checked above)"),
+                };
+                let params: Vec<Param> = args
+                    .iter()
+                    .map(|a| match a {
+                        Pattern::Var(name) => Param {
+                            name: name.clone(),
+                            span: arm.span,
+                        },
+                        // Nested/non-variable argument patterns bind nothing in
+                        // the mechanical adaptation (Task 6 binds them properly).
+                        _ => Param {
+                            name: "_".into(),
+                            span: arm.span,
+                        },
+                    })
+                    .collect();
+                let body = &arm.guards[0].1;
+                let payload = match sum_ctor_payload(ctx, &sum_name, &ctor) {
                     Some(p) => p,
                     None => {
                         return Err(CompileError::Type {
@@ -1472,6 +1516,9 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             }
             Ok(result.unwrap_or(ArrowTy::value_channel(ValueTy::Float)))
         }
+        Expr::If { .. } => Err(CompileError::Unsupported(
+            "`if` is not yet supported in inference (Task 6)".into(),
+        )),
         Expr::Lambda { params, body, span } => {
             // Bind the parameters as value channels and infer the body; the
             // result type is the function type. v1 lambda parameters are

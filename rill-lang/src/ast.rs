@@ -67,6 +67,42 @@ pub enum LogicOp {
     Or,
 }
 
+/// A match pattern. The case convention: an uppercase-initial identifier is a
+/// constructor, a lowercase-initial identifier is a variable binding, `_` is a
+/// wildcard.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Pattern {
+    /// Binds the whole matched value to a name (`x`).
+    Var(String),
+    /// Matches anything, binds nothing (`_`).
+    Wild,
+    /// Integer literal.
+    LitInt(i64),
+    /// Float literal.
+    LitFloat(f64),
+    /// Boolean literal.
+    LitBool(bool),
+    /// String literal.
+    LitStr(String),
+    /// Constructor application with (possibly nested) argument patterns.
+    Ctor(String, Vec<Pattern>),
+}
+
+/// One `match` arm: a pattern, then a sequence of `(guard, body)` alternatives.
+/// The first alternative's guard is `true` (a bare `=> body`).
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct MatchArm {
+    /// The pattern tested against the scrutinee.
+    pub pattern: Pattern,
+    /// `(guard_expr, body_expr)` pairs, evaluated in order; the first that is
+    /// true runs its body.
+    pub guards: Vec<(Expr, Expr)>,
+    /// Span of the whole arm (for diagnostics).
+    pub span: Span,
+}
+
 /// A rill-lang expression node.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -161,12 +197,23 @@ pub enum Expr {
         /// Span.
         span: Span,
     },
-    /// Pattern matching over a sum value.
+    /// Pattern matching over a value (a sum or a scalar).
     Match {
         /// Scrutinee expression.
         scrutinee: Box<Expr>,
-        /// Arms: (ctor name, bindings, body).
-        arms: Vec<(String, Vec<Param>, Expr)>,
+        /// Arms.
+        arms: Vec<MatchArm>,
+        /// Span.
+        span: Span,
+    },
+    /// Conditional expression `if cond then a else b`.
+    If {
+        /// Condition (must be a Bool value).
+        cond: Box<Expr>,
+        /// Taken when the condition is true.
+        then: Box<Expr>,
+        /// Taken when the condition is false.
+        els: Box<Expr>,
         /// Span.
         span: Span,
     },
@@ -235,6 +282,7 @@ impl Expr {
             | Expr::FieldProject { span, .. }
             | Expr::FieldUpdate { span, .. }
             | Expr::Match { span, .. }
+            | Expr::If { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::Bool(_, span)
             | Expr::ListLit(_, span)

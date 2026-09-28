@@ -7,8 +7,24 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ArithOp, Def, Expr, Program};
+use crate::ast::{ArithOp, Def, Expr, MatchArm, Pattern, Program};
 use crate::error::Span;
+
+/// All variable bindings introduced by a pattern (for shadowing-aware
+/// substitution).
+pub(crate) fn pattern_vars(p: &Pattern) -> Vec<String> {
+    let mut out = Vec::new();
+    match p {
+        Pattern::Var(n) => out.push(n.clone()),
+        Pattern::Ctor(_, args) => {
+            for a in args {
+                out.extend(pattern_vars(a));
+            }
+        }
+        _ => {}
+    }
+    out
+}
 
 pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
     match e {
@@ -94,14 +110,22 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
         } => {
             // A match-arm binding shadows an outer name of the same spelling:
             // drop it from the substitution while descending into the arm body.
-            let reduced_arms: Vec<(String, Vec<crate::ast::Param>, Expr)> = arms
+            let reduced_arms: Vec<MatchArm> = arms
                 .iter()
-                .map(|(ctor, params, body)| {
+                .map(|arm| {
                     let mut inner = subst.clone();
-                    for p in params {
-                        inner.remove(&p.name);
+                    for v in pattern_vars(&arm.pattern) {
+                        inner.remove(&v);
                     }
-                    (ctor.clone(), params.clone(), substitute(body, &inner))
+                    MatchArm {
+                        pattern: arm.pattern.clone(),
+                        guards: arm
+                            .guards
+                            .iter()
+                            .map(|(g, b)| (substitute(g, &inner), substitute(b, &inner)))
+                            .collect(),
+                        span: arm.span,
+                    }
                 })
                 .collect();
             Expr::Match {
@@ -110,6 +134,17 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 span: *span,
             }
         }
+        Expr::If {
+            cond,
+            then,
+            els,
+            span,
+        } => Expr::If {
+            cond: Box::new(substitute(cond, subst)),
+            then: Box::new(substitute(then, subst)),
+            els: Box::new(substitute(els, subst)),
+            span: *span,
+        },
         Expr::Lambda { params, body, span } => {
             // A lambda rebinds its parameters inside the body: drop them from
             // the substitution so an outer binding of the same spelling is not

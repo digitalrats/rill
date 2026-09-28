@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Param, Program, TypeExpr};
+use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, MatchArm, Param, Pattern, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 
@@ -136,6 +136,21 @@ fn is_atom_start(tok: &Tok) -> bool {
     )
 }
 
+/// Check if a token can begin a (sub)pattern.
+fn is_pattern_start(tok: &Tok) -> bool {
+    matches!(
+        tok,
+        Tok::Ident(_)
+            | Tok::Int(_)
+            | Tok::Float(_)
+            | Tok::Str(_)
+            | Tok::KwTrue
+            | Tok::KwFalse
+            | Tok::Wire
+            | Tok::LParen
+    )
+}
+
 impl<'a> Parser<'a> {
     fn new(toks: &'a [Token], src: &'a [u8]) -> Self {
         Self { toks, src, pos: 0 }
@@ -171,6 +186,59 @@ impl<'a> Parser<'a> {
             }
             _ => Err(CompileError::Parse {
                 msg: format!("expected identifier, found {:?}", t.tok),
+                span: t.span,
+            }),
+        }
+    }
+
+    fn parse_pattern(&mut self) -> Result<Pattern, CompileError> {
+        let t = self.peek().clone();
+        match &t.tok {
+            Tok::Wire => {
+                self.bump();
+                Ok(Pattern::Wild)
+            }
+            Tok::Int(v) => {
+                self.bump();
+                Ok(Pattern::LitInt(*v))
+            }
+            Tok::Float(v) => {
+                self.bump();
+                Ok(Pattern::LitFloat(*v))
+            }
+            Tok::Str(s) => {
+                self.bump();
+                Ok(Pattern::LitStr(s.clone()))
+            }
+            Tok::KwTrue => {
+                self.bump();
+                Ok(Pattern::LitBool(true))
+            }
+            Tok::KwFalse => {
+                self.bump();
+                Ok(Pattern::LitBool(false))
+            }
+            Tok::LParen => {
+                self.bump();
+                let p = self.parse_pattern()?;
+                self.eat(&Tok::RParen)?;
+                Ok(p)
+            }
+            Tok::Ident(name) => {
+                let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
+                self.bump();
+                if is_ctor {
+                    let mut args = Vec::new();
+                    while is_pattern_start(&self.peek().tok) {
+                        args.push(self.parse_pattern()?);
+                    }
+                    Ok(Pattern::Ctor(name.clone(), args))
+                } else {
+                    Ok(Pattern::Var(name.clone()))
+                }
+            }
+            _ => Err(CompileError::Parse {
+                msg: format!("expected a pattern, found {:?}", t.tok),
                 span: t.span,
             }),
         }
@@ -650,6 +718,21 @@ impl<'a> Parser<'a> {
                 let span = t.span.merge(inner.span());
                 Ok(Expr::Neg(Box::new(inner), span))
             }
+            Tok::KwIf => {
+                self.bump();
+                let cond = self.parse_expr(0, false)?;
+                self.eat(&Tok::KwThen)?;
+                let then = self.parse_expr(0, true)?;
+                self.eat(&Tok::KwElse)?;
+                let els = self.parse_expr(0, true)?;
+                let span = t.span.merge(els.span());
+                Ok(Expr::If {
+                    cond: Box::new(cond),
+                    then: Box::new(then),
+                    els: Box::new(els),
+                    span,
+                })
+            }
             Tok::KwMatch => {
                 self.bump();
                 let scrutinee = self.parse_expr(0, false)?;
@@ -657,18 +740,39 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::LBrace)?;
                 let mut arms = Vec::new();
                 while self.peek().tok != Tok::RBrace {
-                    let (ctor, _) = self.expect_ident()?;
-                    let mut params = Vec::new();
-                    while let Tok::Ident(_) = self.peek().tok {
-                        let (pname, pspan) = self.expect_ident()?;
-                        params.push(Param {
-                            name: pname,
-                            span: pspan,
-                        });
+                    let pat_span = self.peek().span;
+                    let pattern = self.parse_pattern()?;
+                    let mut guards = Vec::new();
+                    if self.peek().tok == Tok::Pipe {
+                        // Guarded arm: `pat | g1 => b1 | g2 => b2` — the first
+                        // alternative's guard is written explicitly.
+                        while self.peek().tok == Tok::Pipe {
+                            self.bump();
+                            let g = self.parse_expr(0, true)?;
+                            self.eat(&Tok::FatArrow)?;
+                            let b = self.parse_expr(0, true)?;
+                            guards.push((g, b));
+                        }
+                    } else {
+                        // Bare arm: `pat => body | g1 => b1 | ...` — the first
+                        // alternative is unconditional (guard `true`).
+                        self.eat(&Tok::FatArrow)?;
+                        let first = self.parse_expr(0, true)?;
+                        guards.push((Expr::Bool(true, pat_span), first));
+                        while self.peek().tok == Tok::Pipe {
+                            self.bump();
+                            let g = self.parse_expr(0, true)?;
+                            self.eat(&Tok::FatArrow)?;
+                            let b = self.parse_expr(0, true)?;
+                            guards.push((g, b));
+                        }
                     }
-                    self.eat(&Tok::FatArrow)?;
-                    let body = self.parse_expr(0, true)?;
-                    arms.push((ctor, params, body));
+                    let arm_span = t.span.merge(guards.last().unwrap().1.span());
+                    arms.push(MatchArm {
+                        pattern,
+                        guards,
+                        span: arm_span,
+                    });
                     if self.peek().tok == Tok::Semi {
                         self.bump();
                     }
@@ -1365,6 +1469,23 @@ mod tests {
         let p = prog("area x = match x of { Circle r => r; Rect w h => w; }; main = area");
         let area = p.defs.iter().find(|d| d.name() == "area").unwrap();
         assert!(matches!(area.body(), Expr::Match { .. }));
+    }
+
+    #[test]
+    fn parse_if_expression() {
+        let p = prog("main = if true then 1.0 else 2.0;");
+        let main = p.main_def().unwrap();
+        assert!(matches!(main.body(), Expr::If { .. }));
+    }
+
+    #[test]
+    fn parse_match_patterns_and_guards() {
+        let p = prog(
+            "data Shape = Circle Float | Rect Float Float; \
+             main = match s of { Circle r => r; 0 => 0.0; _ => 1.0; n | n > 0 => n; };",
+        );
+        // The parser accepts mixed ctor/literal/wildcard arms and guards.
+        let _ = p;
     }
 
     #[test]

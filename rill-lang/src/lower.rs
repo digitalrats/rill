@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ArithOp, Def, Expr, Param, Program};
+use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
@@ -398,14 +398,13 @@ impl<'a> Lowerer<'a> {
                 // first arm's ctor returned a wrong value when the runtime
                 // value was a different constructor.
                 let selected_arm = match self.static_scrutinee_ctor(scrutinee.as_ref()) {
-                    Some(cname) => {
-                        arms.iter()
-                            .position(|(c, _, _)| c == &cname)
-                            .ok_or_else(|| CompileError::Type {
-                                msg: format!("match over `{cname}` has no matching arm"),
-                                span: *span,
-                            })?
-                    }
+                    Some(cname) => arms
+                        .iter()
+                        .position(|arm| matches!(&arm.pattern, Pattern::Ctor(c, _) if c == &cname))
+                        .ok_or_else(|| CompileError::Type {
+                            msg: format!("match over `{cname}` has no matching arm"),
+                            span: *span,
+                        })?,
                     None => {
                         return Err(CompileError::Unsupported(
                             "match scrutinee is not statically resolvable in v1".into(),
@@ -415,11 +414,36 @@ impl<'a> Lowerer<'a> {
                 // Lower the selected arm only, binding its params to the match's
                 // payload regs.
                 let mut result: Option<(usize, ValueTy)> = None;
-                for (arm_idx, (ctor, params, body)) in arms.iter().enumerate() {
+                for (arm_idx, arm) in arms.iter().enumerate() {
                     if arm_idx != selected_arm {
                         continue;
                     }
-                    let ctor_idx = ctors.iter().position(|(c, _)| c == ctor).ok_or_else(|| {
+                    // Mechanical adaptation until Task 8: treat the arm as a flat
+                    // `Ctor(ctor, [Var ...])` pattern + its first body.
+                    let (ctor, args) = match &arm.pattern {
+                        Pattern::Ctor(c, args) => (c.clone(), args),
+                        _ => {
+                            return Err(CompileError::Unsupported(
+                                "non-constructor match patterns are not yet supported in lowering"
+                                    .into(),
+                            ));
+                        }
+                    };
+                    let body = &arm.guards[0].1;
+                    let params: Vec<Param> = args
+                        .iter()
+                        .map(|a| match a {
+                            Pattern::Var(name) => Param {
+                                name: name.clone(),
+                                span: arm.span,
+                            },
+                            _ => Param {
+                                name: "_".into(),
+                                span: arm.span,
+                            },
+                        })
+                        .collect();
+                    let ctor_idx = ctors.iter().position(|(c, _)| c == &ctor).ok_or_else(|| {
                         CompileError::Type {
                             msg: format!("unknown constructor `{ctor}` for `{sum_name}`"),
                             span: *span,
@@ -1403,13 +1427,23 @@ impl<'a> Lowerer<'a> {
                 scrutinee, arms, ..
             } => {
                 self.free_vars_impl(scrutinee, bound, out, seen);
-                for (_, params, body) in arms {
+                for arm in arms {
                     let mut inner = bound.clone();
-                    for p in params {
-                        inner.insert(p.name.clone());
+                    for v in crate::reduce::pattern_vars(&arm.pattern) {
+                        inner.insert(v);
                     }
-                    self.free_vars_impl(body, &inner, out, seen);
+                    for (g, b) in &arm.guards {
+                        self.free_vars_impl(g, &inner, out, seen);
+                        self.free_vars_impl(b, &inner, out, seen);
+                    }
                 }
+            }
+            Expr::If {
+                cond, then, els, ..
+            } => {
+                self.free_vars_impl(cond, bound, out, seen);
+                self.free_vars_impl(then, bound, out, seen);
+                self.free_vars_impl(els, bound, out, seen);
             }
             Expr::Lambda { params, body, .. } => {
                 let mut inner = bound.clone();
@@ -1735,9 +1769,11 @@ impl<'a> Lowerer<'a> {
                 // compile time; the arm's body's constructor is the match's
                 // result constructor.
                 let scrut_ctor = self.static_scrutinee_ctor_impl(scrutinee, visited)?;
-                for (ctor, _, body) in arms {
-                    if ctor == &scrut_ctor {
-                        return self.static_scrutinee_ctor_impl(body, visited);
+                for arm in arms {
+                    if let Pattern::Ctor(c, _) = &arm.pattern {
+                        if c == &scrut_ctor {
+                            return self.static_scrutinee_ctor_impl(&arm.guards[0].1, visited);
+                        }
                     }
                 }
                 None
@@ -1960,13 +1996,17 @@ impl<'a> Lowerer<'a> {
 
     /// Resolve the sum type of a `match` from its arm constructors, intersecting
     /// the candidate sum types per constructor (mirrors inference).
-    fn resolve_match_sum(
-        &self,
-        arms: &[(String, Vec<Param>, Expr)],
-        span: Span,
-    ) -> Result<String, CompileError> {
+    fn resolve_match_sum(&self, arms: &[MatchArm], span: Span) -> Result<String, CompileError> {
         let mut candidates: Option<Vec<String>> = None;
-        for (ctor, _, _) in arms {
+        for arm in arms {
+            let ctor = match &arm.pattern {
+                Pattern::Ctor(c, _) => c,
+                _ => {
+                    return Err(CompileError::Unsupported(
+                        "non-constructor match patterns are not yet supported in lowering".into(),
+                    ));
+                }
+            };
             let per_ctor: Vec<String> = self
                 .env
                 .data_types
@@ -2533,6 +2573,10 @@ impl<'a> Lowerer<'a> {
             }),
             Expr::Match { span, .. } => Err(CompileError::Type {
                 msg: "match is a value expression; it cannot be used in a signal position".into(),
+                span: *span,
+            }),
+            Expr::If { span, .. } => Err(CompileError::Type {
+                msg: "if is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
             Expr::Lambda { span, .. } => Err(CompileError::Type {
@@ -3144,6 +3188,7 @@ impl<'a> Lowerer<'a> {
             Expr::FieldProject { .. }
             | Expr::FieldUpdate { .. }
             | Expr::Match { .. }
+            | Expr::If { .. }
             | Expr::Bool(..)
             | Expr::ListLit(..)
             | Expr::MapLit(..)
