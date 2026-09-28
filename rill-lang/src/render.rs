@@ -286,12 +286,12 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, " of {{ ").ok();
             for arm in arms {
                 render_pattern(&arm.pattern, buf);
-                for (g, body) in &arm.guards {
-                    // A bare arm's first alternative has the synthetic `true`
-                    // guard, which must render without a `| guard` prefix to
-                    // round-trip as the bare form; every other alternative
-                    // carries its written guard.
-                    if matches!(g, Expr::Bool(true, _)) {
+                for (i, (g, body)) in arm.guards.iter().enumerate() {
+                    // A bare arm's FIRST alternative carries the synthetic
+                    // `true` guard and renders without a `| guard` prefix;
+                    // every other alternative — including a written `true`
+                    // guard — renders its guard explicitly.
+                    if i == 0 && matches!(g, Expr::Bool(true, _)) {
                         write!(buf, " => ").ok();
                     } else {
                         write!(buf, " | ").ok();
@@ -429,10 +429,27 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
             write!(buf, "{n}").ok();
             for a in args {
                 write!(buf, " ").ok();
-                render_pattern(a, buf);
+                render_pattern_nested(a, buf);
             }
         }
     }
+}
+
+/// Render a subpattern in constructor-argument position. A nested `Ctor` with
+/// arguments is parenthesized (`Just (Left y) 1`) so the inner constructor
+/// cannot swallow its sibling arguments on re-parse: the unparenthesized
+/// `Just Left y 1` would re-parse as `Just (Left y 1)`, silently changing the
+/// match.
+fn render_pattern_nested(p: &Pattern, buf: &mut String) {
+    if let Pattern::Ctor(_, args) = p {
+        if !args.is_empty() {
+            write!(buf, "(").ok();
+            render_pattern(p, buf);
+            write!(buf, ")").ok();
+            return;
+        }
+    }
+    render_pattern(p, buf);
 }
 
 #[cfg(test)]
@@ -583,7 +600,52 @@ mod tests {
         let dsl = roundtrip_main("main = match x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; };");
         assert_eq!(
             dsl,
-            "main = match x of { Just Left y => y; 0 => 0.0; _ => 1.0; }"
+            "main = match x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; }"
         );
+    }
+
+    #[test]
+    fn render_roundtrip_match_multi_alternative_guarded_arm() {
+        // Guarded first alternative followed by a second guarded alternative:
+        // both guards must be rendered (regression for the first alternative
+        // being dropped).
+        let dsl =
+            roundtrip_main("main = match n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; };");
+        assert_eq!(
+            dsl,
+            "main = match n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; }"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_match_bare_then_guarded_alternative() {
+        // Bare first alternative followed by a guarded alternative.
+        let dsl = roundtrip_main("main = match n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; };");
+        assert_eq!(
+            dsl,
+            "main = match n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; }"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_match_written_true_guard() {
+        // A written `true` guard in a non-first position must not be conflated
+        // with the bare arm's synthetic first-alternative `true` sentinel
+        // (regression: it previously rendered as `n => 1.0 => 2.0`).
+        let dsl = roundtrip_main("main = match n of { n => 1.0 | true => 2.0; _ => 0.0; };");
+        assert_eq!(
+            dsl,
+            "main = match n of { n => 1.0 | true => 2.0; _ => 0.0; }"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_match_nested_ctor_with_sibling_arg() {
+        // A nested ctor with a sibling argument must be parenthesized so the
+        // inner ctor cannot swallow the sibling on re-parse (regression: it
+        // previously rendered as `Just Left y 1` and re-parsed as
+        // `Just (Left y 1)`).
+        let dsl = roundtrip_main("main = match x of { Just (Left y) 1 => y; _ => 0.0; };");
+        assert_eq!(dsl, "main = match x of { Just (Left y) 1 => y; _ => 0.0; }");
     }
 }
