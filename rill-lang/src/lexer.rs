@@ -69,6 +69,12 @@ pub enum Tok {
     KwMatch,
     /// `of` keyword — separator in `match x of { .. }`.
     KwOf,
+    /// `if` keyword — conditional expression.
+    KwIf,
+    /// `then` keyword — `if` branch separator.
+    KwThen,
+    /// `else` keyword — `if` branch separator.
+    KwElse,
     /// `fn` keyword — lambda literal `fn p1 p2 ... -> body`.
     KwFn,
     /// `=>` fat arrow — match arm separator.
@@ -311,6 +317,9 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "instance" if !followed_by_paren => Tok::KwInstance,
                 "match" => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
+                "if" if !followed_by_paren => Tok::KwIf,
+                "then" if !followed_by_paren => Tok::KwThen,
+                "else" if !followed_by_paren => Tok::KwElse,
                 "fn" if !followed_by_paren => Tok::KwFn,
                 "true" if !followed_by_paren => Tok::KwTrue,
                 "false" if !followed_by_paren => Tok::KwFalse,
@@ -579,6 +588,37 @@ mod tests {
                 Tok::Ident("x".into()),
                 Tok::FatArrow,
                 Tok::Ident("x".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_if_then_else_keywords() {
+        assert_eq!(
+            kinds("if then else"),
+            vec![Tok::KwIf, Tok::KwThen, Tok::KwElse, Tok::Eof]
+        );
+    }
+
+    #[test]
+    fn if_then_else_not_keywords_when_followed_by_paren() {
+        // `else(`, `if(`, `then(` are call-style identifiers, not keywords.
+        assert_eq!(
+            kinds("if(x) then(y) else(z)"),
+            vec![
+                Tok::Ident("if".into()),
+                Tok::LParen,
+                Tok::Ident("x".into()),
+                Tok::RParen,
+                Tok::Ident("then".into()),
+                Tok::LParen,
+                Tok::Ident("y".into()),
+                Tok::RParen,
+                Tok::Ident("else".into()),
+                Tok::LParen,
+                Tok::Ident("z".into()),
+                Tok::RParen,
                 Tok::Eof,
             ]
         );
