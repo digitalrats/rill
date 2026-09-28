@@ -1686,6 +1686,22 @@ fn infer_apply(
     args: &[Expr],
     span: Span,
 ) -> Result<ArrowTy, CompileError> {
+    if name == "not" {
+        if args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!("`not` expects 1 argument, got {}", args.len()),
+                span,
+            });
+        }
+        let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
+        if arg_vty != ValueTy::Bool {
+            return Err(CompileError::Type {
+                msg: format!("`not` expects a Bool argument, got {arg_vty:?}"),
+                span: args[0].span(),
+            });
+        }
+        return Ok(ArrowTy::value_channel(ValueTy::Bool));
+    }
     if name == "smooth" {
         if args.len() != 2 {
             return Err(CompileError::Type {

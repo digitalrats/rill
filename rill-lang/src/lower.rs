@@ -47,6 +47,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueMapLit { .. }
             | ValueInstr::ValueCompare { .. }
             | ValueInstr::ValueLogic { .. }
+            | ValueInstr::ValueNot { .. }
             | ValueInstr::ValueCallBuiltin { .. }
     )
 }
@@ -464,6 +465,26 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // Boolean negation: `not b` — a prefix value-track builtin
+                // (the `!` token stays the signal wire-cut combinator).
+                if name == "not" {
+                    if call_args.len() != 1 {
+                        return Err(CompileError::Type {
+                            msg: format!("`not` expects 1 argument, got {}", call_args.len()),
+                            span: *span,
+                        });
+                    }
+                    let (src, ty) = self.lower_value(&call_args[0])?;
+                    if ty != ValueTy::Bool {
+                        return Err(CompileError::Type {
+                            msg: format!("`not` expects a Bool argument, got {ty:?}"),
+                            span: call_args[0].span(),
+                        });
+                    }
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueNot { dst, src });
+                    return Ok((dst, ValueTy::Bool));
+                }
                 // Collection operation (`length`, `cons`, `head`, `tail`, `map`,
                 // `fold`, `filter`, `list`, `insert`, `lookup`, `member`,
                 // `empty_map`, `empty_set`): a reserved name dispatched by

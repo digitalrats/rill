@@ -903,6 +903,16 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
             prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
         }
+        ValueInstr::ValueNot { dst, src } => {
+            let b = match prog.value_regs[*src] {
+                Some(r) => match prog.arena.get(r) {
+                    Some(Value::Bool(p)) => Some(Value::Bool(!*p)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            prog.value_regs[*dst] = b.and_then(|v| alloc_owned(prog, v));
+        }
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
             exec_value_call_builtin(prog, *op, args, *dst, drops);
         }
@@ -1671,6 +1681,10 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             op: *op,
             a: a + base,
             b: b + base,
+        },
+        ValueInstr::ValueNot { dst, src } => ValueInstr::ValueNot {
+            dst: dst + base,
+            src: src + base,
         },
         ValueInstr::ValueCallBuiltin { dst, op, args } => ValueInstr::ValueCallBuiltin {
             dst: dst + base,

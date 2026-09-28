@@ -500,6 +500,13 @@ pub enum ValueInstr {
         /// Right operand value register.
         b: usize,
     },
+    /// Value-track boolean negation: `not b`.
+    ValueNot {
+        /// Destination value register.
+        dst: usize,
+        /// Boolean operand value register.
+        src: usize,
+    },
     /// Dispatch a collection operation.
     ValueCallBuiltin {
         /// Destination value register.
