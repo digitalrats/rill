@@ -508,6 +508,64 @@ impl<'a> Lowerer<'a> {
                     span: *span,
                 })
             }
+            Expr::If {
+                cond,
+                then,
+                els,
+                span,
+            } => {
+                // Static fast path: a literal Bool condition selects one branch
+                // at compile time (single block, no Branch term).
+                if let Expr::Bool(b, _) = cond.as_ref() {
+                    let (reg, ty) = if *b {
+                        self.lower_value(then)?
+                    } else {
+                        self.lower_value(els)?
+                    };
+                    return Ok((reg, ty));
+                }
+                let (cond_reg, cond_ty) = self.lower_value(cond)?;
+                if cond_ty != ValueTy::Bool {
+                    return Err(CompileError::Type {
+                        msg: "if condition must be a Bool value".into(),
+                        span: *span,
+                    });
+                }
+                let then_b = self.new_value_block();
+                let els_b = self.new_value_block();
+                let join = self.new_value_block();
+                let out = self.fresh_value_reg();
+                self.set_value_term(
+                    self.cur_value_block,
+                    ValueTerm::Branch {
+                        cond: cond_reg,
+                        then: then_b,
+                        els: els_b,
+                    },
+                );
+                self.cur_value_block = then_b;
+                let (t_reg, t_ty) = self.lower_value(then)?;
+                self.emit_value(ValueInstr::ValueMove {
+                    dst: out,
+                    src: t_reg,
+                });
+                self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
+                self.cur_value_block = els_b;
+                let (e_reg, e_ty) = self.lower_value(els)?;
+                self.emit_value(ValueInstr::ValueMove {
+                    dst: out,
+                    src: e_reg,
+                });
+                self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
+                if t_ty != e_ty {
+                    return Err(CompileError::Type {
+                        msg: "if branches must have the same type".into(),
+                        span: *span,
+                    });
+                }
+                self.cur_value_block = join;
+                Ok((out, t_ty))
+            }
             Expr::Apply {
                 name,
                 args: call_args,
@@ -3981,6 +4039,32 @@ mod tests {
                 "expected a 'statically resolvable' message, got: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn lower_if_emits_branch() {
+        // A non-constant Bool condition (`g > 0.5` on a main λ-param, read per
+        // tick) must lower to a runtime Branch term.
+        let ir = ir_of("main g = if g > 0.5 then 1.0 else 2.0;");
+        assert!(
+            ir.value_blocks
+                .iter()
+                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
+            "a non-constant if condition must lower to a Branch"
+        );
+    }
+
+    #[test]
+    fn lower_if_static_literal_skips_branch() {
+        // A literal Bool condition selects one branch at compile time: a single
+        // block, no Branch term.
+        let ir = ir_of("main = if false then 1.0 else 2.0;");
+        assert!(
+            !ir.value_blocks
+                .iter()
+                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
+            "a literal-Bool if must not lower to a Branch"
+        );
     }
 
     #[test]
