@@ -1077,13 +1077,17 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
 
 /// Bind a pattern's variables into `ctx.locals` and type-check the pattern
 /// against `vty` (recursively for nested constructor patterns).
+///
+/// The sum context is derived from the VALUE TYPE being matched at each
+/// recursion level, so a nested constructor pattern (`Just (Left x)`) looks up
+/// `Left` in `Either` (the payload's sum), not `Maybe`. `fallback_sum` is used
+/// only when the matched type is not yet a known sum (a top-level wire
+/// scrutinee still typed by a fresh var).
 fn bind_pattern(
     ctx: &mut Ctx<'_>,
     pattern: &Pattern,
     vty: &ValueTy,
-    sum_name: &str,
-    is_builtin: bool,
-    scrutinee_args: &[ValueTy],
+    fallback_sum: &str,
     arm_span: Span,
 ) -> Result<(), CompileError> {
     match pattern {
@@ -1094,7 +1098,24 @@ fn bind_pattern(
         }
         Pattern::Wild => Ok(()),
         Pattern::Ctor(name, args) => {
-            let payload = match sum_ctor_payload(ctx, sum_name, name) {
+            // The sum this constructor belongs to: the type being matched when
+            // it is itself a sum, else the caller's fallback (top-level wire
+            // scrutinees whose type is still a fresh var).
+            let resolved = ctx.subst.resolve_value(vty);
+            let sum_name = match &resolved {
+                ValueTy::App(n, _) | ValueTy::Data(n, _)
+                    if matches!(ctx.env.data_types.get(n.as_str()), Some(DataInfo::Sum(_))) =>
+                {
+                    n.clone()
+                }
+                _ => fallback_sum.to_string(),
+            };
+            let is_builtin = ctx.env.ctor_arity(&sum_name).is_some();
+            let scrutinee_args: Vec<ValueTy> = match &resolved {
+                ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                _ => vec![],
+            };
+            let payload = match sum_ctor_payload(ctx, &sum_name, name) {
                 Some(p) => p,
                 None => {
                     return Err(CompileError::Type {
@@ -1113,7 +1134,7 @@ fn bind_pattern(
                 // Builtin payloads carry placeholder type params; resolve them
                 // against the scrutinee args (a fresh var when the scrutinee has
                 // none — e.g. `Just x` matched against `Nothing`).
-                let resolved = if is_builtin {
+                let resolved_pt = if is_builtin {
                     match pt {
                         ValueTy::Var(k) => scrutinee_args
                             .get(k.saturating_sub(1) as usize)
@@ -1124,15 +1145,7 @@ fn bind_pattern(
                 } else {
                     pt.clone()
                 };
-                bind_pattern(
-                    ctx,
-                    arg,
-                    &resolved,
-                    sum_name,
-                    is_builtin,
-                    scrutinee_args,
-                    arm_span,
-                )?;
+                bind_pattern(ctx, arg, &resolved_pt, &sum_name, arm_span)?;
             }
             Ok(())
         }
@@ -1157,23 +1170,10 @@ fn check_match_arms(
     arms: &[MatchArm],
     span: Span,
 ) -> Result<ValueTy, CompileError> {
-    let scrutinee_args: Vec<ValueTy> = match &scrutinee_vty {
-        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
-        _ => vec![],
-    };
-    let is_builtin = ctx.env.ctor_arity(sum_name).is_some();
     let mut result: Option<ValueTy> = None;
     for arm in arms {
         let saved = ctx.locals.clone();
-        bind_pattern(
-            ctx,
-            &arm.pattern,
-            scrutinee_vty,
-            sum_name,
-            is_builtin,
-            &scrutinee_args,
-            arm.span,
-        )?;
+        bind_pattern(ctx, &arm.pattern, scrutinee_vty, sum_name, arm.span)?;
         for (g, body) in &arm.guards {
             if !matches!(g, Expr::Bool(true, _)) {
                 let gt = infer_expr(ctx, g)?;
@@ -1575,12 +1575,16 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             // `_` in match-scrutinee position is the identity value wire: it is
             // a Value channel with a fresh value type, pinned to the arm-derived
             // sum type (or a literal arm's scalar type) below by unification.
+            // Bare Int/Float literals are signal-rate channels in v1 but
+            // value-compatible in value positions (mirroring `arm_result_vty`).
             let st = match scrutinee.as_ref() {
                 Expr::Wire(_) => {
                     let v = ctx.next;
                     ctx.next += 1;
                     ArrowTy::value_channel(ValueTy::Var(v))
                 }
+                Expr::Int(_, _) => ArrowTy::value_channel(ValueTy::Int),
+                Expr::Float(_, _) => ArrowTy::value_channel(ValueTy::Float),
                 _ => infer_expr(ctx, scrutinee)?,
             };
             // The scrutinee must be a single value channel.
@@ -3698,6 +3702,37 @@ mod tests {
         assert!(ty_of("main = match _ of { 0 => 1.0 }").is_err());
         let t2 = ty_of("main = match true of { true => 1.0; false => 2.0 }").unwrap();
         assert_eq!(t2.process_ty.outs[0].vty, ValueTy::Float);
+    }
+
+    #[test]
+    fn bare_int_literal_scrutinee_infers_as_value() {
+        // `match 0 of {...}`: a bare Int literal is a signal-rate channel in v1
+        // but value-compatible in value positions (mirroring arm_result_vty).
+        let t = ty_of("main = match 0 of { 0 => 1.0; _ => 2.0; }").unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        let t2 = ty_of("main = match 0.0 of { 0.0 => 1; _ => 2; }").unwrap();
+        assert_eq!(t2.process_ty.outs[0].vty, ValueTy::Int);
+    }
+
+    #[test]
+    fn nested_cross_sum_ctor_pattern_infers() {
+        // `Just (Left x)`: the nested `Left` constructor belongs to `Either`,
+        // NOT `Maybe`. The sum context must be re-derived from the payload type
+        // at each pattern level.
+        let t = ty_of("main = match Just (Left 2.0) of { Just (Left x) => x; _ => 0.0; }").unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+    }
+
+    #[test]
+    fn nested_user_sum_ctor_pattern_infers() {
+        // Same nesting for a USER sum: `Wrap (Foo x)` — `Foo` is looked up in
+        // `Inner`, not `Outer`.
+        let t = ty_of(
+            "data Inner = Foo Float; data Outer = Wrap Inner | Empty; \
+             main = match Wrap (Foo 2.0) of { Wrap (Foo x) => x; _ => 0.0; }",
+        )
+        .unwrap();
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
     }
 
     #[test]
