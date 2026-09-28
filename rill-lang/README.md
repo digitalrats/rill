@@ -341,7 +341,7 @@ Capacities are **strict bounds** carried in the type — a growing operation
 
 ```faust
 xs  = [1.0, 2.0, 3.0];            // List Float 3
-ys  = cons 10.0 (list 4);         // prepend -> List Float 4
+ys  = cons 10.0 (list 4);         // prepend; capacity 4 from the runtime arg
 h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
 n   = length xs;                  // Int
 z   = map (fn x -> x * 2.0) xs;   // function first

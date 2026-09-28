@@ -892,8 +892,8 @@ element (set) does not count toward the bound.
 
 ```faust
 xs  = [1.0, 2.0, 3.0];          // List Float 3 — capacity from literal length
-e   = list 4;                   // empty List a 4
-ys  = cons 10.0 e;              // List Float 4 — prepends; 1 element ≤ 4
+e   = list 4;                   // empty list, runtime capacity 4
+ys  = cons 10.0 e;              // prepends; 1 element ≤ 4 — capacity preserved
 h   = head xs;                  // Maybe Float: Just 1.0 / Nothing
 t   = tail xs;                  // List Float 3 — capacity preserved
 n   = length xs;                // Int
@@ -901,6 +901,12 @@ z   = map (fn x -> x * 2.0) xs;           // List Float 3 — function first
 s   = fold (fn a b -> a + b) 0.0 xs;      // Float
 f   = filter (fn x -> x > 1.0) xs;        // List Float 3
 bad = cons 9.0 xs;              // runtime error: len 3 ≥ cap 3
+
+For literal forms (`[e1, …]`) the capacity is part of the static type
+(`List T n`). For the runtime-sized constructors (`list n`, `empty_map n`,
+`empty_set n`) the capacity comes from the `n` argument at runtime; the static
+type carries the container's element type, and the bound is enforced when
+`cons`/`insert` grow the container.
 
 m  = { "a": 1.0, "b": 2.0 };   // Map String Float 2
 m1 = insert "a" 9.0 m;         // replace-on-duplicate; len stays 2
@@ -920,7 +926,7 @@ b2 = member 1 s1;              // Bool
 | `tail xs` | `List a n → List a n` | drop the first element (capacity preserved) |
 | `length xs` | `List a n → Int` | element count |
 | `map f xs` | `(a → b) → List a n → List b n` | apply `f` to each element |
-| `fold f z xs` | `(a → b → b) → b → List a n → b` | left fold — accumulator first |
+| `fold f z xs` | `(b → a → b) → b → List a n → b` | left fold — the closure is called `(acc, elem)` |
 | `filter p xs` | `(a → Bool) → List a n → List a n` | keep elements satisfying `p` |
 | `list n` | `Nat → List a n` | empty list of capacity `n` |
 | `empty_map n` | `Nat → Map k v n` | empty map of capacity `n` |
