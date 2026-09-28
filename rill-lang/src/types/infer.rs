@@ -127,6 +127,47 @@ fn sum_ctor_payload(ctx: &Ctx<'_>, sum_name: &str, ctor: &str) -> Option<Vec<Val
     }
 }
 
+/// Convert a data-declaration field/payload type expression into a value type,
+/// substituting type-variable names with placeholder positions (`data Box a` →
+/// field `value: a` becomes `Var(1)`, mirroring the builtin `Maybe`/`Pair`
+/// shapes). Concrete type names resolve through [`TypeEnv::vty_of_name`].
+fn data_field_vty(env: &TypeEnv, tyvars: &[String], te: &crate::ast::TypeExpr) -> ValueTy {
+    match te {
+        crate::ast::TypeExpr::TName(n) => match tyvars.iter().position(|t| t == n) {
+            Some(k) => ValueTy::Var((k + 1) as u32),
+            None => env.vty_of_name(n),
+        },
+        crate::ast::TypeExpr::TApp(head, args) => ValueTy::App(
+            head.clone(),
+            args.iter()
+                .map(|a| data_field_vty(env, tyvars, a))
+                .collect(),
+        ),
+        crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Func(
+            args.iter()
+                .map(|a| data_field_vty(env, tyvars, a))
+                .collect(),
+            vec![data_field_vty(env, tyvars, ret)],
+        ),
+        crate::ast::TypeExpr::TCap(n) => ValueTy::Cap(*n),
+    }
+}
+
+/// The value type of a value of sum type `sum_name`: builtin sums are
+/// parameterized (`Maybe a`, `Either a b`) and compare/construct as `App`,
+/// while user sums are monomorphic `Data`. A fresh live value variable fills
+/// each builtin type parameter (the shape's `Var(1)`/`Var(2)` placeholders are
+/// NOT live unification vars — see [`TypeEnv::with_builtins`]).
+fn fresh_sum_vty(ctx: &mut Ctx<'_>, sum_name: &str) -> ValueTy {
+    match ctx.env.ctor_arity(sum_name) {
+        Some(arity) => {
+            let args = (0..arity).map(|_| ctx.fresh_vty()).collect();
+            ValueTy::App(sum_name.into(), args)
+        }
+        None => ValueTy::Data(sum_name.into(), vec![]),
+    }
+}
+
 /// Infer an expression that must yield exactly one output and no inputs — a
 /// constant or a per-block value. Signal-rate constants (literals) are coerced
 /// to their value type; returns the resulting `ValueTy`.
@@ -287,6 +328,21 @@ fn collect_static_calls(
                 collect_static_calls(fe, src, bound, nodes, out);
             }
         }
+        Expr::ListLit(elems, _) => {
+            for el in elems {
+                collect_static_calls(el, src, bound, nodes, out);
+            }
+        }
+        Expr::MapLit(entries, _) => {
+            for (_, ve) in entries {
+                collect_static_calls(ve, src, bound, nodes, out);
+            }
+        }
+        Expr::Bool(_, _) => {}
+        Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
+            collect_static_calls(lhs, src, bound, nodes, out);
+            collect_static_calls(rhs, src, bound, nodes, out);
+        }
         Expr::FieldProject { record, .. } => collect_static_calls(record, src, bound, nodes, out),
         Expr::FieldUpdate { record, value, .. } => {
             collect_static_calls(record, src, bound, nodes, out);
@@ -388,6 +444,27 @@ fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
     Ok(())
 }
 
+/// Build the class-var signature pattern for the container argument: `f a`
+/// becomes `App("f", [fresh])` so `match_ctor_pattern` unifies the type-var
+/// slots against the concrete constructor application. The caller computed
+/// `idx` via [`TypeEnv::class_var_arg_index`], so the argument is always a
+/// `TApp` headed by the class variable.
+fn class_var_pattern(ctx: &mut Ctx<'_>, sig: &crate::ast::TypeExpr, idx: usize) -> ValueTy {
+    let container_te = match sig {
+        crate::ast::TypeExpr::TFunc(args, _) => args.get(idx).cloned(),
+        _ => None,
+    };
+    match container_te {
+        Some(crate::ast::TypeExpr::TApp(head, type_args)) => {
+            let fresh: Vec<ValueTy> = type_args.iter().map(|_| ctx.fresh_vty()).collect();
+            ValueTy::App(head, fresh)
+        }
+        _ => unreachable!(
+            "class_var_pattern requires a TApp at container_idx (class_var_arg_index guarantees it)"
+        ),
+    }
+}
+
 /// Infer a typeclass method's argument or body expression (labeled by `what`
 /// for error messages): it must produce a single output channel that is either
 /// a value channel ([`Rate::Value`]) or a bare Float/Int literal (value-
@@ -427,11 +504,92 @@ fn infer_method_value_vty(
     }
 }
 
+/// Convert a typeclass method signature's curried argument types into concrete
+/// parameter `ValueTy`s, substituting the class variable with the concrete
+/// constructor (or concrete type name for arity-0 classes). Type variables in
+/// the signature (`a`, `b`) map to fresh unification vars, shared by name so
+/// `g : a -> b` and `xs : f a` agree on `a`. Used to validate instance method
+/// bodies against the class contract.
+fn signature_param_tys(
+    ctx: &mut Ctx<'_>,
+    class_var: &str,
+    ctor: &str,
+    sig: &crate::ast::TypeExpr,
+) -> Vec<ValueTy> {
+    let mut vars: HashMap<String, ValueTy> = HashMap::new();
+    fn conv(
+        ctx: &mut Ctx<'_>,
+        class_var: &str,
+        ctor: &str,
+        vars: &mut HashMap<String, ValueTy>,
+        te: &crate::ast::TypeExpr,
+    ) -> ValueTy {
+        match te {
+            crate::ast::TypeExpr::TName(n) if n == class_var => ctx.env.vty_of_name(ctor),
+            crate::ast::TypeExpr::TName(n) => {
+                if matches!(n.as_str(), "Float" | "Int" | "Bool" | "String")
+                    || ctx.env.data_types.contains_key(n)
+                    || ctx.env.newtypes.contains_key(n)
+                    || ctx.env.ctor_kinds.contains_key(n)
+                    || ctx.env.type_aliases.contains_key(n)
+                {
+                    ctx.env.vty_of_name(n)
+                } else {
+                    vars.entry(n.clone())
+                        .or_insert_with(|| ctx.fresh_vty())
+                        .clone()
+                }
+            }
+            crate::ast::TypeExpr::TApp(head, args) if head == class_var => {
+                let vargs: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| conv(ctx, class_var, ctor, vars, a))
+                    .collect();
+                if let Some((arity, has_cap)) = ctx.env.ctor_kinds.get(ctor) {
+                    let mut full = vargs;
+                    if *has_cap {
+                        full.push(ValueTy::Cap(0));
+                    }
+                    debug_assert_eq!(full.len(), *arity);
+                    ValueTy::App(ctor.to_string(), full)
+                } else if ctx.env.data_arities.contains_key(ctor) {
+                    ValueTy::Data(ctor.to_string(), vargs)
+                } else {
+                    ctx.env.vty_of_name(ctor)
+                }
+            }
+            crate::ast::TypeExpr::TApp(head, args) => ValueTy::App(
+                head.clone(),
+                args.iter()
+                    .map(|a| conv(ctx, class_var, ctor, vars, a))
+                    .collect(),
+            ),
+            crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Func(
+                args.iter()
+                    .map(|a| conv(ctx, class_var, ctor, vars, a))
+                    .collect(),
+                vec![conv(ctx, class_var, ctor, vars, ret)],
+            ),
+            crate::ast::TypeExpr::TCap(n) => ValueTy::Cap(*n),
+        }
+    }
+    match sig {
+        crate::ast::TypeExpr::TFunc(args, _) => args
+            .iter()
+            .map(|a| conv(ctx, class_var, ctor, &mut vars, a))
+            .collect(),
+        other => vec![conv(ctx, class_var, ctor, &mut vars, other)],
+    }
+}
+
 /// Validate every instance's method bodies at compile time, even when the
 /// instance is never called. Each body must infer to a single value channel
-/// (or a bare literal) with its parameter bound to a value of the instance's
-/// bound type. The recursion guard applies here too, so self-inlining bodies
-/// are rejected even when the instance is dead code.
+/// (or a bare literal) with its parameters bound to values of the class
+/// signature's types (the class var substituted by the concrete constructor).
+/// Constructor instances are kind-checked: a builtin constructor's value arity
+/// must match the class variable's arity (`Pair` is arity 2, so it cannot be a
+/// `Functor`, which needs arity 1). The recursion guard applies here too, so
+/// self-inlining bodies are rejected even when the instance is dead code.
 fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
     // Clone the (class, type) keys so inference (which mutates ctx) does not
     // invalidate the iteration borrow.
@@ -442,6 +600,33 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
         .flat_map(|(class, by_ty)| by_ty.keys().map(|ty_name| (class.clone(), ty_name.clone())))
         .collect();
     for (class, ty_name) in keys {
+        // Kind check: a constructor-class instance (`Functor f`) must bind a
+        // constructor whose value arity equals the class variable's arity.
+        if let Some(class_info) = ctx.env.typeclasses.get(&class).cloned() {
+            if class_info.arity >= 1 {
+                match ctx.env.ctor_value_arity(&ty_name) {
+                    Some(got) if got != class_info.arity => {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{ty_name}` has arity {got}, but `{class}` expects arity {}",
+                                class_info.arity
+                            ),
+                            span: Span::new(0, 0),
+                        });
+                    }
+                    Some(_) => {}
+                    None => {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{ty_name}` is not a type constructor (arity {} expected)",
+                                class_info.arity
+                            ),
+                            span: Span::new(0, 0),
+                        });
+                    }
+                }
+            }
+        }
         let info = ctx
             .env
             .instances
@@ -449,8 +634,7 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
             .and_then(|by_ty| by_ty.get(ty_name.as_str()))
             .cloned()
             .unwrap();
-        let param_vty = ctx.env.vty_of_name(&ty_name);
-        for (mname, (param, body)) in &info.methods {
+        for (mname, (params, body)) in &info.methods {
             let key = (class.clone(), ty_name.clone(), mname.clone());
             if ctx.method_lifting.contains(&key) {
                 return Err(CompileError::Type {
@@ -460,9 +644,26 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
             }
             ctx.method_lifting.insert(key.clone());
             let saved = ctx.locals.clone();
-            if let Some(p) = param {
+            // Bind each parameter to the signature-derived type (class var →
+            // concrete constructor). Falls back to the instance's bound type for
+            // a param count that does not match the signature.
+            let (class_var, method_sig) = {
+                let class_info = ctx.env.typeclasses.get(&class);
+                match class_info.and_then(|c| c.methods.iter().find(|(m, _)| m == mname)) {
+                    Some((_, sig)) => (class_info.map(|c| c.var.clone()), Some(sig.clone())),
+                    None => (class_info.map(|c| c.var.clone()), None),
+                }
+            };
+            let param_tys = match (class_var, method_sig) {
+                (Some(cv), Some(sig)) => signature_param_tys(ctx, &cv, &ty_name, &sig),
+                _ => params
+                    .iter()
+                    .map(|_| ctx.env.vty_of_name(&ty_name))
+                    .collect(),
+            };
+            for (p, pt) in params.iter().zip(param_tys.iter()) {
                 ctx.locals
-                    .insert(p.clone(), ArrowTy::value_channel(param_vty.clone()));
+                    .insert(p.clone(), ArrowTy::value_channel(pt.clone()));
             }
             let res = infer_method_value_vty(ctx, body, "body");
             ctx.locals = saved;
@@ -492,7 +693,7 @@ pub fn infer_program_with(
     // field/payload types against the COMPLETE alias/newtype environment. A
     // single-pass registration would wrongly reject
     // `data P = { x: Angles }; type Angles = Float; ...`.
-    let mut env = TypeEnv::default();
+    let mut env = TypeEnv::with_builtins();
     for def in &program.defs {
         match def {
             Def::TypeAlias { name, target, .. } => {
@@ -508,6 +709,11 @@ pub fn infer_program_with(
                     name.clone(),
                     TypeclassInfo {
                         var: var.clone(),
+                        arity: methods
+                            .iter()
+                            .map(|(_, sig)| TypeEnv::class_var_arity(var, sig))
+                            .max()
+                            .unwrap_or(0),
                         methods: methods.clone(),
                     },
                 );
@@ -518,10 +724,10 @@ pub fn infer_program_with(
                 method_bodies,
                 ..
             } => {
-                let mut methods: HashMap<String, (Option<String>, Expr)> = HashMap::new();
-                for (mname, param, body) in method_bodies {
-                    let binding = param.clone().map(|p| p.name.clone());
-                    methods.insert(mname.clone(), (binding, body.clone()));
+                let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
+                for (mname, params, body) in method_bodies {
+                    let bindings = params.iter().map(|p| p.name.clone()).collect();
+                    methods.insert(mname.clone(), (bindings, body.clone()));
                 }
                 env.instances.entry(class.clone()).or_default().insert(
                     ty.clone(),
@@ -537,20 +743,52 @@ pub fn infer_program_with(
     }
     for def in &program.defs {
         match def {
-            Def::Data { name, fields, .. } => {
+            Def::Data {
+                name,
+                tyvars,
+                fields,
+                ..
+            } => {
                 let fields_ty = fields
                     .iter()
-                    .map(|(f, t)| (f.clone(), env.vty_of_name(t)))
+                    .map(|(f, t)| {
+                        let ft = data_field_vty(&env, tyvars, t);
+                        (f.clone(), ft)
+                    })
                     .collect();
                 env.data_types
                     .insert(name.clone(), DataInfo::Record(fields_ty));
+                if !tyvars.is_empty() {
+                    env.data_arities.insert(name.clone(), tyvars.len());
+                }
             }
-            Def::Sum { name, ctors, .. } => {
+            Def::Sum {
+                name,
+                tyvars,
+                ctors,
+                ..
+            } => {
                 let ctors_ty = ctors
                     .iter()
-                    .map(|(c, ts)| (c.clone(), ts.iter().map(|t| env.vty_of_name(t)).collect()))
+                    .map(|(c, ts)| {
+                        (
+                            c.clone(),
+                            ts.iter().map(|t| data_field_vty(&env, tyvars, t)).collect(),
+                        )
+                    })
                     .collect();
                 env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
+                // NOTE: parameterized user SUMS are intentionally NOT registered
+                // in `data_arities` (only parameterized RECORDS are). A sum's
+                // match-pin and ctor-construction paths stay monomorphic
+                // `Data(name, [])`, so a parameterized sum as a typeclass
+                // instance would fail instance-body validation with the
+                // confusing `Data("Opt", [Var(_)])` vs `Data("Opt", [])` unify
+                // error. Leaving sums out of the table makes `instance` fail
+                // the kind check in `validate_instances` with a clean "not a
+                // type constructor" / arity message. Sums still work as
+                // ordinary data types (construction + match); they just cannot
+                // be instances in v1. See `TypeEnv::data_arities`.
             }
             _ => {}
         }
@@ -567,6 +805,10 @@ pub fn infer_program_with(
     // runtime dispatch chain must terminate, so the call stack is statically
     // bounded (see `check_recursion`).
     check_recursion(&program.defs)?;
+
+    // Derive `Eq`/`Ord` instances for every concrete data type (user + builtin)
+    // and the scalar leaves, keeping any user-written instances intact.
+    env.derive_eq_ord();
 
     let mut ctx = Ctx {
         next: 0,
@@ -832,10 +1074,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             Ok(t)
         }
         Expr::Apply { name, args, span } => infer_apply(ctx, name, args, *span),
-        Expr::Str(_, span) => Err(CompileError::Type {
-            msg: "string literal is only valid as a parameter name".into(),
-            span: *span,
-        }),
+        Expr::Str(_, _) => Ok(ArrowTy::value_channel(ValueTy::String)),
         Expr::Seq(lhs, rhs, span) => infer_seq(ctx, lhs, rhs, *span),
         Expr::Par(lhs, rhs, span) => infer_par(ctx, lhs, rhs, *span),
         Expr::Split(lhs, rhs, span) => infer_split(ctx, lhs, rhs, *span),
@@ -884,13 +1123,22 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             match &t.outs[0].vty {
-                ValueTy::Data(name) => match ctx.env.data_types.get(name.as_str()) {
+                ValueTy::Data(name, args) => match ctx.env.data_types.get(name.as_str()) {
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
                             .iter()
                             .find(|(f, _)| f == field)
                             .map(|(_, t)| t.clone());
                         match fty {
+                            // Parameterized user data (`data Box a = { value: a }`):
+                            // placeholder `Var(k)` maps to the k-th type arg.
+                            Some(ValueTy::Var(k)) if !args.is_empty() => {
+                                Ok(ArrowTy::value_channel(
+                                    args.get(k.saturating_sub(1) as usize)
+                                        .cloned()
+                                        .unwrap_or(ValueTy::Float),
+                                ))
+                            }
                             Some(ft) => Ok(ArrowTy::value_channel(ft)),
                             None => Err(CompileError::Type {
                                 msg: format!("no field `{field}` in `{name}`"),
@@ -903,6 +1151,35 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                         span: *span,
                     }),
                 },
+                ValueTy::App(name, args) if ctx.env.ctor_arity(name.as_str()).is_some() => {
+                    // Builtin record (`Pair a b`): field types are the
+                    // placeholder `Var(1)`/`Var(2)` positions, resolved against
+                    // the concrete type args.
+                    match ctx.env.data_types.get(name.as_str()) {
+                        Some(DataInfo::Record(fields)) => {
+                            match fields.iter().position(|(f, _)| f == field) {
+                                Some(idx) => {
+                                    let fty = match &fields[idx].1 {
+                                        ValueTy::Var(k) => args
+                                            .get(k.saturating_sub(1) as usize)
+                                            .cloned()
+                                            .unwrap_or(ValueTy::Float),
+                                        t => t.clone(),
+                                    };
+                                    Ok(ArrowTy::value_channel(fty))
+                                }
+                                None => Err(CompileError::Type {
+                                    msg: format!("no field `{field}` in `{name}`"),
+                                    span: *span,
+                                }),
+                            }
+                        }
+                        _ => Err(CompileError::Type {
+                            msg: format!("`{name}` is not a record type"),
+                            span: *span,
+                        }),
+                    }
+                }
                 ValueTy::Var(_) => {
                     // Deferred record: the record type is not known here (a
                     // value function's λ-parameter). The projection resolves
@@ -933,7 +1210,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             match &rt.outs[0].vty {
-                ValueTy::Data(name) => {
+                ValueTy::Data(name, _) => {
                     let fty = ctx
                         .env
                         .data_types
@@ -956,6 +1233,40 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                     };
                     // COW update: the new value must be a constant or a value
                     // channel whose type matches the declared field type.
+                    let vt = infer_const_value(ctx, value)?;
+                    unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
+                    Ok(rt)
+                }
+                ValueTy::App(name, args) if ctx.env.ctor_arity(name.as_str()).is_some() => {
+                    // Builtin record (`Pair a b`): the field type is a
+                    // placeholder `Var(k)` position resolved against the
+                    // concrete type args.
+                    let fty = ctx
+                        .env
+                        .data_types
+                        .get(name.as_str())
+                        .and_then(|info| match info {
+                            DataInfo::Record(fields) => fields
+                                .iter()
+                                .position(|(f, _)| f == field)
+                                .map(|idx| match &fields[idx].1 {
+                                    ValueTy::Var(k) => args
+                                        .get(k.saturating_sub(1) as usize)
+                                        .cloned()
+                                        .unwrap_or(ValueTy::Float),
+                                    t => t.clone(),
+                                }),
+                            _ => None,
+                        });
+                    let fty = match fty {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no field `{field}` in `{name}`"),
+                                span: *span,
+                            });
+                        }
+                    };
                     let vt = infer_const_value(ctx, value)?;
                     unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
                     Ok(rt)
@@ -998,8 +1309,21 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 });
             }
             let scrutinee_vty = st.outs[0].vty.clone();
+            // Builtin sums are parameterized (`Maybe a`, `Either a b`):
+            // `Nothing` infers as `App("Maybe", [..])` and `head`/`lookup` as
+            // `App("Maybe", [t])`, while user sums stay `Data(name, [])`. The
+            // scrutinee's sum name is the `App` head (when it is a builtin Sum)
+            // or the `Data` name.
             let scrutinee_sum = match &scrutinee_vty {
-                ValueTy::Data(name) => Some(name.clone()),
+                ValueTy::Data(name, _) => Some(name.clone()),
+                ValueTy::App(name, _)
+                    if matches!(
+                        ctx.env.data_types.get(name.as_str()),
+                        Some(DataInfo::Sum(_))
+                    ) =>
+                {
+                    Some(name.clone())
+                }
                 _ => None,
             };
             // Derive the sum type name: every arm's constructor must belong to
@@ -1040,12 +1364,32 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 }
             };
             // Pin the scrutinee's value type to the arm-derived sum type.
-            unify_value(
-                &scrutinee_vty,
-                &ValueTy::Data(sum_name.clone()),
-                &mut ctx.subst,
-                *span,
-            )?;
+            // Builtin sums keep their concrete type args (fresh when the
+            // scrutinee carries none); user sums pin to the monomorphic `Data`.
+            let pin_ty = match ctx.env.ctor_arity(&sum_name) {
+                Some(arity) => {
+                    let mut args: Vec<ValueTy> = match &scrutinee_vty {
+                        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                        _ => vec![],
+                    };
+                    while args.len() < arity {
+                        args.push(ctx.fresh_vty());
+                    }
+                    ValueTy::App(sum_name.clone(), args)
+                }
+                None => ValueTy::Data(sum_name.clone(), vec![]),
+            };
+            unify_value(&scrutinee_vty, &pin_ty, &mut ctx.subst, *span)?;
+            // Resolve the scrutinee's type args AFTER the pin: for a nullary
+            // `Nothing` the fresh element unifies with the arm results below;
+            // for `head`/`lookup` it is the concrete element type. Builtin arm
+            // payloads reference placeholder positions (`Var(1)`, `Var(2)`) that
+            // map onto these args by position.
+            let scrutinee_args: Vec<ValueTy> = match ctx.subst.resolve_value(&scrutinee_vty) {
+                ValueTy::App(_, a) | ValueTy::Data(_, a) => a,
+                _ => vec![],
+            };
+            let is_builtin_sum = ctx.env.ctor_arity(&sum_name).is_some();
             let mut result: Option<ArrowTy> = None;
             for (ctor, params, body) in arms {
                 let payload = match sum_ctor_payload(ctx, &sum_name, ctor) {
@@ -1063,6 +1407,23 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                         span: body.span(),
                     });
                 }
+                // Builtin payloads carry placeholder type params; resolve them
+                // against the scrutinee args (a fresh var when the scrutinee has
+                // none — e.g. `Just x` matched against `Nothing`).
+                let payload: Vec<ValueTy> = if is_builtin_sum {
+                    payload
+                        .iter()
+                        .map(|pt| match pt {
+                            ValueTy::Var(k) => scrutinee_args
+                                .get(k.saturating_sub(1) as usize)
+                                .cloned()
+                                .unwrap_or_else(|| ctx.fresh_vty()),
+                            t => t.clone(),
+                        })
+                        .collect()
+                } else {
+                    payload
+                };
                 let saved = ctx.locals.clone();
                 for (idx, p) in params.iter().enumerate() {
                     let pty = payload.get(idx).cloned().unwrap_or(ValueTy::Float);
@@ -1071,20 +1432,40 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 }
                 let bt = infer_expr(ctx, body)?;
                 ctx.locals = saved;
-                // Each arm body must be a value expression (0→1 value channel).
-                if bt.arity_in() != 0 || bt.arity_out() != 1 || bt.outs[0].rate != Rate::Value {
+                // Each arm body must be a value expression: a value channel, or
+                // a bare Float/Int literal (value-compatible in v1, like other
+                // value positions).
+                if bt.arity_in() != 0 || bt.arity_out() != 1 {
                     return Err(CompileError::Type {
                         msg: "match arm must be a value expression (0→1 value channel)".into(),
                         span: body.span(),
                     });
                 }
+                let arm_vty = match bt.outs[0].rate {
+                    Rate::Value => bt.outs[0].vty.clone(),
+                    Rate::Signal => match body {
+                        Expr::Int(_, _) => ValueTy::Int,
+                        Expr::Float(_, _) => ValueTy::Float,
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: "match arm must be a value expression (0→1 value channel)"
+                                    .into(),
+                                span: body.span(),
+                            });
+                        }
+                    },
+                };
+                let bt = ArrowTy::value_channel(arm_vty);
+                // Unify (not strict-compare) the arm result types: a `Nothing`
+                // arm's Float result and a `Just x` arm's as-yet-unresolved
+                // element type must agree.
                 if let Some(ref acc) = result {
-                    if acc.outs[0].vty != bt.outs[0].vty {
-                        return Err(CompileError::Type {
-                            msg: "match arms must produce the same value type".into(),
-                            span: body.span(),
-                        });
-                    }
+                    unify_value(
+                        &acc.outs[0].vty,
+                        &bt.outs[0].vty,
+                        &mut ctx.subst,
+                        body.span(),
+                    )?;
                 } else {
                     result = Some(bt);
                 }
@@ -1119,6 +1500,63 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
             let ret_ty = bt.outs[0].vty.clone();
             Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
         }
+        Expr::Bool(_, _) => Ok(ArrowTy::value_channel(ValueTy::Bool)),
+        Expr::ListLit(elems, _) => {
+            // Homogeneous list literal: every element is a value constant of the
+            // same type; the literal's capacity is its length (a strict
+            // type-carried bound — consing past it is a runtime overflow error).
+            let mut elem_ty: Option<ValueTy> = None;
+            for e in elems {
+                let et = infer_const_value(ctx, e)?;
+                if let Some(prev) = &elem_ty {
+                    unify_value(prev, &et, &mut ctx.subst, e.span())?;
+                } else {
+                    elem_ty = Some(et);
+                }
+            }
+            let elem_ty = elem_ty
+                .map(|t| ctx.subst.resolve_value(&t))
+                .unwrap_or(ValueTy::Float);
+            Ok(ArrowTy::value_channel(ValueTy::App(
+                "List".into(),
+                vec![elem_ty, ValueTy::Cap(elems.len())],
+            )))
+        }
+        Expr::MapLit(entries, _) => {
+            // Map literal with string keys: every entry's value must share ONE
+            // type (mirroring the homogeneous List literal); that type is the
+            // map's value type. A mixed-type literal is a compile error, and a
+            // non-Float value type (a List, a record) is carried accurately.
+            let mut val_ty: Option<ValueTy> = None;
+            for (_, ve) in entries {
+                let vt = infer_const_value(ctx, ve)?;
+                if let Some(prev) = &val_ty {
+                    unify_value(prev, &vt, &mut ctx.subst, ve.span())?;
+                } else {
+                    val_ty = Some(vt);
+                }
+            }
+            let val_ty = val_ty
+                .map(|t| ctx.subst.resolve_value(&t))
+                .unwrap_or(ValueTy::Float);
+            Ok(ArrowTy::value_channel(ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, val_ty, ValueTy::Cap(entries.len())],
+            )))
+        }
+        Expr::Cmp { lhs, rhs, .. } => {
+            // Value-track comparison: both sides are value constants (any
+            // types — the interpreter's `value_cmp` is a cross-kind total
+            // order). The result is a Bool value channel.
+            let _ = infer_const_value(ctx, lhs)?;
+            let _ = infer_const_value(ctx, rhs)?;
+            Ok(ArrowTy::value_channel(ValueTy::Bool))
+        }
+        Expr::Logic { lhs, rhs, .. } => {
+            let _ = infer_const_value(ctx, lhs)?;
+            let _ = infer_const_value(ctx, rhs)?;
+            Ok(ArrowTy::value_channel(ValueTy::Bool))
+        }
     }
 }
 
@@ -1128,7 +1566,9 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
     // `Circle` must be applied to its payload.
     if let Some(info) = ctx.env.data_types.get(name) {
         match info {
-            DataInfo::Record(_) => return Ok(ArrowTy::value_channel(ValueTy::Data(name.into()))),
+            DataInfo::Record(_) => {
+                return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])))
+            }
             DataInfo::Sum(_) => {
                 return Err(CompileError::Type {
                     msg: format!("`{name}` is a sum type; use one of its constructors"),
@@ -1145,6 +1585,17 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
     }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {
+        // A bare constructor is normally an error ("requires arguments"), but a
+        // NULLARY constructor (`Nothing`, `Red`) needs no payload: the bare
+        // reference is a complete value of its sum type.
+        if ctor_sums.len() == 1 {
+            let sum_name = &ctor_sums[0];
+            if let Some(payload) = sum_ctor_payload(ctx, sum_name, name) {
+                if payload.is_empty() {
+                    return Ok(ArrowTy::value_channel(fresh_sum_vty(ctx, sum_name)));
+                }
+            }
+        }
         // A bare constructor must be applied to its payload. If the ctor name
         // is shared, the ambiguity is reported rather than resolved by map order.
         let msg = if ctor_sums.len() == 1 {
@@ -1158,12 +1609,16 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
         return Err(CompileError::Type { msg, span });
     }
     // A bare typeclass method reference is an unapplied method call: `show`
-    // needs an argument to select the instance.
-    if let Some(class_name) = ctx.env.class_of_method(name) {
-        return Err(CompileError::Type {
-            msg: format!("method `{name}` of `{class_name}` requires an argument"),
-            span,
-        });
+    // needs an argument to select the instance. User definitions shadow class
+    // methods (a user `eq`/`lt` is a plain function, not the builtin Eq/Ord
+    // method), so this only fires when no def/local of that name exists.
+    if !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
+        if let Some(class_name) = ctx.env.class_of_method(name) {
+            return Err(CompileError::Type {
+                msg: format!("method `{name}` of `{class_name}` requires an argument"),
+                span,
+            });
+        }
     }
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
         let s = ctx.fresh();
@@ -1242,6 +1697,22 @@ fn infer_apply(
     args: &[Expr],
     span: Span,
 ) -> Result<ArrowTy, CompileError> {
+    if name == "not" {
+        if args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!("`not` expects 1 argument, got {}", args.len()),
+                span,
+            });
+        }
+        let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
+        if arg_vty != ValueTy::Bool {
+            return Err(CompileError::Type {
+                msg: format!("`not` expects a Bool argument, got {arg_vty:?}"),
+                span: args[0].span(),
+            });
+        }
+        return Ok(ArrowTy::value_channel(ValueTy::Bool));
+    }
     if name == "smooth" {
         if args.len() != 2 {
             return Err(CompileError::Type {
@@ -1271,6 +1742,18 @@ fn infer_apply(
     }
     if name == "param" {
         return infer_param(args, span);
+    }
+    // Collection operations (value track): reserved names dispatched by the
+    // interpreter's `ValueCallBuiltin`. They take precedence over user
+    // definitions/builtins (mirrors lowering), so a collection op can never be
+    // shadowed by a definition of the same name.
+    match name {
+        "length" | "cons" | "head" | "tail" | "map" | "fold" | "filter" | "list" | "insert"
+        | "lookup" | "member" | "empty_map" | "empty_set" => {
+            let ret = infer_collection_call(ctx, name, args, span)?;
+            return Ok(ArrowTy::value_channel(ret));
+        }
+        _ => {}
     }
     // Data-type constructors take priority over builtins and user definitions:
     // ctor names (`Circle`, `Point`) are never builtins.
@@ -1309,8 +1792,26 @@ fn infer_apply(
                                 });
                             }
                         }
+                        // Builtin records (`Pair a b`) carry PLACEHOLDER type
+                        // parameters (`Var(1)`, `Var(2)`) that are NOT live
+                        // unification vars. Freshen each placeholder to a fresh
+                        // live var BEFORE unifying the fields: unifying the raw
+                        // ids would bind them in the live subst, colliding with
+                        // subsequently freshened ids (`Pair { first: 1.0,
+                        // second: 2 }` failed on the second field).
+                        let is_builtin = ctx.env.ctor_arity(name).is_some();
+                        let field_tys: Vec<(String, ValueTy)> = fields
+                            .iter()
+                            .map(|(fname, fty)| {
+                                let fty = match fty {
+                                    ValueTy::Var(_) => ctx.fresh_vty(),
+                                    t => t.clone(),
+                                };
+                                (fname.to_string(), fty)
+                            })
+                            .collect();
                         for (f, e) in fields_expr {
-                            let fty = fields
+                            let fty = field_tys
                                 .iter()
                                 .find(|(fname, _)| fname == f)
                                 .map(|(_, t)| t.clone());
@@ -1326,7 +1827,39 @@ fn infer_apply(
                             let vt = infer_const_value(ctx, e)?;
                             unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
                         }
-                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into())));
+                        if is_builtin {
+                            let arg_tys: Vec<ValueTy> = field_tys
+                                .iter()
+                                .map(|(_, t)| ctx.subst.resolve_value(t))
+                                .collect();
+                            return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
+                        }
+                        // Parameterized user data (`data Box a = { value: a }`):
+                        // carry the resolved type args so field projection and
+                        // constructor instances resolve the placeholder slots.
+                        if let Some(arity) = ctx.env.data_arities.get(name) {
+                            if *arity > 0 {
+                                let mut slots: Vec<Option<ValueTy>> = vec![None; *arity];
+                                for (i, (_, fty)) in fields.iter().enumerate() {
+                                    let idx = match fty {
+                                        ValueTy::Var(k) => k.saturating_sub(1) as usize,
+                                        _ => i,
+                                    };
+                                    if idx < slots.len() {
+                                        slots[idx] = Some(ctx.subst.resolve_value(&field_tys[i].1));
+                                    }
+                                }
+                                let arg_tys: Vec<ValueTy> = slots
+                                    .into_iter()
+                                    .map(|s| s.unwrap_or_else(|| ctx.fresh_vty()))
+                                    .collect();
+                                return Ok(ArrowTy::value_channel(ValueTy::Data(
+                                    name.into(),
+                                    arg_tys,
+                                )));
+                            }
+                        }
+                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
                     }
                     _ => {
                         return Err(CompileError::Type {
@@ -1361,7 +1894,10 @@ fn infer_apply(
         let vt = infer_const_value(ctx, &args[0])?;
         let inner = ctx.env.vty_of_name(&inner_name);
         unify_value(&vt, &inner, &mut ctx.subst, args[0].span())?;
-        return Ok(ArrowTy::value_channel(ValueTy::Newtype(name.to_string())));
+        return Ok(ArrowTy::value_channel(ValueTy::Newtype(
+            name.to_string(),
+            vec![],
+        )));
     }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {
@@ -1384,71 +1920,216 @@ fn infer_apply(
                 span,
             });
         }
+        // Builtin sums (`Maybe`, `Either`) carry PLACEHOLDER type parameters
+        // (`Var(1)`, `Var(2)`) that are NOT live unification vars. Instantiate
+        // each payload placeholder with a fresh live var, unify the argument
+        // against it, and build the parameterized result `App(sum_name, ...)`
+        // with the FULL `arity` type args: each payload type lands at its
+        // placeholder position (`Var(k)` → arg k-1), the rest stay fresh
+        // (`Left 5.0` is `App("Either", [Float, ?])`). The match pin pads the
+        // scrutinee to `arity`, so the arities must agree.
+        if let Some(arity) = ctx.env.ctor_arity(&sum_name) {
+            let mut slots: Vec<Option<ValueTy>> = Vec::with_capacity(arity);
+            for _ in 0..arity {
+                slots.push(None);
+            }
+            for (i, pt) in payload.iter().enumerate() {
+                let pty = match pt {
+                    ValueTy::Var(_) => ctx.fresh_vty(),
+                    t => t.clone(),
+                };
+                let e = &args[i];
+                let vt = infer_const_value(ctx, e)?;
+                unify_value(&vt, &pty, &mut ctx.subst, e.span())?;
+                let idx = match pt {
+                    ValueTy::Var(k) => k.saturating_sub(1) as usize,
+                    _ => i,
+                };
+                if let Some(slot) = slots.get_mut(idx) {
+                    *slot = Some(ctx.subst.resolve_value(&pty));
+                }
+            }
+            let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(arity);
+            for s in slots {
+                match s {
+                    Some(t) => arg_tys.push(t),
+                    None => arg_tys.push(ctx.fresh_vty()),
+                }
+            }
+            return Ok(ArrowTy::value_channel(ValueTy::App(sum_name, arg_tys)));
+        }
         for (e, pty) in args.iter().zip(payload.iter()) {
             let vt = infer_const_value(ctx, e)?;
             unify_value(&vt, pty, &mut ctx.subst, e.span())?;
         }
-        return Ok(ArrowTy::value_channel(ValueTy::Data(sum_name)));
+        return Ok(ArrowTy::value_channel(ValueTy::Data(sum_name, vec![])));
     }
     // Typeclass method call: `show x` resolves at compile time to the instance
     // of the class declaring `show` for the concrete type of `x` (v1 requires
     // a concrete argument type — an unresolved variable cannot select an
     // instance). The instance's body is β-reduced in place of the call; its
     // inferred type is the method's return type (v1 drops the declared return
-    // signature).
-    if let Some(class_name) = ctx.env.class_of_method(name) {
-        if args.len() != 1 {
-            return Err(CompileError::Type {
-                msg: format!(
-                    "method `{name}` of `{class_name}` expects 1 argument, got {}",
-                    args.len()
-                ),
-                span,
-            });
-        }
-        let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
-        let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
-            Some(t) => t,
-            None => {
+    // signature). User definitions shadow class methods, so this only fires
+    // when no def/local of that name exists.
+    //
+    // Two resolution modes coexist:
+    //   - arity-0 classes (`Show a`, `Eq a`): the argument's concrete type
+    //     NAME selects the instance (`show 1.0` → `Show Float`).
+    //   - constructor classes (`Functor f`, arity ≥ 1): the class-var-applied
+    //     argument (`f a` in `fmap: (a -> b) -> f a -> f b`) selects the
+    //     instance by constructor via `match_ctor_pattern` (`f a` matches
+    //     `App("List", [..])` → the `List` instance).
+    if !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
+        if let Some(class_name) = ctx.env.class_of_method(name) {
+            let class_info = ctx.env.typeclasses.get(&class_name).cloned().unwrap();
+            let class_var = class_info.var.clone();
+            let sig = class_info
+                .methods
+                .iter()
+                .find(|(m, _)| m == name)
+                .map(|(_, s)| s.clone());
+            if class_info.arity == 0 {
+                if args.len() != 1 {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                            args.len()
+                        ),
+                        span,
+                    });
+                }
+                let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
+                let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
+                    Some(t) => t,
+                    None => {
+                        return Err(CompileError::Type {
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                        ),
+                        span: args[0].span(),
+                    });
+                    }
+                };
+                let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
+                    Some(r) => r,
+                    None => {
+                        return Err(CompileError::Type {
+                            msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                            span,
+                        });
+                    }
+                };
+                // Recursion guard: a method that inlines itself (directly or
+                // transitively) is a compile error, not a stack overflow.
+                let key = (class_name, ty_name.clone(), name.to_string());
+                if ctx.method_lifting.contains(&key) {
+                    return Err(CompileError::Type {
+                        msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
+                        span,
+                    });
+                }
+                ctx.method_lifting.insert(key.clone());
+                // Bind the method parameter to the argument's value type and infer the
+                // body; the resulting type is the call's value type.
+                let saved = ctx.locals.clone();
+                if let Some(p) = params.first() {
+                    ctx.locals
+                        .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
+                }
+                let body_vty = infer_method_value_vty(ctx, &body, "body");
+                ctx.locals = saved;
+                ctx.method_lifting.remove(&key);
+                let body_vty = body_vty?;
+                return Ok(ArrowTy::value_channel(body_vty));
+            }
+            // Constructor class (arity ≥ 1): the class-var-applied argument's
+            // concrete type selects the instance by constructor. Infer every
+            // argument's value type, match the class-var pattern against the
+            // container, then bind all method params to the call-site types.
+            let container_idx = ctx
+                .env
+                .class_var_arg_index(sig.as_ref().unwrap(), &class_var)
+                .ok_or_else(|| CompileError::Type {
+                    msg: format!(
+                        "method `{name}` of `{class_name}` has no class-var-applied argument"
+                    ),
+                    span,
+                })?;
+            let n_sig_args = match sig.as_ref().unwrap() {
+                crate::ast::TypeExpr::TFunc(as_, _) => as_.len(),
+                _ => 1,
+            };
+            if args.len() != n_sig_args {
                 return Err(CompileError::Type {
                     msg: format!(
-                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                        "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
+                        args.len()
                     ),
-                    span: args[0].span(),
-                });
-            }
-        };
-        let (_, param, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
-            Some(r) => r,
-            None => {
-                return Err(CompileError::Type {
-                    msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
                     span,
                 });
             }
-        };
-        // Recursion guard: a method that inlines itself (directly or
-        // transitively) is a compile error, not a stack overflow.
-        let key = (class_name, ty_name.clone(), name.to_string());
-        if ctx.method_lifting.contains(&key) {
-            return Err(CompileError::Type {
-                msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
-                span,
-            });
+            let mut arg_vtys = Vec::with_capacity(args.len());
+            for a in args {
+                arg_vtys.push(infer_method_value_vty(ctx, a, "argument")?);
+            }
+            // Build the class-var pattern (`f a` → `App("f", [fresh])`) from the
+            // container argument's signature type.
+            let pattern = class_var_pattern(ctx, sig.as_ref().unwrap(), container_idx);
+            let ctor = match ctx.env.match_ctor_pattern(
+                &class_var,
+                &pattern,
+                &arg_vtys[container_idx],
+                &mut ctx.subst,
+            ) {
+                Some(c) => c,
+                None => {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: the argument type \
+                             does not apply `{class_var}`"
+                        ),
+                        span: args[container_idx].span(),
+                    });
+                }
+            };
+            let (_, params, body) = match ctx.env.resolve_method(name, ctor.as_str()) {
+                Some(r) => r,
+                None => {
+                    return Err(CompileError::Type {
+                        msg: format!("no instance of `{class_name}` for constructor `{ctor}`"),
+                        span,
+                    });
+                }
+            };
+            if params.len() != args.len() {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "method `{name}` of `{class_name}` expects {} argument(s), got {}",
+                        params.len(),
+                        args.len()
+                    ),
+                    span,
+                });
+            }
+            let key = (class_name, ctor.clone(), name.to_string());
+            if ctx.method_lifting.contains(&key) {
+                return Err(CompileError::Type {
+                    msg: format!("recursive typeclass method `{name}` for type `{ctor}`"),
+                    span,
+                });
+            }
+            ctx.method_lifting.insert(key.clone());
+            let saved = ctx.locals.clone();
+            for (p, av) in params.iter().zip(arg_vtys.iter()) {
+                ctx.locals
+                    .insert(p.clone(), ArrowTy::value_channel(av.clone()));
+            }
+            let body_vty = infer_method_value_vty(ctx, &body, "body");
+            ctx.locals = saved;
+            ctx.method_lifting.remove(&key);
+            let body_vty = body_vty?;
+            return Ok(ArrowTy::value_channel(body_vty));
         }
-        ctx.method_lifting.insert(key.clone());
-        // Bind the method parameter to the argument's value type and infer the
-        // body; the resulting type is the call's value type.
-        let saved = ctx.locals.clone();
-        if let Some(p) = param {
-            ctx.locals
-                .insert(p.clone(), ArrowTy::value_channel(arg_vty.clone()));
-        }
-        let body_vty = infer_method_value_vty(ctx, &body, "body");
-        ctx.locals = saved;
-        ctx.method_lifting.remove(&key);
-        let body_vty = body_vty?;
-        return Ok(ArrowTy::value_channel(body_vty));
     }
     if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {
         let min = sig.min_args();
@@ -1801,6 +2482,251 @@ fn infer_apply(
     match combined {
         Some(args_ty) => seq(ctx, &args_ty, &callee, span),
         None => Ok(callee),
+    }
+}
+
+/// Infer a collection-operation call (`length`, `cons`, `head`, `tail`, `map`,
+/// `fold`, `filter`, `list`, `insert`, `lookup`, `member`, `empty_map`,
+/// `empty_set`): validates the argument arity and container types, returning
+/// the result value type. Mirrors the lowerer's `value_builtin_ty` signatures
+/// (Task 6.3).
+fn infer_collection_call(
+    ctx: &mut Ctx<'_>,
+    name: &str,
+    args: &[Expr],
+    span: Span,
+) -> Result<ValueTy, CompileError> {
+    let arity_err = |expected: &str, got: usize| CompileError::Type {
+        msg: format!("`{name}` expects {expected} argument(s), got {got}"),
+        span,
+    };
+    let arg_vty = |ctx: &mut Ctx<'_>, i: usize| -> Result<ValueTy, CompileError> {
+        match args.get(i) {
+            Some(e) => infer_const_value(ctx, e),
+            None => Err(arity_err(&(i + 1).to_string(), args.len())),
+        }
+    };
+    // Enforce the `Ord` constraint on Map/Set keys (and Set elements): every
+    // concrete key type must have a derived `Ord` instance (see
+    // `derive_eq_ord`). `Func` gets no instance, so a function-typed key is a
+    // compile error; an unresolved type var cannot select an instance either.
+    let check_ord = |ctx: &mut Ctx<'_>, ty: &ValueTy, what: &str| -> Result<(), CompileError> {
+        let ty = ctx.subst.resolve_value(ty);
+        match ctx.env.type_name_of_vty(&ty) {
+            Some(name) => {
+                let has = ctx
+                    .env
+                    .instances
+                    .get("Ord")
+                    .map(|by_ty| by_ty.contains_key(name.as_str()))
+                    .unwrap_or(false);
+                if has {
+                    Ok(())
+                } else {
+                    Err(CompileError::Type {
+                        msg: format!("no Ord instance for {what} type `{name}`"),
+                        span,
+                    })
+                }
+            }
+            None => Err(CompileError::Type {
+                msg: format!("no Ord instance for {what} type (function or unresolved type)"),
+                span,
+            }),
+        }
+    };
+    // Validate the first argument is a function value of the value-arity the op
+    // dispatches (map/filter call it with one element, fold with (acc, elem)).
+    // A `Func([], _)` is an unknown signature (a bare named function ref whose
+    // arity resolves at runtime dispatch), so it is allowed; a lambda literal's
+    // structural signature must match the expected arity exactly — a wrong-arity
+    // closure would otherwise pass `value_ins` to the pre-sized call scratch and
+    // panic the runtime path.
+    let expect_closure = |ctx: &mut Ctx<'_>, want: usize, what: &str| -> Result<(), CompileError> {
+        let ft = arg_vty(ctx, 0)?;
+        let ok =
+            matches!(&ft, ValueTy::Func(arg_tys, _) if arg_tys.is_empty() || arg_tys.len() == want);
+        if ok {
+            Ok(())
+        } else {
+            Err(CompileError::Type {
+                msg: format!("`{name}` expects a {what} function"),
+                span,
+            })
+        }
+    };
+    // The (element, capacity) of a `List` value type; Float/0 for a non-list.
+    let list_shape = |t: &ValueTy| -> (ValueTy, usize) {
+        match t {
+            ValueTy::App(n, inner) if n == "List" => {
+                let elem = inner.first().cloned().unwrap_or(ValueTy::Float);
+                let cap = match inner.get(1) {
+                    Some(ValueTy::Cap(c)) => *c,
+                    _ => 0,
+                };
+                (elem, cap)
+            }
+            _ => (ValueTy::Float, 0),
+        }
+    };
+    let list_of = |t: &ValueTy| {
+        let (elem, cap) = list_shape(t);
+        ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)])
+    };
+    match name {
+        "length" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let _ = arg_vty(ctx, 0)?;
+            Ok(ValueTy::Int)
+        }
+        "cons" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let xt = arg_vty(ctx, 0)?;
+            let lt = arg_vty(ctx, 1)?;
+            let (elem, cap) = list_shape(&lt);
+            unify_value(&xt, &elem, &mut ctx.subst, args[0].span())?;
+            Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
+        }
+        "head" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let lt = arg_vty(ctx, 0)?;
+            let (elem, _) = list_shape(&lt);
+            Ok(ValueTy::App("Maybe".into(), vec![elem]))
+        }
+        "tail" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let lt = arg_vty(ctx, 0)?;
+            Ok(list_of(&lt))
+        }
+        "map" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            expect_closure(ctx, 1, "unary")?;
+            // The result list's ELEMENT type is the closure's RETURN type
+            // (`map : (a -> b) -> List a n -> List b n`), not the source list's
+            // element type — a type-changing map must be typed `List b`.
+            // Resolve the closure's structural `Func` signature so an
+            // as-yet-unresolved signature var becomes its concrete return type;
+            // a closure with no known return falls back to the source element.
+            let ft0 = arg_vty(ctx, 0)?;
+            let ft = ctx.subst.resolve_value(&ft0);
+            let ret_ty = match &ft {
+                ValueTy::Func(_, rets) => {
+                    let r = rets.first().cloned().unwrap_or(ValueTy::Float);
+                    ctx.subst.resolve_value(&r)
+                }
+                _ => ValueTy::Float,
+            };
+            let lt = arg_vty(ctx, 1)?;
+            let (_, cap) = list_shape(&lt);
+            Ok(ValueTy::App("List".into(), vec![ret_ty, ValueTy::Cap(cap)]))
+        }
+        "fold" => {
+            if args.len() != 3 {
+                return Err(arity_err("3", args.len()));
+            }
+            expect_closure(ctx, 2, "binary")?;
+            let zt = arg_vty(ctx, 1)?;
+            let _ = arg_vty(ctx, 2)?;
+            Ok(zt)
+        }
+        "filter" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            expect_closure(ctx, 1, "unary")?;
+            let lt = arg_vty(ctx, 1)?;
+            Ok(list_of(&lt))
+        }
+        "list" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            // The capacity argument must be an Int value (`list 4`); a fresh
+            // variable unifies to Int, a Float/string/list literal is a type
+            // error (a non-Int capacity used to read as `Cap(0)` silently).
+            let ct = arg_vty(ctx, 0)?;
+            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
+            Ok(ValueTy::App(
+                "List".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            ))
+        }
+        "insert" => match args.len() {
+            3 => {
+                let kt = arg_vty(ctx, 0)?;
+                let vt = arg_vty(ctx, 1)?;
+                let _ = arg_vty(ctx, 2)?;
+                check_ord(ctx, &kt, "key")?;
+                Ok(ValueTy::App("Map".into(), vec![kt, vt, ValueTy::Cap(0)]))
+            }
+            2 => {
+                let kt = arg_vty(ctx, 0)?;
+                let _ = arg_vty(ctx, 1)?;
+                check_ord(ctx, &kt, "element")?;
+                Ok(ValueTy::App("Set".into(), vec![kt, ValueTy::Cap(0)]))
+            }
+            _ => Err(arity_err("2 or 3", args.len())),
+        },
+        "lookup" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let kt = arg_vty(ctx, 0)?;
+            check_ord(ctx, &kt, "key")?;
+            let mt = arg_vty(ctx, 1)?;
+            let v = match &mt {
+                ValueTy::App(n, inner) if n == "Map" => {
+                    inner.get(1).cloned().unwrap_or(ValueTy::Float)
+                }
+                _ => ValueTy::Float,
+            };
+            Ok(ValueTy::App("Maybe".into(), vec![v]))
+        }
+        "member" => {
+            if args.len() != 2 {
+                return Err(arity_err("2", args.len()));
+            }
+            let kt = arg_vty(ctx, 0)?;
+            check_ord(ctx, &kt, "key")?;
+            let _ = arg_vty(ctx, 1)?;
+            Ok(ValueTy::Bool)
+        }
+        "empty_map" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let ct = arg_vty(ctx, 0)?;
+            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
+            Ok(ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
+            ))
+        }
+        "empty_set" => {
+            if args.len() != 1 {
+                return Err(arity_err("1", args.len()));
+            }
+            let ct = arg_vty(ctx, 0)?;
+            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
+            Ok(ValueTy::App(
+                "Set".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            ))
+        }
+        _ => Err(CompileError::Type {
+            msg: format!("unknown collection op `{name}`"),
+            span,
+        }),
     }
 }
 
@@ -2371,7 +3297,10 @@ mod tests {
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
         assert_eq!(t.process_ty.outs.len(), 1);
         assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+        assert_eq!(
+            t.process_ty.outs[0].vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]
@@ -2400,7 +3329,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+        assert_eq!(
+            t.process_ty.outs[0].vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]
@@ -2412,8 +3344,13 @@ mod tests {
     }
 
     #[test]
-    fn match_arms_must_be_value_channels() {
-        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r => 1.0 }").is_err());
+    fn match_arms_must_be_value_expressions() {
+        // A bare literal arm body is value-compatible (Phase 7:
+        // `Nothing => 42.0`); a genuine signal computation (a wire) is not.
+        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r => 1.0 }").is_ok());
+        assert!(
+            ty_of("data Shape = Circle Float; main = match _ of { Circle r => _ * 2.0 }").is_err()
+        );
     }
 
     #[test]
@@ -2450,7 +3387,7 @@ mod tests {
         // Registration must be order-independent (two-phase: aliases first).
         let t = ty_of("data P = { x: Angles }; type Angles = Float; main = P { x: 1.0 }").unwrap();
         assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -2459,7 +3396,7 @@ mod tests {
         // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
         // it requires the explicit `Hz 440.0` wrapper.
         let t = ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: Hz 440.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
         // Newtypes are distinct wrappers: a bare Float does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
         // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
@@ -2470,7 +3407,7 @@ mod tests {
     fn chained_alias_resolves() {
         let t =
             ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into()));
+        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -2491,7 +3428,10 @@ mod tests {
     fn acyclic_data_type_still_compiles() {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("Point".into()));
+        assert_eq!(
+            t.process_ty.outs[0].vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]

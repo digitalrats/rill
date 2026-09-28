@@ -8,6 +8,21 @@ use serde::{Deserialize, Serialize};
 /// A type name reference in a declaration (`Float`, `Hz`, `Point`, ...).
 pub type TypeName = String;
 
+/// A type expression in a declaration: concrete names, type variables,
+/// constructor application, function types, and capacity literals.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum TypeExpr {
+    /// A concrete type or type variable name (`Float`, `a`).
+    TName(String),
+    /// Constructor application: `f a`, `List Float 16`.
+    TApp(String, Vec<TypeExpr>),
+    /// Curried function type: `(a -> b) -> f a -> f b`.
+    TFunc(Vec<TypeExpr>, Box<TypeExpr>),
+    /// Capacity literal (a `Nat` argument): `16` in `List Float 16`.
+    TCap(usize),
+}
+
 /// Arithmetic operators (elementwise, 2→1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -22,6 +37,34 @@ pub enum ArithOp {
     Div,
     /// `%`
     Rem,
+}
+
+/// A value-track comparison operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum CmpOp {
+    /// `==`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `<`
+    Lt,
+    /// `>`
+    Gt,
+    /// `<=`
+    Le,
+    /// `>=`
+    Ge,
+}
+
+/// A value-track boolean logic operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum LogicOp {
+    /// `&&`
+    And,
+    /// `||`
+    Or,
 }
 
 /// A rill-lang expression node.
@@ -136,6 +179,34 @@ pub enum Expr {
         /// Span.
         span: Span,
     },
+    /// Boolean literal `true` / `false`.
+    Bool(bool, Span),
+    /// List literal `[e1, e2]`.
+    ListLit(Vec<Expr>, Span),
+    /// Map literal `{ "k": v, ... }` (string keys).
+    MapLit(Vec<(String, Expr)>, Span),
+    /// Value-track comparison `a < b` (only valid in value position).
+    Cmp {
+        /// The operator.
+        op: CmpOp,
+        /// Left operand.
+        lhs: Box<Expr>,
+        /// Right operand.
+        rhs: Box<Expr>,
+        /// Full span.
+        span: Span,
+    },
+    /// Value-track logic `a && b` / `a || b`.
+    Logic {
+        /// The operator.
+        op: LogicOp,
+        /// Left operand.
+        lhs: Box<Expr>,
+        /// Right operand.
+        rhs: Box<Expr>,
+        /// Full span.
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -164,7 +235,12 @@ impl Expr {
             | Expr::FieldProject { span, .. }
             | Expr::FieldUpdate { span, .. }
             | Expr::Match { span, .. }
-            | Expr::Lambda { span, .. } => *span,
+            | Expr::Lambda { span, .. }
+            | Expr::Bool(_, span)
+            | Expr::ListLit(_, span)
+            | Expr::MapLit(_, span)
+            | Expr::Cmp { span, .. }
+            | Expr::Logic { span, .. } => *span,
         }
     }
 }
@@ -207,21 +283,25 @@ pub enum Def {
         /// Span of the whole definition.
         span: Span,
     },
-    /// `data Name = { f1: T1, f2: T2 }` — product type.
+    /// `data Name tv1 tv2 = { f1: T1, f2: T2 }` — product type.
     Data {
         /// Type name.
         name: String,
-        /// Fields: (field name, type name).
-        fields: Vec<(String, TypeName)>,
+        /// Type parameters (e.g. `a` in `data Box a`).
+        tyvars: Vec<String>,
+        /// Fields: (field name, type expression).
+        fields: Vec<(String, TypeExpr)>,
         /// Span.
         span: Span,
     },
-    /// `data Name = C1 T1 | C2 T2 T3` — sum type with constructors.
+    /// `data Name tv = C1 T1 | C2 T2 T3` — sum type with constructors.
     Sum {
         /// Type name.
         name: String,
-        /// Constructors: (ctor name, payload type names).
-        ctors: Vec<(String, Vec<TypeName>)>,
+        /// Type parameters (e.g. `a` in `data Box a`).
+        tyvars: Vec<String>,
+        /// Constructors: (ctor name, payload type expressions).
+        ctors: Vec<(String, Vec<TypeExpr>)>,
         /// Span.
         span: Span,
     },
@@ -249,21 +329,21 @@ pub enum Def {
         name: String,
         /// Type variable (e.g. `a`).
         var: String,
-        /// Methods: (method name, signature type name).
-        methods: Vec<(String, TypeName)>,
+        /// Methods: (method name, signature type expression).
+        methods: Vec<(String, TypeExpr)>,
         /// Span.
         span: Span,
     },
-    /// `instance C T where { m p = body; }` — concrete instance. A method body
-    /// optionally binds one parameter (`show f = f`), β-substituted at each
-    /// call site at compile time.
+    /// `instance C T where { m p1 p2 = body; }` — concrete instance. A method
+    /// body binds zero or more parameters (`show f = f`, `fmap g xs = ...`),
+    /// β-substituted at each call site at compile time.
     Instance {
         /// Class name.
         class: String,
         /// Concrete type the instance is for.
         ty: TypeName,
-        /// Method bodies: (method name, optional parameter binding, body expr).
-        method_bodies: Vec<(String, Option<Param>, Expr)>,
+        /// Method bodies: (method name, parameter bindings, body expr).
+        method_bodies: Vec<(String, Vec<Param>, Expr)>,
         /// Span.
         span: Span,
     },
@@ -343,5 +423,22 @@ impl Program {
     /// Returns the `main` definition, if present.
     pub fn main_def(&self) -> Option<&Def> {
         self.defs.iter().find(|d| d.name() == "main")
+    }
+}
+
+#[cfg(test)]
+mod type_expr_tests {
+    use super::*;
+
+    #[test]
+    fn type_expr_variants_construct() {
+        let t = TypeExpr::TFunc(
+            vec![TypeExpr::TName("a".into())],
+            Box::new(TypeExpr::TApp(
+                "List".into(),
+                vec![TypeExpr::TName("a".into()), TypeExpr::TCap(16)],
+            )),
+        );
+        assert!(matches!(t, TypeExpr::TFunc(..)));
     }
 }

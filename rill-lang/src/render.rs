@@ -4,7 +4,7 @@
 //! string. The renderer is used for round-trip tests that verify
 //! isomorphism between JSON and DSL representations.
 
-use crate::ast::{ArithOp, Def, Expr, Program};
+use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Program, TypeExpr};
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
@@ -48,25 +48,45 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
             write!(buf, "{pad}{name} = ").ok();
             render_expr(body, buf, 0);
         }
-        Def::Data { name, fields, .. } => {
-            write!(buf, "{pad}data {name} = {{ ").ok();
+        Def::Data {
+            name,
+            tyvars,
+            fields,
+            ..
+        } => {
+            write!(buf, "{pad}data {name}").ok();
+            for tv in tyvars {
+                write!(buf, " {tv}").ok();
+            }
+            write!(buf, " = {{ ").ok();
             for (i, (fname, tname)) in fields.iter().enumerate() {
                 if i > 0 {
                     write!(buf, ", ").ok();
                 }
-                write!(buf, "{fname}: {tname}").ok();
+                write!(buf, "{fname}: ").ok();
+                render_type_expr(tname, buf);
             }
             write!(buf, " }}").ok();
         }
-        Def::Sum { name, ctors, .. } => {
-            write!(buf, "{pad}data {name} = ").ok();
+        Def::Sum {
+            name,
+            tyvars,
+            ctors,
+            ..
+        } => {
+            write!(buf, "{pad}data {name}").ok();
+            for tv in tyvars {
+                write!(buf, " {tv}").ok();
+            }
+            write!(buf, " = ").ok();
             for (i, (cname, payload)) in ctors.iter().enumerate() {
                 if i > 0 {
                     write!(buf, " | ").ok();
                 }
                 write!(buf, "{cname}").ok();
-                for tname in payload {
-                    write!(buf, " {tname}").ok();
+                for t in payload {
+                    write!(buf, " ").ok();
+                    render_type_expr(t, buf);
                 }
             }
         }
@@ -81,7 +101,9 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
         } => {
             write!(buf, "{pad}typeclass {name} {var} where {{ ").ok();
             for (mname, sig) in methods {
-                write!(buf, "{mname}: {sig}; ").ok();
+                write!(buf, "{mname}: ").ok();
+                render_type_expr(sig, buf);
+                write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
         }
@@ -92,9 +114,9 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
             ..
         } => {
             write!(buf, "{pad}instance {class} {ty} where {{ ").ok();
-            for (mname, param, body) in method_bodies {
+            for (mname, params, body) in method_bodies {
                 write!(buf, "{mname}").ok();
-                if let Some(p) = param {
+                for p in params {
                     write!(buf, " {}", p.name).ok();
                 }
                 write!(buf, " = ").ok();
@@ -102,6 +124,38 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+        }
+    }
+}
+
+/// Render a type expression in a declaration (name, application, function
+/// type, or capacity literal).
+fn render_type_expr(t: &TypeExpr, buf: &mut String) {
+    match t {
+        TypeExpr::TName(n) => {
+            write!(buf, "{n}").ok();
+        }
+        TypeExpr::TApp(head, args) => {
+            write!(buf, "{head}").ok();
+            for a in args {
+                write!(buf, " ").ok();
+                render_type_expr(a, buf);
+            }
+        }
+        TypeExpr::TFunc(args, ret) => {
+            write!(buf, "(").ok();
+            for (i, a) in args.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, " -> ").ok();
+                }
+                render_type_expr(a, buf);
+            }
+            write!(buf, " -> ").ok();
+            render_type_expr(ret, buf);
+            write!(buf, ")").ok();
+        }
+        TypeExpr::TCap(n) => {
+            write!(buf, "{n}").ok();
         }
     }
 }
@@ -225,6 +279,32 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             write!(buf, " -> ").ok();
             render_expr(body, buf, 0);
         }
+        Expr::Bool(v, _) => {
+            write!(buf, "{}", if *v { "true" } else { "false" }).ok();
+        }
+        Expr::ListLit(elems, _) => {
+            write!(buf, "[").ok();
+            for (i, e) in elems.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, ", ").ok();
+                }
+                render_expr(e, buf, 0);
+            }
+            write!(buf, "]").ok();
+        }
+        Expr::MapLit(entries, _) => {
+            write!(buf, "{{ ").ok();
+            for (i, (k, v)) in entries.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, ", ").ok();
+                }
+                write!(buf, "\"{k}\": ").ok();
+                render_expr(v, buf, 0);
+            }
+            write!(buf, " }}").ok();
+        }
+        Expr::Cmp { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, cmp_info(op)),
+        Expr::Logic { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, logic_info(op)),
     }
 }
 
@@ -254,6 +334,24 @@ fn arith_info(op: &ArithOp) -> (u8, u8, u8, &'static str) {
         ArithOp::Mul => (13, 13, 14, "*"),
         ArithOp::Div => (13, 13, 14, "/"),
         ArithOp::Rem => (13, 13, 14, "%"),
+    }
+}
+
+fn cmp_info(op: &CmpOp) -> (u8, u8, u8, &'static str) {
+    match op {
+        CmpOp::Eq => (3, 3, 4, "=="),
+        CmpOp::Ne => (3, 3, 4, "!="),
+        CmpOp::Lt => (3, 3, 4, "<"),
+        CmpOp::Gt => (3, 3, 4, ">"),
+        CmpOp::Le => (3, 3, 4, "<="),
+        CmpOp::Ge => (3, 3, 4, ">="),
+    }
+}
+
+fn logic_info(op: &LogicOp) -> (u8, u8, u8, &'static str) {
+    match op {
+        LogicOp::And => (1, 1, 2, "&&"),
+        LogicOp::Or => (1, 1, 2, "||"),
     }
 }
 

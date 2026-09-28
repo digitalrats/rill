@@ -64,8 +64,8 @@ mod tests {
         let inputs: &[&[f32]] = &[&[1.0, 2.0, 3.0, 4.0], &[0.0; 4]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];
-        let mut outputs: &mut [&mut [f32]] = &mut [&mut out_l, &mut out_r];
-        state.process::<f32>(inputs, &mut outputs).unwrap();
+        let outputs: &mut [&mut [f32]] = &mut [&mut out_l, &mut out_r];
+        state.process::<f32>(inputs, outputs).unwrap();
         assert_eq!(out_l, [1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -76,8 +76,8 @@ mod tests {
         let inputs: &[&[f32]] = &[&[0.0; 4], &[1.0, 2.0, 3.0, 4.0]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];
-        let mut outputs: &mut [&mut [f32]] = &mut [&mut out_l, &mut out_r];
-        state.process::<f32>(inputs, &mut outputs).unwrap();
+        let outputs: &mut [&mut [f32]] = &mut [&mut out_l, &mut out_r];
+        state.process::<f32>(inputs, outputs).unwrap();
         assert_eq!(out_l, [1.0, 2.0, 3.0, 4.0]);
     }
 
@@ -88,8 +88,8 @@ mod tests {
         let inputs: &[&[f32]] = &[&[2.0; 4], &[4.0; 4]];
         let mut out_l = [0.0f32; 4];
         let mut out_r = [0.0f32; 4];
-        let mut outputs: &mut [&mut [f32]] = &mut [&mut out_l, &mut out_r];
-        state.process::<f32>(inputs, &mut outputs).unwrap();
+        let outputs: &mut [&mut [f32]] = &mut [&mut out_l, &mut out_r];
+        state.process::<f32>(inputs, outputs).unwrap();
         assert!((out_l[0] - 3.0).abs() < 0.001);
     }
 }

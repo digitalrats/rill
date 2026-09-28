@@ -6,8 +6,8 @@ use crate::ast::{ArithOp, Def, Expr, Param, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
-    BinArith, BuiltinInstance, FragmentIr, FuncSig, Instr, Ir, ParamDef, StateLayout, UnOp,
-    ValueInstr, ValueLayout,
+    BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
+    StateLayout, UnOp, ValueBuiltinOp, ValueInstr, ValueLayout,
 };
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
@@ -41,7 +41,62 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueUpdateField { .. }
             | ValueInstr::ValueMakeClosure { .. }
             | ValueInstr::ValueCallFunc { .. }
+            | ValueInstr::ValueBool { .. }
+            | ValueInstr::ValueConstString { .. }
+            | ValueInstr::ValueListLit { .. }
+            | ValueInstr::ValueMapLit { .. }
+            | ValueInstr::ValueCompare { .. }
+            | ValueInstr::ValueLogic { .. }
+            | ValueInstr::ValueNot { .. }
+            | ValueInstr::ValueCallBuiltin { .. }
     )
+}
+
+/// The type arguments of a `List` value type (`[elem, Cap(n)]`), if `t` is one.
+fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
+    match t {
+        ValueTy::App(name, inner) if name == "List" => Some(inner),
+        _ => None,
+    }
+}
+
+/// The capacity field of a container value type (`List`, `Map`, `Set`), read
+/// from its trailing `Cap(n)` argument; 0 for a non-container.
+fn container_cap(t: &ValueTy) -> usize {
+    match t {
+        ValueTy::App(name, inner) if matches!(name.as_str(), "List" | "Map" | "Set") => {
+            match inner.last() {
+                Some(ValueTy::Cap(n)) => *n,
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Map a parsed comparison operator to its IR form (the two enums share their
+/// variant names, so the match is mechanical).
+fn cmp_op_from_ast(op: crate::ast::CmpOp) -> CmpOp {
+    use crate::ast::CmpOp as A;
+    use crate::ir::CmpOp as I;
+    match op {
+        A::Eq => I::Eq,
+        A::Ne => I::Ne,
+        A::Lt => I::Lt,
+        A::Gt => I::Gt,
+        A::Le => I::Le,
+        A::Ge => I::Ge,
+    }
+}
+
+/// Map a parsed logic operator to its IR form.
+fn logic_op_from_ast(op: crate::ast::LogicOp) -> LogicOp {
+    use crate::ast::LogicOp as A;
+    use crate::ir::LogicOp as I;
+    match op {
+        A::And => I::And,
+        A::Or => I::Or,
+    }
 }
 
 struct Lowerer<'a> {
@@ -83,6 +138,14 @@ struct Lowerer<'a> {
     /// newtype) pins its whole subtree across ticks, so the bound must account
     /// for the output's subtree size, not just one slot per channel.
     value_out_tys: Vec<ValueTy>,
+    /// Static types of every container-typed value subexpression (`List`,
+    /// `Map`, `Set`) produced during lowering. A container pins its element
+    /// slots while it lives, so the arena bound must sum each container's
+    /// subtree size (the `is_alloc_producing` count alone credits one slot per
+    /// op and undercounts `map`/`filter`/`cons`/literal containers by their
+    /// element slots). With `value_builtin_ty` propagating source caps, these
+    /// types carry the exact capacities the runtime allocates.
+    container_tys: Vec<ValueTy>,
     /// First-class function values referenced by [`ValueInstr::ValueMakeClosure`].
     /// A bare reference to a user definition in value position allocates a
     /// [`Value::Closure`] referencing the entry's index.
@@ -91,6 +154,12 @@ struct Lowerer<'a> {
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
     /// per-tick value registers — a `Ref` to one returns the register directly.
     value_locals: Vec<HashMap<String, (usize, ValueTy)>>,
+    /// Statically-known constructor of each value local, parallel to the scope
+    /// stack [`Self::value_locals`]: a method param bound to `Just 1.0` records
+    /// `Some("Just")`, so a `match` over the param's `Ref` selects its arm at
+    /// compile time (v1 static dispatch). `None` when the local's ctor is not
+    /// statically known.
+    value_local_ctors: Vec<HashMap<String, Option<String>>>,
     /// The shared compile-time type environment (aliases, newtypes, data-type
     /// shapes) carried from inference — the single source of truth for name
     /// resolution in both infer and lower.
@@ -141,6 +210,18 @@ impl<'a> Lowerer<'a> {
         self.value_instrs.push(i);
     }
 
+    /// Record a container-typed subexpression (`List`/`Map`/`Set`) for the
+    /// arena-capacity heuristic: the container pins its element slots while it
+    /// lives, so the bound must include its full subtree size.
+    fn note_container(&mut self, vty: &ValueTy) {
+        if matches!(
+            vty,
+            ValueTy::App(name, _) if matches!(name.as_str(), "List" | "Map" | "Set")
+        ) {
+            self.container_tys.push(vty.clone());
+        }
+    }
+
     /// Lower a value expression to a value register, returning its static value
     /// type. Signal expressions lower to block registers through [`Self::lower`];
     /// value expressions (record/field/match/ctor/literal-in-value-position)
@@ -178,7 +259,9 @@ impl<'a> Lowerer<'a> {
             } => {
                 let (rec_reg, rec_vty) = self.lower_value(record)?;
                 let rec_name = match &rec_vty {
-                    ValueTy::Data(n) => n.clone(),
+                    ValueTy::Data(n, _) => n.clone(),
+                    // Builtin records (`Pair a b`) are parameterized as `App`.
+                    ValueTy::App(n, _) if self.env.ctor_arity(n).is_some() => n.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field projection requires a record value".into(),
@@ -217,7 +300,9 @@ impl<'a> Lowerer<'a> {
             } => {
                 let (rec_reg, rec_vty) = self.lower_value(record)?;
                 let rec_name = match &rec_vty {
-                    ValueTy::Data(n) => n.clone(),
+                    ValueTy::Data(n, _) => n.clone(),
+                    // Builtin records (`Pair a b`) are parameterized as `App`.
+                    ValueTy::App(n, _) if self.env.ctor_arity(n).is_some() => n.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field update requires a data record".into(),
@@ -258,7 +343,7 @@ impl<'a> Lowerer<'a> {
                 // arm constructors determine it (mirroring inference's
                 // intersection of candidate sum types).
                 let sum_name = match &scrutinee_vty {
-                    ValueTy::Data(n) => n.clone(),
+                    ValueTy::Data(n, _) => n.clone(),
                     _ => self.resolve_match_sum(arms, *span)?,
                 };
                 let ctors = match self.env.data_types.get(&sum_name) {
@@ -276,14 +361,29 @@ impl<'a> Lowerer<'a> {
                         span: *span,
                     });
                 }
+                // Builtin sums are parameterized (`Maybe a`, `Either a b`): the
+                // arm payload shapes carry placeholder `Var(k)` type params that
+                // resolve against the scrutinee's concrete type args by position
+                // (mirroring inference). Lowering gives a direct builtin-sum
+                // construction (`Just x`) the type `Data(name, [])`, so the args
+                // are recovered from the constructor application when the static
+                // type carries none.
+                let is_builtin_sum = self.env.ctor_arity(&sum_name).is_some();
+                let scrutinee_args: Vec<ValueTy> = match &scrutinee_vty {
+                    ValueTy::App(_, args) => args.clone(),
+                    ValueTy::Data(_, args) if !args.is_empty() => args.clone(),
+                    _ if is_builtin_sum => self.builtin_sum_scrutinee_args(scrutinee),
+                    _ => vec![],
+                };
                 // v1 static dispatch: v1 has no runtime control flow, so the
                 // match selects its arm at compile time. When the scrutinee's
                 // ctor is statically known (a literal sum or an inlined value
                 // def that is one), lower ONLY the matching arm — emitting the
                 // other arms would run dead bodies and select a None register.
-                // An unbound scrutinee (`_`) assumes the first arm's ctor: the
-                // value arrives constructed per the first arm in v1's static
-                // world (no runtime value inputs).
+                // A scrutinee whose ctor is NOT statically analyzable (`head
+                // (filter ...)`) is a compile error: silently assuming the
+                // first arm's ctor returned a wrong value when the runtime
+                // value was a different constructor.
                 let selected_arm = match self.static_scrutinee_ctor(scrutinee.as_ref()) {
                     Some(cname) => {
                         arms.iter()
@@ -293,7 +393,11 @@ impl<'a> Lowerer<'a> {
                                 span: *span,
                             })?
                     }
-                    None => 0,
+                    None => {
+                        return Err(CompileError::Unsupported(
+                            "match scrutinee is not statically resolvable in v1".into(),
+                        ));
+                    }
                 };
                 // Lower the selected arm only, binding its params to the match's
                 // payload regs.
@@ -319,14 +423,32 @@ impl<'a> Lowerer<'a> {
                         ctor: ctor_idx as u32,
                     });
                     // Bind the arm's payload params to the match's payload regs.
+                    // Builtin-sum payload shapes carry placeholder type params;
+                    // resolve them against the scrutinee's concrete type args
+                    // (`Var(k)` → `scrutinee_args[k-1]`, mirroring inference) so
+                    // a compound payload (`Just (Pair {..})`) binds to its
+                    // record type.
                     let mut scope = HashMap::new();
                     for (idx, p) in params.iter().enumerate() {
-                        let pty = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
+                        let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
+                        let pty = if is_builtin_sum {
+                            match raw {
+                                ValueTy::Var(k) => scrutinee_args
+                                    .get(k.saturating_sub(1) as usize)
+                                    .cloned()
+                                    .unwrap_or(ValueTy::Float),
+                                t => t,
+                            }
+                        } else {
+                            raw
+                        };
                         scope.insert(p.name.clone(), (payload_regs[idx], pty));
                     }
                     self.value_locals.push(scope);
+                    self.value_local_ctors.push(HashMap::new());
                     let (arm_reg, arm_vty) = self.lower_value(body)?;
                     self.value_locals.pop();
+                    self.value_local_ctors.pop();
                     result = Some((arm_reg, arm_vty));
                     break;
                 }
@@ -340,6 +462,50 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // Boolean negation: `not b` — a prefix value-track builtin
+                // (the `!` token stays the signal wire-cut combinator).
+                if name == "not" {
+                    if call_args.len() != 1 {
+                        return Err(CompileError::Type {
+                            msg: format!("`not` expects 1 argument, got {}", call_args.len()),
+                            span: *span,
+                        });
+                    }
+                    let (src, ty) = self.lower_value(&call_args[0])?;
+                    if ty != ValueTy::Bool {
+                        return Err(CompileError::Type {
+                            msg: format!("`not` expects a Bool argument, got {ty:?}"),
+                            span: call_args[0].span(),
+                        });
+                    }
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueNot { dst, src });
+                    return Ok((dst, ValueTy::Bool));
+                }
+                // Collection operation (`length`, `cons`, `head`, `tail`, `map`,
+                // `fold`, `filter`, `list`, `insert`, `lookup`, `member`,
+                // `empty_map`, `empty_set`): a reserved name dispatched by
+                // `ValueCallBuiltin`. Checked before the record/sum/newtype/
+                // method/user-def resolution so a collection op can never be
+                // shadowed by a definition of the same name.
+                if let Some(op) = self.value_builtin(name, call_args.len()) {
+                    let mut arg_regs = Vec::with_capacity(call_args.len());
+                    let mut arg_tys = Vec::with_capacity(call_args.len());
+                    for a in call_args {
+                        let (r, t) = self.lower_value(a)?;
+                        arg_regs.push(r);
+                        arg_tys.push(t);
+                    }
+                    let ret = self.value_builtin_ty(name, &arg_tys, *span)?;
+                    self.note_container(&ret);
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueCallBuiltin {
+                        dst,
+                        op,
+                        args: arg_regs,
+                    });
+                    return Ok((dst, ret));
+                }
                 // Record constructor: `Point { x: 1.0 }`.
                 if let Some(info) = self.env.data_types.get(name).cloned() {
                     match info {
@@ -386,7 +552,7 @@ impl<'a> Lowerer<'a> {
                                 dst,
                                 fields: field_regs,
                             });
-                            return Ok((dst, ValueTy::Data(name.clone())));
+                            return Ok((dst, ValueTy::Data(name.clone(), vec![])));
                         }
                         DataInfo::Sum(_) => {
                             return Err(CompileError::Type {
@@ -419,7 +585,7 @@ impl<'a> Lowerer<'a> {
                         ctor: ctor_idx as u32,
                         payload: payload_regs,
                     });
-                    return Ok((dst, ValueTy::Data(sum_name)));
+                    return Ok((dst, ValueTy::Data(sum_name, vec![])));
                 }
                 // Newtype constructor: `Hz 440.0` wraps its single argument.
                 if self.env.newtypes.contains_key(name) {
@@ -435,64 +601,176 @@ impl<'a> Lowerer<'a> {
                     let (src, _) = self.lower_value(&call_args[0])?;
                     let dst = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueNewtype { dst, src });
-                    return Ok((dst, ValueTy::Newtype(name.clone())));
+                    return Ok((dst, ValueTy::Newtype(name.clone(), vec![])));
                 }
                 // Typeclass method call: the argument's static type selects the
-                // instance, and the method body is inlined with the parameter
-                // bound to the argument's register — β-substitution at compile
-                // time, zero runtime dispatch.
-                if let Some(class_name) = self.env.class_of_method(name) {
-                    if call_args.len() != 1 {
-                        return Err(CompileError::Type {
+                // instance, and the method body is inlined with the parameters
+                // bound to the argument's registers — β-substitution at compile
+                // time, zero runtime dispatch. User definitions shadow class
+                // methods (a user `eq`/`lt` is a plain function), so this only
+                // fires when no user def of that name exists. Constructor
+                // classes (`Functor f`) resolve by the class-var-applied
+                // argument's constructor head (`App("List", ..)` → `List`).
+                if !self.defs.contains_key(name) {
+                    if let Some(class_name) = self.env.class_of_method(name) {
+                        let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
+                        let class_var = class_info.var.clone();
+                        let sig = class_info
+                            .methods
+                            .iter()
+                            .find(|(m, _)| m == name)
+                            .map(|(_, s)| s.clone());
+                        if class_info.arity == 0 {
+                            if call_args.len() != 1 {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                                        call_args.len()
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            let (arg_reg, arg_vty) = self.lower_value(&call_args[0])?;
+                            let ty_name = match self.env.type_name_of_vty(&arg_vty) {
+                                Some(t) => t,
+                                None => {
+                                    return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                                    ),
+                                    span: call_args[0].span(),
+                                });
+                                }
+                            };
+                            let (_, params, body) =
+                                match self.env.resolve_method(name, ty_name.as_str()) {
+                                    Some(r) => r,
+                                    None => {
+                                        return Err(CompileError::Type {
+                                            msg: format!(
+                                            "no instance of `{class_name}` for type `{ty_name}`"
+                                        ),
+                                            span: *span,
+                                        });
+                                    }
+                                };
+                            // Recursion guard: a method that inlines itself (directly
+                            // or transitively) is a compile error, not a stack overflow.
+                            let key = (class_name, ty_name.clone(), name.to_string());
+                            if self.method_lifting.contains(&key) {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "recursive typeclass method `{name}` for type `{ty_name}`"
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            self.method_lifting.insert(key.clone());
+                            let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                            let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                            if let Some(p) = params.first() {
+                                scope.insert(p.clone(), (arg_reg, arg_vty.clone()));
+                                ctor_scope
+                                    .insert(p.clone(), self.static_scrutinee_ctor(&call_args[0]));
+                            }
+                            self.value_locals.push(scope);
+                            self.value_local_ctors.push(ctor_scope);
+                            let res = self.lower_value(&body);
+                            self.value_locals.pop();
+                            self.value_local_ctors.pop();
+                            self.method_lifting.remove(&key);
+                            return res;
+                        }
+                        // Constructor class: the class-var-applied argument's
+                        // concrete type head selects the instance. Lower all
+                        // args, then bind each method param to its register.
+                        let container_idx = self
+                            .env
+                            .class_var_arg_index(sig.as_ref().unwrap(), &class_var)
+                            .ok_or_else(|| CompileError::Type {
                             msg: format!(
-                                "method `{name}` of `{class_name}` expects 1 argument, got {}",
-                                call_args.len()
+                                "method `{name}` of `{class_name}` has no class-var-applied argument"
                             ),
                             span: *span,
-                        });
-                    }
-                    let (arg_reg, arg_vty) = self.lower_value(&call_args[0])?;
-                    let ty_name = match self.env.type_name_of_vty(&arg_vty) {
-                        Some(t) => t,
-                        None => {
+                        })?;
+                        let n_sig_args = match sig.as_ref().unwrap() {
+                            crate::ast::TypeExpr::TFunc(as_, _) => as_.len(),
+                            _ => 1,
+                        };
+                        if call_args.len() != n_sig_args {
                             return Err(CompileError::Type {
                                 msg: format!(
-                                    "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                                    "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
+                                    call_args.len()
                                 ),
-                                span: call_args[0].span(),
-                            });
-                        }
-                    };
-                    let (_, param, body) = match self.env.resolve_method(name, ty_name.as_str()) {
-                        Some(r) => r,
-                        None => {
-                            return Err(CompileError::Type {
-                                msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
                                 span: *span,
                             });
                         }
-                    };
-                    // Recursion guard: a method that inlines itself (directly
-                    // or transitively) is a compile error, not a stack overflow.
-                    let key = (class_name, ty_name.clone(), name.to_string());
-                    if self.method_lifting.contains(&key) {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "recursive typeclass method `{name}` for type `{ty_name}`"
-                            ),
-                            span: *span,
-                        });
+                        let mut arg_regs = Vec::with_capacity(call_args.len());
+                        let mut arg_vtys = Vec::with_capacity(call_args.len());
+                        for a in call_args {
+                            let (r, t) = self.lower_value(a)?;
+                            arg_regs.push(r);
+                            arg_vtys.push(t);
+                        }
+                        let ctor = match &arg_vtys[container_idx] {
+                            ValueTy::App(c, _) | ValueTy::Data(c, _) => c.clone(),
+                            _ => {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not a constructor application"
+                                    ),
+                                    span: call_args[container_idx].span(),
+                                });
+                            }
+                        };
+                        let (_, params, body) = match self.env.resolve_method(name, ctor.as_str()) {
+                            Some(r) => r,
+                            None => {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "no instance of `{class_name}` for constructor `{ctor}`"
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                        };
+                        if params.len() != call_args.len() {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "method `{name}` of `{class_name}` expects {} argument(s), got {}",
+                                    params.len(),
+                                    call_args.len()
+                                ),
+                                span: *span,
+                            });
+                        }
+                        let key = (class_name, ctor.clone(), name.to_string());
+                        if self.method_lifting.contains(&key) {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "recursive typeclass method `{name}` for type `{ctor}`"
+                                ),
+                                span: *span,
+                            });
+                        }
+                        self.method_lifting.insert(key.clone());
+                        let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                        let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                        for (p, (r, t)) in params.iter().zip(arg_regs.into_iter().zip(arg_vtys)) {
+                            scope.insert(p.clone(), (r, t));
+                        }
+                        for (p, a) in params.iter().zip(call_args) {
+                            ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
+                        }
+                        self.value_locals.push(scope);
+                        self.value_local_ctors.push(ctor_scope);
+                        let res = self.lower_value(&body);
+                        self.value_locals.pop();
+                        self.value_local_ctors.pop();
+                        self.method_lifting.remove(&key);
+                        return res;
                     }
-                    self.method_lifting.insert(key.clone());
-                    let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
-                    if let Some(p) = param {
-                        scope.insert(p, (arg_reg, arg_vty.clone()));
-                    }
-                    self.value_locals.push(scope);
-                    let res = self.lower_value(&body);
-                    self.value_locals.pop();
-                    self.method_lifting.remove(&key);
-                    return res;
                 }
                 // Value-function application: `add2 = adder 2.0` — the callee
                 // is a definition whose body lowers to a closure value. Evaluate
@@ -642,10 +920,262 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Func(param_tys, vec![ret_ty])))
             }
+            Expr::Bool(b, _) => {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBool { dst, value: *b });
+                Ok((dst, ValueTy::Bool))
+            }
+            Expr::Str(s, _) => {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstString {
+                    dst,
+                    value: s.clone(),
+                });
+                Ok((dst, ValueTy::String))
+            }
+            Expr::ListLit(elems, _) => {
+                let mut regs = Vec::with_capacity(elems.len());
+                let mut elem_ty = ValueTy::Float;
+                for e in elems {
+                    let (r, t) = self.lower_value(e)?;
+                    regs.push(r);
+                    elem_ty = t;
+                }
+                let cap = regs.len();
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueListLit {
+                    dst,
+                    elems: regs,
+                    cap,
+                });
+                let ret = ValueTy::App("List".into(), vec![elem_ty, ValueTy::Cap(cap)]);
+                self.note_container(&ret);
+                Ok((dst, ret))
+            }
+            Expr::MapLit(entries, _) => {
+                let mut keys = Vec::with_capacity(entries.len());
+                let mut vals = Vec::with_capacity(entries.len());
+                // Inference already unified every entry's value type, so the
+                // entries share one static value type; it is carried on the
+                // result Map (a List/record value is NOT pinned to Float).
+                let mut val_ty = ValueTy::Float;
+                for (k, v) in entries {
+                    let (kr, _) = self.lower_value(&Expr::Str(k.clone(), Span::new(0, 0)))?;
+                    let (vr, vt) = self.lower_value(v)?;
+                    keys.push(kr);
+                    vals.push(vr);
+                    val_ty = vt;
+                }
+                let cap = keys.len();
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueMapLit {
+                    dst,
+                    keys,
+                    vals,
+                    cap,
+                });
+                let ret = ValueTy::App(
+                    "Map".into(),
+                    vec![ValueTy::String, val_ty, ValueTy::Cap(cap)],
+                );
+                self.note_container(&ret);
+                Ok((dst, ret))
+            }
+            Expr::Cmp { op, lhs, rhs, .. } => {
+                let (a, _) = self.lower_value(lhs)?;
+                let (b, _) = self.lower_value(rhs)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueCompare {
+                    dst,
+                    op: cmp_op_from_ast(*op),
+                    a,
+                    b,
+                });
+                Ok((dst, ValueTy::Bool))
+            }
+            Expr::Logic { op, lhs, rhs, .. } => {
+                let (a, _) = self.lower_value(lhs)?;
+                let (b, _) = self.lower_value(rhs)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueLogic {
+                    dst,
+                    op: logic_op_from_ast(*op),
+                    a,
+                    b,
+                });
+                Ok((dst, ValueTy::Bool))
+            }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
                 span: e.span(),
             }),
+        }
+    }
+
+    /// Resolve a collection-operation name to its IR op by arity. `insert`
+    /// dispatches on argument count: 3 → map, 2 → set. Returns `None` for a
+    /// non-collection name (the collection op names are reserved).
+    fn value_builtin(&self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
+        use ValueBuiltinOp::*;
+        Some(match (name, nargs) {
+            ("cons", _) => Cons,
+            ("head", _) => Head,
+            ("tail", _) => Tail,
+            ("length", _) => Length,
+            ("map", _) => Map,
+            ("fold", _) => Fold,
+            ("filter", _) => Filter,
+            ("list", _) => ListEmpty,
+            ("insert", 3) => InsertMap,
+            ("insert", 2) => InsertSet,
+            ("lookup", _) => Lookup,
+            ("member", _) => Member,
+            ("empty_map", _) => MapEmpty,
+            ("empty_set", _) => SetEmpty,
+            _ => return None,
+        })
+    }
+
+    /// Result static type of a collection op applied to the given argument
+    /// types. Element/value types are read from the container argument, and
+    /// the result capacity mirrors the SOURCE container's `Cap` (the runtime
+    /// ops preserve the source cap, so the static type is exact). The
+    /// empty-container constructors (`list`/`empty_map`/`empty_set`) carry
+    /// `Cap(0)`: their value is a single container slot, and element slots are
+    /// allocated per cons/insert/map op (each counted by `is_alloc_producing`).
+    fn value_builtin_ty(
+        &self,
+        name: &str,
+        args: &[ValueTy],
+        span: Span,
+    ) -> Result<ValueTy, CompileError> {
+        // Enforce the `Ord` constraint on Map/Set keys (and Set elements): every
+        // concrete key type must have a derived `Ord` instance (see
+        // `derive_eq_ord`). `Func` gets no instance, so a function-typed key is
+        // a compile error. Mirrors the infer-side check; lowering runs after
+        // inference, so this is defense-in-depth for direct lower-only paths.
+        let check_ord = |ty: &ValueTy, what: &str| -> Result<(), CompileError> {
+            match self.env.type_name_of_vty(ty) {
+                Some(name) => {
+                    let has = self
+                        .env
+                        .instances
+                        .get("Ord")
+                        .map(|by_ty| by_ty.contains_key(name.as_str()))
+                        .unwrap_or(false);
+                    if has {
+                        Ok(())
+                    } else {
+                        Err(CompileError::Type {
+                            msg: format!("no Ord instance for {what} type `{name}`"),
+                            span,
+                        })
+                    }
+                }
+                None => Err(CompileError::Type {
+                    msg: format!("no Ord instance for {what} type (function or unresolved type)"),
+                    span,
+                }),
+            }
+        };
+        match name {
+            "cons" | "filter" => match args.get(1).and_then(list_type_args) {
+                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                _ => Err(CompileError::Type {
+                    msg: format!("{name} expects a List, got {:?}", args.get(1)),
+                    span,
+                }),
+            },
+            "tail" => match args.first().and_then(list_type_args) {
+                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                _ => Err(CompileError::Type {
+                    msg: format!("{name} expects a List, got {:?}", args.first()),
+                    span,
+                }),
+            },
+            "head" => {
+                let elem = match args.first().and_then(list_type_args) {
+                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
+                    _ => ValueTy::Float,
+                };
+                Ok(ValueTy::App("Maybe".into(), vec![elem]))
+            }
+            "length" => Ok(ValueTy::Int),
+            "map" => {
+                // The result list's ELEMENT type is the closure's RETURN type
+                // (`map : (a -> b) -> List a n -> List b n`), read from the
+                // lowered `Func` signature of `args[0]`; a closure with no
+                // known return falls back to the source element type. The
+                // capacity mirrors the SOURCE list's cap: map allocates
+                // cap(source) element slots + the result container in one op,
+                // so a Cap(0) result type would undercount the arena bound.
+                let elem = match args.first() {
+                    Some(ValueTy::Func(_, rets)) => rets.first().cloned().unwrap_or(ValueTy::Float),
+                    _ => match args.get(1).and_then(list_type_args) {
+                        Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
+                        _ => ValueTy::Float,
+                    },
+                };
+                let cap = args.get(1).map(container_cap).unwrap_or(0);
+                Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
+            }
+            // fold's result is the accumulator/seed type (mirrors inference).
+            "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
+            "list" => Ok(ValueTy::App(
+                "List".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            )),
+            "insert" => match args.len() {
+                3 => {
+                    check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                    Ok(ValueTy::App(
+                        "Map".into(),
+                        vec![
+                            args.first().cloned().unwrap_or(ValueTy::Float),
+                            args.get(1).cloned().unwrap_or(ValueTy::Float),
+                            // The result map carries the SOURCE map's capacity (the
+                            // COW insert keeps the source bound): a Cap(0) result
+                            // type would undercount the arena bound.
+                            ValueTy::Cap(args.get(2).map(container_cap).unwrap_or(0)),
+                        ],
+                    ))
+                }
+                _ => {
+                    check_ord(args.first().unwrap_or(&ValueTy::Float), "element")?;
+                    Ok(ValueTy::App(
+                        "Set".into(),
+                        vec![
+                            args.first().cloned().unwrap_or(ValueTy::Float),
+                            ValueTy::Cap(args.get(1).map(container_cap).unwrap_or(0)),
+                        ],
+                    ))
+                }
+            },
+            "lookup" => {
+                check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                let v = match args.get(1) {
+                    Some(ValueTy::App(name, inner)) if name == "Map" => {
+                        inner.get(1).cloned().unwrap_or(ValueTy::Float)
+                    }
+                    _ => ValueTy::Float,
+                };
+                Ok(ValueTy::App("Maybe".into(), vec![v]))
+            }
+            "member" => {
+                check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                Ok(ValueTy::Bool)
+            }
+            "empty_map" => Ok(ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
+            )),
+            "empty_set" => Ok(ValueTy::App(
+                "Set".into(),
+                vec![ValueTy::Float, ValueTy::Cap(0)],
+            )),
+            _ => Err(CompileError::Unsupported(format!(
+                "unknown collection op {name}"
+            ))),
         }
     }
 
@@ -689,6 +1219,19 @@ impl<'a> Lowerer<'a> {
                 msg: format!("`{name}` is a newtype; use its constructor `{name} <value>`"),
                 span,
             });
+        }
+        // Nullary sum constructor: a bare `Nothing` / `Red` in value position is
+        // a complete value of its sum type — construct the empty sum directly.
+        if let Some((sum_name, ctor_idx, payload)) = self.sum_ctor(name) {
+            if payload.is_empty() {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstructSum {
+                    dst,
+                    ctor: ctor_idx as u32,
+                    payload: vec![],
+                });
+                return Ok((dst, ValueTy::Data(sum_name, vec![])));
+            }
         }
         let def = self
             .defs
@@ -867,6 +1410,21 @@ impl<'a> Lowerer<'a> {
                     self.free_vars_impl(d, bound, out, seen);
                 }
             }
+            Expr::Bool(_, _) => {}
+            Expr::ListLit(elems, _) => {
+                for el in elems {
+                    self.free_vars_impl(el, bound, out, seen);
+                }
+            }
+            Expr::MapLit(entries, _) => {
+                for (_, ve) in entries {
+                    self.free_vars_impl(ve, bound, out, seen);
+                }
+            }
+            Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
+                self.free_vars_impl(lhs, bound, out, seen);
+                self.free_vars_impl(rhs, bound, out, seen);
+            }
         }
     }
 
@@ -905,6 +1463,7 @@ impl<'a> Lowerer<'a> {
             scope.insert(p.name.clone(), (i, ty));
         }
         self.value_locals.push(scope);
+        self.value_local_ctors.push(HashMap::new());
         self.fragment_captures = free.to_vec();
         self.next_value_reg = params.len();
 
@@ -915,6 +1474,7 @@ impl<'a> Lowerer<'a> {
                 self.value_instrs = saved_instrs;
                 self.next_value_reg = saved_next;
                 self.value_locals = saved_locals;
+                self.value_local_ctors.pop();
                 self.fragment_captures = saved_captures;
                 return Err(e);
             }
@@ -940,6 +1500,7 @@ impl<'a> Lowerer<'a> {
         self.value_instrs = saved_instrs;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
+        self.value_local_ctors.pop();
         self.fragment_captures = saved_captures;
         Ok((id, result_ty))
     }
@@ -1048,7 +1609,75 @@ impl<'a> Lowerer<'a> {
         visited: &mut HashSet<String>,
     ) -> Option<String> {
         match e {
-            Expr::Apply { name, .. } => self.sum_ctor(name).map(|_| name.clone()),
+            Expr::Apply { name, args, .. } => {
+                if self.sum_ctor(name).is_some() {
+                    return Some(name.clone());
+                }
+                // A typeclass method call whose result constructor is statically
+                // known: resolve the instance via the class-var-applied argument
+                // (constructor classes) and inline the body.
+                if let Some(class_name) = self.env.class_of_method(name) {
+                    let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
+                    let sig = class_info
+                        .methods
+                        .iter()
+                        .find(|(m, _)| m == name)
+                        .map(|(_, s)| s.clone());
+                    if class_info.arity >= 1 {
+                        if let Some(container_idx) = self
+                            .env
+                            .class_var_arg_index(sig.as_ref().unwrap(), &class_info.var)
+                        {
+                            // The container argument's static constructor selects
+                            // the instance: `fmap g (Just 1.0)` → `Just` → the
+                            // `Maybe` instance.
+                            let container_ctor =
+                                self.static_scrutinee_ctor_impl(args.get(container_idx)?, visited)?;
+                            let ty_name = self.instance_type_of_ctor(&container_ctor)?;
+                            if let Some((_, params, body)) = self.env.resolve_method(name, &ty_name)
+                            {
+                                // β-substitute the call args into the body and
+                                // resolve the result's constructor.
+                                let mut subst: HashMap<String, Expr> = HashMap::new();
+                                for (p, a) in params.iter().zip(args.iter()) {
+                                    subst.insert(p.clone(), a.clone());
+                                }
+                                let inlined = crate::reduce::substitute(&body, &subst);
+                                return self.static_scrutinee_ctor_impl(&inlined, visited);
+                            }
+                        }
+                    }
+                }
+                // Builtin Maybe-returning ops resolve statically on concrete
+                // inputs: `head` of a non-empty list and `lookup` of a present
+                // key are `Just`; an empty list / absent key is `Nothing`.
+                match name.as_str() {
+                    "head" => args
+                        .first()
+                        .and_then(|xs| self.static_list_nonempty(xs, visited))
+                        .map(|ne| {
+                            if ne {
+                                "Just".to_string()
+                            } else {
+                                "Nothing".to_string()
+                            }
+                        }),
+                    "lookup" => {
+                        if let (Some(Expr::Str(k, _)), Some(map)) = (args.first(), args.get(1)) {
+                            self.static_map_has_key(map, k, visited).map(|present| {
+                                if present {
+                                    "Just".to_string()
+                                } else {
+                                    "Nothing".to_string()
+                                }
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            }
             Expr::Ref(name, _) => {
                 if visited.contains(name) {
                     return None;
@@ -1059,10 +1688,249 @@ impl<'a> Lowerer<'a> {
                     visited.remove(name);
                     return r;
                 }
+                // A value local bound to a statically-known constructor (a
+                // method parameter bound to `Just 1.0`): a `match` over the
+                // param's `Ref` selects its arm at compile time.
+                for scope in self.value_local_ctors.iter().rev() {
+                    if let Some(ctor) = scope.get(name) {
+                        return ctor.clone();
+                    }
+                }
+                // A bare nullary constructor (`Nothing`, `Red`) is a complete
+                // sum value: its constructor is statically known even though it
+                // is not a `Def::Local` body.
+                if let Some((_, _, payload)) = self.sum_ctor(name) {
+                    if payload.is_empty() {
+                        return Some(name.clone());
+                    }
+                }
+                None
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                // A statically-known scrutinee constructor selects the arm at
+                // compile time; the arm's body's constructor is the match's
+                // result constructor.
+                let scrut_ctor = self.static_scrutinee_ctor_impl(scrutinee, visited)?;
+                for (ctor, _, body) in arms {
+                    if ctor == &scrut_ctor {
+                        return self.static_scrutinee_ctor_impl(body, visited);
+                    }
+                }
                 None
             }
             _ => None,
         }
+    }
+
+    /// The type name bound to the class variable for a value constructor
+    /// (`Just`/`Nothing` → `Maybe`; a builtin ctor like `List` maps to itself).
+    fn instance_type_of_ctor(&self, ctor: &str) -> Option<String> {
+        if let Some((sum_name, _, _)) = self.sum_ctor(ctor) {
+            return Some(sum_name);
+        }
+        // A type constructor name used directly (`List`, `Box`, `Maybe`).
+        if self.env.ctor_arity(ctor).is_some() || self.env.data_arities.contains_key(ctor) {
+            return Some(ctor.to_string());
+        }
+        None
+    }
+
+    /// Statically determine a list expression's emptiness: `Some(true)` when
+    /// non-empty, `Some(false)` when empty, `None` when unknown. Follows
+    /// inlined value definitions (the visit guard breaks cycles).
+    fn static_list_nonempty(&self, e: &Expr, visited: &mut HashSet<String>) -> Option<bool> {
+        match e {
+            Expr::ListLit(elems, _) => Some(!elems.is_empty()),
+            Expr::Apply { name, args, .. } => match name.as_str() {
+                // `cons x xs` always yields a non-empty list; `list n` always an
+                // empty one. `map` preserves the source length; `tail` of an
+                // empty list stays empty (a non-empty source may still produce
+                // an empty tail, so that case is unknown).
+                "cons" => Some(true),
+                "list" => Some(false),
+                "map" => args
+                    .get(1)
+                    .and_then(|xs| self.static_list_nonempty(xs, visited)),
+                "tail" => match args
+                    .first()
+                    .and_then(|xs| self.static_list_nonempty(xs, visited))
+                {
+                    Some(false) => Some(false),
+                    _ => None,
+                },
+                _ => None,
+            },
+            Expr::Ref(name, _) => {
+                if visited.contains(name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    visited.insert(name.clone());
+                    let r = self.static_list_nonempty(&body, visited);
+                    visited.remove(name);
+                    return r;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Statically determine whether a map expression contains `key`:
+    /// `Some(true)`/`Some(false)` when the keys are statically known, `None`
+    /// otherwise. Follows inlined value definitions and `insert`/`empty_map`
+    /// chains.
+    fn static_map_has_key(
+        &self,
+        e: &Expr,
+        key: &str,
+        visited: &mut HashSet<String>,
+    ) -> Option<bool> {
+        match e {
+            Expr::MapLit(entries, _) => {
+                let present = entries.iter().any(|(k, _)| k == key);
+                Some(present)
+            }
+            Expr::Apply { name, args, .. } if name == "insert" && args.len() == 3 => {
+                // Resolve the insert key through the same Ref inlining used for
+                // the map argument: a let-bound key (`k = "a"`) is a concrete
+                // string the analysis can compare. A genuinely non-literal key
+                // is unknown — the analysis must not claim it present/absent.
+                match self.static_string_literal(&args[0], visited) {
+                    Some(k) => {
+                        if k == key {
+                            Some(true)
+                        } else {
+                            self.static_map_has_key(&args[2], key, visited)
+                        }
+                    }
+                    None => None,
+                }
+            }
+            Expr::Apply { name, .. } if name == "empty_map" => Some(false),
+            Expr::Ref(name, _) => {
+                if visited.contains(name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    visited.insert(name.clone());
+                    let r = self.static_map_has_key(&body, key, visited);
+                    visited.remove(name);
+                    return r;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolve an expression to a string literal, following inlined value
+    /// definitions (cycle-guarded). `Some(s)` when the string is statically
+    /// known, `None` otherwise.
+    fn static_string_literal(&self, e: &Expr, visited: &mut HashSet<String>) -> Option<String> {
+        match e {
+            Expr::Str(s, _) => Some(s.clone()),
+            Expr::Ref(name, _) => {
+                if visited.contains(name) {
+                    return None;
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    visited.insert(name.clone());
+                    let r = self.static_string_literal(&body, visited);
+                    visited.remove(name);
+                    return r;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Concrete type arguments of a builtin-sum scrutinee that is a direct
+    /// constructor application (`Just x`, `Left x`, `Right x`), following
+    /// inlined value definitions. Lowering gives such a scrutinee the static
+    /// type `Data(name, [])`, so the placeholder payload types in the builtin
+    /// shape must be resolved against the constructor arguments' concrete
+    /// types (mirroring inference). The arguments are lowered in a sandbox —
+    /// their instructions are discarded — to recover their static types.
+    /// Returns an empty vector when the scrutinee is not a resolvable builtin
+    /// construction (user sums already carry concrete payloads).
+    fn builtin_sum_scrutinee_args(&mut self, scrutinee: &Expr) -> Vec<ValueTy> {
+        self.builtin_sum_scrutinee_args_impl(scrutinee, &mut HashSet::new())
+    }
+
+    fn builtin_sum_scrutinee_args_impl(
+        &mut self,
+        e: &Expr,
+        seen: &mut HashSet<String>,
+    ) -> Vec<ValueTy> {
+        match e {
+            Expr::Ref(name, _) => {
+                if !seen.insert(name.clone()) {
+                    return vec![];
+                }
+                if let Some(Def::Local { body, .. }) = self.defs.get(name).cloned() {
+                    let r = self.builtin_sum_scrutinee_args_impl(&body, seen);
+                    seen.remove(name);
+                    return r;
+                }
+                vec![]
+            }
+            Expr::Apply { name, args, .. } => {
+                let Some((sum_name, _, payload)) = self.sum_ctor(name) else {
+                    return vec![];
+                };
+                if self.env.ctor_arity(&sum_name).is_none() {
+                    // User sum — its payloads are already concrete.
+                    return vec![];
+                }
+                // Placeholder payloads reference type-param positions
+                // (`Var(k)` ↔ k-th type arg); the ctor's argument at that
+                // payload slot supplies the concrete type.
+                let mut out: Vec<ValueTy> = vec![];
+                for (i, pt) in payload.iter().enumerate() {
+                    let ValueTy::Var(k) = pt else {
+                        continue;
+                    };
+                    let Some(arg) = args.get(i) else {
+                        continue;
+                    };
+                    let Some(ty) = self.sandbox_value_ty(arg) else {
+                        return vec![];
+                    };
+                    let idx = k.saturating_sub(1) as usize;
+                    while out.len() <= idx {
+                        out.push(ValueTy::Float);
+                    }
+                    out[idx] = ty;
+                }
+                out
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Recover an expression's static value type by lowering it in a sandbox:
+    /// the emitted instructions are discarded. Used to resolve builtin-sum
+    /// scrutinee payload types that `lower_value` does not carry on the
+    /// returned scrutinee type (`Data(name, [])`).
+    fn sandbox_value_ty(&mut self, e: &Expr) -> Option<ValueTy> {
+        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_next = self.next_value_reg;
+        let saved_locals = std::mem::take(&mut self.value_locals);
+        let saved_captures = std::mem::take(&mut self.fragment_captures);
+        let saved_inline = std::mem::take(&mut self.value_inline);
+        let saved_pending = std::mem::take(&mut self.pending_param_tys);
+        let r = self.lower_value(e).ok();
+        self.value_instrs = saved_instrs;
+        self.next_value_reg = saved_next;
+        self.value_locals = saved_locals;
+        self.fragment_captures = saved_captures;
+        self.value_inline = saved_inline;
+        self.pending_param_tys = saved_pending;
+        r.map(|(_, ty)| ty.clone())
     }
 
     /// Resolve the sum type of a `match` from its arm constructors, intersecting
@@ -1135,18 +2003,75 @@ impl<'a> Lowerer<'a> {
     /// Shapes: a record is `1 + Σ field subtrees`; a sum is `1 + the largest
     /// ctor's payload subtree` (each ctor's payload subtree is the sum of its
     /// entries); a newtype is `1 + inner subtree`; scalars, func values and
-    /// unbound variables occupy exactly one slot. Recursive data types are
-    /// cycle-guarded (a re-entered type contributes one slot) — v1 values are
-    /// finite literal constructions, so the bound stays finite and is exact
-    /// for non-recursive shapes.
+    /// unbound variables occupy exactly one slot. Builtin collections are
+    /// exact too: `List`/`Set` are `1 + cap × elem subtree`, `Map` is
+    /// `1 + cap × (key subtree + value subtree)`, `Pair` is `1 + both
+    /// subtrees`, `Maybe` is `1 + the inner subtree` and `Either` is
+    /// `1 + the larger arm's subtree` (the smaller arm can hold no value at
+    /// runtime). Recursive data types are cycle-guarded (a re-entered type
+    /// contributes one slot) — v1 values are finite literal constructions, so
+    /// the bound stays finite.
     fn subtree_size(&self, vty: &ValueTy) -> usize {
         self.subtree_size_impl(vty, &mut HashSet::new())
     }
 
     fn subtree_size_impl(&self, vty: &ValueTy, visiting: &mut HashSet<String>) -> usize {
         match vty {
-            ValueTy::Int | ValueTy::Float | ValueTy::Func(_, _) | ValueTy::Var(_) => 1,
-            ValueTy::Newtype(name) => {
+            ValueTy::Int
+            | ValueTy::Float
+            | ValueTy::Bool
+            | ValueTy::String
+            | ValueTy::Cap(_)
+            | ValueTy::Func(_, _)
+            | ValueTy::Var(_)
+            | ValueTy::TyConVar(_) => 1,
+            ValueTy::App(name, args) => match name.as_str() {
+                "Maybe" => {
+                    1 + args
+                        .first()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .unwrap_or(1)
+                }
+                "Pair" => {
+                    1 + args
+                        .iter()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .sum::<usize>()
+                }
+                "Either" => {
+                    1 + args
+                        .iter()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .max()
+                        .unwrap_or(1)
+                }
+                "List" | "Set" => {
+                    let elem = &args[0];
+                    let cap = match &args[1] {
+                        ValueTy::Cap(n) => *n,
+                        _ => 0,
+                    };
+                    1 + cap * self.subtree_size_impl(elem, visiting)
+                }
+                "Map" => {
+                    let k = &args[0];
+                    let v = &args[1];
+                    let cap = match &args[2] {
+                        ValueTy::Cap(n) => *n,
+                        _ => 0,
+                    };
+                    1 + cap
+                        * (self.subtree_size_impl(k, visiting)
+                            + self.subtree_size_impl(v, visiting))
+                }
+                _ => {
+                    1 + args
+                        .iter()
+                        .map(|t| self.subtree_size_impl(t, visiting))
+                        .sum::<usize>()
+                }
+            },
+            ValueTy::Newtype(name, _) => {
                 if !visiting.insert(name.clone()) {
                     return 1;
                 }
@@ -1160,7 +2085,7 @@ impl<'a> Lowerer<'a> {
                 visiting.remove(name);
                 s
             }
-            ValueTy::Data(name) => {
+            ValueTy::Data(name, _) => {
                 if !visiting.insert(name.clone()) {
                     return 1;
                 }
@@ -1589,6 +2514,14 @@ impl<'a> Lowerer<'a> {
                 msg: "lambda is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
+            Expr::Bool(_, _)
+            | Expr::ListLit(_, _)
+            | Expr::MapLit(_, _)
+            | Expr::Cmp { .. }
+            | Expr::Logic { .. } => Err(CompileError::Unsupported(
+                "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
+                    .into(),
+            )),
         }
     }
 
@@ -2183,7 +3116,14 @@ impl<'a> Lowerer<'a> {
             // Value expressions are 0→1 value channels: they carry no signal
             // arity. (A combinator mixing value and signal channels is outside
             // v1 scope and errors elsewhere in lowering.)
-            Expr::FieldProject { .. } | Expr::FieldUpdate { .. } | Expr::Match { .. } => (0, 1),
+            Expr::FieldProject { .. }
+            | Expr::FieldUpdate { .. }
+            | Expr::Match { .. }
+            | Expr::Bool(..)
+            | Expr::ListLit(..)
+            | Expr::MapLit(..)
+            | Expr::Cmp { .. }
+            | Expr::Logic { .. } => (0, 1),
             Expr::Lambda { .. } => (0, 1),
         })
     }
@@ -2285,8 +3225,10 @@ pub fn lower_with_cafs(
         next_value_reg: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
+        container_tys: Vec::new(),
         value_funcs: Vec::new(),
         value_locals: Vec::new(),
+        value_local_ctors: Vec::new(),
         env: &tp.type_env,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
@@ -2377,6 +3319,19 @@ pub fn lower_with_cafs(
                 + f.sig.value_outs
         })
         .sum::<usize>();
+    // Container-typed subexpressions pin their element slots while live, so
+    // each contributes its full subtree size (1 + cap × elem slots) to the
+    // bound. `value_builtin_ty` propagates the source cap for map/filter/cons/
+    // tail/insert, so these types carry the exact capacities the runtime
+    // allocates (a Cap(0) map/filter result type would undercount by cap(elem)
+    // element slots). Empty `list`/`empty_map`/`empty_set` legitimately have
+    // Cap(0): the empty container occupies one slot and element slots are
+    // allocated by the cons/insert ops themselves, each already counted.
+    let container_capacity = lw
+        .container_tys
+        .iter()
+        .map(|t| lw.subtree_size(t))
+        .sum::<usize>();
     let value_capacity = lw
         .value_instrs
         .iter()
@@ -2386,6 +3341,7 @@ pub fn lower_with_cafs(
             .iter()
             .map(|t| lw.subtree_size(t))
             .sum::<usize>()
+        + container_capacity
         + num_main_cells
         + fragment_capacity;
     // Pre-allocated function-call scratch: the runtime call stack never holds
@@ -2520,8 +3476,10 @@ mod tests {
             next_value_reg: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
+            container_tys: Vec::new(),
             value_funcs: Vec::new(),
             value_locals: Vec::new(),
+            value_local_ctors: Vec::new(),
             env,
             value_inline: HashSet::new(),
             method_lifting: HashSet::new(),
@@ -2853,7 +3811,7 @@ mod tests {
     #[test]
     fn match_lowers_to_value_match() {
         let ir = ir_of(
-            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+            "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Circle r => r; Rect w h => w; }",
         );
         assert!(ir
             .value_instrs
@@ -2900,18 +3858,74 @@ mod tests {
     }
 
     #[test]
-    fn match_wire_uses_first_arm() {
-        // An unbound `_` scrutinee has no static ctor: v1 static dispatch
-        // assumes the value is constructed per the first arm's ctor, so exactly
-        // one ValueMatch is emitted.
-        let ir = ir_of(
-            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+    fn match_wire_scrutinee_is_compile_error() {
+        // An unbound `_` scrutinee has no statically-known constructor: v1
+        // static dispatch must reject it, not silently assume the first arm's
+        // ctor (which returned a wrong value when the runtime value was a
+        // different constructor).
+        let p = parse(
+            &tokenize(
+                "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+            )
+            .unwrap(),
+            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }"
+                .as_bytes(),
+        )
+        .unwrap();
+        let tp = infer_program(&p).unwrap();
+        let res = lower(&tp);
+        assert!(res.is_err());
+        if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
+            assert!(
+                msg.contains("statically resolvable"),
+                "expected a 'statically resolvable' message, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn collection_subtree_sizes_are_exact() {
+        let env = TypeEnv::default();
+        let empty = HashSet::new();
+        let lw = lw(&env, &empty);
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "List".into(),
+                vec![ValueTy::Float, ValueTy::Cap(16)]
+            )),
+            1 + 16
         );
-        let matches = ir
-            .value_instrs
-            .iter()
-            .filter(|i| matches!(i, ValueInstr::ValueMatch { .. }))
-            .count();
-        assert_eq!(matches, 1);
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(4)]
+            )),
+            1 + 4 * 2
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Set".into(),
+                vec![ValueTy::Int, ValueTy::Cap(8)]
+            )),
+            1 + 8
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App("Maybe".into(), vec![ValueTy::Float])),
+            2
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Pair".into(),
+                vec![ValueTy::Float, ValueTy::Int]
+            )),
+            3
+        );
+        assert_eq!(
+            lw.subtree_size(&ValueTy::App(
+                "Either".into(),
+                vec![ValueTy::Float, ValueTy::Int]
+            )),
+            2
+        );
     }
 }

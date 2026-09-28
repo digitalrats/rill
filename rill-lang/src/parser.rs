@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{ArithOp, Def, Expr, Param, Program};
+use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Param, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 
@@ -18,6 +18,14 @@ enum InfixOp {
     Mul,
     Div,
     Rem,
+    CmpEq,
+    CmpNe,
+    CmpLt,
+    CmpGt,
+    CmpLe,
+    CmpGe,
+    LogicAnd,
+    LogicOr,
 }
 
 impl InfixOp {
@@ -38,6 +46,42 @@ impl InfixOp {
             _ => unreachable!("not an arithmetic operator"),
         }
     }
+
+    fn is_logic(self) -> bool {
+        matches!(self, InfixOp::LogicAnd | InfixOp::LogicOr)
+    }
+
+    fn to_logic(self) -> LogicOp {
+        match self {
+            InfixOp::LogicAnd => LogicOp::And,
+            InfixOp::LogicOr => LogicOp::Or,
+            _ => unreachable!("not a logic operator"),
+        }
+    }
+
+    fn is_cmp(self) -> bool {
+        matches!(
+            self,
+            InfixOp::CmpEq
+                | InfixOp::CmpNe
+                | InfixOp::CmpLt
+                | InfixOp::CmpGt
+                | InfixOp::CmpLe
+                | InfixOp::CmpGe
+        )
+    }
+
+    fn to_cmp(self) -> CmpOp {
+        match self {
+            InfixOp::CmpEq => CmpOp::Eq,
+            InfixOp::CmpNe => CmpOp::Ne,
+            InfixOp::CmpLt => CmpOp::Lt,
+            InfixOp::CmpGt => CmpOp::Gt,
+            InfixOp::CmpLe => CmpOp::Le,
+            InfixOp::CmpGe => CmpOp::Ge,
+            _ => unreachable!("not a comparison operator"),
+        }
+    }
 }
 
 struct Parser<'a> {
@@ -50,7 +94,15 @@ struct Parser<'a> {
 fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
     Some(match t {
         Tok::Tilde => (InfixOp::Loop, 1, 2),
+        Tok::AndAnd => (InfixOp::LogicAnd, 1, 2),
+        Tok::OrOr => (InfixOp::LogicOr, 1, 2),
         Tok::Colon => (InfixOp::Seq, 3, 4),
+        Tok::EqEq => (InfixOp::CmpEq, 3, 4),
+        Tok::NotEq => (InfixOp::CmpNe, 3, 4),
+        Tok::Lt => (InfixOp::CmpLt, 3, 4),
+        Tok::Gt => (InfixOp::CmpGt, 3, 4),
+        Tok::Le => (InfixOp::CmpLe, 3, 4),
+        Tok::Ge => (InfixOp::CmpGe, 3, 4),
         Tok::Merge => (InfixOp::Merge, 5, 6),
         Tok::Split => (InfixOp::Split, 7, 8),
         Tok::Comma => (InfixOp::Par, 9, 10),
@@ -76,6 +128,9 @@ fn is_atom_start(tok: &Tok) -> bool {
             | Tok::Str(_)
             | Tok::LParen
             | Tok::LBrace
+            | Tok::LBracket
+            | Tok::KwTrue
+            | Tok::KwFalse
             | Tok::Minus
             | Tok::Question
     )
@@ -246,6 +301,11 @@ impl<'a> Parser<'a> {
     fn parse_data_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (name, _) = self.expect_ident()?;
+        let mut tyvars = Vec::new();
+        while matches!(self.peek().tok, Tok::Ident(_)) {
+            let (tv, _) = self.expect_ident()?;
+            tyvars.push(tv);
+        }
         self.eat(&Tok::Eq)?;
         if self.peek().tok == Tok::LBrace {
             // product: { f1: T1, f2: T2 }
@@ -254,8 +314,8 @@ impl<'a> Parser<'a> {
             while self.peek().tok != Tok::RBrace {
                 let (fname, _) = self.expect_ident()?;
                 self.eat(&Tok::Colon)?;
-                let (tname, _) = self.expect_ident()?;
-                fields.push((fname, tname));
+                let t = self.parse_type_expr()?;
+                fields.push((fname, t));
                 if self.peek().tok == Tok::Comma {
                     self.bump();
                 }
@@ -263,6 +323,7 @@ impl<'a> Parser<'a> {
             self.eat(&Tok::RBrace)?;
             Ok(Def::Data {
                 name,
+                tyvars,
                 fields,
                 span: self.span_from(start),
             })
@@ -272,9 +333,8 @@ impl<'a> Parser<'a> {
             while self.peek().tok != Tok::Semi && self.peek().tok != Tok::Eof {
                 let (cname, _) = self.expect_ident()?;
                 let mut payload = Vec::new();
-                while let Tok::Ident(_) = self.peek().tok {
-                    let (tname, _) = self.expect_ident()?;
-                    payload.push(tname);
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_)) {
+                    payload.push(self.parse_type_single()?);
                 }
                 ctors.push((cname, payload));
                 if self.peek().tok == Tok::Pipe {
@@ -283,9 +343,84 @@ impl<'a> Parser<'a> {
             }
             Ok(Def::Sum {
                 name,
+                tyvars,
                 ctors,
                 span: self.span_from(start),
             })
+        }
+    }
+
+    /// Parse a single, non-absorbing type atom: a bare type or type-variable
+    /// name, a capacity int, or a parenthesized type expression. It does not
+    /// consume following juxtaposed atoms — the caller's application and
+    /// currying loops collect those.
+    fn parse_type_single(&mut self) -> Result<TypeExpr, CompileError> {
+        let t = self.peek().clone();
+        match t.tok {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(TypeExpr::TCap(n as usize))
+            }
+            Tok::LParen => {
+                self.bump();
+                let inner = self.parse_type_expr()?;
+                self.eat(&Tok::RParen)?;
+                Ok(inner)
+            }
+            Tok::Ident(name) => {
+                self.bump();
+                Ok(TypeExpr::TName(name))
+            }
+            other => Err(self.error(&format!("expected type expression, found {other:?}"))),
+        }
+    }
+
+    /// Parse a type atom: a single atom, or a name applied to juxtaposed atoms
+    /// (`List Float 16`, `f a`). Juxtaposed arguments stay flat — each is one
+    /// non-absorbing [`Parser::parse_type_single`].
+    fn parse_type_atom(&mut self) -> Result<TypeExpr, CompileError> {
+        let t = self.peek().clone();
+        match t.tok {
+            Tok::Int(n) => {
+                self.bump();
+                Ok(TypeExpr::TCap(n as usize))
+            }
+            Tok::LParen => {
+                self.bump();
+                let inner = self.parse_type_expr()?;
+                self.eat(&Tok::RParen)?;
+                Ok(inner)
+            }
+            Tok::Ident(name) => {
+                self.bump();
+                let mut args = Vec::new();
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::LParen) {
+                    args.push(self.parse_type_single()?);
+                }
+                if args.is_empty() {
+                    Ok(TypeExpr::TName(name))
+                } else {
+                    Ok(TypeExpr::TApp(name, args))
+                }
+            }
+            other => Err(self.error(&format!("expected type expression, found {other:?}"))),
+        }
+    }
+
+    /// Parse a type expression: a chain of juxta-applied type names and type
+    /// variables, `(T -> U -> V)` curried function types, and capacity ints.
+    fn parse_type_expr(&mut self) -> Result<TypeExpr, CompileError> {
+        let first = self.parse_type_atom()?;
+        if self.peek().tok == Tok::FatArrow {
+            let mut args = vec![first];
+            while self.peek().tok == Tok::FatArrow {
+                self.bump();
+                args.push(self.parse_type_atom()?);
+            }
+            let ret = args.pop().expect("function type needs a result");
+            Ok(TypeExpr::TFunc(args, Box::new(ret)))
+        } else {
+            Ok(first)
         }
     }
 
@@ -326,7 +461,7 @@ impl<'a> Parser<'a> {
         while self.peek().tok != Tok::RBrace {
             let (mname, _) = self.expect_ident()?;
             self.eat(&Tok::Colon)?;
-            let (sig, _) = self.expect_ident()?;
+            let sig = self.parse_type_expr()?;
             methods.push((mname, sig));
             self.eat(&Tok::Semi)?;
         }
@@ -339,8 +474,9 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `instance C T where { m p = body; }` — concrete instance. Each method
-    /// optionally binds a single parameter (`show f = f`).
+    /// `instance C T where { m p1 p2 = body; }` — concrete instance. Each
+    /// method optionally binds one or more parameters (`show f = f`,
+    /// `fmap g xs = map g xs`), β-substituted at each call site.
     fn parse_instance_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (class, _) = self.expect_ident()?;
@@ -350,19 +486,19 @@ impl<'a> Parser<'a> {
         let mut method_bodies = Vec::new();
         while self.peek().tok != Tok::RBrace {
             let (mname, _) = self.expect_ident()?;
-            // Optional single parameter binding before `=`: `show f = f`.
-            let param = if matches!(self.peek().tok, Tok::Ident(_)) {
+            // Zero or more parameter bindings before `=`: `show f = f`,
+            // `fmap g xs = map g xs`.
+            let mut params = Vec::new();
+            while matches!(self.peek().tok, Tok::Ident(_)) {
                 let (pname, pspan) = self.expect_ident()?;
-                Some(Param {
+                params.push(Param {
                     name: pname,
                     span: pspan,
-                })
-            } else {
-                None
-            };
+                });
+            }
             self.eat(&Tok::Eq)?;
             let body = self.parse_expr(0, true)?;
-            method_bodies.push((mname, param, body));
+            method_bodies.push((mname, params, body));
             self.eat(&Tok::Semi)?;
         }
         self.eat(&Tok::RBrace)?;
@@ -460,6 +596,20 @@ impl<'a> Parser<'a> {
             lhs = if op.is_arith() {
                 Expr::Arith {
                     op: op.to_arith(),
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
+                }
+            } else if op.is_logic() {
+                Expr::Logic {
+                    op: op.to_logic(),
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                    span,
+                }
+            } else if op.is_cmp() {
+                Expr::Cmp {
+                    op: op.to_cmp(),
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                     span,
@@ -592,21 +742,33 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_record(&mut self) -> Result<Expr, CompileError> {
+    fn parse_record_or_map(&mut self) -> Result<Expr, CompileError> {
         let start = self.eat(&Tok::LBrace)?.span.start;
-        let mut fields = Vec::new();
-
         if self.peek().tok == Tok::RBrace {
             self.bump();
-            return Ok(Expr::Record(fields, self.span_from(start)));
+            return Ok(Expr::Record(Vec::new(), self.span_from(start)));
         }
-
+        // A string literal key makes this a Map literal.
+        let is_map = matches!(self.peek().tok, Tok::Str(_));
+        let mut fields = Vec::new();
+        let mut entries = Vec::new();
         loop {
-            let (key, _) = self.expect_ident()?;
-            self.eat(&Tok::Colon)?;
-            let val = self.parse_expr(0, true)?;
-            fields.push((key, val));
-
+            if is_map {
+                let k = match self.bump().tok {
+                    Tok::Str(s) => s,
+                    other => {
+                        return Err(self.error(&format!("expected string map key, found {other:?}")))
+                    }
+                };
+                self.eat(&Tok::Colon)?;
+                let v = self.parse_expr(0, true)?;
+                entries.push((k, v));
+            } else {
+                let (key, _) = self.expect_ident()?;
+                self.eat(&Tok::Colon)?;
+                let val = self.parse_expr(0, true)?;
+                fields.push((key, val));
+            }
             if self.peek().tok == Tok::Comma {
                 self.bump();
                 if self.peek().tok == Tok::RBrace {
@@ -615,12 +777,15 @@ impl<'a> Parser<'a> {
             } else if self.peek().tok == Tok::RBrace {
                 break;
             } else {
-                return Err(self.error("expected ',' or '}' in record literal"));
+                return Err(self.error("expected ',' or '}' in literal"));
             }
         }
-
         self.eat(&Tok::RBrace)?;
-        Ok(Expr::Record(fields, self.span_from(start)))
+        if is_map {
+            Ok(Expr::MapLit(entries, self.span_from(start)))
+        } else {
+            Ok(Expr::Record(fields, self.span_from(start)))
+        }
     }
 
     fn parse_atom(&mut self) -> Result<Expr, CompileError> {
@@ -660,15 +825,45 @@ impl<'a> Parser<'a> {
                 }
             }
             Tok::LParen => {
+                let start = t.span.start;
                 let inner = self.parse_expr(0, false)?;
                 self.eat(&Tok::RParen)?;
-                Ok(inner)
+                if self.peek().tok == Tok::Dot {
+                    self.parse_field(inner, start)
+                } else {
+                    Ok(inner)
+                }
             }
             Tok::LBrace => {
-                // rewind — parse_record handles the opening brace
+                // rewind — parse_record_or_map handles the opening brace
                 self.pos -= 1;
-                self.parse_record()
+                self.parse_record_or_map()
             }
+            Tok::LBracket => {
+                let start = t.span.start;
+                if self.peek().tok == Tok::RBracket {
+                    self.bump();
+                    return Ok(Expr::ListLit(Vec::new(), self.span_from(start)));
+                }
+                let mut elems = Vec::new();
+                loop {
+                    elems.push(self.parse_expr(0, true)?);
+                    if self.peek().tok == Tok::Comma {
+                        self.bump();
+                        if self.peek().tok == Tok::RBracket {
+                            break;
+                        }
+                    } else if self.peek().tok == Tok::RBracket {
+                        break;
+                    } else {
+                        return Err(self.error("expected ',' or ']' in list literal"));
+                    }
+                }
+                self.eat(&Tok::RBracket)?;
+                Ok(Expr::ListLit(elems, self.span_from(start)))
+            }
+            Tok::KwTrue => Ok(Expr::Bool(true, t.span)),
+            Tok::KwFalse => Ok(Expr::Bool(false, t.span)),
             other => Err(CompileError::Parse {
                 msg: format!("unexpected token {other:?}"),
                 span: t.span,
@@ -1094,6 +1289,72 @@ mod tests {
     }
 
     #[test]
+    fn parses_parameterized_data_and_typeclass() {
+        let p = prog("data Box a = { value: a }; typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }; main = _");
+        match &p.defs[0] {
+            Def::Data {
+                name,
+                tyvars,
+                fields,
+                ..
+            } => {
+                assert_eq!(name, "Box");
+                assert_eq!(tyvars, &vec!["a".to_string()]);
+                assert_eq!(
+                    fields[0],
+                    ("value".to_string(), TypeExpr::TName("a".into()))
+                );
+            }
+            other => panic!("expected Data, got {other:?}"),
+        }
+        match &p.defs[1] {
+            Def::Typeclass {
+                name, var, methods, ..
+            } => {
+                assert_eq!(name, "Functor");
+                assert_eq!(var, "f");
+                assert_eq!(methods.len(), 1);
+                assert_eq!(methods[0].0, "fmap");
+                // Pin the flat-curried signature shape: `(a -> b) -> f a -> f b`.
+                assert_eq!(
+                    methods[0].1,
+                    TypeExpr::TFunc(
+                        vec![
+                            TypeExpr::TFunc(
+                                vec![TypeExpr::TName("a".into())],
+                                Box::new(TypeExpr::TName("b".into()))
+                            ),
+                            TypeExpr::TApp("f".into(), vec![TypeExpr::TName("a".into())]),
+                        ],
+                        Box::new(TypeExpr::TApp(
+                            "f".into(),
+                            vec![TypeExpr::TName("b".into())]
+                        ))
+                    )
+                );
+            }
+            other => panic!("expected Typeclass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_capacity_in_type_application() {
+        let p = prog("data V = { xs: List Float 16 }; main = _");
+        match &p.defs[0] {
+            Def::Data { fields, .. } => {
+                assert_eq!(
+                    fields[0].1,
+                    TypeExpr::TApp(
+                        "List".into(),
+                        vec![TypeExpr::TName("Float".into()), TypeExpr::TCap(16)]
+                    )
+                );
+            }
+            other => panic!("expected Data, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_instance_declaration() {
         let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Instance { .. })));
@@ -1149,5 +1410,47 @@ mod tests {
         let p = prog("adder = fn n -> fn x -> x + n; main = adder 2.0");
         let d = p.defs.iter().find(|d| d.name() == "adder").unwrap();
         assert!(matches!(d.body(), Expr::Lambda { .. }));
+    }
+
+    #[test]
+    fn parses_list_map_bool_cmp_logic() {
+        match body("main = [1.0, 2.0]") {
+            Expr::ListLit(elems, _) => assert_eq!(elems.len(), 2),
+            other => panic!("expected ListLit, got {other:?}"),
+        }
+        match body("main = { \"a\": 1.0 }") {
+            Expr::MapLit(entries, _) => assert_eq!(entries.len(), 1),
+            other => panic!("expected MapLit, got {other:?}"),
+        }
+        match body("main = true") {
+            Expr::Bool(true, _) => {}
+            other => panic!("expected Bool, got {other:?}"),
+        }
+        match body("main = 1.0 < 2.0 && 3.0 > 1.0") {
+            Expr::Logic { .. } => {}
+            other => panic!("expected Logic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comparison_binds_tighter_than_logic() {
+        match body("main = a < b || c > d") {
+            Expr::Logic { lhs, rhs, .. } => {
+                assert!(matches!(lhs.as_ref(), Expr::Cmp { .. }));
+                assert!(matches!(rhs.as_ref(), Expr::Cmp { .. }));
+            }
+            other => panic!("expected Logic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arithmetic_binds_tighter_than_comparison() {
+        match body("main = 1.0 + 2.0 < 4.0") {
+            Expr::Cmp { lhs, rhs, .. } => {
+                assert!(matches!(lhs.as_ref(), Expr::Arith { .. }));
+                assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 4.0));
+            }
+            other => panic!("expected Cmp, got {other:?}"),
+        }
     }
 }

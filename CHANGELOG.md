@@ -2,6 +2,20 @@
 
 ## [0.6.0-M2] — 2026-08-02
 
+### ✨ Features
+
+- **rill-lang: higher-kinded types (HKT) and first-class Haskell-style collections.**
+  Parameterized data types (`data Box a = { value: a }`) and kind polymorphism
+  over type constructors (`typeclass Functor f where { fmap: ... }`, `instance
+  Functor List`) with compile-time inline resolution — zero runtime dispatch.
+  First-class `List`/`Map`/`Set` arena containers with **strict type-carried
+  capacities** (`List Float 16`) — exceeding a capacity is a runtime
+  `ProcessError::Processing` — plus `Maybe`/`Pair`/`Either` builtin data types,
+  `Bool`/`String` value types, list/map literals, value-track comparisons
+  (`==` `!=` `<` `>` `<=` `>=`) and logic (`&&` `||` `not`), nullary
+  constructors, and derived `Eq`/`Ord` instances allowing any acyclic value
+  (except `Func`) as a Map/Set key.
+
 ### 🐛 Bug fixes
 
 - Fixed missing `register_analog_builtins` function in `rill-analog-effects/src/lang.rs`

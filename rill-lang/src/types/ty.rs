@@ -15,14 +15,17 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::Expr;
 use crate::error::{CompileError, Span};
 
+use super::unify::unify_value;
+
 /// A unification variable identifier.
 pub type TypeVarId = u32;
 
-/// Upper bound on `resolve_value` chain-following depth. Legitimate nested
-/// function types (`Func([Func([...])], ...)`) stay well below this; a value
-/// type deeper than this is either a cyclic binding or a pathological program,
-/// and resolving it must degrade to the unresolved var — never a stack
-/// overflow. The occurs-check in `unify_value` rejects cycles at the source.
+/// Upper bound on `resolve_value` chain-following depth. Legitimate nesting —
+/// function types (`Func([Func([...])], ...)`) and the argument lists of
+/// `App`/`Data`/`Newtype` applications — stays well below this; a value type
+/// deeper than this is either a cyclic binding or a pathological program, and
+/// resolving it must degrade to the unresolved var — never a stack overflow.
+/// The occurs-check in `unify_value` rejects cycles at the source.
 pub(crate) const MAX_VALUE_RESOLVE_DEPTH: usize = 64;
 
 /// The scalar (element) type of a sample.
@@ -52,16 +55,27 @@ pub enum ValueTy {
     Int,
     /// Floating point value.
     Float,
-    /// A named data record.
-    Data(String),
+    /// Boolean value type (value track only).
+    Bool,
+    /// String value type (value track only).
+    String,
+    /// A named data record, parameterized by its type arguments.
+    Data(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
-    Newtype(String),
+    Newtype(String, Vec<ValueTy>),
+    /// Builtin constructor application: `List Float 16`.
+    App(String, Vec<ValueTy>),
+    /// Capacity literal (`Nat` argument).
+    Cap(usize),
     /// Function type: value-argument types and value-result types. Signal-wire
     /// arguments are positional wire-captures at the call site, not part of the
     /// type.
     Func(Vec<ValueTy>, Vec<ValueTy>),
     /// Unresolved value-type unification variable.
     Var(TypeVarId),
+    /// Type-constructor variable (kind `* -> *` or higher), bound by a
+    /// typeclass class variable.
+    TyConVar(TypeVarId),
 }
 
 /// A signal or value channel.
@@ -190,8 +204,11 @@ pub enum DataInfo {
 pub struct TypeclassInfo {
     /// The class type variable (e.g. `a` in `typeclass Show a`).
     pub var: String,
-    /// Method dictionary: method name → declared argument type name.
-    pub methods: Vec<(String, String)>,
+    /// Kind arity of the class variable, inferred from its use in method
+    /// signatures (`f a` -> 1, `f a b` -> 2, bare `a` -> 0).
+    pub arity: usize,
+    /// Method dictionary: method name → signature type expression.
+    pub methods: Vec<(String, crate::ast::TypeExpr)>,
 }
 
 /// A concrete `instance` declaration: which class it implements, the concrete
@@ -202,8 +219,8 @@ pub struct InstanceInfo {
     pub class: String,
     /// The concrete type name bound to the class variable.
     pub ty: String,
-    /// Method bodies: method name → (optional parameter binding, body).
-    pub methods: HashMap<String, (Option<String>, Expr)>,
+    /// Method bodies: method name → (parameter bindings, body).
+    pub methods: HashMap<String, (Vec<String>, Expr)>,
 }
 
 /// The compile-time type environment: aliases, newtypes, data-type shapes, and
@@ -223,9 +240,192 @@ pub struct TypeEnv {
     pub typeclasses: HashMap<String, TypeclassInfo>,
     /// Instances grouped by class, then by bound type name.
     pub instances: HashMap<String, HashMap<String, InstanceInfo>>,
+    /// Builtin type constructors: name → (value arity, whether the final
+    /// argument is a capacity). `List a n` has arity 2, has-cap true.
+    pub ctor_kinds: HashMap<String, (usize, bool)>,
+    /// User-declared parameterized data types: name → number of type
+    /// parameters (`data Box a` → 1). Used to kind-check constructor instances
+    /// against a class's arity (`Functor f` needs `Box a`, not `Pair a b`).
+    ///
+    /// v1 registers only parameterized RECORDS here, not sums. A parameterized
+    /// user sum (`data Opt a = Some a | None`) works as an ordinary data type
+    /// (construction + match both stay monomorphic `Data(name, [])`), but its
+    /// match-pin path is not slot-carrying like a record's field projection, so
+    /// an instance body would hit the confusing `Data("Opt", [Var(_)])` vs
+    /// `Data("Opt", [])` unify error. Leaving sums out of this table makes such
+    /// an instance fail the kind check with a clean "not a type constructor"
+    /// / arity message instead. See `validate_instances`.
+    pub data_arities: HashMap<String, usize>,
 }
 
 impl TypeEnv {
+    /// A `TypeEnv` with the builtin constructor table and the builtin
+    /// `Maybe`/`Pair`/`Either` type shapes registered.
+    pub fn with_builtins() -> Self {
+        let ctor_kinds = [
+            ("List".to_string(), (2usize, true)),
+            ("Maybe".to_string(), (1usize, false)),
+            ("Set".to_string(), (2usize, true)),
+            ("Map".to_string(), (3usize, true)),
+            ("Pair".to_string(), (2usize, false)),
+            ("Either".to_string(), (2usize, false)),
+        ]
+        .into_iter()
+        .collect();
+        // NOTE: the `Var(1)`/`Var(2)` ids below are NOT unification variables —
+        // they are placeholder parameter positions inside the builtin type
+        // shapes (`Maybe a`, `Pair a b`, `Either a b`). They collide with the
+        // live inference var space (`Ctx::next` counts from 0), so any Phase
+        // 7/8 consumer that resolves these shapes MUST instantiate them with
+        // fresh ids before unifying against a live `Subst`.
+        let data_types = HashMap::from([
+            (
+                "Maybe".to_string(),
+                DataInfo::Sum(vec![
+                    ("Just".to_string(), vec![ValueTy::Var(1)]),
+                    ("Nothing".to_string(), vec![]),
+                ]),
+            ),
+            (
+                "Pair".to_string(),
+                DataInfo::Record(vec![
+                    ("first".to_string(), ValueTy::Var(1)),
+                    ("second".to_string(), ValueTy::Var(2)),
+                ]),
+            ),
+            (
+                "Either".to_string(),
+                DataInfo::Sum(vec![
+                    ("Left".to_string(), vec![ValueTy::Var(1)]),
+                    ("Right".to_string(), vec![ValueTy::Var(2)]),
+                ]),
+            ),
+        ]);
+        let typeclasses = HashMap::from([
+            (
+                "Eq".to_string(),
+                TypeclassInfo {
+                    var: "a".to_string(),
+                    arity: 0,
+                    methods: vec![(
+                        "eq".to_string(),
+                        crate::ast::TypeExpr::TFunc(
+                            vec![crate::ast::TypeExpr::TName("a".into())],
+                            Box::new(crate::ast::TypeExpr::TName("Bool".into())),
+                        ),
+                    )],
+                },
+            ),
+            (
+                "Ord".to_string(),
+                TypeclassInfo {
+                    var: "a".to_string(),
+                    arity: 0,
+                    methods: vec![(
+                        "lt".to_string(),
+                        crate::ast::TypeExpr::TFunc(
+                            vec![crate::ast::TypeExpr::TName("a".into())],
+                            Box::new(crate::ast::TypeExpr::TName("Bool".into())),
+                        ),
+                    )],
+                },
+            ),
+        ]);
+        TypeEnv {
+            ctor_kinds,
+            data_types,
+            typeclasses,
+            ..TypeEnv::default()
+        }
+    }
+
+    /// The kind arity of a class variable as used in a method signature: the
+    /// max number of type arguments applied to the variable (`f a` -> 1,
+    /// `f a b` -> 2, bare `a` -> 0). Used to typecheck `instance` heads.
+    pub(crate) fn class_var_arity(var: &str, sig: &crate::ast::TypeExpr) -> usize {
+        fn depth(var: &str, te: &crate::ast::TypeExpr) -> usize {
+            match te {
+                crate::ast::TypeExpr::TName(n) if n == var => 0,
+                crate::ast::TypeExpr::TApp(head, args) if head == var => args.len(),
+                crate::ast::TypeExpr::TApp(_, args) => {
+                    args.iter().map(|a| depth(var, a)).max().unwrap_or(0)
+                }
+                crate::ast::TypeExpr::TFunc(args, ret) => args
+                    .iter()
+                    .map(|a| depth(var, a))
+                    .chain(std::iter::once(depth(var, ret)))
+                    .max()
+                    .unwrap_or(0),
+                _ => 0,
+            }
+        }
+        depth(var, sig)
+    }
+
+    /// The index of the argument in a method signature whose type applies the
+    /// class variable (`f a` in `fmap: (a -> b) -> f a -> f b`). The instance
+    /// is selected by that argument's concrete type. `None` for arity-0
+    /// signatures (bare class var).
+    pub(crate) fn class_var_arg_index(
+        &self,
+        sig: &crate::ast::TypeExpr,
+        class_var: &str,
+    ) -> Option<usize> {
+        match sig {
+            crate::ast::TypeExpr::TFunc(args, _) => args
+                .iter()
+                .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),
+            _ => None,
+        }
+    }
+
+    /// Register a derived (structural) `Eq`/`Ord` instance for every concrete
+    /// data type currently in the env — user data types, the builtin shapes
+    /// (`Maybe`/`Pair`/`Either`) and the builtin ctor kinds (`List`/`Set`/`Map`,
+    /// whose structural order the interpreter's `value_cmp` implements) — plus
+    /// newtypes (derived by their inner, spec §2.5; `value_cmp` unwraps them)
+    /// and the scalar leaves. `Func` types get no instance. Derived instances
+    /// are markers: their method bodies are not run — the interpreter's
+    /// `value_cmp` implements the order.
+    pub fn derive_eq_ord(&mut self) {
+        let mut names: Vec<String> = self.data_types.keys().cloned().collect();
+        names.extend(self.ctor_kinds.keys().cloned());
+        names.extend(self.newtypes.keys().cloned());
+        names.extend(
+            ["Int", "Float", "Bool", "String"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+        for class in ["Eq", "Ord"] {
+            let by_ty = self.instances.entry(class.to_string()).or_default();
+            for n in &names {
+                by_ty.entry(n.clone()).or_insert_with(|| InstanceInfo {
+                    class: class.to_string(),
+                    ty: n.clone(),
+                    methods: HashMap::new(), // derived marker — empty body
+                });
+            }
+        }
+    }
+
+    /// Value arity of a builtin constructor (`None` if not a builtin).
+    pub fn ctor_arity(&self, name: &str) -> Option<usize> {
+        self.ctor_kinds.get(name).map(|(a, _)| *a)
+    }
+    /// Whether the final argument of the constructor is a capacity.
+    pub fn ctor_has_cap(&self, name: &str) -> Option<bool> {
+        self.ctor_kinds.get(name).map(|(_, c)| *c)
+    }
+    /// The number of VALUE arguments a constructor takes, excluding a capacity
+    /// slot. Builtin constructors come from [`Self::ctor_kinds`]; user
+    /// parameterized data types (`data Box a`) from [`Self::data_arities`].
+    pub fn ctor_value_arity(&self, name: &str) -> Option<usize> {
+        if let Some((a, cap)) = self.ctor_kinds.get(name) {
+            return Some(*a - usize::from(*cap));
+        }
+        self.data_arities.get(name).copied()
+    }
+
     /// Resolve a DSL type name to a value type, following type synonyms and
     /// newtype wrappers. Alias chains resolve iteratively with a bounded loop
     /// (cycle-safe): each pass follows one link and there are at most
@@ -243,9 +443,9 @@ impl TypeEnv {
             "Int" => ValueTy::Int,
             n => {
                 if self.newtypes.contains_key(n) {
-                    ValueTy::Newtype(n.to_string())
+                    ValueTy::Newtype(n.to_string(), vec![])
                 } else {
-                    ValueTy::Data(n.to_string())
+                    ValueTy::Data(n.to_string(), vec![])
                 }
             }
         }
@@ -269,17 +469,73 @@ impl TypeEnv {
     }
 
     /// The DSL type name of a concrete value type, used to look up instances
-    /// (`Float`, `Int`, a data type name, a newtype name). `None` for
-    /// unresolved type variables — a method call over such an argument cannot
-    /// select an instance at compile time.
+    /// (`Float`, `Int`, a data type name, a newtype name, a builtin ctor
+    /// application's head like `List`/`Map`). `None` for unresolved type
+    /// variables and function types — a method call or Ord-constrained key
+    /// over such an argument cannot select an instance at compile time.
     pub fn type_name_of_vty(&self, v: &ValueTy) -> Option<String> {
         match v {
             ValueTy::Int => Some("Int".to_string()),
             ValueTy::Float => Some("Float".to_string()),
-            ValueTy::Data(n) => Some(n.clone()),
-            ValueTy::Newtype(n) => Some(n.clone()),
+            ValueTy::Bool => Some("Bool".to_string()),
+            ValueTy::String => Some("String".to_string()),
+            ValueTy::Data(n, _) => Some(n.clone()),
+            ValueTy::Newtype(n, _) => Some(n.clone()),
+            ValueTy::App(n, _) => Some(n.clone()),
             _ => None,
         }
+    }
+
+    /// Match a class-var signature pattern against a concrete value type.
+    /// `f a` (pattern head is the class var) matches `App("List", [Int, Cap 4])`
+    /// by binding the class var to the constructor and unifying the remaining
+    /// pattern args with the concrete's non-Cap args (the Cap slot is carried
+    /// through unchanged — capacity flows argument → result).
+    /// Returns the bound constructor name on success.
+    pub fn match_ctor_pattern(
+        &self,
+        class_var: &str,
+        pat: &ValueTy,
+        concrete: &ValueTy,
+        subst: &mut Subst,
+    ) -> Option<String> {
+        if let ValueTy::App(f, p_args) = pat {
+            if f == class_var {
+                // The concrete side is either a builtin constructor
+                // (`App("List", [..])` / `App("Maybe", [t])`) or a user data
+                // type (`Data("Box", [..])`).
+                let (c, c_args) = match concrete {
+                    ValueTy::App(c, a) | ValueTy::Data(c, a) => (c, a),
+                    _ => return None,
+                };
+                // Match the non-Cap args positionally; the Cap slot unifies
+                // or is left free.
+                let mut pi = 0;
+                for ca in c_args {
+                    if let ValueTy::Cap(_) = ca {
+                        continue;
+                    }
+                    if pi >= p_args.len() {
+                        return None;
+                    }
+                    if unify_value(&p_args[pi], ca, subst, Span::new(0, 0)).is_err() {
+                        return None;
+                    }
+                    pi += 1;
+                }
+                // A pattern that applies MORE type args than the concrete's
+                // non-Cap slots is not a match (`f a b` vs `App("List", [t])`).
+                // The kind check normally rejects this up front, but the guard
+                // keeps the pattern matcher total. Partial subst bindings from
+                // the unified prefix are acceptable on failure — unification
+                // here is speculative (a later step returns None anyway).
+                if pi != p_args.len() {
+                    return None;
+                }
+                return Some(c.clone());
+            }
+        }
+        None
     }
 
     /// Validate that all data types and newtypes are acyclic. A data type that
@@ -316,8 +572,10 @@ impl TypeEnv {
             Some(DataInfo::Record(fields)) => {
                 for (_, t) in fields {
                     match t {
-                        ValueTy::Data(inner) => self.check_acyclic_name(inner, visiting)?,
-                        ValueTy::Newtype(inner) => self.check_acyclic_newtype(inner, visiting)?,
+                        ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
+                        ValueTy::Newtype(inner, _) => {
+                            self.check_acyclic_newtype(inner, visiting)?
+                        }
                         _ => {}
                     }
                 }
@@ -326,8 +584,8 @@ impl TypeEnv {
                 for (_, payload) in ctors {
                     for t in payload {
                         match t {
-                            ValueTy::Data(inner) => self.check_acyclic_name(inner, visiting)?,
-                            ValueTy::Newtype(inner) => {
+                            ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
+                            ValueTy::Newtype(inner, _) => {
                                 self.check_acyclic_newtype(inner, visiting)?
                             }
                             _ => {}
@@ -356,8 +614,8 @@ impl TypeEnv {
         }
         let res = match self.newtypes.get(name) {
             Some(inner) => match self.vty_of_name(inner) {
-                ValueTy::Data(data_name) => self.check_acyclic_name(&data_name, visiting),
-                ValueTy::Newtype(nw_name) => self.check_acyclic_newtype(&nw_name, visiting),
+                ValueTy::Data(data_name, _) => self.check_acyclic_name(&data_name, visiting),
+                ValueTy::Newtype(nw_name, _) => self.check_acyclic_newtype(&nw_name, visiting),
                 _ => Ok(()),
             },
             None => Ok(()),
@@ -368,21 +626,21 @@ impl TypeEnv {
 
     /// Resolve a typeclass method call: the class declaring `method`, the
     /// concrete type name `ty_name`, and the matching instance's method body
-    /// `(parameter binding, body)`. Returns `None` when no class declares
+    /// `(parameter bindings, body)`. Returns `None` when no class declares
     /// `method` or no instance binds `ty_name`.
     pub fn resolve_method(
         &self,
         method: &str,
         ty_name: &str,
-    ) -> Option<(String, Option<String>, Expr)> {
+    ) -> Option<(String, Vec<String>, Expr)> {
         if let Some(cname) = self.class_of_method(method) {
             if let Some(instance) = self
                 .instances
                 .get(cname.as_str())
                 .and_then(|by_ty| by_ty.get(ty_name))
             {
-                if let Some((param, body)) = instance.methods.get(method).cloned() {
-                    return Some((cname, param, body));
+                if let Some((params, body)) = instance.methods.get(method).cloned() {
+                    return Some((cname, params, body));
                 }
             }
         }
@@ -422,6 +680,10 @@ impl Subst {
                 Some(inner) => self.resolve_value_depth(inner, depth + 1),
                 None => t.clone(),
             },
+            ValueTy::TyConVar(v) => match self.value_map.get(v) {
+                Some(inner) => self.resolve_value_depth(inner, depth + 1),
+                None => t.clone(),
+            },
             ValueTy::Func(args, rets) => ValueTy::Func(
                 args.iter()
                     .map(|a| self.resolve_value_depth(a, depth + 1))
@@ -430,6 +692,17 @@ impl Subst {
                     .map(|r| self.resolve_value_depth(r, depth + 1))
                     .collect(),
             ),
+            ValueTy::Data(name, args) | ValueTy::Newtype(name, args) | ValueTy::App(name, args) => {
+                let resolved: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| self.resolve_value_depth(a, depth + 1))
+                    .collect();
+                match t {
+                    ValueTy::Data(..) => ValueTy::Data(name.clone(), resolved),
+                    ValueTy::Newtype(..) => ValueTy::Newtype(name.clone(), resolved),
+                    _ => ValueTy::App(name.clone(), resolved),
+                }
+            }
             _ => t.clone(),
         }
     }
@@ -467,13 +740,66 @@ mod funcsig_tests {
 }
 
 #[cfg(test)]
+mod hkt_value_ty_tests {
+    use super::*;
+
+    #[test]
+    fn app_and_cap_construct() {
+        let t = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(16)]);
+        assert!(matches!(t, ValueTy::App(..)));
+    }
+
+    #[test]
+    fn bool_string_are_leaves() {
+        assert_ne!(ValueTy::Bool, ValueTy::Float);
+        assert_ne!(ValueTy::String, ValueTy::Bool);
+    }
+
+    #[test]
+    fn match_ctor_pattern_rejects_extra_pattern_args() {
+        let env = TypeEnv::with_builtins();
+        let mut subst = Subst::default();
+        // Pattern `f a b` (two type args) against `App("List", [Float, Cap(4)])`
+        // (one non-Cap slot): the extra `b` slot must reject the match. Without
+        // the trailing-arg guard this silently returned `Some("List")`, leaving
+        // the `b` slot unbound.
+        let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0), ValueTy::Var(1)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        assert_eq!(
+            env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
+            None
+        );
+    }
+
+    #[test]
+    fn match_ctor_pattern_matches_consumed_pattern_args() {
+        let env = TypeEnv::with_builtins();
+        let mut subst = Subst::default();
+        // `f a` (one arg) against a List (one non-Cap slot + Cap) still matches.
+        let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        assert_eq!(
+            env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
+            Some("List".to_string())
+        );
+        // `f a b` (two args) against a Pair (two non-Cap slots) matches.
+        let pat2 = ValueTy::App("f".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
+        let concrete2 = ValueTy::App("Pair".into(), vec![ValueTy::Float, ValueTy::Int]);
+        assert_eq!(
+            env.match_ctor_pattern("f", &pat2, &concrete2, &mut subst),
+            Some("Pair".to_string())
+        );
+    }
+}
+
+#[cfg(test)]
 mod channel_tests {
     use super::*;
 
     #[test]
     fn channel_rates_are_distinct() {
         let sig = Channel::signal(Scalar::Float);
-        let val = Channel::value(ValueTy::Data("Point".into()));
+        let val = Channel::value(ValueTy::Data("Point".into(), vec![]));
         assert_eq!(sig.rate, Rate::Signal);
         assert_eq!(val.rate, Rate::Value);
         assert_eq!(sig.vty, ValueTy::Int);
@@ -489,5 +815,67 @@ mod channel_tests {
         let r = s.apply(&t);
         assert_eq!(r.ins[0].rate, Rate::Value);
         assert_eq!(r.ins[0].vty, ValueTy::Int);
+    }
+}
+
+#[cfg(test)]
+mod ctor_table_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_ctor_kinds_and_capacity_flags() {
+        let env = TypeEnv::with_builtins();
+        assert!(env.ctor_arity("List") == Some(2)); // elem + cap
+        assert!(env.ctor_has_cap("List") == Some(true));
+        assert!(env.ctor_arity("Maybe") == Some(1));
+        assert!(env.ctor_has_cap("Maybe") == Some(false));
+        assert!(env.ctor_arity("Set") == Some(2));
+        assert!(env.ctor_has_cap("Set") == Some(true));
+        assert!(env.ctor_arity("Map") == Some(3));
+        assert!(env.ctor_has_cap("Map") == Some(true));
+        assert!(env.ctor_arity("Pair") == Some(2));
+        assert!(env.ctor_has_cap("Pair") == Some(false));
+        assert!(env.ctor_arity("Either") == Some(2));
+        assert!(env.ctor_has_cap("Either") == Some(false));
+        assert!(env.ctor_arity("Nope").is_none());
+    }
+
+    #[test]
+    fn builtin_shapes_are_acyclic() {
+        // The injected Maybe/Pair/Either shapes must satisfy the v1 acyclicity
+        // contract (the arena-capacity bound depends on it).
+        TypeEnv::with_builtins().check_acyclic().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod eq_ord_tests {
+    use super::*;
+
+    #[test]
+    fn builtin_eq_ord_registered_and_derived() {
+        let mut env = TypeEnv::with_builtins();
+        env.data_types.insert(
+            "Point".to_string(),
+            DataInfo::Record(vec![("x".to_string(), ValueTy::Float)]),
+        );
+        env.data_types.insert(
+            "List".to_string(),
+            DataInfo::Sum(vec![
+                ("Cons".to_string(), vec![ValueTy::Var(1), ValueTy::Var(2)]),
+                ("Nil".to_string(), vec![]),
+            ]),
+        );
+        env.derive_eq_ord();
+        assert!(env.typeclasses.contains_key("Eq"));
+        assert!(env.typeclasses.contains_key("Ord"));
+        let by_ty = &env.instances["Ord"];
+        assert!(by_ty.contains_key("Float"));
+        assert!(by_ty.contains_key("Int"));
+        assert!(by_ty.contains_key("Bool"));
+        assert!(by_ty.contains_key("String"));
+        assert!(by_ty.contains_key("Point"));
+        assert!(by_ty.contains_key("List"));
+        assert!(!by_ty.contains_key("Func"), "Func has no derived Ord");
     }
 }

@@ -4,9 +4,10 @@ use rill_core::buffer::FixedBuffer;
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
+use rill_core::traits::ProcessError;
 
-use crate::arena::{ArenaRef, Value};
-use crate::ir::{BinArith, FragmentIr, Instr, UnOp, ValueInstr};
+use crate::arena::{Arena, ArenaRef, Value};
+use crate::ir::{BinArith, CmpOp, FragmentIr, Instr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr};
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
 
@@ -40,12 +41,13 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
 }
 
 /// Run one block via the schedule. Every step is a whole-buffer operation.
-/// Supports N inputs → M outputs.
+/// Supports N inputs → M outputs. Returns a `ProcessError` when the value track
+/// latched one (a collection capacity overflow — a user error, not a build bug).
 pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     inputs: &[&[T]],
     outputs: &mut [&mut [T]],
-) {
+) -> Result<(), ProcessError> {
     push_builtin_params(prog);
     // Release the previous tick's value outputs BEFORE this tick allocates.
     // A value output pins its whole subtree across ticks (the output keeps the
@@ -73,8 +75,12 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
     prog.schedule.steps = steps;
 
-    // Value-track phase (per-tick): allocate/free the program's values.
-    run_value_track(prog);
+    // Value-track phase (per-tick): allocate/free the program's values. A
+    // latched value error (a collection capacity overflow) is propagated only
+    // AFTER the tick-end cleanup below — the registers, block-state swap and
+    // output release all still run, so a repeatedly erroring program cannot
+    // leak the fixed arena or desync its feedback state.
+    let value_res = run_value_track(prog);
 
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
@@ -109,6 +115,7 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     // store, and `ValueStateWrite` already drops the previous ref when
     // overwriting a slot.
     prog.clear_value_regs();
+    value_res
 }
 
 /// Execute the per-tick value track: run every [`ValueInstr`] once per block,
@@ -120,7 +127,9 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
 /// (RC++); a store that MOVES a ref clears the source (`None`). Drops are
 /// deferred to the end of the track so a drop cannot free a slot mid-track
 /// that a later instruction reuses, and the release order is deterministic.
-pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>) {
+pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+) -> Result<(), ProcessError> {
     // Move the instruction list out of `prog` so we can borrow `prog`'s value
     // registers mutably while iterating (`mem::take` leaves an empty `Vec`
     // behind — no allocation on the RT path). Drops queue on the shared,
@@ -140,6 +149,13 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(prog: &mut Ri
         prog.arena.drop_ref(r);
     }
     prog.drops_scratch = drops;
+    // The value-error latch: a collection op (e.g. `cons` past capacity) sets
+    // it and the tick fails with a user-facing `ProcessError` rather than a
+    // silent `None` (that channel is reserved for build-time arena exhaustion).
+    if let Some(err) = prog.value_error.take() {
+        return Err(err);
+    }
+    Ok(())
 }
 
 /// Allocate a slot holding `v`, taking over the ownership of `v`'s child refs.
@@ -161,6 +177,9 @@ fn alloc_owned<T: Transcendental, const BUF: usize>(
         Value::Record(ref fields) | Value::Sum(_, ref fields) => fields.clone(),
         Value::Newtype(inner) => vec![inner],
         Value::Closure(env, _) => vec![env],
+        Value::List { ref elems, .. } => elems.clone(),
+        Value::Map { ref pairs, .. } => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
+        Value::Set { ref elems, .. } => elems.clone(),
         _ => Vec::new(),
     };
     match prog.arena.alloc(v) {
@@ -198,6 +217,22 @@ fn alloc_copy<T: Transcendental, const BUF: usize>(
         }
         Value::Closure(env, _) => {
             _ = prog.arena.copy(*env);
+        }
+        Value::List { elems, .. } => {
+            for e in elems {
+                _ = prog.arena.copy(*e);
+            }
+        }
+        Value::Map { pairs, .. } => {
+            for (k, v) in pairs {
+                _ = prog.arena.copy(*k);
+                _ = prog.arena.copy(*v);
+            }
+        }
+        Value::Set { elems, .. } => {
+            for e in elems {
+                _ = prog.arena.copy(*e);
+            }
         }
         _ => {}
     }
@@ -275,7 +310,117 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
         }
         Value::Newtype(inner) => prog.arena.drop_ref(*inner),
         Value::Closure(env, _) => prog.arena.drop_ref(*env),
+        Value::List { elems, .. } => {
+            for e in elems {
+                prog.arena.drop_ref(*e);
+            }
+        }
+        Value::Map { pairs, .. } => {
+            for (k, v) in pairs {
+                prog.arena.drop_ref(*k);
+                prog.arena.drop_ref(*v);
+            }
+        }
+        Value::Set { elems, .. } => {
+            for e in elems {
+                prog.arena.drop_ref(*e);
+            }
+        }
         _ => {}
+    }
+}
+
+/// Structural total order over acyclic arena values (the derived `Eq`/`Ord`).
+/// Returns `< 0`, `== 0`, or `> 0`.
+///
+/// Leaves compare by value; a `Sum` by constructor index then payload; a
+/// `Record` by field order; a `Newtype` by its inner value; `List`/`Set`
+/// lexicographically over elements; `Map` lexicographically over the sorted
+/// (key, value) pairs. Mixed kinds fall back to [`kind_rank`], so any two
+/// acyclic values are comparable — this total cross-kind order is what makes
+/// arbitrary-typed `Map` keys work.
+///
+/// `Closure` values are unordered — reaching one is a lowering bug (the type
+/// checker rejects `Ord` over functions).
+fn value_cmp(arena: &Arena, a: ArenaRef, b: ArenaRef) -> i8 {
+    match (arena.get(a), arena.get(b)) {
+        (Some(va), Some(vb)) => value_cmp_ref(arena, va, vb),
+        _ => 0,
+    }
+}
+
+fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
+    use Value::*;
+    match (a, b) {
+        (Int(x), Int(y)) => x.cmp(y) as i8,
+        // `total_cmp` is a genuine total order: NaN sorts greatest and NaN ≡
+        // NaN, so NaN keys in maps and sets stay well-defined and the ordering
+        // is transitive. A `partial_cmp`-with-`Equal`-fallback would be an
+        // intransitive equivalence (NaN ≈ 3.0 but 3.0 < 5.0), breaking the
+        // sorted Map/Set binary search.
+        (Float(x), Float(y)) => x.total_cmp(y) as i8,
+        (Bool(x), Bool(y)) => x.cmp(y) as i8,
+        (String(x), String(y)) => x.cmp(y) as i8,
+        (Newtype(x), Newtype(y)) => value_cmp(arena, *x, *y),
+        (Sum(i, px), Sum(j, py)) => {
+            let c = i.cmp(j) as i8;
+            if c != 0 {
+                return c;
+            }
+            cmp_ref_slices(arena, px, py)
+        }
+        (Record(fx), Record(fy)) => cmp_ref_slices(arena, fx, fy),
+        (List { elems: ex, .. }, List { elems: ey, .. }) => cmp_ref_slices(arena, ex, ey),
+        (Set { elems: ex, .. }, Set { elems: ey, .. }) => cmp_ref_slices(arena, ex, ey),
+        (Map { pairs: px, .. }, Map { pairs: py, .. }) => {
+            for (i, (kx, vx)) in px.iter().enumerate() {
+                let Some((ky, vy)) = py.get(i) else {
+                    return 1;
+                };
+                let c = value_cmp(arena, *kx, *ky);
+                if c != 0 {
+                    return c;
+                }
+                let c = value_cmp(arena, *vx, *vy);
+                if c != 0 {
+                    return c;
+                }
+            }
+            px.len().cmp(&py.len()) as i8
+        }
+        (Closure(..), Closure(..)) => 0, // unreachable for Ord-typed keys
+        _ => kind_rank(a).cmp(&kind_rank(b)) as i8,
+    }
+}
+
+fn cmp_ref_slices(arena: &Arena, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 {
+    for (i, x) in xs.iter().enumerate() {
+        let Some(y) = ys.get(i) else {
+            return 1;
+        };
+        let c = value_cmp(arena, *x, *y);
+        if c != 0 {
+            return c;
+        }
+    }
+    xs.len().cmp(&ys.len()) as i8
+}
+
+fn kind_rank(v: &Value) -> i8 {
+    use Value::*;
+    match v {
+        Bool(_) => 0,
+        Int(_) => 1,
+        Float(_) => 2,
+        String(_) => 3,
+        Record(_) => 4,
+        Sum(..) => 5,
+        Newtype(_) => 6,
+        List { .. } => 7,
+        Map { .. } => 8,
+        Set { .. } => 9,
+        Closure(..) => 10,
+        Void => 11,
     }
 }
 
@@ -686,7 +831,599 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
             }
         }
+        ValueInstr::ValueBool { dst, value } => {
+            prog.value_regs[*dst] = alloc_owned(prog, Value::Bool(*value));
+        }
+        ValueInstr::ValueConstString { dst, value } => {
+            prog.value_regs[*dst] = alloc_owned(prog, Value::String(value.clone()));
+        }
+        ValueInstr::ValueListLit { dst, elems, cap } => {
+            prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, elems) {
+                alloc_owned(
+                    prog,
+                    Value::List {
+                        elems: refs,
+                        cap: *cap,
+                    },
+                )
+            } else {
+                None
+            };
+        }
+        ValueInstr::ValueMapLit {
+            dst,
+            keys,
+            vals,
+            cap,
+        } => {
+            prog.value_regs[*dst] = if let (Some(ks), Some(vs)) =
+                (read_field_refs(prog, keys), read_field_refs(prog, vals))
+            {
+                // Map entries are kept SORTED by the derived key order (the
+                // insert/lookup/member binary search relies on it), so a map
+                // literal written out of order is normalised here.
+                let mut pairs: Vec<(ArenaRef, ArenaRef)> = ks.into_iter().zip(vs).collect();
+                pairs.sort_by(|a, b| value_cmp(&prog.arena, a.0, b.0).cmp(&0));
+                alloc_owned(prog, Value::Map { pairs, cap: *cap })
+            } else {
+                None
+            };
+        }
+        ValueInstr::ValueCompare { dst, op, a, b } => {
+            let res = match (prog.value_regs[*a], prog.value_regs[*b]) {
+                (Some(x), Some(y)) => {
+                    let c = value_cmp(&prog.arena, x, y);
+                    let b = match op {
+                        CmpOp::Eq => c == 0,
+                        CmpOp::Ne => c != 0,
+                        CmpOp::Lt => c < 0,
+                        CmpOp::Gt => c > 0,
+                        CmpOp::Le => c <= 0,
+                        CmpOp::Ge => c >= 0,
+                    };
+                    Some(Value::Bool(b))
+                }
+                _ => None,
+            };
+            prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
+        }
+        ValueInstr::ValueLogic { dst, op, a, b } => {
+            let res = match (prog.value_regs[*a], prog.value_regs[*b]) {
+                (Some(x), Some(y)) => {
+                    let (ax, ay) = match (prog.arena.get(x), prog.arena.get(y)) {
+                        (Some(Value::Bool(p)), Some(Value::Bool(q))) => (*p, *q),
+                        _ => (false, false),
+                    };
+                    Some(Value::Bool(match op {
+                        LogicOp::And => ax && ay,
+                        LogicOp::Or => ax || ay,
+                    }))
+                }
+                _ => None,
+            };
+            prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
+        }
+        ValueInstr::ValueNot { dst, src } => {
+            let b = match prog.value_regs[*src] {
+                Some(r) => match prog.arena.get(r) {
+                    Some(Value::Bool(p)) => Some(Value::Bool(!*p)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            prog.value_regs[*dst] = b.and_then(|v| alloc_owned(prog, v));
+        }
+        ValueInstr::ValueCallBuiltin { dst, op, args } => {
+            exec_value_call_builtin(prog, *op, args, *dst, drops);
+        }
     }
+}
+
+/// The sorted position at which `key` belongs among the sorted `keys`, via
+/// binary search over the total `value_cmp` order — the first index whose key
+/// is not less than `key` (a lower bound). Map/Set entries are kept sorted by
+/// this derived order, so `insert` splices here, and `lookup`/`member` test
+/// `value_cmp(key, keys[pos]) == 0` to distinguish hit from insert point.
+fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    key: ArenaRef,
+    keys: &[ArenaRef],
+) -> usize {
+    let mut lo = 0;
+    let mut hi = keys.len();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if value_cmp(&prog.arena, key, keys[mid]) > 0 {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
+}
+
+/// Read an Int value register as a non-negative capacity (clamped), 0 when the
+/// register holds no Int (a negative Int must not wrap into a huge `usize`).
+fn int_cap_arg<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    reg: usize,
+) -> usize {
+    prog.value_regs
+        .get(reg)
+        .copied()
+        .flatten()
+        .and_then(|r| match prog.arena.get(r) {
+            Some(Value::Int(n)) => Some((*n).max(0) as usize),
+            _ => None,
+        })
+        .unwrap_or(0)
+}
+
+/// Dispatch a collection operation (`ValueCallBuiltin`).
+///
+/// Container reads copy (RC++) any child refs the result claims so both the
+/// source and the new container own them. A capacity overflow latches a
+/// `ProcessError` on `prog.value_error` instead of a silent `None` — the
+/// register-`Option` channel is reserved for build-time arena exhaustion.
+fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    op: ValueBuiltinOp,
+    args: &[usize],
+    dst: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    use ValueBuiltinOp::*;
+    match op {
+        Cons => {
+            // cons x xs: build a new List whose head is x followed by the
+            // source elems (`x : xs`). The result recounts (RC++) the source
+            // elems and the new element so both the source container and the
+            // result own them (the source register is dropped at tick end).
+            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            match xs {
+                Some(Value::List { mut elems, cap }) => {
+                    if elems.len() >= cap {
+                        prog.value_error = Some(ProcessError::processing("list capacity exceeded"));
+                        return;
+                    }
+                    let x = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok());
+                    match x {
+                        Some(xr) => {
+                            // The result shares the source elems' refs: recount
+                            // each so the source list keeps its own ownership
+                            // until it is dropped and the result's refs survive.
+                            for e in &elems {
+                                _ = prog.arena.copy(*e);
+                            }
+                            elems.insert(0, xr);
+                            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems, cap });
+                        }
+                        None => prog.value_regs[dst] = None,
+                    }
+                }
+                _ => prog.value_regs[dst] = None,
+            }
+        }
+        Length => {
+            // The IR doc says Length covers list/set/map: each container
+            // reports its entry count.
+            let n = prog.value_regs[args[0]]
+                .and_then(|r| prog.arena.get(r))
+                .map(|v| match v {
+                    Value::List { elems, .. } => elems.len() as i64,
+                    Value::Map { pairs, .. } => pairs.len() as i64,
+                    Value::Set { elems, .. } => elems.len() as i64,
+                    _ => 0,
+                })
+                .unwrap_or(0);
+            prog.value_regs[dst] = alloc_owned(prog, Value::Int(n));
+        }
+        Head => {
+            let r = prog.value_regs[args[0]].and_then(|r| prog.arena.get(r).cloned());
+            let m = match r {
+                Some(Value::List { elems, .. }) => elems.first().copied(),
+                _ => None,
+            };
+            prog.value_regs[dst] = match m {
+                // `Just e`: the Sum owns a counted ref on the element (the list
+                // keeps its own ownership). `Nothing`: an empty sum payload.
+                Some(e) => match copy_owned(prog, e) {
+                    Some(ce) => alloc_owned(prog, Value::Sum(0, vec![ce])),
+                    None => None,
+                },
+                None => alloc_owned(prog, Value::Sum(1, vec![])),
+            };
+        }
+        Map => {
+            // map f xs: dispatch f per element via a one-arg closure call.
+            let f = prog.value_regs[args[0]];
+            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(_), Some(Value::List { elems, cap })) = (f, xs) {
+                let mut out = Vec::with_capacity(elems.len());
+                for e in &elems {
+                    let out_e = call_closure_single(prog, args[0], *e, dst, drops);
+                    if let Some(o) = out_e {
+                        out.push(o);
+                    }
+                }
+                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out, cap });
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        Fold => {
+            // fold f z xs: seed the accumulator with a copy of z, then for each
+            // element call f with (acc, elem); the result becomes the new acc.
+            let f = prog.value_regs[args[0]];
+            let acc = prog.value_regs[args[1]];
+            let xs = prog.value_regs[args[2]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(_), Some(accr), Some(Value::List { elems, .. })) = (f, acc, xs) {
+                let mut cur = match copy_owned(prog, accr) {
+                    Some(c) => c,
+                    None => {
+                        prog.value_regs[dst] = None;
+                        return;
+                    }
+                };
+                let mut failed = false;
+                for e in &elems {
+                    let pair = [cur, *e];
+                    let next = call_closure_args(prog, args[0], &pair, dst, drops);
+                    match next {
+                        Some(n) => {
+                            // Replace the previous accumulator copy with the
+                            // fresh result: exactly one owner lives.
+                            prog.arena.drop_ref(cur);
+                            cur = n;
+                        }
+                        None => {
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if failed {
+                    prog.arena.drop_ref(cur);
+                    prog.value_regs[dst] = None;
+                } else {
+                    prog.value_regs[dst] = Some(cur);
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        ListEmpty => {
+            // list n: an empty List with capacity n. The capacity is read from
+            // the runtime Int argument (`list 4`).
+            let cap = int_cap_arg(prog, args[0]);
+            prog.value_regs[dst] = alloc_owned(
+                prog,
+                Value::List {
+                    elems: Vec::new(),
+                    cap,
+                },
+            );
+        }
+        Tail => {
+            // tail xs: the source without its head, capacity preserved. The
+            // result claims elems[1..]: recount (RC++) every element the source
+            // owns, allocate the tail list over the kept slice, then release
+            // the extra count on the removed head — the source keeps its single
+            // claim, and the head is never freed mid-tick (its slot cannot be
+            // recycled while the source list still references it). An empty
+            // list is its own tail.
+            let xs = prog.value_regs[args[0]].and_then(|r| prog.arena.get(r).cloned());
+            match xs {
+                Some(Value::List { elems, cap }) => {
+                    if elems.is_empty() {
+                        prog.value_regs[dst] = alloc_owned(
+                            prog,
+                            Value::List {
+                                elems: Vec::new(),
+                                cap,
+                            },
+                        );
+                        return;
+                    }
+                    for e in &elems {
+                        _ = prog.arena.copy(*e);
+                    }
+                    let kept: Vec<ArenaRef> = elems[1..].to_vec();
+                    let head = elems[0];
+                    prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept, cap });
+                    prog.arena.drop_ref(head);
+                }
+                _ => prog.value_regs[dst] = None,
+            }
+        }
+        Filter => {
+            // filter p xs: keep the elements for which the unary predicate
+            // returns Bool(true). A kept element is recounted (RC++) into the
+            // result list so both the source and the result own it; the
+            // predicate's Bool result is released after each call.
+            let p = prog.value_regs[args[0]];
+            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(_), Some(Value::List { elems, cap })) = (p, xs) {
+                let mut kept: Vec<ArenaRef> = Vec::with_capacity(elems.len());
+                for e in &elems {
+                    let pred = call_closure_single(prog, args[0], *e, dst, drops);
+                    let is_keep = match pred {
+                        Some(pr) => match prog.arena.get(pr) {
+                            Some(Value::Bool(b)) => *b,
+                            _ => false,
+                        },
+                        None => false,
+                    };
+                    if is_keep {
+                        if let Ok(c) = prog.arena.copy(*e) {
+                            kept.push(c);
+                        }
+                    }
+                    if let Some(pr) = pred {
+                        prog.arena.drop_ref(pr);
+                    }
+                }
+                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept, cap });
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        InsertMap => {
+            // insert k v m: COW-insert (k, v) into the sorted map, or
+            // COW-replace the value when an equal key already exists. The
+            // capacity is a strict bound: a NEW key past capacity latches a
+            // runtime `ProcessError`. Every ref the result map claims is
+            // recounted (RC++) so the source keeps its own ownership.
+            let k = prog.value_regs[args[0]];
+            let v = prog.value_regs[args[1]];
+            let m = prog.value_regs[args[2]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(vr), Some(Value::Map { pairs, cap })) = (k, v, m) {
+                let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
+                let pos = sorted_insert_pos(prog, kr, &keys);
+                let dup = pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0;
+                if dup {
+                    // Replace-on-duplicate: recount every pair ref, swap in the
+                    // new value (counted once for the map), and release the
+                    // replaced value's extra count — the source keeps its own
+                    // claim, so the replaced value is never freed mid-tick.
+                    let mut new_pairs = pairs.clone();
+                    for (pk, pv) in &new_pairs {
+                        _ = prog.arena.copy(*pk);
+                        _ = prog.arena.copy(*pv);
+                    }
+                    let old_val = new_pairs[pos].1;
+                    new_pairs[pos].1 = vr;
+                    _ = prog.arena.copy(vr);
+                    prog.arena.drop_ref(old_val);
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Map {
+                            pairs: new_pairs,
+                            cap,
+                        },
+                    );
+                } else if pairs.len() >= cap {
+                    prog.value_error = Some(ProcessError::processing("map capacity exceeded"));
+                } else {
+                    // Insert at the sorted position: splice (k, v) into the
+                    // cloned pair list, then recount every key and value the
+                    // new map claims (the source and the result each own them).
+                    let mut new_pairs: Vec<(ArenaRef, ArenaRef)> =
+                        Vec::with_capacity(pairs.len() + 1);
+                    for (i, (pk, pv)) in pairs.iter().enumerate() {
+                        if i == pos {
+                            new_pairs.push((kr, vr));
+                        }
+                        new_pairs.push((*pk, *pv));
+                    }
+                    if new_pairs.len() == pairs.len() {
+                        new_pairs.push((kr, vr));
+                    }
+                    for (pk, pv) in &new_pairs {
+                        _ = prog.arena.copy(*pk);
+                        _ = prog.arena.copy(*pv);
+                    }
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Map {
+                            pairs: new_pairs,
+                            cap,
+                        },
+                    );
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        Lookup => {
+            // lookup k m: binary search the sorted map for the key; `Just v`
+            // when found, `Nothing` otherwise (the same Sum encoding as
+            // `head`). The found value ref is counted (RC++) so the Sum owns
+            // it independently of the map.
+            let k = prog.value_regs[args[0]];
+            let m = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(Value::Map { pairs, .. })) = (k, m) {
+                let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
+                let pos = sorted_insert_pos(prog, kr, &keys);
+                if pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0 {
+                    match copy_owned(prog, pairs[pos].1) {
+                        Some(cv) => {
+                            prog.value_regs[dst] = alloc_owned(prog, Value::Sum(0, vec![cv]))
+                        }
+                        None => prog.value_regs[dst] = None,
+                    }
+                } else {
+                    prog.value_regs[dst] = alloc_owned(prog, Value::Sum(1, vec![]));
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        Member => {
+            // member k c: a shared op — the container's variant tells map
+            // membership (among the sorted keys) from set membership (among
+            // the sorted elements). A non-container reads as `false`.
+            let k = prog.value_regs[args[0]];
+            let c = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(cv)) = (k, c) {
+                let found = match cv {
+                    Value::Map { pairs, .. } => {
+                        let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
+                        let pos = sorted_insert_pos(prog, kr, &keys);
+                        pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0
+                    }
+                    Value::Set { elems, .. } => {
+                        let pos = sorted_insert_pos(prog, kr, &elems);
+                        pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0
+                    }
+                    _ => false,
+                };
+                prog.value_regs[dst] = alloc_owned(prog, Value::Bool(found));
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        InsertSet => {
+            // insert k s: COW-insert the element into the sorted set; a
+            // duplicate leaves the set unchanged (a fresh COW copy). The
+            // capacity is a strict bound: a NEW element past capacity latches
+            // a runtime `ProcessError`.
+            let k = prog.value_regs[args[0]];
+            let s = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
+            if let (Some(kr), Some(Value::Set { elems, cap })) = (k, s) {
+                let pos = sorted_insert_pos(prog, kr, &elems);
+                let dup = pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0;
+                if dup {
+                    let new_elems = elems.clone();
+                    for e in &new_elems {
+                        _ = prog.arena.copy(*e);
+                    }
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Set {
+                            elems: new_elems,
+                            cap,
+                        },
+                    );
+                } else if elems.len() >= cap {
+                    prog.value_error = Some(ProcessError::processing("set capacity exceeded"));
+                } else {
+                    let mut new_elems: Vec<ArenaRef> = Vec::with_capacity(elems.len() + 1);
+                    for (i, e) in elems.iter().enumerate() {
+                        if i == pos {
+                            new_elems.push(kr);
+                        }
+                        new_elems.push(*e);
+                    }
+                    if new_elems.len() == elems.len() {
+                        new_elems.push(kr);
+                    }
+                    for e in &new_elems {
+                        _ = prog.arena.copy(*e);
+                    }
+                    prog.value_regs[dst] = alloc_owned(
+                        prog,
+                        Value::Set {
+                            elems: new_elems,
+                            cap,
+                        },
+                    );
+                }
+            } else {
+                prog.value_regs[dst] = None;
+            }
+        }
+        MapEmpty => {
+            // empty_map n: an empty Map with capacity n (the strict bound for
+            // later inserts).
+            let cap = int_cap_arg(prog, args[0]);
+            prog.value_regs[dst] = alloc_owned(
+                prog,
+                Value::Map {
+                    pairs: Vec::new(),
+                    cap,
+                },
+            );
+        }
+        SetEmpty => {
+            // empty_set n: an empty Set with capacity n.
+            let cap = int_cap_arg(prog, args[0]);
+            prog.value_regs[dst] = alloc_owned(
+                prog,
+                Value::Set {
+                    elems: Vec::new(),
+                    cap,
+                },
+            );
+        }
+    }
+}
+
+/// Bind `elem` as the fragment's single argument register, run the closure, and
+/// return the copied result ref (or `None` when the slot holds no closure).
+///
+/// Thin wrapper over [`call_closure_args`].
+fn call_closure_single<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    closure_reg: usize,
+    elem: ArenaRef,
+    result_reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    call_closure_args(
+        prog,
+        closure_reg,
+        std::slice::from_ref(&elem),
+        result_reg,
+        drops,
+    )
+}
+
+/// Bind `args` as a closure call's argument registers and run the fragment,
+/// returning the copied result ref (or `None` on any unbound/errored step).
+///
+/// The arg refs are placed in the pre-allocated call-scratch slots as raw
+/// borrows — `run_fragment` copies each (RC++) into the same slots before
+/// running and drains them on return, so the source containers keep their own
+/// ownership and the borrow never leaks. `result_reg` is a program-level
+/// register (below the scratch watermark), so the drained range cannot reclaim
+/// it; its previous occupant is dropped first, because `run_fragment`
+/// overwrites `dst` without releasing the old ref.
+fn call_closure_args<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    closure_reg: usize,
+    args: &[ArenaRef],
+    result_reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let (env_ref, fragment_id) = match prog.value_regs.get(closure_reg).copied().flatten() {
+        Some(r) => match prog.arena.get(r) {
+            Some(Value::Closure(env, fid)) => (*env, *fid),
+            _ => return None,
+        },
+        None => return None,
+    };
+    let frag = prog.ir.fragments.get(fragment_id as usize).cloned()?;
+    let base = prog.value_regs_top;
+    // Bounds-guard: the pre-sized call scratch reserves `max_call_regs` slots,
+    // so a wrong-arity closure (e.g. `fold (fn a -> a) ...`) could pass more
+    // args than the fragment declares and write the raw borrows past the store.
+    // Clamp to `frag.sig.value_ins` and the store's tail; the type checker
+    // rejects wrong-arity closures at compile time, this is belt-and-suspenders
+    // so a bad closure cannot crash the RT path.
+    let n = args
+        .len()
+        .min(frag.sig.value_ins)
+        .min(prog.value_regs.len().saturating_sub(base));
+    for (i, e) in args.iter().take(n).enumerate() {
+        prog.value_regs[base + i] = Some(*e);
+    }
+    if let Some(old) = prog.value_regs.get_mut(result_reg).and_then(|r| r.take()) {
+        drops.push(old);
+    }
+    let arg_regs: Vec<usize> = (0..n).map(|i| base + i).collect();
+    run_fragment(prog, &frag, env_ref, &arg_regs, &result_reg, drops);
+    prog.value_regs.get_mut(result_reg).and_then(|r| r.take())
 }
 
 /// Execute a function fragment: binds the captured env fields as cells in a
@@ -912,6 +1649,51 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             dst: dst.iter().map(|d| d + base).collect(),
             slot: slot + base,
             ctor: *ctor,
+        },
+        ValueInstr::ValueBool { dst, value } => ValueInstr::ValueBool {
+            dst: dst + base,
+            value: *value,
+        },
+        ValueInstr::ValueConstString { dst, value } => ValueInstr::ValueConstString {
+            dst: dst + base,
+            value: value.clone(),
+        },
+        ValueInstr::ValueListLit { dst, elems, cap } => ValueInstr::ValueListLit {
+            dst: dst + base,
+            elems: elems.iter().map(|e| e + base).collect(),
+            cap: *cap,
+        },
+        ValueInstr::ValueMapLit {
+            dst,
+            keys,
+            vals,
+            cap,
+        } => ValueInstr::ValueMapLit {
+            dst: dst + base,
+            keys: keys.iter().map(|k| k + base).collect(),
+            vals: vals.iter().map(|v| v + base).collect(),
+            cap: *cap,
+        },
+        ValueInstr::ValueCompare { dst, op, a, b } => ValueInstr::ValueCompare {
+            dst: dst + base,
+            op: *op,
+            a: a + base,
+            b: b + base,
+        },
+        ValueInstr::ValueLogic { dst, op, a, b } => ValueInstr::ValueLogic {
+            dst: dst + base,
+            op: *op,
+            a: a + base,
+            b: b + base,
+        },
+        ValueInstr::ValueNot { dst, src } => ValueInstr::ValueNot {
+            dst: dst + base,
+            src: src + base,
+        },
+        ValueInstr::ValueCallBuiltin { dst, op, args } => ValueInstr::ValueCallBuiltin {
+            dst: dst + base,
+            op: *op,
+            args: args.iter().map(|a| a + base).collect(),
         },
     }
 }
@@ -1262,7 +2044,7 @@ mod value_track_tests {
         // Drive the value track directly (the full tick additionally clears
         // the per-tick registers at the end) so the registers and arena can be
         // inspected mid-tick.
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         assert_eq!(prog.value_regs[0], Some(0));
         let slot0 = prog.arena.get(0).unwrap().clone();
         assert_eq!(slot0, crate::arena::Value::Int(42));
@@ -1284,7 +2066,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         let cell = prog.value_regs[1].unwrap();
         let val = prog.arena.get(cell).unwrap();
         assert_eq!(val, &crate::arena::Value::Int(7));
@@ -1364,7 +2146,7 @@ mod value_track_tests {
             5,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         let get = |r: usize| prog.arena.get(prog.value_regs[r].unwrap()).unwrap().clone();
         assert_eq!(get(2), crate::arena::Value::Float(5.0), "3 + 2.0");
         assert_eq!(get(3), crate::arena::Value::Float(10.0), "2.0 * 5.0");
@@ -1384,12 +2166,34 @@ mod value_track_tests {
             2,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         assert_eq!(
             prog.arena.get(prog.value_regs[0].unwrap()).unwrap(),
             &crate::arena::Value::Float(84.0)
         );
         assert_eq!(prog.arena.live(), 2, "old dst occupant must be dropped");
+    }
+
+    #[test]
+    fn list_empty_clamps_negative_int_capacity() {
+        // A negative Int capacity must clamp to 0, not wrap into a huge `usize`.
+        let mut prog = prog_with(
+            vec![
+                ValueInstr::ValueConstInt { dst: 0, value: -3 },
+                ValueInstr::ValueCallBuiltin {
+                    dst: 1,
+                    op: ValueBuiltinOp::ListEmpty,
+                    args: vec![0],
+                },
+            ],
+            2,
+            0,
+        );
+        run_value_track(&mut prog).unwrap();
+        match prog.arena.get(prog.value_regs[1].unwrap()).unwrap() {
+            crate::arena::Value::List { cap, .. } => assert_eq!(*cap, 0),
+            other => panic!("expected a List, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1413,7 +2217,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         let payload = prog.value_regs[2].unwrap();
         assert_eq!(
             prog.arena.get(payload).unwrap(),
@@ -1449,7 +2253,140 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog);
+        run_value_track(&mut prog).unwrap();
         assert_eq!(prog.value_regs[2], None);
+    }
+}
+
+#[cfg(test)]
+mod value_cmp_tests {
+    use super::*;
+
+    #[test]
+    fn value_cmp_orders_structural() {
+        use crate::arena::{Arena, Value};
+        let mut a = Arena::with_capacity(16);
+        let r1 = a.alloc(Value::Float(1.0)).unwrap();
+        let r2 = a.alloc(Value::Float(2.0)).unwrap();
+        assert!(value_cmp(&a, r1, r2) < 0);
+        assert_eq!(value_cmp(&a, r1, r1), 0);
+        assert!(value_cmp(&a, r2, r1) > 0);
+        let s1 = a.alloc(Value::String("a".into())).unwrap();
+        let s2 = a.alloc(Value::String("b".into())).unwrap();
+        assert!(value_cmp(&a, s1, s2) < 0);
+        let b = a.alloc(Value::Bool(true)).unwrap();
+        assert!(value_cmp(&a, b, r1) < 0, "Bool sorts before Int");
+    }
+
+    fn int_list(a: &mut Arena, len: usize) -> ArenaRef {
+        let elems: Vec<ArenaRef> = (0..len).map(|_| a.alloc(Value::Int(0)).unwrap()).collect();
+        a.alloc(Value::List { elems, cap: len }).unwrap()
+    }
+
+    #[test]
+    fn value_cmp_orders_containers() {
+        use crate::arena::{Arena, Value};
+        let mut a = Arena::with_capacity(32);
+        let f1 = a.alloc(Value::Float(1.0)).unwrap();
+        let f2 = a.alloc(Value::Float(2.0)).unwrap();
+
+        // Sum: constructor index first, then payload.
+        let s_1_1 = a.alloc(Value::Sum(0, vec![f1])).unwrap();
+        let s_1_2 = a.alloc(Value::Sum(0, vec![f2])).unwrap();
+        let s_2_0 = a.alloc(Value::Sum(1, vec![])).unwrap();
+        assert!(value_cmp(&a, s_1_1, s_1_2) < 0, "same ctor, payload orders");
+        assert!(
+            value_cmp(&a, s_1_2, s_2_0) < 0,
+            "ctor index dominates payload"
+        );
+
+        // Record: field order.
+        let r1 = a.alloc(Value::Record(vec![f1])).unwrap();
+        let r2 = a.alloc(Value::Record(vec![f2])).unwrap();
+        assert!(value_cmp(&a, r1, r2) < 0, "record field order");
+
+        // Newtype: unwraps to the inner value.
+        let n1 = a.alloc(Value::Newtype(f1)).unwrap();
+        let n2 = a.alloc(Value::Newtype(f2)).unwrap();
+        assert!(value_cmp(&a, n1, n2) < 0, "newtype compares by inner value");
+
+        // List: lexicographic, shorter is less when prefixes match.
+        let l1 = a
+            .alloc(Value::List {
+                elems: vec![f1],
+                cap: 2,
+            })
+            .unwrap();
+        let l12 = a
+            .alloc(Value::List {
+                elems: vec![f1, f2],
+                cap: 2,
+            })
+            .unwrap();
+        assert!(
+            value_cmp(&a, l1, l12) < 0,
+            "list lexicographic, shorter first"
+        );
+
+        // Map: key equal, value differs; then key differs.
+        let ka = a.alloc(Value::String("a".into())).unwrap();
+        let kb = a.alloc(Value::String("b".into())).unwrap();
+        let m_a1 = a
+            .alloc(Value::Map {
+                pairs: vec![(ka, f1)],
+                cap: 1,
+            })
+            .unwrap();
+        let m_a2 = a
+            .alloc(Value::Map {
+                pairs: vec![(ka, f2)],
+                cap: 1,
+            })
+            .unwrap();
+        let m_b1 = a
+            .alloc(Value::Map {
+                pairs: vec![(kb, f1)],
+                cap: 1,
+            })
+            .unwrap();
+        assert!(value_cmp(&a, m_a1, m_a2) < 0, "map value differs");
+        assert!(value_cmp(&a, m_a1, m_b1) < 0, "map key differs");
+    }
+
+    #[test]
+    fn value_cmp_length_tiebreak_survives_large_containers() {
+        use crate::arena::Arena;
+        // 200 identical elements compare equal across two lists; a 201-element
+        // list with the same prefix orders after. The length tiebreak must not
+        // wrap at i8 (127+ elements would otherwise invert the order).
+        let mut a = Arena::with_capacity(900);
+        let l200a = int_list(&mut a, 200);
+        let l200b = int_list(&mut a, 200);
+        let l201 = int_list(&mut a, 201);
+        assert_eq!(
+            value_cmp(&a, l200a, l200b),
+            0,
+            "identical prefixes, equal length"
+        );
+        assert!(
+            value_cmp(&a, l200a, l201) < 0,
+            "200-elem list sorts before 201-elem"
+        );
+        assert!(
+            value_cmp(&a, l201, l200a) > 0,
+            "201-elem list sorts after 200-elem"
+        );
+
+        // The wrap that motivated the fix: 127 must not order above 128/200.
+        let l127 = int_list(&mut a, 127);
+        let l128 = int_list(&mut a, 128);
+        assert!(
+            value_cmp(&a, l127, l128) < 0,
+            "127 < 128 across the i8 wrap"
+        );
+        assert!(
+            value_cmp(&a, l127, l200a) < 0,
+            "127 < 200 across the i8 wrap"
+        );
     }
 }
