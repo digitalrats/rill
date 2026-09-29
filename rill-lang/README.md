@@ -411,8 +411,8 @@ main = amp 2.0 _;                // input block scaled by 2.0
 
 `if cond then a else b` and `match` are pure expressions on the value track,
 re-evaluated every tick. A runtime `Bool` — e.g. a main λ-parameter compared to
-a threshold and written via `SetParameter` — switches branches from block to
-block:
+a threshold and written via `SetParameter` — switches the active branch on
+each tick:
 
 ```faust
 main g = if g > 0.5 then 1.0 else 0.0;
@@ -423,7 +423,7 @@ main g = if g > 0.5 then 1.0 else 0.0;
 initial is a constructor, a lowercase initial is a binding. Matches must be
 exhaustive (every constructor covered, or a `_`/variable arm); a guarded arm
 whose guard fails falls through to the next arm, and a residual non-match is a
-runtime `ProcessError`.
+runtime `ProcessError::Processing`.
 
 ## Status
 
