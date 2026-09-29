@@ -991,6 +991,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
             prog.value_regs[*dst] = b.and_then(|v| alloc_owned(prog, v));
         }
+        ValueInstr::ValueSetError => {
+            prog.value_error = Some(ProcessError::processing(
+                "match is non-exhaustive at runtime (no arm matched)",
+            ));
+        }
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
             exec_value_call_builtin(prog, *op, args, *dst, drops);
         }
@@ -1805,6 +1810,7 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             dst: dst + base,
             src: src + base,
         },
+        ValueInstr::ValueSetError => ValueInstr::ValueSetError,
         ValueInstr::ValueCallBuiltin { dst, op, args } => ValueInstr::ValueCallBuiltin {
             dst: dst + base,
             op: *op,

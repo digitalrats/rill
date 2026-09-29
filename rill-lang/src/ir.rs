@@ -555,6 +555,9 @@ pub enum ValueInstr {
         /// Boolean operand value register.
         src: usize,
     },
+    /// Latch a `ProcessError::Processing` for this tick (runtime match
+    /// non-exhaustive). The tick fails at the end of `run_value_track`.
+    ValueSetError,
     /// Move an arena ref between registers (`dst = src; src = None`) — an
     /// ownership transfer used at control-flow join points.
     ValueMove {
