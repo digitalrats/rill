@@ -2,6 +2,14 @@
 
 ## [0.6.0-M2] — 2026-08-02
 
+### rill-lang
+
+- feat: `if cond then a else b` and generalized `match` (constructor/literal/
+  wildcard/variable/nested patterns, guards) with runtime control flow on the
+  value track.
+- refactor: value track executes on a block CFG (`ValueBlock`/`ValueTerm`)
+  driven by a trampoline interpreter; static fast-paths preserved.
+
 ### ✨ Features
 
 - **rill-lang: higher-kinded types (HKT) and first-class Haskell-style collections.**
