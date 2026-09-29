@@ -7,7 +7,9 @@ use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::ProcessError;
 
 use crate::arena::{Arena, ArenaRef, Value};
-use crate::ir::{BinArith, CmpOp, FragmentIr, Instr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr};
+use crate::ir::{
+    BinArith, CmpOp, FragmentIr, Instr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr, ValueTerm,
+};
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
 use crate::schedule::Step;
 
@@ -118,8 +120,9 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     value_res
 }
 
-/// Execute the per-tick value track: run every [`ValueInstr`] once per block,
-/// in order, allocating and freeing values in the program's fixed arena.
+/// Execute the per-tick value track: walk the program's value-track blocks from
+/// the entry block, following each block's terminator, allocating and freeing
+/// values in the program's fixed arena.
 ///
 /// Every value register, value-state slot, and cell holds ONE ownership of the
 /// arena ref it stores (the RC is already counted for that ref). A store that
@@ -130,7 +133,7 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
 pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) -> Result<(), ProcessError> {
-    // Move the instruction list out of `prog` so we can borrow `prog`'s value
+    // Move the block list out of `prog` so we can borrow `prog`'s value
     // registers mutably while iterating (`mem::take` leaves an empty `Vec`
     // behind — no allocation on the RT path). Drops queue on the shared,
     // pre-sized `drops_scratch`, moved out ONCE here and threaded through the
@@ -140,11 +143,42 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
     // discipline keeps each frame's pending drops below its own mark.
     let mut drops = std::mem::take(&mut prog.drops_scratch);
     let mark = drops.len();
-    let value_instrs = std::mem::take(&mut prog.ir.value_instrs);
-    for instr in &value_instrs {
-        exec_value_instr(prog, instr, &mut drops);
+    let blocks = std::mem::take(&mut prog.ir.value_blocks);
+    let mut cur = prog.ir.value_entry;
+    loop {
+        debug_assert!(
+            cur < blocks.len(),
+            "value-track fall-off-the-end: block {cur} does not exist"
+        );
+        let Some(b) = blocks.get(cur) else { break };
+        for i in &b.instrs {
+            exec_value_instr(prog, i, &mut drops);
+        }
+        cur = match b.term {
+            ValueTerm::Fallthrough(n) => n,
+            ValueTerm::Branch { cond, then, els } => {
+                if value_reg_is_true(prog, cond) {
+                    then
+                } else {
+                    els
+                }
+            }
+            ValueTerm::BranchCtor {
+                slot,
+                ctor,
+                then,
+                els,
+            } => {
+                if value_reg_ctor(prog, slot) == Some(ctor) {
+                    then
+                } else {
+                    els
+                }
+            }
+            ValueTerm::Halt => break,
+        };
     }
-    prog.ir.value_instrs = value_instrs;
+    prog.ir.value_blocks = blocks;
     for r in drops.drain(mark..) {
         prog.arena.drop_ref(r);
     }
@@ -156,6 +190,39 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
         return Err(err);
     }
     Ok(())
+}
+
+/// Whether a value register holds `Bool(true)`. Non-Bool/`None` is `false`
+/// (defensive; static typing guarantees a Bool here).
+fn value_reg_is_true<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    reg: usize,
+) -> bool {
+    matches!(
+        prog.value_regs
+            .get(reg)
+            .copied()
+            .flatten()
+            .and_then(|r| prog.arena.get(r)),
+        Some(Value::Bool(true))
+    )
+}
+
+/// The constructor tag of a value register's sum value, if any.
+fn value_reg_ctor<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    reg: usize,
+) -> Option<u32> {
+    match prog
+        .value_regs
+        .get(reg)
+        .copied()
+        .flatten()
+        .and_then(|r| prog.arena.get(r))
+    {
+        Some(Value::Sum(c, _)) => Some(*c),
+        _ => None,
+    }
 }
 
 /// Allocate a slot holding `v`, taking over the ownership of `v`'s child refs.
@@ -761,6 +828,17 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             }
             None => prog.value_regs[*dst] = None,
         },
+        ValueInstr::ValueMove { dst, src } => {
+            // A move overwrites `dst`, so release any previous occupant (dst
+            // regs are SSA in lowering, but re-assignment must not leak) — and
+            // a self-move (`dst == src`) is a no-op, never a clear.
+            if *dst != *src {
+                if let Some(old) = prog.value_regs[*dst].take() {
+                    drops.push(old);
+                }
+                prog.value_regs[*dst] = prog.value_regs[*src].take();
+            }
+        }
         ValueInstr::ValueDrop { src } => {
             if let Some(r) = prog.value_regs[*src].take() {
                 drops.push(r);
@@ -912,6 +990,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 _ => None,
             };
             prog.value_regs[*dst] = b.and_then(|v| alloc_owned(prog, v));
+        }
+        ValueInstr::ValueSetError => {
+            prog.value_error = Some(ProcessError::processing(
+                "match is non-exhaustive at runtime (no arm matched)",
+            ));
         }
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
             exec_value_call_builtin(prog, *op, args, *dst, drops);
@@ -1500,13 +1583,46 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
             prog.value_regs[base + i] = copy_owned(prog, sr);
         }
     }
-    // 4. Run the fragment's value instructions with the register offset.
-    //    Drops queue on the threaded scratch above this call's mark and are
-    //    drained below, so a nested dispatch's drops never collide.
+    // 4. Run the fragment's value blocks with the register offset. Drops queue
+    //    on the threaded scratch above this call's mark and are drained below,
+    //    so a nested dispatch's drops never collide.
     let drops_mark = drops.len();
-    for instr in &frag.value_instrs {
-        let remapped = remap_value_instr(instr, base);
-        exec_value_instr(prog, &remapped, drops);
+    let mut cur = frag.entry;
+    loop {
+        debug_assert!(
+            cur < frag.value_blocks.len(),
+            "fragment value-track fall-off-the-end: block {cur} does not exist"
+        );
+        let Some(b) = frag.value_blocks.get(cur) else {
+            break;
+        };
+        for i in &b.instrs {
+            let remapped = remap_value_instr(i, base);
+            exec_value_instr(prog, &remapped, drops);
+        }
+        cur = match b.term {
+            ValueTerm::Fallthrough(n) => n,
+            ValueTerm::Branch { cond, then, els } => {
+                if value_reg_is_true(prog, cond + base) {
+                    then
+                } else {
+                    els
+                }
+            }
+            ValueTerm::BranchCtor {
+                slot,
+                ctor,
+                then,
+                els,
+            } => {
+                if value_reg_ctor(prog, slot + base) == Some(ctor) {
+                    then
+                } else {
+                    els
+                }
+            }
+            ValueTerm::Halt => break,
+        };
     }
     for r in drops.drain(drops_mark..) {
         prog.arena.drop_ref(r);
@@ -1636,6 +1752,10 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             dst: dst + base,
             src: src + base,
         },
+        ValueInstr::ValueMove { dst, src } => ValueInstr::ValueMove {
+            dst: dst + base,
+            src: src + base,
+        },
         ValueInstr::ValueDrop { src } => ValueInstr::ValueDrop { src: src + base },
         ValueInstr::ValueStateRead { dst, slot } => ValueInstr::ValueStateRead {
             dst: dst + base,
@@ -1690,6 +1810,7 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             dst: dst + base,
             src: src + base,
         },
+        ValueInstr::ValueSetError => ValueInstr::ValueSetError,
         ValueInstr::ValueCallBuiltin { dst, op, args } => ValueInstr::ValueCallBuiltin {
             dst: dst + base,
             op: *op,
@@ -1933,7 +2054,7 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
 
 #[cfg(test)]
 mod closure_dispatch_tests {
-    use crate::ir::{FragmentIr, FuncSig, Ir, ValueInstr, ValueLayout};
+    use crate::ir::{FragmentIr, FuncSig, Ir, ValueBlock, ValueInstr, ValueLayout, ValueTerm};
     use crate::program::RillProgram;
     use rill_core::traits::MultichannelAlgorithm;
 
@@ -1952,19 +2073,23 @@ mod closure_dispatch_tests {
             builtins: Vec::new(),
             params: Vec::new(),
             num_main_cells: 0,
-            value_instrs: vec![
-                ValueInstr::ValueBindCell { dst: 0 },
-                ValueInstr::ValueMakeClosure {
-                    dst: 1,
-                    env: 0,
-                    fragment: 0,
-                },
-                ValueInstr::ValueCallFunc {
-                    dst: 2,
-                    closure_slot: 1,
-                    args: vec![],
-                },
-            ],
+            value_blocks: vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueBindCell { dst: 0 },
+                    ValueInstr::ValueMakeClosure {
+                        dst: 1,
+                        env: 0,
+                        fragment: 0,
+                    },
+                    ValueInstr::ValueCallFunc {
+                        dst: 2,
+                        closure_slot: 1,
+                        args: vec![],
+                    },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            value_entry: 0,
             num_value_regs: 3,
             value_output_regs: vec![2],
             value_funcs: Vec::new(),
@@ -1974,7 +2099,11 @@ mod closure_dispatch_tests {
                 value_state_slots: 0,
             },
             fragments: vec![std::sync::Arc::new(FragmentIr {
-                value_instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }],
+                value_blocks: vec![ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }],
+                    term: ValueTerm::Halt,
+                }],
+                entry: 0,
                 steps: Vec::new(),
                 num_value_regs: 1,
                 num_block_regs: 0,
@@ -1999,11 +2128,12 @@ mod closure_dispatch_tests {
 #[cfg(test)]
 mod value_track_tests {
     use super::*;
-    use crate::ir::{Ir, StateLayout, ValueInstr, ValueLayout};
+    use crate::ir::{Ir, StateLayout, ValueBlock, ValueInstr, ValueLayout, ValueTerm};
     use rill_core::traits::MultichannelAlgorithm;
 
     fn prog_with(
-        value_instrs: Vec<ValueInstr>,
+        value_blocks: Vec<ValueBlock>,
+        value_entry: usize,
         num_value_regs: usize,
         value_state_slots: usize,
     ) -> RillProgram<f32, 256> {
@@ -2017,7 +2147,8 @@ mod value_track_tests {
             builtins: Vec::new(),
             params: Vec::new(),
             num_main_cells: 0,
-            value_instrs,
+            value_blocks,
+            value_entry,
             num_value_regs,
             value_output_regs: Vec::new(),
             value_funcs: Vec::new(),
@@ -2034,10 +2165,14 @@ mod value_track_tests {
     #[test]
     fn const_int_and_const_float_run_per_tick() {
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueConstInt { dst: 0, value: 42 },
-                ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: 42 },
+                    ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             2,
             0,
         );
@@ -2055,14 +2190,18 @@ mod value_track_tests {
     #[test]
     fn cell_stack_bind_read_write() {
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValuePushScope,
-                ValueInstr::ValueConstInt { dst: 0, value: 7 },
-                ValueInstr::ValueBindCell { dst: 1 },
-                ValueInstr::ValueWriteCell { cell: 1, src: 0 },
-                ValueInstr::ValueReadCell { dst: 2, cell: 1 },
-                ValueInstr::ValuePopScope,
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValuePushScope,
+                    ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                    ValueInstr::ValueBindCell { dst: 1 },
+                    ValueInstr::ValueWriteCell { cell: 1, src: 0 },
+                    ValueInstr::ValueReadCell { dst: 2, cell: 1 },
+                    ValueInstr::ValuePopScope,
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             3,
             0,
         );
@@ -2080,12 +2219,16 @@ mod value_track_tests {
         // must be readable in tick 2. The read runs before the write, so slot 1
         // latches whatever the read saw; asserting it proves the delay.
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueStateRead { dst: 1, slot: 0 },
-                ValueInstr::ValueConstInt { dst: 0, value: 7 },
-                ValueInstr::ValueStateWrite { slot: 0, src: 0 },
-                ValueInstr::ValueStateWrite { slot: 1, src: 1 },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueStateRead { dst: 1, slot: 0 },
+                    ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                    ValueInstr::ValueStateWrite { slot: 0, src: 0 },
+                    ValueInstr::ValueStateWrite { slot: 1, src: 1 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             2,
             2,
         );
@@ -2116,10 +2259,14 @@ mod value_track_tests {
         // cleared and their refs released, so a multi-tick value program cannot
         // exhaust the fixed arena (one leaked slot per register per tick).
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueConstInt { dst: 0, value: 42 },
-                ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: 42 },
+                    ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             2,
             0,
         );
@@ -2136,13 +2283,17 @@ mod value_track_tests {
     fn value_arith_computes_float_result() {
         // Int and Float operands widen to f64; the result is always Float.
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueConstInt { dst: 0, value: 3 },
-                ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
-                ValueInstr::ValueAdd { dst: 2, a: 0, b: 1 },
-                ValueInstr::ValueMul { dst: 3, a: 1, b: 2 },
-                ValueInstr::ValueDiv { dst: 4, a: 3, b: 1 },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: 3 },
+                    ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
+                    ValueInstr::ValueAdd { dst: 2, a: 0, b: 1 },
+                    ValueInstr::ValueMul { dst: 3, a: 1, b: 2 },
+                    ValueInstr::ValueDiv { dst: 4, a: 3, b: 1 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             5,
             0,
         );
@@ -2158,11 +2309,15 @@ mod value_track_tests {
         // dst 0 is reused: the previous Int(42) ref must be released (deferred
         // drop), not leaked — the arena holds exactly the two live slots.
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueConstInt { dst: 0, value: 42 },
-                ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
-                ValueInstr::ValueMul { dst: 0, a: 0, b: 1 },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: 42 },
+                    ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
+                    ValueInstr::ValueMul { dst: 0, a: 0, b: 1 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             2,
             0,
         );
@@ -2178,14 +2333,18 @@ mod value_track_tests {
     fn list_empty_clamps_negative_int_capacity() {
         // A negative Int capacity must clamp to 0, not wrap into a huge `usize`.
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueConstInt { dst: 0, value: -3 },
-                ValueInstr::ValueCallBuiltin {
-                    dst: 1,
-                    op: ValueBuiltinOp::ListEmpty,
-                    args: vec![0],
-                },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: -3 },
+                    ValueInstr::ValueCallBuiltin {
+                        dst: 1,
+                        op: ValueBuiltinOp::ListEmpty,
+                        args: vec![0],
+                    },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             2,
             0,
         );
@@ -2201,19 +2360,23 @@ mod value_track_tests {
         // Sum(0, [7]) matched against ctor 0: dst reg 2 receives a shared ref to
         // the payload (rc++), so both the sum and the dst reg own it.
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueConstInt { dst: 0, value: 7 },
-                ValueInstr::ValueConstructSum {
-                    dst: 1,
-                    ctor: 0,
-                    payload: vec![0],
-                },
-                ValueInstr::ValueMatch {
-                    dst: vec![2],
-                    slot: 1,
-                    ctor: 0,
-                },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                    ValueInstr::ValueConstructSum {
+                        dst: 1,
+                        ctor: 0,
+                        payload: vec![0],
+                    },
+                    ValueInstr::ValueMatch {
+                        dst: vec![2],
+                        slot: 1,
+                        ctor: 0,
+                    },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             3,
             0,
         );
@@ -2237,24 +2400,166 @@ mod value_track_tests {
         // Sum(1, [7]) matched against ctor 0: no arm matches, so the dst reg is
         // written None (a detectable no-op under v1 static dispatch).
         let mut prog = prog_with(
-            vec![
-                ValueInstr::ValueConstInt { dst: 0, value: 7 },
-                ValueInstr::ValueConstructSum {
-                    dst: 1,
-                    ctor: 1,
-                    payload: vec![0],
-                },
-                ValueInstr::ValueMatch {
-                    dst: vec![2],
-                    slot: 1,
-                    ctor: 0,
-                },
-            ],
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: 7 },
+                    ValueInstr::ValueConstructSum {
+                        dst: 1,
+                        ctor: 1,
+                        payload: vec![0],
+                    },
+                    ValueInstr::ValueMatch {
+                        dst: vec![2],
+                        slot: 1,
+                        ctor: 0,
+                    },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            0,
             3,
             0,
         );
         run_value_track(&mut prog).unwrap();
         assert_eq!(prog.value_regs[2], None);
+    }
+
+    #[test]
+    fn trampoline_branch_and_move() {
+        // A 5-block CFG: block 0 loads Bool(true) and two floats, moves the
+        // then-path value into reg 3, then Branches on the Bool. Block 1 (the
+        // `then` target) moves the else-path value into the out reg 4 and
+        // falls through to Halt; block 2 (the `els` target) would overwrite
+        // reg 4 with 999.0 if the branch dispatched wrongly. Block 3 is the
+        // Halt block; block 4 is a SENTINEL after it that writes reg 5 —
+        // reaching it means Halt was ignored (fall-off past the terminator),
+        // so reg 5 must stay `None` after the tick.
+        let mut prog = prog_with(
+            vec![
+                ValueBlock {
+                    instrs: vec![
+                        ValueInstr::ValueBool {
+                            dst: 0,
+                            value: true,
+                        },
+                        ValueInstr::ValueConstFloat { dst: 1, value: 1.0 },
+                        ValueInstr::ValueConstFloat { dst: 2, value: 0.0 },
+                        ValueInstr::ValueMove { dst: 3, src: 1 },
+                    ],
+                    term: ValueTerm::Branch {
+                        cond: 0,
+                        then: 1,
+                        els: 2,
+                    },
+                },
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueMove { dst: 4, src: 2 }],
+                    term: ValueTerm::Fallthrough(3),
+                },
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat {
+                        dst: 4,
+                        value: 999.0,
+                    }],
+                    term: ValueTerm::Fallthrough(3),
+                },
+                ValueBlock {
+                    instrs: vec![],
+                    term: ValueTerm::Halt,
+                },
+                // Sentinel: must never run.
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat {
+                        dst: 5,
+                        value: 777.0,
+                    }],
+                    term: ValueTerm::Halt,
+                },
+            ],
+            0,
+            6,
+            0,
+        );
+        run_value_track(&mut prog).unwrap();
+        assert_eq!(prog.value_regs[1], None, "ValueMove cleared the source reg");
+        assert_eq!(prog.value_regs[2], None, "ValueMove cleared the source reg");
+        assert_eq!(
+            prog.arena.get(prog.value_regs[3].unwrap()).unwrap(),
+            &crate::arena::Value::Float(1.0),
+            "block 0's move landed the then-path value"
+        );
+        assert_eq!(
+            prog.arena.get(prog.value_regs[4].unwrap()).unwrap(),
+            &crate::arena::Value::Float(0.0),
+            "the Branch selected the then block, not the else (999.0)"
+        );
+        assert_eq!(
+            prog.value_regs[5], None,
+            "the sentinel block after Halt must never execute"
+        );
+    }
+
+    #[test]
+    fn trampoline_branch_false_takes_els() {
+        // A `Branch` with a `Bool(false)` condition must run the `els` block,
+        // not the `then` block: block 0 loads Bool(false); block 1 (`then`)
+        // would write 999.0 into reg 3, block 2 (`els`) writes 0.0. The sentinel
+        // block after Halt must stay `None` (reg 4).
+        let mut prog = prog_with(
+            vec![
+                ValueBlock {
+                    instrs: vec![
+                        ValueInstr::ValueBool {
+                            dst: 0,
+                            value: false,
+                        },
+                        ValueInstr::ValueConstFloat { dst: 1, value: 1.0 },
+                        ValueInstr::ValueConstFloat { dst: 2, value: 0.0 },
+                    ],
+                    term: ValueTerm::Branch {
+                        cond: 0,
+                        then: 1,
+                        els: 2,
+                    },
+                },
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat {
+                        dst: 3,
+                        value: 999.0,
+                    }],
+                    term: ValueTerm::Fallthrough(3),
+                },
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat { dst: 3, value: 0.0 }],
+                    term: ValueTerm::Fallthrough(3),
+                },
+                ValueBlock {
+                    instrs: vec![],
+                    term: ValueTerm::Halt,
+                },
+                // Sentinel: must never run.
+                ValueBlock {
+                    instrs: vec![ValueInstr::ValueConstFloat {
+                        dst: 4,
+                        value: 777.0,
+                    }],
+                    term: ValueTerm::Halt,
+                },
+            ],
+            0,
+            5,
+            0,
+        );
+        run_value_track(&mut prog).unwrap();
+        assert_eq!(
+            prog.arena.get(prog.value_regs[3].unwrap()).unwrap(),
+            &crate::arena::Value::Float(0.0),
+            "the false Branch ran the els block, not the then (999.0)"
+        );
+        assert_eq!(
+            prog.value_regs[4], None,
+            "the sentinel block after Halt must never execute"
+        );
     }
 }
 

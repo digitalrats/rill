@@ -407,13 +407,32 @@ main = amp 2.0 _;                // input block scaled by 2.0
   is a static bound and the interpreter pre-allocates the dispatch register
   frames — `ValueCallFunc` performs **no heap allocation** on the RT path.
 
+## Branching and pattern matching
+
+`if cond then a else b` and `match` are pure expressions on the value track,
+re-evaluated every tick. A runtime `Bool` — e.g. a main λ-parameter compared to
+a threshold and written via `SetParameter` — switches the active branch on
+each tick:
+
+```faust
+main g = if g > 0.5 then 1.0 else 0.0;
+```
+
+`match` supports constructor, literal (`0`, `1.5`, `true`, `"s"`), wildcard
+`_`, variable, and nested patterns plus Haskell-style guards. An uppercase
+initial is a constructor, a lowercase initial is a binding. Matches must be
+exhaustive (every constructor covered, or a `_`/variable arm); a guarded arm
+whose guard fails falls through to the next arm, and a residual non-match is a
+runtime `ProcessError::Processing`.
+
 ## Status
 
 MVP. The value track ships first-class Haskell-style collections
 (`List`/`Map`/`Set` with strict type-carried capacities, `Maybe`/`Pair`/
 `Either`, `Bool`/`String` value types) and higher-kinded types (parameterized
 `data`, kind polymorphism over type constructors, compile-time inline
-resolution). Deferred to follow-on work: the Cranelift `jit` feature, foreign
+resolution), with runtime control flow on the value track (`if`/`match`).
+Deferred to follow-on work: the Cranelift `jit` feature, foreign
 references to existing rill DSP primitives, a SIMD-aware IR, runtime typeclass
 dispatch, user-written `Eq`/`Ord` instances and hash-based containers, and
 `strict`/`complete` compiler modes.

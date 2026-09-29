@@ -231,21 +231,19 @@ fn list_capacity_arg_must_be_int() {
 }
 
 #[test]
-fn match_over_non_analyzable_scrutinee_is_compile_error() {
-    // `head (filter ...)` is not statically resolvable in v1: the old lowering
-    // silently picked arm 0 (Nothing) even when the runtime head is Just — a
-    // silent wrong value. It must now be a COMPILE error.
-    let res = compile::<f32>(
+fn match_over_non_analyzable_scrutinee_dispatches_at_runtime() {
+    // `head (filter ...)` is not statically analyzable — the runtime dispatch
+    // must select `Just` and expose its payload (regression for the old
+    // static-only behavior which rejected it).
+    let mut prog = compile::<f32>(
         "main = match (head (filter (fn x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing => 0.0; Just x => x; };",
+    )
+    .unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(2.0)
     );
-    assert!(
-        res.is_err(),
-        "a match over a non-statically-resolvable scrutinee must not compile"
-    );
-    if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
-        assert!(
-            msg.contains("statically resolvable"),
-            "expected a 'statically resolvable' message, got: {msg}"
-        );
-    }
 }

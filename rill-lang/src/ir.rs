@@ -243,6 +243,54 @@ pub enum LogicOp {
     Or,
 }
 
+/// A straight-line run of value instructions ending in a terminator.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueBlock {
+    /// Instructions executed in order.
+    pub instrs: Vec<ValueInstr>,
+    /// How the block ends.
+    pub term: ValueTerm,
+}
+
+impl Default for ValueBlock {
+    fn default() -> Self {
+        ValueBlock {
+            instrs: Vec::new(),
+            term: ValueTerm::Halt,
+        }
+    }
+}
+
+/// The data-driven successor(s) of a value block. Control flow lives in these
+/// ids (data), not in the Rust call stack.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueTerm {
+    /// Run the block with the given id.
+    Fallthrough(usize),
+    /// Branch on a Bool value register.
+    Branch {
+        /// Value register holding the Bool condition.
+        cond: usize,
+        /// Block to run when the condition is true.
+        then: usize,
+        /// Block to run when the condition is false.
+        els: usize,
+    },
+    /// Branch on a sum value's constructor tag.
+    BranchCtor {
+        /// Value register holding the scrutinee sum.
+        slot: usize,
+        /// Constructor tag that selects the `then` block.
+        ctor: u32,
+        /// Block to run when the scrutinee's ctor matches.
+        then: usize,
+        /// Block to run otherwise.
+        els: usize,
+    },
+    /// End of the value track (or fragment).
+    Halt,
+}
+
 /// A per-tick value instruction. Executed once per block in the value-track
 /// phase, alongside the whole-buffer block instructions.
 #[derive(Debug, Clone, PartialEq)]
@@ -507,6 +555,17 @@ pub enum ValueInstr {
         /// Boolean operand value register.
         src: usize,
     },
+    /// Latch a `ProcessError::Processing` for this tick (runtime match
+    /// non-exhaustive). The tick fails at the end of `run_value_track`.
+    ValueSetError,
+    /// Move an arena ref between registers (`dst = src; src = None`) — an
+    /// ownership transfer used at control-flow join points.
+    ValueMove {
+        /// Destination value register.
+        dst: usize,
+        /// Source value register (cleared by the move).
+        src: usize,
+    },
     /// Dispatch a collection operation.
     ValueCallBuiltin {
         /// Destination value register.
@@ -547,8 +606,10 @@ pub struct FuncSig {
 /// calls, so they are never rewritten).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FragmentIr {
-    /// Value-track instructions for the body.
-    pub value_instrs: Vec<ValueInstr>,
+    /// Value-track blocks for the body.
+    pub value_blocks: Vec<ValueBlock>,
+    /// Entry block of the fragment's value track.
+    pub entry: usize,
     /// Block-track steps (for signal-wire args); empty for pure-value bodies.
     pub steps: Vec<crate::schedule::Step>,
     /// Number of value registers (args + temps).
@@ -645,8 +706,10 @@ pub struct Ir {
     /// are the first `num_main_cells` entries of [`Ir::params`] — `set_param`
     /// on the program writes into the cell for exactly these indices.
     pub num_main_cells: usize,
-    /// Value-track instructions (per-tick).
-    pub value_instrs: Vec<ValueInstr>,
+    /// Value-track blocks (per-tick), see `run_value_track`.
+    pub value_blocks: Vec<ValueBlock>,
+    /// Entry block of the value track.
+    pub value_entry: usize,
     /// Number of value registers required.
     pub num_value_regs: usize,
     /// Value registers holding program outputs.

@@ -2,12 +2,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ArithOp, Def, Expr, Param, Program};
+use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
     BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
-    StateLayout, UnOp, ValueBuiltinOp, ValueInstr, ValueLayout,
+    StateLayout, UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueLayout, ValueTerm,
 };
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
@@ -127,8 +127,12 @@ struct Lowerer<'a> {
     /// [`Instr::ReadMainCell`]; value-track reads via `ValueReadMainCell`.
     main_cell_locals: HashMap<String, usize>,
     sample_rate: f32,
-    /// Value-track instructions, executed once per tick (see `run_value_track`).
-    value_instrs: Vec<ValueInstr>,
+    /// Value-track blocks, executed once per tick (see `run_value_track`).
+    value_blocks: Vec<ValueBlock>,
+    /// The block currently being appended to.
+    cur_value_block: usize,
+    /// Entry block of the program's value track (always 0).
+    value_entry: usize,
     /// Next value register index (SSA value registers are per-tick scratch).
     next_value_reg: usize,
     /// Value registers holding the program's value outputs (value-channel main).
@@ -207,7 +211,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit_value(&mut self, i: ValueInstr) {
-        self.value_instrs.push(i);
+        self.value_blocks[self.cur_value_block].instrs.push(i);
+    }
+
+    fn new_value_block(&mut self) -> usize {
+        self.value_blocks.push(ValueBlock::default());
+        self.value_blocks.len() - 1
+    }
+
+    fn set_value_term(&mut self, block: usize, term: ValueTerm) {
+        self.value_blocks[block].term = term;
     }
 
     /// Record a container-typed subexpression (`List`/`Map`/`Set`) for the
@@ -341,19 +354,29 @@ impl<'a> Lowerer<'a> {
                 let (scrutinee_reg, scrutinee_vty) = self.lower_value(scrutinee)?;
                 // The sum type: a concrete scrutinee type pins it; otherwise the
                 // arm constructors determine it (mirroring inference's
-                // intersection of candidate sum types).
+                // intersection of candidate sum types). A scalar match (only
+                // literal/wildcard/variable arms) has no sum.
                 let sum_name = match &scrutinee_vty {
-                    ValueTy::Data(n, _) => n.clone(),
-                    _ => self.resolve_match_sum(arms, *span)?,
-                };
-                let ctors = match self.env.data_types.get(&sum_name) {
-                    Some(DataInfo::Sum(ctors)) => ctors.clone(),
-                    _ => {
-                        return Err(CompileError::Type {
-                            msg: format!("`{sum_name}` is not a sum type"),
-                            span: *span,
-                        });
+                    ValueTy::Data(n, _) => Some(n.clone()),
+                    _ if arms
+                        .iter()
+                        .any(|a| matches!(a.pattern, Pattern::Ctor(_, _))) =>
+                    {
+                        Some(self.resolve_match_sum(arms, *span)?)
                     }
+                    _ => None,
+                };
+                let ctors: Vec<(String, Vec<ValueTy>)> = match &sum_name {
+                    Some(n) => match self.env.data_types.get(n) {
+                        Some(DataInfo::Sum(ctors)) => ctors.clone(),
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: format!("`{n}` is not a sum type"),
+                                span: *span,
+                            });
+                        }
+                    },
+                    None => Vec::new(),
                 };
                 if arms.is_empty() {
                     return Err(CompileError::Type {
@@ -368,94 +391,158 @@ impl<'a> Lowerer<'a> {
                 // construction (`Just x`) the type `Data(name, [])`, so the args
                 // are recovered from the constructor application when the static
                 // type carries none.
-                let is_builtin_sum = self.env.ctor_arity(&sum_name).is_some();
+                let is_builtin_sum = sum_name
+                    .as_ref()
+                    .map(|n| self.env.ctor_arity(n).is_some())
+                    .unwrap_or(false);
                 let scrutinee_args: Vec<ValueTy> = match &scrutinee_vty {
                     ValueTy::App(_, args) => args.clone(),
                     ValueTy::Data(_, args) if !args.is_empty() => args.clone(),
                     _ if is_builtin_sum => self.builtin_sum_scrutinee_args(scrutinee),
                     _ => vec![],
                 };
-                // v1 static dispatch: v1 has no runtime control flow, so the
-                // match selects its arm at compile time. When the scrutinee's
-                // ctor is statically known (a literal sum or an inlined value
-                // def that is one), lower ONLY the matching arm — emitting the
-                // other arms would run dead bodies and select a None register.
-                // A scrutinee whose ctor is NOT statically analyzable (`head
-                // (filter ...)`) is a compile error: silently assuming the
-                // first arm's ctor returned a wrong value when the runtime
-                // value was a different constructor.
-                let selected_arm = match self.static_scrutinee_ctor(scrutinee.as_ref()) {
-                    Some(cname) => {
-                        arms.iter()
-                            .position(|(c, _, _)| c == &cname)
-                            .ok_or_else(|| CompileError::Type {
-                                msg: format!("match over `{cname}` has no matching arm"),
-                                span: *span,
-                            })?
-                    }
-                    None => {
-                        return Err(CompileError::Unsupported(
-                            "match scrutinee is not statically resolvable in v1".into(),
-                        ));
-                    }
-                };
-                // Lower the selected arm only, binding its params to the match's
-                // payload regs.
-                let mut result: Option<(usize, ValueTy)> = None;
-                for (arm_idx, (ctor, params, body)) in arms.iter().enumerate() {
-                    if arm_idx != selected_arm {
-                        continue;
-                    }
-                    let ctor_idx = ctors.iter().position(|(c, _)| c == ctor).ok_or_else(|| {
-                        CompileError::Type {
-                            msg: format!("unknown constructor `{ctor}` for `{sum_name}`"),
-                            span: *span,
+                // A guarded arm can fail its guard at runtime, so the static
+                // fast path (compile-time ctor selection) is only sound for
+                // guard-free matches.
+                let has_guards = arms.iter().any(|a| {
+                    a.guards.len() > 1
+                        || !matches!(a.guards.first(), Some((Expr::Bool(true, _), _)))
+                });
+                // Static fast path (guard-free, statically-known ctor): lower
+                // ONLY the matching arm — preserves exact-capacity behavior.
+                if !has_guards {
+                    if let Some(cname) = self.static_scrutinee_ctor(scrutinee.as_ref()) {
+                        // The static path binds flat `Ctor(_, [Var/Wild ...])`
+                        // patterns (plus Var/Wild arms) in one pass; a
+                        // nested-pattern arm needs recursive runtime payload
+                        // extraction, so it is routed to runtime dispatch.
+                        let statically_lowerable = arms.iter().all(|arm| match &arm.pattern {
+                            Pattern::Ctor(_, args) => args
+                                .iter()
+                                .all(|a| matches!(a, Pattern::Var(_) | Pattern::Wild)),
+                            Pattern::Var(_) | Pattern::Wild => true,
+                            _ => true,
+                        });
+                        if statically_lowerable {
+                            let static_sum = sum_name.clone().unwrap_or_default();
+                            return self.lower_static_match_arm(
+                                scrutinee_reg,
+                                &scrutinee_vty,
+                                &static_sum,
+                                &ctors,
+                                &scrutinee_args,
+                                is_builtin_sum,
+                                arms,
+                                &cname,
+                                *span,
+                            );
                         }
-                    })?;
-                    let payload_tys = &ctors[ctor_idx].1;
-                    let mut payload_regs = Vec::with_capacity(payload_tys.len());
-                    for _ in 0..payload_tys.len() {
-                        payload_regs.push(self.fresh_value_reg());
                     }
-                    self.emit_value(ValueInstr::ValueMatch {
-                        dst: payload_regs.clone(),
-                        slot: scrutinee_reg,
-                        ctor: ctor_idx as u32,
-                    });
-                    // Bind the arm's payload params to the match's payload regs.
-                    // Builtin-sum payload shapes carry placeholder type params;
-                    // resolve them against the scrutinee's concrete type args
-                    // (`Var(k)` → `scrutinee_args[k-1]`, mirroring inference) so
-                    // a compound payload (`Just (Pair {..})`) binds to its
-                    // record type.
-                    let mut scope = HashMap::new();
-                    for (idx, p) in params.iter().enumerate() {
-                        let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
-                        let pty = if is_builtin_sum {
-                            match raw {
-                                ValueTy::Var(k) => scrutinee_args
-                                    .get(k.saturating_sub(1) as usize)
-                                    .cloned()
-                                    .unwrap_or(ValueTy::Float),
-                                t => t,
-                            }
-                        } else {
-                            raw
-                        };
-                        scope.insert(p.name.clone(), (payload_regs[idx], pty));
-                    }
-                    self.value_locals.push(scope);
+                }
+                // Runtime dispatch: a sequential test chain per arm ending in a
+                // fail block that latches a ProcessError when no arm matched.
+                let scrutinee_block = self.cur_value_block;
+                let out = self.fresh_value_reg();
+                let join = self.new_value_block();
+                let fail = self.new_value_block();
+                // fail block: latch the error, then halt the value track.
+                self.cur_value_block = fail;
+                self.emit_value(ValueInstr::ValueSetError);
+                self.set_value_term(fail, ValueTerm::Halt);
+                let n = arms.len();
+                // All arm-entry blocks are created up front so the `else`
+                // target of every arm is known before any body is lowered.
+                let entries: Vec<usize> = (0..n).map(|_| self.new_value_block()).collect();
+                // The scrutinee's block falls through into the first arm's
+                // entry; the last arm's else is the fail block.
+                self.set_value_term(scrutinee_block, ValueTerm::Fallthrough(entries[0]));
+                let mut out_ty: Option<ValueTy> = None;
+                for i in 0..n {
+                    let else_t = if i + 1 < n { entries[i + 1] } else { fail };
+                    let arm = &arms[i];
+                    self.cur_value_block = entries[i];
+                    // One scope per arm: pushed before the pattern test so the
+                    // arm's `Var` bindings are visible to its guards + body, and
+                    // popped after the body. Only one arm runs at runtime, but
+                    // all arms are lowered at compile time.
+                    self.value_locals.push(HashMap::new());
                     self.value_local_ctors.push(HashMap::new());
-                    let (arm_reg, arm_vty) = self.lower_value(body)?;
+                    let pass = self.lower_pattern_test(
+                        &arm.pattern,
+                        scrutinee_reg,
+                        &scrutinee_vty,
+                        &scrutinee_args,
+                        else_t,
+                        arm.span,
+                    )?;
+                    self.cur_value_block = pass;
+                    let arm_ty = self.lower_match_guards_and_body(arm, &out, join, else_t)?;
                     self.value_locals.pop();
                     self.value_local_ctors.pop();
-                    result = Some((arm_reg, arm_vty));
-                    break;
+                    if out_ty.is_none() {
+                        out_ty = Some(arm_ty);
+                    }
                 }
-                result.ok_or_else(|| CompileError::Type {
-                    msg: "match requires at least one arm".into(),
-                    span: *span,
-                })
+                self.cur_value_block = join;
+                Ok((out, out_ty.unwrap_or(ValueTy::Float)))
+            }
+            Expr::If {
+                cond,
+                then,
+                els,
+                span,
+            } => {
+                // Static fast path: a literal Bool condition selects one branch
+                // at compile time (single block, no Branch term).
+                if let Expr::Bool(b, _) = cond.as_ref() {
+                    let (reg, ty) = if *b {
+                        self.lower_value(then)?
+                    } else {
+                        self.lower_value(els)?
+                    };
+                    return Ok((reg, ty));
+                }
+                let (cond_reg, cond_ty) = self.lower_value(cond)?;
+                if cond_ty != ValueTy::Bool {
+                    return Err(CompileError::Type {
+                        msg: "if condition must be a Bool value".into(),
+                        span: *span,
+                    });
+                }
+                let then_b = self.new_value_block();
+                let els_b = self.new_value_block();
+                let join = self.new_value_block();
+                let out = self.fresh_value_reg();
+                self.set_value_term(
+                    self.cur_value_block,
+                    ValueTerm::Branch {
+                        cond: cond_reg,
+                        then: then_b,
+                        els: els_b,
+                    },
+                );
+                self.cur_value_block = then_b;
+                let (t_reg, t_ty) = self.lower_value(then)?;
+                self.emit_value(ValueInstr::ValueMove {
+                    dst: out,
+                    src: t_reg,
+                });
+                self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
+                self.cur_value_block = els_b;
+                let (e_reg, e_ty) = self.lower_value(els)?;
+                self.emit_value(ValueInstr::ValueMove {
+                    dst: out,
+                    src: e_reg,
+                });
+                self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
+                if t_ty != e_ty {
+                    return Err(CompileError::Type {
+                        msg: "if branches must have the same type".into(),
+                        span: *span,
+                    });
+                }
+                self.cur_value_block = join;
+                Ok((out, t_ty))
             }
             Expr::Apply {
                 name,
@@ -1390,13 +1477,23 @@ impl<'a> Lowerer<'a> {
                 scrutinee, arms, ..
             } => {
                 self.free_vars_impl(scrutinee, bound, out, seen);
-                for (_, params, body) in arms {
+                for arm in arms {
                     let mut inner = bound.clone();
-                    for p in params {
-                        inner.insert(p.name.clone());
+                    for v in crate::reduce::pattern_vars(&arm.pattern) {
+                        inner.insert(v);
                     }
-                    self.free_vars_impl(body, &inner, out, seen);
+                    for (g, b) in &arm.guards {
+                        self.free_vars_impl(g, &inner, out, seen);
+                        self.free_vars_impl(b, &inner, out, seen);
+                    }
                 }
+            }
+            Expr::If {
+                cond, then, els, ..
+            } => {
+                self.free_vars_impl(cond, bound, out, seen);
+                self.free_vars_impl(then, bound, out, seen);
+                self.free_vars_impl(els, bound, out, seen);
             }
             Expr::Lambda { params, body, .. } => {
                 let mut inner = bound.clone();
@@ -1434,9 +1531,9 @@ impl<'a> Lowerer<'a> {
     /// Fragment-local registers: the body's value instructions use registers
     /// `0..num_value_regs`, unrelated to the program's register numbering —
     /// the interpreter offsets them by a per-call base at dispatch. The
-    /// program-level value-track state (`value_instrs`, `next_value_reg`,
-    /// `value_locals`, `fragment_captures`) is saved around the body compile
-    /// and restored afterwards.
+    /// program-level value-track state (`value_blocks`, `cur_value_block`,
+    /// `next_value_reg`, `value_locals`, `fragment_captures`) is saved around
+    /// the body compile and restored afterwards.
     ///
     /// Within the fragment: parameters bind to fragment-local registers
     /// `0..params.len()` (value args are copied in by `run_fragment`), typed
@@ -1452,7 +1549,9 @@ impl<'a> Lowerer<'a> {
         param_tys: &[ValueTy],
         _span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
-        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
@@ -1471,7 +1570,8 @@ impl<'a> Lowerer<'a> {
         let body_result = match res {
             Ok(r) => r,
             Err(e) => {
-                self.value_instrs = saved_instrs;
+                self.value_blocks = saved_blocks;
+                self.cur_value_block = saved_cur;
                 self.next_value_reg = saved_next;
                 self.value_locals = saved_locals;
                 self.value_local_ctors.pop();
@@ -1481,7 +1581,8 @@ impl<'a> Lowerer<'a> {
         };
         let (result_reg, result_ty) = body_result;
         let frag = FragmentIr {
-            value_instrs: std::mem::take(&mut self.value_instrs),
+            value_blocks: std::mem::take(&mut self.value_blocks),
+            entry: 0,
             steps: Vec::new(),
             num_value_regs: self.next_value_reg,
             num_block_regs: 0,
@@ -1497,7 +1598,8 @@ impl<'a> Lowerer<'a> {
         let id = self.fragments.len();
         self.fragments.push(std::sync::Arc::new(frag));
 
-        self.value_instrs = saved_instrs;
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
         self.value_local_ctors.pop();
@@ -1541,7 +1643,9 @@ impl<'a> Lowerer<'a> {
         remaining_arity: usize,
         _span: Span,
     ) -> Result<usize, CompileError> {
-        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
@@ -1571,7 +1675,8 @@ impl<'a> Lowerer<'a> {
         });
 
         let frag = FragmentIr {
-            value_instrs: std::mem::take(&mut self.value_instrs),
+            value_blocks: std::mem::take(&mut self.value_blocks),
+            entry: 0,
             steps: Vec::new(),
             num_value_regs,
             num_block_regs: 0,
@@ -1587,7 +1692,8 @@ impl<'a> Lowerer<'a> {
         let id = self.fragments.len();
         self.fragments.push(std::sync::Arc::new(frag));
 
-        self.value_instrs = saved_instrs;
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
         self.fragment_captures = saved_captures;
@@ -1713,9 +1819,16 @@ impl<'a> Lowerer<'a> {
                 // compile time; the arm's body's constructor is the match's
                 // result constructor.
                 let scrut_ctor = self.static_scrutinee_ctor_impl(scrutinee, visited)?;
-                for (ctor, _, body) in arms {
-                    if ctor == &scrut_ctor {
-                        return self.static_scrutinee_ctor_impl(body, visited);
+                for arm in arms {
+                    if let Pattern::Ctor(c, _) = &arm.pattern {
+                        if c == &scrut_ctor {
+                            // A guarded arm's result constructor is NOT
+                            // statically known (the guard may fail at runtime),
+                            // so only a bare arm can claim a statically-known
+                            // result.
+                            return crate::reduce::unguarded_arm_body(arm)
+                                .and_then(|body| self.static_scrutinee_ctor_impl(body, visited));
+                        }
                     }
                 }
                 None
@@ -1917,14 +2030,17 @@ impl<'a> Lowerer<'a> {
     /// scrutinee payload types that `lower_value` does not carry on the
     /// returned scrutinee type (`Data(name, [])`).
     fn sandbox_value_ty(&mut self, e: &Expr) -> Option<ValueTy> {
-        let saved_instrs = std::mem::take(&mut self.value_instrs);
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
         let saved_inline = std::mem::take(&mut self.value_inline);
         let saved_pending = std::mem::take(&mut self.pending_param_tys);
         let r = self.lower_value(e).ok();
-        self.value_instrs = saved_instrs;
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
         self.next_value_reg = saved_next;
         self.value_locals = saved_locals;
         self.fragment_captures = saved_captures;
@@ -1934,14 +2050,17 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Resolve the sum type of a `match` from its arm constructors, intersecting
-    /// the candidate sum types per constructor (mirrors inference).
-    fn resolve_match_sum(
-        &self,
-        arms: &[(String, Vec<Param>, Expr)],
-        span: Span,
-    ) -> Result<String, CompileError> {
+    /// the candidate sum types per constructor (mirrors inference). Literal,
+    /// wildcard, and variable arms do not pin the sum (a scalar match, or a sum
+    /// match with a fallback arm); the caller only resolves when at least one
+    /// constructor arm exists.
+    fn resolve_match_sum(&self, arms: &[MatchArm], span: Span) -> Result<String, CompileError> {
         let mut candidates: Option<Vec<String>> = None;
-        for (ctor, _, _) in arms {
+        for arm in arms {
+            let ctor = match &arm.pattern {
+                Pattern::Ctor(c, _) => c,
+                _ => continue,
+            };
             let per_ctor: Vec<String> = self
                 .env
                 .data_types
@@ -1971,6 +2090,332 @@ impl<'a> Lowerer<'a> {
                 span,
             }),
         }
+    }
+
+    /// Lower the guard-free arm of a match whose scrutinee constructor is
+    /// statically known. Only the selected arm is lowered (its pattern matched
+    /// at compile time), preserving exact-capacity behavior. The arm that would
+    /// match at runtime is the `Ctor` arm for `cname`, or the first `Var`/`Wild`
+    /// arm. Returns `(body_reg, body_ty)`.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_static_match_arm(
+        &mut self,
+        scrutinee_reg: usize,
+        scrutinee_vty: &ValueTy,
+        sum_name: &str,
+        ctors: &[(String, Vec<ValueTy>)],
+        scrutinee_args: &[ValueTy],
+        is_builtin_sum: bool,
+        arms: &[MatchArm],
+        cname: &str,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        // The first arm that matches at runtime: the Ctor arm for `cname`, or a
+        // Var/Wild arm (a Var binds the whole scrutinee, a Wild ignores it).
+        let selected = arms
+            .iter()
+            .position(|arm| match &arm.pattern {
+                Pattern::Ctor(c, _) => c == cname,
+                Pattern::Var(_) | Pattern::Wild => true,
+                _ => false,
+            })
+            .ok_or_else(|| CompileError::Type {
+                msg: format!("match over `{cname}` has no matching arm"),
+                span,
+            })?;
+        let arm = &arms[selected];
+        // Reachable only from the guard-free static fast path (`!has_guards`),
+        // so every arm here is a bare `pattern => body`; a guarded arm is a
+        // defensive error rather than a silent drop.
+        let body = crate::reduce::unguarded_arm_body(arm).ok_or_else(|| CompileError::Type {
+            msg: "guarded arm reached the static match fast path".into(),
+            span,
+        })?;
+        // Bind the arm's pattern leaves in a fresh scope, visible to the body.
+        self.value_locals.push(HashMap::new());
+        self.value_local_ctors.push(HashMap::new());
+        let result = match &arm.pattern {
+            Pattern::Var(name) => {
+                // A variable arm binds the whole scrutinee (its ctor is
+                // statically known, so a nested match over it resolves too).
+                self.value_locals
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), (scrutinee_reg, scrutinee_vty.clone()));
+                self.value_local_ctors
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), Some(cname.to_string()));
+                self.lower_value(body)
+            }
+            Pattern::Wild => self.lower_value(body),
+            Pattern::Ctor(ctor, args) => {
+                let ctor_idx = ctors.iter().position(|(c, _)| c == ctor).ok_or_else(|| {
+                    CompileError::Type {
+                        msg: format!("unknown constructor `{ctor}` for `{sum_name}`"),
+                        span,
+                    }
+                })?;
+                let payload_tys = &ctors[ctor_idx].1;
+                let mut payload_regs = Vec::with_capacity(payload_tys.len());
+                for _ in 0..payload_tys.len() {
+                    payload_regs.push(self.fresh_value_reg());
+                }
+                self.emit_value(ValueInstr::ValueMatch {
+                    dst: payload_regs.clone(),
+                    slot: scrutinee_reg,
+                    ctor: ctor_idx as u32,
+                });
+                // Bind the arm's payload vars to the match's payload regs.
+                // Builtin-sum payload shapes carry placeholder type params;
+                // resolve them against the scrutinee's concrete type args
+                // (`Var(k)` → `scrutinee_args[k-1]`, mirroring inference).
+                for (idx, p) in args.iter().enumerate() {
+                    let Pattern::Var(name) = p else {
+                        continue;
+                    };
+                    let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
+                    let pty = if is_builtin_sum {
+                        match raw {
+                            ValueTy::Var(k) => scrutinee_args
+                                .get(k.saturating_sub(1) as usize)
+                                .cloned()
+                                .unwrap_or(ValueTy::Float),
+                            t => t,
+                        }
+                    } else {
+                        raw
+                    };
+                    self.value_locals
+                        .last_mut()
+                        .unwrap()
+                        .insert(name.clone(), (payload_regs[idx], pty));
+                }
+                self.lower_value(body)
+            }
+            _ => self.lower_value(body),
+        };
+        self.value_locals.pop();
+        self.value_local_ctors.pop();
+        result
+    }
+
+    /// Lower the runtime test for one pattern against `scrutinee_reg`, starting
+    /// at `self.cur_value_block`. On a match, control flow reaches the returned
+    /// block (where the arm's guards and body continue); on a mismatch it jumps
+    /// to `else_t`. A `Ctor` pattern resolves its sum/ctor index by constructor
+    /// name (`sum_ctor`) and extracts the payload via `ValueMatch`, then
+    /// recurses over its argument patterns; `Lit` patterns emit a constant +
+    /// `ValueCompare`/`Branch`. Variable leaves bind into the scope on top of
+    /// `self.value_locals` (pushed by the caller around each arm). Builtin-sum
+    /// payload placeholders (`Var(k)`) resolve against the scrutinee's concrete
+    /// type args, falling back to `top_args` (recovered in the match arm) when
+    /// `vty` carries none.
+    fn lower_pattern_test(
+        &mut self,
+        pattern: &Pattern,
+        scrutinee_reg: usize,
+        vty: &ValueTy,
+        top_args: &[ValueTy],
+        else_t: usize,
+        span: Span,
+    ) -> Result<usize, CompileError> {
+        match pattern {
+            Pattern::Var(name) => {
+                // Binds the whole matched value; no test is emitted.
+                self.value_locals
+                    .last_mut()
+                    .unwrap()
+                    .insert(name.clone(), (scrutinee_reg, vty.clone()));
+                Ok(self.cur_value_block)
+            }
+            Pattern::Wild => Ok(self.cur_value_block),
+            Pattern::LitInt(v) => {
+                let lit_reg = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstInt {
+                    dst: lit_reg,
+                    value: *v,
+                });
+                Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
+            }
+            Pattern::LitFloat(v) => {
+                let lit_reg = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstFloat {
+                    dst: lit_reg,
+                    value: *v,
+                });
+                Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
+            }
+            Pattern::LitBool(v) => {
+                let lit_reg = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBool {
+                    dst: lit_reg,
+                    value: *v,
+                });
+                Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
+            }
+            Pattern::LitStr(v) => {
+                let lit_reg = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstString {
+                    dst: lit_reg,
+                    value: v.clone(),
+                });
+                Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
+            }
+            Pattern::Ctor(name, args) => {
+                let (ctor_sum, ctor_idx, payload) =
+                    self.sum_ctor(name).ok_or_else(|| CompileError::Type {
+                        msg: format!("unknown constructor `{name}`"),
+                        span,
+                    })?;
+                let is_builtin = self.env.ctor_arity(&ctor_sum).is_some();
+                // The concrete type args of the scrutinee at this level: a
+                // concrete `App`/`Data` type carries them; a bare construction
+                // (`Data(name, [])`) or an unbound wire falls back to the
+                // top-level recovered args.
+                let scrutinee_args: Vec<ValueTy> = match vty {
+                    ValueTy::App(_, args) | ValueTy::Data(_, args) if !args.is_empty() => {
+                        args.clone()
+                    }
+                    _ => top_args.to_vec(),
+                };
+                let payload_regs: Vec<usize> =
+                    (0..payload.len()).map(|_| self.fresh_value_reg()).collect();
+                let bind_b = self.new_value_block();
+                let cur = self.cur_value_block;
+                self.set_value_term(
+                    cur,
+                    ValueTerm::BranchCtor {
+                        slot: scrutinee_reg,
+                        ctor: ctor_idx as u32,
+                        then: bind_b,
+                        els: else_t,
+                    },
+                );
+                self.cur_value_block = bind_b;
+                self.emit_value(ValueInstr::ValueMatch {
+                    dst: payload_regs.clone(),
+                    slot: scrutinee_reg,
+                    ctor: ctor_idx as u32,
+                });
+                // Recurse per argument against its payload reg; the last
+                // sub-test's matched block is where the arm continues.
+                let mut pass = self.cur_value_block;
+                for (i, arg) in args.iter().enumerate() {
+                    let raw = payload.get(i).cloned().unwrap_or(ValueTy::Float);
+                    let pty = if is_builtin {
+                        match raw {
+                            ValueTy::Var(k) => scrutinee_args
+                                .get(k.saturating_sub(1) as usize)
+                                .cloned()
+                                .unwrap_or(ValueTy::Float),
+                            t => t,
+                        }
+                    } else {
+                        raw
+                    };
+                    pass = self.lower_pattern_test(
+                        arg,
+                        payload_regs[i],
+                        &pty,
+                        top_args,
+                        else_t,
+                        span,
+                    )?;
+                }
+                Ok(pass)
+            }
+        }
+    }
+
+    /// Emit the literal-equality test for a matched scalar: `ValueCompare { Eq }`
+    /// against `lit_reg`, branching to a fresh pass block on equality and
+    /// `else_t` otherwise. Returns the pass block.
+    fn emit_literal_test(&mut self, scrutinee_reg: usize, lit_reg: usize, else_t: usize) -> usize {
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueCompare {
+            dst,
+            op: CmpOp::Eq,
+            a: scrutinee_reg,
+            b: lit_reg,
+        });
+        let pass_b = self.new_value_block();
+        let cur = self.cur_value_block;
+        self.set_value_term(
+            cur,
+            ValueTerm::Branch {
+                cond: dst,
+                then: pass_b,
+                els: else_t,
+            },
+        );
+        self.cur_value_block = pass_b;
+        pass_b
+    }
+
+    /// Lower an arm's guard/body alternatives starting at `self.cur_value_block`
+    /// (the block where the pattern test succeeded). Each body runs in its own
+    /// block and ends with `ValueMove { dst: out, src: body_reg }` +
+    /// `Fallthrough(join)`; a failing guard falls through to the next
+    /// alternative (or `else_t` after the last). Returns the first
+    /// alternative's body type.
+    fn lower_match_guards_and_body(
+        &mut self,
+        arm: &MatchArm,
+        out: &usize,
+        join: usize,
+        else_t: usize,
+    ) -> Result<ValueTy, CompileError> {
+        let mut first_ty: Option<ValueTy> = None;
+        let m = arm.guards.len();
+        for (idx, (g, body)) in arm.guards.iter().enumerate() {
+            let next = if idx + 1 < m {
+                self.new_value_block()
+            } else {
+                else_t
+            };
+            if idx == 0 && matches!(g, Expr::Bool(true, _)) {
+                // Bare `pattern => body`: no guard to test.
+                let (body_reg, body_ty) = self.lower_value(body)?;
+                self.emit_value(ValueInstr::ValueMove {
+                    dst: *out,
+                    src: body_reg,
+                });
+                self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
+                if first_ty.is_none() {
+                    first_ty = Some(body_ty);
+                }
+                break;
+            }
+            let (guard_reg, guard_ty) = self.lower_value(g)?;
+            if guard_ty != ValueTy::Bool {
+                return Err(CompileError::Type {
+                    msg: "match guard must be a Bool value".into(),
+                    span: g.span(),
+                });
+            }
+            let body_b = self.new_value_block();
+            self.set_value_term(
+                self.cur_value_block,
+                ValueTerm::Branch {
+                    cond: guard_reg,
+                    then: body_b,
+                    els: next,
+                },
+            );
+            self.cur_value_block = body_b;
+            let (body_reg, body_ty) = self.lower_value(body)?;
+            self.emit_value(ValueInstr::ValueMove {
+                dst: *out,
+                src: body_reg,
+            });
+            self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
+            if first_ty.is_none() {
+                first_ty = Some(body_ty);
+            }
+            self.cur_value_block = next;
+        }
+        Ok(first_ty.unwrap_or(ValueTy::Float))
     }
 
     /// Resolve a bare constructor name to `(sum type, ctor index, payload)`.
@@ -2508,6 +2953,10 @@ impl<'a> Lowerer<'a> {
             }),
             Expr::Match { span, .. } => Err(CompileError::Type {
                 msg: "match is a value expression; it cannot be used in a signal position".into(),
+                span: *span,
+            }),
+            Expr::If { span, .. } => Err(CompileError::Type {
+                msg: "if is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
             Expr::Lambda { span, .. } => Err(CompileError::Type {
@@ -3119,6 +3568,7 @@ impl<'a> Lowerer<'a> {
             Expr::FieldProject { .. }
             | Expr::FieldUpdate { .. }
             | Expr::Match { .. }
+            | Expr::If { .. }
             | Expr::Bool(..)
             | Expr::ListLit(..)
             | Expr::MapLit(..)
@@ -3221,7 +3671,9 @@ pub fn lower_with_cafs(
         param_names: HashMap::new(),
         main_cell_locals: HashMap::new(),
         sample_rate,
-        value_instrs: Vec::new(),
+        value_blocks: vec![ValueBlock::default()],
+        cur_value_block: 0,
+        value_entry: 0,
         next_value_reg: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
@@ -3310,8 +3762,9 @@ pub fn lower_with_cafs(
         .fragments
         .iter()
         .map(|f| {
-            f.value_instrs
+            f.value_blocks
                 .iter()
+                .flat_map(|b| &b.instrs)
                 .filter(|i| is_alloc_producing(i))
                 .count()
                 + f.num_capture_cells
@@ -3333,8 +3786,9 @@ pub fn lower_with_cafs(
         .map(|t| lw.subtree_size(t))
         .sum::<usize>();
     let value_capacity = lw
-        .value_instrs
+        .value_blocks
         .iter()
+        .flat_map(|b| &b.instrs)
         .filter(|i| is_alloc_producing(i))
         .count()
         + lw.value_out_tys
@@ -3357,6 +3811,9 @@ pub fn lower_with_cafs(
         .max()
         .unwrap_or(0);
     let max_call_regs = max_call_depth * max_fragment_regs;
+    // Terminate the program's value track: the entry block's fallthrough chain
+    // ends here. Every existing program is a single block ending in `Halt`.
+    lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
     Ok(Ir {
         instrs: lw.instrs,
         num_regs: lw.next_reg,
@@ -3371,7 +3828,8 @@ pub fn lower_with_cafs(
         builtins: lw.builtins,
         params: lw.params,
         num_main_cells,
-        value_instrs: lw.value_instrs,
+        value_blocks: std::mem::take(&mut lw.value_blocks),
+        value_entry: lw.value_entry,
         num_value_regs: lw.next_value_reg,
         value_output_regs: lw.value_regs_out,
         value_funcs: lw.value_funcs,
@@ -3472,7 +3930,9 @@ mod tests {
             param_names: HashMap::new(),
             main_cell_locals: HashMap::new(),
             sample_rate: 44_100.0,
-            value_instrs: Vec::new(),
+            value_blocks: vec![ValueBlock::default()],
+            cur_value_block: 0,
+            value_entry: 0,
             next_value_reg: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
@@ -3772,8 +4232,8 @@ mod tests {
     #[test]
     fn record_construct_lowers_to_value_track() {
         let ir = ir_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }");
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueConstructRecord { .. })));
     }
@@ -3782,8 +4242,8 @@ mod tests {
     fn field_project_lowers_to_value_project() {
         let ir =
             ir_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x");
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueProject { .. })));
     }
@@ -3791,8 +4251,8 @@ mod tests {
     #[test]
     fn newtype_construct_lowers_to_value_newtype() {
         let ir = ir_of("newtype Hz = Float; main = Hz 440.0");
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueNewtype { .. })));
     }
@@ -3813,8 +4273,8 @@ mod tests {
         let ir = ir_of(
             "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Circle r => r; Rect w h => w; }",
         );
-        assert!(ir
-            .value_instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
             .any(|i| matches!(i, ValueInstr::ValueMatch { .. })));
     }
@@ -3828,8 +4288,8 @@ mod tests {
         let ir = ir_of(
             "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Rect w h => w; Circle r => r; }",
         );
-        let matches = ir
-            .value_instrs
+        let matches = ir.value_blocks[0]
+            .instrs
             .iter()
             .filter(|i| matches!(i, ValueInstr::ValueMatch { .. }))
             .count();
@@ -3837,8 +4297,8 @@ mod tests {
             matches, 1,
             "static dispatch must emit exactly one ValueMatch"
         );
-        let vm = ir
-            .value_instrs
+        let vm = ir.value_blocks[0]
+            .instrs
             .iter()
             .find(|i| matches!(i, ValueInstr::ValueMatch { .. }))
             .unwrap();
@@ -3858,11 +4318,41 @@ mod tests {
     }
 
     #[test]
-    fn match_wire_scrutinee_is_compile_error() {
-        // An unbound `_` scrutinee has no statically-known constructor: v1
-        // static dispatch must reject it, not silently assume the first arm's
-        // ctor (which returned a wrong value when the runtime value was a
-        // different constructor).
+    fn lower_match_runtime_dispatch_emits_branch_ctor() {
+        let src = "data Shape = Circle Float | Rect Float Float; \
+                   main = match _ of { Circle r => r; Rect w h => w; };";
+        let toks = tokenize(src).unwrap();
+        let p = parse(&toks, src.as_bytes()).unwrap();
+        let tp = infer_program(&p).unwrap();
+        let ir = lower(&tp).unwrap();
+        assert!(
+            ir.value_blocks
+                .iter()
+                .any(|b| matches!(b.term, ValueTerm::BranchCtor { .. })),
+            "a non-static match must lower to BranchCtor dispatch"
+        );
+    }
+
+    #[test]
+    fn lower_match_literal_and_wildcard() {
+        let src = "main = match 0 of { 0 => 1.0; _ => 2.0; };";
+        let toks = tokenize(src).unwrap();
+        let p = parse(&toks, src.as_bytes()).unwrap();
+        let tp = infer_program(&p).unwrap();
+        let ir = lower(&tp).unwrap();
+        assert!(
+            ir.value_blocks
+                .iter()
+                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
+            "a literal match must lower to a Branch"
+        );
+    }
+
+    #[test]
+    fn match_wire_scrutinee_dispatches_at_runtime() {
+        // An unbound `_` scrutinee has no statically-known constructor: the
+        // match must lower to runtime BranchCtor dispatch instead of the old
+        // static-only compile error.
         let p = parse(
             &tokenize(
                 "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
@@ -3873,14 +4363,39 @@ mod tests {
         )
         .unwrap();
         let tp = infer_program(&p).unwrap();
-        let res = lower(&tp);
-        assert!(res.is_err());
-        if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
-            assert!(
-                msg.contains("statically resolvable"),
-                "expected a 'statically resolvable' message, got: {msg}"
-            );
-        }
+        let ir = lower(&tp).unwrap();
+        assert!(
+            ir.value_blocks
+                .iter()
+                .any(|b| matches!(b.term, ValueTerm::BranchCtor { .. })),
+            "a wire scrutinee must lower to BranchCtor dispatch"
+        );
+    }
+
+    #[test]
+    fn lower_if_emits_branch() {
+        // A non-constant Bool condition (`g > 0.5` on a main λ-param, read per
+        // tick) must lower to a runtime Branch term.
+        let ir = ir_of("main g = if g > 0.5 then 1.0 else 2.0;");
+        assert!(
+            ir.value_blocks
+                .iter()
+                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
+            "a non-constant if condition must lower to a Branch"
+        );
+    }
+
+    #[test]
+    fn lower_if_static_literal_skips_branch() {
+        // A literal Bool condition selects one branch at compile time: a single
+        // block, no Branch term.
+        let ir = ir_of("main = if false then 1.0 else 2.0;");
+        assert!(
+            !ir.value_blocks
+                .iter()
+                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
+            "a literal-Bool if must not lower to a Branch"
+        );
     }
 
     #[test]

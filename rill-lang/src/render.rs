@@ -2,24 +2,26 @@
 //!
 //! Converts a parsed [`crate::ast::Program`] back into a rill-lang source
 //! string. The renderer is used for round-trip tests that verify
-//! isomorphism between JSON and DSL representations.
+//! isomorphism between JSON and DSL representations. Rendering is total:
+//! `if` and `match` render every arm, including guarded alternatives.
 
-use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Program, TypeExpr};
+use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Pattern, Program, TypeExpr};
+use crate::error::CompileError;
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
-pub fn render(program: &Program) -> String {
+pub fn render(program: &Program) -> Result<String, CompileError> {
     let mut buf = String::new();
     for (i, def) in program.defs.iter().enumerate() {
         if i > 0 {
             buf.push('\n');
         }
-        render_def(def, &mut buf, 0);
+        render_def(def, &mut buf, 0)?;
     }
-    buf
+    Ok(buf)
 }
 
-fn render_def(def: &Def, buf: &mut String, indent: usize) {
+fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileError> {
     let pad = " ".repeat(indent);
     match def {
         Def::Anchor {
@@ -34,19 +36,21 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 write!(buf, " {}", p.name).ok();
             }
             write!(buf, " = ").ok();
-            render_expr(body, buf, 3);
+            render_expr(body, buf, 3)?;
             if !where_defs.is_empty() {
                 writeln!(buf, " where {{").ok();
                 for wd in where_defs {
-                    render_def(wd, buf, indent + 4);
+                    render_def(wd, buf, indent + 4)?;
                     writeln!(buf, ";").ok();
                 }
                 write!(buf, "{pad}}}").ok();
             }
+            Ok(())
         }
         Def::Local { name, body, .. } => {
             write!(buf, "{pad}{name} = ").ok();
-            render_expr(body, buf, 0);
+            render_expr(body, buf, 0)?;
+            Ok(())
         }
         Def::Data {
             name,
@@ -67,6 +71,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 render_type_expr(tname, buf);
             }
             write!(buf, " }}").ok();
+            Ok(())
         }
         Def::Sum {
             name,
@@ -89,12 +94,15 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                     render_type_expr(t, buf);
                 }
             }
+            Ok(())
         }
         Def::TypeAlias { name, target, .. } => {
             write!(buf, "{pad}type {name} = {target}").ok();
+            Ok(())
         }
         Def::Newtype { name, target, .. } => {
             write!(buf, "{pad}newtype {name} = {target}").ok();
+            Ok(())
         }
         Def::Typeclass {
             name, var, methods, ..
@@ -106,6 +114,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+            Ok(())
         }
         Def::Instance {
             class,
@@ -120,10 +129,11 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) {
                     write!(buf, " {}", p.name).ok();
                 }
                 write!(buf, " = ").ok();
-                render_expr(body, buf, 0);
+                render_expr(body, buf, 0)?;
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+            Ok(())
         }
     }
 }
@@ -160,10 +170,11 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
     }
 }
 
-fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
+fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), CompileError> {
     match expr {
         Expr::Int(v, _) => {
             write!(buf, "{v}").ok();
+            Ok(())
         }
         Expr::Float(v, _) => {
             if *v == *v as i64 as f64 && v.is_finite() {
@@ -171,32 +182,40 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             } else {
                 write!(buf, "{}", v).ok();
             }
+            Ok(())
         }
         Expr::Imag(v, _) => {
             write!(buf, "{v}i").ok();
+            Ok(())
         }
         Expr::Wire(_) => {
             write!(buf, "_").ok();
+            Ok(())
         }
         Expr::Cut(_) => {
             write!(buf, "!").ok();
+            Ok(())
         }
         Expr::Str(s, _) => {
             write!(buf, "\"{s}\"").ok();
+            Ok(())
         }
         Expr::Ref(name, _) => {
             write!(buf, "{name}").ok();
+            Ok(())
         }
         Expr::Apply { name, args, .. } => {
             write!(buf, "{name}").ok();
             for a in args {
                 write!(buf, " ").ok();
-                render_expr(a, buf, 20); // application args are tight
+                render_expr(a, buf, 20)?; // application args are tight
             }
+            Ok(())
         }
         Expr::Neg(inner, _) => {
             write!(buf, "-").ok();
-            render_expr(inner, buf, 15);
+            render_expr(inner, buf, 15)?;
+            Ok(())
         }
         Expr::Seq(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (3, 3, 4, ":")),
         Expr::Split(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (5, 5, 6, "<:")),
@@ -210,17 +229,18 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             if defs.len() > 1 {
                 write!(buf, "{{ ").ok();
                 for d in defs {
-                    render_def(d, buf, 0);
+                    render_def(d, buf, 0)?;
                     write!(buf, "; ").ok();
                 }
                 write!(buf, "}} in ").ok();
             } else {
                 for d in defs {
-                    render_def(d, buf, 0);
+                    render_def(d, buf, 0)?;
                 }
                 write!(buf, " in ").ok();
             }
-            render_expr(body, buf, 0);
+            render_expr(body, buf, 0)?;
+            Ok(())
         }
         Expr::Record(fields, _) => {
             write!(buf, "{{ ").ok();
@@ -229,20 +249,23 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                     write!(buf, ", ").ok();
                 }
                 write!(buf, "{name}: ").ok();
-                render_expr(val, buf, 0);
+                render_expr(val, buf, 0)?;
             }
             write!(buf, " }}").ok();
+            Ok(())
         }
         Expr::ActorParam { name, default, .. } => {
             write!(buf, "?{name}").ok();
             if let Some(d) = default {
                 write!(buf, "=").ok();
-                render_expr(d, buf, 0);
+                render_expr(d, buf, 0)?;
             }
+            Ok(())
         }
         Expr::FieldProject { record, field, .. } => {
-            render_expr(record, buf, 20);
+            render_expr(record, buf, 20)?;
             write!(buf, ".{field}").ok();
+            Ok(())
         }
         Expr::FieldUpdate {
             record,
@@ -250,26 +273,48 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
             value,
             ..
         } => {
-            render_expr(record, buf, 20);
+            render_expr(record, buf, 20)?;
             write!(buf, ".{field} := ").ok();
-            render_expr(value, buf, 0);
+            render_expr(value, buf, 0)?;
+            Ok(())
         }
         Expr::Match {
             scrutinee, arms, ..
         } => {
             write!(buf, "match ").ok();
-            render_expr(scrutinee, buf, 0);
+            render_expr(scrutinee, buf, 0)?;
             write!(buf, " of {{ ").ok();
-            for (ctor, params, body) in arms {
-                write!(buf, "{ctor}").ok();
-                for p in params {
-                    write!(buf, " {}", p.name).ok();
+            for arm in arms {
+                render_pattern(&arm.pattern, buf);
+                for (i, (g, body)) in arm.guards.iter().enumerate() {
+                    // A bare arm's FIRST alternative carries the synthetic
+                    // `true` guard and renders without a `| guard` prefix;
+                    // every other alternative — including a written `true`
+                    // guard — renders its guard explicitly.
+                    if i == 0 && matches!(g, Expr::Bool(true, _)) {
+                        write!(buf, " => ").ok();
+                    } else {
+                        write!(buf, " | ").ok();
+                        render_expr(g, buf, 0)?;
+                        write!(buf, " => ").ok();
+                    }
+                    render_expr(body, buf, 0)?;
                 }
-                write!(buf, " => ").ok();
-                render_expr(body, buf, 0);
                 write!(buf, "; ").ok();
             }
             write!(buf, "}}").ok();
+            Ok(())
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            write!(buf, "if ").ok();
+            render_expr(cond, buf, 0)?;
+            write!(buf, " then ").ok();
+            render_expr(then, buf, 0)?;
+            write!(buf, " else ").ok();
+            render_expr(els, buf, 0)?;
+            Ok(())
         }
         Expr::Lambda { params, body, .. } => {
             write!(buf, "fn").ok();
@@ -277,10 +322,12 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                 write!(buf, " {}", p.name).ok();
             }
             write!(buf, " -> ").ok();
-            render_expr(body, buf, 0);
+            render_expr(body, buf, 0)?;
+            Ok(())
         }
         Expr::Bool(v, _) => {
             write!(buf, "{}", if *v { "true" } else { "false" }).ok();
+            Ok(())
         }
         Expr::ListLit(elems, _) => {
             write!(buf, "[").ok();
@@ -288,9 +335,10 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                 if i > 0 {
                     write!(buf, ", ").ok();
                 }
-                render_expr(e, buf, 0);
+                render_expr(e, buf, 0)?;
             }
             write!(buf, "]").ok();
+            Ok(())
         }
         Expr::MapLit(entries, _) => {
             write!(buf, "{{ ").ok();
@@ -299,9 +347,10 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) {
                     write!(buf, ", ").ok();
                 }
                 write!(buf, "\"{k}\": ").ok();
-                render_expr(v, buf, 0);
+                render_expr(v, buf, 0)?;
             }
             write!(buf, " }}").ok();
+            Ok(())
         }
         Expr::Cmp { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, cmp_info(op)),
         Expr::Logic { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, logic_info(op)),
@@ -315,16 +364,17 @@ fn render_bin(
     buf: &mut String,
     outer_bp: u8,
     (prec, l_bp, r_bp, sym): (u8, u8, u8, &'static str),
-) {
+) -> Result<(), CompileError> {
     if outer_bp > prec {
         write!(buf, "(").ok();
     }
-    render_expr(lhs, buf, l_bp);
+    render_expr(lhs, buf, l_bp)?;
     write!(buf, " {sym} ").ok();
-    render_expr(rhs, buf, r_bp);
+    render_expr(rhs, buf, r_bp)?;
     if outer_bp > prec {
         write!(buf, ")").ok();
     }
+    Ok(())
 }
 
 fn arith_info(op: &ArithOp) -> (u8, u8, u8, &'static str) {
@@ -355,6 +405,53 @@ fn logic_info(op: &LogicOp) -> (u8, u8, u8, &'static str) {
     }
 }
 
+fn render_pattern(p: &Pattern, buf: &mut String) {
+    match p {
+        Pattern::Wild => {
+            write!(buf, "_").ok();
+        }
+        Pattern::Var(n) => {
+            write!(buf, "{n}").ok();
+        }
+        Pattern::LitInt(v) => {
+            write!(buf, "{v}").ok();
+        }
+        Pattern::LitFloat(v) => {
+            write!(buf, "{v}").ok();
+        }
+        Pattern::LitBool(v) => {
+            write!(buf, "{v}").ok();
+        }
+        Pattern::LitStr(s) => {
+            write!(buf, "\"{s}\"").ok();
+        }
+        Pattern::Ctor(n, args) => {
+            write!(buf, "{n}").ok();
+            for a in args {
+                write!(buf, " ").ok();
+                render_pattern_nested(a, buf);
+            }
+        }
+    }
+}
+
+/// Render a subpattern in constructor-argument position. A nested `Ctor` with
+/// arguments is parenthesized (`Just (Left y) 1`) so the inner constructor
+/// cannot swallow its sibling arguments on re-parse: the unparenthesized
+/// `Just Left y 1` would re-parse as `Just (Left y 1)`, silently changing the
+/// match.
+fn render_pattern_nested(p: &Pattern, buf: &mut String) {
+    if let Pattern::Ctor(_, args) = p {
+        if !args.is_empty() {
+            write!(buf, "(").ok();
+            render_pattern(p, buf);
+            write!(buf, ")").ok();
+            return;
+        }
+    }
+    render_pattern(p, buf);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,7 +477,7 @@ mod tests {
                 where_defs: vec![],
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "main = sine 440.0 0.5");
     }
 
@@ -403,7 +500,7 @@ mod tests {
                 where_defs: vec![],
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "main = _ : lowpass 1000.0 0.7");
     }
 
@@ -426,7 +523,7 @@ mod tests {
                 where_defs: vec![],
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "main gain = _ * gain");
     }
 
@@ -452,7 +549,103 @@ mod tests {
                 span: span(),
             }],
         };
-        let dsl = render(&prog);
+        let dsl = render(&prog).unwrap();
         assert_eq!(dsl, "double = fn x -> x * 2.0");
+    }
+
+    /// Render `main` from `src`, re-parse the rendered text, render again, and
+    /// assert the two renderings are identical. Comparing render→parse→render
+    /// strings sidesteps span differences that a direct AST comparison would
+    /// flag after re-parsing.
+    fn roundtrip_main(src: &str) -> String {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
+        let main_program = Program {
+            defs: vec![program.main_def().unwrap().clone()],
+        };
+        let first = render(&main_program).unwrap();
+        let tokens2 = crate::lexer::tokenize(&first).unwrap();
+        let reparsed = crate::parser::parse(&tokens2, first.as_bytes()).unwrap();
+        let second = render(&reparsed).unwrap();
+        assert_eq!(
+            first, second,
+            "render → parse → render is not idempotent for: {src}\nfirst: {first}\nsecond: {second}"
+        );
+        first
+    }
+
+    #[test]
+    fn render_roundtrip_if() {
+        let dsl = roundtrip_main("main = if true then 1.0 else 2.0;");
+        assert_eq!(dsl, "main = if true then 1.0 else 2.0");
+    }
+
+    #[test]
+    fn render_roundtrip_match_bare_ctor_arms() {
+        let dsl = roundtrip_main(
+            "data Shape = Circle Float | Rect Float Float; \
+             main = match s of { Circle r => r; Rect w h => w; };",
+        );
+        assert_eq!(dsl, "main = match s of { Circle r => r; Rect w h => w; }");
+    }
+
+    #[test]
+    fn render_roundtrip_match_guarded_arm() {
+        let dsl = roundtrip_main("main = match n of { n | n > 0 => 1.0; _ => 0.0; };");
+        assert_eq!(dsl, "main = match n of { n | n > 0 => 1.0; _ => 0.0; }");
+    }
+
+    #[test]
+    fn render_roundtrip_match_nested_pattern_literal_wildcard() {
+        let dsl = roundtrip_main("main = match x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; };");
+        assert_eq!(
+            dsl,
+            "main = match x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; }"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_match_multi_alternative_guarded_arm() {
+        // Guarded first alternative followed by a second guarded alternative:
+        // both guards must be rendered (regression for the first alternative
+        // being dropped).
+        let dsl =
+            roundtrip_main("main = match n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; };");
+        assert_eq!(
+            dsl,
+            "main = match n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; }"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_match_bare_then_guarded_alternative() {
+        // Bare first alternative followed by a guarded alternative.
+        let dsl = roundtrip_main("main = match n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; };");
+        assert_eq!(
+            dsl,
+            "main = match n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; }"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_match_written_true_guard() {
+        // A written `true` guard in a non-first position must not be conflated
+        // with the bare arm's synthetic first-alternative `true` sentinel
+        // (regression: it previously rendered as `n => 1.0 => 2.0`).
+        let dsl = roundtrip_main("main = match n of { n => 1.0 | true => 2.0; _ => 0.0; };");
+        assert_eq!(
+            dsl,
+            "main = match n of { n => 1.0 | true => 2.0; _ => 0.0; }"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_match_nested_ctor_with_sibling_arg() {
+        // A nested ctor with a sibling argument must be parenthesized so the
+        // inner ctor cannot swallow the sibling on re-parse (regression: it
+        // previously rendered as `Just Left y 1` and re-parsed as
+        // `Just (Left y 1)`).
+        let dsl = roundtrip_main("main = match x of { Just (Left y) 1 => y; _ => 0.0; };");
+        assert_eq!(dsl, "main = match x of { Just (Left y) 1 => y; _ => 0.0; }");
     }
 }
