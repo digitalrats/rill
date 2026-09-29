@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{ArithOp, Def, Expr, MatchArm, Pattern, Program};
-use crate::error::{CompileError, Span};
+use crate::error::Span;
 
 /// All variable bindings introduced by a pattern (for shadowing-aware
 /// substitution).
@@ -26,17 +26,16 @@ pub(crate) fn pattern_vars(p: &Pattern) -> Vec<String> {
     out
 }
 
-/// The mechanically-usable body of a match arm until Tasks 6/8: only a bare
-/// `pattern => body` (exactly one alternative whose guard is `true`) can be
-/// consumed by the pre-guard render/infer/lower paths. A guarded arm is
-/// rejected loudly rather than silently dropping the guard.
-pub(crate) fn unguarded_arm_body(arm: &MatchArm) -> Result<&Expr, CompileError> {
+/// The body of a match arm that is usable as a plain `pattern => body` arm.
+/// Returns `Some(body)` when the arm is bare (its single alternative carries the
+/// trivial `true` guard), and `None` when the arm is guarded (`pattern | g =>
+/// body`) — a guarded body runs only when its guard succeeds at runtime, so it
+/// has no statically-usable unguarded form.
+pub(crate) fn unguarded_arm_body(arm: &MatchArm) -> Option<&Expr> {
     if arm.guards.len() == 1 && matches!(arm.guards[0].0, Expr::Bool(true, _)) {
-        Ok(&arm.guards[0].1)
+        Some(&arm.guards[0].1)
     } else {
-        Err(CompileError::Unsupported(
-            "match guards are not yet supported (Task 6/8)".into(),
-        ))
+        None
     }
 }
 

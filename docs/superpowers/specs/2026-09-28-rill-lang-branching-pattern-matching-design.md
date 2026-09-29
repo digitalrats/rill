@@ -183,12 +183,18 @@ remains `Wire`.
   total if both `true` and `false` literals are covered (or a wildcard exists).
   No interval analysis for `Int`/`Float`/`String`.
 - **Guarded arms do not count toward coverage** (a guard may fail at runtime).
-- **Runtime fallback**: if on a tick no arm matches — a guarded arm's pattern
-  matched but its guard failed and the next arm's pattern does not match the
-  value — the tick fails with `ProcessError` via the existing `value_error`
-  latch (same channel as collection capacity overflow). Example:
-  `match Just 5.0 of { Just x | x > 10.0 => 1.0; Nothing => 2.0; }` — structurally
-  total, but at runtime the guard fails and `Nothing` does not match `Just`.
+  Under the strict totality rule a constructor covered only by a *guarded* arm
+  is **non-exhaustive**: `match Just 5.0 of { Just x | x > 10.0 => 1.0;
+  Nothing => 2.0; }` is a **compile error** — the `Just` constructor has no
+  unguarded arm (and no wildcard covers it).
+- **Runtime fallback (defense-in-depth):** the lowered match always ends in a
+  fail block that latches `ProcessError` on a tick where no arm matches. Because
+  compile-time totality guarantees a well-formed match has an unguarded
+  fallback, this backstop is reachable in practice only when the scrutinee slot
+  is uninitialized — an unbound `_` wire scrutinee (`match _ of { … }`) has no
+  constructor tag to dispatch on — which yields `ProcessError`. (Covered by
+  `match_over_unbound_wire_scrutinee_errors_at_runtime` in
+  `tests/match_patterns.rs`.)
 
 ## 5. IR
 

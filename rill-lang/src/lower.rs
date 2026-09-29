@@ -1824,10 +1824,9 @@ impl<'a> Lowerer<'a> {
                         if c == &scrut_ctor {
                             // A guarded arm's result constructor is NOT
                             // statically known (the guard may fail at runtime),
-                            // and guards land only in Tasks 6/8 — do not claim a
-                            // statically-known result for it.
+                            // so only a bare arm can claim a statically-known
+                            // result.
                             return crate::reduce::unguarded_arm_body(arm)
-                                .ok()
                                 .and_then(|body| self.static_scrutinee_ctor_impl(body, visited));
                         }
                     }
@@ -2125,7 +2124,13 @@ impl<'a> Lowerer<'a> {
                 span,
             })?;
         let arm = &arms[selected];
-        let body = crate::reduce::unguarded_arm_body(arm)?;
+        // Reachable only from the guard-free static fast path (`!has_guards`),
+        // so every arm here is a bare `pattern => body`; a guarded arm is a
+        // defensive error rather than a silent drop.
+        let body = crate::reduce::unguarded_arm_body(arm).ok_or_else(|| CompileError::Type {
+            msg: "guarded arm reached the static match fast path".into(),
+            span,
+        })?;
         // Bind the arm's pattern leaves in a fresh scope, visible to the body.
         self.value_locals.push(HashMap::new());
         self.value_local_ctors.push(HashMap::new());

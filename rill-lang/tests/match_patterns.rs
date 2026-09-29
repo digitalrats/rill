@@ -93,6 +93,18 @@ fn guarded_arm_without_unguarded_fallback_is_compile_error() {
 }
 
 #[test]
+fn match_over_unbound_wire_scrutinee_errors_at_runtime() {
+    // The wire scrutinee cell is uninitialized (None); no constructor tag is
+    // available, so dispatch reaches the fail block and latches ProcessError.
+    let mut prog = compile::<f32>(
+        "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; };",
+    )
+    .unwrap();
+    let mut out = [0.0f32; 4];
+    assert!(MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).is_err());
+}
+
+#[test]
 fn match_over_sum_param_switches_with_setparameter() {
     // The scrutinee is a runtime `if` (driven by SetParameter), and the outer
     // match dispatches on the runtime constructor each tick.
