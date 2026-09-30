@@ -419,16 +419,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a single, non-absorbing type atom: a bare type or type-variable
-    /// name, a capacity int, or a parenthesized type expression. It does not
-    /// consume following juxtaposed atoms — the caller's application and
-    /// currying loops collect those.
+    /// name, or a parenthesized type expression. It does not consume following
+    /// juxtaposed atoms — the caller's application and currying loops collect
+    /// those.
     fn parse_type_single(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
         match t.tok {
-            Tok::Int(n) => {
-                self.bump();
-                Ok(TypeExpr::TCap(n as usize))
-            }
             Tok::LParen => {
                 self.bump();
                 let inner = self.parse_type_expr()?;
@@ -444,15 +440,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a type atom: a single atom, or a name applied to juxtaposed atoms
-    /// (`List Float 16`, `f a`). Juxtaposed arguments stay flat — each is one
+    /// (`List Float`, `f a`). Juxtaposed arguments stay flat — each is one
     /// non-absorbing [`Parser::parse_type_single`].
     fn parse_type_atom(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
         match t.tok {
-            Tok::Int(n) => {
-                self.bump();
-                Ok(TypeExpr::TCap(n as usize))
-            }
             Tok::LParen => {
                 self.bump();
                 let inner = self.parse_type_expr()?;
@@ -462,7 +454,7 @@ impl<'a> Parser<'a> {
             Tok::Ident(name) => {
                 self.bump();
                 let mut args = Vec::new();
-                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::LParen) {
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::LParen) {
                     args.push(self.parse_type_single()?);
                 }
                 if args.is_empty() {
@@ -1445,16 +1437,13 @@ mod tests {
     }
 
     #[test]
-    fn parses_capacity_in_type_application() {
-        let p = prog("data V = { xs: List Float 16 }; main = _");
+    fn parses_type_application() {
+        let p = prog("data V = { xs: List Float }; main = _");
         match &p.defs[0] {
             Def::Data { fields, .. } => {
                 assert_eq!(
                     fields[0].1,
-                    TypeExpr::TApp(
-                        "List".into(),
-                        vec![TypeExpr::TName("Float".into()), TypeExpr::TCap(16)]
-                    )
+                    TypeExpr::TApp("List".into(), vec![TypeExpr::TName("Float".into())])
                 );
             }
             other => panic!("expected Data, got {other:?}"),

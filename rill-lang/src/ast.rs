@@ -10,17 +10,16 @@ pub type TypeName = String;
 
 /// A type expression in a declaration: concrete names, type variables,
 /// constructor application, function types, and capacity literals.
+/// A type-expression node in a declaration signature.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum TypeExpr {
-    /// A concrete type or type variable name (`Float`, `a`).
+    /// A concrete type name or a type variable.
     TName(String),
-    /// Constructor application: `f a`, `List Float 16`.
+    /// A constructor application: `f a`, `List Float`.
     TApp(String, Vec<TypeExpr>),
-    /// Curried function type: `(a -> b) -> f a -> f b`.
+    /// A curried function type: `a -> b`.
     TFunc(Vec<TypeExpr>, Box<TypeExpr>),
-    /// Capacity literal (a `Nat` argument): `16` in `List Float 16`.
-    TCap(usize),
 }
 
 /// Arithmetic operators (elementwise, 2→1).
@@ -486,7 +485,7 @@ mod type_expr_tests {
             vec![TypeExpr::TName("a".into())],
             Box::new(TypeExpr::TApp(
                 "List".into(),
-                vec![TypeExpr::TName("a".into()), TypeExpr::TCap(16)],
+                vec![TypeExpr::TName("a".into())],
             )),
         );
         assert!(matches!(t, TypeExpr::TFunc(..)));

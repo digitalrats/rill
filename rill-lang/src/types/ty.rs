@@ -63,10 +63,8 @@ pub enum ValueTy {
     Data(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
     Newtype(String, Vec<ValueTy>),
-    /// Builtin constructor application: `List Float 16`.
+    /// Builtin constructor application: `List Float`.
     App(String, Vec<ValueTy>),
-    /// Capacity literal (`Nat` argument).
-    Cap(usize),
     /// Function type: value-argument types and value-result types. Signal-wire
     /// arguments are positional wire-captures at the call site, not part of the
     /// type.
@@ -240,9 +238,9 @@ pub struct TypeEnv {
     pub typeclasses: HashMap<String, TypeclassInfo>,
     /// Instances grouped by class, then by bound type name.
     pub instances: HashMap<String, HashMap<String, InstanceInfo>>,
-    /// Builtin type constructors: name → (value arity, whether the final
-    /// argument is a capacity). `List a n` has arity 2, has-cap true.
-    pub ctor_kinds: HashMap<String, (usize, bool)>,
+    /// Builtin type constructors: name → value arity. `List a` has arity 1,
+    /// `Map k v` arity 2. Open collections carry no capacity.
+    pub ctor_kinds: HashMap<String, usize>,
     /// User-declared parameterized data types: name → number of type
     /// parameters (`data Box a` → 1). Used to kind-check constructor instances
     /// against a class's arity (`Functor f` needs `Box a`, not `Pair a b`).
@@ -263,12 +261,12 @@ impl TypeEnv {
     /// `Maybe`/`Pair`/`Either` type shapes registered.
     pub fn with_builtins() -> Self {
         let ctor_kinds = [
-            ("List".to_string(), (2usize, true)),
-            ("Maybe".to_string(), (1usize, false)),
-            ("Set".to_string(), (2usize, true)),
-            ("Map".to_string(), (3usize, true)),
-            ("Pair".to_string(), (2usize, false)),
-            ("Either".to_string(), (2usize, false)),
+            ("List".to_string(), 1usize),
+            ("Maybe".to_string(), 1usize),
+            ("Set".to_string(), 1usize),
+            ("Map".to_string(), 2usize),
+            ("Pair".to_string(), 2usize),
+            ("Either".to_string(), 2usize),
         ]
         .into_iter()
         .collect();
@@ -410,18 +408,14 @@ impl TypeEnv {
 
     /// Value arity of a builtin constructor (`None` if not a builtin).
     pub fn ctor_arity(&self, name: &str) -> Option<usize> {
-        self.ctor_kinds.get(name).map(|(a, _)| *a)
+        self.ctor_kinds.get(name).copied()
     }
-    /// Whether the final argument of the constructor is a capacity.
-    pub fn ctor_has_cap(&self, name: &str) -> Option<bool> {
-        self.ctor_kinds.get(name).map(|(_, c)| *c)
-    }
-    /// The number of VALUE arguments a constructor takes, excluding a capacity
-    /// slot. Builtin constructors come from [`Self::ctor_kinds`]; user
-    /// parameterized data types (`data Box a`) from [`Self::data_arities`].
+    /// The number of VALUE arguments a constructor takes. Builtin constructors
+    /// come from [`Self::ctor_kinds`]; user parameterized data types
+    /// (`data Box a`) from [`Self::data_arities`].
     pub fn ctor_value_arity(&self, name: &str) -> Option<usize> {
-        if let Some((a, cap)) = self.ctor_kinds.get(name) {
-            return Some(*a - usize::from(*cap));
+        if let Some(a) = self.ctor_kinds.get(name) {
+            return Some(*a);
         }
         self.data_arities.get(name).copied()
     }
@@ -487,11 +481,10 @@ impl TypeEnv {
     }
 
     /// Match a class-var signature pattern against a concrete value type.
-    /// `f a` (pattern head is the class var) matches `App("List", [Int, Cap 4])`
+    /// `f a` (pattern head is the class var) matches `App("List", [Int])`
     /// by binding the class var to the constructor and unifying the remaining
-    /// pattern args with the concrete's non-Cap args (the Cap slot is carried
-    /// through unchanged — capacity flows argument → result).
-    /// Returns the bound constructor name on success.
+    /// pattern args with the concrete's args positionally. Open collections
+    /// carry no capacity slot. Returns the bound constructor name on success.
     pub fn match_ctor_pattern(
         &self,
         class_var: &str,
@@ -508,29 +501,14 @@ impl TypeEnv {
                     ValueTy::App(c, a) | ValueTy::Data(c, a) => (c, a),
                     _ => return None,
                 };
-                // Match the non-Cap args positionally; the Cap slot unifies
-                // or is left free.
-                let mut pi = 0;
-                for ca in c_args {
-                    if let ValueTy::Cap(_) = ca {
-                        continue;
-                    }
-                    if pi >= p_args.len() {
-                        return None;
-                    }
-                    if unify_value(&p_args[pi], ca, subst, Span::new(0, 0)).is_err() {
-                        return None;
-                    }
-                    pi += 1;
-                }
-                // A pattern that applies MORE type args than the concrete's
-                // non-Cap slots is not a match (`f a b` vs `App("List", [t])`).
-                // The kind check normally rejects this up front, but the guard
-                // keeps the pattern matcher total. Partial subst bindings from
-                // the unified prefix are acceptable on failure — unification
-                // here is speculative (a later step returns None anyway).
-                if pi != p_args.len() {
+                // Match the pattern args positionally against the concrete's.
+                if p_args.len() != c_args.len() {
                     return None;
+                }
+                for (pa, ca) in p_args.iter().zip(c_args.iter()) {
+                    if unify_value(pa, ca, subst, Span::new(0, 0)).is_err() {
+                        return None;
+                    }
                 }
                 return Some(c.clone());
             }
@@ -744,8 +722,8 @@ mod hkt_value_ty_tests {
     use super::*;
 
     #[test]
-    fn app_and_cap_construct() {
-        let t = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(16)]);
+    fn app_constructs() {
+        let t = ValueTy::App("List".into(), vec![ValueTy::Float]);
         assert!(matches!(t, ValueTy::App(..)));
     }
 
@@ -759,12 +737,10 @@ mod hkt_value_ty_tests {
     fn match_ctor_pattern_rejects_extra_pattern_args() {
         let env = TypeEnv::with_builtins();
         let mut subst = Subst::default();
-        // Pattern `f a b` (two type args) against `App("List", [Float, Cap(4)])`
-        // (one non-Cap slot): the extra `b` slot must reject the match. Without
-        // the trailing-arg guard this silently returned `Some("List")`, leaving
-        // the `b` slot unbound.
+        // Pattern `f a b` (two type args) against `App("List", [Float])`
+        // (one slot): the extra `b` slot must reject the match.
         let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0), ValueTy::Var(1)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             None
@@ -775,14 +751,14 @@ mod hkt_value_ty_tests {
     fn match_ctor_pattern_matches_consumed_pattern_args() {
         let env = TypeEnv::with_builtins();
         let mut subst = Subst::default();
-        // `f a` (one arg) against a List (one non-Cap slot + Cap) still matches.
+        // `f a` (one arg) against a List (one slot) matches.
         let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             Some("List".to_string())
         );
-        // `f a b` (two args) against a Pair (two non-Cap slots) matches.
+        // `f a b` (two args) against a Pair (two slots) matches.
         let pat2 = ValueTy::App("f".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
         let concrete2 = ValueTy::App("Pair".into(), vec![ValueTy::Float, ValueTy::Int]);
         assert_eq!(
@@ -823,20 +799,14 @@ mod ctor_table_tests {
     use super::*;
 
     #[test]
-    fn builtin_ctor_kinds_and_capacity_flags() {
+    fn builtin_ctor_kinds_and_arities() {
         let env = TypeEnv::with_builtins();
-        assert!(env.ctor_arity("List") == Some(2)); // elem + cap
-        assert!(env.ctor_has_cap("List") == Some(true));
+        assert!(env.ctor_arity("List") == Some(1)); // elem
         assert!(env.ctor_arity("Maybe") == Some(1));
-        assert!(env.ctor_has_cap("Maybe") == Some(false));
-        assert!(env.ctor_arity("Set") == Some(2));
-        assert!(env.ctor_has_cap("Set") == Some(true));
-        assert!(env.ctor_arity("Map") == Some(3));
-        assert!(env.ctor_has_cap("Map") == Some(true));
+        assert!(env.ctor_arity("Set") == Some(1));
+        assert!(env.ctor_arity("Map") == Some(2));
         assert!(env.ctor_arity("Pair") == Some(2));
-        assert!(env.ctor_has_cap("Pair") == Some(false));
         assert!(env.ctor_arity("Either") == Some(2));
-        assert!(env.ctor_has_cap("Either") == Some(false));
         assert!(env.ctor_arity("Nope").is_none());
     }
 

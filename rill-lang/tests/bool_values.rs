@@ -35,7 +35,7 @@ fn comparisons_and_logic() {
 
 #[test]
 fn not_combines_with_member() {
-    let mut prog = compile::<f32>("s = insert 5 (empty_set 8); main = not (member 9 s);").unwrap();
+    let mut prog = compile::<f32>("s = insert 5 (empty_set); main = not (member 9 s);").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();

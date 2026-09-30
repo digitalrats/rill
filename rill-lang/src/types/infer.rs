@@ -150,7 +150,6 @@ fn data_field_vty(env: &TypeEnv, tyvars: &[String], te: &crate::ast::TypeExpr) -
                 .collect(),
             vec![data_field_vty(env, tyvars, ret)],
         ),
-        crate::ast::TypeExpr::TCap(n) => ValueTy::Cap(*n),
     }
 }
 
@@ -556,13 +555,8 @@ fn signature_param_tys(
                     .iter()
                     .map(|a| conv(ctx, class_var, ctor, vars, a))
                     .collect();
-                if let Some((arity, has_cap)) = ctx.env.ctor_kinds.get(ctor) {
-                    let mut full = vargs;
-                    if *has_cap {
-                        full.push(ValueTy::Cap(0));
-                    }
-                    debug_assert_eq!(full.len(), *arity);
-                    ValueTy::App(ctor.to_string(), full)
+                if ctx.env.ctor_arity(ctor).is_some() {
+                    ValueTy::App(ctor.to_string(), vargs)
                 } else if ctx.env.data_arities.contains_key(ctor) {
                     ValueTy::Data(ctor.to_string(), vargs)
                 } else {
@@ -581,7 +575,6 @@ fn signature_param_tys(
                     .collect(),
                 vec![conv(ctx, class_var, ctor, vars, ret)],
             ),
-            crate::ast::TypeExpr::TCap(n) => ValueTy::Cap(*n),
         }
     }
     match sig {
@@ -1777,7 +1770,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 .unwrap_or(ValueTy::Float);
             Ok(ArrowTy::value_channel(ValueTy::App(
                 "List".into(),
-                vec![elem_ty, ValueTy::Cap(elems.len())],
+                vec![elem_ty],
             )))
         }
         Expr::MapLit(entries, _) => {
@@ -1799,7 +1792,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
                 .unwrap_or(ValueTy::Float);
             Ok(ArrowTy::value_channel(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, val_ty, ValueTy::Cap(entries.len())],
+                vec![ValueTy::String, val_ty],
             )))
         }
         Expr::Cmp { lhs, rhs, .. } => {
@@ -2837,24 +2830,16 @@ fn infer_collection_call(
             })
         }
     };
-    // The (element, capacity) of a `List` value type; Float/0 for a non-list.
-    let list_shape = |t: &ValueTy| -> (ValueTy, usize) {
+    // The element type of a `List` value type; Float for a non-list.
+    let list_elem = |t: &ValueTy| -> ValueTy {
         match t {
             ValueTy::App(n, inner) if n == "List" => {
-                let elem = inner.first().cloned().unwrap_or(ValueTy::Float);
-                let cap = match inner.get(1) {
-                    Some(ValueTy::Cap(c)) => *c,
-                    _ => 0,
-                };
-                (elem, cap)
+                inner.first().cloned().unwrap_or(ValueTy::Float)
             }
-            _ => (ValueTy::Float, 0),
+            _ => ValueTy::Float,
         }
     };
-    let list_of = |t: &ValueTy| {
-        let (elem, cap) = list_shape(t);
-        ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)])
-    };
+    let list_of = |t: &ValueTy| ValueTy::App("List".into(), vec![list_elem(t)]);
     match name {
         "length" => {
             if args.len() != 1 {
@@ -2869,16 +2854,16 @@ fn infer_collection_call(
             }
             let xt = arg_vty(ctx, 0)?;
             let lt = arg_vty(ctx, 1)?;
-            let (elem, cap) = list_shape(&lt);
+            let elem = list_elem(&lt);
             unify_value(&xt, &elem, &mut ctx.subst, args[0].span())?;
-            Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
+            Ok(ValueTy::App("List".into(), vec![elem]))
         }
         "head" => {
             if args.len() != 1 {
                 return Err(arity_err("1", args.len()));
             }
             let lt = arg_vty(ctx, 0)?;
-            let (elem, _) = list_shape(&lt);
+            let elem = list_elem(&lt);
             Ok(ValueTy::App("Maybe".into(), vec![elem]))
         }
         "tail" => {
@@ -2894,11 +2879,8 @@ fn infer_collection_call(
             }
             expect_closure(ctx, 1, "unary")?;
             // The result list's ELEMENT type is the closure's RETURN type
-            // (`map : (a -> b) -> List a n -> List b n`), not the source list's
+            // (`map : (a -> b) -> List a -> List b`), not the source list's
             // element type — a type-changing map must be typed `List b`.
-            // Resolve the closure's structural `Func` signature so an
-            // as-yet-unresolved signature var becomes its concrete return type;
-            // a closure with no known return falls back to the source element.
             let ft0 = arg_vty(ctx, 0)?;
             let ft = ctx.subst.resolve_value(&ft0);
             let ret_ty = match &ft {
@@ -2908,9 +2890,7 @@ fn infer_collection_call(
                 }
                 _ => ValueTy::Float,
             };
-            let lt = arg_vty(ctx, 1)?;
-            let (_, cap) = list_shape(&lt);
-            Ok(ValueTy::App("List".into(), vec![ret_ty, ValueTy::Cap(cap)]))
+            Ok(ValueTy::App("List".into(), vec![ret_ty]))
         }
         "fold" => {
             if args.len() != 3 {
@@ -2930,18 +2910,10 @@ fn infer_collection_call(
             Ok(list_of(&lt))
         }
         "list" => {
-            if args.len() != 1 {
-                return Err(arity_err("1", args.len()));
+            if !args.is_empty() {
+                return Err(arity_err("0", args.len()));
             }
-            // The capacity argument must be an Int value (`list 4`); a fresh
-            // variable unifies to Int, a Float/string/list literal is a type
-            // error (a non-Int capacity used to read as `Cap(0)` silently).
-            let ct = arg_vty(ctx, 0)?;
-            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
-            Ok(ValueTy::App(
-                "List".into(),
-                vec![ValueTy::Float, ValueTy::Cap(0)],
-            ))
+            Ok(ValueTy::App("List".into(), vec![ValueTy::Float]))
         }
         "insert" => match args.len() {
             3 => {
@@ -2949,13 +2921,13 @@ fn infer_collection_call(
                 let vt = arg_vty(ctx, 1)?;
                 let _ = arg_vty(ctx, 2)?;
                 check_ord(ctx, &kt, "key")?;
-                Ok(ValueTy::App("Map".into(), vec![kt, vt, ValueTy::Cap(0)]))
+                Ok(ValueTy::App("Map".into(), vec![kt, vt]))
             }
             2 => {
                 let kt = arg_vty(ctx, 0)?;
                 let _ = arg_vty(ctx, 1)?;
                 check_ord(ctx, &kt, "element")?;
-                Ok(ValueTy::App("Set".into(), vec![kt, ValueTy::Cap(0)]))
+                Ok(ValueTy::App("Set".into(), vec![kt]))
             }
             _ => Err(arity_err("2 or 3", args.len())),
         },
@@ -2984,26 +2956,19 @@ fn infer_collection_call(
             Ok(ValueTy::Bool)
         }
         "empty_map" => {
-            if args.len() != 1 {
-                return Err(arity_err("1", args.len()));
+            if !args.is_empty() {
+                return Err(arity_err("0", args.len()));
             }
-            let ct = arg_vty(ctx, 0)?;
-            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
             Ok(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
+                vec![ValueTy::String, ValueTy::Float],
             ))
         }
         "empty_set" => {
-            if args.len() != 1 {
-                return Err(arity_err("1", args.len()));
+            if !args.is_empty() {
+                return Err(arity_err("0", args.len()));
             }
-            let ct = arg_vty(ctx, 0)?;
-            unify_value(&ct, &ValueTy::Int, &mut ctx.subst, args[0].span())?;
-            Ok(ValueTy::App(
-                "Set".into(),
-                vec![ValueTy::Float, ValueTy::Cap(0)],
-            ))
+            Ok(ValueTy::App("Set".into(), vec![ValueTy::Float]))
         }
         _ => Err(CompileError::Type {
             msg: format!("unknown collection op `{name}`"),

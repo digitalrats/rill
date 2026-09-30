@@ -164,9 +164,6 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             render_type_expr(ret, buf);
             write!(buf, ")").ok();
         }
-        TypeExpr::TCap(n) => {
-            write!(buf, "{n}").ok();
-        }
     }
 }
 

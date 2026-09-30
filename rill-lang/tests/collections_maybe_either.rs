@@ -102,7 +102,7 @@ fn lookup_key_via_let_binding_is_not_statically_misjudged() {
     // The static lookup analysis must NOT claim the key is absent when it
     // comes through a let-bound variable (would silently pick Nothing).
     let mut prog = compile::<f32>(
-        "k = \"a\"; m = insert k 5.0 (empty_map 4); main = match (lookup \"a\" m) of { Nothing => 0.0; Just x => x; };",
+        "k = \"a\"; m = insert k 5.0 (empty_map); main = match (lookup \"a\" m) of { Nothing => 0.0; Just x => x; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

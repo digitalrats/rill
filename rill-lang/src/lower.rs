@@ -52,25 +52,11 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
     )
 }
 
-/// The type arguments of a `List` value type (`[elem, Cap(n)]`), if `t` is one.
+/// The type arguments of a `List` value type (`[elem]`), if `t` is one.
 fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     match t {
         ValueTy::App(name, inner) if name == "List" => Some(inner),
         _ => None,
-    }
-}
-
-/// The capacity field of a container value type (`List`, `Map`, `Set`), read
-/// from its trailing `Cap(n)` argument; 0 for a non-container.
-fn container_cap(t: &ValueTy) -> usize {
-    match t {
-        ValueTy::App(name, inner) if matches!(name.as_str(), "List" | "Map" | "Set") => {
-            match inner.last() {
-                Some(ValueTy::Cap(n)) => *n,
-                _ => 0,
-            }
-        }
-        _ => 0,
     }
 }
 
@@ -1034,10 +1020,10 @@ impl<'a> Lowerer<'a> {
                     regs.push(r);
                     elem_ty = t;
                 }
-                let cap = regs.len();
+                let _ = regs.len();
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueListLit { dst, elems: regs });
-                let ret = ValueTy::App("List".into(), vec![elem_ty, ValueTy::Cap(cap)]);
+                let ret = ValueTy::App("List".into(), vec![elem_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
             }
@@ -1055,13 +1041,10 @@ impl<'a> Lowerer<'a> {
                     vals.push(vr);
                     val_ty = vt;
                 }
-                let cap = keys.len();
+                let _ = keys.len();
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMapLit { dst, keys, vals });
-                let ret = ValueTy::App(
-                    "Map".into(),
-                    vec![ValueTy::String, val_ty, ValueTy::Cap(cap)],
-                );
+                let ret = ValueTy::App("Map".into(), vec![ValueTy::String, val_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
             }
@@ -1121,12 +1104,8 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Result static type of a collection op applied to the given argument
-    /// types. Element/value types are read from the container argument, and
-    /// the result capacity mirrors the SOURCE container's `Cap` (the runtime
-    /// ops preserve the source cap, so the static type is exact). The
-    /// empty-container constructors (`list`/`empty_map`/`empty_set`) carry
-    /// `Cap(0)`: their value is a single container slot, and element slots are
-    /// allocated per cons/insert/map op (each counted by `is_alloc_producing`).
+    /// types. Element/value types are read from the container argument. Open
+    /// collections carry no capacity.
     fn value_builtin_ty(
         &self,
         name: &str,
@@ -1187,12 +1166,9 @@ impl<'a> Lowerer<'a> {
             "length" => Ok(ValueTy::Int),
             "map" => {
                 // The result list's ELEMENT type is the closure's RETURN type
-                // (`map : (a -> b) -> List a n -> List b n`), read from the
-                // lowered `Func` signature of `args[0]`; a closure with no
-                // known return falls back to the source element type. The
-                // capacity mirrors the SOURCE list's cap: map allocates
-                // cap(source) element slots + the result container in one op,
-                // so a Cap(0) result type would undercount the arena bound.
+                // (`map : (a -> b) -> List a -> List b`), read from the lowered
+                // `Func` signature of `args[0]`; a closure with no known return
+                // falls back to the source element type.
                 let elem = match args.first() {
                     Some(ValueTy::Func(_, rets)) => rets.first().cloned().unwrap_or(ValueTy::Float),
                     _ => match args.get(1).and_then(list_type_args) {
@@ -1200,15 +1176,11 @@ impl<'a> Lowerer<'a> {
                         _ => ValueTy::Float,
                     },
                 };
-                let cap = args.get(1).map(container_cap).unwrap_or(0);
-                Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
+                Ok(ValueTy::App("List".into(), vec![elem]))
             }
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
-            "list" => Ok(ValueTy::App(
-                "List".into(),
-                vec![ValueTy::Float, ValueTy::Cap(0)],
-            )),
+            "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Float])),
             "insert" => match args.len() {
                 3 => {
                     check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
@@ -1217,10 +1189,6 @@ impl<'a> Lowerer<'a> {
                         vec![
                             args.first().cloned().unwrap_or(ValueTy::Float),
                             args.get(1).cloned().unwrap_or(ValueTy::Float),
-                            // The result map carries the SOURCE map's capacity (the
-                            // COW insert keeps the source bound): a Cap(0) result
-                            // type would undercount the arena bound.
-                            ValueTy::Cap(args.get(2).map(container_cap).unwrap_or(0)),
                         ],
                     ))
                 }
@@ -1228,10 +1196,7 @@ impl<'a> Lowerer<'a> {
                     check_ord(args.first().unwrap_or(&ValueTy::Float), "element")?;
                     Ok(ValueTy::App(
                         "Set".into(),
-                        vec![
-                            args.first().cloned().unwrap_or(ValueTy::Float),
-                            ValueTy::Cap(args.get(1).map(container_cap).unwrap_or(0)),
-                        ],
+                        vec![args.first().cloned().unwrap_or(ValueTy::Float)],
                     ))
                 }
             },
@@ -1251,12 +1216,9 @@ impl<'a> Lowerer<'a> {
             }
             "empty_map" => Ok(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
+                vec![ValueTy::String, ValueTy::Float],
             )),
-            "empty_set" => Ok(ValueTy::App(
-                "Set".into(),
-                vec![ValueTy::Float, ValueTy::Cap(0)],
-            )),
+            "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Float])),
             _ => Err(CompileError::Unsupported(format!(
                 "unknown collection op {name}"
             ))),
@@ -2490,8 +2452,7 @@ impl<'a> Lowerer<'a> {
             | ValueTy::String
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
-            | ValueTy::TyConVar(_)
-            | ValueTy::Cap(_) => 1,
+            | ValueTy::TyConVar(_) => 1,
             ValueTy::App(name, args) => match name.as_str() {
                 "Maybe" => {
                     1 + args

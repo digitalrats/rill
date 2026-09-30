@@ -80,7 +80,7 @@ fn value_contains_var_impl(
         ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => args
             .iter()
             .any(|a| value_contains_var_impl(subst, a, v, seen)),
-        ValueTy::Bool | ValueTy::String | ValueTy::Cap(_) => false,
+        ValueTy::Bool | ValueTy::String => false,
         _ => false,
     }
 }
@@ -171,7 +171,6 @@ pub fn unify_value(
         (ValueTy::Int, ValueTy::Int) | (ValueTy::Float, ValueTy::Float) => Ok(()),
         (ValueTy::Bool, ValueTy::Bool) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
-        (ValueTy::Cap(x), ValueTy::Cap(y)) if x == y => Ok(()),
         (ValueTy::Data(x, ax), ValueTy::Data(y, ay))
         | (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay))
             if x == y && ax.len() == ay.len() =>
@@ -304,30 +303,29 @@ mod tests {
     #[test]
     fn unifies_app_with_matching_ctor() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
-        let b = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let a = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let b = ValueTy::App("List".into(), vec![ValueTy::Float]);
         unify_value(&a, &b, &mut s, sp()).unwrap();
     }
 
     #[test]
-    fn unifies_app_with_cap_var_binding() {
+    fn unifies_app_with_type_var_binding() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
-        let b = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let a = ValueTy::App("List".into(), vec![ValueTy::Var(1)]);
+        let b = ValueTy::App("List".into(), vec![ValueTy::Float]);
         unify_value(&a, &b, &mut s, sp()).unwrap();
         assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Float);
-        assert_eq!(s.resolve_value(&ValueTy::Var(2)), ValueTy::Cap(4));
     }
 
     #[test]
     fn unifies_tyconvar_with_ctor_head() {
         let mut s = Subst::default();
         let pat = ValueTy::TyConVar(10);
-        let ctor = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let ctor = ValueTy::App("List".into(), vec![ValueTy::Float]);
         unify_value(&pat, &ctor, &mut s, sp()).unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::TyConVar(10)),
-            ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)])
+            ValueTy::App("List".into(), vec![ValueTy::Float])
         );
     }
 
@@ -395,8 +393,8 @@ mod tests {
     #[test]
     fn app_ctor_head_mismatch_errors() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
-        let b = ValueTy::App("Map".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let a = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let b = ValueTy::App("Map".into(), vec![ValueTy::Float]);
         assert!(unify_value(&a, &b, &mut s, sp()).is_err());
     }
 }

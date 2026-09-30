@@ -18,7 +18,7 @@ fn list_literal_length_and_head() {
 #[test]
 fn cons_builds_list_and_head_is_maybe() {
     let mut prog = compile::<f32>(
-        "main = match (head (cons 1.0 (list 4))) of { Nothing => 0.0; Just x => x; };",
+        "main = match (head (cons 1.0 (list))) of { Nothing => 0.0; Just x => x; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -79,11 +79,10 @@ fn repeated_growth_ticks_do_not_leak_arena() {
 
 #[test]
 fn cons_list_fold_sum() {
-    // End-to-end: `list 4` gives an empty List of capacity 4; cons builds
+    // End-to-end: `list` gives an empty List; cons builds
     // 9 : 1 : [] and `fold (+)` reduces it to 10.0.
     let mut prog =
-        compile::<f32>("main = fold (fn a b -> a + b) 0.0 (cons 9.0 (cons 1.0 (list 4)));")
-            .unwrap();
+        compile::<f32>("main = fold (fn a b -> a + b) 0.0 (cons 9.0 (cons 1.0 (list)));").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -96,9 +95,9 @@ fn cons_list_fold_sum() {
 #[test]
 fn cons_prepends_new_head() {
     // `cons x xs = x : xs` — the new element becomes the head. `head` of
-    // `cons 9.0 (cons 1.0 (list 4))` must be `Just 9.0`; append semantics would
+    // `cons 9.0 (cons 1.0 (list))` must be `Just 9.0`; append semantics would
     // leave the old head 1.0 first.
-    let mut prog = compile::<f32>("main = head (cons 9.0 (cons 1.0 (list 4)));").unwrap();
+    let mut prog = compile::<f32>("main = head (cons 9.0 (cons 1.0 (list)));").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -144,12 +143,12 @@ fn map_rejects_wrong_arity_closure_at_compile_time() {
 
 #[test]
 fn consed_list_shares_source_elements_across_ticks() {
-    // The CAF `l = cons 1.0 (cons 2.0 (list 4))` is [1.0, 2.0]; main's output
+    // The CAF `l = cons 1.0 (cons 2.0 (list))` is [1.0, 2.0]; main's output
     // `cons 9.0 l` is [9.0, 1.0, 2.0], sharing l's elements 1.0/2.0. Each tick
     // rebuilds and then clears the source list at tick end, so the Cons arm
     // MUST recount (RC++) the shared source elements or the pinned output's
     // refs dangle and read None on the next tick.
-    let mut prog = compile::<f32>("l = cons 1.0 (cons 2.0 (list 4)); main = cons 9.0 l;").unwrap();
+    let mut prog = compile::<f32>("l = cons 1.0 (cons 2.0 (list)); main = cons 9.0 l;").unwrap();
     let mut out = [0.0f32; 4];
     for tick in 0..3 {
         MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -198,7 +197,7 @@ fn map_result_element_type_comes_from_closure_return() {
     // End-to-end length 4: the source needs spare capacity for the cons (map
     // preserves the source cap).
     let mut prog = compile::<f32>(
-        "main = length (cons 4.0 (map (fn x -> x + 0.5) (cons 3.0 (cons 2.0 (cons 1.0 (list 4))))));",
+        "main = length (cons 4.0 (map (fn x -> x + 0.5) (cons 3.0 (cons 2.0 (cons 1.0 (list))))));",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
