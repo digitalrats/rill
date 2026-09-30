@@ -847,7 +847,7 @@ phase of the interpreter (the signal track stays whole-buffer SIMD).
 | `type Angles = Float` | type synonym (pure substitution) |
 | `newtype Hz = Float` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
 | `Bool`, `String` | scalar value types (value track only); literals `true`/`false`, `"text"` |
-| `List a n`, `Map k v n`, `Set a n` | builtin containers; capacity `n` is a strict bound (exceeding it is a runtime `ProcessError::Processing`) |
+| `List a`, `Map k v`, `Set a` | builtin containers (**open** — grow up to the pre-allocated arena pool) |
 | `Maybe a`, `Pair a b`, `Either a b` | builtin data types: `Maybe a = Just a \| Nothing`, `Pair a b = { first, second }`, `Either a b = Left a \| Right b` |
 | `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Float where { show f = ...; }` |
 | `fn x -> x * 2.0` | first-class function (lambda literal); see below |
@@ -861,15 +861,14 @@ A `data` value output is inspected via `RillProgram::value_outputs()`.
 
 The builtin containers and data types are **type constructors**: they take
 type arguments, applied by **juxtaposition** (consistent with the DSL) — e.g.
-`List Float 16` is `List` applied to `Float` and the capacity literal `16`.
-Container capacities are a `Nat` pseudo-type carried as a constructor argument.
-`Bool`/`String` are leaf value types (kind `*`).
+`List Float` is `List` applied to `Float`. Collections are **open** (no
+capacity argument). `Bool`/`String` are leaf value types (kind `*`).
 
 | Constructor | Kind | Meaning |
 |---|---|---|
-| `List a n` | `* → Nat → *` | ordered sequence of `a`, capacity `n` |
-| `Set a n` | `* → Nat → *` | unordered set of `a`, capacity `n` |
-| `Map k v n` | `* → * → Nat → *` | key→value map, capacity `n` |
+| `List a` | `* → *` | ordered sequence of `a` (open) |
+| `Set a` | `* → *` | unordered set of `a` (open) |
+| `Map k v` | `* → * → *` | key→value map (open) |
 | `Maybe a` | `* → *` | optional `a` |
 | `Pair a b` | `* → * → *` | pair of `a` and `b` |
 | `Either a b` | `* → * → *` | sum of `a` or `b` |
@@ -881,59 +880,53 @@ machinery — they are injected into the type environment at compile time.
 ### First-class collections
 
 Lists, maps, and sets are first-class arena values with Haskell-style
-operations. Collection **capacities are strict bounds** carried in the type:
-an operation that grows a container (`cons`, `insert` of a new key, a literal)
-requires `len < n` at runtime; exceeding it is a runtime user error surfaced as
-`ProcessError::Processing` ("`list capacity exceeded`", "`map capacity
-exceeded`", "`set capacity exceeded`") — `process()` returns the error and the
-per-tick arena is released. `map`, `filter`, and `tail` preserve the capacity;
-`length` needs none. Replacing a duplicate key (map) or inserting a duplicate
-element (set) does not count toward the bound.
+operations. Collections are **open**: there is no capacity in the type, and
+`cons`/`insert` grow freely. Values live in a **page-based arena**
+(Alexandrescu-style): a pre-allocated slot pool (embedded free list) plus a
+size-classed **payload buffer pool**, so collection ops perform **no heap
+allocation** on the processing path in the default (RT) mode. The pool is
+bounded by a conservative build-time budget; exceeding it in the default mode
+is a detectable no-op (a build-budget bug), and the `growable-arena` feature
+(non-RT) grows the pool instead. `map`, `filter`, and `tail` preserve the
+shape; `length` needs none.
 
 ```faust
-xs  = [1.0, 2.0, 3.0];          // List Float 3 — capacity from literal length
-e   = list 4;                   // empty list, runtime capacity 4
-ys  = cons 10.0 e;              // prepends; 1 element ≤ 4 — capacity preserved
+xs  = [1.0, 2.0, 3.0];          // List Float
+e   = list;                     // empty list
+ys  = cons 10.0 e;              // prepends; the list grows
 h   = head xs;                  // Maybe Float: Just 1.0 / Nothing
-t   = tail xs;                  // List Float 3 — capacity preserved
+t   = tail xs;                  // List Float
 n   = length xs;                // Int
-z   = map (fn x -> x * 2.0) xs;           // List Float 3 — function first
+z   = map (fn x -> x * 2.0) xs;           // List Float — function first
 s   = fold (fn a b -> a + b) 0.0 xs;      // Float
-f   = filter (fn x -> x > 1.0) xs;        // List Float 3
-bad = cons 9.0 xs;              // runtime error: len 3 ≥ cap 3
+f   = filter (fn x -> x > 1.0) xs;        // List Float
 
-For literal forms (`[e1, …]`) the capacity is part of the static type
-(`List T n`). For the runtime-sized constructors (`list n`, `empty_map n`,
-`empty_set n`) the capacity comes from the `n` argument at runtime; the static
-type carries the container's element type, and the bound is enforced when
-`cons`/`insert` grow the container.
-
-m  = { "a": 1.0, "b": 2.0 };   // Map String Float 2
-m1 = insert "a" 9.0 m;         // replace-on-duplicate; len stays 2
-m2 = empty_map 8;              // empty Map k v 8 (`map` is the HOF builtin)
+m  = { "a": 1.0, "b": 2.0 };   // Map String Float
+m1 = insert "a" 9.0 m;         // replace-on-duplicate
+m2 = empty_map;                // empty Map k v (`map` is the HOF builtin)
 v  = lookup "a" m;             // Maybe Float
 b  = member "a" m;             // Bool
 
-st = empty_set 8;              // empty Set a 8
-s1 = insert 1 st;              // Set Int 8
+st = empty_set;                // empty Set a
+s1 = insert 1 st;              // Set Int
 b2 = member 1 s1;              // Bool
 ```
 
 | Operation | Signature | Meaning |
 |---|---|---|
-| `cons x xs` | `a → List a n → List a n` | prepend `x` (Haskell `x : xs`); error if `len = n` |
-| `head xs` | `List a n → Maybe a` | first element, or `Nothing` for the empty list |
-| `tail xs` | `List a n → List a n` | drop the first element (capacity preserved) |
-| `length xs` | `List a n → Int` | element count |
-| `map f xs` | `(a → b) → List a n → List b n` | apply `f` to each element |
-| `fold f z xs` | `(b → a → b) → b → List a n → b` | left fold — the closure is called `(acc, elem)` |
-| `filter p xs` | `(a → Bool) → List a n → List a n` | keep elements satisfying `p` |
-| `list n` | `Nat → List a n` | empty list of capacity `n` |
-| `empty_map n` | `Nat → Map k v n` | empty map of capacity `n` |
-| `empty_set n` | `Nat → Set a n` | empty set of capacity `n` |
-| `insert k v m` / `insert k s` | `k → v → Map k v n → Map k v n` / `k → Set a n → Set a n` | insert (replace-on-duplicate); overloaded by arity |
-| `lookup k m` | `k → Map k v n → Maybe v` | value for key, or `Nothing` |
-| `member k c` | `k → Map k v n → Bool` / `a → Set a n → Bool` | membership test |
+| `cons x xs` | `a → List a → List a` | prepend `x` (Haskell `x : xs`) |
+| `head xs` | `List a → Maybe a` | first element, or `Nothing` for the empty list |
+| `tail xs` | `List a → List a` | drop the first element |
+| `length xs` | `List a → Int` | element count |
+| `map f xs` | `(a → b) → List a → List b` | apply `f` to each element |
+| `fold f z xs` | `(b → a → b) → b → List a → b` | left fold — the closure is called `(acc, elem)` |
+| `filter p xs` | `(a → Bool) → List a → List a` | keep elements satisfying `p` |
+| `list` | `List a` | empty list |
+| `empty_map` | `Map k v` | empty map |
+| `empty_set` | `Set a` | empty set |
+| `insert k v m` / `insert k s` | `k → v → Map k v → Map k v` / `k → Set a → Set a` | insert (replace-on-duplicate); overloaded by arity |
+| `lookup k m` | `k → Map k v → Maybe v` | value for key, or `Nothing` |
+| `member k c` | `k → Map k v → Bool` / `a → Set a → Bool` | membership test |
 
 List literals `[e1, e2, …]` are `List T n` with `n` = literal length; map
 literals `{ "k": v, … }` are `Map String T n`. Bool literals `true`/`false`,
@@ -994,32 +987,35 @@ main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
   from its use in method signatures (`f a` → 1, `f a b` → 2, bare `a` → 0) and
   checked against the instance: `instance Functor Pair` (Pair has arity 2) is a
   **kind error**.
-- **Capacity flow** — a kind variable matches the **head constructor**, ignoring
-  `Nat` capacity arguments. Unifying `f a` with `List Float 16` binds `f :=
-  List`, `a := Float`, and the capacity flows from argument to result — `fmap`
-  over a `List` preserves its capacity.
 - **Compile-time inline resolution** — `fmap g xs` unifies the method signature
   with the argument type, instantiates the instance body, β-substitutes the
   arguments, and inlines the result. `fmap` over `List` compiles directly to the
   `map` builtin call — **zero runtime dispatch, no dictionaries**, preserving the
   existing typeclass property.
+- Open collections carry no capacity — a kind variable matches the **head
+  constructor** (`f a` with `List Float` binds `f := List`, `a := Float`).
 - Parameterized user **sums** are not registered as type constructors in v1:
   `data Opt a = Some a | None` works as an ordinary (monomorphic) data type
   (construction + match) but cannot be a typeclass instance.
 
-### Memory model: arena + RC + COW
+### Memory model: page arena + RC + COW
 
-Value data lives in a **fixed-capacity arena** owned by the `RillProgram`,
-pre-allocated at build time (no heap growth on the RT path). Slots are managed
-by non-atomic reference counting (single-threaded DAG) with **copy-on-write**:
+Value data lives in a **page-based arena** in the style of Alexandrescu's
+"Affordable Allocator", owned by the `RillProgram` and pre-allocated at build
+time (no heap growth on the RT path). Value slots form an **embedded free list**
+(a freed slot stores the next free index in place of its payload), and collection/
+record payload buffers come from a **size-classed buffer pool**, so collection
+ops allocate nothing per tick in the default (RT) mode. Slots are managed by
+non-atomic reference counting (single-threaded DAG) with **copy-on-write**:
 mutating a field of a shared value copies it first. Local variables (including
 `main`'s λ-parameters) are **runtime-stack cells** — persistent arena slots that
 `SetParameter` writes into directly.
 
 Acyclicity is guaranteed at compile time: a `data`/`newtype` type that
-(transitively) references itself is rejected. The arena capacity bound is
-computed from the value instructions and the static subtree sizes of value
-outputs, so a well-formed program never exhausts the arena.
+(transitively) references itself is rejected. The arena slot and buffer budgets
+are computed from the value instructions and the static subtree sizes of value
+outputs, so a well-formed program never exhausts them in the default mode; the
+`growable-arena` feature (non-RT) grows the pool instead.
 
 ### First-class functions and closures
 

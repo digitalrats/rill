@@ -307,23 +307,28 @@ p = Point { x: 2.0, y: 3.0 };
 main = p.x;                                    // field projection -> Float(2.0)
 ```
 
-Values live in a **fixed-capacity arena** with reference counting and
-copy-on-write mutation (`p.x := 3.0`). Local variables — including `main`'s
-λ-parameters — are persistent runtime-stack cells that `SetParameter` writes
-into directly. Data types are acyclic by construction (compile-time check),
-and the arena capacity is a static bound. `typeclass` methods resolve at
-compile time (no runtime dispatch).
+Values live in a **page-based arena** in the style of Alexandrescu's
+"Affordable Allocator": a pre-allocated pool of value slots (an embedded free
+list — a freed slot stores the next free index in place of its payload) plus a
+size-classed **payload buffer pool** for collection/record element buffers, so
+collection ops perform **no heap allocation** on the processing path in the
+default (RT) mode. Copy-on-write mutation (`p.x := 3.0`), reference counting,
+and acyclic-by-construction data types are unchanged; the pool is bounded by a
+conservative build-time budget, and a program that exhausts it (default mode)
+or grows it (`growable-arena` feature, non-RT) hits a detectable no-op /
+runtime error. `typeclass` methods resolve at compile time (no runtime
+dispatch).
 
 ### Builtin value types and type constructors
 
 The value track ships scalar value types and builtin **type constructors**
-applied by juxtaposition (`List Float 16` — the capacity is a `Nat` argument):
+applied by juxtaposition (`List Float`):
 
 | Type | Kind | Meaning |
 |---|---|---|
 | `Bool`, `String` | `*` | scalar value types (value track only) |
-| `List a n`, `Set a n` | `* → Nat → *` | ordered list / unordered set, capacity `n` |
-| `Map k v n` | `* → * → Nat → *` | key→value map, capacity `n` |
+| `List a`, `Set a` | `* → *` | ordered list / unordered set (**open** — grow up to the pool) |
+| `Map k v` | `* → * → *` | key→value map (**open**) |
 | `Maybe a` | `* → *` | optional `a` (`Just a` / `Nothing`) |
 | `Pair a b` | `* → * → *` | pair (`{ first, second }`) |
 | `Either a b` | `* → * → *` | sum (`Left a` / `Right b`) |
@@ -331,28 +336,28 @@ applied by juxtaposition (`List Float 16` — the capacity is a `Nat` argument):
 ### First-class collections
 
 `List`/`Map`/`Set` are first-class arena containers with Haskell-style ops.
-Capacities are **strict bounds** carried in the type — a growing operation
-(`cons`, `insert` of a new key, a literal) past capacity is a runtime
-`ProcessError::Processing`; `map`/`filter`/`tail` preserve the capacity.
+Collections are **open** — there is no capacity in the type, and `cons`/
+`insert` grow freely up to the pre-allocated pool budget (exceeding it in the
+default RT mode is a detectable no-op, not a per-container error).
 `map`/`fold`/`filter` take the function **first**; `cons` **prepends**
-(Haskell `x : xs`); empty containers are `list n` / `empty_map n` /
-`empty_set n`; `insert` is overloaded by arity (Map 3-arg, Set 2-arg);
-`not` is a prefix builtin.
+(Haskell `x : xs`); empty containers are `list` / `empty_map` / `empty_set`;
+`insert` is overloaded by arity (Map 3-arg, Set 2-arg); `not` is a prefix
+builtin.
 
 ```faust
-xs  = [1.0, 2.0, 3.0];            // List Float 3
-ys  = cons 10.0 (list 4);         // prepend; capacity 4 from the runtime arg
+xs  = [1.0, 2.0, 3.0];            // List Float
+ys  = cons 10.0 (list);           // prepend; the list grows
 h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
 n   = length xs;                  // Int
 z   = map (fn x -> x * 2.0) xs;   // function first
 s   = fold (fn a b -> a + b) 0.0 xs;   // Float
-f   = filter (fn x -> x > 1.0) xs;     // List Float 3
+f   = filter (fn x -> x > 1.0) xs;     // List Float
 
-m  = { "a": 1.0, "b": 2.0 };      // Map String Float 2
+m  = { "a": 1.0, "b": 2.0 };      // Map String Float
 m1 = insert "a" 9.0 m;            // replace-on-duplicate
 v  = lookup "a" m;                // Maybe Float
 b  = member "a" m;                // Bool
-st = insert 1 (empty_set 8);      // Set Int 8
+st = insert 1 (empty_set);        // Set Int
 ```
 
 Map keys and set elements can be **any acyclic value type**: the compiler
@@ -365,8 +370,7 @@ function-typed key is a compile error.
 `data` can take type parameters and `typeclass` can range over a type
 **constructor** (kind `* → *` / `* → * → *`). Resolution is compile-time
 **inline** — `fmap` over a `List` compiles directly to the `map` builtin, with
-zero runtime dispatch; capacities flow from argument to result through the
-instance, so `fmap` preserves the list capacity:
+zero runtime dispatch:
 
 ```faust
 data Box a = { value: a };

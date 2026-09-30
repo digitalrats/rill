@@ -160,20 +160,20 @@ impl BufferPool {
         let mut classes: Vec<Vec<Vec<ArenaRef>>> = vec![Vec::new(); 6];
         let mut remaining = budget;
         // One buffer per class, smallest first.
-        for class in 0..6 {
+        for (class, bucket) in classes.iter_mut().enumerate() {
             let cap = Self::class_cap(class);
             if remaining >= cap {
-                classes[class].push(Vec::with_capacity(cap));
+                bucket.push(Vec::with_capacity(cap));
                 remaining -= cap;
             }
         }
         // Fill the remainder proportionally to inverse capacity (bounded passes).
         let mut passes = 0;
         while remaining >= 8 && passes < 64 {
-            for class in 0..6 {
+            for (class, bucket) in classes.iter_mut().enumerate() {
                 let cap = Self::class_cap(class);
                 if remaining >= cap {
-                    classes[class].push(Vec::with_capacity(cap));
+                    bucket.push(Vec::with_capacity(cap));
                     remaining -= cap;
                 }
             }

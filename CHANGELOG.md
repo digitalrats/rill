@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### rill-lang
+
+- **Open collections + page-based arena.** `List`/`Map`/`Set` drop their
+  type-level capacity (`Cap`) and become **open** — `cons`/`insert` grow freely
+  up to a pre-allocated pool. The value arena is reworked in the style of
+  Alexandrescu's "Affordable Allocator": an **embedded free list** for slots (a
+  freed slot stores the next free index in place of its payload) plus a
+  **size-classed payload buffer pool**, so collection ops perform **no per-tick
+  heap allocation** in the default (RT) mode. `list`/`empty_map`/`empty_set`
+  take no capacity argument. The `growable-arena` feature (non-RT) grows the
+  pool on exhaustion instead of reporting a build-time budget bug.
+
 ## [0.6.0-M2] — 2026-08-02
 
 ### rill-lang
