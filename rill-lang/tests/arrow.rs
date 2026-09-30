@@ -15,6 +15,45 @@ fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 
 }
 
 #[test]
+fn value_tuple_is_pair() {
+    // `(1.0, 2.0)` in value position is a `Pair { first, second }`.
+    let mut prog = run("main = (1.0, 2.0);");
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
+        rill_lang::arena::Value::Record(fields) => {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(
+                prog.arena().get(fields[0]).unwrap(),
+                &rill_lang::arena::Value::Float(1.0)
+            );
+            assert_eq!(
+                prog.arena().get(fields[1]).unwrap(),
+                &rill_lang::arena::Value::Float(2.0)
+            );
+        }
+        other => panic!("expected Pair Record, got {other:?}"),
+    }
+}
+
+#[test]
+fn value_tuple_field_projection_is_first() {
+    // `.first` on a value tuple forces the Pair into a value-consuming
+    // position: `(1.0, 2.0).first` yields `Float(1.0)`.
+    let mut prog = run("main = (1.0, 2.0).first;");
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 1.0);
+}
+
+#[test]
+fn mixed_value_signal_tuple_is_error() {
+    // `value , signal` in a tuple cannot share one track — the mixed case is a
+    // compile error, not a silent fallback to the signal parallel composition.
+    assert!(compile::<f32>("main = 1.0 , _;").is_err());
+}
+
+#[test]
 fn hkt_data_field_applies_type_parameter() {
     // `m b` in `data K m a b = { f: a -> m b }`: the type parameter m is
     // applied as a constructor. Unify m := Maybe, a := Float, b := Float.

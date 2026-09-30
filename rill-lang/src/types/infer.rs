@@ -3402,14 +3402,54 @@ fn infer_seq(
     seq(ctx, &a, &b, span)
 }
 
+/// The value type of a channel-tuple operand (`value , value` → `Pair a b`),
+/// or `None` when the operand is a signal. A 0→1 value channel is a value; a
+/// bare `Int`/`Float` literal is signal-rate in v1 but value-compatible in
+/// value position (mirrors `arm_result_vty`), so `(1.0, 2.0)` is
+/// `Pair Float Float`. A multi-channel or block-signal operand is `None`.
+fn tuple_operand_vty(t: &ArrowTy, e: &Expr) -> Option<ValueTy> {
+    if t.arity_in() != 0 || t.arity_out() != 1 {
+        return None;
+    }
+    match t.outs[0].rate {
+        Rate::Value => Some(t.outs[0].vty.clone()),
+        Rate::Signal => match e {
+            Expr::Int(_, _) => Some(ValueTy::Int),
+            Expr::Float(_, _) => Some(ValueTy::Float),
+            _ => None,
+        },
+    }
+}
+
 fn infer_par(
     ctx: &mut Ctx<'_>,
     lhs: &Expr,
     rhs: &Expr,
-    _span: Span,
+    span: Span,
 ) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
+    // Channel tuple: `value , value` → `Pair a b`; `signal , signal` keeps the
+    // block-diagram parallel composition; mixing a value with a signal is a
+    // compile error. A bare Int/Float literal is signal-rate in v1 but
+    // value-compatible in value position (`(1.0, 2.0)` is a `Pair Float Float`).
+    let a_value = tuple_operand_vty(&a, lhs);
+    let b_value = tuple_operand_vty(&b, rhs);
+    match (a_value, b_value) {
+        (Some(av), Some(bv)) => {
+            return Ok(ArrowTy::value_channel(ValueTy::App(
+                "Pair".into(),
+                vec![av, bv],
+            )));
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(CompileError::Type {
+                msg: "cannot mix a value and a signal in a tuple `,` (use one track)".into(),
+                span,
+            });
+        }
+        (None, None) => {}
+    }
     Ok(par(&a, &b))
 }
 
@@ -4165,8 +4205,25 @@ mod tests {
     }
 
     #[test]
-    fn lambda_body_arity_mismatch_is_error() {
-        assert!(ty_of("main = fn x -> (x , x)").is_err());
+    fn lambda_body_value_tuple_is_pair() {
+        // `(x , x)` with a value λ-param is a channel tuple → `Pair`, a single
+        // 0→1 value channel, so the lambda body is well-typed (the tuple no
+        // longer parses as two signal channels).
+        let t = ty_of("main = fn x -> (x , x)").unwrap();
+        match &t.process_ty.outs[0].vty {
+            ValueTy::Func(_, ret) => {
+                assert_eq!(ret.len(), 1);
+                match &ret[0] {
+                    ValueTy::App(name, _) => {
+                        assert_eq!(name.as_str(), "Pair");
+                    }
+                    other => panic!("expected Pair result, got {other:?}"),
+                }
+            }
+            other => panic!("expected Func type, got {other:?}"),
+        }
+        // A mixed value/signal tuple is still a compile error.
+        assert!(ty_of("main = fn x -> (x , _)").is_err());
     }
 
     #[test]

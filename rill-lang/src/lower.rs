@@ -1270,6 +1270,20 @@ impl<'a> Lowerer<'a> {
                 self.defs = saved;
                 res
             }
+            Expr::Par(lhs, rhs, _) => {
+                // Channel tuple in value position: `value , value` is
+                // `Pair { first, second }`. Field order matches the declared
+                // `Pair` field order, so fields[0]/fields[1] are `first`/`second`;
+                // the returned type carries the exact element types.
+                let (lr, lt) = self.lower_value(lhs)?;
+                let (rr, rt) = self.lower_value(rhs)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstructRecord {
+                    dst,
+                    fields: vec![lr, rr],
+                });
+                Ok((dst, ValueTy::App("Pair".into(), vec![lt, rt])))
+            }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
                 span: e.span(),
