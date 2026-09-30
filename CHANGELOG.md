@@ -4,6 +4,18 @@
 
 ### rill-lang
 
+- **Builtin category typeclasses + value-track category core.** `Functor`,
+  `Applicative`, `Monad`, `Monoid` ship built in via a language prelude
+  (`CATEGORY_PRELUDE`) parsed and registered in `TypeEnv::with_builtins()` —
+  no runtime dispatch, compile-time inline method resolution. Builtin instances
+  for `List`/`Maybe`/`Either a` (Functor/Monad) and `List`/`String`/`Float`/
+  `Int` (Monoid). `instance Monad T` auto-derives `Applicative T` and `Functor
+  T` (explicit instances win). **Result-directed `mempty`**: a nullary method
+  resolves by its expected result type (`mappend xs mempty`). **`do`-notation**
+  desugars in the parser to nested `bind` (`x <- e`, `let x = e`, bare
+  statements). New value-track IR ops: `ConcatMap` (List bind), `AppendList`
+  (List mappend), `ConcatString` (String mappend). Bare `list` is polymorphic
+  (`List ?a`) so `mempty = list` unifies with any element type.
 - **Open collections + page-based arena.** `List`/`Map`/`Set` drop their
   type-level capacity (`Cap`) and become **open** — `cons`/`insert` grow freely
   up to a pre-allocated pool. The value arena is reworked in the style of

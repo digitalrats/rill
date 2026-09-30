@@ -998,6 +998,40 @@ main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
   `data Opt a = Some a | None` works as an ordinary (monomorphic) data type
   (construction + match) but cannot be a typeclass instance.
 
+### Builtin category typeclasses
+
+The category-theory classes `Functor`/`Applicative`/`Monad`/`Monoid` are
+**built in** — declared in a language prelude (`CATEGORY_PRELUDE`) parsed and
+registered in `TypeEnv::with_builtins()`, so a program never redeclares them but
+may add its own instances. Methods resolve at compile time by **inline**
+lowering — zero runtime dispatch, no dictionaries.
+
+```faust
+typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
+typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
+typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
+typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
+```
+
+- **Auto-derivation** — `instance Monad T` synthesizes `Applicative T`
+  (`pure = return`, `ap` via `bind`) and `Functor T` (`fmap` via `bind`);
+  `instance Applicative T` synthesizes `Functor T` (`fmap = ap (pure g)`).
+  Explicit instances always win, so the prelude's `fmap = map` for `List`
+  survives.
+- **Result-directed `mempty`** — a nullary method resolves by its **expected
+  result type** (`mappend xs mempty` picks the instance by `xs`'s type). A bare
+  `mempty` with an unknown expected type is a compile error.
+- **`do`-notation** — `do { x <- mx; let y = e; stmt; expr; }` desugars in the
+  parser to nested `bind` (`<-` → `bind e (fn x -> rest)`, `let` → `Expr::Let`,
+  bare statements → `bind e (fn _ -> rest)`); the final statement is the block's
+  result. `a < -b` needs parentheses (`a < (-b)`).
+
+Builtin instances: `Functor`/`Monad` for `List` (`fmap = map`, `bind =
+concat_map`), `Maybe`, `Either a`; `Monoid` for `List` (`append_list`), `String`
+(`concat_string`), `Float`, `Int`. New value-track IR ops back the category
+instances: `ConcatMap`, `AppendList`, `ConcatString` — all buffer-pool-backed,
+no per-tick heap allocation.
+
 ### Memory model: page arena + RC + COW
 
 Value data lives in a **page-based arena** in the style of Alexandrescu's

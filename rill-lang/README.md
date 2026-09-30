@@ -385,6 +385,53 @@ main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
 Kind arity is inferred from method signatures and checked — `instance Functor
 Pair` (Pair has arity 2) is a kind error.
 
+### Builtin category typeclasses (`Functor`/`Applicative`/`Monad`/`Monoid`)
+
+The four category-theory classes ship **built in** — declared in a language
+prelude registered at compile time, so a program never redeclares them but may
+add its own instances. Methods resolve at compile time by **inline** lowering
+(zero runtime dispatch), and `instance Monad T` **auto-derives** `Applicative
+T` and `Functor T` (explicit instances always win):
+
+```faust
+typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
+typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
+typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
+typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
+```
+
+Builtin instances: `Functor`/`Monad` for `List`, `Maybe`, `Either a`;
+`Monoid` for `List` (`append_list`), `String` (`concat_string`), `Float`, `Int`.
+
+**Result-directed dispatch (`mempty`).** A nullary method has no selector
+argument, so it resolves by its *expected result type* — `mappend xs mempty`
+resolves `mempty` by the type of `xs`:
+
+```faust
+main = length (mappend [1.0, 2.0] mempty);   // List Float, mempty = list -> Int(2)
+main = mappend mempty 3.5;                    // Float, mempty = 0.0 -> Float(3.5)
+```
+
+Using `mempty` where its result type is unknown is a compile error.
+
+**`do`-notation** desugars to nested `bind` (Haskell `<-`):
+
+```faust
+mx = Just 1.0;
+my = Just 2.0;
+main = match (do { x <- mx; y <- my; pure (x + y); }) of { Nothing => 0.0; Just z => z; };
+// == bind mx (fn x -> bind my (fn y -> pure (x + y))) -> Just 3.0
+```
+
+`do { x <- mx; let y = e; stmt; expr; }` supports `<-` binds, `let` bindings,
+and bare monadic statements (each desugars to `bind`); the final statement is
+the block's result. Note that `a < -b` is a comparison followed by negation —
+parenthesize: `a < (-b)`.
+
+Reserved method/builtin names from the prelude: `fmap`, `pure`, `ap`,
+`return`, `bind`, `mempty`, `mappend`, `concat_map`, `append_list`,
+`concat_string`.
+
 ## First-class functions and closures
 
 Functions are first-class values: a **lambda literal** `fn p -> body` compiles
