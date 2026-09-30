@@ -887,7 +887,7 @@ impl Subst {
                 match resolved {
                     ValueTy::TyConVar(_) => ValueTy::TyConApp(*f, resolved_args),
                     ValueTy::App(c, _) => ValueTy::App(c, resolved_args),
-                    other => ValueTy::TyConApp(*f, vec![other]),
+                    _other => ValueTy::TyConApp(*f, resolved_args),
                 }
             }
             ValueTy::Data(name, args) | ValueTy::Newtype(name, args) | ValueTy::App(name, args) => {

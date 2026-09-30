@@ -952,6 +952,11 @@ fn infer_def_body(ctx: &mut Ctx<'_>, def: &Def) -> Result<ArrowTy, CompileError>
     }
     let saved_subst = ctx.subst.clone();
     let saved_next = ctx.next;
+    // Restore the defs/def_bodies too: a failed first attempt may leave stale
+    // nested placeholder schemes in `ctx.defs`, so the retry's re-inference
+    // would trip the `duplicate definition` guard. Note the empty-param path
+    // restores `ctx.locals` by design — such defs capture the enclosing scope,
+    // matching top-level semantics.
     let saved_defs = ctx.defs.clone();
     let saved_bodies = ctx.def_bodies.clone();
     ctx.locals.clear();

@@ -251,13 +251,13 @@ pub fn unify_value(
         }
         // `m b ~ n b'` (two type-constructor-variable applications).
         (ValueTy::TyConApp(f, ax), ValueTy::TyConApp(g, ay)) => {
-            unify_value(&ValueTy::TyConVar(*f), &ValueTy::TyConVar(*g), subst, span)?;
             if ax.len() != ay.len() {
                 return Err(CompileError::Type {
                     msg: format!("cannot unify type-constructor applications {a:?} with {b:?}"),
                     span,
                 });
             }
+            unify_value(&ValueTy::TyConVar(*f), &ValueTy::TyConVar(*g), subst, span)?;
             for (x, y) in ax.iter().zip(ay.iter()) {
                 unify_value(x, y, subst, span)?;
             }
