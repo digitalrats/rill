@@ -151,6 +151,16 @@ fn is_pattern_start(tok: &Tok) -> bool {
     )
 }
 
+/// One statement inside a `do { … }` block.
+enum DoStmt {
+    /// `x <- e` — monadic bind: `bind e (fn x -> rest)`.
+    Bind(String, Expr),
+    /// `let x = e` — inline binding: `let x = e in rest`.
+    Let(String, Expr),
+    /// `e;` — bare statement: `bind e (fn _ -> rest)`.
+    Stmt(Expr),
+}
+
 impl<'a> Parser<'a> {
     fn new(toks: &'a [Token], src: &'a [u8]) -> Self {
         Self { toks, src, pos: 0 }
@@ -189,6 +199,14 @@ impl<'a> Parser<'a> {
                 span: t.span,
             }),
         }
+    }
+
+    fn pos(&self) -> usize {
+        self.pos
+    }
+
+    fn seek(&mut self, pos: usize) {
+        self.pos = pos;
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, CompileError> {
@@ -798,6 +816,7 @@ impl<'a> Parser<'a> {
                     span,
                 })
             }
+            Tok::KwDo => self.parse_do_block(),
             Tok::Ident(name) => {
                 let start = t.span.start;
                 self.bump();
@@ -816,6 +835,107 @@ impl<'a> Parser<'a> {
             }
             _ => self.parse_atom(),
         }
+    }
+
+    /// `do { stmt; stmt; expr }` — monadic sequencing, desugared here to nested
+    /// `bind e (fn x -> rest)` (Haskell `<-`), `let` statements to `Expr::Let`,
+    /// and bare statement expressions to `bind e (fn _ -> rest)`.
+    fn parse_do_block(&mut self) -> Result<Expr, CompileError> {
+        let start = self.bump().span.start; // consume `do`
+        self.eat(&Tok::LBrace)?;
+        let mut stmts: Vec<DoStmt> = Vec::new();
+        let mut result: Option<Expr> = None;
+        while self.peek().tok != Tok::RBrace {
+            if matches!(self.peek().tok, Tok::Ident(_)) {
+                // `x <- e` (bind) or `let x = e` (let) or a bare expression.
+                let save = self.pos();
+                if let Ok((n, _)) = self.expect_ident() {
+                    if self.peek().tok == Tok::LArrow {
+                        self.bump();
+                        let e = self.parse_expr(0, true)?;
+                        stmts.push(DoStmt::Bind(n, e));
+                        self.eat(&Tok::Semi)?;
+                        continue;
+                    }
+                }
+                self.seek(save);
+            }
+            if matches!(self.peek().tok, Tok::KwLet) {
+                self.bump();
+                let (n, _) = self.expect_ident()?;
+                self.eat(&Tok::Eq)?;
+                let e = self.parse_expr(0, true)?;
+                stmts.push(DoStmt::Let(n, e));
+                self.eat(&Tok::Semi)?;
+                continue;
+            }
+            let e = self.parse_expr(0, true)?;
+            if self.peek().tok == Tok::Semi {
+                self.bump();
+                // A trailing `;` before `}`: the statement is the block's
+                // result expression (`do { x <- mx; pure x; }`).
+                if self.peek().tok == Tok::RBrace {
+                    result = Some(e);
+                    break;
+                }
+                stmts.push(DoStmt::Stmt(e));
+            } else {
+                result = Some(e);
+                break;
+            }
+        }
+        self.eat(&Tok::RBrace)?;
+        let mut rest = result.ok_or_else(|| self.error("do block must end with an expression"))?;
+        for s in stmts.iter().rev() {
+            match s {
+                DoStmt::Bind(x, e) => {
+                    let span = self.span_from(start);
+                    let lam = Expr::Lambda {
+                        params: vec![Param {
+                            name: x.clone(),
+                            span,
+                        }],
+                        body: Box::new(rest),
+                        span,
+                    };
+                    rest = Expr::Apply {
+                        name: "bind".to_string(),
+                        args: vec![e.clone(), lam],
+                        span,
+                    };
+                }
+                DoStmt::Let(x, e) => {
+                    let span = self.span_from(start);
+                    rest = Expr::Let {
+                        defs: vec![Def::Local {
+                            name: x.clone(),
+                            body: e.clone(),
+                            where_defs: vec![],
+                            span,
+                        }],
+                        body: Box::new(rest),
+                        span,
+                    };
+                }
+                DoStmt::Stmt(e) => {
+                    let span = self.span_from(start);
+                    let lam = Expr::Lambda {
+                        params: vec![Param {
+                            name: "_".to_string(),
+                            span,
+                        }],
+                        body: Box::new(rest),
+                        span,
+                    };
+                    rest = Expr::Apply {
+                        name: "bind".to_string(),
+                        args: vec![e.clone(), lam],
+                        span,
+                    };
+                }
+            }
+        }
+        Ok(rest)
     }
 
     /// Parse a `.field` or `.field := value` postfix after a leading record
