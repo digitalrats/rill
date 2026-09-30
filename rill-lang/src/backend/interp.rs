@@ -1100,6 +1100,34 @@ fn pooled_elems_of<T: Transcendental, const BUF: usize>(
     Some(out)
 }
 
+/// Copy a SLOT's List element refs into a freshly pooled buffer.
+///
+/// Like [`pooled_elems_of`] but takes an arena ref (a closure call result)
+/// instead of a value-register index.
+fn pooled_elems_of_ref<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    r: ArenaRef,
+) -> Option<Vec<ArenaRef>> {
+    let len = match prog.arena.get(r) {
+        Some(Value::List { elems }) => elems.len(),
+        _ => return None,
+    };
+    let mut out = match prog.arena.take_buf(len) {
+        Ok(b) => b,
+        Err(_) => {
+            debug_assert!(false, "value buffer pool exhausted at build time");
+            return None;
+        }
+    };
+    if let Some(elems) = match prog.arena.get(r) {
+        Some(Value::List { elems }) => Some(elems),
+        _ => None,
+    } {
+        out.extend_from_slice(elems);
+    }
+    Some(out)
+}
+
 /// Dispatch a collection operation (`ValueCallBuiltin`).
 ///
 /// Container reads copy (RC++) any child refs the result claims so both the
@@ -1502,6 +1530,95 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         SetEmpty => {
             // empty_set: an empty Set. Open collections have no capacity.
             prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: Vec::new() });
+        }
+        ConcatMap => {
+            // bind xs f: for each element, call f -> a List, splicing all the
+            // resulting lists into one (`concat_map`). Element and result
+            // payloads are pooled.
+            let Some(src) = pooled_elems_of(prog, args[1]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let mut out = match prog.arena.take_buf(src.len()) {
+                Ok(b) => b,
+                Err(_) => {
+                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            for e in &src {
+                if let Some(lr) = call_closure_single(prog, args[0], *e, dst, drops) {
+                    if let Some(sub) = pooled_elems_of_ref(prog, lr) {
+                        for s in &sub {
+                            if let Ok(c) = prog.arena.copy(*s) {
+                                out.push(c);
+                            }
+                        }
+                        prog.arena.put_buf(sub);
+                    }
+                    prog.arena.drop_ref(lr);
+                }
+            }
+            prog.arena.put_buf(src);
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
+        }
+        AppendList => {
+            // append_list xs ys: the concatenation of two lists (Monoid
+            // mappend). Every element is recounted for the result.
+            let Some(mut left) = pooled_elems_of(prog, args[0]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(mut right) = pooled_elems_of(prog, args[1]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            for e in &left {
+                _ = prog.arena.copy(*e);
+            }
+            for e in &right {
+                _ = prog.arena.copy(*e);
+            }
+            let mut out = match prog.arena.take_buf(left.len() + right.len()) {
+                Ok(b) => b,
+                Err(_) => {
+                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            out.append(&mut left);
+            out.append(&mut right);
+            prog.arena.put_buf(left);
+            prog.arena.put_buf(right);
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
+        }
+        ConcatString => {
+            let a = prog
+                .value_regs
+                .get(args[0])
+                .copied()
+                .flatten()
+                .and_then(|r| prog.arena.get(r))
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                });
+            let b = prog
+                .value_regs
+                .get(args[1])
+                .copied()
+                .flatten()
+                .and_then(|r| prog.arena.get(r))
+                .and_then(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    _ => None,
+                });
+            prog.value_regs[dst] = match (a, b) {
+                (Some(x), Some(y)) => alloc_owned(prog, Value::String(format!("{x}{y}"))),
+                _ => None,
+            };
         }
     }
 }

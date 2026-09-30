@@ -121,6 +121,9 @@ struct Lowerer<'a> {
     value_entry: usize,
     /// Next value register index (SSA value registers are per-tick scratch).
     next_value_reg: usize,
+    /// Fresh type-variable counter (for `signature_param_tys_conv` in the
+    /// typeclass method-call lowering, which threads expected types).
+    next_tyvar: u32,
     /// Value registers holding the program's value outputs (value-channel main).
     value_regs_out: Vec<usize>,
     /// Static value type of each value output, parallel to [`Self::value_regs_out`].
@@ -241,6 +244,16 @@ impl<'a> Lowerer<'a> {
     /// through because field indices (records) and constructor indices (sums)
     /// depend on the concrete data type of the value.
     fn lower_value(&mut self, e: &Expr) -> Result<(usize, ValueTy), CompileError> {
+        self.lower_value_expected(e, None)
+    }
+
+    /// [`Self::lower_value`] with an optional expected value type, used for
+    /// result-directed typeclass dispatch (`mempty`, `pure`, `return`).
+    fn lower_value_expected(
+        &mut self,
+        e: &Expr,
+        expected: Option<&ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
         match e {
             Expr::Int(v, _) => {
                 let dst = self.fresh_value_reg();
@@ -260,7 +273,7 @@ impl<'a> Lowerer<'a> {
                 let dst = self.fresh_value_reg();
                 Ok((dst, ValueTy::Var(0)))
             }
-            Expr::Ref(name, span) => self.lower_value_ref(name, *span),
+            Expr::Ref(name, span) => self.lower_value_ref_expected(name, *span, expected),
             Expr::FieldProject {
                 record,
                 field,
@@ -694,6 +707,15 @@ impl<'a> Lowerer<'a> {
                 // fires when no user def of that name exists. Constructor
                 // classes (`Functor f`) resolve by the class-var-applied
                 // argument's constructor head (`App("List", ..)` → `List`).
+                // Typeclass method call: the argument's static type selects the
+                // instance, and the method body is inlined with the parameters
+                // bound to the argument's registers — β-substitution at compile
+                // time, zero runtime dispatch. User definitions shadow class
+                // methods (a user `eq`/`lt` is a plain function), so this only
+                // fires when no user def of that name exists. Three resolution
+                // modes: result-directed (`pure`/`return`/`mempty`), arity-0
+                // (`Monoid mappend`, `Show show`), and constructor classes
+                // (`Functor f`, by the class-var-applied argument).
                 if !self.defs.contains_key(name) {
                     if let Some(class_name) = self.env.class_of_method(name) {
                         let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
@@ -703,17 +725,110 @@ impl<'a> Lowerer<'a> {
                             .iter()
                             .find(|(m, _)| m == name)
                             .map(|(_, s)| s.clone());
-                        if class_info.arity == 0 {
-                            if call_args.len() != 1 {
+                        let sig = sig.as_ref().unwrap();
+                        // Argument count: a `TFunc` signature carries its
+                        // argument list; a bare class-var signature (`show: a`)
+                        // takes exactly one selector argument.
+                        let n_sig_args = match sig {
+                            crate::ast::TypeExpr::TFunc(args, _) => args.len(),
+                            _ => 1,
+                        };
+                        // Result-directed methods (`pure a`, `return x`): a
+                        // function signature whose arguments never mention the
+                        // class variable — the container comes only from the
+                        // expected RESULT type. A bare signature (`show: a`,
+                        // `mempty: m`) is NOT result-directed in an apply: it
+                        // resolves by the selector argument (arity-0 path).
+                        let result_directed = matches!(
+                            sig,
+                            crate::ast::TypeExpr::TFunc(args, _)
+                                if !args.is_empty()
+                                    && args
+                                        .iter()
+                                        .all(|a| !crate::types::infer::type_expr_mentions(a, &class_var))
+                        );
+                        if result_directed {
+                            // `pure x` / `return x`: the container comes from the
+                            // expected result type. No class-var-applied argument.
+                            let exp = match expected {
+                                Some(t) => t,
+                                None => {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "cannot resolve method `{name}` of `{class_name}`: expected type unknown"
+                                        ),
+                                        span: *span,
+                                    });
+                                }
+                            };
+                            let ty_name = match self.env.type_name_of_vty(exp) {
+                                Some(t) => t,
+                                None => {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                                        ),
+                                        span: *span,
+                                    });
+                                }
+                            };
+                            let (_, params, body) =
+                                match self.env.resolve_method(name, ty_name.as_str()) {
+                                    Some(r) => r,
+                                    None => {
+                                        return Err(CompileError::Type {
+                                            msg: format!(
+                                            "no instance of `{class_name}` for type `{ty_name}`"
+                                        ),
+                                            span: *span,
+                                        });
+                                    }
+                                };
+                            let key = (class_name, ty_name.clone(), name.to_string());
+                            if self.method_lifting.contains(&key) {
                                 return Err(CompileError::Type {
                                     msg: format!(
-                                        "method `{name}` of `{class_name}` expects 1 argument, got {}",
+                                        "recursive typeclass method `{name}` for type `{ty_name}`"
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            self.method_lifting.insert(key.clone());
+                            let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                            let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                            // Bind every param to its lowered argument register
+                            // (`pure x`/`return x` have one element arg).
+                            for (p, a) in params.iter().zip(call_args.iter()) {
+                                let (r, t) = self.lower_value(a)?;
+                                scope.insert(p.clone(), (r, t));
+                                ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
+                            }
+                            self.value_locals.push(scope);
+                            self.value_local_ctors.push(ctor_scope);
+                            let res = self.lower_value_expected(&body, Some(exp));
+                            self.value_locals.pop();
+                            self.value_local_ctors.pop();
+                            self.method_lifting.remove(&key);
+                            return res;
+                        }
+                        if class_info.arity == 0 {
+                            if call_args.len() != n_sig_args {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
                                         call_args.len()
                                     ),
                                     span: *span,
                                 });
                             }
-                            let (arg_reg, arg_vty) = self.lower_value(&call_args[0])?;
+                            // Selector: the first argument that is not a bare
+                            // nullary method ref (`mappend xs mempty` — `xs`
+                            // selects; `mempty` resolves by that type name).
+                            let selector_idx = call_args
+                                .iter()
+                                .position(|a| !self.is_bare_nullary_method_ref(a, &class_name))
+                                .unwrap_or(0);
+                            let (arg_reg, arg_vty) = self.lower_value(&call_args[selector_idx])?;
                             let ty_name = match self.env.type_name_of_vty(&arg_vty) {
                                 Some(t) => t,
                                 None => {
@@ -721,7 +836,7 @@ impl<'a> Lowerer<'a> {
                                     msg: format!(
                                         "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
                                     ),
-                                    span: call_args[0].span(),
+                                    span: call_args[selector_idx].span(),
                                 });
                                 }
                             };
@@ -737,9 +852,7 @@ impl<'a> Lowerer<'a> {
                                         });
                                     }
                                 };
-                            // Recursion guard: a method that inlines itself (directly
-                            // or transitively) is a compile error, not a stack overflow.
-                            let key = (class_name, ty_name.clone(), name.to_string());
+                            let key = (class_name.clone(), ty_name.clone(), name.to_string());
                             if self.method_lifting.contains(&key) {
                                 return Err(CompileError::Type {
                                     msg: format!(
@@ -749,12 +862,44 @@ impl<'a> Lowerer<'a> {
                                 });
                             }
                             self.method_lifting.insert(key.clone());
+                            let param_tys = crate::types::infer::signature_param_tys_conv(
+                                self.env,
+                                &class_var,
+                                &ty_name,
+                                sig,
+                                || {
+                                    let v = self.next_tyvar;
+                                    self.next_tyvar += 1;
+                                    ValueTy::Var(v)
+                                },
+                            );
                             let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
                             let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
-                            if let Some(p) = params.first() {
-                                scope.insert(p.clone(), (arg_reg, arg_vty.clone()));
+                            for (i, p) in params.iter().enumerate() {
+                                let (r, t) = if i == selector_idx {
+                                    (arg_reg, arg_vty.clone())
+                                } else if !self
+                                    .is_bare_nullary_method_ref(&call_args[i], &class_name)
+                                {
+                                    self.lower_value(&call_args[i])?
+                                } else {
+                                    // Nullary arg (`mempty`): inline ITS
+                                    // instance body with the signature param
+                                    // type as expected so `list` stays open.
+                                    let arg_name = match &call_args[i] {
+                                        Expr::Ref(n, _) => n.as_str(),
+                                        _ => unreachable!("nullary arg must be a Ref"),
+                                    };
+                                    let (_, _, nbody) = self
+                                        .env
+                                        .resolve_method(arg_name, ty_name.as_str())
+                                        .unwrap();
+                                    let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                                    self.lower_value_expected(&nbody, Some(&exp))?
+                                };
+                                scope.insert(p.clone(), (r, t));
                                 ctor_scope
-                                    .insert(p.clone(), self.static_scrutinee_ctor(&call_args[0]));
+                                    .insert(p.clone(), self.static_scrutinee_ctor(&call_args[i]));
                             }
                             self.value_locals.push(scope);
                             self.value_local_ctors.push(ctor_scope);
@@ -765,21 +910,20 @@ impl<'a> Lowerer<'a> {
                             return res;
                         }
                         // Constructor class: the class-var-applied argument's
-                        // concrete type head selects the instance. Lower all
-                        // args, then bind each method param to its register.
+                        // concrete type head selects the instance. Lower the
+                        // container argument first (to find the constructor),
+                        // then the rest with the signature's param type as
+                        // expected so `bind mx (fn x -> return x)` resolves
+                        // `return` by the monad.
                         let container_idx = self
                             .env
-                            .class_var_arg_index(sig.as_ref().unwrap(), &class_var)
+                            .class_var_arg_index(sig, &class_var)
                             .ok_or_else(|| CompileError::Type {
                             msg: format!(
                                 "method `{name}` of `{class_name}` has no class-var-applied argument"
                             ),
                             span: *span,
                         })?;
-                        let n_sig_args = match sig.as_ref().unwrap() {
-                            crate::ast::TypeExpr::TFunc(as_, _) => as_.len(),
-                            _ => 1,
-                        };
                         if call_args.len() != n_sig_args {
                             return Err(CompileError::Type {
                                 msg: format!(
@@ -789,14 +933,11 @@ impl<'a> Lowerer<'a> {
                                 span: *span,
                             });
                         }
-                        let mut arg_regs = Vec::with_capacity(call_args.len());
-                        let mut arg_vtys = Vec::with_capacity(call_args.len());
-                        for a in call_args {
-                            let (r, t) = self.lower_value(a)?;
-                            arg_regs.push(r);
-                            arg_vtys.push(t);
-                        }
-                        let ctor = match &arg_vtys[container_idx] {
+                        // Phase 1: lower the container argument and resolve the
+                        // constructor.
+                        let (container_reg, container_vty) =
+                            self.lower_value(&call_args[container_idx])?;
+                        let ctor = match &container_vty {
                             ValueTy::App(c, _) | ValueTy::Data(c, _) => c.clone(),
                             _ => {
                                 return Err(CompileError::Type {
@@ -838,6 +979,32 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                         self.method_lifting.insert(key.clone());
+                        // Phase 2: lower the remaining args with their signature
+                        // param type as expected, then bind all params.
+                        let param_tys = crate::types::infer::signature_param_tys_conv(
+                            self.env,
+                            &class_var,
+                            &ctor,
+                            sig,
+                            || {
+                                let v = self.next_tyvar;
+                                self.next_tyvar += 1;
+                                ValueTy::Var(v)
+                            },
+                        );
+                        let mut arg_regs = Vec::with_capacity(call_args.len());
+                        let mut arg_vtys = Vec::with_capacity(call_args.len());
+                        for (i, a) in call_args.iter().enumerate() {
+                            if i == container_idx {
+                                arg_regs.push(container_reg);
+                                arg_vtys.push(container_vty.clone());
+                            } else {
+                                let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                                let (r, t) = self.lower_value_expected(a, Some(&exp))?;
+                                arg_regs.push(r);
+                                arg_vtys.push(t);
+                            }
+                        }
                         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
                         let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
                         for (p, (r, t)) in params.iter().zip(arg_regs.into_iter().zip(arg_vtys)) {
@@ -992,8 +1159,22 @@ impl<'a> Lowerer<'a> {
                     .pending_param_tys
                     .take()
                     .unwrap_or_else(|| vec![ValueTy::Float; params.len()]);
-                let (fragment_id, ret_ty) =
-                    self.lower_fragment(params, body, &free, &param_tys, *span)?;
+                // The lambda's BODY is expected to produce the lambda's RESULT
+                // type (not the whole `Func` type the caller expects) — a
+                // result-directed method call inside (`bind mx (fn x -> return
+                // x)`) resolves by that type.
+                let body_expected = match expected {
+                    Some(ValueTy::Func(_, rets)) => rets.first().cloned(),
+                    _ => None,
+                };
+                let (fragment_id, ret_ty) = self.lower_fragment(
+                    params,
+                    body,
+                    &free,
+                    &param_tys,
+                    body_expected.as_ref(),
+                    *span,
+                )?;
                 let env_reg = self.emit_env_snapshot(&free, *span)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
@@ -1076,6 +1257,19 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Bool))
             }
+            Expr::Let { defs, body, .. } => {
+                // Expression-level `let x = e in body` in value position: the
+                // defs are plain inlined bindings (v1 value defs are per-tick
+                // re-evaluated expressions), so lower each into the def table
+                // and lower the body. Mirrors `infer_expr_expected`'s Let arm.
+                let saved = self.defs.clone();
+                for d in defs {
+                    self.defs.insert(d.name().to_string(), d.clone());
+                }
+                let res = self.lower_value_expected(body, expected);
+                self.defs = saved;
+                res
+            }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
                 span: e.span(),
@@ -1103,6 +1297,9 @@ impl<'a> Lowerer<'a> {
             ("member", _) => Member,
             ("empty_map", _) => MapEmpty,
             ("empty_set", _) => SetEmpty,
+            ("concat_map", 2) => ConcatMap,
+            ("append_list", 2) => AppendList,
+            ("concat_string", 2) => ConcatString,
             _ => return None,
         })
     }
@@ -1184,6 +1381,21 @@ impl<'a> Lowerer<'a> {
             }
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
+            "concat_map" => {
+                let elem = match args.get(1).and_then(list_type_args) {
+                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
+                    _ => ValueTy::Float,
+                };
+                Ok(ValueTy::App("List".into(), vec![elem]))
+            }
+            "append_list" => match args.first().and_then(list_type_args) {
+                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                _ => Err(CompileError::Type {
+                    msg: format!("append_list expects a List, got {:?}", args.first()),
+                    span,
+                }),
+            },
+            "concat_string" => Ok(ValueTy::String),
             "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Float])),
             "insert" => match args.len() {
                 3 => {
@@ -1229,9 +1441,119 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Whether `e` is a bare reference to a nullary method of `class_name` (e.g.
+    /// `mempty` in `mappend xs mempty`) — such an argument resolves by the
+    /// selector argument's concrete type.
+    fn is_bare_nullary_method_ref(&self, e: &Expr, class_name: &str) -> bool {
+        match e {
+            Expr::Ref(name, _) => self.env.is_nullary_method(class_name, name.as_str()),
+            _ => false,
+        }
+    }
+
     /// Resolve a `Ref` in value position: a value local (match-arm binding) or a
     /// value definition (inlined at each use site).
     fn lower_value_ref(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        self.lower_value_ref_expected(name, span, None)
+    }
+
+    /// [`Self::lower_value_ref`] with an optional expected value type. A
+    /// result-directed typeclass method (`mempty`) resolves by the expected
+    /// type's concrete name.
+    fn lower_value_ref_expected(
+        &mut self,
+        name: &str,
+        span: Span,
+        expected: Option<&ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if !self.defs.contains_key(name) && !self.value_locals.iter().any(|s| s.contains_key(name))
+        {
+            if let Some(class_name) = self.env.class_of_method(name) {
+                let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
+                let class_var = class_info.var.clone();
+                let sig = class_info
+                    .methods
+                    .iter()
+                    .find(|(m, _)| m == name)
+                    .map(|(_, s)| s.clone());
+                let result_directed = match &sig {
+                    Some(crate::ast::TypeExpr::TFunc(args, _)) => args
+                        .iter()
+                        .all(|a| !crate::types::infer::type_expr_mentions(a, &class_var)),
+                    Some(_) => true,
+                    None => false,
+                };
+                if result_directed {
+                    let exp = match expected {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "cannot resolve method `{name}` of `{class_name}`: expected type unknown"
+                                ),
+                                span,
+                            });
+                        }
+                    };
+                    let ty_name = match self.env.type_name_of_vty(exp) {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                                ),
+                                span,
+                            });
+                        }
+                    };
+                    let (_, params, body) = match self.env.resolve_method(name, ty_name.as_str()) {
+                        Some(r) => r,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                                span,
+                            });
+                        }
+                    };
+                    let key = (class_name, ty_name.clone(), name.to_string());
+                    if self.method_lifting.contains(&key) {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "recursive typeclass method `{name}` for type `{ty_name}`"
+                            ),
+                            span,
+                        });
+                    }
+                    self.method_lifting.insert(key.clone());
+                    let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                    // Result-directed methods take no arguments (`mempty`) or a
+                    // single element argument (`pure x`/`return x`) — bind any
+                    // params to fresh registers.
+                    let arg_reg = self.fresh_value_reg();
+                    for p in params.iter() {
+                        scope.insert(p.clone(), (arg_reg, ValueTy::Float));
+                        ctor_scope.insert(p.clone(), None);
+                    }
+                    self.value_locals.push(scope);
+                    self.value_local_ctors.push(ctor_scope);
+                    let res = self.lower_value_expected(&body, Some(exp));
+                    self.value_locals.pop();
+                    self.value_local_ctors.pop();
+                    self.method_lifting.remove(&key);
+                    return res;
+                }
+            }
+        }
+        self.lower_value_ref_inner(name, span)
+    }
+
+    /// The original [`Self::lower_value_ref`] body.
+    fn lower_value_ref_inner(
         &mut self,
         name: &str,
         span: Span,
@@ -1356,7 +1678,7 @@ impl<'a> Lowerer<'a> {
                 let free = self.free_vars(&body, &param_names);
                 let param_tys = vec![ValueTy::Float; def_params.len()];
                 let (fragment_id, ret_ty) =
-                    self.lower_fragment(&def_params, &body, &free, &param_tys, dspan)?;
+                    self.lower_fragment(&def_params, &body, &free, &param_tys, None, dspan)?;
                 let env_reg = self.emit_env_snapshot(&free, dspan)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
@@ -1394,7 +1716,12 @@ impl<'a> Lowerer<'a> {
     ) {
         match e {
             Expr::Ref(name, _) => {
-                if !bound.contains(name) && seen.insert(name.clone()) {
+                // Top-level value defs are inlined at each use site (see
+                // `lower_value_ref_inner`), so they are never captured.
+                if !bound.contains(name)
+                    && !self.defs.contains_key(name)
+                    && seen.insert(name.clone())
+                {
                     out.push(name.clone());
                 }
             }
@@ -1418,7 +1745,14 @@ impl<'a> Lowerer<'a> {
                     let is_ctor = self.env.data_types.contains_key(name)
                         || self.env.newtypes.contains_key(name)
                         || self.sum_ctor(name).is_some();
-                    if !is_ctor {
+                    // Typeclass methods (`pure`, `return`, `fmap`, `bind`, …)
+                    // resolve at compile time via inlining — they are not
+                    // runtime values and must not be captured by the env
+                    // snapshot. Top-level value defs are likewise inlined at
+                    // each use site (`lower_value_ref_inner`).
+                    let is_class_method = self.env.class_of_method(name).is_some();
+                    let is_top_level_def = self.defs.contains_key(name);
+                    if !is_ctor && !is_class_method && !is_top_level_def {
                         out.push(name.clone());
                     }
                 }
@@ -1535,6 +1869,7 @@ impl<'a> Lowerer<'a> {
         body: &Expr,
         free: &[String],
         param_tys: &[ValueTy],
+        expected_body: Option<&ValueTy>,
         _span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
         let saved_blocks = std::mem::take(&mut self.value_blocks);
@@ -1543,6 +1878,11 @@ impl<'a> Lowerer<'a> {
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
+        // A fragment is a deferred computation: typeclass method calls inside
+        // resolve at the fragment's own call sites, not against the enclosing
+        // method-inlining path (clear the recursion guard).
+        let saved_lifting = self.method_lifting.clone();
+        self.method_lifting.clear();
 
         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
         for (i, p) in params.iter().enumerate() {
@@ -1554,7 +1894,7 @@ impl<'a> Lowerer<'a> {
         self.fragment_captures = free.to_vec();
         self.next_value_reg = params.len();
 
-        let res = self.lower_value(body);
+        let res = self.lower_value_expected(body, expected_body);
         let body_result = match res {
             Ok(r) => r,
             Err(e) => {
@@ -1592,6 +1932,7 @@ impl<'a> Lowerer<'a> {
         self.value_locals = saved_locals;
         self.value_local_ctors.pop();
         self.fragment_captures = saved_captures;
+        self.method_lifting = saved_lifting;
         Ok((id, result_ty))
     }
 
@@ -3654,6 +3995,7 @@ pub fn lower_with_cafs(
         cur_value_block: 0,
         value_entry: 0,
         next_value_reg: 0,
+        next_tyvar: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
         container_tys: Vec::new(),
@@ -3917,6 +4259,7 @@ mod tests {
             cur_value_block: 0,
             value_entry: 0,
             next_value_reg: 0,
+            next_tyvar: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
             container_tys: Vec::new(),

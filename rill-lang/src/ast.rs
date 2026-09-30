@@ -22,6 +22,23 @@ pub enum TypeExpr {
     TFunc(Vec<TypeExpr>, Box<TypeExpr>),
 }
 
+impl TypeExpr {
+    /// The number of function arguments (0 for a non-function type).
+    pub fn arg_count(&self) -> usize {
+        match self {
+            TypeExpr::TFunc(args, _) => args.len(),
+            _ => 0,
+        }
+    }
+    /// The argument type expressions (empty for a non-function type).
+    pub fn arg_types(&self) -> &[TypeExpr] {
+        match self {
+            TypeExpr::TFunc(args, _) => args,
+            _ => &[],
+        }
+    }
+}
+
 /// Arithmetic operators (elementwise, 2→1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

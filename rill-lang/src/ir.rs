@@ -215,6 +215,13 @@ pub enum ValueBuiltinOp {
     MapEmpty,
     /// Allocate an empty set with a capacity.
     SetEmpty,
+    /// Bind (concat-map) a function over a list, splicing the results
+    /// (`bind xs f` for the `Monad List` instance).
+    ConcatMap,
+    /// Concatenate two lists (`Monoid List.mappend`).
+    AppendList,
+    /// Concatenate two strings (`Monoid String.mappend`).
+    ConcatString,
 }
 
 /// Value-track comparison operators.
@@ -768,7 +775,10 @@ mod value_builtin_tests {
             ValueBuiltinOp::InsertSet,
             ValueBuiltinOp::MapEmpty,
             ValueBuiltinOp::SetEmpty,
+            ValueBuiltinOp::ConcatMap,
+            ValueBuiltinOp::AppendList,
+            ValueBuiltinOp::ConcatString,
         ];
-        assert_eq!(ops.len(), 14);
+        assert_eq!(ops.len(), 17);
     }
 }

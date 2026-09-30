@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::Expr;
+use crate::ast::{Def, Expr};
 use crate::error::{CompileError, Span};
 
 use super::unify::unify_value;
@@ -256,9 +256,80 @@ pub struct TypeEnv {
     pub data_arities: HashMap<String, usize>,
 }
 
+/// Built-in category-theory typeclasses, declared in rill-lang itself and
+/// registered by [`TypeEnv::with_builtins`]. Users never redeclare them but may
+/// add their own instances. `instance Monad T` auto-derives `Applicative T` and
+/// `Functor T` (see [`TypeEnv::derive_superclass_instances`]).
+pub(crate) const CATEGORY_PRELUDE: &str = r#"
+typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
+typeclass Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
+typeclass Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
+typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
+
+instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
+instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
+instance Monoid List where { mempty = list; mappend a b = append_list a b; }
+
+instance Functor List where { fmap g xs = map g xs; }
+instance Functor Maybe where {
+    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+}
+
+instance Monad Maybe where {
+    return x = Just x;
+    bind m f = match m of { Nothing => Nothing; Just x => f x; };
+}
+instance Monad List where {
+    return x = cons x (list);
+    bind xs f = concat_map f xs;
+}
+
+main = _;
+"#;
+
+/// Derived instance bodies for the superclass chain, written in rill-lang.
+/// `instance Monad T` ⇒ `Applicative T` (`pure` = `return`, `ap` via `bind`) and
+/// `Functor T` (`fmap` via `bind`); `instance Applicative T` ⇒ `Functor T`
+/// (`fmap` via `ap`/`pure`). Referenced by [`TypeEnv::derive_superclass_instances`].
+const APPLICATIVE_FROM_MONAD: &str =
+    "pure x = return x; ap mf mx = bind mf (fn f -> bind mx (fn x -> return (f x)));";
+const FUNCTOR_FROM_MONAD: &str = "fmap g x = bind x (fn y -> return (g y));";
+const FUNCTOR_FROM_APPLICATIVE: &str = "fmap g x = ap (pure g) x;";
+
+/// Parse an `instance C T where { <template> }` source fragment and build the
+/// [`InstanceInfo`]. Used by superclass auto-derivation.
+fn instance_from_template(ty: &str, class: &str, bodies: &str) -> InstanceInfo {
+    let src = format!("instance {class} {ty} where {{ {bodies} }}; main = _;");
+    let toks = crate::lexer::tokenize(&src);
+    debug_assert!(toks.is_ok(), "derived instance template must lex");
+    let program = crate::parser::parse(&toks.ok().unwrap(), src.as_bytes());
+    debug_assert!(program.is_ok(), "derived instance template must parse");
+    let defs = program.ok().unwrap().defs;
+    let inst = defs
+        .iter()
+        .find(|d| matches!(d, Def::Instance { .. }))
+        .cloned()
+        .unwrap();
+    let Def::Instance { method_bodies, .. } = inst else {
+        unreachable!("derived instance template produced an instance")
+    };
+    let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
+    for (mname, params, body) in method_bodies {
+        let bindings = params.iter().map(|p| p.name.clone()).collect();
+        methods.insert(mname.clone(), (bindings, body));
+    }
+    InstanceInfo {
+        class: class.to_string(),
+        ty: ty.to_string(),
+        methods,
+    }
+}
+
 impl TypeEnv {
-    /// A `TypeEnv` with the builtin constructor table and the builtin
-    /// `Maybe`/`Pair`/`Either` type shapes registered.
+    /// A `TypeEnv` with the builtin constructor table, the builtin
+    /// `Maybe`/`Pair`/`Either` type shapes, and the category-theory prelude
+    /// (`Functor`/`Applicative`/`Monad`/`Monoid` classes + instances)
+    /// registered.
     pub fn with_builtins() -> Self {
         let ctor_kinds = [
             ("List".to_string(), 1usize),
@@ -329,11 +400,132 @@ impl TypeEnv {
                 },
             ),
         ]);
-        TypeEnv {
+        let mut env = TypeEnv {
             ctor_kinds,
             data_types,
             typeclasses,
             ..TypeEnv::default()
+        };
+        // Category-theory prelude: declared in rill-lang itself so the classes
+        // and instances are first-class entities. A parse failure here is a
+        // compiler bug (the constant is fixed) — assert loudly.
+        let toks = crate::lexer::tokenize(CATEGORY_PRELUDE);
+        debug_assert!(toks.is_ok(), "category prelude must lex");
+        let program = crate::parser::parse(&toks.ok().unwrap(), CATEGORY_PRELUDE.as_bytes());
+        debug_assert!(program.is_ok(), "category prelude must parse");
+        env.register_decls(&program.ok().unwrap().defs);
+        env.derive_superclass_instances();
+        env
+    }
+
+    /// Register declaration defs (`typeclass`/`instance`) into the env.
+    /// Extracted from inference phase 1 so the category prelude (parsed in
+    /// [`Self::with_builtins`]) and user declarations share one registration
+    /// path.
+    pub(crate) fn register_decls(&mut self, defs: &[Def]) {
+        for def in defs {
+            match def {
+                Def::Typeclass {
+                    name, var, methods, ..
+                } => {
+                    self.typeclasses.insert(
+                        name.clone(),
+                        TypeclassInfo {
+                            var: var.clone(),
+                            arity: methods
+                                .iter()
+                                .map(|(_, sig)| Self::class_var_arity(var, sig))
+                                .max()
+                                .unwrap_or(0),
+                            methods: methods.clone(),
+                        },
+                    );
+                }
+                Def::Instance {
+                    class,
+                    ty,
+                    method_bodies,
+                    ..
+                } => {
+                    let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
+                    for (mname, params, body) in method_bodies {
+                        let bindings = params.iter().map(|p| p.name.clone()).collect();
+                        methods.insert(mname.clone(), (bindings, body.clone()));
+                    }
+                    self.instances.entry(class.clone()).or_default().insert(
+                        ty.clone(),
+                        InstanceInfo {
+                            class: class.clone(),
+                            ty: ty.clone(),
+                            methods,
+                        },
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Superclass auto-derivation: `instance Monad T` synthesizes
+    /// `Applicative T` and `Functor T`; `instance Applicative T` synthesizes
+    /// `Functor T`. Explicit instances always win. The derived bodies are the
+    /// standard definitions, parsed from templates.
+    pub(crate) fn derive_superclass_instances(&mut self) {
+        let monad_tys = self
+            .instances
+            .get("Monad")
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or(vec![]);
+        let applicative_tys = self
+            .instances
+            .get("Applicative")
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or(vec![]);
+        for t in monad_tys {
+            if !self
+                .instances
+                .entry("Applicative".to_string())
+                .or_default()
+                .contains_key(&t)
+            {
+                self.instances
+                    .entry("Applicative".to_string())
+                    .or_default()
+                    .insert(
+                        t.clone(),
+                        instance_from_template(t.as_str(), "Applicative", APPLICATIVE_FROM_MONAD),
+                    );
+            }
+            if !self
+                .instances
+                .entry("Functor".to_string())
+                .or_default()
+                .contains_key(&t)
+            {
+                self.instances
+                    .entry("Functor".to_string())
+                    .or_default()
+                    .insert(
+                        t.clone(),
+                        instance_from_template(t.as_str(), "Functor", FUNCTOR_FROM_MONAD),
+                    );
+            }
+        }
+        for t in applicative_tys {
+            if !self
+                .instances
+                .entry("Functor".to_string())
+                .or_default()
+                .contains_key(&t)
+            {
+                self.instances
+                    .entry("Functor".to_string())
+                    .or_default()
+                    .insert(
+                        t.clone(),
+                        instance_from_template(t.as_str(), "Functor", FUNCTOR_FROM_APPLICATIVE),
+                    );
+            }
         }
     }
 
@@ -443,6 +635,15 @@ impl TypeEnv {
                 }
             }
         }
+    }
+
+    /// Whether `method` is declared with zero arguments (e.g. `mempty: m`).
+    pub(crate) fn is_nullary_method(&self, class: &str, method: &str) -> bool {
+        self.typeclasses
+            .get(class)
+            .and_then(|c| c.methods.iter().find(|(m, _)| m == method))
+            .map(|(_, s)| s.arg_count() == 0)
+            .unwrap_or(false)
     }
 
     /// Find the class whose method dictionary declares `method`. Returns
