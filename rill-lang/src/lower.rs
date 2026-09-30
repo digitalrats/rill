@@ -3774,14 +3774,12 @@ pub fn lower_with_cafs(
         + num_main_cells
         + fragment_capacity;
     let slot_capacity = value_capacity * Lowerer::POOL_SAFETY_MULTIPLIER;
-    // Payload buffer budget: the element slots of every container-typed
-    // subexpression (the container slot itself is counted in `slot_capacity`).
-    let buffer_budget = lw
-        .container_tys
-        .iter()
-        .map(|t| lw.subtree_size(t).saturating_sub(1))
-        .sum::<usize>()
-        * Lowerer::POOL_SAFETY_MULTIPLIER;
+    // Payload buffer budget: every live slot may hold one pooled payload
+    // buffer (a Record/Sum/List/Set payload). `value_capacity` bounds the
+    // peak live slots; `ELEM_EST` bounds each buffer's refs. Covers literals
+    // (their subtree is already in `value_capacity`) and runtime match/ctor
+    // payloads without separate tracking.
+    let buffer_budget = value_capacity * Lowerer::ELEM_EST;
     // Pre-allocated function-call scratch: the runtime call stack never holds
     // more than one frame per fragment (recursion is rejected at inference, so
     // no fragment can recur on a dispatch chain), so the total fragment count

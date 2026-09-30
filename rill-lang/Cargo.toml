@@ -20,6 +20,7 @@ default = ["router"]
 router = []
 serde = ["dep:serde"]
 debug = []
+growable-arena = []
 
 [dev-dependencies]
 float-cmp = "0.9"

@@ -116,6 +116,96 @@ enum Slot {
     Free { next: Option<ArenaRef> },
 }
 
+/// Size-classed payload buffer pool.
+///
+/// Collection and record payloads (`Vec<ArenaRef>`) are served from this pool
+/// instead of the global heap, so the interpreter's per-tick collection ops
+/// allocate nothing in the default (RT) mode. The pool is pre-allocated from
+/// `ValueLayout::buffer_budget` at program construction. In the default mode
+/// `take` returns `None` when the pool is exhausted (the caller latches a
+/// `ProcessError`); with the `growable-arena` feature it allocates a fresh
+/// buffer on the heap instead.
+#[derive(Debug, Clone)]
+pub struct BufferPool {
+    /// Free buffers per size class (index = class id).
+    classes: Vec<Vec<Vec<ArenaRef>>>,
+    /// Whether `take` may allocate a fresh buffer on exhaustion.
+    pub growable: bool,
+}
+
+impl BufferPool {
+    /// The size-class bucket for a request of `n` refs.
+    fn class_of(n: usize) -> usize {
+        match n {
+            0..=8 => 0,
+            9..=16 => 1,
+            17..=32 => 2,
+            33..=64 => 3,
+            65..=128 => 4,
+            _ => 5,
+        }
+    }
+    fn class_cap(class: usize) -> usize {
+        [8, 16, 32, 64, 128, 256][class.min(5)]
+    }
+
+    /// Pre-allocate `budget` refs of pooled buffers.
+    ///
+    /// Every size class gets at least one buffer (so a request of any size has a
+    /// candidate), then the remainder fills classes proportionally — more small
+    /// buffers, since small payloads (records, sums, closures, short lists)
+    /// dominate. `take` searches the request's class upward, so a small request
+    /// prefers a small buffer and a large request falls through to a larger one.
+    pub fn new(budget: usize, growable: bool) -> Self {
+        let mut classes: Vec<Vec<Vec<ArenaRef>>> = vec![Vec::new(); 6];
+        let mut remaining = budget;
+        // One buffer per class, smallest first.
+        for class in 0..6 {
+            let cap = Self::class_cap(class);
+            if remaining >= cap {
+                classes[class].push(Vec::with_capacity(cap));
+                remaining -= cap;
+            }
+        }
+        // Fill the remainder proportionally to inverse capacity (bounded passes).
+        let mut passes = 0;
+        while remaining >= 8 && passes < 64 {
+            for class in 0..6 {
+                let cap = Self::class_cap(class);
+                if remaining >= cap {
+                    classes[class].push(Vec::with_capacity(cap));
+                    remaining -= cap;
+                }
+            }
+            passes += 1;
+        }
+        Self { classes, growable }
+    }
+
+    /// Borrow a buffer with capacity ≥ n. `None` when the pool is exhausted and
+    /// growth is disabled (RT mode: the caller latches a `ProcessError`).
+    pub fn take(&mut self, n: usize) -> Option<Vec<ArenaRef>> {
+        let class = Self::class_of(n);
+        for c in class..6 {
+            if let Some(mut b) = self.classes[c].pop() {
+                b.clear();
+                return Some(b);
+            }
+        }
+        if self.growable {
+            return Some(Vec::with_capacity(n.max(1)));
+        }
+        None
+    }
+
+    /// Return a buffer to the pool.
+    pub fn put(&mut self, mut b: Vec<ArenaRef>) {
+        b.clear();
+        let class = Self::class_of(b.capacity());
+        self.classes[class].push(b);
+    }
+}
+
 /// A fixed-capacity arena. `with_capacity(0)` is allowed and means "no values".
 ///
 /// The arena owns all values on behalf of a single-threaded [`RillProgram`] and
@@ -128,6 +218,8 @@ pub struct Arena {
     capacity: usize,
     /// Reserved for future debug/abort-safety support; not yet read.
     next_gen: u32,
+    /// Payload buffer pool for Record/Sum/List/Set element buffers.
+    pub pool: BufferPool,
 }
 
 impl Arena {
@@ -146,6 +238,67 @@ impl Arena {
             live: 0,
             capacity,
             next_gen: 0,
+            pool: BufferPool::new(0, false),
+        }
+    }
+
+    /// Borrow a payload buffer of at least `n` refs from the pool (RT-safe in
+    /// the default mode). `Err` on exhaustion when growth is disabled.
+    pub fn take_buf(&mut self, n: usize) -> Result<Vec<ArenaRef>, ArenaError> {
+        self.pool.take(n).ok_or(ArenaError::CapacityExceeded)
+    }
+
+    /// Return a payload buffer to the pool.
+    pub fn put_buf(&mut self, b: Vec<ArenaRef>) {
+        self.pool.put(b);
+    }
+
+    /// Copy a slot's value to an OWNED [`Value`], serving Record/Sum/List/Set
+    /// payloads from the buffer pool so the copy allocates nothing on the heap
+    /// (default mode). Map payloads and Strings fall back to `clone` (v1
+    /// limitation). `Err(DanglingRef)` when the slot is not live.
+    pub fn clone_pooled(&mut self, r: ArenaRef) -> Result<Value, ArenaError> {
+        // Phase 1: read the value's shape and payload length (short borrow).
+        let shape: (u8, usize) = match self.get(r) {
+            Some(Value::Record(fields)) => (0, fields.len()),
+            Some(Value::Sum(_, fields)) => (1, fields.len()),
+            Some(Value::List { elems }) => (2, elems.len()),
+            Some(Value::Set { elems }) => (3, elems.len()),
+            Some(v) => return Ok(v.clone()),
+            None => return Err(ArenaError::DanglingRef),
+        };
+        // Phase 2: pool a payload buffer (the slot borrow above has ended).
+        let mut buf = self.take_buf(shape.1)?;
+        // Phase 3: copy the payload refs (fresh short borrow).
+        match shape.0 {
+            0 => {
+                if let Some(Value::Record(fields)) = self.get(r) {
+                    buf.extend_from_slice(fields);
+                }
+                Ok(Value::Record(buf))
+            }
+            1 => {
+                let ctor = match self.get(r) {
+                    Some(Value::Sum(c, _)) => *c,
+                    _ => 0,
+                };
+                if let Some(Value::Sum(_, fields)) = self.get(r) {
+                    buf.extend_from_slice(fields);
+                }
+                Ok(Value::Sum(ctor, buf))
+            }
+            2 => {
+                if let Some(Value::List { elems }) = self.get(r) {
+                    buf.extend_from_slice(elems);
+                }
+                Ok(Value::List { elems: buf })
+            }
+            _ => {
+                if let Some(Value::Set { elems }) = self.get(r) {
+                    buf.extend_from_slice(elems);
+                }
+                Ok(Value::Set { elems: buf })
+            }
         }
     }
 
@@ -159,9 +312,14 @@ impl Arena {
         self.live
     }
 
-    /// Allocate a slot holding `val`. `Err` when the arena is full.
-    pub fn alloc(&mut self, val: Value) -> Result<ArenaRef, ArenaError> {
-        let idx = self.free.ok_or(ArenaError::CapacityExceeded)?;
+    /// Allocate a slot holding `val`. `Err((.., val))` when the arena is full —
+    /// the value is returned so the caller can release its children (the slot
+    /// that never existed would have owned them).
+    pub fn alloc(&mut self, val: Value) -> Result<ArenaRef, (ArenaError, Value)> {
+        let idx = match self.free {
+            Some(idx) => idx,
+            None => return Err((ArenaError::CapacityExceeded, val)),
+        };
         self.free = match &self.slots[idx as usize] {
             Slot::Free { next } => *next,
             Slot::Occupied { .. } => unreachable!("arena free list corrupt"),
@@ -226,30 +384,40 @@ impl Arena {
             Some(Slot::Occupied { val, .. }) => std::mem::replace(val, Value::Void),
             _ => return,
         };
-        match val {
+        // Drop the children first (the refs live in the payload buffer), then
+        // return the container's own payload buffer to the pool. Map pairs are
+        // `Vec<(ArenaRef, ArenaRef)>` — not poolable by the ref pool in v1
+        // (deferred; Map payloads stay heap-backed).
+        match &val {
             Value::Record(fields) | Value::Sum(_, fields) => {
                 for f in fields {
-                    self.drop_ref(f);
+                    self.drop_ref(*f);
                 }
             }
-            Value::Newtype(inner) => self.drop_ref(inner),
-            Value::Closure(env, _) => self.drop_ref(env),
-            Value::List { elems, .. } => {
+            Value::Newtype(inner) => self.drop_ref(*inner),
+            Value::Closure(env, _) => self.drop_ref(*env),
+            Value::List { elems } => {
                 for e in elems {
-                    self.drop_ref(e);
+                    self.drop_ref(*e);
                 }
             }
             Value::Map { pairs, .. } => {
                 for (k, v) in pairs {
-                    self.drop_ref(k);
-                    self.drop_ref(v);
+                    self.drop_ref(*k);
+                    self.drop_ref(*v);
                 }
             }
-            Value::Set { elems, .. } => {
+            Value::Set { elems } => {
                 for e in elems {
-                    self.drop_ref(e);
+                    self.drop_ref(*e);
                 }
             }
+            _ => {}
+        }
+        match val {
+            Value::Record(fields) => self.put_buf(fields),
+            Value::List { elems } => self.put_buf(elems),
+            Value::Set { elems } => self.put_buf(elems),
             _ => {}
         }
         self.slots[r as usize] = Slot::Free { next: self.free };
@@ -305,7 +473,41 @@ impl Arena {
             _ => {}
         }
         self.drop_ref(r);
-        self.alloc(val)
+        match self.alloc(val) {
+            Ok(new) => Ok(new),
+            Err((err, val)) => {
+                // The fresh slot never existed; release the clone's recounted
+                // children so the arena stays balanced (a build-time exhaustion
+                // bug — `drop_ref` above already recycled the original).
+                match &val {
+                    Value::Record(fields) | Value::Sum(_, fields) => {
+                        for f in fields {
+                            self.drop_ref(*f);
+                        }
+                    }
+                    Value::Newtype(inner) => self.drop_ref(*inner),
+                    Value::Closure(env, _) => self.drop_ref(*env),
+                    Value::List { elems } => {
+                        for e in elems {
+                            self.drop_ref(*e);
+                        }
+                    }
+                    Value::Map { pairs, .. } => {
+                        for (k, v) in pairs {
+                            self.drop_ref(*k);
+                            self.drop_ref(*v);
+                        }
+                    }
+                    Value::Set { elems } => {
+                        for e in elems {
+                            self.drop_ref(*e);
+                        }
+                    }
+                    _ => {}
+                }
+                Err(err)
+            }
+        }
     }
 }
 

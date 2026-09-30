@@ -8,7 +8,7 @@ use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
 
-use crate::arena::Arena;
+use crate::arena::{Arena, BufferPool};
 use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
 use crate::ir::{Ir, ParamDef, ValueBlock};
@@ -169,6 +169,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .collect();
         let params_dirty = vec![false; params.len()];
         let mut arena = Arena::with_capacity(ir.value_state.capacity);
+        arena.pool = BufferPool::new(
+            ir.value_state.buffer_budget,
+            cfg!(feature = "growable-arena"),
+        );
         let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
         // Pre-allocate the value-register store: the program's own registers
         // plus the function-call scratch (see `Ir::max_call_regs`).
@@ -314,6 +318,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .collect();
         let params_dirty = vec![false; params.len()];
         let mut arena = Arena::with_capacity(ir.value_state.capacity);
+        arena.pool = BufferPool::new(
+            ir.value_state.buffer_budget,
+            cfg!(feature = "growable-arena"),
+        );
         let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
         // Pre-allocate the value-register store: the program's own registers
         // plus the function-call scratch (see `Ir::max_call_regs`).

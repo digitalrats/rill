@@ -235,47 +235,32 @@ fn value_reg_ctor<T: Transcendental, const BUF: usize>(
 /// conflating "arena full" with a real slot would silently corrupt data.
 /// Capacity is computed conservatively at build time, so exhaustion means a
 /// lowering bug — `debug_assert!` flags it in debug builds and the `None`
-/// register is a detectable no-op in release.
+/// register is a detectable no-op in release. No child refs are cloned on the
+/// happy path: `Arena::alloc` returns the value on failure so the children are
+/// released without a separate bookkeeping `Vec`.
 fn alloc_owned<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     v: Value,
 ) -> Option<ArenaRef> {
-    let children: Vec<ArenaRef> = match v {
-        Value::Record(ref fields) | Value::Sum(_, ref fields) => fields.clone(),
-        Value::Newtype(inner) => vec![inner],
-        Value::Closure(env, _) => vec![env],
-        Value::List { ref elems, .. } => elems.clone(),
-        Value::Map { ref pairs, .. } => pairs.iter().flat_map(|(k, v)| [*k, *v]).collect(),
-        Value::Set { ref elems, .. } => elems.clone(),
-        _ => Vec::new(),
-    };
     match prog.arena.alloc(v) {
         Ok(r) => Some(r),
-        Err(_) => {
-            for c in children {
-                prog.arena.drop_ref(c);
-            }
+        Err((_, v)) => {
+            drop_value_children(prog, &v);
             debug_assert!(false, "value arena capacity exhausted at build time");
             None
         }
     }
 }
 
-/// Allocate a fresh slot holding an independent copy of `v`.
-///
-/// The new slot counts its own refs on `v`'s children (RC++ per child), so the
-/// caller may keep `v` — its register retains its own ownership. Returns `None`
-/// on exhaustion, undoing the recounts so nothing leaks.
-fn alloc_copy<T: Transcendental, const BUF: usize>(
+/// Recount (RC++) every child of a value for a fresh slot that will own them
+/// independently of the original owner.
+fn recount_children<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     v: &Value,
-) -> Option<ArenaRef> {
-    let cloned = v.clone();
-    match &cloned {
+) {
+    match v {
         Value::Record(fields) | Value::Sum(_, fields) => {
             for f in fields {
-                // The fresh slot shares these refs with the original value:
-                // count each one so both owners are balanced.
                 _ = prog.arena.copy(*f);
             }
         }
@@ -285,7 +270,7 @@ fn alloc_copy<T: Transcendental, const BUF: usize>(
         Value::Closure(env, _) => {
             _ = prog.arena.copy(*env);
         }
-        Value::List { elems, .. } => {
+        Value::List { elems } => {
             for e in elems {
                 _ = prog.arena.copy(*e);
             }
@@ -296,19 +281,50 @@ fn alloc_copy<T: Transcendental, const BUF: usize>(
                 _ = prog.arena.copy(*v);
             }
         }
-        Value::Set { elems, .. } => {
+        Value::Set { elems } => {
             for e in elems {
                 _ = prog.arena.copy(*e);
             }
         }
         _ => {}
     }
+}
+
+/// Copy a SLOT's value into a fresh slot: pooled payload copy + child recount.
+///
+/// Unlike [`alloc_copy`], which takes a `&Value` (used for values not owned by
+/// the arena), this takes the slot ref so no `&Value` borrow of the arena is
+/// held while the pool is mutated — the borrow-checker-safe RT path.
+fn alloc_copy_slot<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    r: ArenaRef,
+) -> Option<ArenaRef> {
+    let cloned = match prog.arena.clone_pooled(r) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+    recount_children(prog, &cloned);
+    alloc_owned(prog, cloned)
+}
+
+/// Allocate a fresh slot holding an independent copy of `v`.
+///
+/// The new slot counts its own refs on `v`'s children (RC++ per child), so the
+/// caller may keep `v` — its register retains its own ownership. Returns `None`
+/// on exhaustion, undoing the recounts so nothing leaks. Container payloads are
+/// copied into pooled buffers (no per-tick heap allocation).
+fn alloc_copy<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    v: &Value,
+) -> Option<ArenaRef> {
+    let cloned = pool_clone_value(prog, v);
+    recount_children(prog, &cloned);
     match prog.arena.alloc(cloned) {
         Ok(r) => Some(r),
-        Err(_) => {
+        Err((_, cloned)) => {
             // No slot was created; undo the recounts above so the original
             // value keeps exclusive ownership of its children. Never `Some(0)`.
-            drop_value_children(prog, v);
+            drop_value_children(prog, &cloned);
             debug_assert!(false, "value arena capacity exhausted at build time");
             None
         }
@@ -329,32 +345,81 @@ fn copy_owned<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// Clone a value for COW/copy, serving Record/Sum/List/Set payloads from the
+/// buffer pool so the copy allocates nothing on the heap (default mode). Map
+/// payloads and Strings fall back to `Value::clone` (v1 limitation). Falls back
+/// to `clone` on pool exhaustion (a build-time budget bug — the `debug_assert!`
+/// in `alloc_owned`/`alloc_copy` flags it).
+fn pool_clone_value<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    v: &Value,
+) -> Value {
+    match v {
+        Value::Record(fields) | Value::Sum(_, fields) => {
+            let mut out = match prog.arena.take_buf(fields.len()) {
+                Ok(b) => b,
+                Err(_) => return v.clone(),
+            };
+            out.extend_from_slice(fields);
+            match v {
+                Value::Record(_) => Value::Record(out),
+                Value::Sum(c, _) => Value::Sum(*c, out),
+                _ => unreachable!(),
+            }
+        }
+        Value::List { elems } => {
+            let mut out = match prog.arena.take_buf(elems.len()) {
+                Ok(b) => b,
+                Err(_) => return v.clone(),
+            };
+            out.extend_from_slice(elems);
+            Value::List { elems: out }
+        }
+        Value::Set { elems } => {
+            let mut out = match prog.arena.take_buf(elems.len()) {
+                Ok(b) => b,
+                Err(_) => return v.clone(),
+            };
+            out.extend_from_slice(elems);
+            Value::Set { elems: out }
+        }
+        _ => v.clone(),
+    }
+}
+
 /// Collect a copied ref for every register in `regs`.
 ///
 /// Each source register keeps its own ownership, so every collected ref is a
 /// fresh `copy` (RC++) — the constructed record/sum owns its fields
 /// independently of the source registers (aliasing). Returns `None`, dropping
 /// anything already copied, when any source is unbound or the arena cannot
-/// count another ref.
+/// count another ref. The result buffer is pooled (no per-tick heap
+/// allocation).
 fn read_field_refs<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     regs: &[usize],
 ) -> Option<Vec<ArenaRef>> {
-    let mut refs: Vec<ArenaRef> = Vec::with_capacity(regs.len());
+    let mut refs: Vec<ArenaRef> = match prog.arena.take_buf(regs.len()) {
+        Ok(b) => b,
+        Err(_) => {
+            debug_assert!(false, "value buffer pool exhausted at build time");
+            return None;
+        }
+    };
     for r in regs {
         match prog.value_regs[*r] {
             Some(src) => match prog.arena.copy(src) {
                 Ok(c) => refs.push(c),
                 Err(_) => {
-                    for x in refs {
-                        prog.arena.drop_ref(x);
+                    for x in &refs {
+                        prog.arena.drop_ref(*x);
                     }
                     return None;
                 }
             },
             None => {
-                for x in refs {
-                    prog.arena.drop_ref(x);
+                for x in &refs {
+                    prog.arena.drop_ref(*x);
                 }
                 return None;
             }
@@ -595,20 +660,17 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 None
             };
             match capture.or_else(|| prog.value_regs.get(*cell).copied().flatten()) {
-                Some(cr) => match prog.arena.get(cr) {
-                    Some(v) => {
-                        // Copy the value OUT of the cell into a fresh slot: a
-                        // read result is a new owner, it does not share. An
-                        // uninitialised (Void) cell reads as 0.0.
-                        let out = if matches!(v, Value::Void) {
-                            Value::Float(0.0)
-                        } else {
-                            v.clone()
-                        };
-                        prog.value_regs[*dst] = alloc_copy(prog, &out);
-                    }
-                    None => prog.value_regs[*dst] = None,
-                },
+                Some(cr) => {
+                    // Copy the value OUT of the cell into a fresh slot: a
+                    // read result is a new owner, it does not share. An
+                    // uninitialised (Void) cell reads as 0.0. Payloads are
+                    // pooled (no per-tick heap allocation).
+                    prog.value_regs[*dst] = if matches!(prog.arena.get(cr), Some(&Value::Void)) {
+                        alloc_owned(prog, Value::Float(0.0))
+                    } else {
+                        alloc_copy_slot(prog, cr)
+                    };
+                }
                 None => prog.value_regs[*dst] = None,
             }
         }
@@ -616,32 +678,24 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // Read a persistent main λ-parameter cell (see `ReadMainCell` in the
             // block track). The result is a new owner; a `Void` cell reads 0.0.
             match prog.main_cells[*cell] {
-                Some(cr) => match prog.arena.get(cr) {
-                    Some(v) => {
-                        let out = if matches!(v, Value::Void) {
-                            Value::Float(0.0)
-                        } else {
-                            v.clone()
-                        };
-                        prog.value_regs[*dst] = alloc_copy(prog, &out);
-                    }
-                    None => prog.value_regs[*dst] = None,
-                },
+                Some(cr) => {
+                    prog.value_regs[*dst] = if matches!(prog.arena.get(cr), Some(&Value::Void)) {
+                        alloc_owned(prog, Value::Float(0.0))
+                    } else {
+                        alloc_copy_slot(prog, cr)
+                    };
+                }
                 _ => prog.value_regs[*dst] = None,
             }
         }
         ValueInstr::ValueWriteCell { cell, src } => {
             if let (Some(cr), Some(sr)) = (prog.value_regs[*cell], prog.value_regs[*src]) {
-                let sv = prog.arena.get(sr).cloned();
-                if let Some(v) = sv {
-                    // The cell holds its value: allocate a fresh slot with a
-                    // copy, then release the previous cell (a cell is
-                    // re-assignable). The src register keeps its own ref —
-                    // this is a copy, not a move.
-                    let new_cell = alloc_copy(prog, &v);
-                    prog.arena.drop_ref(cr);
-                    prog.value_regs[*cell] = new_cell;
-                }
+                // The cell holds a copy of the src value: allocate a fresh slot
+                // with a pooled copy, then release the previous cell (a cell is
+                // re-assignable). The src register keeps its own ref.
+                let new_cell = alloc_copy_slot(prog, sr);
+                prog.arena.drop_ref(cr);
+                prog.value_regs[*cell] = new_cell;
             }
         }
         ValueInstr::ValueConstInt { dst, value } => {
@@ -813,8 +867,9 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
                 None => match prog.arena.alloc(Value::Void) {
                     Ok(v) => v,
-                    Err(_) => {
+                    Err((err, _)) => {
                         prog.value_regs[*dst] = None;
+                        let _ = err;
                         return;
                     }
                 },
@@ -1014,6 +1069,37 @@ fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
     lo
 }
 
+/// Copy a slot's List/Set element refs into a freshly pooled buffer.
+///
+/// Returns an OWNED copy of the refs (no borrow of `prog.arena` survives), so
+/// the caller can iterate them while mutating the arena (calling closures,
+/// recounting) without a borrow conflict and without a per-tick heap
+/// allocation. `None` when the register/slot is not the right container kind.
+fn pooled_elems_of<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    reg: usize,
+) -> Option<Vec<ArenaRef>> {
+    let r = prog.value_regs[reg]?;
+    let len = match prog.arena.get(r) {
+        Some(Value::List { elems }) | Some(Value::Set { elems }) => elems.len(),
+        _ => return None,
+    };
+    let mut out = match prog.arena.take_buf(len) {
+        Ok(b) => b,
+        Err(_) => {
+            debug_assert!(false, "value buffer pool exhausted at build time");
+            return None;
+        }
+    };
+    if let Some(elems) = match prog.arena.get(r) {
+        Some(Value::List { elems }) | Some(Value::Set { elems }) => Some(elems),
+        _ => None,
+    } {
+        out.extend_from_slice(elems);
+    }
+    Some(out)
+}
+
 /// Dispatch a collection operation (`ValueCallBuiltin`).
 ///
 /// Container reads copy (RC++) any child refs the result claims so both the
@@ -1035,26 +1121,31 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // source elems (`x : xs`). The result recounts (RC++) the source
             // elems and the new element so both the source container and the
             // result own them (the source register is dropped at tick end).
-            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            match xs {
-                Some(Value::List { mut elems }) => {
-                    let x = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok());
-                    match x {
-                        Some(xr) => {
-                            // The result shares the source elems' refs: recount
-                            // each so the source list keeps its own ownership
-                            // until it is dropped and the result's refs survive.
-                            for e in &elems {
-                                _ = prog.arena.copy(*e);
-                            }
-                            elems.insert(0, xr);
-                            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems });
-                        }
-                        None => prog.value_regs[dst] = None,
-                    }
-                }
-                _ => prog.value_regs[dst] = None,
+            // Payloads are pooled — no per-tick heap allocation.
+            let Some(mut src) = pooled_elems_of(prog, args[1]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(xr) = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok()) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            for e in &src {
+                _ = prog.arena.copy(*e);
             }
+            let mut out = match prog.arena.take_buf(src.len() + 1) {
+                Ok(b) => b,
+                Err(_) => {
+                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            out.push(xr);
+            out.append(&mut src);
+            // `src`'s refs moved into `out`; return the emptied pooled buffer.
+            prog.arena.put_buf(src);
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
         }
         Length => {
             // The IR doc says Length covers list/set/map: each container
@@ -1062,25 +1153,40 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let n = prog.value_regs[args[0]]
                 .and_then(|r| prog.arena.get(r))
                 .map(|v| match v {
-                    Value::List { elems, .. } => elems.len() as i64,
+                    Value::List { elems } => elems.len() as i64,
                     Value::Map { pairs, .. } => pairs.len() as i64,
-                    Value::Set { elems, .. } => elems.len() as i64,
+                    Value::Set { elems } => elems.len() as i64,
                     _ => 0,
                 })
                 .unwrap_or(0);
             prog.value_regs[dst] = alloc_owned(prog, Value::Int(n));
         }
         Head => {
-            let r = prog.value_regs[args[0]].and_then(|r| prog.arena.get(r).cloned());
-            let m = match r {
-                Some(Value::List { elems, .. }) => elems.first().copied(),
-                _ => None,
+            let first = {
+                let Some(r) = prog.value_regs[args[0]] else {
+                    prog.value_regs[dst] = None;
+                    return;
+                };
+                match prog.arena.get(r) {
+                    Some(Value::List { elems }) => elems.first().copied(),
+                    _ => None,
+                }
             };
-            prog.value_regs[dst] = match m {
+            prog.value_regs[dst] = match first {
                 // `Just e`: the Sum owns a counted ref on the element (the list
                 // keeps its own ownership). `Nothing`: an empty sum payload.
                 Some(e) => match copy_owned(prog, e) {
-                    Some(ce) => alloc_owned(prog, Value::Sum(0, vec![ce])),
+                    Some(ce) => {
+                        let mut payload = match prog.arena.take_buf(1) {
+                            Ok(b) => b,
+                            Err(_) => {
+                                debug_assert!(false, "value buffer pool exhausted");
+                                return;
+                            }
+                        };
+                        payload.push(ce);
+                        alloc_owned(prog, Value::Sum(0, payload))
+                    }
                     None => None,
                 },
                 None => alloc_owned(prog, Value::Sum(1, vec![])),
@@ -1088,60 +1194,67 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         }
         Map => {
             // map f xs: dispatch f per element via a one-arg closure call.
-            let f = prog.value_regs[args[0]];
-            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(_), Some(Value::List { elems })) = (f, xs) {
-                let mut out = Vec::with_capacity(elems.len());
-                for e in &elems {
-                    let out_e = call_closure_single(prog, args[0], *e, dst, drops);
-                    if let Some(o) = out_e {
-                        out.push(o);
-                    }
-                }
-                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
-            } else {
+            let Some(src) = pooled_elems_of(prog, args[1]) else {
                 prog.value_regs[dst] = None;
+                return;
+            };
+            let mut out = match prog.arena.take_buf(src.len()) {
+                Ok(b) => b,
+                Err(_) => {
+                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            for e in &src {
+                if let Some(o) = call_closure_single(prog, args[0], *e, dst, drops) {
+                    out.push(o);
+                }
             }
+            prog.arena.put_buf(src);
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
         }
         Fold => {
             // fold f z xs: seed the accumulator with a copy of z, then for each
             // element call f with (acc, elem); the result becomes the new acc.
-            let f = prog.value_regs[args[0]];
-            let acc = prog.value_regs[args[1]];
-            let xs = prog.value_regs[args[2]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(_), Some(accr), Some(Value::List { elems, .. })) = (f, acc, xs) {
-                let mut cur = match copy_owned(prog, accr) {
-                    Some(c) => c,
-                    None => {
-                        prog.value_regs[dst] = None;
-                        return;
-                    }
-                };
-                let mut failed = false;
-                for e in &elems {
-                    let pair = [cur, *e];
-                    let next = call_closure_args(prog, args[0], &pair, dst, drops);
-                    match next {
-                        Some(n) => {
-                            // Replace the previous accumulator copy with the
-                            // fresh result: exactly one owner lives.
-                            prog.arena.drop_ref(cur);
-                            cur = n;
-                        }
-                        None => {
-                            failed = true;
-                            break;
-                        }
-                    }
-                }
-                if failed {
-                    prog.arena.drop_ref(cur);
-                    prog.value_regs[dst] = None;
-                } else {
-                    prog.value_regs[dst] = Some(cur);
-                }
-            } else {
+            let Some(src) = pooled_elems_of(prog, args[2]) else {
                 prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(accr) = prog.value_regs[args[1]] else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let mut cur = match copy_owned(prog, accr) {
+                Some(c) => c,
+                None => {
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            let mut failed = false;
+            for e in &src {
+                let pair = [cur, *e];
+                let next = call_closure_args(prog, args[0], &pair, dst, drops);
+                match next {
+                    Some(n) => {
+                        // Replace the previous accumulator copy with the
+                        // fresh result: exactly one owner lives.
+                        prog.arena.drop_ref(cur);
+                        cur = n;
+                    }
+                    None => {
+                        failed = true;
+                        break;
+                    }
+                }
+            }
+            prog.arena.put_buf(src);
+            if failed {
+                prog.arena.drop_ref(cur);
+                prog.value_regs[dst] = None;
+            } else {
+                prog.value_regs[dst] = Some(cur);
             }
         }
         ListEmpty => {
@@ -1150,114 +1263,127 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
         }
         Tail => {
-            // tail xs: the source without its head, capacity preserved. The
-            // result claims elems[1..]: recount (RC++) every element the source
-            // owns, allocate the tail list over the kept slice, then release
-            // the extra count on the removed head — the source keeps its single
-            // claim, and the head is never freed mid-tick (its slot cannot be
-            // recycled while the source list still references it). An empty
-            // list is its own tail.
-            let xs = prog.value_regs[args[0]].and_then(|r| prog.arena.get(r).cloned());
-            match xs {
-                Some(Value::List { elems }) => {
-                    if elems.is_empty() {
-                        prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
-                        return;
-                    }
-                    for e in &elems {
-                        _ = prog.arena.copy(*e);
-                    }
-                    let kept: Vec<ArenaRef> = elems[1..].to_vec();
-                    let head = elems[0];
-                    prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
-                    prog.arena.drop_ref(head);
-                }
-                _ => prog.value_regs[dst] = None,
+            // tail xs: the source without its head. The result claims elems[1..]:
+            // recount (RC++) every element the source owns, allocate the tail
+            // list over the kept slice, then release the extra count on the
+            // removed head — the source keeps its single claim, and the head is
+            // never freed mid-tick. An empty list is its own tail.
+            let Some(mut kept) = pooled_elems_of(prog, args[0]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            if kept.is_empty() {
+                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
+                return;
             }
+            for e in &kept {
+                _ = prog.arena.copy(*e);
+            }
+            let head = kept[0];
+            kept.remove(0);
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
+            prog.arena.drop_ref(head);
         }
         Filter => {
             // filter p xs: keep the elements for which the unary predicate
             // returns Bool(true). A kept element is recounted (RC++) into the
             // result list so both the source and the result own it; the
             // predicate's Bool result is released after each call.
-            let p = prog.value_regs[args[0]];
-            let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(_), Some(Value::List { elems })) = (p, xs) {
-                let mut kept: Vec<ArenaRef> = Vec::with_capacity(elems.len());
-                for e in &elems {
-                    let pred = call_closure_single(prog, args[0], *e, dst, drops);
-                    let is_keep = match pred {
-                        Some(pr) => match prog.arena.get(pr) {
-                            Some(Value::Bool(b)) => *b,
-                            _ => false,
-                        },
-                        None => false,
-                    };
-                    if is_keep {
-                        if let Ok(c) = prog.arena.copy(*e) {
-                            kept.push(c);
-                        }
-                    }
-                    if let Some(pr) = pred {
-                        prog.arena.drop_ref(pr);
+            let Some(src) = pooled_elems_of(prog, args[1]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let mut kept = match prog.arena.take_buf(src.len()) {
+                Ok(b) => b,
+                Err(_) => {
+                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            for e in &src {
+                let pred = call_closure_single(prog, args[0], *e, dst, drops);
+                let is_keep = match pred {
+                    Some(pr) => match prog.arena.get(pr) {
+                        Some(Value::Bool(b)) => *b,
+                        _ => false,
+                    },
+                    None => false,
+                };
+                if is_keep {
+                    if let Ok(c) = prog.arena.copy(*e) {
+                        kept.push(c);
                     }
                 }
-                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
-            } else {
-                prog.value_regs[dst] = None;
+                if let Some(pr) = pred {
+                    prog.arena.drop_ref(pr);
+                }
             }
+            prog.arena.put_buf(src);
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
         }
         InsertMap => {
             // insert k v m: COW-insert (k, v) into the sorted map, or
-            // COW-replace the value when an equal key already exists. The
-            // capacity is a strict bound: a NEW key past capacity latches a
-            // runtime `ProcessError`. Every ref the result map claims is
-            // recounted (RC++) so the source keeps its own ownership.
-            let k = prog.value_regs[args[0]];
-            let v = prog.value_regs[args[1]];
-            let m = prog.value_regs[args[2]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(kr), Some(vr), Some(Value::Map { pairs })) = (k, v, m) {
+            // COW-replace the value when an equal key already exists. Open
+            // collections have no capacity bound. Map pair payloads stay
+            // heap-backed in v1 (deferred pooling); the source is read via
+            // short borrows, not a full value clone.
+            let (Some(kr), Some(vr), Some(sr)) = (
+                prog.value_regs[args[0]],
+                prog.value_regs[args[1]],
+                prog.value_regs[args[2]],
+            ) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let (pos, dup) = {
+                let Some(Value::Map { pairs, .. }) = prog.arena.get(sr) else {
+                    prog.value_regs[dst] = None;
+                    return;
+                };
                 let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
                 let pos = sorted_insert_pos(prog, kr, &keys);
                 let dup = pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0;
-                if dup {
-                    // Replace-on-duplicate: recount every pair ref, swap in the
-                    // new value (counted once for the map), and release the
-                    // replaced value's extra count — the source keeps its own
-                    // claim, so the replaced value is never freed mid-tick.
-                    let mut new_pairs = pairs.clone();
-                    for (pk, pv) in &new_pairs {
-                        _ = prog.arena.copy(*pk);
-                        _ = prog.arena.copy(*pv);
-                    }
-                    let old_val = new_pairs[pos].1;
-                    new_pairs[pos].1 = vr;
-                    _ = prog.arena.copy(vr);
-                    prog.arena.drop_ref(old_val);
-                    prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
-                } else {
-                    // Insert at the sorted position: splice (k, v) into the
-                    // cloned pair list, then recount every key and value the
-                    // new map claims (the source and the result each own them).
-                    let mut new_pairs: Vec<(ArenaRef, ArenaRef)> =
-                        Vec::with_capacity(pairs.len() + 1);
-                    for (i, (pk, pv)) in pairs.iter().enumerate() {
-                        if i == pos {
-                            new_pairs.push((kr, vr));
-                        }
-                        new_pairs.push((*pk, *pv));
-                    }
-                    if new_pairs.len() == pairs.len() {
+                (pos, dup)
+            };
+            let Some(Value::Map { pairs, .. }) = prog.arena.get(sr).cloned() else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            if dup {
+                // Replace-on-duplicate: recount every pair ref, swap in the
+                // new value (counted once for the map), and release the
+                // replaced value's extra count — the source keeps its own
+                // claim, so the replaced value is never freed mid-tick.
+                let mut new_pairs = pairs;
+                for (pk, pv) in &new_pairs {
+                    _ = prog.arena.copy(*pk);
+                    _ = prog.arena.copy(*pv);
+                }
+                let old_val = new_pairs[pos].1;
+                new_pairs[pos].1 = vr;
+                _ = prog.arena.copy(vr);
+                prog.arena.drop_ref(old_val);
+                prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
+            } else {
+                // Insert at the sorted position: splice (k, v) into the cloned
+                // pair list, then recount every key and value the new map
+                // claims (the source and the result each own them).
+                let mut new_pairs: Vec<(ArenaRef, ArenaRef)> = Vec::with_capacity(pairs.len() + 1);
+                for (i, (pk, pv)) in pairs.iter().enumerate() {
+                    if i == pos {
                         new_pairs.push((kr, vr));
                     }
-                    for (pk, pv) in &new_pairs {
-                        _ = prog.arena.copy(*pk);
-                        _ = prog.arena.copy(*pv);
-                    }
-                    prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
+                    new_pairs.push((*pk, *pv));
                 }
-            } else {
-                prog.value_regs[dst] = None;
+                if new_pairs.len() == pairs.len() {
+                    new_pairs.push((kr, vr));
+                }
+                for (pk, pv) in &new_pairs {
+                    _ = prog.arena.copy(*pk);
+                    _ = prog.arena.copy(*pv);
+                }
+                prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
             }
         }
         Lookup => {
@@ -1265,84 +1391,108 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // when found, `Nothing` otherwise (the same Sum encoding as
             // `head`). The found value ref is counted (RC++) so the Sum owns
             // it independently of the map.
-            let k = prog.value_regs[args[0]];
-            let m = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(kr), Some(Value::Map { pairs, .. })) = (k, m) {
+            let (Some(kr), Some(sr)) = (prog.value_regs[args[0]], prog.value_regs[args[1]]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let found = {
+                let Some(Value::Map { pairs, .. }) = prog.arena.get(sr) else {
+                    prog.value_regs[dst] = None;
+                    return;
+                };
                 let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
                 let pos = sorted_insert_pos(prog, kr, &keys);
                 if pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0 {
-                    match copy_owned(prog, pairs[pos].1) {
-                        Some(cv) => {
-                            prog.value_regs[dst] = alloc_owned(prog, Value::Sum(0, vec![cv]))
-                        }
-                        None => prog.value_regs[dst] = None,
-                    }
+                    Some(pairs[pos].1)
                 } else {
-                    prog.value_regs[dst] = alloc_owned(prog, Value::Sum(1, vec![]));
+                    None
                 }
-            } else {
-                prog.value_regs[dst] = None;
+            };
+            match found {
+                Some(fv) => match copy_owned(prog, fv) {
+                    Some(cv) => {
+                        let mut payload = match prog.arena.take_buf(1) {
+                            Ok(b) => b,
+                            Err(_) => {
+                                debug_assert!(false, "value buffer pool exhausted");
+                                return;
+                            }
+                        };
+                        payload.push(cv);
+                        prog.value_regs[dst] = alloc_owned(prog, Value::Sum(0, payload));
+                    }
+                    None => prog.value_regs[dst] = None,
+                },
+                None => prog.value_regs[dst] = alloc_owned(prog, Value::Sum(1, vec![])),
             }
         }
         Member => {
             // member k c: a shared op — the container's variant tells map
             // membership (among the sorted keys) from set membership (among
             // the sorted elements). A non-container reads as `false`.
-            let k = prog.value_regs[args[0]];
-            let c = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(kr), Some(cv)) = (k, c) {
-                let found = match cv {
-                    Value::Map { pairs, .. } => {
-                        let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
-                        let pos = sorted_insert_pos(prog, kr, &keys);
-                        pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0
-                    }
-                    Value::Set { elems, .. } => {
-                        let pos = sorted_insert_pos(prog, kr, &elems);
-                        pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0
-                    }
-                    _ => false,
-                };
-                prog.value_regs[dst] = alloc_owned(prog, Value::Bool(found));
-            } else {
+            let (Some(kr), Some(sr)) = (prog.value_regs[args[0]], prog.value_regs[args[1]]) else {
                 prog.value_regs[dst] = None;
-            }
+                return;
+            };
+            let found = match prog.arena.get(sr) {
+                Some(Value::Map { pairs, .. }) => {
+                    let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
+                    let pos = sorted_insert_pos(prog, kr, &keys);
+                    pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0
+                }
+                Some(Value::Set { elems }) => {
+                    let pos = sorted_insert_pos(prog, kr, elems);
+                    pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0
+                }
+                _ => false,
+            };
+            prog.value_regs[dst] = alloc_owned(prog, Value::Bool(found));
         }
         InsertSet => {
             // insert k s: COW-insert the element into the sorted set; a
-            // duplicate leaves the set unchanged (a fresh COW copy). The
-            // capacity is a strict bound: a NEW element past capacity latches
-            // a runtime `ProcessError`.
-            let k = prog.value_regs[args[0]];
-            let s = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(kr), Some(Value::Set { elems })) = (k, s) {
-                let pos = sorted_insert_pos(prog, kr, &elems);
+            // duplicate leaves the set unchanged (a fresh COW copy). Open
+            // collections have no capacity bound.
+            let (Some(kr), Some(sr)) = (prog.value_regs[args[0]], prog.value_regs[args[1]]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let (len, pos, dup) = {
+                let Some(elems) = (match prog.arena.get(sr) {
+                    Some(Value::Set { elems }) => Some(elems),
+                    _ => None,
+                }) else {
+                    prog.value_regs[dst] = None;
+                    return;
+                };
+                let pos = sorted_insert_pos(prog, kr, elems);
                 let dup = pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0;
-                if dup {
-                    let new_elems = elems.clone();
-                    for e in &new_elems {
-                        _ = prog.arena.copy(*e);
-                    }
-                    prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: new_elems });
-                } else {
-                    let mut new_elems: Vec<ArenaRef> = Vec::with_capacity(elems.len() + 1);
-                    for (i, e) in elems.iter().enumerate() {
-                        if i == pos {
-                            new_elems.push(kr);
-                        }
-                        new_elems.push(*e);
-                    }
-                    if new_elems.len() == elems.len() {
-                        new_elems.push(kr);
-                    }
-                    for e in &new_elems {
-                        _ = prog.arena.copy(*e);
-                    }
-                    prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: new_elems });
+                (elems.len(), pos, dup)
+            };
+            let mut out = match prog.arena.take_buf(len + usize::from(!dup)) {
+                Ok(b) => b,
+                Err(_) => {
+                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            if let Some(elems) = match prog.arena.get(sr) {
+                Some(Value::Set { elems }) => Some(elems),
+                _ => None,
+            } {
+                out.extend_from_slice(elems);
+            }
+            if dup {
+                for e in &out {
+                    _ = prog.arena.copy(*e);
                 }
             } else {
-                prog.value_regs[dst] = None;
+                out.insert(pos, kr);
+                for e in &out {
+                    _ = prog.arena.copy(*e);
+                }
             }
+            prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: out });
         }
         MapEmpty => {
             // empty_map: an empty Map. Open collections have no capacity — the
@@ -2064,7 +2214,7 @@ mod value_track_tests {
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 16,
-                buffer_budget: 0,
+                buffer_budget: 64,
                 value_state_slots,
             },
         };
