@@ -80,6 +80,16 @@ fn value_contains_var_impl(
         ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => args
             .iter()
             .any(|a| value_contains_var_impl(subst, a, v, seen)),
+        // `m b` (a type-constructor variable applied to args): check the head
+        // id against `v` (same id space as `Var`/`TyConVar`), then recurse into
+        // the arguments.
+        ValueTy::TyConApp(f, args) => {
+            if *f == v {
+                return true;
+            }
+            args.iter()
+                .any(|a| value_contains_var_impl(subst, a, v, seen))
+        }
         ValueTy::Bool | ValueTy::String => false,
         _ => false,
     }
@@ -217,6 +227,41 @@ pub fn unify_value(
                     span,
                 })
             }
+        }
+        // `m b` (a type-constructor variable applied to args) unifies with a
+        // concrete application `Maybe Float`: bind the head var to the bare
+        // constructor, unify the args.
+        (ValueTy::TyConApp(f, ax), other @ ValueTy::App(..))
+        | (other @ ValueTy::App(..), ValueTy::TyConApp(f, ax)) => {
+            let ValueTy::App(c, ay) = other else {
+                unreachable!()
+            };
+            if ax.len() != ay.len() {
+                return Err(CompileError::Type {
+                    msg: format!("cannot unify type-constructor application {a:?} with {b:?}"),
+                    span,
+                });
+            }
+            // Bind the head variable to the bare constructor (TyConVar ~ App-head).
+            subst.value_map.insert(*f, ValueTy::App(c.clone(), vec![]));
+            for (x, y) in ax.iter().zip(ay.iter()) {
+                unify_value(x, y, subst, span)?;
+            }
+            Ok(())
+        }
+        // `m b ~ n b'` (two type-constructor-variable applications).
+        (ValueTy::TyConApp(f, ax), ValueTy::TyConApp(g, ay)) => {
+            unify_value(&ValueTy::TyConVar(*f), &ValueTy::TyConVar(*g), subst, span)?;
+            if ax.len() != ay.len() {
+                return Err(CompileError::Type {
+                    msg: format!("cannot unify type-constructor applications {a:?} with {b:?}"),
+                    span,
+                });
+            }
+            for (x, y) in ax.iter().zip(ay.iter()) {
+                unify_value(x, y, subst, span)?;
+            }
+            Ok(())
         }
         _ => Err(CompileError::Type {
             msg: format!("cannot unify value type {a:?} with {b:?}"),

@@ -2798,6 +2798,12 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
             | ValueTy::TyConVar(_) => 1,
+            ValueTy::TyConApp(_, args) => {
+                1 + args
+                    .iter()
+                    .map(|t| self.subtree_size_impl(t, visiting))
+                    .sum::<usize>()
+            }
             ValueTy::App(name, args) => match name.as_str() {
                 "Maybe" => {
                     1 + args

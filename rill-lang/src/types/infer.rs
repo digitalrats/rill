@@ -137,12 +137,26 @@ fn data_field_vty(env: &TypeEnv, tyvars: &[String], te: &crate::ast::TypeExpr) -
             Some(k) => ValueTy::Var((k + 1) as u32),
             None => env.vty_of_name(n),
         },
-        crate::ast::TypeExpr::TApp(head, args) => ValueTy::App(
-            head.clone(),
-            args.iter()
-                .map(|a| data_field_vty(env, tyvars, a))
-                .collect(),
-        ),
+        crate::ast::TypeExpr::TApp(head, args) => {
+            // A type PARAMETER applied as a constructor (`m b` in
+            // `data K m a b`) becomes a type-constructor application whose head
+            // is the parameter's var id. A concrete constructor stays `App`.
+            if let Some(k) = tyvars.iter().position(|t| t == head) {
+                ValueTy::TyConApp(
+                    (k + 1) as u32,
+                    args.iter()
+                        .map(|a| data_field_vty(env, tyvars, a))
+                        .collect(),
+                )
+            } else {
+                ValueTy::App(
+                    head.clone(),
+                    args.iter()
+                        .map(|a| data_field_vty(env, tyvars, a))
+                        .collect(),
+                )
+            }
+        }
         crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Func(
             args.iter()
                 .map(|a| data_field_vty(env, tyvars, a))
@@ -930,22 +944,28 @@ pub fn infer_program_with(
 /// counter are rolled back so the retry starts from a clean context. A def
 /// with no λ-parameters that fails is genuinely broken and errors.
 fn infer_def_body(ctx: &mut Ctx<'_>, def: &Def) -> Result<ArrowTy, CompileError> {
+    let saved_locals = ctx.locals.clone();
     if def.params().is_empty() {
-        ctx.locals.clear();
-        return infer_expr(ctx, def.body());
+        let r = infer_expr(ctx, def.body());
+        ctx.locals = saved_locals;
+        return r;
     }
     let saved_subst = ctx.subst.clone();
     let saved_next = ctx.next;
+    let saved_defs = ctx.defs.clone();
+    let saved_bodies = ctx.def_bodies.clone();
     ctx.locals.clear();
     for p in def.params() {
         ctx.locals
             .insert(p.name.clone(), ArrowTy::uniform(0, 1, Scalar::Float));
     }
-    match infer_expr(ctx, def.body()) {
+    let result = match infer_expr(ctx, def.body()) {
         Ok(t) => Ok(t),
         Err(_) => {
             ctx.subst = saved_subst;
             ctx.next = saved_next;
+            ctx.defs = saved_defs;
+            ctx.def_bodies = saved_bodies;
             ctx.locals.clear();
             for p in def.params() {
                 let v = ctx.next;
@@ -955,7 +975,9 @@ fn infer_def_body(ctx: &mut Ctx<'_>, def: &Def) -> Result<ArrowTy, CompileError>
             }
             infer_expr(ctx, def.body())
         }
-    }
+    };
+    ctx.locals = saved_locals;
+    result
 }
 
 /// Infer a group of mutually-recursive definitions (top-level, where, or let).
@@ -2255,11 +2277,22 @@ fn infer_apply_impl(
                         // subsequently freshened ids (`Pair { first: 1.0,
                         // second: 2 }` failed on the second field).
                         let is_builtin = ctx.env.ctor_arity(name).is_some();
+                        // Track which placeholder a freshened bare-var field
+                        // replaced (`Var(k)` → fresh), so parameterized user
+                        // data can resolve each type parameter from the subst
+                        // after the fields unify: a compound field like
+                        // `a -> m b` binds its placeholders directly, while a
+                        // bare `a` field was freshened and needs the link.
+                        let mut placeholder_bindings: HashMap<u32, ValueTy> = HashMap::new();
                         let field_tys: Vec<(String, ValueTy)> = fields
                             .iter()
                             .map(|(fname, fty)| {
                                 let fty = match fty {
-                                    ValueTy::Var(_) => ctx.fresh_vty(),
+                                    ValueTy::Var(k) => {
+                                        let fresh = ctx.fresh_vty();
+                                        placeholder_bindings.insert(*k, fresh.clone());
+                                        fresh
+                                    }
                                     t => t.clone(),
                                 };
                                 (fname.to_string(), fty)
@@ -2289,24 +2322,27 @@ fn infer_apply_impl(
                                 .collect();
                             return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
                         }
-                        // Parameterized user data (`data Box a = { value: a }`):
-                        // carry the resolved type args so field projection and
-                        // constructor instances resolve the placeholder slots.
+                        // Parameterized user data (`data Kleisli m a b`): resolve each type
+                        // parameter from the substitution built by unifying the
+                        // fields. `Var(k+1)` and the `TyConApp` head share one
+                        // id space, so resolving `Var(k+1)` yields the concrete
+                        // type (m → Maybe, a → Float, b → Float).
                         if let Some(arity) = ctx.env.data_arities.get(name) {
                             if *arity > 0 {
-                                let mut slots: Vec<Option<ValueTy>> = vec![None; *arity];
-                                for (i, (_, fty)) in fields.iter().enumerate() {
-                                    let idx = match fty {
-                                        ValueTy::Var(k) => k.saturating_sub(1) as usize,
-                                        _ => i,
-                                    };
-                                    if idx < slots.len() {
-                                        slots[idx] = Some(ctx.subst.resolve_value(&field_tys[i].1));
-                                    }
-                                }
-                                let arg_tys: Vec<ValueTy> = slots
-                                    .into_iter()
-                                    .map(|s| s.unwrap_or_else(|| ctx.fresh_vty()))
+                                let arg_tys: Vec<ValueTy> = (0..*arity)
+                                    .map(|k| {
+                                        let pid = (k + 1) as u32;
+                                        let pty = match placeholder_bindings.get(&pid) {
+                                            // A bare `Var(k)` field was freshened;
+                                            // resolve its fresh var.
+                                            Some(fresh) => ctx.subst.resolve_value(fresh),
+                                            None => ctx.subst.resolve_value(&ValueTy::Var(pid)),
+                                        };
+                                        match pty {
+                                            ValueTy::Var(_) => ctx.fresh_vty(), // unconstrained param
+                                            t => t,
+                                        }
+                                    })
                                     .collect();
                                 return Ok(ArrowTy::value_channel(ValueTy::Data(
                                     name.into(),

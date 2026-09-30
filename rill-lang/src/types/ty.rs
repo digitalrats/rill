@@ -74,6 +74,11 @@ pub enum ValueTy {
     /// Type-constructor variable (kind `* -> *` or higher), bound by a
     /// typeclass class variable.
     TyConVar(TypeVarId),
+    /// Application of a type-constructor *variable* to arguments: `m b` in a
+    /// data-field type (`data K m a b = { f: a -> m b }`). The head is the id of
+    /// the data-type's type parameter (same id space as `Var`/`TyConVar`); when it
+    /// resolves to a concrete constructor the application becomes `App(c, args)`.
+    TyConApp(TypeVarId, Vec<ValueTy>),
 }
 
 /// A signal or value channel.
@@ -871,6 +876,20 @@ impl Subst {
                     .map(|r| self.resolve_value_depth(r, depth + 1))
                     .collect(),
             ),
+            ValueTy::TyConApp(f, args) => {
+                // Resolve the head variable; a bound head (a concrete
+                // constructor) rewrites the application to `App(c, args)`.
+                let resolved_args: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| self.resolve_value_depth(a, depth + 1))
+                    .collect();
+                let resolved = self.resolve_value_depth(&ValueTy::TyConVar(*f), depth + 1);
+                match resolved {
+                    ValueTy::TyConVar(_) => ValueTy::TyConApp(*f, resolved_args),
+                    ValueTy::App(c, _) => ValueTy::App(c, resolved_args),
+                    other => ValueTy::TyConApp(*f, vec![other]),
+                }
+            }
             ValueTy::Data(name, args) | ValueTy::Newtype(name, args) | ValueTy::App(name, args) => {
                 let resolved: Vec<ValueTy> = args
                     .iter()
