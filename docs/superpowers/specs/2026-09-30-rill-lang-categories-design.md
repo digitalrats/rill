@@ -285,6 +285,44 @@ field projection `unKleisli` extracts the underlying monadic function. The
 constraint machinery from SP-1 resolves `return`/`bind` inside the instance body
 against the concrete monad at each inlining site.
 
+### 2.1 Implementation decisions (user-approved, 2026-09-30)
+
+- **HKT in data fields (`TyConApp`).** A data-field type that applies a type
+  *parameter* as a constructor (`unKleisli: a -> m b` with `m` a parameter) is a
+  missing piece of HKT today: `data_field_vty` would emit a literal `App("m", …)`
+  string that cannot unify with `App("Maybe", …)`. Introduce
+  `ValueTy::TyConApp(TypeVarId, Vec<ValueTy>)` — application of a type-constructor
+  *variable* to arguments. `data_field_vty` emits it for `TApp(head, args)` where
+  `head` is a `data`-type parameter; unify binds it to a concrete constructor
+  (`TyConApp(m, [b]) ~ App("Maybe", [Float])` ⇒ `m := Maybe`, `b := Float`);
+  resolve_value/lower/subtree_size handle it.
+- **Constraint-qualified instances.** Parser accepts `instance (Class Var) =>
+  Class (Head …) where { … }`; `Def::Instance` gains `constraints: Vec<(String,
+  String)>` and a `head: (String, Vec<String>)` (partial application —
+  `(Kleisli m)` binds 1 of 3 args). `InstanceInfo` gains `head_args` and
+  `constraints`. Resolution (infer + lower): bind head args from the call-site
+  type (`Kleisli Maybe Float Float` → `m := Maybe`), then discharge each
+  constraint (`Monad m`) by instance lookup of the bound type. Kind check: a
+  partial application `(Kleisli m)` (total arity 3, bound 1 ⇒ remaining 2) is
+  valid against an arity-2 class variable.
+- **Default methods.** `TypeclassInfo::methods` entries carry an optional default
+  body (parsed from the `typeclass` declaration when written after `=`).
+  Precedence: instance body > default > compile error. `Arrow`'s `second`/`both`/
+  `fan` are the first defaults (classic definitions via `arr`/`first`/`compose`).
+- **Field-projection application.** The parser accepts applying a projected field
+  as a function: `(k.unKleisli) p.first`. This is how the instance body extracts
+  the monadic function and calls it.
+- **Tuple syntax.** `(b, d)` in type position desugars to `Pair b d`; `(x, y)`
+  in expression position desugars to `Pair { first: x, second: y }`. Both are
+  sugar — the underlying type/value stays `Pair`.
+- **Kleisli constructor.** A single-field record type is constructed in
+  newtype-style by applying the constructor to the field value:
+  `Kleisli (fn x -> …)` ≡ `Kleisli { unKleisli: fn x -> … }`.
+- **Placement.** `data Kleisli`, `typeclass Arrow`, and
+  `instance Monad m => Arrow (Kleisli m)` all live in `CATEGORY_PRELUDE`
+  (registered in `TypeEnv::with_builtins`), so programs use `arr`/`first`/
+  `compose`/`second`/`both`/`fan` without redeclaring anything.
+
 ---
 
 ## SP-3. Signal-track Arrow
