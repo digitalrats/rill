@@ -309,12 +309,21 @@ against the concrete monad at each inlining site.
   body (parsed from the `typeclass` declaration when written after `=`).
   Precedence: instance body > default > compile error. `Arrow`'s `second`/`both`/
   `fan` are the first defaults (classic definitions via `arr`/`first`/`compose`).
+- **Tuple syntax via `Expr::Par` unification.** `,` stays the `Expr::Par`
+  combinator, re-read as a **tuple of channels**: `signal , signal` keeps the
+  block-diagram parallel composition (concatenated in/out — `par()` in
+  `infer.rs`), `value , value` becomes `Pair a b` (a `Pair { first, second }`
+  value), and a mixed `signal , value` is a compile error. No lexer/parser
+  change and zero migration — existing signal programs with `,` keep working,
+  while `(1.0, 2.0)` in value position is a `Pair`. This is the first step
+  toward the long-term goal of unifying the value and signal tracks (Signal
+  blocks as values; block `do`-notation). In **type** position `(b, d)`
+  desugars to `Pair b d`.
 - **Field-projection application.** The parser accepts applying a projected field
   as a function: `(k.unKleisli) p.first`. This is how the instance body extracts
-  the monadic function and calls it.
-- **Tuple syntax.** `(b, d)` in type position desugars to `Pair b d`; `(x, y)`
-  in expression position desugars to `Pair { first: x, second: y }`. Both are
-  sugar — the underlying type/value stays `Pair`.
+  the monadic function and calls it. In the prelude source the projection is
+  written with the language's existing field-projection syntax: the instance
+  body lowers `unKleisli k p.first` as `(k.unKleisli) p.first`.
 - **Kleisli constructor.** A single-field record type is constructed in
   newtype-style by applying the constructor to the field value:
   `Kleisli (fn x -> …)` ≡ `Kleisli { unKleisli: fn x -> … }`.
