@@ -226,6 +226,10 @@ impl<'a> Lowerer<'a> {
     /// this is a conservative per-op estimate; the runtime safety net is pool
     /// exhaustion (default mode) or pool growth (`growable-arena`).
     const ELEM_EST: usize = 16;
+    /// Multiplier on the estimated slot/buffer budgets for the default RT mode
+    /// so legitimate open-collection programs do not trip the exhaustion error.
+    /// Tuned against the collection stress tests (Task 8).
+    const POOL_SAFETY_MULTIPLIER: usize = 4;
 
     /// Lower a value expression to a value register, returning its static value
     /// type. Signal expressions lower to block registers through [`Self::lower`];
@@ -3747,14 +3751,10 @@ pub fn lower_with_cafs(
                 + f.sig.value_outs
         })
         .sum::<usize>();
-    // Container-typed subexpressions pin their element slots while live, so
-    // each contributes its full subtree size (1 + cap × elem slots) to the
-    // bound. `value_builtin_ty` propagates the source cap for map/filter/cons/
-    // tail/insert, so these types carry the exact capacities the runtime
-    // allocates (a Cap(0) map/filter result type would undercount by cap(elem)
-    // element slots). Empty `list`/`empty_map`/`empty_set` legitimately have
-    // Cap(0): the empty container occupies one slot and element slots are
-    // allocated by the cons/insert ops themselves, each already counted.
+    // Container-typed subexpressions pin their element slots while live. Open
+    // collections have no type-level capacity, so `subtree_size` uses the
+    // conservative `ELEM_EST`; the default RT mode applies `POOL_SAFETY_MULTIPLIER`
+    // so legitimate growth does not exhaust the pool.
     let container_capacity = lw
         .container_tys
         .iter()
@@ -3773,6 +3773,15 @@ pub fn lower_with_cafs(
         + container_capacity
         + num_main_cells
         + fragment_capacity;
+    let slot_capacity = value_capacity * Lowerer::POOL_SAFETY_MULTIPLIER;
+    // Payload buffer budget: the element slots of every container-typed
+    // subexpression (the container slot itself is counted in `slot_capacity`).
+    let buffer_budget = lw
+        .container_tys
+        .iter()
+        .map(|t| lw.subtree_size(t).saturating_sub(1))
+        .sum::<usize>()
+        * Lowerer::POOL_SAFETY_MULTIPLIER;
     // Pre-allocated function-call scratch: the runtime call stack never holds
     // more than one frame per fragment (recursion is rejected at inference, so
     // no fragment can recur on a dispatch chain), so the total fragment count
@@ -3811,7 +3820,8 @@ pub fn lower_with_cafs(
         fragments: lw.fragments,
         max_call_regs,
         value_state: ValueLayout {
-            capacity: value_capacity,
+            capacity: slot_capacity,
+            buffer_budget,
             value_state_slots: 0,
         },
     })

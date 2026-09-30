@@ -628,6 +628,7 @@ mod program_value_tests {
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
+                buffer_budget: 0,
                 value_state_slots: 2,
             },
         };
@@ -657,6 +658,7 @@ mod program_value_tests {
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
+                buffer_budget: 0,
                 value_state_slots: 1,
             },
         };

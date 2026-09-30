@@ -2003,6 +2003,7 @@ mod closure_dispatch_tests {
             max_call_regs: 2,
             value_state: ValueLayout {
                 capacity: 16,
+                buffer_budget: 0,
                 value_state_slots: 0,
             },
             fragments: vec![std::sync::Arc::new(FragmentIr {
@@ -2063,6 +2064,7 @@ mod value_track_tests {
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 16,
+                buffer_budget: 0,
                 value_state_slots,
             },
         };

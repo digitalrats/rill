@@ -578,6 +578,9 @@ pub enum ValueInstr {
 pub struct ValueLayout {
     /// Number of arena slots pre-allocated for the whole program.
     pub capacity: usize,
+    /// Ref-slot budget of the pre-allocated payload buffer pool (collection and
+    /// record element buffers served by `Arena::take_buf`).
+    pub buffer_budget: usize,
     /// Number of per-tick value-state slots (feedback/delay of values).
     pub value_state_slots: usize,
 }
