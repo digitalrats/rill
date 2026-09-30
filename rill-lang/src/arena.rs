@@ -1,11 +1,11 @@
 //! Fixed-capacity arena with reference counting and copy-on-write.
 //!
-//! All slots are pre-allocated up front; allocation pops a free index from a
-//! free-list and returns a slot. RC is a non-atomic `u32` — the arena is owned
-//! by a single `RillProgram` on a single-threaded DAG. Copy-on-write: `mutate()`
-//! copies the value to a fresh slot when `rc > 1`.
-
-use std::collections::VecDeque;
+//! All slots are pre-allocated up front; allocation pops the head of an
+//! **embedded free list** — a freed slot stores the next free index in place of
+//! its payload, so the free list needs no separate bookkeeping structure. RC is
+//! a non-atomic `u32` — the arena is owned by a single `RillProgram` on a
+//! single-threaded DAG. Copy-on-write: `mutate()` copies the value to a fresh
+//! slot when `rc > 1`.
 
 /// Opaque index into an [`Arena`] slot. Stable across slot reuse.
 pub type ArenaRef = u32;
@@ -108,10 +108,18 @@ impl Value {
     }
 }
 
+/// A slot in the arena: either live (with an RC) or on the embedded free list.
+///
+/// The free-list link lives *inside* the freed slot — this is the embedded
+/// free-list trick from Alexandrescu's "Affordable Allocator": no separate
+/// free-list structure, and a freed slot's memory is reused to hold the link.
 #[derive(Debug, Clone)]
-struct Slot {
-    rc: u32,
-    val: Value,
+enum Slot {
+    /// A live value with a reference count.
+    Occupied { rc: u32, val: Value },
+    /// A freed slot holding the index of the next free slot (the free-list
+    /// head when reached from [`Arena::free`]).
+    Free { next: Option<ArenaRef> },
 }
 
 /// A fixed-capacity arena. `with_capacity(0)` is allowed and means "no values".
@@ -120,23 +128,28 @@ struct Slot {
 /// is never shared between graph nodes, so RC is a plain non-atomic `u32`.
 #[derive(Debug)]
 pub struct Arena {
-    slots: Vec<Option<Slot>>,
-    free: VecDeque<ArenaRef>,
+    slots: Vec<Slot>,
+    free: Option<ArenaRef>,
+    live: usize,
     capacity: usize,
     /// Reserved for future debug/abort-safety support; not yet read.
     next_gen: u32,
 }
 
 impl Arena {
-    /// Create an arena with `capacity` pre-allocated slots.
+    /// Create an arena with `capacity` pre-allocated slots linked into the
+    /// embedded free list.
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut free = VecDeque::with_capacity(capacity);
+        let mut slots = Vec::with_capacity(capacity);
         for i in 0..capacity {
-            free.push_back(i as ArenaRef);
+            slots.push(Slot::Free {
+                next: (i + 1 < capacity).then_some((i + 1) as ArenaRef),
+            });
         }
         Self {
-            slots: vec![None; capacity],
-            free,
+            slots,
+            free: (capacity > 0).then_some(0),
+            live: 0,
             capacity,
             next_gen: 0,
         }
@@ -149,31 +162,36 @@ impl Arena {
 
     /// Number of live (allocated) slots.
     pub fn live(&self) -> usize {
-        self.capacity - self.free.len()
+        self.live
     }
 
     /// Allocate a slot holding `val`. `Err` when the arena is full.
     pub fn alloc(&mut self, val: Value) -> Result<ArenaRef, ArenaError> {
-        let idx = self.free.pop_front().ok_or(ArenaError::CapacityExceeded)?;
+        let idx = self.free.ok_or(ArenaError::CapacityExceeded)?;
+        self.free = match &self.slots[idx as usize] {
+            Slot::Free { next } => *next,
+            Slot::Occupied { .. } => unreachable!("arena free list corrupt"),
+        };
+        self.slots[idx as usize] = Slot::Occupied { rc: 1, val };
         self.next_gen = self.next_gen.wrapping_add(1);
-        self.slots[idx as usize] = Some(Slot { rc: 1, val });
+        self.live += 1;
         Ok(idx)
     }
 
     /// Reference count of a slot (0 if freed).
     pub fn rc(&self, r: ArenaRef) -> u32 {
-        self.slots
-            .get(r as usize)
-            .and_then(|s| s.as_ref())
-            .map_or(0, |s| s.rc)
+        match self.slots.get(r as usize) {
+            Some(Slot::Occupied { rc, .. }) => *rc,
+            _ => 0,
+        }
     }
 
     /// Immutable view of a slot's value.
     pub fn get(&self, r: ArenaRef) -> Option<&Value> {
-        self.slots
-            .get(r as usize)
-            .and_then(|s| s.as_ref())
-            .map(|s| &s.val)
+        match self.slots.get(r as usize) {
+            Some(Slot::Occupied { val, .. }) => Some(val),
+            _ => None,
+        }
     }
 
     /// Mutable view of a slot's value (no RC change). Debug builds assert the
@@ -181,21 +199,21 @@ impl Arena {
     /// without accounting; call `mutate` first when shared.
     pub fn get_mut(&mut self, r: ArenaRef) -> Option<&mut Value> {
         debug_assert_eq!(self.rc(r), 1);
-        self.slots
-            .get_mut(r as usize)
-            .and_then(|s| s.as_mut())
-            .map(|s| &mut s.val)
+        match self.slots.get_mut(r as usize) {
+            Some(Slot::Occupied { val, .. }) => Some(val),
+            _ => None,
+        }
     }
 
     /// Share a value: `rc++` and return the same ref.
     pub fn copy(&mut self, r: ArenaRef) -> Result<ArenaRef, ArenaError> {
-        let slot = self
-            .slots
-            .get_mut(r as usize)
-            .and_then(|s| s.as_mut())
-            .ok_or(ArenaError::DanglingRef)?;
-        slot.rc = slot.rc.checked_add(1).ok_or(ArenaError::RcOverflow)?;
-        Ok(r)
+        match self.slots.get_mut(r as usize) {
+            Some(Slot::Occupied { rc, .. }) => {
+                *rc = rc.checked_add(1).ok_or(ArenaError::RcOverflow)?;
+                Ok(r)
+            }
+            _ => Err(ArenaError::DanglingRef),
+        }
     }
 
     /// Drop one reference; frees the slot (recursively for field refs) at rc 0.
@@ -205,19 +223,15 @@ impl Arena {
             return;
         }
         if cur > 1 {
-            self.slots
-                .get_mut(r as usize)
-                .and_then(|s| s.as_mut())
-                .unwrap()
-                .rc = cur - 1;
+            if let Some(Slot::Occupied { rc, .. }) = self.slots.get_mut(r as usize) {
+                *rc = cur - 1;
+            }
             return;
         }
-        let val = self
-            .slots
-            .get_mut(r as usize)
-            .and_then(|s| s.take())
-            .unwrap()
-            .val;
+        let val = match self.slots.get_mut(r as usize) {
+            Some(Slot::Occupied { val, .. }) => std::mem::replace(val, Value::Void),
+            _ => return,
+        };
         match val {
             Value::Record(fields) | Value::Sum(_, fields) => {
                 for f in fields {
@@ -244,7 +258,9 @@ impl Arena {
             }
             _ => {}
         }
-        self.free.push_front(r);
+        self.slots[r as usize] = Slot::Free { next: self.free };
+        self.free = Some(r);
+        self.live -= 1;
     }
 
     /// Copy-on-write entry point: returns a ref that is safe to mutate.
@@ -260,12 +276,10 @@ impl Arena {
         // Copy value, decrement original, return fresh slot. The clone shares
         // the original's field refs, so count each one to give the fresh slot
         // independent ownership before the original is dropped.
-        let val = self
-            .slots
-            .get(r as usize)
-            .and_then(|s| s.as_ref())
-            .map(|s| s.val.clone())
-            .ok_or(ArenaError::DanglingRef)?;
+        let val = match self.slots.get(r as usize) {
+            Some(Slot::Occupied { val, .. }) => val.clone(),
+            _ => return Err(ArenaError::DanglingRef),
+        };
         match &val {
             Value::Record(fields) | Value::Sum(_, fields) => {
                 for f in fields {
@@ -315,6 +329,19 @@ pub enum ArenaError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_free_list_recycles_and_counts() {
+        let mut a = Arena::with_capacity(4);
+        assert_eq!(a.live(), 0);
+        let r = a.alloc(Value::Int(7)).unwrap();
+        assert_eq!(a.live(), 1);
+        a.drop_ref(r);
+        assert_eq!(a.live(), 0);
+        let r2 = a.alloc(Value::Float(1.0)).unwrap();
+        assert_eq!(r2, r, "freed slot must recycle via the embedded free list");
+        assert_eq!(a.live(), 1);
+    }
 
     #[test]
     fn alloc_and_drop_recycles_slot() {
