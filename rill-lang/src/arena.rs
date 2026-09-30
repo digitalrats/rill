@@ -318,6 +318,15 @@ impl Arena {
     pub fn alloc(&mut self, val: Value) -> Result<ArenaRef, (ArenaError, Value)> {
         let idx = match self.free {
             Some(idx) => idx,
+            None if self.pool.growable => {
+                // `growable-arena` (non-RT): grow the slot pool on demand.
+                let idx = self.slots.len() as ArenaRef;
+                self.slots.push(Slot::Occupied { rc: 1, val });
+                self.capacity += 1;
+                self.live += 1;
+                self.next_gen = self.next_gen.wrapping_add(1);
+                return Ok(idx);
+            }
             None => return Err((ArenaError::CapacityExceeded, val)),
         };
         self.free = match &self.slots[idx as usize] {
@@ -549,6 +558,36 @@ mod tests {
         assert_eq!(a.rc(r), 0);
         let r2 = a.alloc(Value::Float(1.0)).unwrap();
         assert_eq!(r2, r, "freed slot must be recycled");
+    }
+
+    #[test]
+    fn buffer_pool_exhaustion_and_recycle() {
+        let mut pool = BufferPool::new(8, false);
+        let b1 = pool.take(4).unwrap();
+        assert!(b1.capacity() >= 4);
+        // The RT (non-growable) pool must not allocate on exhaustion.
+        assert!(pool.take(4).is_none(), "RT pool must report exhaustion");
+        pool.put(b1);
+        assert!(pool.take(4).is_some(), "returned buffer must be reusable");
+    }
+
+    #[test]
+    fn growable_pool_allocates_on_exhaustion() {
+        let mut pool = BufferPool::new(8, true);
+        let _b1 = pool.take(4).unwrap();
+        let b2 = pool.take(4).unwrap();
+        assert!(b2.capacity() >= 4, "growable pool allocates a fresh buffer");
+    }
+
+    #[test]
+    fn growable_arena_allocates_new_slots() {
+        let mut a = Arena::with_capacity(1);
+        a.pool.growable = true;
+        a.alloc(Value::Int(1)).unwrap();
+        let r = a.alloc(Value::Int(2)).unwrap();
+        assert_eq!(a.get(r).unwrap(), &Value::Int(2));
+        assert_eq!(a.capacity(), 2);
+        assert_eq!(a.live(), 2);
     }
 
     #[test]
