@@ -63,26 +63,20 @@ pub enum Value {
     /// and `ValueMakeClosure` recounts the env so both the creating register
     /// and the closure are balanced owners.
     Closure(ArenaRef, u32),
-    /// A first-class list: element refs, current length = `elems.len()`, cap.
+    /// A first-class list: element refs; the current length is `elems.len()`.
     List {
         /// Element arena refs; the current length is `elems.len()`.
         elems: Vec<ArenaRef>,
-        /// Allocated capacity for the list.
-        cap: usize,
     },
     /// A first-class map: sorted (key, value) ref pairs.
     Map {
         /// Sorted (key, value) arena ref pairs.
         pairs: Vec<(ArenaRef, ArenaRef)>,
-        /// Allocated capacity for the map.
-        cap: usize,
     },
     /// A first-class set: sorted element refs.
     Set {
         /// Sorted element arena refs.
         elems: Vec<ArenaRef>,
-        /// Allocated capacity for the set.
-        cap: usize,
     },
     /// The unit value.
     Void,
@@ -446,7 +440,6 @@ mod tests {
         let l = a
             .alloc(Value::List {
                 elems: vec![e0, e1],
-                cap: 4,
             })
             .unwrap();
         // COW copies the list and recounts its elements.
@@ -472,15 +465,9 @@ mod tests {
         let m = a
             .alloc(Value::Map {
                 pairs: vec![(k, v)],
-                cap: 4,
             })
             .unwrap();
-        let s = a
-            .alloc(Value::Set {
-                elems: vec![k],
-                cap: 4,
-            })
-            .unwrap();
+        let s = a.alloc(Value::Set { elems: vec![k] }).unwrap();
         a.drop_ref(m);
         assert_eq!(a.rc(v), 0);
         a.drop_ref(s);

@@ -47,15 +47,17 @@ fn tail_and_filter_preserve_capacity() {
 }
 
 #[test]
-fn map_insert_new_key_overflows_at_capacity() {
-    // { "a": 1.0 } has cap 1, len 1; inserting a NEW key overflows.
-    let mut prog = compile::<f32>("m = { \"a\": 1.0 }; main = insert \"b\" 2.0 m;").unwrap();
+fn map_insert_new_key_grows_past_literal_entries() {
+    // Open collections: inserting a NEW key past the former literal capacity is
+    // no longer a runtime error — the map grows.
+    let mut prog =
+        compile::<f32>("m = { \"a\": 1.0 }; main = length (insert \"b\" 2.0 m);").unwrap();
     let mut out = [0.0f32; 4];
-    let res = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
-    assert!(res.is_err(), "insert of a new key past capacity must error");
-    assert!(
-        format!("{:?}", res.unwrap_err()).contains("capacity exceeded"),
-        "expected capacity message"
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2)
     );
 }
 

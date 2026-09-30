@@ -512,8 +512,6 @@ pub enum ValueInstr {
         dst: usize,
         /// Element value registers (refs).
         elems: Vec<usize>,
-        /// Allocated capacity for the list.
-        cap: usize,
     },
     /// Map literal with string keys.
     ValueMapLit {
@@ -523,8 +521,6 @@ pub enum ValueInstr {
         keys: Vec<usize>,
         /// Value value registers (refs).
         vals: Vec<usize>,
-        /// Allocated capacity for the map.
-        cap: usize,
     },
     /// Value-track comparison.
     ValueCompare {

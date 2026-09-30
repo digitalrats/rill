@@ -46,16 +46,35 @@ fn map_fold_filter_over_list() {
 }
 
 #[test]
-fn cons_overflow_is_runtime_process_error() {
+fn list_grows_past_literal_capacity() {
+    // Open collections: a `cons` past the former strict capacity is no longer
+    // a runtime error — the list grows.
+    let mut prog =
+        compile::<f32>("xs = [1.0, 2.0]; main = length (cons 3.0 (cons 4.0 xs));").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(4)
+    );
+}
+
+#[test]
+fn repeated_growth_ticks_do_not_leak_arena() {
+    // Open collections: repeated cons growth across ticks must not leak — the
+    // tick-end clear releases every per-tick register, keeping the fixed arena
+    // balanced. The pinned List output (list slot + element slots) stays live
+    // across ticks, so live() must be stable, not growing.
     let mut prog = compile::<f32>("main = cons 3.0 [1.0, 2.0];").unwrap();
     let mut out = [0.0f32; 4];
-    let res = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
-    assert!(res.is_err(), "cons past capacity must be a runtime error");
-    let err = res.unwrap_err();
-    assert!(
-        format!("{err:?}").contains("capacity exceeded"),
-        "expected capacity message, got {err:?}"
-    );
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let baseline = prog.arena().live();
+    assert!(baseline > 0, "the pinned List output must hold slots");
+    for _ in 0..20 {
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        assert_eq!(prog.arena().live(), baseline, "tick must leak nothing");
+    }
 }
 
 #[test]
@@ -91,21 +110,6 @@ fn cons_prepends_new_head() {
             );
         }
         other => panic!("expected Just 9.0, got {other:?}"),
-    }
-}
-
-#[test]
-fn repeated_cons_overflow_ticks_do_not_leak_arena() {
-    // A cons overflow latches a runtime error; the tick must still release its
-    // per-tick registers so a graph that keeps calling `process` while the
-    // program is broken cannot exhaust the fixed arena (one orphaned slot per
-    // register per erroring tick would otherwise exhaust it after a few ticks).
-    let mut prog = compile::<f32>("main = cons 3.0 [1.0, 2.0];").unwrap();
-    let mut out = [0.0f32; 4];
-    for _ in 0..20 {
-        let res = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
-        assert!(res.is_err(), "every tick must report the overflow");
-        assert_eq!(prog.arena().live(), 0, "erroring tick must leak nothing");
     }
 }
 
@@ -169,18 +173,16 @@ fn consed_list_shares_source_elements_across_ticks() {
 }
 
 #[test]
-fn list_negative_capacity_does_not_explode() {
-    // A negative capacity input must not wrap into a huge `usize` (the interp
-    // clamps Int capacities; a non-Int input falls back to 0). Regression guard
-    // for the defensive `max(0)` clamp in the ListEmpty arm.
-    let mut prog = compile::<f32>("main = list (0 - 3);").unwrap();
+fn list_empty_has_zero_length() {
+    // `list` (no capacity arg) is an empty list with length 0.
+    let mut prog = compile::<f32>("main = length (list);").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
-    match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::List { cap, .. } => assert_eq!(*cap, 0),
-        other => panic!("expected a List, got {other:?}"),
-    }
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(0)
+    );
 }
 
 #[test]
@@ -221,13 +223,6 @@ fn map_preserves_type_when_closure_returns_same_type() {
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(3)
     );
-}
-
-#[test]
-fn list_capacity_arg_must_be_int() {
-    // `list "foo"` — a non-Int capacity argument — must be a COMPILE error,
-    // not a silent `Cap(0)`.
-    assert!(compile::<f32>("main = list \"foo\";").is_err());
 }
 
 #[test]

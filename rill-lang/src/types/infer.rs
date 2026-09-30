@@ -1841,6 +1841,30 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
             span,
         });
     }
+    // Bare zero-argument collection constructors: `list`, `empty_map`,
+    // `empty_set` in value position are empty-container builtin calls (the
+    // capacity argument was removed — open collections).
+    match name {
+        "list" => {
+            return Ok(ArrowTy::value_channel(ValueTy::App(
+                "List".into(),
+                vec![ValueTy::Float],
+            )))
+        }
+        "empty_map" => {
+            return Ok(ArrowTy::value_channel(ValueTy::App(
+                "Map".into(),
+                vec![ValueTy::String, ValueTy::Float],
+            )))
+        }
+        "empty_set" => {
+            return Ok(ArrowTy::value_channel(ValueTy::App(
+                "Set".into(),
+                vec![ValueTy::Float],
+            )))
+        }
+        _ => {}
+    }
     let ctor_sums = sum_types_with_ctor(ctx, name);
     if !ctor_sums.is_empty() {
         // A bare constructor is normally an error ("requires arguments"), but a

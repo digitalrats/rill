@@ -915,25 +915,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueConstString { dst, value } => {
             prog.value_regs[*dst] = alloc_owned(prog, Value::String(value.clone()));
         }
-        ValueInstr::ValueListLit { dst, elems, cap } => {
+        ValueInstr::ValueListLit { dst, elems } => {
             prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, elems) {
-                alloc_owned(
-                    prog,
-                    Value::List {
-                        elems: refs,
-                        cap: *cap,
-                    },
-                )
+                alloc_owned(prog, Value::List { elems: refs })
             } else {
                 None
             };
         }
-        ValueInstr::ValueMapLit {
-            dst,
-            keys,
-            vals,
-            cap,
-        } => {
+        ValueInstr::ValueMapLit { dst, keys, vals } => {
             prog.value_regs[*dst] = if let (Some(ks), Some(vs)) =
                 (read_field_refs(prog, keys), read_field_refs(prog, vals))
             {
@@ -942,7 +931,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 // literal written out of order is normalised here.
                 let mut pairs: Vec<(ArenaRef, ArenaRef)> = ks.into_iter().zip(vs).collect();
                 pairs.sort_by(|a, b| value_cmp(&prog.arena, a.0, b.0).cmp(&0));
-                alloc_owned(prog, Value::Map { pairs, cap: *cap })
+                alloc_owned(prog, Value::Map { pairs })
             } else {
                 None
             };
@@ -1025,29 +1014,13 @@ fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
     lo
 }
 
-/// Read an Int value register as a non-negative capacity (clamped), 0 when the
-/// register holds no Int (a negative Int must not wrap into a huge `usize`).
-fn int_cap_arg<T: Transcendental, const BUF: usize>(
-    prog: &RillProgram<T, BUF>,
-    reg: usize,
-) -> usize {
-    prog.value_regs
-        .get(reg)
-        .copied()
-        .flatten()
-        .and_then(|r| match prog.arena.get(r) {
-            Some(Value::Int(n)) => Some((*n).max(0) as usize),
-            _ => None,
-        })
-        .unwrap_or(0)
-}
-
 /// Dispatch a collection operation (`ValueCallBuiltin`).
 ///
 /// Container reads copy (RC++) any child refs the result claims so both the
-/// source and the new container own them. A capacity overflow latches a
-/// `ProcessError` on `prog.value_error` instead of a silent `None` — the
-/// register-`Option` channel is reserved for build-time arena exhaustion.
+/// source and the new container own them. Arena exhaustion is reported as a
+/// build-time bug (`debug_assert!`) and a detectable no-op — open collections
+/// grow up to the pre-allocated pool, so a correctly-budgeted program never
+/// exhausts it.
 fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     op: ValueBuiltinOp,
@@ -1064,11 +1037,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // result own them (the source register is dropped at tick end).
             let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
             match xs {
-                Some(Value::List { mut elems, cap }) => {
-                    if elems.len() >= cap {
-                        prog.value_error = Some(ProcessError::processing("list capacity exceeded"));
-                        return;
-                    }
+                Some(Value::List { mut elems }) => {
                     let x = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok());
                     match x {
                         Some(xr) => {
@@ -1079,7 +1048,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                                 _ = prog.arena.copy(*e);
                             }
                             elems.insert(0, xr);
-                            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems, cap });
+                            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems });
                         }
                         None => prog.value_regs[dst] = None,
                     }
@@ -1121,7 +1090,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // map f xs: dispatch f per element via a one-arg closure call.
             let f = prog.value_regs[args[0]];
             let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(_), Some(Value::List { elems, cap })) = (f, xs) {
+            if let (Some(_), Some(Value::List { elems })) = (f, xs) {
                 let mut out = Vec::with_capacity(elems.len());
                 for e in &elems {
                     let out_e = call_closure_single(prog, args[0], *e, dst, drops);
@@ -1129,7 +1098,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         out.push(o);
                     }
                 }
-                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out, cap });
+                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
             } else {
                 prog.value_regs[dst] = None;
             }
@@ -1176,16 +1145,9 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             }
         }
         ListEmpty => {
-            // list n: an empty List with capacity n. The capacity is read from
-            // the runtime Int argument (`list 4`).
-            let cap = int_cap_arg(prog, args[0]);
-            prog.value_regs[dst] = alloc_owned(
-                prog,
-                Value::List {
-                    elems: Vec::new(),
-                    cap,
-                },
-            );
+            // list: an empty List. Open collections have no capacity — the
+            // list grows via cons/append up to the pre-allocated arena pool.
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
         }
         Tail => {
             // tail xs: the source without its head, capacity preserved. The
@@ -1197,15 +1159,9 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // list is its own tail.
             let xs = prog.value_regs[args[0]].and_then(|r| prog.arena.get(r).cloned());
             match xs {
-                Some(Value::List { elems, cap }) => {
+                Some(Value::List { elems }) => {
                     if elems.is_empty() {
-                        prog.value_regs[dst] = alloc_owned(
-                            prog,
-                            Value::List {
-                                elems: Vec::new(),
-                                cap,
-                            },
-                        );
+                        prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
                         return;
                     }
                     for e in &elems {
@@ -1213,7 +1169,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     }
                     let kept: Vec<ArenaRef> = elems[1..].to_vec();
                     let head = elems[0];
-                    prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept, cap });
+                    prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
                     prog.arena.drop_ref(head);
                 }
                 _ => prog.value_regs[dst] = None,
@@ -1226,7 +1182,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // predicate's Bool result is released after each call.
             let p = prog.value_regs[args[0]];
             let xs = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(_), Some(Value::List { elems, cap })) = (p, xs) {
+            if let (Some(_), Some(Value::List { elems })) = (p, xs) {
                 let mut kept: Vec<ArenaRef> = Vec::with_capacity(elems.len());
                 for e in &elems {
                     let pred = call_closure_single(prog, args[0], *e, dst, drops);
@@ -1246,7 +1202,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         prog.arena.drop_ref(pr);
                     }
                 }
-                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept, cap });
+                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
             } else {
                 prog.value_regs[dst] = None;
             }
@@ -1260,7 +1216,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let k = prog.value_regs[args[0]];
             let v = prog.value_regs[args[1]];
             let m = prog.value_regs[args[2]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(kr), Some(vr), Some(Value::Map { pairs, cap })) = (k, v, m) {
+            if let (Some(kr), Some(vr), Some(Value::Map { pairs })) = (k, v, m) {
                 let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
                 let pos = sorted_insert_pos(prog, kr, &keys);
                 let dup = pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0;
@@ -1278,15 +1234,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     new_pairs[pos].1 = vr;
                     _ = prog.arena.copy(vr);
                     prog.arena.drop_ref(old_val);
-                    prog.value_regs[dst] = alloc_owned(
-                        prog,
-                        Value::Map {
-                            pairs: new_pairs,
-                            cap,
-                        },
-                    );
-                } else if pairs.len() >= cap {
-                    prog.value_error = Some(ProcessError::processing("map capacity exceeded"));
+                    prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
                 } else {
                     // Insert at the sorted position: splice (k, v) into the
                     // cloned pair list, then recount every key and value the
@@ -1306,13 +1254,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         _ = prog.arena.copy(*pk);
                         _ = prog.arena.copy(*pv);
                     }
-                    prog.value_regs[dst] = alloc_owned(
-                        prog,
-                        Value::Map {
-                            pairs: new_pairs,
-                            cap,
-                        },
-                    );
+                    prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
                 }
             } else {
                 prog.value_regs[dst] = None;
@@ -1373,7 +1315,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // a runtime `ProcessError`.
             let k = prog.value_regs[args[0]];
             let s = prog.value_regs[args[1]].and_then(|r| prog.arena.get(r).cloned());
-            if let (Some(kr), Some(Value::Set { elems, cap })) = (k, s) {
+            if let (Some(kr), Some(Value::Set { elems })) = (k, s) {
                 let pos = sorted_insert_pos(prog, kr, &elems);
                 let dup = pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0;
                 if dup {
@@ -1381,15 +1323,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     for e in &new_elems {
                         _ = prog.arena.copy(*e);
                     }
-                    prog.value_regs[dst] = alloc_owned(
-                        prog,
-                        Value::Set {
-                            elems: new_elems,
-                            cap,
-                        },
-                    );
-                } else if elems.len() >= cap {
-                    prog.value_error = Some(ProcessError::processing("set capacity exceeded"));
+                    prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: new_elems });
                 } else {
                     let mut new_elems: Vec<ArenaRef> = Vec::with_capacity(elems.len() + 1);
                     for (i, e) in elems.iter().enumerate() {
@@ -1404,40 +1338,20 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     for e in &new_elems {
                         _ = prog.arena.copy(*e);
                     }
-                    prog.value_regs[dst] = alloc_owned(
-                        prog,
-                        Value::Set {
-                            elems: new_elems,
-                            cap,
-                        },
-                    );
+                    prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: new_elems });
                 }
             } else {
                 prog.value_regs[dst] = None;
             }
         }
         MapEmpty => {
-            // empty_map n: an empty Map with capacity n (the strict bound for
-            // later inserts).
-            let cap = int_cap_arg(prog, args[0]);
-            prog.value_regs[dst] = alloc_owned(
-                prog,
-                Value::Map {
-                    pairs: Vec::new(),
-                    cap,
-                },
-            );
+            // empty_map: an empty Map. Open collections have no capacity — the
+            // map grows via insert up to the pre-allocated arena pool.
+            prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: Vec::new() });
         }
         SetEmpty => {
-            // empty_set n: an empty Set with capacity n.
-            let cap = int_cap_arg(prog, args[0]);
-            prog.value_regs[dst] = alloc_owned(
-                prog,
-                Value::Set {
-                    elems: Vec::new(),
-                    cap,
-                },
-            );
+            // empty_set: an empty Set. Open collections have no capacity.
+            prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: Vec::new() });
         }
     }
 }
@@ -1778,21 +1692,14 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             dst: dst + base,
             value: value.clone(),
         },
-        ValueInstr::ValueListLit { dst, elems, cap } => ValueInstr::ValueListLit {
+        ValueInstr::ValueListLit { dst, elems } => ValueInstr::ValueListLit {
             dst: dst + base,
             elems: elems.iter().map(|e| e + base).collect(),
-            cap: *cap,
         },
-        ValueInstr::ValueMapLit {
-            dst,
-            keys,
-            vals,
-            cap,
-        } => ValueInstr::ValueMapLit {
+        ValueInstr::ValueMapLit { dst, keys, vals } => ValueInstr::ValueMapLit {
             dst: dst + base,
             keys: keys.iter().map(|k| k + base).collect(),
             vals: vals.iter().map(|v| v + base).collect(),
-            cap: *cap,
         },
         ValueInstr::ValueCompare { dst, op, a, b } => ValueInstr::ValueCompare {
             dst: dst + base,
@@ -2330,32 +2237,6 @@ mod value_track_tests {
     }
 
     #[test]
-    fn list_empty_clamps_negative_int_capacity() {
-        // A negative Int capacity must clamp to 0, not wrap into a huge `usize`.
-        let mut prog = prog_with(
-            vec![ValueBlock {
-                instrs: vec![
-                    ValueInstr::ValueConstInt { dst: 0, value: -3 },
-                    ValueInstr::ValueCallBuiltin {
-                        dst: 1,
-                        op: ValueBuiltinOp::ListEmpty,
-                        args: vec![0],
-                    },
-                ],
-                term: ValueTerm::Halt,
-            }],
-            0,
-            2,
-            0,
-        );
-        run_value_track(&mut prog).unwrap();
-        match prog.arena.get(prog.value_regs[1].unwrap()).unwrap() {
-            crate::arena::Value::List { cap, .. } => assert_eq!(*cap, 0),
-            other => panic!("expected a List, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn value_match_selects_payload_of_matching_ctor() {
         // Sum(0, [7]) matched against ctor 0: dst reg 2 receives a shared ref to
         // the payload (rc++), so both the sum and the dst reg own it.
@@ -2585,7 +2466,7 @@ mod value_cmp_tests {
 
     fn int_list(a: &mut Arena, len: usize) -> ArenaRef {
         let elems: Vec<ArenaRef> = (0..len).map(|_| a.alloc(Value::Int(0)).unwrap()).collect();
-        a.alloc(Value::List { elems, cap: len }).unwrap()
+        a.alloc(Value::List { elems }).unwrap()
     }
 
     #[test]
@@ -2616,16 +2497,10 @@ mod value_cmp_tests {
         assert!(value_cmp(&a, n1, n2) < 0, "newtype compares by inner value");
 
         // List: lexicographic, shorter is less when prefixes match.
-        let l1 = a
-            .alloc(Value::List {
-                elems: vec![f1],
-                cap: 2,
-            })
-            .unwrap();
+        let l1 = a.alloc(Value::List { elems: vec![f1] }).unwrap();
         let l12 = a
             .alloc(Value::List {
                 elems: vec![f1, f2],
-                cap: 2,
             })
             .unwrap();
         assert!(
@@ -2639,19 +2514,16 @@ mod value_cmp_tests {
         let m_a1 = a
             .alloc(Value::Map {
                 pairs: vec![(ka, f1)],
-                cap: 1,
             })
             .unwrap();
         let m_a2 = a
             .alloc(Value::Map {
                 pairs: vec![(ka, f2)],
-                cap: 1,
             })
             .unwrap();
         let m_b1 = a
             .alloc(Value::Map {
                 pairs: vec![(kb, f1)],
-                cap: 1,
             })
             .unwrap();
         assert!(value_cmp(&a, m_a1, m_a2) < 0, "map value differs");

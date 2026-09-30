@@ -235,6 +235,12 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Worst-case element estimate for open collections. Exact counts are
+    /// data-dependent (a `concat_map` result length is unknown statically), so
+    /// this is a conservative per-op estimate; the runtime safety net is pool
+    /// exhaustion (default mode) or pool growth (`growable-arena`).
+    const ELEM_EST: usize = 16;
+
     /// Lower a value expression to a value register, returning its static value
     /// type. Signal expressions lower to block registers through [`Self::lower`];
     /// value expressions (record/field/match/ctor/literal-in-value-position)
@@ -1030,11 +1036,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let cap = regs.len();
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueListLit {
-                    dst,
-                    elems: regs,
-                    cap,
-                });
+                self.emit_value(ValueInstr::ValueListLit { dst, elems: regs });
                 let ret = ValueTy::App("List".into(), vec![elem_ty, ValueTy::Cap(cap)]);
                 self.note_container(&ret);
                 Ok((dst, ret))
@@ -1055,12 +1057,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let cap = keys.len();
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueMapLit {
-                    dst,
-                    keys,
-                    vals,
-                    cap,
-                });
+                self.emit_value(ValueInstr::ValueMapLit { dst, keys, vals });
                 let ret = ValueTy::App(
                     "Map".into(),
                     vec![ValueTy::String, val_ty, ValueTy::Cap(cap)],
@@ -1277,6 +1274,31 @@ impl<'a> Lowerer<'a> {
             if let Some(&(reg, ref vty)) = scope.get(name) {
                 return Ok((reg, vty.clone()));
             }
+        }
+        // Bare zero-argument collection constructors: `list`, `empty_map`,
+        // `empty_set` in value position are empty-container builtin calls (the
+        // capacity argument was removed — open collections).
+        if let Some(op) = match name {
+            "list" => Some(ValueBuiltinOp::ListEmpty),
+            "empty_map" => Some(ValueBuiltinOp::MapEmpty),
+            "empty_set" => Some(ValueBuiltinOp::SetEmpty),
+            _ => None,
+        } {
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueCallBuiltin {
+                dst,
+                op,
+                args: vec![],
+            });
+            let ret = match op {
+                ValueBuiltinOp::ListEmpty => ValueTy::App("List".into(), vec![ValueTy::Float]),
+                ValueBuiltinOp::MapEmpty => {
+                    ValueTy::App("Map".into(), vec![ValueTy::String, ValueTy::Float])
+                }
+                _ => ValueTy::App("Set".into(), vec![ValueTy::Float]),
+            };
+            self.note_container(&ret);
+            return Ok((dst, ret));
         }
         if let Some(idx) = self.fragment_captures.iter().position(|f| f == name) {
             // A free variable of the enclosing lambda: read it from the call's
@@ -2466,10 +2488,10 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Float
             | ValueTy::Bool
             | ValueTy::String
-            | ValueTy::Cap(_)
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
-            | ValueTy::TyConVar(_) => 1,
+            | ValueTy::TyConVar(_)
+            | ValueTy::Cap(_) => 1,
             ValueTy::App(name, args) => match name.as_str() {
                 "Maybe" => {
                     1 + args
@@ -2492,20 +2514,12 @@ impl<'a> Lowerer<'a> {
                 }
                 "List" | "Set" => {
                     let elem = &args[0];
-                    let cap = match &args[1] {
-                        ValueTy::Cap(n) => *n,
-                        _ => 0,
-                    };
-                    1 + cap * self.subtree_size_impl(elem, visiting)
+                    1 + Self::ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
                 "Map" => {
                     let k = &args[0];
                     let v = &args[1];
-                    let cap = match &args[2] {
-                        ValueTy::Cap(n) => *n,
-                        _ => 0,
-                    };
-                    1 + cap
+                    1 + Self::ELEM_EST
                         * (self.subtree_size_impl(k, visiting)
                             + self.subtree_size_impl(v, visiting))
                 }
@@ -4399,30 +4413,26 @@ mod tests {
     }
 
     #[test]
-    fn collection_subtree_sizes_are_exact() {
+    fn collection_subtree_sizes_use_open_collection_estimate() {
+        // Open collections: the estimator is ELEM_EST element slots per
+        // container (element counts are data-dependent, not in the type).
         let env = TypeEnv::default();
         let empty = HashSet::new();
         let lw = lw(&env, &empty);
         assert_eq!(
-            lw.subtree_size(&ValueTy::App(
-                "List".into(),
-                vec![ValueTy::Float, ValueTy::Cap(16)]
-            )),
-            1 + 16
+            lw.subtree_size(&ValueTy::App("List".into(), vec![ValueTy::Float])),
+            1 + Lowerer::ELEM_EST
         );
         assert_eq!(
             lw.subtree_size(&ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(4)]
+                vec![ValueTy::String, ValueTy::Float]
             )),
-            1 + 4 * 2
+            1 + Lowerer::ELEM_EST * 2
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App(
-                "Set".into(),
-                vec![ValueTy::Int, ValueTy::Cap(8)]
-            )),
-            1 + 8
+            lw.subtree_size(&ValueTy::App("Set".into(), vec![ValueTy::Int])),
+            1 + Lowerer::ELEM_EST
         );
         assert_eq!(
             lw.subtree_size(&ValueTy::App("Maybe".into(), vec![ValueTy::Float])),
