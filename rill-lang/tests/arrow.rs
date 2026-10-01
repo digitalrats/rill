@@ -211,3 +211,17 @@ fn constraint_instance_resolves() {
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);
 }
+
+#[test]
+fn single_field_record_newtype_style() {
+    // `Box (fn x -> x * 2.0)` constructs a single-field record from the field
+    // VALUE — newtype-style, equivalent to `Box { f: fn x -> x * 2.0 }`.
+    let src = r#"
+        data Box = { f: Float -> Float };
+        b = Box (fn x -> x * 2.0);
+        main = 1.0;
+    "#;
+    let mut prog = run(src);
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+}

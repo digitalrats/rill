@@ -660,8 +660,17 @@ impl<'a> Lowerer<'a> {
                                     span: *span,
                                 });
                             }
-                            let fields_expr = match &call_args[0] {
-                                Expr::Record(f, _) => f,
+                            // The single argument may be a record literal matched by field
+                            // name or — for a single-field record — the field
+                            // VALUE directly, newtype-style: `Box (fn x -> x *
+                            // 2.0)` ≡ `Box { f: fn x -> x * 2.0 }`.
+                            let fields_expr: Vec<(String, Expr)> = match &call_args[0] {
+                                Expr::Record(f, _) => {
+                                    f.iter().map(|(n, e)| (n.clone(), e.clone())).collect()
+                                }
+                                _ if fields.len() == 1 => {
+                                    vec![(fields[0].0.clone(), call_args[0].clone())]
+                                }
                                 _ => {
                                     return Err(CompileError::Type {
                                         msg: format!(

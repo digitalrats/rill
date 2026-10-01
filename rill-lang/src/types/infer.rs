@@ -2483,173 +2483,14 @@ fn infer_apply_impl(
                         span,
                     });
                 }
-                match &args[0] {
-                    Expr::Record(fields_expr, _) => {
-                        // Every declared field exactly once, no duplicates.
-                        let mut seen: Vec<&String> = Vec::new();
-                        for (f, _) in fields_expr {
-                            if seen.contains(&f) {
-                                return Err(CompileError::Type {
-                                    msg: format!("duplicate field `{f}` in `{name}` constructor"),
-                                    span,
-                                });
-                            }
-                            seen.push(f);
-                        }
-                        for (fname, _) in &fields {
-                            if !seen.iter().any(|s| s.as_str() == fname.as_str()) {
-                                return Err(CompileError::Type {
-                                    msg: format!("missing field `{fname}` in `{name}` constructor"),
-                                    span,
-                                });
-                            }
-                        }
-                        // Builtin records (`Pair a b`) carry PLACEHOLDER type
-                        // parameters (`Var(1)`, `Var(2)`) that are NOT live
-                        // unification vars. Freshen each placeholder to a fresh
-                        // live var BEFORE unifying the fields: unifying the raw
-                        // ids would bind them in the live subst, colliding with
-                        // subsequently freshened ids (`Pair { first: 1.0,
-                        // second: 2 }` failed on the second field).
-                        let is_builtin = ctx.env.ctor_arity(name).is_some();
-                        // Track which placeholder a freshened field replaced
-                        // (`Var(k)` / `TyConVar(k)` / `TyConApp(k, ..)` head →
-                        // fresh var), so parameterized user data can resolve
-                        // each type parameter from the subst after the fields
-                        // unify. EVERY placeholder id is freshened — not just
-                        // bare `Var(k)` fields — because the raw ids live in the
-                        // SAME counter space as live inference vars: with a small
-                        // `ctx.next`, a field VALUE's own fresh vars (a lambda's
-                        // parameter `fn x -> Just x`) would otherwise collide
-                        // with the record's placeholder ids (`data Kleisli m a b`
-                        // uses ids 1..3), corrupting the parameter bindings.
-                        let mut placeholder_bindings: HashMap<u32, ValueTy> = HashMap::new();
-                        fn fresh_placeholder_id(
-                            k: u32,
-                            bindings: &mut HashMap<u32, ValueTy>,
-                            ctx: &mut Ctx<'_>,
-                        ) -> u32 {
-                            match bindings.get(&k) {
-                                Some(ValueTy::Var(f)) | Some(ValueTy::TyConVar(f)) => *f,
-                                Some(_) => unreachable!("placeholder binding is a fresh var"),
-                                None => {
-                                    let f = ctx.next;
-                                    ctx.next += 1;
-                                    bindings.insert(k, ValueTy::Var(f));
-                                    f
-                                }
-                            }
-                        }
-                        fn freshen_placeholder(
-                            fty: &ValueTy,
-                            bindings: &mut HashMap<u32, ValueTy>,
-                            ctx: &mut Ctx<'_>,
-                        ) -> ValueTy {
-                            match fty {
-                                ValueTy::Var(k) => {
-                                    ValueTy::Var(fresh_placeholder_id(*k, bindings, ctx))
-                                }
-                                ValueTy::TyConVar(k) => {
-                                    ValueTy::TyConVar(fresh_placeholder_id(*k, bindings, ctx))
-                                }
-                                ValueTy::TyConApp(f, xs) => ValueTy::TyConApp(
-                                    fresh_placeholder_id(*f, bindings, ctx),
-                                    xs.iter()
-                                        .map(|x| freshen_placeholder(x, bindings, ctx))
-                                        .collect(),
-                                ),
-                                ValueTy::Func(fa, fr) => ValueTy::Func(
-                                    fa.iter()
-                                        .map(|x| freshen_placeholder(x, bindings, ctx))
-                                        .collect(),
-                                    fr.iter()
-                                        .map(|x| freshen_placeholder(x, bindings, ctx))
-                                        .collect(),
-                                ),
-                                ValueTy::Data(n, a) => ValueTy::Data(
-                                    n.clone(),
-                                    a.iter()
-                                        .map(|x| freshen_placeholder(x, bindings, ctx))
-                                        .collect(),
-                                ),
-                                ValueTy::Newtype(n, a) => ValueTy::Newtype(
-                                    n.clone(),
-                                    a.iter()
-                                        .map(|x| freshen_placeholder(x, bindings, ctx))
-                                        .collect(),
-                                ),
-                                ValueTy::App(n, a) => ValueTy::App(
-                                    n.clone(),
-                                    a.iter()
-                                        .map(|x| freshen_placeholder(x, bindings, ctx))
-                                        .collect(),
-                                ),
-                                t => t.clone(),
-                            }
-                        }
-                        let field_tys: Vec<(String, ValueTy)> = fields
-                            .iter()
-                            .map(|(fname, fty)| {
-                                (
-                                    fname.to_string(),
-                                    freshen_placeholder(fty, &mut placeholder_bindings, ctx),
-                                )
-                            })
-                            .collect();
-                        for (f, e) in fields_expr {
-                            let fty = field_tys
-                                .iter()
-                                .find(|(fname, _)| fname == f)
-                                .map(|(_, t)| t.clone());
-                            let fty = match fty {
-                                Some(t) => t,
-                                None => {
-                                    return Err(CompileError::Type {
-                                        msg: format!("no field `{f}` in `{name}`"),
-                                        span: e.span(),
-                                    });
-                                }
-                            };
-                            let vt = infer_const_value(ctx, e)?;
-                            unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
-                        }
-                        if is_builtin {
-                            let arg_tys: Vec<ValueTy> = field_tys
-                                .iter()
-                                .map(|(_, t)| ctx.subst.resolve_value(t))
-                                .collect();
-                            return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
-                        }
-                        // Parameterized user data (`data Kleisli m a b`): resolve each type
-                        // parameter from the substitution built by unifying the
-                        // fields. `Var(k+1)` and the `TyConApp` head share one
-                        // id space, so resolving `Var(k+1)` yields the concrete
-                        // type (m → Maybe, a → Float, b → Float).
-                        if let Some(arity) = ctx.env.data_arities.get(name) {
-                            if *arity > 0 {
-                                let arg_tys: Vec<ValueTy> = (0..*arity)
-                                    .map(|k| {
-                                        let pid = (k + 1) as u32;
-                                        let pty = match placeholder_bindings.get(&pid) {
-                                            // A bare `Var(k)` field was freshened;
-                                            // resolve its fresh var.
-                                            Some(fresh) => ctx.subst.resolve_value(fresh),
-                                            None => ctx.subst.resolve_value(&ValueTy::Var(pid)),
-                                        };
-                                        match pty {
-                                            ValueTy::Var(_) => ctx.fresh_vty(), // unconstrained param
-                                            t => t,
-                                        }
-                                    })
-                                    .collect();
-                                return Ok(ArrowTy::value_channel(ValueTy::Data(
-                                    name.into(),
-                                    arg_tys,
-                                )));
-                            }
-                        }
-                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
-                    }
+                // The single argument may be a record literal matched by field
+                // name or — for a single-field record — the field VALUE
+                // directly, newtype-style: `Box (fn x -> x * 2.0)` ≡
+                // `Box { f: fn x -> x * 2.0 }`. Synthesize the field literal so
+                // both shapes flow through the unification below unchanged.
+                let fields_expr: Vec<(String, Expr)> = match &args[0] {
+                    Expr::Record(f, _) => f.iter().map(|(n, e)| (n.clone(), e.clone())).collect(),
+                    _ if fields.len() == 1 => vec![(fields[0].0.clone(), args[0].clone())],
                     _ => {
                         return Err(CompileError::Type {
                             msg: format!(
@@ -2658,7 +2499,166 @@ fn infer_apply_impl(
                             span,
                         });
                     }
+                };
+                // Every declared field exactly once, no duplicates.
+                let mut seen: Vec<&String> = Vec::new();
+                for (f, _) in &fields_expr {
+                    if seen.contains(&f) {
+                        return Err(CompileError::Type {
+                            msg: format!("duplicate field `{f}` in `{name}` constructor"),
+                            span,
+                        });
+                    }
+                    seen.push(f);
                 }
+                for (fname, _) in &fields {
+                    if !seen.iter().any(|s| s.as_str() == fname.as_str()) {
+                        return Err(CompileError::Type {
+                            msg: format!("missing field `{fname}` in `{name}` constructor"),
+                            span,
+                        });
+                    }
+                }
+                // Builtin records (`Pair a b`) carry PLACEHOLDER type
+                // parameters (`Var(1)`, `Var(2)`) that are NOT live
+                // unification vars. Freshen each placeholder to a fresh
+                // live var BEFORE unifying the fields: unifying the raw
+                // ids would bind them in the live subst, colliding with
+                // subsequently freshened ids (`Pair { first: 1.0,
+                // second: 2 }` failed on the second field).
+                let is_builtin = ctx.env.ctor_arity(name).is_some();
+                // Track which placeholder a freshened field replaced
+                // (`Var(k)` / `TyConVar(k)` / `TyConApp(k, ..)` head →
+                // fresh var), so parameterized user data can resolve
+                // each type parameter from the subst after the fields
+                // unify. EVERY placeholder id is freshened — not just
+                // bare `Var(k)` fields — because the raw ids live in the
+                // SAME counter space as live inference vars: with a small
+                // `ctx.next`, a field VALUE's own fresh vars (a lambda's
+                // parameter `fn x -> Just x`) would otherwise collide
+                // with the record's placeholder ids (`data Kleisli m a b`
+                // uses ids 1..3), corrupting the parameter bindings.
+                let mut placeholder_bindings: HashMap<u32, ValueTy> = HashMap::new();
+                fn fresh_placeholder_id(
+                    k: u32,
+                    bindings: &mut HashMap<u32, ValueTy>,
+                    ctx: &mut Ctx<'_>,
+                ) -> u32 {
+                    match bindings.get(&k) {
+                        Some(ValueTy::Var(f)) | Some(ValueTy::TyConVar(f)) => *f,
+                        Some(_) => unreachable!("placeholder binding is a fresh var"),
+                        None => {
+                            let f = ctx.next;
+                            ctx.next += 1;
+                            bindings.insert(k, ValueTy::Var(f));
+                            f
+                        }
+                    }
+                }
+                fn freshen_placeholder(
+                    fty: &ValueTy,
+                    bindings: &mut HashMap<u32, ValueTy>,
+                    ctx: &mut Ctx<'_>,
+                ) -> ValueTy {
+                    match fty {
+                        ValueTy::Var(k) => ValueTy::Var(fresh_placeholder_id(*k, bindings, ctx)),
+                        ValueTy::TyConVar(k) => {
+                            ValueTy::TyConVar(fresh_placeholder_id(*k, bindings, ctx))
+                        }
+                        ValueTy::TyConApp(f, xs) => ValueTy::TyConApp(
+                            fresh_placeholder_id(*f, bindings, ctx),
+                            xs.iter()
+                                .map(|x| freshen_placeholder(x, bindings, ctx))
+                                .collect(),
+                        ),
+                        ValueTy::Func(fa, fr) => ValueTy::Func(
+                            fa.iter()
+                                .map(|x| freshen_placeholder(x, bindings, ctx))
+                                .collect(),
+                            fr.iter()
+                                .map(|x| freshen_placeholder(x, bindings, ctx))
+                                .collect(),
+                        ),
+                        ValueTy::Data(n, a) => ValueTy::Data(
+                            n.clone(),
+                            a.iter()
+                                .map(|x| freshen_placeholder(x, bindings, ctx))
+                                .collect(),
+                        ),
+                        ValueTy::Newtype(n, a) => ValueTy::Newtype(
+                            n.clone(),
+                            a.iter()
+                                .map(|x| freshen_placeholder(x, bindings, ctx))
+                                .collect(),
+                        ),
+                        ValueTy::App(n, a) => ValueTy::App(
+                            n.clone(),
+                            a.iter()
+                                .map(|x| freshen_placeholder(x, bindings, ctx))
+                                .collect(),
+                        ),
+                        t => t.clone(),
+                    }
+                }
+                let field_tys: Vec<(String, ValueTy)> = fields
+                    .iter()
+                    .map(|(fname, fty)| {
+                        (
+                            fname.to_string(),
+                            freshen_placeholder(fty, &mut placeholder_bindings, ctx),
+                        )
+                    })
+                    .collect();
+                for (f, e) in &fields_expr {
+                    let fty = field_tys
+                        .iter()
+                        .find(|(fname, _)| fname == f)
+                        .map(|(_, t)| t.clone());
+                    let fty = match fty {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no field `{f}` in `{name}`"),
+                                span: e.span(),
+                            });
+                        }
+                    };
+                    let vt = infer_const_value(ctx, e)?;
+                    unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
+                }
+                if is_builtin {
+                    let arg_tys: Vec<ValueTy> = field_tys
+                        .iter()
+                        .map(|(_, t)| ctx.subst.resolve_value(t))
+                        .collect();
+                    return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
+                }
+                // Parameterized user data (`data Kleisli m a b`): resolve each type
+                // parameter from the substitution built by unifying the
+                // fields. `Var(k+1)` and the `TyConApp` head share one
+                // id space, so resolving `Var(k+1)` yields the concrete
+                // type (m → Maybe, a → Float, b → Float).
+                if let Some(arity) = ctx.env.data_arities.get(name) {
+                    if *arity > 0 {
+                        let arg_tys: Vec<ValueTy> = (0..*arity)
+                            .map(|k| {
+                                let pid = (k + 1) as u32;
+                                let pty = match placeholder_bindings.get(&pid) {
+                                    // A bare `Var(k)` field was freshened;
+                                    // resolve its fresh var.
+                                    Some(fresh) => ctx.subst.resolve_value(fresh),
+                                    None => ctx.subst.resolve_value(&ValueTy::Var(pid)),
+                                };
+                                match pty {
+                                    ValueTy::Var(_) => ctx.fresh_vty(), // unconstrained param
+                                    t => t,
+                                }
+                            })
+                            .collect();
+                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), arg_tys)));
+                    }
+                }
+                return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
             }
             DataInfo::Sum(_) => {
                 // Applying the sum type name itself is not a constructor call.
