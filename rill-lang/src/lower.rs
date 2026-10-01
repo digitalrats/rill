@@ -162,6 +162,12 @@ struct Lowerer<'a> {
     /// Recursion guard for typeclass method inlining: resolved (class, type,
     /// method) calls currently on the expansion path.
     method_lifting: HashSet<(String, String, String)>,
+    /// Head-argument bindings of a constraint instance (`instance (Monad m) =>
+    /// Arrow (Kleisli m)`): head arg name → concrete type taken from the
+    /// call-site concrete container's LEADING args. The instance body's own
+    /// record construction resolves against the same concrete type via the
+    /// expected-type threading.
+    head_arg_bindings: HashMap<String, ValueTy>,
     /// Compiled function bodies (lambda literals), indexed by
     /// [`ValueInstr::ValueMakeClosure`]'s `fragment` field.
     fragments: Vec<std::sync::Arc<FragmentIr>>,
@@ -279,7 +285,46 @@ impl<'a> Lowerer<'a> {
                 field,
                 span,
             } => {
-                let (rec_reg, rec_vty) = self.lower_value(record)?;
+                // A result-directed typeclass call in record position
+                // (`(arr f).unKleisli`) selects its instance by the record
+                // type, which only the FIELD name identifies (`unKleisli` →
+                // `Kleisli m a b`). When the field names exactly one record
+                // type, thread it as the expected type so the record's own
+                // lowering resolves (a projection on a concrete expression is
+                // unaffected — the expected is only a hint).
+                let rec_candidates: Vec<String> = self
+                    .env
+                    .data_types
+                    .iter()
+                    .filter_map(|(n, info)| match info {
+                        DataInfo::Record(fields) if fields.iter().any(|(f, _)| f == field) => {
+                            Some(n.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let rec_expected: Option<ValueTy> = if rec_candidates.len() == 1 {
+                    let arity = self
+                        .env
+                        .data_arities
+                        .get(&rec_candidates[0])
+                        .copied()
+                        .unwrap_or(0);
+                    let args = (0..arity)
+                        .map(|_| {
+                            let v = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            ValueTy::Var(v)
+                        })
+                        .collect::<Vec<_>>();
+                    Some(ValueTy::Data(rec_candidates[0].clone(), args))
+                } else {
+                    None
+                };
+                let (rec_reg, rec_vty) = match rec_expected {
+                    Some(e) => self.lower_value_expected(record, Some(&e))?,
+                    None => self.lower_value(record)?,
+                };
                 let rec_name = match &rec_vty {
                     ValueTy::Data(n, _) => n.clone(),
                     // Builtin records (`Pair a b`) are parameterized as `App`.
@@ -772,18 +817,27 @@ impl<'a> Lowerer<'a> {
                                     });
                                 }
                             };
-                            let (_, params, body) =
-                                match self.env.resolve_method(name, ty_name.as_str()) {
-                                    Some(r) => r,
+                            // Constraint instance: bind head args from the
+                            // expected container's leading args and discharge
+                            // the constraints before inlining the body.
+                            self.bind_head_args_and_discharge(&class_name, &ty_name, exp, *span)?;
+                            let (_, params, body) = match self
+                                .env
+                                .resolve_method(name, ty_name.as_str())
+                            {
+                                Some(r) => r,
+                                None => match self.env.class_default(&class_name, name) {
+                                    Some((params, body)) => (class_name.clone(), params, body),
                                     None => {
                                         return Err(CompileError::Type {
-                                            msg: format!(
-                                            "no instance of `{class_name}` for type `{ty_name}`"
-                                        ),
-                                            span: *span,
-                                        });
+                                                msg: format!(
+                                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                                ),
+                                                span: *span,
+                                            });
                                     }
-                                };
+                                },
+                            };
                             let key = (class_name, ty_name.clone(), name.to_string());
                             if self.method_lifting.contains(&key) {
                                 return Err(CompileError::Type {
@@ -840,18 +894,23 @@ impl<'a> Lowerer<'a> {
                                 });
                                 }
                             };
-                            let (_, params, body) =
-                                match self.env.resolve_method(name, ty_name.as_str()) {
-                                    Some(r) => r,
+                            let (_, params, body) = match self
+                                .env
+                                .resolve_method(name, ty_name.as_str())
+                            {
+                                Some(r) => r,
+                                None => match self.env.class_default(&class_name, name) {
+                                    Some((params, body)) => (class_name.clone(), params, body),
                                     None => {
                                         return Err(CompileError::Type {
-                                            msg: format!(
-                                            "no instance of `{class_name}` for type `{ty_name}`"
-                                        ),
-                                            span: *span,
-                                        });
+                                                msg: format!(
+                                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                                ),
+                                                span: *span,
+                                            });
                                     }
-                                };
+                                },
+                            };
                             let key = (class_name.clone(), ty_name.clone(), name.to_string());
                             if self.method_lifting.contains(&key) {
                                 return Err(CompileError::Type {
@@ -937,6 +996,20 @@ impl<'a> Lowerer<'a> {
                         // constructor.
                         let (container_reg, container_vty) =
                             self.lower_value(&call_args[container_idx])?;
+                        // Constraint instance: bind head args from the
+                        // container's LEADING args and discharge the
+                        // constraints before resolving the constructor.
+                        match &container_vty {
+                            ValueTy::App(c, _) | ValueTy::Data(c, _) => {
+                                self.bind_head_args_and_discharge(
+                                    &class_name,
+                                    c,
+                                    &container_vty,
+                                    *span,
+                                )?;
+                            }
+                            _ => {}
+                        }
                         let ctor = match &container_vty {
                             ValueTy::App(c, _) | ValueTy::Data(c, _) => c.clone(),
                             _ => {
@@ -950,14 +1023,17 @@ impl<'a> Lowerer<'a> {
                         };
                         let (_, params, body) = match self.env.resolve_method(name, ctor.as_str()) {
                             Some(r) => r,
-                            None => {
-                                return Err(CompileError::Type {
-                                    msg: format!(
-                                        "no instance of `{class_name}` for constructor `{ctor}`"
-                                    ),
-                                    span: *span,
-                                });
-                            }
+                            None => match self.env.class_default(&class_name, name) {
+                                Some((params, body)) => (class_name.clone(), params, body),
+                                None => {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "no instance of `{class_name}` for constructor `{ctor}` and no default for `{name}`"
+                                        ),
+                                        span: *span,
+                                    });
+                                }
+                            },
                         };
                         if params.len() != call_args.len() {
                             return Err(CompileError::Type {
@@ -1499,6 +1575,88 @@ impl<'a> Lowerer<'a> {
             Expr::Ref(name, _) => self.env.is_nullary_method(class_name, name.as_str()),
             _ => false,
         }
+    }
+
+    /// Bind a constraint instance's head args from the LEADING args of the
+    /// call-site concrete container (`instance (Monad m) => Arrow (Kleisli m)`:
+    /// `Kleisli Maybe Float Float` + head `Kleisli m` → `m := Maybe`), recording
+    /// each binding in [`Self::head_arg_bindings`], then discharge every
+    /// constraint by instance lookup of the bound type. A head arg that is not
+    /// concrete at the call site is DEFERRED (recorded, not checked) — the
+    /// concrete binding emerges when the surrounding expression's type is
+    /// pinned. Returns the instance's `(head_args, constraints)` (both empty
+    /// for a non-constraint instance).
+    #[allow(clippy::type_complexity)]
+    fn bind_head_args_and_discharge(
+        &mut self,
+        class_name: &str,
+        ctor: &str,
+        container_vty: &ValueTy,
+        span: Span,
+    ) -> Result<(Vec<String>, Vec<(String, String)>), CompileError> {
+        let inst = self
+            .env
+            .instances
+            .get(class_name)
+            .and_then(|by_ty| by_ty.get(ctor))
+            .cloned();
+        let (head_args, constraints) = match &inst {
+            Some(i) => (i.head_args.clone(), i.constraints.clone()),
+            None => (vec![], vec![]),
+        };
+        let concrete_args = match container_vty {
+            ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+            _ => vec![],
+        };
+        if concrete_args.is_empty() && !head_args.is_empty() {
+            // The container's type args are unknown at the call site (the
+            // lowerer's inlined record literal carries no parameterization).
+            // Defer the head binding and constraint discharge — inference
+            // already discharged them with the concrete args.
+            return Ok((vec![], vec![]));
+        }
+        for (k, hv) in head_args.iter().enumerate() {
+            if let Some(ca) = concrete_args.get(k) {
+                self.head_arg_bindings.insert(hv.clone(), ca.clone());
+            } else {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "head argument `{hv}` of `{ctor}` is not concrete at the call site"
+                    ),
+                    span,
+                });
+            }
+        }
+        for (cclass, cv) in &constraints {
+            let bound =
+                self.head_arg_bindings
+                    .get(cv)
+                    .cloned()
+                    .ok_or_else(|| CompileError::Type {
+                        msg: format!("constraint `{cclass} {cv}` has an unbound type variable"),
+                        span,
+                    })?;
+            let tname = self.env.type_name_of_vty(&bound);
+            if let Some(tname) = tname {
+                if !self
+                    .env
+                    .instances
+                    .get(cclass.as_str())
+                    .map(|m| m.contains_key(tname.as_str()))
+                    .unwrap_or(false)
+                {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "no instance of `{cclass}` for type `{tname}` (constraint of `{class_name}`)"
+                        ),
+                        span,
+                    });
+                }
+            }
+            // An unresolved type variable defers the discharge to the point
+            // where the head arg becomes concrete (the body's own resolution).
+        }
+        Ok((head_args, constraints))
     }
 
     /// Resolve a `Ref` in value position: a value local (match-arm binding) or a
@@ -4073,6 +4231,7 @@ pub fn lower_with_cafs(
         env: &tp.type_env,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
+        head_arg_bindings: HashMap::new(),
         fragments: Vec::new(),
         fragment_captures: Vec::new(),
         fn_param_tys: tp.fn_param_tys.clone(),
@@ -4337,6 +4496,7 @@ mod tests {
             env,
             value_inline: HashSet::new(),
             method_lifting: HashSet::new(),
+            head_arg_bindings: HashMap::new(),
             fragments: Vec::new(),
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),

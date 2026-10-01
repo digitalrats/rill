@@ -68,6 +68,28 @@ fn tuple_type_desugars_to_pair() {
 }
 
 #[test]
+fn constraint_instance_container_arg_discharges() {
+    // The constructor-class resolution path: `unwrap (Kleisli {..})` binds the
+    // container argument `a b c` against a CONCRETE `Kleisli Maybe Float Float`,
+    // so the head arg `m := Maybe` is concrete when the `Monad m` constraint
+    // discharges (strictly, by instance lookup), and the class pattern matches
+    // the container args AFTER the bound head (`[Float, Float]`).
+    let src = r#"
+        typeclass Unwrap a where { unwrap: a b c -> c; }
+        data Kleisli m a b = { unKleisli: a -> m b };
+        instance (Monad m) => Unwrap (Kleisli m) where {
+            unwrap k = k.unKleisli;
+        }
+        main = match ((unwrap (Kleisli { unKleisli: fn x -> Just x })) 3.0)
+                of { Just v => v; Nothing => 0.0; };
+    "#;
+    let mut prog = run(src);
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 3.0);
+}
+
+#[test]
 fn field_projection_applies_as_function() {
     // `(b.f) 3.0` applies the projected closure.
     let src = r#"
@@ -163,6 +185,28 @@ fn apply_expr_non_function_callee_is_error() {
 fn apply_expr_lambda_callee() {
     // `(fn x -> x) 1.0` applies a lambda literal directly.
     let mut prog = run("main = (fn x -> x * 2.0) 3.0;");
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 6.0);
+}
+
+#[test]
+fn constraint_instance_resolves() {
+    // User-declared equivalents of Kleisli/Arrow/instance with a Monad
+    // constraint: `arr f` must resolve `(Monad m) => Arrow (Kleisli m)`.
+    // `lifted` is a top-level def so reduce β-reduces the `apply` call
+    // (a def-call inside a match scrutinee is not β-reduced).
+    let src = r#"
+        typeclass Arrow a where { arr: (b -> c) -> a b c; }
+        data Kleisli m a b = { unKleisli: a -> m b };
+        instance (Monad m) => Arrow (Kleisli m) where {
+            arr f = Kleisli { unKleisli: fn x -> Just (f x) };
+        }
+        apply k x = k.unKleisli x;
+        lifted = apply (arr (fn x -> x * 2.0)) 3.0;
+        main = match lifted of { Just v => v; Nothing => 0.0; };
+    "#;
+    let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);

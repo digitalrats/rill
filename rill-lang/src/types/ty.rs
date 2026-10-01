@@ -212,6 +212,10 @@ pub struct TypeclassInfo {
     pub arity: usize,
     /// Method dictionary: method name → signature type expression.
     pub methods: Vec<(String, crate::ast::TypeExpr)>,
+    /// Default method bodies: method name → (params, body). An instance that
+    /// omits a method uses its class default (precedence: instance body >
+    /// default > error).
+    pub defaults: HashMap<String, (Vec<String>, Expr)>,
 }
 
 /// A concrete `instance` declaration: which class it implements, the concrete
@@ -395,6 +399,7 @@ impl TypeEnv {
                             Box::new(crate::ast::TypeExpr::TName("Bool".into())),
                         ),
                     )],
+                    defaults: HashMap::new(),
                 },
             ),
             (
@@ -409,6 +414,7 @@ impl TypeEnv {
                             Box::new(crate::ast::TypeExpr::TName("Bool".into())),
                         ),
                     )],
+                    defaults: HashMap::new(),
                 },
             ),
         ]);
@@ -450,6 +456,7 @@ impl TypeEnv {
                                 .max()
                                 .unwrap_or(0),
                             methods: methods.clone(),
+                            defaults: HashMap::new(),
                         },
                     );
                 }
@@ -854,6 +861,14 @@ impl TypeEnv {
             }
         }
         None
+    }
+
+    /// The default body for `method` of `class`, if the class declares one.
+    /// Precedence: instance body > default > error.
+    pub(crate) fn class_default(&self, class: &str, method: &str) -> Option<(Vec<String>, Expr)> {
+        self.typeclasses
+            .get(class)
+            .and_then(|c| c.defaults.get(method).cloned())
     }
 }
 

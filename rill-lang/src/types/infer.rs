@@ -54,6 +54,13 @@ struct Ctx<'a> {
     /// Recursion guard for typeclass method inlining: resolved
     /// (class, type, method) calls currently on the expansion path.
     method_lifting: HashSet<(String, String, String)>,
+    /// Head-argument bindings of a constraint instance (`instance (Monad m) =>
+    /// Arrow (Kleisli m)`): head arg name → concrete type taken from the
+    /// call-site concrete container's LEADING args (`Kleisli Maybe Float Float`
+    /// → `m := Maybe`). The constraints discharge against these, and the
+    /// instance body's own record construction unifies against the same
+    /// concrete type via the expected-type threading.
+    type_var_bindings: HashMap<String, ValueTy>,
 }
 
 impl Ctx<'_> {
@@ -179,6 +186,45 @@ fn fresh_sum_vty(ctx: &mut Ctx<'_>, sum_name: &str) -> ValueTy {
         }
         None => ValueTy::Data(sum_name.into(), vec![]),
     }
+}
+
+/// Substitute a parameterized record's type params into a field type
+/// (`data Kleisli m a b = { unKleisli: a -> m b }` → projecting `unKleisli` off
+/// `Kleisli Maybe Float Float` yields `Float -> Maybe Float`). The env's field
+/// types carry PLACEHOLDER ids (`Var(k)` for the k-th param, `TyConApp` heads in
+/// the same id space); the record's concrete args fill them in positionally.
+fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueTy {
+    fn sub(ty: &ValueTy, args: &[ValueTy]) -> ValueTy {
+        match ty {
+            ValueTy::Var(k) | ValueTy::TyConVar(k) => args
+                .get(k.saturating_sub(1) as usize)
+                .cloned()
+                .unwrap_or_else(|| ty.clone()),
+            ValueTy::TyConApp(f, xs) => {
+                let head = args.get((*f).saturating_sub(1) as usize).cloned();
+                let sub_args = xs.iter().map(|x| sub(x, args)).collect();
+                match head {
+                    Some(ValueTy::App(c, _)) => ValueTy::App(c, sub_args),
+                    Some(ValueTy::Data(c, _)) => ValueTy::Data(c, sub_args),
+                    Some(ValueTy::Newtype(c, _)) => ValueTy::Newtype(c, sub_args),
+                    _ => ValueTy::TyConApp(*f, sub_args),
+                }
+            }
+            ValueTy::Func(fa, fr) => ValueTy::Func(
+                fa.iter().map(|x| sub(x, args)).collect(),
+                fr.iter().map(|x| sub(x, args)).collect(),
+            ),
+            ValueTy::Data(n, a) => {
+                ValueTy::Data(n.clone(), a.iter().map(|x| sub(x, args)).collect())
+            }
+            ValueTy::Newtype(n, a) => {
+                ValueTy::Newtype(n.clone(), a.iter().map(|x| sub(x, args)).collect())
+            }
+            ValueTy::App(n, a) => ValueTy::App(n.clone(), a.iter().map(|x| sub(x, args)).collect()),
+            t => t.clone(),
+        }
+    }
+    sub(fty, args)
 }
 
 /// Infer an expression that must yield exactly one output and no inputs — a
@@ -554,6 +600,80 @@ fn is_bare_nullary_method_ref(ctx: &Ctx<'_>, e: &Expr, class_name: &str) -> bool
     }
 }
 
+/// Bind a constraint instance's head args from the LEADING args of the
+/// call-site concrete container (`instance (Monad m) => Arrow (Kleisli m)`:
+/// `Kleisli Maybe Float Float` + head `Kleisli m` → `m := Maybe`), recording
+/// each binding in `ctx.type_var_bindings`, then discharge every constraint by
+/// instance lookup of the bound type. A head arg that is still an unresolved
+/// type variable at the call site is DEFERRED (recorded, not checked): the
+/// concrete binding emerges when the surrounding expression's type is pinned
+/// (a `match` on `m b`), and the constraint is then discharged by the body's
+/// own resolution. Returns the instance's `(head_args, constraints)` (both
+/// empty for a non-constraint instance).
+#[allow(clippy::type_complexity)]
+fn bind_constraint_instance(
+    ctx: &mut Ctx<'_>,
+    class_name: &str,
+    ctor: &str,
+    container_vty: &ValueTy,
+    span: Span,
+) -> Result<(Vec<String>, Vec<(String, String)>), CompileError> {
+    let inst = ctx
+        .env
+        .instances
+        .get(class_name)
+        .and_then(|by_ty| by_ty.get(ctor))
+        .cloned();
+    let (head_args, constraints) = match &inst {
+        Some(i) => (i.head_args.clone(), i.constraints.clone()),
+        None => (vec![], vec![]),
+    };
+    let concrete_args = match container_vty {
+        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+        _ => vec![],
+    };
+    for (k, hv) in head_args.iter().enumerate() {
+        if let Some(ca) = concrete_args.get(k) {
+            ctx.type_var_bindings.insert(hv.clone(), ca.clone());
+        } else {
+            return Err(CompileError::Type {
+                msg: format!("head argument `{hv}` of `{ctor}` is not concrete at the call site"),
+                span,
+            });
+        }
+    }
+    for (cclass, cv) in &constraints {
+        let bound = ctx
+            .type_var_bindings
+            .get(cv)
+            .cloned()
+            .ok_or_else(|| CompileError::Type {
+                msg: format!("constraint `{cclass} {cv}` has an unbound type variable"),
+                span,
+            })?;
+        let tname = ctx.env.type_name_of_vty(&ctx.subst.resolve_value(&bound));
+        if let Some(tname) = tname {
+            if !ctx
+                .env
+                .instances
+                .get(cclass.as_str())
+                .map(|m| m.contains_key(tname.as_str()))
+                .unwrap_or(false)
+            {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "no instance of `{cclass}` for type `{tname}` (constraint of `{class_name}`)"
+                    ),
+                    span,
+                });
+            }
+        }
+        // An unresolved type variable defers the discharge to the point where
+        // the head arg becomes concrete (the body's own method resolution).
+    }
+    Ok((head_args, constraints))
+}
+
 /// Convert a typeclass method signature's curried argument types into concrete
 /// parameter `ValueTy`s, substituting the class variable with the concrete
 /// constructor (or concrete type name for arity-0 classes). Type variables in
@@ -657,11 +777,22 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
         .flat_map(|(class, by_ty)| by_ty.keys().map(|ty_name| (class.clone(), ty_name.clone())))
         .collect();
     for (class, ty_name) in keys {
+        let info = ctx
+            .env
+            .instances
+            .get(class.as_str())
+            .and_then(|by_ty| by_ty.get(ty_name.as_str()))
+            .cloned()
+            .unwrap();
         // Kind check: a constructor-class instance (`Functor f`) must bind a
-        // constructor whose value arity equals the class variable's arity.
+        // constructor whose REMAINING arity (after the instance head's bound
+        // args) equals the class variable's arity. A partial head
+        // (`instance (Monad m) => Arrow (Kleisli m)`, head `Kleisli m` → 1 bound
+        // of total 3) leaves `instance_head_arity` = 2, which must equal
+        // `Arrow`'s arity 2.
         if let Some(class_info) = ctx.env.typeclasses.get(&class).cloned() {
             if class_info.arity >= 1 {
-                match ctx.env.ctor_value_arity(&ty_name) {
+                match ctx.env.instance_head_arity(&ty_name, &info.head_args) {
                     Some(got) if got != class_info.arity => {
                         return Err(CompileError::Type {
                             msg: format!(
@@ -684,13 +815,16 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
                 }
             }
         }
-        let info = ctx
-            .env
-            .instances
-            .get(class.as_str())
-            .and_then(|by_ty| by_ty.get(ty_name.as_str()))
-            .cloned()
-            .unwrap();
+        // A constraint / partial-head instance (`instance (Monad m) => Arrow
+        // (Kleisli m)`) cannot have its bodies inferred in isolation: the head
+        // args are abstract until a call site binds them to concrete types
+        // (`Kleisli Maybe Float Float` → `m := Maybe`), and a result-directed
+        // method inside (`return (f x)`) needs that concrete type to resolve.
+        // Bodies of such instances are inferred (and errors reported) at every
+        // CALL SITE instead — the constraint discharge there is the real check.
+        if !info.head_args.is_empty() || !info.constraints.is_empty() {
+            continue;
+        }
         for (mname, (params, body)) in &info.methods {
             let key = (class.clone(), ty_name.clone(), mname.clone());
             if ctx.method_lifting.contains(&key) {
@@ -860,6 +994,7 @@ pub fn infer_program_with(
         sigs,
         env,
         method_lifting: HashSet::new(),
+        type_var_bindings: HashMap::new(),
     };
 
     infer_def_group(&mut ctx, &program.defs)?;
@@ -1461,7 +1596,39 @@ fn infer_expr_expected(
             field,
             span,
         } => {
-            let t = infer_expr(ctx, record)?;
+            // A result-directed typeclass call in record position (`(arr f).f`)
+            // selects its instance by the record type, which only the FIELD
+            // name identifies (`unKleisli` → `Kleisli m a b`). When the field
+            // names exactly one record type, thread it as the expected type so
+            // the record's own inference resolves (an unresolved variable
+            // record stays deferred as before).
+            let rec_candidates: Vec<String> = ctx
+                .env
+                .data_types
+                .iter()
+                .filter_map(|(n, info)| match info {
+                    DataInfo::Record(fields) if fields.iter().any(|(f, _)| f == field) => {
+                        Some(n.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let rec_expected = if rec_candidates.len() == 1 {
+                let arity = ctx
+                    .env
+                    .data_arities
+                    .get(&rec_candidates[0])
+                    .copied()
+                    .unwrap_or(0);
+                let args = (0..arity).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
+                Some(ValueTy::Data(rec_candidates[0].clone(), args))
+            } else {
+                None
+            };
+            let t = match rec_expected {
+                Some(e) => infer_expr_expected(ctx, record, Some(e))?,
+                None => infer_expr(ctx, record)?,
+            };
             // record must be a single Value channel of a known Data type
             if t.arity_out() != 1 || t.outs[0].rate != Rate::Value {
                 return Err(CompileError::Type {
@@ -1477,14 +1644,12 @@ fn infer_expr_expected(
                             .find(|(f, _)| f == field)
                             .map(|(_, t)| t.clone());
                         match fty {
-                            // Parameterized user data (`data Box a = { value: a }`):
-                            // placeholder `Var(k)` maps to the k-th type arg.
-                            Some(ValueTy::Var(k)) if !args.is_empty() => {
-                                Ok(ArrowTy::value_channel(
-                                    args.get(k.saturating_sub(1) as usize)
-                                        .cloned()
-                                        .unwrap_or(ValueTy::Float),
-                                ))
+                            // Parameterized user data (`data Box a = { value: a }`,
+                            // `data Kleisli m a b = { unKleisli: a -> m b }`):
+                            // substitute the record's concrete type args for the
+                            // field type's placeholder positions.
+                            Some(ft) if !args.is_empty() => {
+                                Ok(ArrowTy::value_channel(substitute_field_params(&ft, args)))
                             }
                             Some(ft) => Ok(ArrowTy::value_channel(ft)),
                             None => Err(CompileError::Type {
@@ -1538,7 +1703,10 @@ fn infer_expr_expected(
                     Ok(ArrowTy::value_channel(ValueTy::Var(v)))
                 }
                 _ => Err(CompileError::Type {
-                    msg: "field projection requires a record value".into(),
+                    msg: format!(
+                        "field projection requires a record value (got {:?})",
+                        t.outs[0].vty
+                    ),
                     span: *span,
                 }),
             }
@@ -2194,8 +2362,7 @@ fn infer_apply_expr(
         });
     }
     let cty = ct.outs[0].vty.clone();
-    let resolved = ctx.subst.resolve_value(&cty);
-    let (arg_tys, ret_tys) = match resolved {
+    let (arg_tys, ret_tys) = match ctx.subst.resolve_value(&cty) {
         ValueTy::Func(a, r) => (a, r),
         ValueTy::Var(_) => {
             let a = (0..args.len()).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
@@ -2345,25 +2512,88 @@ fn infer_apply_impl(
                         // subsequently freshened ids (`Pair { first: 1.0,
                         // second: 2 }` failed on the second field).
                         let is_builtin = ctx.env.ctor_arity(name).is_some();
-                        // Track which placeholder a freshened bare-var field
-                        // replaced (`Var(k)` → fresh), so parameterized user
-                        // data can resolve each type parameter from the subst
-                        // after the fields unify: a compound field like
-                        // `a -> m b` binds its placeholders directly, while a
-                        // bare `a` field was freshened and needs the link.
+                        // Track which placeholder a freshened field replaced
+                        // (`Var(k)` / `TyConVar(k)` / `TyConApp(k, ..)` head →
+                        // fresh var), so parameterized user data can resolve
+                        // each type parameter from the subst after the fields
+                        // unify. EVERY placeholder id is freshened — not just
+                        // bare `Var(k)` fields — because the raw ids live in the
+                        // SAME counter space as live inference vars: with a small
+                        // `ctx.next`, a field VALUE's own fresh vars (a lambda's
+                        // parameter `fn x -> Just x`) would otherwise collide
+                        // with the record's placeholder ids (`data Kleisli m a b`
+                        // uses ids 1..3), corrupting the parameter bindings.
                         let mut placeholder_bindings: HashMap<u32, ValueTy> = HashMap::new();
+                        fn fresh_placeholder_id(
+                            k: u32,
+                            bindings: &mut HashMap<u32, ValueTy>,
+                            ctx: &mut Ctx<'_>,
+                        ) -> u32 {
+                            match bindings.get(&k) {
+                                Some(ValueTy::Var(f)) | Some(ValueTy::TyConVar(f)) => *f,
+                                Some(_) => unreachable!("placeholder binding is a fresh var"),
+                                None => {
+                                    let f = ctx.next;
+                                    ctx.next += 1;
+                                    bindings.insert(k, ValueTy::Var(f));
+                                    f
+                                }
+                            }
+                        }
+                        fn freshen_placeholder(
+                            fty: &ValueTy,
+                            bindings: &mut HashMap<u32, ValueTy>,
+                            ctx: &mut Ctx<'_>,
+                        ) -> ValueTy {
+                            match fty {
+                                ValueTy::Var(k) => {
+                                    ValueTy::Var(fresh_placeholder_id(*k, bindings, ctx))
+                                }
+                                ValueTy::TyConVar(k) => {
+                                    ValueTy::TyConVar(fresh_placeholder_id(*k, bindings, ctx))
+                                }
+                                ValueTy::TyConApp(f, xs) => ValueTy::TyConApp(
+                                    fresh_placeholder_id(*f, bindings, ctx),
+                                    xs.iter()
+                                        .map(|x| freshen_placeholder(x, bindings, ctx))
+                                        .collect(),
+                                ),
+                                ValueTy::Func(fa, fr) => ValueTy::Func(
+                                    fa.iter()
+                                        .map(|x| freshen_placeholder(x, bindings, ctx))
+                                        .collect(),
+                                    fr.iter()
+                                        .map(|x| freshen_placeholder(x, bindings, ctx))
+                                        .collect(),
+                                ),
+                                ValueTy::Data(n, a) => ValueTy::Data(
+                                    n.clone(),
+                                    a.iter()
+                                        .map(|x| freshen_placeholder(x, bindings, ctx))
+                                        .collect(),
+                                ),
+                                ValueTy::Newtype(n, a) => ValueTy::Newtype(
+                                    n.clone(),
+                                    a.iter()
+                                        .map(|x| freshen_placeholder(x, bindings, ctx))
+                                        .collect(),
+                                ),
+                                ValueTy::App(n, a) => ValueTy::App(
+                                    n.clone(),
+                                    a.iter()
+                                        .map(|x| freshen_placeholder(x, bindings, ctx))
+                                        .collect(),
+                                ),
+                                t => t.clone(),
+                            }
+                        }
                         let field_tys: Vec<(String, ValueTy)> = fields
                             .iter()
                             .map(|(fname, fty)| {
-                                let fty = match fty {
-                                    ValueTy::Var(k) => {
-                                        let fresh = ctx.fresh_vty();
-                                        placeholder_bindings.insert(*k, fresh.clone());
-                                        fresh
-                                    }
-                                    t => t.clone(),
-                                };
-                                (fname.to_string(), fty)
+                                (
+                                    fname.to_string(),
+                                    freshen_placeholder(fty, &mut placeholder_bindings, ctx),
+                                )
                             })
                             .collect();
                         for (f, e) in fields_expr {
@@ -2593,14 +2823,23 @@ fn infer_apply_impl(
                         });
                     }
                 };
+                // Constraint instance: bind head args from the expected
+                // container's leading args (`Kleisli Maybe Float Float` + head
+                // `Kleisli m` → `m := Maybe`) and discharge the constraints.
+                bind_constraint_instance(ctx, &class_name, &ty_name, &exp, span)?;
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
-                    None => {
-                        return Err(CompileError::Type {
-                            msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
-                            span,
-                        });
-                    }
+                    None => match ctx.env.class_default(&class_name, name) {
+                        Some((params, body)) => (class_name.clone(), params, body),
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                ),
+                                span,
+                            });
+                        }
+                    },
                 };
                 let key = (class_name, ty_name.clone(), name.to_string());
                 if ctx.method_lifting.contains(&key) {
@@ -2666,12 +2905,17 @@ fn infer_apply_impl(
                 };
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
-                    None => {
-                        return Err(CompileError::Type {
-                            msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
-                            span,
-                        });
-                    }
+                    None => match ctx.env.class_default(&class_name, name) {
+                        Some((params, body)) => (class_name.clone(), params, body),
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                ),
+                                span,
+                            });
+                        }
+                    },
                 };
                 let key = (class_name.clone(), ty_name.clone(), name.to_string());
                 if ctx.method_lifting.contains(&key) {
@@ -2734,13 +2978,44 @@ fn infer_apply_impl(
             }
             // Phase 1: infer the container argument and resolve the constructor.
             let container_vty = infer_method_value_vty(ctx, &args[container_idx], "argument")?;
+            // Constraint instance: bind head args from the container's LEADING
+            // args and discharge the constraints, then match the class pattern
+            // against the REMAINING args.
+            let container_head: Option<String> = match &container_vty {
+                ValueTy::App(c, _) | ValueTy::Data(c, _) => Some(c.clone()),
+                _ => None,
+            };
+            let (head_args, _) = match &container_head {
+                Some(c) => bind_constraint_instance(ctx, &class_name, c, &container_vty, span)?,
+                None => (vec![], vec![]),
+            };
+            let concrete_args = match &container_vty {
+                ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                _ => vec![],
+            };
             // Build the class-var pattern (`f a` → `App("f", [fresh])`) from the
             // container argument's signature type.
             let pattern = class_var_pattern(ctx, sig, container_idx);
+            // A partial instance head (`Kleisli m`, head_args = ["m"]) means the
+            // pattern matches the concrete container's args AFTER the bound
+            // head args (`Kleisli Maybe Float Float` → match `[Float, Float]`).
+            let match_target = if head_args.is_empty() {
+                container_vty.clone()
+            } else {
+                match &container_vty {
+                    ValueTy::App(c, _) => {
+                        ValueTy::App(c.clone(), concrete_args[head_args.len()..].to_vec())
+                    }
+                    ValueTy::Data(c, _) => {
+                        ValueTy::Data(c.clone(), concrete_args[head_args.len()..].to_vec())
+                    }
+                    _ => container_vty.clone(),
+                }
+            };
             let ctor = match ctx.env.match_ctor_pattern(
                 &class_var,
                 &pattern,
-                &container_vty,
+                &match_target,
                 &mut ctx.subst,
             ) {
                 Some(c) => c,
@@ -2756,12 +3031,17 @@ fn infer_apply_impl(
             };
             let (_, params, body) = match ctx.env.resolve_method(name, ctor.as_str()) {
                 Some(r) => r,
-                None => {
-                    return Err(CompileError::Type {
-                        msg: format!("no instance of `{class_name}` for constructor `{ctor}`"),
-                        span,
-                    });
-                }
+                None => match ctx.env.class_default(&class_name, name) {
+                    Some((params, body)) => (class_name.clone(), params, body),
+                    None => {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "no instance of `{class_name}` for constructor `{ctor}` and no default for `{name}`"
+                            ),
+                            span,
+                        });
+                    }
+                },
             };
             if params.len() != args.len() {
                 return Err(CompileError::Type {
