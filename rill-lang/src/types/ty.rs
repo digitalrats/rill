@@ -444,7 +444,11 @@ impl TypeEnv {
         for def in defs {
             match def {
                 Def::Typeclass {
-                    name, var, methods, ..
+                    name,
+                    var,
+                    methods,
+                    defaults,
+                    ..
                 } => {
                     self.typeclasses.insert(
                         name.clone(),
@@ -456,7 +460,15 @@ impl TypeEnv {
                                 .max()
                                 .unwrap_or(0),
                             methods: methods.clone(),
-                            defaults: HashMap::new(),
+                            defaults: defaults
+                                .iter()
+                                .map(|(m, ps, b)| {
+                                    (
+                                        m.clone(),
+                                        (ps.iter().map(|p| p.name.clone()).collect(), b.clone()),
+                                    )
+                                })
+                                .collect(),
                         },
                     );
                 }

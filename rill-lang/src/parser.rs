@@ -546,7 +546,10 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `typeclass C a where { m: sig; }` — method dictionary.
+    /// `typeclass C a where { m: sig; }` — method dictionary. A method may
+    /// declare a class-level default body after its signature:
+    /// `second: sig = k body;` — the default instances omit (precedence:
+    /// instance body > default > error).
     fn parse_typeclass_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (name, _) = self.expect_ident()?;
@@ -554,11 +557,28 @@ impl<'a> Parser<'a> {
         self.eat(&Tok::KwWhere)?;
         self.eat(&Tok::LBrace)?;
         let mut methods = Vec::new();
+        let mut defaults = Vec::new();
         while self.peek().tok != Tok::RBrace {
             let (mname, _) = self.expect_ident()?;
             self.eat(&Tok::Colon)?;
             let sig = self.parse_type_expr()?;
-            methods.push((mname, sig));
+            let mut default = None;
+            if self.peek().tok == Tok::Eq {
+                self.bump();
+                // Zero or more parameter bindings before the body:
+                // `second k = …`, `both f g = …`.
+                let mut dparams = Vec::new();
+                while matches!(self.peek().tok, Tok::Ident(_)) {
+                    let (p, ps) = self.expect_ident()?;
+                    dparams.push(Param { name: p, span: ps });
+                }
+                let body = self.parse_expr(0, true)?;
+                default = Some((dparams, body));
+            }
+            methods.push((mname.clone(), sig));
+            if let Some((p, b)) = default {
+                defaults.push((mname, p, b));
+            }
             self.eat(&Tok::Semi)?;
         }
         self.eat(&Tok::RBrace)?;
@@ -566,6 +586,7 @@ impl<'a> Parser<'a> {
             name,
             var,
             methods,
+            defaults,
             span: self.span_from(start),
         })
     }
@@ -1646,6 +1667,29 @@ mod tests {
                         ))
                     )
                 );
+            }
+            other => panic!("expected Typeclass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_typeclass_default_bodies() {
+        // `mname : sig = p1 p2 body;` — a class-level default body the
+        // instances may omit. Params bind between `=` and the body.
+        let p = prog("typeclass Arrow a where { arr: (b -> c) -> a b c; second: a b c -> a (Pair d b) (Pair d c) = k (compose (first k)); both: a b c -> a d e -> a (Pair b d) (Pair c e) = f g (compose (first f) (second g)); }; main = _");
+        match &p.defs[0] {
+            Def::Typeclass { name, defaults, .. } => {
+                assert_eq!(name, "Arrow");
+                assert_eq!(defaults.len(), 2);
+                // `second k = compose (first k)` — one param `k`.
+                assert_eq!(defaults[0].0, "second");
+                assert_eq!(defaults[0].1.len(), 1);
+                assert_eq!(defaults[0].1[0].name, "k");
+                // `both f g = …` — two params.
+                assert_eq!(defaults[1].0, "both");
+                assert_eq!(defaults[1].1.len(), 2);
+                assert_eq!(defaults[1].1[0].name, "f");
+                assert_eq!(defaults[1].1[1].name, "g");
             }
             other => panic!("expected Typeclass, got {other:?}"),
         }

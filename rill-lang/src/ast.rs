@@ -408,6 +408,10 @@ pub enum Def {
         var: String,
         /// Methods: (method name, signature type expression).
         methods: Vec<(String, TypeExpr)>,
+        /// Default method bodies: (method name, parameter bindings, body expr).
+        /// `second k = …` — a default the class provides for instances that omit
+        /// the method (precedence: instance body > default > error).
+        defaults: Vec<(String, Vec<Param>, Expr)>,
         /// Span.
         span: Span,
     },
