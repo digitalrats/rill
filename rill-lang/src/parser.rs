@@ -1575,6 +1575,35 @@ mod tests {
     }
 
     #[test]
+    fn tuple_type_desugars_to_pair() {
+        // `(Float, Float)` in type position must desugar to `TApp("Pair", …)` —
+        // typeclass defs store the raw TypeExpr (no resolution), so compilation
+        // alone cannot catch a wrong desugar target.
+        let p = prog("typeclass T a where { m: a (Float, Float) -> Float; }; main = _");
+        match &p.defs[0] {
+            Def::Typeclass { methods, .. } => {
+                assert_eq!(
+                    methods[0].1,
+                    TypeExpr::TFunc(
+                        vec![TypeExpr::TApp(
+                            "a".into(),
+                            vec![TypeExpr::TApp(
+                                "Pair".into(),
+                                vec![
+                                    TypeExpr::TName("Float".into()),
+                                    TypeExpr::TName("Float".into())
+                                ]
+                            )]
+                        )],
+                        Box::new(TypeExpr::TName("Float".into()))
+                    )
+                );
+            }
+            other => panic!("expected Typeclass, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_type_application() {
         let p = prog("data V = { xs: List Float }; main = _");
         match &p.defs[0] {
