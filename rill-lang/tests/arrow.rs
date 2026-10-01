@@ -135,3 +135,19 @@ fn hkt_data_field_applies_type_parameter() {
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(out_float(&prog, 0), 3.0);
 }
+
+#[test]
+fn apply_expr_non_function_callee_is_error() {
+    // `(5.0) 3.0` — a non-function callee must be a compile error.
+    let res = compile::<f32>("main = (5.0) 3.0;");
+    assert!(res.is_err(), "expected a compile error, got success");
+}
+
+#[test]
+fn apply_expr_lambda_callee() {
+    // `(fn x -> x) 1.0` applies a lambda literal directly.
+    let mut prog = run("main = (fn x -> x * 2.0) 3.0;");
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 6.0);
+}

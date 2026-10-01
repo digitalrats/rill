@@ -1118,6 +1118,7 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
+                // Inference enforces exact arity (infer_apply_expr); this guard is defensive/unreachable via compilation.
                 if args.len() > arg_tys.len() {
                     return Err(CompileError::Type {
                         msg: format!(

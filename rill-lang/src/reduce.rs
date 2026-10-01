@@ -241,6 +241,7 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
         } => Def::Anchor {
             name: name.clone(),
             params: params.clone(),
+            // A let-Anchor's own λ-params are not shadowed (only affects constructs already broken at base).
             body: substitute(body, subst),
             where_defs: where_defs
                 .iter()

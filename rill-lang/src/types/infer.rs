@@ -2197,7 +2197,7 @@ fn infer_apply_expr(
     let resolved = ctx.subst.resolve_value(&cty);
     let (arg_tys, ret_tys) = match resolved {
         ValueTy::Func(a, r) => (a, r),
-        _ => {
+        ValueTy::Var(_) => {
             let a = (0..args.len()).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
             let r = vec![ctx.fresh_vty()];
             unify_value(
@@ -2207,6 +2207,12 @@ fn infer_apply_expr(
                 span,
             )?;
             (a, r)
+        }
+        _ => {
+            return Err(CompileError::Type {
+                msg: "applied expression must be a function value".into(),
+                span,
+            })
         }
     };
     if args.len() != arg_tys.len() {

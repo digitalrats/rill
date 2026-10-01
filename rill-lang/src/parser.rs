@@ -1081,22 +1081,7 @@ impl<'a> Parser<'a> {
             Tok::Ident(name) => {
                 if self.peek().tok == Tok::Dot {
                     let proj = self.parse_field(Expr::Ref(name, t.span), t.span.start)?;
-                    if !arg_list && is_atom_start(&self.peek().tok) {
-                        // `(k.unKleisli) p.first` — apply a field projection
-                        // as the callee.
-                        let mut args = Vec::new();
-                        while is_atom_start(&self.peek().tok) {
-                            args.push(self.parse_atom(true)?);
-                        }
-                        let span = self.span_from(t.span.start);
-                        Ok(Expr::ApplyExpr {
-                            callee: Box::new(proj),
-                            args,
-                            span,
-                        })
-                    } else {
-                        Ok(proj)
-                    }
+                    Ok(proj)
                 } else {
                     Ok(Expr::Ref(name, t.span))
                 }
