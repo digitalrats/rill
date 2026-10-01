@@ -209,6 +209,16 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             }
             Ok(())
         }
+        Expr::ApplyExpr { callee, args, .. } => {
+            write!(buf, "(").ok();
+            render_expr(callee, buf, 0)?;
+            write!(buf, ")").ok();
+            for a in args {
+                write!(buf, " ").ok();
+                render_expr(a, buf, 20)?; // application args are tight
+            }
+            Ok(())
+        }
         Expr::Neg(inner, _) => {
             write!(buf, "-").ok();
             render_expr(inner, buf, 15)?;

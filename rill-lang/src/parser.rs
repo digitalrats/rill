@@ -839,11 +839,28 @@ impl<'a> Parser<'a> {
                 let start = t.span.start;
                 self.bump();
                 if self.peek().tok == Tok::Dot {
-                    self.parse_field(Expr::Ref(name, t.span), start)
+                    let proj = self.parse_field(Expr::Ref(name, t.span), start)?;
+                    if is_atom_start(&self.peek().tok) {
+                        // `k.unKleisli p.first` — apply a field projection as
+                        // the callee (field access binds tighter than
+                        // application).
+                        let mut args = Vec::new();
+                        while is_atom_start(&self.peek().tok) {
+                            args.push(self.parse_atom(true)?);
+                        }
+                        let span = self.span_from(start);
+                        Ok(Expr::ApplyExpr {
+                            callee: Box::new(proj),
+                            args,
+                            span,
+                        })
+                    } else {
+                        Ok(proj)
+                    }
                 } else if is_atom_start(&self.peek().tok) {
                     let mut args = Vec::new();
                     while is_atom_start(&self.peek().tok) {
-                        args.push(self.parse_atom()?);
+                        args.push(self.parse_atom(true)?);
                     }
                     let span = t.span.merge(args.last().unwrap().span());
                     Ok(Expr::Apply { name, args, span })
@@ -851,7 +868,7 @@ impl<'a> Parser<'a> {
                     Ok(Expr::Ref(name, t.span))
                 }
             }
-            _ => self.parse_atom(),
+            _ => self.parse_atom(false),
         }
     }
 
@@ -1025,7 +1042,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_atom(&mut self) -> Result<Expr, CompileError> {
+    /// Parse a single atom. `arg_list` is true when the atom is a juxtaposed
+    /// argument of an enclosing application: a parenthesized expression in that
+    /// position is a plain argument and must not absorb the following atoms as
+    /// its own application (`fmap (fn x -> x) [1.0]` — the lambda is fmap's
+    /// first argument). A bare parenthesized expression (`arg_list == false`)
+    /// followed by atom-starting tokens is an application of the parenthesized
+    /// callee: `(k.unKleisli) p.first`.
+    fn parse_atom(&mut self, arg_list: bool) -> Result<Expr, CompileError> {
         let t = self.bump();
         match t.tok {
             Tok::Int(v) => Ok(Expr::Int(v, t.span)),
@@ -1056,7 +1080,23 @@ impl<'a> Parser<'a> {
             Tok::Percent => Ok(Expr::Ref("%".into(), t.span)),
             Tok::Ident(name) => {
                 if self.peek().tok == Tok::Dot {
-                    self.parse_field(Expr::Ref(name, t.span), t.span.start)
+                    let proj = self.parse_field(Expr::Ref(name, t.span), t.span.start)?;
+                    if !arg_list && is_atom_start(&self.peek().tok) {
+                        // `(k.unKleisli) p.first` — apply a field projection
+                        // as the callee.
+                        let mut args = Vec::new();
+                        while is_atom_start(&self.peek().tok) {
+                            args.push(self.parse_atom(true)?);
+                        }
+                        let span = self.span_from(t.span.start);
+                        Ok(Expr::ApplyExpr {
+                            callee: Box::new(proj),
+                            args,
+                            span,
+                        })
+                    } else {
+                        Ok(proj)
+                    }
                 } else {
                     Ok(Expr::Ref(name, t.span))
                 }
@@ -1067,6 +1107,18 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::RParen)?;
                 if self.peek().tok == Tok::Dot {
                     self.parse_field(inner, start)
+                } else if !arg_list && is_atom_start(&self.peek().tok) {
+                    // `(expr) arg1 arg2` — apply a parenthesized expression.
+                    let mut args = Vec::new();
+                    while is_atom_start(&self.peek().tok) {
+                        args.push(self.parse_atom(true)?);
+                    }
+                    let span = self.span_from(start);
+                    Ok(Expr::ApplyExpr {
+                        callee: Box::new(inner),
+                        args,
+                        span,
+                    })
                 } else {
                     Ok(inner)
                 }

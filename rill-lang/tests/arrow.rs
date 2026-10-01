@@ -68,6 +68,51 @@ fn tuple_type_desugars_to_pair() {
 }
 
 #[test]
+fn field_projection_applies_as_function() {
+    // `(b.f) 3.0` applies the projected closure.
+    let src = r#"
+        data Box = { f: Float -> Float };
+        b = Box { f: fn x -> x * 2.0 };
+        main = (b.f) 3.0;
+    "#;
+    let mut prog = run(src);
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 6.0);
+}
+
+#[test]
+fn let_bound_projected_closure_applies() {
+    // `let u = b.f in u x`: a nullary func-value def whose body is a field
+    // projection (not a `Ref`) must not drop the application during reduce.
+    let src = r#"
+        data Box = { f: Float -> Float };
+        b = Box { f: fn x -> x * 2.0 };
+        apply x = let u = b.f in u x;
+        main = apply 3.0;
+    "#;
+    let mut prog = run(src);
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 6.0);
+}
+
+#[test]
+fn bare_field_projection_applies_as_function() {
+    // `b.f 3.0` — a bare field projection applied as the callee (the shape
+    // Task 9's Arrow instance body writes: `bind (k.unKleisli p.first) …`).
+    let src = r#"
+        data Box = { f: Float -> Float };
+        b = Box { f: fn x -> x * 2.0 };
+        main = b.f 3.0;
+    "#;
+    let mut prog = run(src);
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 6.0);
+}
+
+#[test]
 fn hkt_data_field_applies_type_parameter() {
     // `m b` in `data K m a b = { f: a -> m b }`: the type parameter m is
     // applied as a constructor. Unify m := Maybe, a := Float, b := Float.

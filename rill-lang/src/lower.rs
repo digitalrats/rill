@@ -1107,6 +1107,41 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+            Expr::ApplyExpr { callee, args, span } => {
+                let (cr, cty) = self.lower_value(callee)?;
+                let (arg_tys, ret_tys) = match &cty {
+                    ValueTy::Func(a, r) => (a.clone(), r.clone()),
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: "applied expression must be a function value".into(),
+                            span: *span,
+                        });
+                    }
+                };
+                if args.len() > arg_tys.len() {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "expression expects {} argument(s), got {}",
+                            arg_tys.len(),
+                            args.len()
+                        ),
+                        span: *span,
+                    });
+                }
+                let mut arg_regs = Vec::with_capacity(args.len());
+                for a in args {
+                    let (ar, _) = self.lower_value(a)?;
+                    arg_regs.push(ar);
+                }
+                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueCallFunc {
+                    dst,
+                    closure_slot: cr,
+                    args: arg_regs,
+                });
+                Ok((dst, ret_ty))
+            }
             Expr::Arith { op, lhs, rhs, span } => {
                 // Value-track arithmetic: lower both operands as values, emit
                 // the matching element-wise instruction, and yield a Float
@@ -1770,6 +1805,12 @@ impl<'a> Lowerer<'a> {
                         out.push(name.clone());
                     }
                 }
+                for a in args {
+                    self.free_vars_impl(a, bound, out, seen);
+                }
+            }
+            Expr::ApplyExpr { callee, args, .. } => {
+                self.free_vars_impl(callee, bound, out, seen);
                 for a in args {
                     self.free_vars_impl(a, bound, out, seen);
                 }
@@ -3286,6 +3327,11 @@ impl<'a> Lowerer<'a> {
                         .into(),
                 span: *span,
             }),
+            Expr::ApplyExpr { span, .. } => Err(CompileError::Type {
+                msg: "expression application is a value expression; it cannot be used in a signal position"
+                    .into(),
+                span: *span,
+            }),
             Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
                 msg: "field update is a value expression; it cannot be used in a signal position"
                     .into(),
@@ -3913,7 +3959,8 @@ impl<'a> Lowerer<'a> {
             | Expr::ListLit(..)
             | Expr::MapLit(..)
             | Expr::Cmp { .. }
-            | Expr::Logic { .. } => (0, 1),
+            | Expr::Logic { .. }
+            | Expr::ApplyExpr { .. } => (0, 1),
             Expr::Lambda { .. } => (0, 1),
         })
     }

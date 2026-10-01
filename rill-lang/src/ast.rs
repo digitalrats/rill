@@ -148,6 +148,16 @@ pub enum Expr {
         /// Full span of the application.
         span: Span,
     },
+    /// Application of an arbitrary expression (not just a name) to arguments:
+    /// `(k.unKleisli) p.first`, `(fn x -> x) 1.0`.
+    ApplyExpr {
+        /// The callee expression (a closure-valued projection, lambda, …).
+        callee: Box<Expr>,
+        /// Argument expressions.
+        args: Vec<Expr>,
+        /// Full span.
+        span: Span,
+    },
     /// Unary negation `-expr`.
     Neg(Box<Expr>, Span),
     // --- arrow combinators (first-class) ---
@@ -293,6 +303,7 @@ impl Expr {
             | Expr::Loop(_, _, s)
             | Expr::Delay(_, _, s) => *s,
             Expr::Apply { span, .. }
+            | Expr::ApplyExpr { span, .. }
             | Expr::Arith { span, .. }
             | Expr::Let { span, .. }
             | Expr::Record(_, span)

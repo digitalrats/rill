@@ -305,6 +305,12 @@ fn collect_static_calls(
                 collect_static_calls(a, src, bound, nodes, out);
             }
         }
+        Expr::ApplyExpr { callee, args, .. } => {
+            collect_static_calls(callee, src, bound, nodes, out);
+            for a in args {
+                collect_static_calls(a, src, bound, nodes, out);
+            }
+        }
         Expr::Ref(_, _)
         | Expr::Int(_, _)
         | Expr::Float(_, _)
@@ -1414,6 +1420,7 @@ fn infer_expr_expected(
             Ok(t)
         }
         Expr::Apply { name, args, span } => infer_apply_expected(ctx, name, args, *span, expected),
+        Expr::ApplyExpr { callee, args, span } => infer_apply_expr(ctx, callee, args, *span),
         Expr::Str(_, _) => Ok(ArrowTy::value_channel(ValueTy::String)),
         Expr::Seq(lhs, rhs, span) => infer_seq(ctx, lhs, rhs, *span),
         Expr::Par(lhs, rhs, span) => infer_par(ctx, lhs, rhs, *span),
@@ -2169,6 +2176,56 @@ fn infer_apply_expected(
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
     infer_apply_impl(ctx, name, args, span, expected)
+}
+
+/// `(expr) a b` — apply a closure-valued expression. Infer the callee, unify it
+/// against a fresh `Func` signature, infer and check args, return the result.
+fn infer_apply_expr(
+    ctx: &mut Ctx<'_>,
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let ct = infer_expr(ctx, callee)?;
+    if ct.arity_out() != 1 || ct.outs[0].rate != Rate::Value {
+        return Err(CompileError::Type {
+            msg: "applied expression must be a value (function)".into(),
+            span,
+        });
+    }
+    let cty = ct.outs[0].vty.clone();
+    let resolved = ctx.subst.resolve_value(&cty);
+    let (arg_tys, ret_tys) = match resolved {
+        ValueTy::Func(a, r) => (a, r),
+        _ => {
+            let a = (0..args.len()).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
+            let r = vec![ctx.fresh_vty()];
+            unify_value(
+                &cty,
+                &ValueTy::Func(a.clone(), r.clone()),
+                &mut ctx.subst,
+                span,
+            )?;
+            (a, r)
+        }
+    };
+    if args.len() != arg_tys.len() {
+        return Err(CompileError::Type {
+            msg: format!(
+                "expression expects {} argument(s), got {}",
+                arg_tys.len(),
+                args.len()
+            ),
+            span,
+        });
+    }
+    for (a, pt) in args.iter().zip(arg_tys.iter()) {
+        let vt = infer_method_value_vty(ctx, a, "argument")?;
+        unify_value(&vt, pt, &mut ctx.subst, a.span())?;
+    }
+    Ok(ArrowTy::value_channel(
+        ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+    ))
 }
 
 fn infer_apply_impl(
