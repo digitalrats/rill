@@ -327,7 +327,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "type" if !followed_by_paren => Tok::KwType,
                 "newtype" if !followed_by_paren => Tok::KwNewtype,
                 "typeclass" if !followed_by_paren => Tok::KwTypeclass,
-                "instance" if !followed_by_paren => Tok::KwInstance,
+                // `instance` is always a keyword — its head may start with a
+                // parenthesized constraint list (`instance (Monad m) => …`), so
+                // the `followed_by_paren` call-guard must not apply here.
+                "instance" => Tok::KwInstance,
                 "match" => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "if" if !followed_by_paren => Tok::KwIf,

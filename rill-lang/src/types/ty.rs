@@ -222,6 +222,11 @@ pub struct InstanceInfo {
     pub class: String,
     /// The concrete type name bound to the class variable.
     pub ty: String,
+    /// Constraint list: (class, type var), e.g. `(Monad, "m")`.
+    pub constraints: Vec<(String, String)>,
+    /// Type-constructor args bound by the instance head (partial application):
+    /// `Kleisli m` → `["m"]` (arity 3 total, 1 bound ⇒ 2 remaining).
+    pub head_args: Vec<String>,
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
 }
@@ -326,6 +331,8 @@ fn instance_from_template(ty: &str, class: &str, bodies: &str) -> InstanceInfo {
     InstanceInfo {
         class: class.to_string(),
         ty: ty.to_string(),
+        constraints: vec![],
+        head_args: vec![],
         methods,
     }
 }
@@ -449,6 +456,8 @@ impl TypeEnv {
                 Def::Instance {
                     class,
                     ty,
+                    constraints,
+                    head_args,
                     method_bodies,
                     ..
                 } => {
@@ -462,6 +471,8 @@ impl TypeEnv {
                         InstanceInfo {
                             class: class.clone(),
                             ty: ty.clone(),
+                            constraints: constraints.clone(),
+                            head_args: head_args.clone(),
                             methods,
                         },
                     );
@@ -597,6 +608,8 @@ impl TypeEnv {
                 by_ty.entry(n.clone()).or_insert_with(|| InstanceInfo {
                     class: class.to_string(),
                     ty: n.clone(),
+                    constraints: vec![], // derived marker — no constraint list
+                    head_args: vec![],   // derived marker — full application
                     methods: HashMap::new(), // derived marker — empty body
                 });
             }
@@ -615,6 +628,18 @@ impl TypeEnv {
             return Some(*a);
         }
         self.data_arities.get(name).copied()
+    }
+
+    /// Arity remaining after the instance head's bound args: `Kleisli m` (total 3,
+    /// bound 1) → 2. For a non-partial head, `total`.
+    ///
+    /// Wired up by SP-2 Task 6 (constraint-instance resolution); no callers
+    /// yet, so the transient `dead_code` is allowed here rather than suppressed
+    /// globally.
+    #[allow(dead_code)]
+    pub(crate) fn instance_head_arity(&self, ty: &str, head_args: &[String]) -> Option<usize> {
+        let total = self.ctor_value_arity(ty)?;
+        Some(total.saturating_sub(head_args.len()))
     }
 
     /// Resolve a DSL type name to a value type, following type synonyms and
@@ -1035,6 +1060,19 @@ mod ctor_table_tests {
         // The injected Maybe/Pair/Either shapes must satisfy the v1 acyclicity
         // contract (the arena-capacity bound depends on it).
         TypeEnv::with_builtins().check_acyclic().unwrap();
+    }
+
+    #[test]
+    fn instance_head_arity_after_bound_args() {
+        let env = TypeEnv::with_builtins();
+        // `(Pair a)` — total 2, bound 1 ⇒ 1 remaining.
+        assert_eq!(env.instance_head_arity("Pair", &["a".to_string()]), Some(1));
+        // `(List a)` — total 1, bound 1 ⇒ fully applied.
+        assert_eq!(env.instance_head_arity("List", &["a".to_string()]), Some(0));
+        // A non-partial head: total arity unchanged.
+        assert_eq!(env.instance_head_arity("Pair", &[]), Some(2));
+        // Unknown constructor: None.
+        assert_eq!(env.instance_head_arity("Nope", &[]), None);
     }
 }
 

@@ -573,10 +573,48 @@ impl<'a> Parser<'a> {
     /// `instance C T where { m p1 p2 = body; }` — concrete instance. Each
     /// method optionally binds one or more parameters (`show f = f`,
     /// `fmap g xs = map g xs`), β-substituted at each call site.
+    ///
+    /// The head may be constraint-qualified and/or partially applied:
+    /// `instance (Monad m) => Arrow (Kleisli m) where { … }`.
     fn parse_instance_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
+        let mut constraints = Vec::new();
+        if self.peek().tok == Tok::LParen {
+            // `(Monad m) =>` (comma-separated constraints inside parens).
+            self.bump();
+            loop {
+                let (class, _) = self.expect_ident()?;
+                let (var, _) = self.expect_ident()?;
+                constraints.push((class, var));
+                if self.peek().tok == Tok::RParen {
+                    self.bump();
+                    break;
+                }
+                if self.peek().tok == Tok::Comma {
+                    self.bump();
+                    continue;
+                }
+                return Err(self.error("expected ')' or ',' in instance constraint list"));
+            }
+            self.eat(&Tok::FatArrow)?;
+        }
         let (class, _) = self.expect_ident()?;
-        let (ty, _) = self.expect_ident()?;
+        // Head: either a bare type (`List`) or a parenthesized partial application
+        // (`(Kleisli m)`).
+        let (ty, head_args) = if self.peek().tok == Tok::LParen {
+            self.bump();
+            let (h, _) = self.expect_ident()?;
+            let mut args = Vec::new();
+            while matches!(self.peek().tok, Tok::Ident(_)) {
+                let (a, _) = self.expect_ident()?;
+                args.push(a);
+            }
+            self.eat(&Tok::RParen)?;
+            (h, args)
+        } else {
+            let (t, _) = self.expect_ident()?;
+            (t, Vec::new())
+        };
         self.eat(&Tok::KwWhere)?;
         self.eat(&Tok::LBrace)?;
         let mut method_bodies = Vec::new();
@@ -601,6 +639,8 @@ impl<'a> Parser<'a> {
         Ok(Def::Instance {
             class,
             ty,
+            constraints,
+            head_args,
             method_bodies,
             span: self.span_from(start),
         })
@@ -1658,6 +1698,53 @@ mod tests {
     fn parses_instance_declaration() {
         let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Instance { .. })));
+    }
+
+    #[test]
+    fn parses_constraint_instance_head() {
+        let p = prog("instance (Monad m) => Arrow (Kleisli m) where { arr f = f; }; main = _");
+        let inst = p
+            .defs
+            .iter()
+            .find(|d| matches!(d, Def::Instance { .. }))
+            .unwrap();
+        let Def::Instance {
+            class,
+            ty,
+            constraints,
+            head_args,
+            method_bodies,
+            ..
+        } = inst
+        else {
+            unreachable!("expected an instance def")
+        };
+        assert_eq!(class, "Arrow");
+        assert_eq!(ty, "Kleisli");
+        assert_eq!(constraints, &[("Monad".to_string(), "m".to_string())]);
+        assert_eq!(head_args, &["m".to_string()]);
+        assert_eq!(method_bodies.len(), 1);
+    }
+
+    #[test]
+    fn plain_instance_has_empty_constraints_and_head_args() {
+        // Backward compatibility: `instance C T where { … }` (no constraint
+        // list, no parenthesized head) must keep both new fields empty.
+        let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
+        let Def::Instance {
+            constraints,
+            head_args,
+            ..
+        } = p
+            .defs
+            .iter()
+            .find(|d| matches!(d, Def::Instance { .. }))
+            .unwrap()
+        else {
+            unreachable!("expected an instance def")
+        };
+        assert!(constraints.is_empty());
+        assert!(head_args.is_empty());
     }
 
     #[test]

@@ -419,6 +419,12 @@ pub enum Def {
         class: String,
         /// Concrete type the instance is for.
         ty: TypeName,
+        /// Optional constraint list: (class, type variable) before `=>`,
+        /// e.g. `Monad m` in `instance Monad m => Arrow (Kleisli m)`.
+        constraints: Vec<(String, String)>,
+        /// Head type-constructor args (partial application). `Kleisli m` →
+        /// head `Kleisli`, `head_args = ["m"]`; a plain `List` → `head_args = []`.
+        head_args: Vec<String>,
         /// Method bodies: (method name, parameter bindings, body expr).
         method_bodies: Vec<(String, Vec<Param>, Expr)>,
         /// Span.

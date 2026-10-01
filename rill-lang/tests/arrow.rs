@@ -137,6 +137,22 @@ fn hkt_data_field_applies_type_parameter() {
 }
 
 #[test]
+fn parses_constraint_instance_head() {
+    // `instance (Monad m) => Arrow (Kleisli m)` — a constraint list before
+    // the class name and a parenthesized partial-application head. The
+    // instance may not fully RESOLVE yet (SP-2 Task 6) — this proves the
+    // constraint syntax PARSES and the instance REGISTERS without a parse
+    // error.
+    let src = r#"
+        typeclass Arrow a where { arr: (b -> c) -> a b c; }
+        instance (Monad m) => Arrow (Kleisli m) where { arr f = f; }
+        main = 1.0;
+    "#;
+    let res = compile::<f32>(src);
+    assert!(res.is_ok() || matches!(res.err(), Some(rill_lang::CompileError::Type { .. })));
+}
+
+#[test]
 fn apply_expr_non_function_callee_is_error() {
     // `(5.0) 3.0` — a non-function callee must be a compile error.
     let res = compile::<f32>("main = (5.0) 3.0;");
