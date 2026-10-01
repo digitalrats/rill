@@ -436,6 +436,28 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse the inside of a `(…)` type grouping: a single grouped type
+    /// expression, or `(b, d)` tuple sugar desugared to `TApp("Pair", [b, d])`.
+    /// Only the binary tuple is supported. The opening `LParen` must already be
+    /// consumed; this eats the closing `RParen`.
+    fn parse_paren_type(&mut self) -> Result<TypeExpr, CompileError> {
+        let first = self.parse_type_expr()?;
+        if self.peek().tok == Tok::Comma {
+            let mut items = vec![first];
+            while self.peek().tok == Tok::Comma {
+                self.bump();
+                items.push(self.parse_type_single()?);
+            }
+            if items.len() != 2 {
+                return Err(self.error("tuples in types are binary (use Pair)"));
+            }
+            self.eat(&Tok::RParen)?;
+            return Ok(TypeExpr::TApp("Pair".into(), items));
+        }
+        self.eat(&Tok::RParen)?;
+        Ok(first)
+    }
+
     /// Parse a single, non-absorbing type atom: a bare type or type-variable
     /// name, or a parenthesized type expression. It does not consume following
     /// juxtaposed atoms — the caller's application and currying loops collect
@@ -445,9 +467,7 @@ impl<'a> Parser<'a> {
         match t.tok {
             Tok::LParen => {
                 self.bump();
-                let inner = self.parse_type_expr()?;
-                self.eat(&Tok::RParen)?;
-                Ok(inner)
+                self.parse_paren_type()
             }
             Tok::Ident(name) => {
                 self.bump();
@@ -465,9 +485,7 @@ impl<'a> Parser<'a> {
         match t.tok {
             Tok::LParen => {
                 self.bump();
-                let inner = self.parse_type_expr()?;
-                self.eat(&Tok::RParen)?;
-                Ok(inner)
+                self.parse_paren_type()
             }
             Tok::Ident(name) => {
                 self.bump();

@@ -54,6 +54,20 @@ fn mixed_value_signal_tuple_is_error() {
 }
 
 #[test]
+fn tuple_type_desugars_to_pair() {
+    // `(Float, Float)` in type position is sugar for `Pair Float Float`.
+    // Compilation alone proves the typeclass signature parses and resolves —
+    // `main` is a trivial 1.0.
+    let src = r#"
+        typeclass T a where { m: a (Float, Float) -> Float; }
+        main = 1.0;
+    "#;
+    let mut prog = run(src);
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+}
+
+#[test]
 fn hkt_data_field_applies_type_parameter() {
     // `m b` in `data K m a b = { f: a -> m b }`: the type parameter m is
     // applied as a constructor. Unify m := Maybe, a := Float, b := Float.
