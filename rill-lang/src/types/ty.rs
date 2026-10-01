@@ -298,6 +298,26 @@ instance Monad List where {
     bind xs f = concat_map f xs;
 }
 
+data Kleisli m a b = { unKleisli: a -> m b };
+
+typeclass Arrow a where {
+    arr: (b -> c) -> a b c;
+    first: a b c -> a (Pair b d) (Pair c d);
+    compose: a b c -> a c d -> a b d;
+    second: a b c -> a (Pair d b) (Pair d c) =
+        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+    both: a b c -> a d e -> a (Pair b d) (Pair c e) =
+        f g (compose (first f) (second g));
+    fan: a b c -> a b d -> a b (Pair c d) =
+        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+}
+
+instance (Monad m) => Arrow (Kleisli m) where {
+    arr f = Kleisli (fn x -> return (f x));
+    first k = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+}
+
 main = _;
 "#;
 
@@ -431,7 +451,34 @@ impl TypeEnv {
         debug_assert!(toks.is_ok(), "category prelude must lex");
         let program = crate::parser::parse(&toks.ok().unwrap(), CATEGORY_PRELUDE.as_bytes());
         debug_assert!(program.is_ok(), "category prelude must parse");
-        env.register_decls(&program.ok().unwrap().defs);
+        let defs = program.ok().unwrap().defs;
+        // Prelude `data` declarations (`data Kleisli m a b = …`) register here.
+        // User `data` declarations register in infer phase 2 (`infer_program_with`)
+        // — `register_decls` deliberately does NOT handle `Def::Data`, so a user
+        // declaration reaches exactly one registration path (no double-register).
+        for def in &defs {
+            if let Def::Data {
+                name,
+                tyvars,
+                fields,
+                ..
+            } = def
+            {
+                let fields_ty = fields
+                    .iter()
+                    .map(|(f, t)| {
+                        let ft = crate::types::infer::data_field_vty(&env, tyvars, t);
+                        (f.clone(), ft)
+                    })
+                    .collect();
+                env.data_types
+                    .insert(name.clone(), DataInfo::Record(fields_ty));
+                if !tyvars.is_empty() {
+                    env.data_arities.insert(name.clone(), tyvars.len());
+                }
+            }
+        }
+        env.register_decls(&defs);
         env.derive_superclass_instances();
         env
     }

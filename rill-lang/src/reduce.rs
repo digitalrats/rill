@@ -524,6 +524,45 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
             span: *span,
         },
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+        } => {
+            // A match-arm binding shadows an outer name of the same spelling:
+            // drop it from the reduction context while descending into the arm
+            // body. Reducing the scrutinee β-reduces def calls inside it (a
+            // `match (apply ...) of` scrutinee inlines `apply`), so lowering
+            // never sees a λ-def call whose params it cannot bind.
+            let inner_ctx: HashMap<String, Def> = arms
+                .iter()
+                .flat_map(|arm| pattern_vars(&arm.pattern))
+                .fold(ctx.clone(), |mut c, v| {
+                    c.remove(&v);
+                    c
+                });
+            Expr::Match {
+                scrutinee: Box::new(reduce_expr(scrutinee, ctx, cafs)),
+                arms: arms
+                    .iter()
+                    .map(|arm| MatchArm {
+                        pattern: arm.pattern.clone(),
+                        guards: arm
+                            .guards
+                            .iter()
+                            .map(|(g, b)| {
+                                (
+                                    reduce_expr(g, &inner_ctx, cafs),
+                                    reduce_expr(b, &inner_ctx, cafs),
+                                )
+                            })
+                            .collect(),
+                        span: arm.span,
+                    })
+                    .collect(),
+                span: *span,
+            }
+        }
         _ => e.clone(),
     }
 }

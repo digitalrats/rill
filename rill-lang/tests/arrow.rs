@@ -226,3 +226,22 @@ fn single_field_record_newtype_style() {
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(out_float(&prog, 0), 42.0);
 }
+
+#[test]
+fn kleisli_arrow_end_to_end() {
+    // The full category prelude Arrow over Kleisli, generic over the monad:
+    // `compose (arr f) (arr g)` resolves the constraint instance
+    // `(Monad m) => Arrow (Kleisli m)` at a CONCRETE container (`m := Maybe`),
+    // and the instance bodies use `return`/`bind` (resolved via expected-type
+    // threading) rather than a hardcoded `Just`.
+    let src = r#"
+        apply k x = let u = k.unKleisli in u x;
+        main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
+            Just v => v; Nothing => 0.0;
+        };
+    "#;
+    let mut prog = run(src);
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert_eq!(out_float(&prog, 0), 8.0); // (3+1)*2
+}

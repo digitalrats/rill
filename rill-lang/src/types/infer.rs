@@ -138,7 +138,14 @@ fn sum_ctor_payload(ctx: &Ctx<'_>, sum_name: &str, ctor: &str) -> Option<Vec<Val
 /// substituting type-variable names with placeholder positions (`data Box a` →
 /// field `value: a` becomes `Var(1)`, mirroring the builtin `Maybe`/`Pair`
 /// shapes). Concrete type names resolve through [`TypeEnv::vty_of_name`].
-fn data_field_vty(env: &TypeEnv, tyvars: &[String], te: &crate::ast::TypeExpr) -> ValueTy {
+///
+/// Exposed for the category-prelude data registration (`Kleisli m a b` is
+/// declared in the prelude and registered by [`TypeEnv::with_builtins`]).
+pub(crate) fn data_field_vty(
+    env: &TypeEnv,
+    tyvars: &[String],
+    te: &crate::ast::TypeExpr,
+) -> ValueTy {
     match te {
         crate::ast::TypeExpr::TName(n) => match tyvars.iter().position(|t| t == n) {
             Some(k) => ValueTy::Var((k + 1) as u32),
@@ -193,7 +200,10 @@ fn fresh_sum_vty(ctx: &mut Ctx<'_>, sum_name: &str) -> ValueTy {
 /// `Kleisli Maybe Float Float` yields `Float -> Maybe Float`). The env's field
 /// types carry PLACEHOLDER ids (`Var(k)` for the k-th param, `TyConApp` heads in
 /// the same id space); the record's concrete args fill them in positionally.
-fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueTy {
+///
+/// Exposed for lowering's record-ctor expected threading (`Kleisli (fn x ->
+/// return (f x))` threads the substituted field type into the field value).
+pub(crate) fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueTy {
     fn sub(ty: &ValueTy, args: &[ValueTy]) -> ValueTy {
         match ty {
             ValueTy::Var(k) | ValueTy::TyConVar(k) => args
@@ -207,6 +217,12 @@ fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueTy {
                     Some(ValueTy::App(c, _)) => ValueTy::App(c, sub_args),
                     Some(ValueTy::Data(c, _)) => ValueTy::Data(c, sub_args),
                     Some(ValueTy::Newtype(c, _)) => ValueTy::Newtype(c, sub_args),
+                    // An unresolved head (a fresh record type arg) carries the
+                    // LIVE var id, not the placeholder id — so the substituted
+                    // field type participates in live unification (`m := Maybe`)
+                    // and lowering's expected threading can bind it.
+                    Some(ValueTy::Var(v)) => ValueTy::TyConApp(v, sub_args),
+                    Some(ValueTy::TyConVar(v)) => ValueTy::TyConApp(v, sub_args),
                     _ => ValueTy::TyConApp(*f, sub_args),
                 }
             }
@@ -756,6 +772,51 @@ pub(crate) fn signature_param_tys_conv(
             .map(|a| conv(env, class_var, ctor, &mut vars, &mut fresh, a))
             .collect(),
         other => vec![conv(env, class_var, ctor, &mut vars, &mut fresh, other)],
+    }
+}
+
+/// Prepend a partial instance head's bound args to each container-typed
+/// signature param type. `instance (Monad m) => Arrow (Kleisli m)` resolves
+/// `a b c` to `Data("Kleisli", [b, c])` (the head `m` is dropped by the
+/// signature conversion in [`signature_param_tys_conv`]); this restores it to
+/// `Data("Kleisli", [m, b, c])` with the concrete head binding from the call
+/// site (`m := Maybe`), so a result-directed SECOND argument (`arr g` in
+/// `compose (arr f) (arr g)`) resolves `return` by the concrete monad.
+pub(crate) fn prepend_instance_head_args(
+    env: &TypeEnv,
+    class_name: &str,
+    param_tys: &mut [ValueTy],
+    ctor: &str,
+    head_bindings: &HashMap<String, ValueTy>,
+    mut fresh: impl FnMut() -> ValueTy,
+) {
+    let head_args = env
+        .instances
+        .get(class_name)
+        .and_then(|by_ty| by_ty.get(ctor))
+        .map(|i| i.head_args.clone())
+        .unwrap_or_default();
+    if head_args.is_empty() {
+        return;
+    }
+    let head_values: Vec<ValueTy> = head_args
+        .iter()
+        .map(|hv| head_bindings.get(hv).cloned().unwrap_or_else(&mut fresh))
+        .collect();
+    for t in param_tys.iter_mut() {
+        match t {
+            ValueTy::Data(c, args) if c == ctor => {
+                let mut full = head_values.clone();
+                full.extend(args.clone());
+                *t = ValueTy::Data(c.clone(), full);
+            }
+            ValueTy::App(c, args) if c == ctor => {
+                let mut full = head_values.clone();
+                full.extend(args.clone());
+                *t = ValueTy::App(c.clone(), full);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1625,8 +1686,8 @@ fn infer_expr_expected(
             } else {
                 None
             };
-            let t = match rec_expected {
-                Some(e) => infer_expr_expected(ctx, record, Some(e))?,
+            let t = match &rec_expected {
+                Some(e) => infer_expr_expected(ctx, record, Some(e.clone()))?,
                 None => infer_expr(ctx, record)?,
             };
             // record must be a single Value channel of a known Data type
@@ -1693,14 +1754,40 @@ fn infer_expr_expected(
                     }
                 }
                 ValueTy::Var(_) => {
-                    // Deferred record: the record type is not known here (a
-                    // value function's λ-parameter). The projection resolves
-                    // when the function is called with a concrete argument —
-                    // `reduce` β-reduces the call, so lowering sees a concrete
-                    // expression. Return a fresh unresolved field type.
-                    let v = ctx.next;
-                    ctx.next += 1;
-                    Ok(ArrowTy::value_channel(ValueTy::Var(v)))
+                    // Deferred record: the record type is not resolved here (a
+                    // value function's λ-parameter). When the field uniquely
+                    // identifies the record type (`unKleisli` → `Kleisli`, the
+                    // `rec_expected` threaded above), the projection type IS
+                    // known up to the record's fresh type args — return it so a
+                    // let-bound projection types as a Func
+                    // (`let u = k.unKleisli in u x`). A truly ambiguous/unknown
+                    // record defers to a fresh var, resolved when the function
+                    // is called with a concrete argument (`reduce` β-reduces).
+                    let field_ty = match &rec_expected {
+                        Some(ValueTy::Data(name, args)) => {
+                            match ctx.env.data_types.get(name.as_str()) {
+                                Some(DataInfo::Record(fields)) => {
+                                    fields.iter().find(|(f, _)| f == field).map(|(_, ft)| {
+                                        if args.is_empty() {
+                                            ft.clone()
+                                        } else {
+                                            substitute_field_params(ft, args)
+                                        }
+                                    })
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    match field_ty {
+                        Some(ft) => Ok(ArrowTy::value_channel(ft)),
+                        None => {
+                            let v = ctx.next;
+                            ctx.next += 1;
+                            Ok(ArrowTy::value_channel(ValueTy::Var(v)))
+                        }
+                    }
                 }
                 _ => Err(CompileError::Type {
                     msg: format!(
@@ -2977,7 +3064,48 @@ fn infer_apply_impl(
                 });
             }
             // Phase 1: infer the container argument and resolve the constructor.
-            let container_vty = infer_method_value_vty(ctx, &args[container_idx], "argument")?;
+            // The container arg may itself be a result-directed method call
+            // (`arr f` in `compose (arr f) (arr g)`) that needs an expected
+            // type to resolve. When the enclosing expression expects a concrete
+            // container (`Data("Kleisli", [..])` threaded from a field
+            // projection / match), derive the container arg's expected type
+            // from it: the instance head's args (`m`) from the expected's
+            // leading args, the remaining class-var slots freshened.
+            let class_info_for_container = ctx.env.typeclasses.get(&class_name).cloned();
+            let container_expected: Option<ValueTy> = match &expected {
+                Some(ValueTy::Data(c, args)) | Some(ValueTy::App(c, args)) => {
+                    let inst = ctx.env.instances.get(&class_name).and_then(|m| m.get(c));
+                    match inst {
+                        Some(i) => {
+                            let head_len = i.head_args.len();
+                            let mut cargs: Vec<ValueTy> =
+                                args.iter().take(head_len).cloned().collect();
+                            let arity = class_info_for_container
+                                .as_ref()
+                                .map(|ci| ci.arity)
+                                .unwrap_or(0);
+                            while cargs.len() < head_len + arity {
+                                cargs.push(ctx.fresh_vty());
+                            }
+                            Some(match expected {
+                                Some(ValueTy::Data(..)) => ValueTy::Data(c.clone(), cargs),
+                                _ => ValueTy::App(c.clone(), cargs),
+                            })
+                        }
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
+            let container_vty = match container_expected {
+                Some(ce) => infer_method_value_vty_expected(
+                    ctx,
+                    &args[container_idx],
+                    "argument",
+                    Some(ce),
+                )?,
+                None => infer_method_value_vty(ctx, &args[container_idx], "argument")?,
+            };
             // Constraint instance: bind head args from the container's LEADING
             // args and discharge the constraints, then match the class pattern
             // against the REMAINING args.
@@ -3053,7 +3181,7 @@ fn infer_apply_impl(
                     span,
                 });
             }
-            let key = (class_name, ctor.clone(), name.to_string());
+            let key = (class_name.clone(), ctor.clone(), name.to_string());
             if ctx.method_lifting.contains(&key) {
                 return Err(CompileError::Type {
                     msg: format!("recursive typeclass method `{name}` for type `{ctor}`"),
@@ -3064,10 +3192,25 @@ fn infer_apply_impl(
             // Phase 2: infer the remaining args with their signature param type
             // as expected (so `bind mx (fn x -> return x)` resolves `return` by
             // the monad), then bind all params.
-            let param_tys =
+            let mut param_tys =
                 signature_param_tys_conv(&ctx.env.clone(), &class_var, &ctor, sig, || {
                     ctx.fresh_vty()
                 });
+            // A partial instance head (`Kleisli m` → head arg `m`): the
+            // signature-converted container type drops the head (`a b c` →
+            // `Data("Kleisli", [b, c])`). Prepend the head args bound at the
+            // call site (`m := Maybe`) so the arg expected types carry the full
+            // concrete container (`Data("Kleisli", [Maybe, b, c])`) — a
+            // result-directed second arg (`arr g`) then resolves `return` by the
+            // monad.
+            prepend_instance_head_args(
+                &ctx.env.clone(),
+                &class_name,
+                &mut param_tys,
+                &ctor,
+                &ctx.type_var_bindings.clone(),
+                || ctx.fresh_vty(),
+            );
             let mut arg_vtys = Vec::with_capacity(args.len());
             for (i, a) in args.iter().enumerate() {
                 if i == container_idx {
