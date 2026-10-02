@@ -382,3 +382,69 @@ fn foreign_fn_runs_end_to_end() {
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     assert_eq!(out, [0.5, 1.0, 1.5, 2.0]);
 }
+
+#[test]
+fn foreign_fn_multichannel_runs_end_to_end() {
+    use rill_core::builtin::MultichannelBlockBuiltin;
+    use rill_core::traits::MultichannelAlgorithm;
+    use rill_lang::ffi::ForeignRegistry;
+
+    // A 2→1 foreign builtin: sums two input channels.
+    struct Add;
+    impl<T: rill_core::math::Transcendental> MultichannelAlgorithm<T> for Add {
+        fn num_inputs(&self) -> usize {
+            2
+        }
+        fn num_outputs(&self) -> usize {
+            1
+        }
+        fn process(
+            &mut self,
+            inputs: &[&[T]],
+            outputs: &mut [&mut [T]],
+        ) -> rill_core::ProcessResult<()> {
+            for i in 0..outputs[0].len() {
+                outputs[0][i] = inputs[0][i] + inputs[1][i];
+            }
+            Ok(())
+        }
+        fn reset(&mut self) {}
+    }
+    impl<T: rill_core::math::Transcendental> MultichannelBlockBuiltin<T> for Add {}
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    ffi.register_multichannel_block("add", |_ins: usize, _p: &[f64], _sr: f32| Box::new(Add));
+
+    let src = r#"
+        foreign fn add : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+        main = add _ _;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(
+        &mut prog,
+        &[&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0]],
+        &mut [&mut out],
+    )
+    .unwrap();
+    assert_eq!(out, [11.0, 22.0, 33.0, 44.0]);
+}
+
+#[test]
+fn foreign_fn_not_registered_is_compile_error() {
+    use rill_lang::ffi::ForeignRegistry;
+
+    let ffi = ForeignRegistry::<f32>::new();
+    let src = r#"
+        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = gain _ 0.5;
+    "#;
+    let err = match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+        Err(e) => e,
+        Ok(_) => panic!("expected a compile error for an unregistered foreign builtin"),
+    };
+    assert!(
+        err.to_string().contains("not registered"),
+        "expected a 'not registered' error, got: {err}"
+    );
+}
