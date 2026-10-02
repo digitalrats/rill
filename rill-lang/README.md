@@ -184,6 +184,94 @@ so the engine stays block-only and SIMD-friendly. Bindings and registries live i
 (`lang_builtins::full_registry`), with per-crate `register_lang_builtins()`
 functions for selective registration.
 
+## FFI (foreign functions)
+
+The **FFI layer** is the language-side contract for calling Rust-implemented
+built-ins: a built-in algorithm's signature is written **in rill-lang**, and the
+Rust implementation is matched by name through a factory registry at compile
+time. **The language owns the signature; Rust owns the implementation.**
+
+A foreign built-in is declared with the `foreign fn name : TypeExpr;` syntax.
+The signature is a carried arrow (`a -> b -> r`). Signal channels are typed
+`FixedBuffer f32`; scalar parameters use the scalar value types `Float` /
+`Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer f32)`:
+
+```faust
+foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn add    : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32;
+```
+
+Parameters occupy positional argument slots in declaration order — the signal
+channel at slot 0, the scalar at slot 1:
+
+```faust
+foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+main = gain _ 0.5;
+```
+
+The result type is one or more `FixedBuffer` channels (`FixedBuffer f32` → 1
+out; `(FixedBuffer f32, FixedBuffer f32)` → 2 outs). A `List (FixedBuffer f32)`
+variadic parameter must be **last** — a mid-signature variadic does not resolve
+as a foreign built-in.
+
+### The signal-track types
+
+`SIGNAL_PRELUDE` ships two built-in names, registered the same way as the
+category prelude:
+
+```faust
+typeclass Buffer b where { }
+instance Buffer (FixedBuffer a) where { }
+```
+
+- **`FixedBuffer a`** — the signal-channel type. A `foreign fn` signal parameter
+  is strictly a `FixedBuffer[BUF]` at the runtime boundary (block-sized, no heap
+  on the RT path).
+- **`Buffer`** — a typeclass over buffer types; the home of buffer math in later
+  stages.
+
+### The FFI registry
+
+Rust implementations are registered by name on `rill_lang::ffi::ForeignRegistry<T>`:
+
+```rust
+use rill_lang::ffi::ForeignRegistry;
+
+let mut ffi = ForeignRegistry::<f32>::new();
+ffi.register_block("gain", |params: &[f64], sample_rate: f32| {
+    // -> Box<dyn BlockBuiltin<f32>>  (a 1→1 block builtin)
+});
+ffi.register_multichannel_block("add", |ins: usize, params: &[f64], sample_rate: f32| {
+    // -> Box<dyn MultichannelBlockBuiltin<f32>>  (an N→M block builtin)
+});
+let prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+```
+
+`register_block` registers a single-channel (1→1) built-in;
+`register_multichannel_block` an N→M one — the runtime dispatches by the
+`BuiltinInst` variant exactly as it does for legacy built-ins. `compile_with_ffi`
+compiles source against the registry and a fresh, empty legacy built-in
+registry, returning `RillProgram<T, 256>`. A foreign call whose name is not
+registered fails at `RillProgram::build` with `foreign built-in '...' is not
+registered`.
+
+### Reserved names
+
+- **`foreign`** — a lexer keyword, reserved for `foreign fn` declarations.
+- **`FixedBuffer`** — the built-in signal-channel type constructor (arity 1).
+- **`Buffer`** — the built-in typeclass over buffer types.
+
+### Coexistence with legacy built-ins
+
+The FFI layer is the first step toward removing the legacy
+`BuiltinSig`/`ParamType` machinery; today the two **coexist**. Legacy built-ins
+(registered via the rill-core `Registry<T>`, consumed by `compile_with`) and
+foreign-declared built-ins (via `ForeignRegistry<T>`, consumed by
+`compile_with_ffi`) share the same IR and runtime. A `foreign fn` name takes
+precedence over a legacy built-in at inference and lowering; an unregistered
+foreign name is a compile error.
+
 ## Two parameter models
 
 rill-lang supports **two** parameter mechanisms:
@@ -575,10 +663,11 @@ MVP. The value track ships first-class Haskell-style collections
 `Either`, `Bool`/`String` value types) and higher-kinded types (parameterized
 `data`, kind polymorphism over type constructors, compile-time inline
 resolution), with runtime control flow on the value track (`if`/`match`).
-Deferred to follow-on work: the Cranelift `jit` feature, foreign
-references to existing rill DSP primitives, a SIMD-aware IR, runtime typeclass
-dispatch, user-written `Eq`/`Ord` instances and hash-based containers, and
-`strict`/`complete` compiler modes.
+Deferred to follow-on work: the Cranelift `jit` feature, migrating the
+existing rill DSP primitives onto the FFI layer (the `foreign fn` mechanism
+itself is live — see *FFI*), a SIMD-aware IR, runtime typeclass dispatch,
+user-written `Eq`/`Ord` instances and hash-based containers, and `strict`/
+`complete` compiler modes.
 
 ## License
 
