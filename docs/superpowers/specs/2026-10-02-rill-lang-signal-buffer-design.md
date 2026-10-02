@@ -5,7 +5,7 @@
 > **Branch:** `feature/rill-lang-categories`
 > **Scope:** SP-3 of the categories work. Introduce an **FFI layer in rill-lang**:
 > builtin algorithm signatures are declared in the language itself
-> (`foreign fn name : Buffer f32 -> ...`) over a first-class buffer type
+> (`foreign fn name : FixedBuffer f32 -> ...`) over a first-class buffer type
 > (`FixedBuffer a` / `Buffer`), and the Rust-side builtin registry becomes a
 > runtime API of rill-lang that holds only factories. `BuiltinSig`/`ParamType`
 > are removed. Execution system and backend interaction do NOT change.
@@ -28,7 +28,7 @@ removing dedicated signal channels entirely in favor of parameters
 
 | Piece | What | Where |
 |---|---|---|
-| `foreign fn` declarations | Builtin signatures written in rill types (`foreign fn biquad : Buffer f32 -> Float -> Float -> Float -> Buffer f32`) | `parser.rs`, `ast.rs`, `reduce.rs` |
+| `foreign fn` declarations | Builtin signatures written in rill types (`foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32`) | `parser.rs`, `ast.rs`, `reduce.rs` |
 | `FixedBuffer a` / `Buffer` | First-class type name for the single signal-channel kind | `SIGNAL_PRELUDE` + type registry |
 | FFI registry | Runtime API of rill-lang holding name → factory; the only source of signal signatures | `rill_lang::ffi` |
 | Factory contract | Rust-side `&[f64]` + sample_rate → `Box<dyn Algorithm<T>>`, defined in rill-core | `rill_core` types |
@@ -52,15 +52,15 @@ signature *for* the language.
 
 ```rill
 // SIGNAL_PRELUDE + user code
-foreign fn biquad : Buffer f32 -> Float -> Float -> Float -> Buffer f32;
-foreign fn sine   : Float -> Float -> Float -> Buffer f32;
-foreign fn mixer  : List (Buffer f32) -> MixerConfig -> (Buffer f32, Buffer f32);
+foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn sine   : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn mixer  : List (FixedBuffer f32) -> MixerConfig -> (FixedBuffer f32, FixedBuffer f32);
 ```
 
 - `foreign fn name : TypeExpr;` — a top-level declaration. `name` becomes a
   resolvable name whose type is the carried `TypeExpr`.
-- `Buffer f32` is the signal-channel parameter (see §2). `Float`/`Int`/`Bool`/
-  `String` are compile-time scalar parameters. `List (Buffer f32)` is a variadic
+- `FixedBuffer f32` is the signal-channel parameter (see §2). `Float`/`Int`/`Bool`/
+  `String` are compile-time scalar parameters. `List (FixedBuffer f32)` is a variadic
   signal-channel list. A record literal type (`MixerConfig`) is a `Data`-typed
   record parameter (see §4).
 - The declaration registers into the type environment (like a builtin name with a
@@ -135,12 +135,12 @@ type-level machinery is required:
 
 | `ParamType` (old) | FFI signature type (rill) | Notes |
 |---|---|---|
-| `Signal` | `Buffer f32` | Signal channel, strictly `FixedBuffer[BUF]` |
+| `Signal` | `FixedBuffer f32` | Signal channel, strictly `FixedBuffer[BUF]` |
 | `Float` | `Float` | Compile-time constant |
 | `Int` | `Int` | Compile-time constant |
 | `String` | `String` | Compile-time string |
 | `Bool` | `Bool` | Compile-time bool |
-| `Variadic(Signal)` | `List (Buffer f32)` | Variadic signal channels |
+| `Variadic(Signal)` | `List (FixedBuffer f32)` | Variadic signal channels |
 | `Record(schema)` | a `Data` record type | `data MixerConfig = { ... }` + record literal; Record is semantically `Data` |
 | `Enum` | (unused today) | not needed for the current catalog |
 | `Resource` | — | **tape builtins stay outside FFI** (§5) |
@@ -148,7 +148,7 @@ type-level machinery is required:
 **Why no new types:** `TypeExpr` is `TName | TApp | TFunc` (ast.rs:16-22);
 records are declared as `data` types and constructed with record literals, and
 `List` is already a builtin `App("List", [t])`. Variadic signal channels are
-expressed as `List (Buffer f32)`, which the existing variadic signal path
+expressed as `List (FixedBuffer f32)`, which the existing variadic signal path
 (`infer.rs:3371`) already handles.
 
 ---
@@ -187,11 +187,11 @@ parameters**: a program is `(arg..) -> IO`, streams are built-in language
 entities, backend interaction flows through the stream concept. SP-3 is the first
 step:
 
-- Signal channels become named (`Buffer`), so the type system can talk about them
-  uniformly.
+- Signal channels become named (`FixedBuffer`), so the type system can talk about
+  them uniformly.
 - The builtin contract moves into the language, so the language (not `rill-core`)
   owns the vocabulary in which the future `(arg..) -> IO` program is typed.
-- `Buffer` as a parameter is the seed of "buffers are values"; the tape
+- `FixedBuffer` as a parameter is the seed of "buffers are values"; the tape
   `TapeLoop`-as-parameter scheme and the ST-style variant build on this later.
 
 ---
@@ -202,7 +202,7 @@ step:
 |---|---|
 | `foreign fn` syntax | `parser.rs` (`parse_foreign_def`), `ast.rs` (`Def::Foreign`), `render.rs`, `reduce.rs` |
 | Type registration | `types/ty.rs` (`SIGNAL_PRELUDE`, foreign sig table, `FixedBuffer`/`Buffer` types), `types/infer.rs` (foreign-name typing, `Buffer` as signal channel), `types/unify.rs` (`Buffer` unification) |
-| Lowering | `lower.rs` (foreign call → `CallBlock`; `Buffer` signal args; `List (Buffer f32)` variadic) |
+| Lowering | `lower.rs` (foreign call → `CallBlock`; `FixedBuffer` signal args; `List (FixedBuffer f32)` variadic) |
 | FFI registry | `rill_lang::ffi` (new module), `program.rs` (`RillProgram::build` factory resolution) |
 | rill-core cleanup | `rill_core/src/builtin.rs` — remove `BuiltinSig`/`ParamType`/`SignatureSource`; keep `Algorithm`/`BlockBuiltin`/`MultichannelBlockBuiltin`/`Registry`(factory-only) |
 | DSP crates | ~10 crates' `lang/register.rs` — factory-only registrations, drop `BuiltinSig` |
