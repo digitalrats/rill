@@ -91,3 +91,53 @@ fn foreign_fn_declaration_parses() {
         )
     );
 }
+
+#[test]
+fn foreign_sig_describes_signal_and_scalar_params() {
+    use rill_lang::ast::TypeExpr;
+    use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+
+    // `FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32`
+    let te = TypeExpr::TFunc(
+        vec![
+            TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("Float".into())]),
+            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Float".into()),
+        ],
+        Box::new(TypeExpr::TApp(
+            "FixedBuffer".into(),
+            vec![TypeExpr::TName("Float".into())],
+        )),
+    );
+    let sig = ffi_sig_from_typeexpr(&te).expect("FFI sig");
+    assert_eq!(sig.params.len(), 4);
+    assert!(matches!(sig.params[0], FfiParam::Signal));
+    assert!(matches!(sig.params[1], FfiParam::Scalar));
+    assert_eq!(sig.signal_outs, 1);
+}
+
+#[test]
+fn foreign_sig_from_parser_flat_curried_form() {
+    // The parser emits a FLAT `TFunc(args: Vec, ret)` for carried arrows
+    // (`a -> b -> c -> r` → `TFunc([a, b, c], r)`, not nested one-arg-at-a-time).
+    // Feed the real parser output into the descriptor to pin that compatibility.
+    use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+
+    let src = "foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32; main = 1.0;";
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let sig = prog
+        .defs
+        .iter()
+        .find_map(|d| match d {
+            rill_lang::ast::Def::Foreign { sig, .. } => Some(sig),
+            _ => None,
+        })
+        .expect("foreign fn biquad not found");
+    let ffi = ffi_sig_from_typeexpr(sig).expect("FFI sig from parser output");
+    assert_eq!(ffi.params.len(), 4);
+    assert!(matches!(ffi.params[0], FfiParam::Signal));
+    assert!(matches!(ffi.params[1], FfiParam::Scalar));
+    assert_eq!(ffi.signal_outs, 1);
+}

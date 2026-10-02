@@ -268,6 +268,9 @@ pub struct TypeEnv {
     /// an instance fail the kind check with a clean "not a type constructor"
     /// / arity message instead. See `validate_instances`.
     pub data_arities: HashMap<String, usize>,
+    /// Foreign function declarations: name → declared `TypeExpr` signature.
+    /// The language-side contract for Rust-implemented builtins (SP-3a FFI layer).
+    pub foreign_sigs: HashMap<String, crate::ast::TypeExpr>,
 }
 
 /// Built-in category-theory typeclasses, declared in rill-lang itself and
@@ -562,6 +565,9 @@ impl TypeEnv {
                             methods,
                         },
                     );
+                }
+                Def::Foreign { name, sig, .. } => {
+                    self.foreign_sigs.insert(name.clone(), sig.clone());
                 }
                 _ => {}
             }
