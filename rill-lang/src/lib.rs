@@ -15,6 +15,8 @@ pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
 pub mod error;
+/// FFI factory registry: foreign-declared builtins' Rust implementations.
+pub mod ffi;
 /// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → [`CompiledStream`](graph::CompiledStream).
 pub mod graph;
 pub mod ir;
@@ -86,7 +88,25 @@ pub fn compile_with<T: Transcendental>(
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
     let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
-    RillProgram::<T, 256>::new_with(ir, registry, sample_rate)
+    RillProgram::<T, 256>::new_with(ir, registry, sample_rate, None)
+}
+
+/// Compile source against a foreign registry: `foreign fn` builtins resolve
+/// their Rust implementations from `ffi` (a fresh, empty legacy built-in
+/// registry is used for the built-in path). Uses the default block size
+/// (`BUF = 256`).
+pub fn compile_with_ffi<T: Transcendental>(
+    src: &str,
+    ffi: &crate::ffi::ForeignRegistry<T>,
+    sample_rate: f32,
+) -> Result<RillProgram<T, 256>, CompileError> {
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let mut typed = types::infer::infer_program(&program)?;
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, sample_rate, &typed.cafs)?;
+    let registry = Registry::<T>::new();
+    RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
 }
 
 /// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
@@ -171,7 +191,7 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
         }
     };
 
-    let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res)?;
+    let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res, None)?;
     let mailbox = Arc::new(Mailbox::new(64));
     Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox))
 }

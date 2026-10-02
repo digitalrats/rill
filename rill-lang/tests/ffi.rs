@@ -343,3 +343,42 @@ fn foreign_fn_non_terminal_variadic_fails_inference() {
         "non-terminal variadic signal must be rejected at inference"
     );
 }
+
+#[test]
+fn foreign_fn_runs_end_to_end() {
+    use rill_core::builtin::BlockBuiltin;
+    use rill_core::traits::Algorithm;
+    use rill_lang::ffi::ForeignRegistry;
+
+    // A trivial gain builtin implemented in the test.
+    struct Gain(f64);
+    impl<T: rill_core::math::Transcendental> Algorithm<T> for Gain {
+        fn process(
+            &mut self,
+            input: Option<&[T]>,
+            output: &mut [T],
+        ) -> rill_core::ProcessResult<()> {
+            let x = input.unwrap_or(&[]);
+            for (o, &i) in output.iter_mut().zip(x.iter()) {
+                *o = i * T::from_f64(self.0);
+            }
+            Ok(())
+        }
+        fn reset(&mut self) {}
+    }
+    impl<T: rill_core::math::Transcendental> BlockBuiltin<T> for Gain {}
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    ffi.register_block("gain", |params: &[f64], _sr: f32| {
+        Box::new(Gain(params.first().copied().unwrap_or(1.0)))
+    });
+
+    let src = r#"
+        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = gain _ 0.5;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    assert_eq!(out, [0.5, 1.0, 1.5, 2.0]);
+}

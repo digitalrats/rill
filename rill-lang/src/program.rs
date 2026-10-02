@@ -214,23 +214,30 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// Parses `builtins` from the IR, allocates registers, state, and delays,
     /// and builds the execution schedule. The resulting program implements
     /// [`Algorithm<T>`](rill_core::traits::Algorithm).
+    ///
+    /// When `foreign` is provided, built-in names not in `registry` resolve
+    /// against the foreign registry (foreign-declared builtins).
     pub fn new_with(
         ir: Ir,
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
+        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
     ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, None)
+        Self::build(ir, registry, sample_rate, None, foreign)
     }
 
     /// Create a program with a resource registry, resolving resource-backed
-    /// built-ins (e.g. tape heads) from the named resources.
+    /// built-ins (e.g. tape heads) from the named resources. When `foreign`
+    /// is provided, non-resource built-in names not in `registry` resolve
+    /// against the foreign registry.
     pub fn new_with_resources(
         ir: Ir,
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
         resources: &mut rill_core::buffer::ResourceRegistry<T>,
+        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
     ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, Some(resources))
+        Self::build(ir, registry, sample_rate, Some(resources), foreign)
     }
 
     fn build(
@@ -238,62 +245,94 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
         mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
     ) -> Result<Self, CompileError> {
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
-            let entry = registry.get(&bi.name).ok_or_else(|| {
-                CompileError::Unsupported(format!("unknown built-in '{}'", bi.name))
-            })?;
             let is_multi = bi.signal_ins > 1 || bi.signal_outs > 1;
             if is_multi {
-                let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(res) = &bi.resource {
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_multichannel_block(
-                            bi.signal_ins,
-                            &bi.params,
-                            sample_rate,
-                            reg,
-                            res,
-                        )
+                let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(entry) =
+                    registry.get(&bi.name)
+                {
+                    if let Some(res) = &bi.resource {
+                        let reg = resources.as_deref_mut().ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "built-in '{}' requires a resource registry",
+                                bi.name
+                            ))
+                        })?;
+                        entry
+                            .build_resource_multichannel_block(
+                                bi.signal_ins,
+                                &bi.params,
+                                sample_rate,
+                                reg,
+                                res,
+                            )
+                            .ok_or_else(|| {
+                                CompileError::Unsupported(format!(
+                                    "resource built-in '{}' is not registered as resource-backed",
+                                    bi.name
+                                ))
+                            })?
+                    } else {
+                        entry
+                            .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
+                            .expect("registry build_multichannel_block failed")
+                    }
+                } else if let Some(ffi) = foreign {
+                    // FFI: multi-channel foreign builtin.
+                    ffi.build_multichannel_block(&bi.name, bi.signal_ins, &bi.params, sample_rate)
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
+                                "foreign built-in '{}' is not registered",
                                 bi.name
                             ))
                         })?
                 } else {
-                    entry
-                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
-                        .expect("registry build_multichannel_block failed")
+                    return Err(CompileError::Unsupported(format!(
+                        "unknown built-in '{}'",
+                        bi.name
+                    )));
                 };
                 MultichannelAlgorithm::reset(b.as_mut());
                 builtins.push(BuiltinInst::MultichannelBlock(b));
             } else {
-                let mut b: Box<dyn BlockBuiltin<T>> = if let Some(res) = &bi.resource {
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_block(&bi.params, sample_rate, reg, res)
+                let mut b: Box<dyn BlockBuiltin<T>> = if let Some(entry) = registry.get(&bi.name) {
+                    if let Some(res) = &bi.resource {
+                        let reg = resources.as_deref_mut().ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "built-in '{}' requires a resource registry",
+                                bi.name
+                            ))
+                        })?;
+                        entry
+                            .build_resource_block(&bi.params, sample_rate, reg, res)
+                            .ok_or_else(|| {
+                                CompileError::Unsupported(format!(
+                                    "resource built-in '{}' is not registered as resource-backed",
+                                    bi.name
+                                ))
+                            })?
+                    } else {
+                        entry
+                            .build_block(&bi.params, sample_rate)
+                            .expect("registry build_block failed for block builtin")
+                    }
+                } else if let Some(ffi) = foreign {
+                    // FFI: single-channel (1→1) foreign builtin.
+                    ffi.build_block(&bi.name, &bi.params, sample_rate)
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
+                                "foreign built-in '{}' is not registered",
                                 bi.name
                             ))
                         })?
                 } else {
-                    entry
-                        .build_block(&bi.params, sample_rate)
-                        .expect("registry build_block failed for block builtin")
+                    return Err(CompileError::Unsupported(format!(
+                        "unknown built-in '{}'",
+                        bi.name
+                    )));
                 };
                 Algorithm::init(b.as_mut(), sample_rate);
                 builtins.push(BuiltinInst::Block(b));
