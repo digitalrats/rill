@@ -47,14 +47,10 @@ pub fn ffi_sig_from_typeexpr(te: &TypeExpr) -> Option<FfiSig> {
     loop {
         match ret {
             TypeExpr::TFunc(args, r) => {
-                if args.len() != 1 {
-                    // A multi-arg TFunc is only produced by the parser's flat
-                    // `a -> b -> c` form; treat each arg as one param.
-                    for a in args {
-                        params.push(param_from_typeexpr(a)?);
-                    }
-                } else {
-                    params.push(param_from_typeexpr(&args[0])?);
+                // The parser's carried arrows are flat (`a -> b -> c -> r` →
+                // `TFunc([a,b,c], r)`); a nested one-arg TFunc also unrolls here.
+                for a in args {
+                    params.push(param_from_typeexpr(a)?);
                 }
                 ret = r;
             }

@@ -141,3 +141,23 @@ fn foreign_sig_from_parser_flat_curried_form() {
     assert!(matches!(ffi.params[1], FfiParam::Scalar));
     assert_eq!(ffi.signal_outs, 1);
 }
+
+#[test]
+fn foreign_decl_registers_into_type_env() {
+    // A foreign fn declaration registers its signature into TypeEnv::foreign_sigs
+    // via the shared `register_decls` path (the same path inference phase 1 uses).
+    // This is the compiler state Task 4 (infer foreign names) will consume.
+    let src = r#"
+        foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+        main = 1.0;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let mut env = TypeEnv::with_builtins();
+    env.register_decls(&prog.defs);
+    let sig = env
+        .foreign_sigs
+        .get("biquad")
+        .expect("biquad foreign sig registered");
+    assert!(matches!(sig, rill_lang::ast::TypeExpr::TFunc(..)));
+}

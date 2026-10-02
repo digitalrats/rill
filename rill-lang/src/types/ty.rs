@@ -506,11 +506,11 @@ impl TypeEnv {
         env
     }
 
-    /// Register declaration defs (`typeclass`/`instance`) into the env.
-    /// Extracted from inference phase 1 so the category prelude (parsed in
+    /// Register declaration defs (`typeclass`/`instance`/`foreign fn`) into the
+    /// env. Extracted from inference phase 1 so the category prelude (parsed in
     /// [`Self::with_builtins`]) and user declarations share one registration
     /// path.
-    pub(crate) fn register_decls(&mut self, defs: &[Def]) {
+    pub fn register_decls(&mut self, defs: &[Def]) {
         for def in defs {
             match def {
                 Def::Typeclass {
