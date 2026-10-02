@@ -434,6 +434,17 @@ pub enum Def {
         /// Span.
         span: Span,
     },
+    /// `foreign fn name : TypeExpr;` — a foreign (Rust-implemented) builtin whose
+    /// signature is declared in the language. The language owns the contract; a
+    /// runtime factory bound by name provides the implementation.
+    Foreign {
+        /// Foreign function name (the builtin's registry name).
+        name: String,
+        /// Carried type signature: `FixedBuffer f32 -> Float -> ... -> FixedBuffer f32`.
+        sig: TypeExpr,
+        /// Span.
+        span: Span,
+    },
 }
 
 impl Def {
@@ -448,6 +459,7 @@ impl Def {
             Def::Newtype { name, .. } => name,
             Def::Typeclass { name, .. } => name,
             Def::Instance { class, .. } => class,
+            Def::Foreign { name, .. } => name,
         }
     }
 
@@ -493,6 +505,7 @@ impl Def {
                 | Def::Newtype { .. }
                 | Def::Typeclass { .. }
                 | Def::Instance { .. }
+                | Def::Foreign { .. }
         )
     }
 }

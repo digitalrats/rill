@@ -34,3 +34,19 @@ fn buffer_typeclass_registers_from_signal_prelude() {
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
 }
+
+#[test]
+fn foreign_fn_declaration_parses() {
+    // `foreign fn name : TypeExpr;` — a carried signal signature. Parsing alone
+    // is the bar here; resolution lands in Task 4.
+    let src = r#"
+        foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+        main = 1.0;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    assert!(prog
+        .defs
+        .iter()
+        .any(|d| matches!(d, rill_lang::ast::Def::Foreign { name, .. } if name == "biquad")));
+}

@@ -135,6 +135,12 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             write!(buf, "}}").ok();
             Ok(())
         }
+        Def::Foreign { name, sig, .. } => {
+            write!(buf, "{pad}foreign fn {name}: ").ok();
+            render_type_expr(sig, buf);
+            write!(buf, ";").ok();
+            Ok(())
+        }
     }
 }
 

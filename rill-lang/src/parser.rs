@@ -321,6 +321,7 @@ impl<'a> Parser<'a> {
             Tok::KwNewtype => return self.parse_newtype_def(),
             Tok::KwTypeclass => return self.parse_typeclass_def(),
             Tok::KwInstance => return self.parse_instance_def(),
+            Tok::KwForeign => return self.parse_foreign_def(),
             _ => {}
         }
         let start = self.peek().span.start;
@@ -663,6 +664,23 @@ impl<'a> Parser<'a> {
             constraints,
             head_args,
             method_bodies,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `foreign fn name : TypeExpr;` — a foreign builtin signature declared in the
+    /// language. Parsed by the standard type parser; the carried arrow's `FixedBuffer`
+    /// channels are the signal-track parameters.
+    fn parse_foreign_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.bump().span.start;
+        self.eat(&Tok::KwFn)?;
+        let (name, _) = self.expect_ident()?;
+        self.eat(&Tok::Colon)?;
+        let sig = self.parse_type_expr()?;
+        self.eat(&Tok::Semi)?;
+        Ok(Def::Foreign {
+            name,
+            sig,
             span: self.span_from(start),
         })
     }

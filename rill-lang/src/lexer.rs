@@ -65,6 +65,8 @@ pub enum Tok {
     KwTypeclass,
     /// `instance` keyword — concrete typeclass instance.
     KwInstance,
+    /// `foreign` keyword — foreign fn declaration.
+    KwForeign,
     /// `match` keyword — pattern matching over a sum value.
     KwMatch,
     /// `of` keyword — separator in `match x of { .. }`.
@@ -331,6 +333,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 // parenthesized constraint list (`instance (Monad m) => …`), so
                 // the `followed_by_paren` call-guard must not apply here.
                 "instance" => Tok::KwInstance,
+                "foreign" if !followed_by_paren => Tok::KwForeign,
                 "match" => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "if" if !followed_by_paren => Tok::KwIf,
