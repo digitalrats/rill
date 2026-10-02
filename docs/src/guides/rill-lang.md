@@ -1000,11 +1000,11 @@ main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
 
 ### Builtin category typeclasses
 
-The category-theory classes `Functor`/`Applicative`/`Monad`/`Monoid` are
-**built in** — declared in a language prelude (`CATEGORY_PRELUDE`) parsed and
-registered in `TypeEnv::with_builtins()`, so a program never redeclares them but
-may add its own instances. Methods resolve at compile time by **inline**
-lowering — zero runtime dispatch, no dictionaries.
+The category-theory classes `Functor`/`Applicative`/`Monad`/`Monoid`/`Arrow`
+are **built in** — declared in a language prelude (`CATEGORY_PRELUDE`) parsed
+and registered in `TypeEnv::with_builtins()`, so a program never redeclares
+them but may add its own instances. Methods resolve at compile time by
+**inline** lowering — zero runtime dispatch, no dictionaries.
 
 ```faust
 typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
@@ -1025,6 +1025,100 @@ typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
   parser to nested `bind` (`<-` → `bind e (fn x -> rest)`, `let` → `Expr::Let`,
   bare statements → `bind e (fn _ -> rest)`); the final statement is the block's
   result. `a < -b` needs parentheses (`a < (-b)`).
+
+#### `Arrow` and `Kleisli`
+
+The prelude also declares **`Kleisli`**, the free category over a monad (an
+arrow `a -> m b` inside the container `m`), and **`Arrow`**, the category of
+container morphisms:
+
+```faust
+data Kleisli m a b = { unKleisli: a -> m b };
+
+typeclass Arrow a where {
+    arr:     (b -> c) -> a b c;
+    first:   a b c -> a (Pair b d) (Pair c d);
+    compose: a b c -> a c d -> a b d;
+    second:  a b c -> a (Pair d b) (Pair d c) =
+        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+    both:    a b c -> a d e -> a (Pair b d) (Pair c e) =
+        f g (compose (first f) (second g));
+    fan:     a b c -> a b d -> a b (Pair c d) =
+        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+}
+
+instance (Monad m) => Arrow (Kleisli m) where {
+    arr f        = Kleisli (fn x -> return (f x));
+    first k      = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+}
+```
+
+- **Constraint-qualified instances** — `instance (Monad m) => Arrow (Kleisli
+  m)` is the first instance with a **constraint list** before the class name
+  and a **partial-application head** (`Kleisli m`). The leading head argument
+  `m` is bound at the **call site** from the concrete container's leading type
+  arguments — `Kleisli Maybe Float Float` binds `m := Maybe` — and the
+  `Monad m` constraint is then discharged by ordinary instance lookup
+  (`instance Monad Maybe`). The instance body may therefore call `return` /
+  `bind` on the monad directly. A constraint that has no instance is a compile
+  error; there is no kind-polymorphic fallback.
+- **Default methods** — `second`/`both`/`fan` have **default bodies** in the
+  typeclass declaration, written `= param (body)` — a parameter (here `k`)
+  followed by a **parenthesized** expression (`second: … = k (compose …)`).
+  The default body may itself call other typeclass methods (including other
+  defaults — `both` calls `first` and `second`; `fan` calls `both`), which is
+  **not** recursion: only a body that re-enters its own method is rejected.
+  Resolution precedence is **instance body > class default > compile error**:
+  `instance (Monad m) => Arrow (Kleisli m)` supplies `arr`/`first`/`compose`,
+  and `second`/`both`/`fan` fall back to the defaults built from them.
+- **`arr`/`first`/`compose` are end-to-end runnable** — the canonical program
+  composes two arrows and applies the result:
+
+  ```faust
+  apply k x = let u = k.unKleisli in u x;
+  main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
+      Just v => v; Nothing => 0.0;
+  };
+  // -> Just 8.0, i.e. (3 + 1) * 2
+  ```
+
+- **Known limitation: `second`/`both`/`fan` compile but do not yet run.** The
+  default bodies are valid and lower to IR, but their **runtime execution is
+  deferred**: the arena-capacity heuristic undercounts the deep closure chains
+  these defaults build, so a program that calls them panics at build time with
+  `value buffer pool exhausted at build time`. This is a known follow-up (the
+  correct IR is verified; it needs a larger budget estimate). Do not present
+  `second`/`both`/`fan` as runnable.
+
+#### Channel tuples, tuple types, and projections
+
+The `,` combinator doubles as a **channel tuple** that unifies on the track of
+its operands: `signal,signal` stays the block-diagram parallel composition;
+`value,value` builds a `Pair { first, second }`; a **mixed** `value , signal`
+is a compile error (one channel cannot live on both tracks):
+
+```faust
+main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
+main = (1.0, 2.0).first;  // -> Float(1.0)
+```
+
+In **type position**, `(b, d)` is sugar for `Pair b d` — the Arrow signatures
+above are `a (Pair b d) (Pair c d)` ≡ `a (b, d) (c, d)`.
+
+A **field projection is a first-class function value**: `(b.f) 3.0` applies
+the projected closure, and the bare `b.f 3.0` form works too (this is the
+shape the Kleisli instance bodies write — `k.unKleisli p.first`).
+
+A **single-field record** can be constructed newtype-style by passing the
+field value directly: `Kleisli (fn x -> …)` is exactly
+`Kleisli { unKleisli: fn x -> … }`. The prelude instance bodies use this
+shorthand (`arr f = Kleisli (fn x -> return (f x));`).
+
+Reserved names added by the prelude: the Arrow methods `arr`, `first`,
+`compose`, `second`, `both`, `fan`, and the data type `Kleisli` (alongside the
+existing `fmap`, `pure`, `ap`, `return`, `bind`, `mempty`, `mappend`,
+`concat_map`, `append_list`, `concat_string`).
 
 Builtin instances: `Functor`/`Monad` for `List` (`fmap = map`, `bind =
 concat_map`), `Maybe`, `Either a`; `Monoid` for `List` (`append_list`), `String`

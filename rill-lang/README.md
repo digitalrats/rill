@@ -385,13 +385,13 @@ main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
 Kind arity is inferred from method signatures and checked — `instance Functor
 Pair` (Pair has arity 2) is a kind error.
 
-### Builtin category typeclasses (`Functor`/`Applicative`/`Monad`/`Monoid`)
+### Builtin category typeclasses (`Functor`/`Applicative`/`Monad`/`Monoid`/`Arrow`)
 
-The four category-theory classes ship **built in** — declared in a language
-prelude registered at compile time, so a program never redeclares them but may
-add its own instances. Methods resolve at compile time by **inline** lowering
-(zero runtime dispatch), and `instance Monad T` **auto-derives** `Applicative
-T` and `Functor T` (explicit instances always win):
+The category-theory classes ship **built in** — declared in a language prelude
+registered at compile time, so a program never redeclares them but may add its
+own instances. Methods resolve at compile time by **inline** lowering (zero
+runtime dispatch), and `instance Monad T` **auto-derives** `Applicative T` and
+`Functor T` (explicit instances always win):
 
 ```faust
 typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
@@ -428,9 +428,101 @@ and bare monadic statements (each desugars to `bind`); the final statement is
 the block's result. Note that `a < -b` is a comparison followed by negation —
 parenthesize: `a < (-b)`.
 
+#### `Arrow` and `Kleisli`
+
+The prelude also declares **`Kleisli`**, the free category over a monad (an
+arrow `a -> m b` inside the container `m`), and **`Arrow`**, the category of
+container morphisms:
+
+```faust
+data Kleisli m a b = { unKleisli: a -> m b };
+
+typeclass Arrow a where {
+    arr:     (b -> c) -> a b c;
+    first:   a b c -> a (Pair b d) (Pair c d);
+    compose: a b c -> a c d -> a b d;
+    second:  a b c -> a (Pair d b) (Pair d c) =
+        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+    both:    a b c -> a d e -> a (Pair b d) (Pair c e) =
+        f g (compose (first f) (second g));
+    fan:     a b c -> a b d -> a b (Pair c d) =
+        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+}
+
+instance (Monad m) => Arrow (Kleisli m) where {
+    arr f        = Kleisli (fn x -> return (f x));
+    first k      = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+}
+```
+
+This is the first **constraint-qualified instance** in the prelude. The
+instance head `Kleisli m` is a partial application: the leading head argument
+`m` is bound at the **call site** from the concrete container's leading type
+arguments — `Kleisli Maybe Float Float` binds `m := Maybe` — and the
+`Monad m` constraint is then discharged by ordinary instance lookup
+(`instance Monad Maybe`), so the bodies may call `return`/`bind` directly.
+
+**`second`/`both`/`fan` are default methods** — the typeclass declares a
+default body (with parameters, parenthesized) that any instance may override.
+Resolution precedence is **instance body > class default > compile error**:
+`instance (Monad m) => Arrow (Kleisli m)` provides `arr`/`first`/`compose`,
+and `second`/`both`/`fan` fall back to the class defaults built from them.
+The `second` default body is written `= k (compose …)` — `k` is the parameter
+and the body is parenthesized.
+
+```faust
+apply k x = let u = k.unKleisli in u x;
+main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
+    Just v => v; Nothing => 0.0;
+};
+// -> Just 8.0, i.e. (3 + 1) * 2
+```
+
+**Status.** `arr`/`first`/`compose` are fully working end-to-end — the example
+above compiles, runs, and produces `Just 8.0`. `second`/`both`/`fan` are
+declared and **compile** (their default bodies lower), but their **runtime
+execution is not yet supported**: the arena-capacity heuristic undercounts the
+deep closure chains these defaults build, so a program that actually calls
+them panics at build time with `value buffer pool exhausted at build time`.
+This is a known, deferred follow-up — do not rely on `second`/`both`/`fan` at
+runtime yet.
+
+#### Channel tuples, tuple types, and projections
+
+The `,` combinator now doubles as a **channel tuple** — it unifies on the
+track of its operands. `signal,signal` stays the block-diagram parallel
+composition; `value,value` builds a `Pair { first, second }`; a **mixed**
+`value , signal` is a compile error (one channel cannot live on both tracks):
+
+```faust
+main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
+main = (1.0, 2.0).first;  // -> Float(1.0)
+```
+
+In **type position**, the same syntax desugars to the pair type: `(b, d)` is
+sugar for `Pair b d` — that is how the Arrow methods above spell their pair
+arguments (`a (Pair b d) (Pair c d)` ≡ `a (b, d) (c, d)`).
+
+A **field projection is a first-class function value** — a projected closure
+can be applied directly, parenthesized or bare:
+
+```faust
+data Box = { f: Float -> Float };
+b = Box { f: fn x -> x * 2.0 };
+main = (b.f) 3.0;         // parenthesized projection applied: Float(6.0)
+main = b.f 3.0;           // bare projection applied too
+```
+
+A **single-field record** can be constructed newtype-style, passing the field
+value directly instead of a record literal — `Kleisli (fn x -> …)` is exactly
+`Kleisli { unKleisli: fn x -> … }`. The prelude instance bodies above use this
+shorthand (`arr f = Kleisli (fn x -> return (f x));`).
+
 Reserved method/builtin names from the prelude: `fmap`, `pure`, `ap`,
 `return`, `bind`, `mempty`, `mappend`, `concat_map`, `append_list`,
-`concat_string`.
+`concat_string`, plus the Arrow methods and the Kleisli data type: `arr`,
+`first`, `compose`, `second`, `both`, `fan`, `Kleisli`.
 
 ## First-class functions and closures
 

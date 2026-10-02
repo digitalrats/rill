@@ -16,6 +16,23 @@
   statements). New value-track IR ops: `ConcatMap` (List bind), `AppendList`
   (List mappend), `ConcatString` (String mappend). Bare `list` is polymorphic
   (`List ?a`) so `mempty = list` unifies with any element type.
+- **`Arrow`/`Kleisli`, constraint-qualified instances, and channel tuples.**
+  The category prelude adds `data Kleisli m a b = { unKleisli: a -> m b }` and
+  `typeclass Arrow a` (`arr`/`first`/`compose` methods; `second`/`both`/`fan`
+  default bodies), with `instance (Monad m) => Arrow (Kleisli m)` — the first
+  **constraint-qualified instance**: the head argument binds at the call site
+  (`Kleisli Maybe Float Float` → `m := Maybe`) and the `Monad m` constraint
+  discharges by instance lookup. **Default methods** resolve instance body >
+  class default > compile error. The `,` combinator is now a **channel tuple**:
+  `value,value` → `Pair { first, second }`, `signal,signal` → parallel
+  composition, mixed → compile error; `(b, d)` in type position is `Pair b d`.
+  Field projections apply as first-class functions (`(k.unKleisli) p.first`,
+  `b.f x`), and a single-field record constructs newtype-style
+  (`Kleisli (fn x -> …)` ≡ `Kleisli { unKleisli: fn x -> … }`). `arr`/`first`/
+  `compose` are end-to-end runnable; `second`/`both`/`fan` compile but their
+  runtime execution is deferred (arena-capacity undercount for deep closure
+  chains — known follow-up). New reserved names: `arr`, `first`, `compose`,
+  `second`, `both`, `fan`, `Kleisli`.
 - **Open collections + page-based arena.** `List`/`Map`/`Set` drop their
   type-level capacity (`Cap`) and become **open** — `cons`/`insert` grow freely
   up to a pre-allocated pool. The value arena is reworked in the style of
