@@ -556,13 +556,14 @@ mod tests {
     #[test]
     fn lexes_new_declaration_keywords() {
         assert_eq!(
-            kinds("data type newtype typeclass instance match of"),
+            kinds("data type newtype typeclass instance foreign match of"),
             vec![
                 Tok::KwData,
                 Tok::KwType,
                 Tok::KwNewtype,
                 Tok::KwTypeclass,
                 Tok::KwInstance,
+                Tok::KwForeign,
                 Tok::KwMatch,
                 Tok::KwOf,
                 Tok::Eof,

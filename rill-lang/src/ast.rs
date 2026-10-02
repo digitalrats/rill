@@ -493,9 +493,9 @@ impl Def {
     }
 
     /// Whether this definition is a type declaration (`data`, `type`,
-    /// `newtype`, `typeclass`, `instance`) rather than a signal expression
-    /// definition. Declaration variants carry no inferable body — the
-    /// inference/lowering pipeline skips them via this flag.
+    /// `newtype`, `typeclass`, `instance`, `foreign`) rather than a signal
+    /// expression definition. Declaration variants carry no inferable body —
+    /// the inference/lowering pipeline skips them via this flag.
     pub fn is_decl(&self) -> bool {
         matches!(
             self,

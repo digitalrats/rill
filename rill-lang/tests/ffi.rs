@@ -36,6 +36,23 @@ fn buffer_typeclass_registers_from_signal_prelude() {
 }
 
 #[test]
+fn foreign_fn_in_brace_where_block_parses() {
+    // Regression: `parse_foreign_def` must leave the trailing `;` for
+    // `parse_where_block` (brace style) to consume — double-eating used to
+    // fail with "expected Semi, found Ident(x)".
+    let src = r#"
+        main = x where { foreign fn biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let main = prog.main_def().expect("main def");
+    assert!(main.where_defs().iter().any(|d| matches!(
+        d,
+        rill_lang::ast::Def::Foreign { name, .. } if name == "biquad"
+    )));
+}
+
+#[test]
 fn foreign_fn_declaration_parses() {
     // `foreign fn name : TypeExpr;` — a carried signal signature. Parsing alone
     // is the bar here; resolution lands in Task 4.
@@ -45,8 +62,32 @@ fn foreign_fn_declaration_parses() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    assert!(prog
+    let foreign = prog
         .defs
         .iter()
-        .any(|d| matches!(d, rill_lang::ast::Def::Foreign { name, .. } if name == "biquad")));
+        .find_map(|d| match d {
+            rill_lang::ast::Def::Foreign { name, sig, .. } if name == "biquad" => Some(sig),
+            _ => None,
+        })
+        .expect("foreign fn biquad not found");
+    // Pin the flat-curried signature shape: `FixedBuffer f32 -> Float -> Float
+    // -> Float -> FixedBuffer f32`.
+    assert_eq!(
+        foreign,
+        &rill_lang::ast::TypeExpr::TFunc(
+            vec![
+                rill_lang::ast::TypeExpr::TApp(
+                    "FixedBuffer".into(),
+                    vec![rill_lang::ast::TypeExpr::TName("f32".into())]
+                ),
+                rill_lang::ast::TypeExpr::TName("Float".into()),
+                rill_lang::ast::TypeExpr::TName("Float".into()),
+                rill_lang::ast::TypeExpr::TName("Float".into()),
+            ],
+            Box::new(rill_lang::ast::TypeExpr::TApp(
+                "FixedBuffer".into(),
+                vec![rill_lang::ast::TypeExpr::TName("f32".into())]
+            ))
+        )
+    );
 }

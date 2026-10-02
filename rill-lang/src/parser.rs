@@ -670,14 +670,15 @@ impl<'a> Parser<'a> {
 
     /// `foreign fn name : TypeExpr;` — a foreign builtin signature declared in the
     /// language. Parsed by the standard type parser; the carried arrow's `FixedBuffer`
-    /// channels are the signal-track parameters.
+    /// channels are the signal-track parameters. Like every sibling def parser
+    /// (data/sum/typeclass/instance/alias/newtype), leaves the trailing `;` for the
+    /// caller (`parse_program` / `parse_where_block`) to consume.
     fn parse_foreign_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         self.eat(&Tok::KwFn)?;
         let (name, _) = self.expect_ident()?;
         self.eat(&Tok::Colon)?;
         let sig = self.parse_type_expr()?;
-        self.eat(&Tok::Semi)?;
         Ok(Def::Foreign {
             name,
             sig,
@@ -1760,6 +1761,23 @@ mod tests {
     fn parses_instance_declaration() {
         let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Instance { .. })));
+    }
+
+    #[test]
+    fn parses_foreign_def_in_brace_where_block() {
+        // `foreign fn` inside a brace-style where-block: the def parser must
+        // leave the trailing `;` for `parse_where_block` to consume
+        // (regression: it used to eat its own semi, double-eating and failing
+        // on the next def with "expected Semi").
+        let p = prog(
+            "main = x where { foreign fn biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }",
+        );
+        let main = p.main_def().unwrap();
+        assert_eq!(main.where_defs().len(), 2);
+        match &main.where_defs()[0] {
+            Def::Foreign { name, .. } => assert_eq!(name, "biquad"),
+            other => panic!("expected Foreign, got {other:?}"),
+        }
     }
 
     #[test]

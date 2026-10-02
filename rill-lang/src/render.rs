@@ -594,6 +594,24 @@ mod tests {
     }
 
     #[test]
+    fn render_roundtrip_foreign_decl() {
+        // A `foreign fn` declaration renders a trailing `;` (render.rs
+        // Def::Foreign arm) that the top-level parse loop — not the def parser
+        // — consumes. Full-program round-trip must stay idempotent.
+        let src = "foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;\nmain = 1.0;";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
+        let first = render(&program).unwrap();
+        let tokens2 = crate::lexer::tokenize(&first).unwrap();
+        let reparsed = crate::parser::parse(&tokens2, first.as_bytes()).unwrap();
+        let second = render(&reparsed).unwrap();
+        assert_eq!(
+            first, second,
+            "render → parse → render is not idempotent for: {src}\nfirst: {first}\nsecond: {second}"
+        );
+    }
+
+    #[test]
     fn render_roundtrip_match_bare_ctor_arms() {
         let dsl = roundtrip_main(
             "data Shape = Circle Float | Rect Float Float; \
