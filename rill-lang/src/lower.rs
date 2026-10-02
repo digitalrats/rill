@@ -3620,6 +3620,133 @@ impl<'a> Lowerer<'a> {
                         span: *span,
                     });
                 }
+                // Foreign (FFI) declaration: walk the language-side signature,
+                // folding scalar params and lowering signal args interleaved — a
+                // single positional cursor over call_args mirrors inference
+                // (`gain _ 0.5` → the Wire at [0], the constant at [1]).
+                if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&fsig) {
+                        let mut param_values = Vec::new();
+                        let mut param_bindings = Vec::new();
+                        let mut signal_srcs = Vec::new();
+                        let mut pos = 0usize;
+                        for p in &sig.params {
+                            match p {
+                                crate::types::ffi::FfiParam::Signal => {
+                                    if pos >= call_args.len() {
+                                        return Err(CompileError::Type {
+                                            msg: format!("missing signal input for `{name}`"),
+                                            span: *span,
+                                        });
+                                    }
+                                    // Lower the signal expression at this position:
+                                    // a Wire yields the caller's wiring reg; a
+                                    // generator (0-in) yields its outs.
+                                    let outs = self.lower(&call_args[pos], args)?;
+                                    if outs.is_empty() {
+                                        return Err(CompileError::Type {
+                                            msg: format!(
+                                                "signal argument {pos} of `{name}` has no outputs"
+                                            ),
+                                            span: call_args[pos].span(),
+                                        });
+                                    }
+                                    // A foreign signal slot is a single channel in v1.
+                                    signal_srcs.push(outs[0]);
+                                    pos += 1;
+                                }
+                                crate::types::ffi::FfiParam::VariadicSignal => {
+                                    for arg in &call_args[pos..] {
+                                        let outs = self.lower(arg, args)?;
+                                        if outs.is_empty() {
+                                            return Err(CompileError::Type {
+                                                msg: format!(
+                                                    "signal argument of `{name}` has no outputs"
+                                                ),
+                                                span: arg.span(),
+                                            });
+                                        }
+                                        signal_srcs.extend(outs);
+                                    }
+                                    pos = call_args.len();
+                                }
+                                crate::types::ffi::FfiParam::Scalar => {
+                                    if pos >= call_args.len() {
+                                        break;
+                                    }
+                                    if let Expr::Ref(ref_name, _) = &call_args[pos] {
+                                        if let Some(&pidx) = self.param_names.get(ref_name) {
+                                            param_values.push(0.0);
+                                            param_bindings.push((param_values.len() - 1, pidx));
+                                            pos += 1;
+                                            continue;
+                                        }
+                                    }
+                                    if let Expr::ActorParam {
+                                        name,
+                                        default,
+                                        span,
+                                    } = &call_args[pos]
+                                    {
+                                        let default_val = if let Some(d) = default {
+                                            const_f64(d).unwrap_or(0.0)
+                                        } else {
+                                            0.0
+                                        };
+                                        let idx = self.intern_param(
+                                            name.clone(),
+                                            default_val,
+                                            f64::NEG_INFINITY,
+                                            f64::INFINITY,
+                                            *span,
+                                        )?;
+                                        param_values.push(0.0);
+                                        param_bindings.push((param_values.len() - 1, idx));
+                                        pos += 1;
+                                        continue;
+                                    }
+                                    let v = self.caf_const(&call_args[pos]).ok_or_else(|| {
+                                        CompileError::Type {
+                                            msg: format!(
+                                                "param at position {pos} of `{name}` must be a \
+                                                 constant or parameter reference"
+                                            ),
+                                            span: call_args[pos].span(),
+                                        }
+                                    })?;
+                                    param_values.push(v);
+                                    pos += 1;
+                                }
+                                crate::types::ffi::FfiParam::Record(_) => {
+                                    return Err(CompileError::Type {
+                                        msg: format!("foreign `{name}` has a record parameter (SP-3b)"),
+                                        span: *span,
+                                    });
+                                }
+                            }
+                        }
+                        let instance = self.builtins.len();
+                        self.builtins.push(BuiltinInstance {
+                            name: name.clone(),
+                            params: param_values,
+                            resource: None,
+                            kind: crate::builtin::BuiltinKind::Block,
+                            signal_ins: signal_srcs.len(),
+                            signal_outs: sig.signal_outs,
+                            param_bindings,
+                        });
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        self.emit(Instr::CallBlock {
+                            dst: fst,
+                            srcs: signal_srcs,
+                            instance,
+                        });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
+                    }
+                }
                 if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
                     let mut param_values = Vec::new();
                     let mut param_bindings = Vec::new();

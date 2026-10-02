@@ -195,3 +195,47 @@ fn foreign_fn_wrong_arity_is_error() {
         Ok(_) => panic!("expected a type error for wrong arity"),
     }
 }
+
+#[test]
+fn foreign_fn_lowers_to_callblock() {
+    // Lower `gain _ 0.5` and assert the IR contains a CallBlock referencing the
+    // `gain` builtin with one signal input and the folded param 0.5.
+    use rill_lang::lower::lower_with_cafs;
+
+    let src = r#"
+        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = gain _ 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = lower_with_cafs(&typed, &rill_lang::builtin::NoSigs, 44100.0, &typed.cafs).unwrap();
+    assert!(
+        ir.builtins
+            .iter()
+            .any(|b| b.name == "gain" && b.signal_ins == 1 && b.params == vec![0.5]),
+        "expected gain CallBlock with 1 signal in and folded param 0.5, got {:?}",
+        ir.builtins
+    );
+}
+
+#[test]
+fn foreign_fn_signal_slot_rejects_value() {
+    // A VALUE-channel expression in a Signal slot is a type error (rate check).
+    // Note: a bare Float literal is itself a Signal-rate constant signal
+    // (0-in generator), so the rejection needs a genuine Value expression —
+    // here a String literal.
+    let src = r#"
+        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = gain "oops" 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    match rill_lang::types::infer::infer_program(&prog) {
+        Err(e) => assert!(
+            e.to_string().contains("must be a signal"),
+            "expected a signal-slot rate error, got: {e}"
+        ),
+        Ok(_) => panic!("expected a type error for a value in a Signal slot"),
+    }
+}

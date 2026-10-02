@@ -3308,6 +3308,21 @@ fn infer_apply_impl(
             for p in &sig.params {
                 match p {
                     crate::types::ffi::FfiParam::Signal => {
+                        // A foreign signal slot holds a signal-channel expression
+                        // (a wire or a 0-in generator like `sine 440.0`) — a
+                        // VALUE-rate channel (a string, a record, a lambda) is a
+                        // type error. A bare Float literal IS Signal-rate (a
+                        // constant signal), so it legitimately passes.
+                        let at = infer_expr(ctx, &args[pos])?;
+                        if at.outs.len() != 1 || at.outs[0].rate != Rate::Signal {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "signal argument {pos} of `{name}` must be a signal \
+                                     (found a value/constant)"
+                                ),
+                                span: args[pos].span(),
+                            });
+                        }
                         signal_ins += 1;
                         pos += 1;
                     }
