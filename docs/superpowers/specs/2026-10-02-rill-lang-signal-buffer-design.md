@@ -36,7 +36,7 @@ removing dedicated signal channels entirely in favor of parameters
 
 Explicitly **out of scope** for SP-3: sample access from the value track, the
 "big objects" memory subsystem, `Array`/`Vector` collection types, `List` →
-cons-list refactor, `Block a b` as a first-class arrow value, and the tape
+cons-list refactor, `Buffer a b` as a first-class arrow value, and the tape
 builtins (see §5). These are the next stages (separate specs).
 
 ---
