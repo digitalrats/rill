@@ -239,3 +239,107 @@ fn foreign_fn_signal_slot_rejects_value() {
         Ok(_) => panic!("expected a type error for a value in a Signal slot"),
     }
 }
+
+#[test]
+fn foreign_fn_multi_signal_wires_distinct_inputs() {
+    // `cross _ _ 0.5` — two distinct signal inputs must wire to two registers,
+    // not both to the first (the k-th Wire in a Signal slot binds the k-th
+    // wiring register).
+    use rill_lang::lower::lower_with_cafs;
+
+    let src = r#"
+        foreign fn cross : FixedBuffer f32 -> FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = cross _ _ 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = lower_with_cafs(&typed, &rill_lang::builtin::NoSigs, 44100.0, &typed.cafs).unwrap();
+    let cross_idx = ir
+        .builtins
+        .iter()
+        .position(|b| b.name == "cross")
+        .expect("cross builtin");
+    let bi = &ir.builtins[cross_idx];
+    assert_eq!(bi.signal_ins, 2);
+    // The CallBlock for cross must reference two distinct src registers.
+    let calls: Vec<_> = ir
+        .instrs
+        .iter()
+        .filter_map(|i| match i {
+            rill_lang::ir::Instr::CallBlock { instance, .. } if *instance == cross_idx => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 1);
+    let rill_lang::ir::Instr::CallBlock { srcs, .. } = calls[0] else {
+        unreachable!()
+    };
+    assert_eq!(srcs.len(), 2);
+    assert_ne!(
+        srcs[0], srcs[1],
+        "two signal inputs must wire to distinct registers"
+    );
+}
+
+#[test]
+fn foreign_sig_rejects_non_terminal_variadic_signal() {
+    // A VariadicSignal (`List (FixedBuffer f32)`) that is not the LAST param
+    // is ambiguous: lowering would fold any trailing scalar as a signal, while
+    // inference counts a different arity. The descriptor must reject it.
+    use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+
+    // `List (FixedBuffer f32) -> Float -> FixedBuffer f32` — variadic mid-signature.
+    let te = rill_lang::ast::TypeExpr::TFunc(
+        vec![
+            rill_lang::ast::TypeExpr::TApp(
+                "List".into(),
+                vec![rill_lang::ast::TypeExpr::TApp(
+                    "FixedBuffer".into(),
+                    vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+                )],
+            ),
+            rill_lang::ast::TypeExpr::TName("Float".into()),
+        ],
+        Box::new(rill_lang::ast::TypeExpr::TApp(
+            "FixedBuffer".into(),
+            vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+        )),
+    );
+    assert_eq!(ffi_sig_from_typeexpr(&te), None);
+
+    // A terminal VariadicSignal is still accepted (`List (FixedBuffer f32) ->
+    // FixedBuffer f32`).
+    let ok = rill_lang::ast::TypeExpr::TFunc(
+        vec![rill_lang::ast::TypeExpr::TApp(
+            "List".into(),
+            vec![rill_lang::ast::TypeExpr::TApp(
+                "FixedBuffer".into(),
+                vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+            )],
+        )],
+        Box::new(rill_lang::ast::TypeExpr::TApp(
+            "FixedBuffer".into(),
+            vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+        )),
+    );
+    let sig = ffi_sig_from_typeexpr(&ok).expect("terminal variadic is accepted");
+    assert!(matches!(sig.params[0], FfiParam::VariadicSignal));
+}
+
+#[test]
+fn foreign_fn_non_terminal_variadic_fails_inference() {
+    // `foreign fn bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;`
+    // — a non-terminal VariadicSignal — must be rejected: the descriptor
+    // returns None and the name does not resolve as a foreign builtin.
+    let src = r#"
+        foreign fn bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;
+        main = bad _ _ 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    assert!(
+        rill_lang::types::infer::infer_program(&prog).is_err(),
+        "non-terminal variadic signal must be rejected at inference"
+    );
+}

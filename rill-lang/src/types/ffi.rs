@@ -55,6 +55,18 @@ pub fn ffi_sig_from_typeexpr(te: &TypeExpr) -> Option<FfiSig> {
                 ret = r;
             }
             other => {
+                // A VariadicSignal that is not the LAST param is ambiguous:
+                // lowering folds every remaining call arg (including a trailing
+                // scalar) as a signal while inference counts a different arity.
+                // Reject the whole descriptor so the name does not resolve as a
+                // foreign builtin.
+                if params
+                    .iter()
+                    .rposition(|p| matches!(p, FfiParam::VariadicSignal))
+                    .is_some_and(|i| i != params.len() - 1)
+                {
+                    return None;
+                }
                 return Some(FfiSig {
                     params,
                     signal_outs: outs_from_typeexpr(other)?,

@@ -3630,6 +3630,7 @@ impl<'a> Lowerer<'a> {
                         let mut param_bindings = Vec::new();
                         let mut signal_srcs = Vec::new();
                         let mut pos = 0usize;
+                        let mut signal_index = 0usize;
                         for p in &sig.params {
                             match p {
                                 crate::types::ffi::FfiParam::Signal => {
@@ -3639,35 +3640,61 @@ impl<'a> Lowerer<'a> {
                                             span: *span,
                                         });
                                     }
-                                    // Lower the signal expression at this position:
-                                    // a Wire yields the caller's wiring reg; a
-                                    // generator (0-in) yields its outs.
-                                    let outs = self.lower(&call_args[pos], args)?;
-                                    if outs.is_empty() {
-                                        return Err(CompileError::Type {
+                                    // A Wire in the k-th Signal slot binds the k-th
+                                    // wiring register; a generator (0-in) yields its
+                                    // outs via `self.lower`.
+                                    let src = if matches!(&call_args[pos], Expr::Wire(_)) {
+                                        let reg = *args.get(signal_index).ok_or_else(|| {
+                                            CompileError::Type {
+                                                msg: format!(
+                                                    "signal argument {pos} of `{name}`: not \
+                                                     enough wiring inputs"
+                                                ),
+                                                span: call_args[pos].span(),
+                                            }
+                                        })?;
+                                        reg
+                                    } else {
+                                        let outs = self.lower(&call_args[pos], args)?;
+                                        *outs.first().ok_or_else(|| CompileError::Type {
                                             msg: format!(
                                                 "signal argument {pos} of `{name}` has no outputs"
                                             ),
                                             span: call_args[pos].span(),
-                                        });
-                                    }
+                                        })?
+                                    };
                                     // A foreign signal slot is a single channel in v1.
-                                    signal_srcs.push(outs[0]);
+                                    signal_srcs.push(src);
+                                    signal_index += 1;
                                     pos += 1;
                                 }
                                 crate::types::ffi::FfiParam::VariadicSignal => {
-                                    for arg in &call_args[pos..] {
-                                        let outs = self.lower(arg, args)?;
-                                        if outs.is_empty() {
-                                            return Err(CompileError::Type {
+                                    for (i, arg) in call_args[pos..].iter().enumerate() {
+                                        // The i-th Wire in the variadic span binds the
+                                        // (signal_index + i)-th wiring register.
+                                        let src = if matches!(arg, Expr::Wire(_)) {
+                                            let reg = *args
+                                                .get(signal_index + i)
+                                                .ok_or_else(|| CompileError::Type {
+                                                    msg: format!(
+                                                        "variadic signal argument of `{name}`: \
+                                                         not enough wiring inputs"
+                                                    ),
+                                                    span: arg.span(),
+                                                })?;
+                                            reg
+                                        } else {
+                                            let outs = self.lower(arg, args)?;
+                                            *outs.first().ok_or_else(|| CompileError::Type {
                                                 msg: format!(
                                                     "signal argument of `{name}` has no outputs"
                                                 ),
                                                 span: arg.span(),
-                                            });
-                                        }
-                                        signal_srcs.extend(outs);
+                                            })?
+                                        };
+                                        signal_srcs.push(src);
                                     }
+                                    signal_index += call_args.len() - pos;
                                     pos = call_args.len();
                                 }
                                 crate::types::ffi::FfiParam::Scalar => {
