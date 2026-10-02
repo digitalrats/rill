@@ -321,6 +321,16 @@ instance (Monad m) => Arrow (Kleisli m) where {
 main = _;
 "#;
 
+/// Built-in signal-track declarations: the first-class buffer type and the
+/// `Buffer` typeclass. Registered by [`TypeEnv::with_builtins`]. The home of the
+/// Faust combinators and buffer math in later stages.
+pub(crate) const SIGNAL_PRELUDE: &str = r#"
+typeclass Buffer b where { }
+instance Buffer (FixedBuffer a) where { }
+
+main = _;
+"#;
+
 /// Derived instance bodies for the superclass chain, written in rill-lang.
 /// `instance Monad T` ⇒ `Applicative T` (`pure` = `return`, `ap` via `bind`) and
 /// `Functor T` (`fmap` via `bind`); `instance Applicative T` ⇒ `Functor T`
@@ -374,6 +384,7 @@ impl TypeEnv {
             ("Map".to_string(), 2usize),
             ("Pair".to_string(), 2usize),
             ("Either".to_string(), 2usize),
+            ("FixedBuffer".to_string(), 1usize),
         ]
         .into_iter()
         .collect();
@@ -479,6 +490,15 @@ impl TypeEnv {
             }
         }
         env.register_decls(&defs);
+        env.derive_superclass_instances();
+        // Signal-track prelude: the `Buffer` typeclass + `FixedBuffer` type.
+        // Parsed the same way as `CATEGORY_PRELUDE` (a parse failure here is a
+        // compiler bug).
+        let stoks = crate::lexer::tokenize(SIGNAL_PRELUDE);
+        debug_assert!(stoks.is_ok(), "signal prelude must lex");
+        let sprogram = crate::parser::parse(&stoks.ok().unwrap(), SIGNAL_PRELUDE.as_bytes());
+        debug_assert!(sprogram.is_ok(), "signal prelude must parse");
+        env.register_decls(&sprogram.ok().unwrap().defs);
         env.derive_superclass_instances();
         env
     }
