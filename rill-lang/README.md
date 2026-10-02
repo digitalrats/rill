@@ -182,7 +182,8 @@ All built-ins are whole-buffer `BlockBuiltin`s — opaque block steps implementi
 so the engine stays block-only and SIMD-friendly. Bindings and registries live in
 `rill-adrift`
 (`lang_builtins::full_registry`), with per-crate `register_lang_builtins()`
-functions for selective registration.
+functions for selective registration. For declaring Rust-implemented built-ins in
+the language, see *FFI (foreign functions)* below.
 
 ## FFI (foreign functions)
 
@@ -192,7 +193,7 @@ Rust implementation is matched by name through a factory registry at compile
 time. **The language owns the signature; Rust owns the implementation.**
 
 A foreign built-in is declared with the `foreign fn name : TypeExpr;` syntax.
-The signature is a carried arrow (`a -> b -> r`). Signal channels are typed
+The signature is a curried arrow (`a -> b -> r`). Signal channels are typed
 `FixedBuffer f32`; scalar parameters use the scalar value types `Float` /
 `Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer f32)`:
 
@@ -226,8 +227,8 @@ instance Buffer (FixedBuffer a) where { }
 ```
 
 - **`FixedBuffer a`** — the signal-channel type. A `foreign fn` signal parameter
-  is strictly a `FixedBuffer[BUF]` at the runtime boundary (block-sized, no heap
-  on the RT path).
+  is strictly a `FixedBuffer[BUF]` at the runtime boundary (i.e. the const-generic
+  `FixedBuffer<f32, BUF>`, block-sized, no heap on the RT path).
 - **`Buffer`** — a typeclass over buffer types; the home of buffer math in later
   stages.
 
