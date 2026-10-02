@@ -2351,6 +2351,24 @@ fn infer_ref_inner(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy,
         let s = ctx.fresh();
         return Ok(ArrowTy::uniform(2, 1, s));
     }
+    // Foreign (FFI) declaration: type through the language-side signature. A bare
+    // ref is valid when every param is a signal channel (no scalar params yet).
+    if let Some(fsig) = ctx.env.foreign_sigs.get(name).cloned() {
+        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&fsig) {
+            if sig
+                .params
+                .iter()
+                .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                && sig.signal_outs > 0
+            {
+                return Ok(ArrowTy::uniform(
+                    sig.params.len(),
+                    sig.signal_outs,
+                    Scalar::Float,
+                ));
+            }
+        }
+    }
     if let Some(sig) = ctx.sigs.builtin_sig(name) {
         if sig.params.len() == sig.signal_ins() {
             return Ok(ArrowTy::uniform(
@@ -3242,6 +3260,98 @@ fn infer_apply_impl(
             ctx.method_lifting.remove(&key);
             let body_vty = body_vty?;
             return Ok(ArrowTy::value_channel(body_vty));
+        }
+    }
+    // Foreign (FFI) declaration: validate arity + scalar params from the
+    // language signature, then type as a signal arrow. Signal and scalar params
+    // occupy positional arg slots in declaration order (`gain _ 0.5` → the wire
+    // at args[0], the constant at args[1]); a variadic signal tail consumes all
+    // remaining args.
+    if let Some(fsig) = ctx.env.foreign_sigs.get(name).cloned() {
+        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&fsig) {
+            let min_args = sig
+                .params
+                .iter()
+                .filter(|p| !matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
+                .count();
+            let max_args = if sig
+                .params
+                .iter()
+                .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
+            {
+                None
+            } else {
+                Some(min_args)
+            };
+            if args.len() < min_args {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "foreign `{name}` expects at least {min_args} arg(s), got {}",
+                        args.len()
+                    ),
+                    span,
+                });
+            }
+            if let Some(max) = max_args {
+                if args.len() > max {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "foreign `{name}` expects at most {max} arg(s), got {}",
+                            args.len()
+                        ),
+                        span,
+                    });
+                }
+            }
+            let mut signal_ins = 0usize;
+            let mut pos = 0usize;
+            for p in &sig.params {
+                match p {
+                    crate::types::ffi::FfiParam::Signal => {
+                        signal_ins += 1;
+                        pos += 1;
+                    }
+                    crate::types::ffi::FfiParam::VariadicSignal => {
+                        // All remaining args after the fixed params are signal wires.
+                        for arg in &args[pos..] {
+                            let ty = infer_expr(ctx, arg)?;
+                            if ty.arity_out() == 0 {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "variadic signal argument of `{name}` has no outputs"
+                                    ),
+                                    span: arg.span(),
+                                });
+                            }
+                            signal_ins += ty.arity_in();
+                        }
+                        pos = args.len();
+                    }
+                    crate::types::ffi::FfiParam::Scalar => {
+                        if pos >= args.len() {
+                            break;
+                        }
+                        let at = infer_expr(ctx, &args[pos])?;
+                        if at.arity_in() != 0 || at.arity_out() != 1 {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "param at position {pos} of `{name}` must be constant"
+                                ),
+                                span: args[pos].span(),
+                            });
+                        }
+                        pos += 1;
+                    }
+                    crate::types::ffi::FfiParam::Record(_) => {
+                        // SP-3b — not yet resolved at inference.
+                        return Err(CompileError::Type {
+                            msg: format!("foreign `{name}` has a record parameter (SP-3b)"),
+                            span,
+                        });
+                    }
+                }
+            }
+            return Ok(ArrowTy::uniform(signal_ins, sig.signal_outs, Scalar::Float));
         }
     }
     if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {

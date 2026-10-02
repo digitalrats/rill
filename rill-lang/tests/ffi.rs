@@ -161,3 +161,37 @@ fn foreign_decl_registers_into_type_env() {
         .expect("biquad foreign sig registered");
     assert!(matches!(sig, rill_lang::ast::TypeExpr::TFunc(..)));
 }
+
+#[test]
+fn foreign_fn_types_as_signal_arrow() {
+    // `gain : FixedBuffer f32 -> Float -> FixedBuffer f32` applied to a wire and
+    // a constant — types as a 1→1 signal arrow.
+    let src = r#"
+        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = gain _ 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    // `process_ty` is the diagram type of the whole program (main).
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn foreign_fn_wrong_arity_is_error() {
+    // `gain` takes 1 signal + 1 scalar = 2 args; a 1-arg call is a type error.
+    let src = r#"
+        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = gain _;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    match rill_lang::types::infer::infer_program(&prog) {
+        Err(e) => assert!(
+            e.to_string().contains("expects at least"),
+            "expected an arity error, got: {e}"
+        ),
+        Ok(_) => panic!("expected a type error for wrong arity"),
+    }
+}
