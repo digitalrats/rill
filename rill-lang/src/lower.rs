@@ -1335,16 +1335,6 @@ impl<'a> Lowerer<'a> {
                                 span: *span,
                             });
                         }
-                        let key = (class_name.clone(), ctor.clone(), name.to_string());
-                        if self.method_lifting.contains(&key) {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "recursive typeclass method `{name}` for type `{ctor}`"
-                                ),
-                                span: *span,
-                            });
-                        }
-                        self.method_lifting.insert(key.clone());
                         // Phase 2: lower the remaining args with their signature
                         // param type as expected, then bind all params.
                         let mut param_tys = crate::types::infer::signature_param_tys_conv(
@@ -1398,6 +1388,27 @@ impl<'a> Lowerer<'a> {
                         for (p, a) in params.iter().zip(call_args) {
                             ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
                         }
+                        // The recursion guard is armed ONLY around the inlined
+                        // BODY — not while the arguments are lowered. Arguments
+                        // may legally inline other methods' defaults that
+                        // reference this method (the method-lifting composition:
+                        // `both`'s default `compose (first f) (second g)` reaches
+                        // `compose` again through `second`'s default body while
+                        // the outer `compose`'s SECOND argument is lowered).
+                        // That is not recursion — `compose`'s own body never
+                        // calls `compose`. Genuine recursion (a body that calls
+                        // its own method name) is still caught: the key is held
+                        // while the body lowers.
+                        let key = (class_name.clone(), ctor.clone(), name.to_string());
+                        if self.method_lifting.contains(&key) {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "recursive typeclass method `{name}` for type `{ctor}`"
+                                ),
+                                span: *span,
+                            });
+                        }
+                        self.method_lifting.insert(key.clone());
                         self.value_locals.push(scope);
                         self.value_local_ctors.push(ctor_scope);
                         // Lower the inlined body with the method's expected

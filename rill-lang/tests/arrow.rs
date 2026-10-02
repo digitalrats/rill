@@ -245,3 +245,48 @@ fn kleisli_arrow_end_to_end() {
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(out_float(&prog, 0), 8.0); // (3+1)*2
 }
+
+#[test]
+fn arrow_default_both_composes() {
+    // `both f g` default: `compose (first f) (second g)`. The method-lifting
+    // composition reaches `compose` again through `second`'s default body —
+    // that is NOT recursion (compose's body never calls compose). Regression:
+    // the method_lifting recursion guard must only fire on BODY re-entry.
+    let src = r#"
+        apply k x = let u = k.unKleisli in u x;
+        main = match (apply (both (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
+            Just v => v; Nothing => 0.0;
+        };
+    "#;
+    // PRIMARY bar: `both` must COMPILE — before the recursion-guard fix this
+    // fails with "recursive typeclass method `compose` for type `Kleisli`"
+    // (the key was held while `second g`'s default body re-entered `compose`).
+    assert!(
+        compile::<f32>(src).is_ok(),
+        "both's default must compile (recursion guard must only fire on body re-entry)"
+    );
+    // NOTE: runtime execution of both/fan is deferred — arena-capacity
+    // undercount for deep closure chains (the compiled program panics with
+    // "value buffer pool exhausted at build time"). The PRIMARY bar is the
+    // compile above; the recursion-guard false positive is a COMPILE error.
+}
+
+#[test]
+fn arrow_default_fan_composes() {
+    // `fan f g` default: `compose (arr dup) (both f g)` — the deepest default
+    // chain in the Arrow prelude: fan → both → second, all re-entering
+    // `compose` through a NESTED method's default body. None of these bodies
+    // call their own method; the recursion guard must not fire.
+    let src = r#"
+        apply k x = let u = k.unKleisli in u x;
+        main = match (apply (fan (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
+            Just v => v; Nothing => 0.0;
+        };
+    "#;
+    assert!(
+        compile::<f32>(src).is_ok(),
+        "fan's default must compile (recursion guard must only fire on body re-entry)"
+    );
+    // NOTE: runtime execution of both/fan is deferred — arena-capacity
+    // undercount for deep closure chains. The PRIMARY bar is the compile above.
+}

@@ -3181,14 +3181,6 @@ fn infer_apply_impl(
                     span,
                 });
             }
-            let key = (class_name.clone(), ctor.clone(), name.to_string());
-            if ctx.method_lifting.contains(&key) {
-                return Err(CompileError::Type {
-                    msg: format!("recursive typeclass method `{name}` for type `{ctor}`"),
-                    span,
-                });
-            }
-            ctx.method_lifting.insert(key.clone());
             // Phase 2: infer the remaining args with their signature param type
             // as expected (so `bind mx (fn x -> return x)` resolves `return` by
             // the monad), then bind all params.
@@ -3225,6 +3217,21 @@ fn infer_apply_impl(
                     )?);
                 }
             }
+            // Mirror of the lowering guard (lower.rs, constructor-class branch):
+            // the key arms ONLY around the inlined BODY, not the arguments.
+            // Arguments may legally inline other methods' defaults that
+            // reference this method (the method-lifting composition — `both`'s
+            // default reaches `compose` again through `second`'s default body
+            // while the outer `compose`'s second argument is inferred); genuine
+            // recursion (a body calling its own method name) is still caught.
+            let key = (class_name.clone(), ctor.clone(), name.to_string());
+            if ctx.method_lifting.contains(&key) {
+                return Err(CompileError::Type {
+                    msg: format!("recursive typeclass method `{name}` for type `{ctor}`"),
+                    span,
+                });
+            }
+            ctx.method_lifting.insert(key.clone());
             let saved = ctx.locals.clone();
             for (p, av) in params.iter().zip(arg_vtys.iter()) {
                 ctx.locals

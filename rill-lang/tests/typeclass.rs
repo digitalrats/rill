@@ -94,6 +94,33 @@ fn transitive_recursive_typeclass_methods_are_compile_error() {
 }
 
 #[test]
+fn recursive_constructor_class_method_is_compile_error() {
+    // Constructor-class branch of the recursion guard: an INSTANCE body that
+    // calls its own method (`f k = f k`) must be a compile error. The guard
+    // arms around the inlined BODY only (not the arguments — composed
+    // defaults legitimately re-enter other methods' bodies through arguments),
+    // so genuine body self-re-entry must still trip it.
+    let src = r#"
+        typeclass A a where { f: a b c -> a b c; }
+        data K m a b = { unK: a -> m b };
+        instance (Monad m) => A (K m) where { f k = f k; }
+        apply k x = let u = k.unK in u x;
+        main = match (apply (f (K { unK: fn x -> Just x })) 3.0) of { Just v => v; Nothing => 0.0; };
+    "#;
+    let res = compile::<f32>(src);
+    assert!(res.is_err(), "expected a compile error, got success");
+    match res.err().expect("compile failed") {
+        rill_lang::CompileError::Type { msg, .. } => {
+            assert!(
+                msg.contains("recursive typeclass method"),
+                "expected recursive-method message, got: {msg}",
+            );
+        }
+        other => panic!("expected a Type error, got {other:?}"),
+    }
+}
+
+#[test]
 fn signal_method_argument_is_compile_error() {
     // A genuine signal computation (`sin 1.0`) cannot select a typeclass
     // instance — only value expressions (and bare Float/Int literals) can.
