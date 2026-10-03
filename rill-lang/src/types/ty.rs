@@ -334,6 +334,49 @@ instance Buffer (FixedBuffer a) where { }
 main = _;
 "#;
 
+/// Inline catalog of foreign builtin declarations auto-registered into
+/// [`TypeEnv::foreign_sigs`] (and their record `data` types into
+/// [`TypeEnv::data_types`]). Programs resolve these names without a
+/// user-written `foreign fn` per program — this is the in-language migration
+/// target for the legacy `BuiltinSig` catalog (SP-3b).
+///
+/// Scope note: only declarations whose apply-arg convention matches the FFI
+/// model (signal wires are POSITIONAL apply args, `gain _ 0.5`) are listed.
+/// Builtins that existing DSL programs wire through the `:` combinator
+/// (`_ : onepole 200.0 0.7`, `+ ~ _` → `integrator`, the `lofi`/`spectral*`
+/// pipelines) keep resolving through the legacy `BuiltinSig` path until their
+/// call sites migrate; registering their FFI sigs here would shadow that path
+/// and break them with an arity error. The record-param builtins
+/// (`mixer`/`eq_parametric`/`dry_wet`) register their `data` types now; their
+/// `foreign fn` declarations land in Task 4 (record params resolve at infer
+/// only then). `tape_loop` (`Int -> Tape f32`) is deferred to Task 11 — its
+/// `Tape f32` result is not a `FixedBuffer`/`Pair`, so
+/// [`crate::types::ffi::ffi_sig_from_typeexpr`] rejects it.
+pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
+foreign fn sine : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn saw : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn square : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn triangle : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn noise : Float -> Float -> FixedBuffer f32;
+foreign fn complex : Float -> Float -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn conj : FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn re : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn im : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn norm : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn arg : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn cmul : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn cadd : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn ay38910 : Float -> Float -> FixedBuffer f32;
+foreign fn sampler : Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+
+data MixerConfig = { buses: Int, master_vol: Float };
+data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };
+data EqConfig = { bands: List EqBand };
+data DryWetConfig = { mix: Float };
+
+main = _;
+"#;
+
 /// Derived instance bodies for the superclass chain, written in rill-lang.
 /// `instance Monad T` ⇒ `Applicative T` (`pure` = `return`, `ap` via `bind`) and
 /// `Functor T` (`fmap` via `bind`); `instance Applicative T` ⇒ `Functor T`
@@ -372,6 +415,48 @@ fn instance_from_template(ty: &str, class: &str, bodies: &str) -> InstanceInfo {
         head_args: vec![],
         methods,
     }
+}
+
+/// Parse a prelude/catalog fragment and register its defs: `Def::Data` through
+/// the phase-2 path ([`crate::types::infer::data_field_vty`], the same path
+/// user data declarations use) and every other declaration
+/// (`typeclass`/`instance`/`foreign fn`) through
+/// [`TypeEnv::register_decls`]. A parse failure is a compiler bug (the
+/// constants are fixed) — assert loudly.
+fn register_prelude(env: &mut TypeEnv, src: &str) {
+    let toks = crate::lexer::tokenize(src);
+    debug_assert!(toks.is_ok(), "prelude must lex");
+    let program = crate::parser::parse(&toks.ok().unwrap(), src.as_bytes());
+    debug_assert!(program.is_ok(), "prelude must parse");
+    let defs = program.ok().unwrap().defs;
+    // Prelude `data` declarations (`data Kleisli m a b = …`, the catalog's
+    // record types) register here. User `data` declarations register in
+    // infer phase 2 (`infer_program_with`) — `register_decls` deliberately
+    // does NOT handle `Def::Data`, so a declaration reaches exactly one
+    // registration path (no double-register).
+    for def in &defs {
+        if let Def::Data {
+            name,
+            tyvars,
+            fields,
+            ..
+        } = def
+        {
+            let fields_ty = fields
+                .iter()
+                .map(|(f, t)| {
+                    let ft = crate::types::infer::data_field_vty(env, tyvars, t);
+                    (f.clone(), ft)
+                })
+                .collect();
+            env.data_types
+                .insert(name.clone(), DataInfo::Record(fields_ty));
+            if !tyvars.is_empty() {
+                env.data_arities.insert(name.clone(), tyvars.len());
+            }
+        }
+    }
+    env.register_decls(&defs);
 }
 
 impl TypeEnv {
@@ -461,48 +546,15 @@ impl TypeEnv {
         // Category-theory prelude: declared in rill-lang itself so the classes
         // and instances are first-class entities. A parse failure here is a
         // compiler bug (the constant is fixed) — assert loudly.
-        let toks = crate::lexer::tokenize(CATEGORY_PRELUDE);
-        debug_assert!(toks.is_ok(), "category prelude must lex");
-        let program = crate::parser::parse(&toks.ok().unwrap(), CATEGORY_PRELUDE.as_bytes());
-        debug_assert!(program.is_ok(), "category prelude must parse");
-        let defs = program.ok().unwrap().defs;
-        // Prelude `data` declarations (`data Kleisli m a b = …`) register here.
-        // User `data` declarations register in infer phase 2 (`infer_program_with`)
-        // — `register_decls` deliberately does NOT handle `Def::Data`, so a user
-        // declaration reaches exactly one registration path (no double-register).
-        for def in &defs {
-            if let Def::Data {
-                name,
-                tyvars,
-                fields,
-                ..
-            } = def
-            {
-                let fields_ty = fields
-                    .iter()
-                    .map(|(f, t)| {
-                        let ft = crate::types::infer::data_field_vty(&env, tyvars, t);
-                        (f.clone(), ft)
-                    })
-                    .collect();
-                env.data_types
-                    .insert(name.clone(), DataInfo::Record(fields_ty));
-                if !tyvars.is_empty() {
-                    env.data_arities.insert(name.clone(), tyvars.len());
-                }
-            }
-        }
-        env.register_decls(&defs);
+        register_prelude(&mut env, CATEGORY_PRELUDE);
         env.derive_superclass_instances();
         // Signal-track prelude: the `Buffer` typeclass + `FixedBuffer` type.
-        // Parsed the same way as `CATEGORY_PRELUDE` (a parse failure here is a
-        // compiler bug).
-        let stoks = crate::lexer::tokenize(SIGNAL_PRELUDE);
-        debug_assert!(stoks.is_ok(), "signal prelude must lex");
-        let sprogram = crate::parser::parse(&stoks.ok().unwrap(), SIGNAL_PRELUDE.as_bytes());
-        debug_assert!(sprogram.is_ok(), "signal prelude must parse");
-        env.register_decls(&sprogram.ok().unwrap().defs);
+        register_prelude(&mut env, SIGNAL_PRELUDE);
         env.derive_superclass_instances();
+        // Builtin foreign catalog: the migrated legacy builtins' declarations
+        // plus the record types their params need. Parsed the same way as the
+        // preludes — a parse failure here is a compiler bug.
+        register_prelude(&mut env, BUILTIN_FOREIGN_DECLS);
         env
     }
 

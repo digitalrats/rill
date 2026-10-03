@@ -496,3 +496,59 @@ fn foreign_fn_not_registered_is_compile_error() {
         "expected a 'not registered' error, got: {err}"
     );
 }
+
+#[test]
+fn builtin_catalog_is_auto_registered() {
+    // `sine` resolves WITHOUT a user-written `foreign fn` declaration — the
+    // inline builtin catalog auto-registers the declaration into
+    // `TypeEnv::foreign_sigs` (SP-3b Task 3).
+    let src = r#"
+        main = sine 440.0 1.0 0.0;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 0);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn builtin_catalog_complex_ops_resolve() {
+    // `complex` and `norm` are catalog entries: the combinator style
+    // `complex 3.0 4.0 : norm` must infer (complex 0→2, norm bare-ref 2→1).
+    let src = r#"
+        main = complex 3.0 4.0 : norm;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 0);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn builtin_catalog_registers_record_data_types() {
+    // The record types the catalog's record-param builtins need (mixer/eq/
+    // dry_wet) register as `data` declarations — Task 4's record-param
+    // lowering reads them from `TypeEnv::data_types`.
+    let env = TypeEnv::with_builtins();
+    for name in ["MixerConfig", "EqBand", "EqConfig", "DryWetConfig"] {
+        assert!(
+            env.data_types.contains_key(name),
+            "catalog data type `{name}` must be registered"
+        );
+    }
+    // `EqConfig = { bands: List EqBand }` — the `List EqBand` field must survive
+    // the phase-2 value-type conversion as an App of the nested record name.
+    match env.data_types.get("EqConfig") {
+        Some(rill_lang::types::ty::DataInfo::Record(fields)) => {
+            assert_eq!(fields.len(), 1);
+            assert!(matches!(
+                &fields[0].1,
+                rill_lang::types::ty::ValueTy::App(head, args)
+                    if head == "List" && args.len() == 1
+            ));
+        }
+        other => panic!("EqConfig must be a record, got {other:?}"),
+    }
+}
