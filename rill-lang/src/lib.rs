@@ -47,7 +47,7 @@ pub use ir::{Instr, Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry};
+pub use builtin::{BuiltinKind, Registry};
 
 use rill_core::math::Transcendental;
 use rill_core_actor::Mailbox;
@@ -77,7 +77,7 @@ pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, Comp
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, 44_100.0, &typed.cafs)?;
+    let ir = lower::lower_with_cafs(&typed, 44_100.0, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
     Ok(RillProgram::<T, 256>::new(ir))
 }
@@ -92,13 +92,13 @@ pub fn compile_with<T: Transcendental>(
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let (program, tape_decls) = extract_resources(&program)?;
-    let mut typed = types::infer::infer_program_with(&program, registry)?;
+    let mut typed = types::infer::infer_program_with(&program)?;
     typed.tape_decls = tape_decls
         .iter()
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
+    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
     RillProgram::<T, 256>::new_with(ir, registry, sample_rate, None)
 }
@@ -121,7 +121,7 @@ pub fn compile_with_ffi<T: Transcendental>(
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, sample_rate, &typed.cafs)?;
+    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
     let registry = Registry::<T>::new();
     RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
 }
@@ -161,7 +161,7 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     let (program, resource_decls) = extract_resources(program)?;
 
-    let mut typed = types::infer::infer_program_with(&program, registry)?;
+    let mut typed = types::infer::infer_program_with(&program)?;
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
 
     // The DSL `tape_loop` path (no external registry) resolves a resource
@@ -174,7 +174,7 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
             .map(|d| (d.name.clone(), d.capacity))
             .collect();
     }
-    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
+    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
 
     if let Some(res) = &mut resources {
         for bi in &ir.builtins {
@@ -293,7 +293,7 @@ fn extract_resources(
 #[cfg(test)]
 mod ir_tests {
     use super::*;
-    use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
+    use crate::builtin::{BuiltinKind, Registry};
 
     struct TestOsc;
     impl rill_core::traits::Algorithm<f32> for TestOsc {
@@ -311,10 +311,7 @@ mod ir_tests {
 
     fn sine_registry() -> Registry<f32> {
         let mut registry = Registry::<f32>::new();
-        registry.register_block(
-            BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block),
-            |_, _| Box::new(TestOsc),
-        );
+        registry.register_block("sine", |_, _| Box::new(TestOsc));
         registry
     }
 
@@ -343,22 +340,16 @@ mod ir_tests {
     #[test]
     fn lang_chiptune_ir_structure() {
         let mut registry = Registry::<f32>::new();
-        registry.register_block(
-            BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),
-            |_, _| panic!("not instantiated"),
-        );
+        registry.register_block("ay38910", |_, _| panic!("not instantiated"));
         // lofi: 1 signal in (from pipeline :), 1 out, 7 params
-        registry.register_block(
-            BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block),
-            |_, _| panic!("not instantiated"),
-        );
+        registry.register_block("lofi", |_, _| panic!("not instantiated"));
 
         let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
         let tokens = lexer::tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
-        let mut typed = types::infer::infer_program_with(&program, &registry).unwrap();
+        let mut typed = types::infer::infer_program_with(&program).unwrap();
         typed.program = reduce::reduce(&typed.program);
-        let ir = lower::lower_with(&typed, &registry, 44100.0).unwrap();
+        let ir = lower::lower_with(&typed, 44100.0).unwrap();
         assert!(ir.num_inputs > 0);
         assert!(ir.num_outputs > 0);
     }

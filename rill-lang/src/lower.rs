@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
-use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
     BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
@@ -165,7 +164,6 @@ fn logic_op_from_ast(op: crate::ast::LogicOp) -> LogicOp {
 
 struct Lowerer<'a> {
     defs: HashMap<String, Def>,
-    sigs: &'a dyn SignatureSource,
     cafs: &'a HashSet<String>,
     /// Lowered registers of each lifted CAF, keyed by `(name, call-site args)`.
     /// Task 5 threads the caller's signal args into a value-CAF's body (a
@@ -3553,29 +3551,36 @@ impl<'a> Lowerer<'a> {
             }
             Expr::Imag(v, _) => {
                 let name = "complex".to_string();
-                if let Some(sig) = self.sigs.builtin_sig(&name) {
-                    let sig = sig.clone();
-                    let instance = self.builtins.len();
-                    self.builtins.push(BuiltinInstance {
-                        name,
-                        params: vec![0.0, *v],
-                        resource: None,
-                        tape_index: None,
-                        kind: sig.kind,
-                        signal_ins: sig.signal_ins(),
-                        signal_outs: sig.signal_outs,
-                        param_bindings: Vec::new(),
-                    });
-                    let fst = self.fresh_reg();
-                    for _ in 1..sig.signal_outs {
-                        self.fresh_reg();
+                if let Some(fsig) = self.env.foreign_sigs.get(&name).cloned() {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&name, &fsig) {
+                        let instance = self.builtins.len();
+                        self.builtins.push(BuiltinInstance {
+                            name,
+                            params: vec![0.0, *v],
+                            resource: None,
+                            tape_index: None,
+                            kind: crate::builtin::BuiltinKind::Block,
+                            signal_ins: sig
+                                .params
+                                .iter()
+                                .filter(|p| {
+                                    matches!(p, crate::types::ffi::FfiParam::Signal)
+                                })
+                                .count(),
+                            signal_outs: sig.signal_outs,
+                            param_bindings: Vec::new(),
+                        });
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        self.emit(Instr::CallBlock {
+                            dst: fst,
+                            srcs: vec![],
+                            instance,
+                        });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
-                    self.emit(Instr::CallBlock {
-                        dst: fst,
-                        srcs: vec![],
-                        instance,
-                    });
-                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
                 let dst = self.fresh_reg();
                 self.emit(Instr::Const { dst, value: 0.0 });
@@ -4024,197 +4029,6 @@ impl<'a> Lowerer<'a> {
                         return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
                 }
-                if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
-                    let mut param_values = Vec::new();
-                    let mut param_bindings = Vec::new();
-                    let mut signal_srcs = Vec::new();
-                    let mut signal_pos = 0;
-                    let mut param_pos = 0;
-                    let mut resource: Option<String> = None;
-
-                    for ptype in &sig.params {
-                        match ptype {
-                            ParamType::Signal => {
-                                if signal_pos >= args.len() {
-                                    return Err(CompileError::Type {
-                                        msg: format!("missing signal input for `{name}`"),
-                                        span: *span,
-                                    });
-                                }
-                                signal_srcs.push(args[signal_pos]);
-                                signal_pos += 1;
-                            }
-                            ParamType::Resource => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                match &call_args[param_pos] {
-                                    Expr::Ref(res_name, _) => {
-                                        resource = Some(res_name.clone());
-                                    }
-                                    other => {
-                                        return Err(CompileError::Type {
-                                            msg: format!(
-                                                "resource argument of `{name}` must be a symbolic reference",
-                                            ),
-                                            span: other.span(),
-                                        });
-                                    }
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Float | ParamType::Int => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                if let Expr::Ref(ref_name, _) = &call_args[param_pos] {
-                                    if let Some(&pidx) = self.param_names.get(ref_name) {
-                                        param_values.push(0.0);
-                                        param_bindings.push((param_values.len() - 1, pidx));
-                                        param_pos += 1;
-                                        continue;
-                                    }
-                                }
-                                if let Expr::ActorParam {
-                                    name,
-                                    default,
-                                    span,
-                                } = &call_args[param_pos]
-                                {
-                                    let default_val = if let Some(d) = default {
-                                        const_f64(d).unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    };
-                                    let idx = self.intern_param(
-                                        name.clone(),
-                                        default_val,
-                                        f64::NEG_INFINITY,
-                                        f64::INFINITY,
-                                        *span,
-                                    )?;
-                                    param_values.push(0.0);
-                                    param_bindings.push((param_values.len() - 1, idx));
-                                    param_pos += 1;
-                                    continue;
-                                }
-                                let v = self.caf_const(&call_args[param_pos]).ok_or_else(|| {
-                                    CompileError::Type {
-                                        msg: format!(
-                                            "param at position {param_pos} of `{name}` \
-                                                 must be a constant or parameter reference"
-                                        ),
-                                        span: call_args[param_pos].span(),
-                                    }
-                                })?;
-                                param_values.push(v);
-                                param_pos += 1;
-                            }
-                            ParamType::String => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Bool => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                match &call_args[param_pos] {
-                                    Expr::Int(0, _) => param_values.push(0.0),
-                                    Expr::Int(1, _) => param_values.push(1.0),
-                                    _ => param_values.push(1.0),
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Enum(_) => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Record(schema) => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                if let Expr::Record(fields, field_span) = &call_args[param_pos] {
-                                    let mut field_values: HashMap<&str, f64> = HashMap::new();
-                                    for (field_name, field_expr) in fields {
-                                        if let Some(val) = self.caf_const(field_expr) {
-                                            field_values.insert(field_name.as_str(), val);
-                                        }
-                                    }
-                                    // Push schema field values in schema order so the
-                                    // built-in factory can read its configuration.
-                                    for field in &schema.fields {
-                                        let val = field_values
-                                            .get(field.name)
-                                            .copied()
-                                            .unwrap_or(field.default.unwrap_or(0.0));
-                                        param_values.push(val);
-                                    }
-                                    for (field_name, field_expr) in fields {
-                                        if let Some(val) = self.caf_const(field_expr) {
-                                            self.intern_param(
-                                                field_name.clone(),
-                                                val,
-                                                f64::NEG_INFINITY,
-                                                f64::INFINITY,
-                                                *field_span,
-                                            )?;
-                                        }
-                                    }
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Variadic(inner) => match &**inner {
-                                ParamType::Signal => {
-                                    for &reg in &args[signal_pos..] {
-                                        signal_srcs.push(reg);
-                                    }
-                                    signal_pos = args.len();
-                                }
-                                _ => {
-                                    for arg in &call_args[param_pos..] {
-                                        if let Expr::Ref(ref_name, _) = arg {
-                                            if let Some(&pidx) = self.param_names.get(ref_name) {
-                                                param_values.push(0.0);
-                                                param_bindings.push((param_values.len() - 1, pidx));
-                                                continue;
-                                            }
-                                        }
-                                        if let Some(val) = self.caf_const(arg) {
-                                            param_values.push(val);
-                                        }
-                                    }
-                                    param_pos = call_args.len();
-                                }
-                            },
-                        }
-                    }
-
-                    let instance = self.builtins.len();
-                    self.builtins.push(BuiltinInstance {
-                        name: name.clone(),
-                        params: param_values,
-                        resource,
-                        tape_index: None,
-                        kind: sig.kind,
-                        signal_ins: signal_srcs.len(),
-                        signal_outs: sig.signal_outs,
-                        param_bindings,
-                    });
-                    let fst = self.fresh_reg();
-                    for _ in 1..sig.signal_outs {
-                        self.fresh_reg();
-                    }
-                    self.emit(Instr::CallBlock {
-                        dst: fst,
-                        srcs: signal_srcs,
-                        instance,
-                    });
-                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                }
                 let mut arg_regs = Vec::new();
                 for a in call_args {
                     arg_regs.extend(self.lower(a, args)?);
@@ -4394,31 +4208,37 @@ impl<'a> Lowerer<'a> {
         args: &[usize],
         _span: Span,
     ) -> Result<Vec<usize>, CompileError> {
-        if let Some(sig) = self.sigs.builtin_sig(name) {
-            if sig.clone().params.len() == sig.clone().signal_ins() {
-                let sig = sig.clone();
-                let instance = self.builtins.len();
-                self.builtins.push(BuiltinInstance {
-                    name: name.to_string(),
-                    params: Vec::new(),
-                    resource: None,
-                    tape_index: None,
-                    kind: sig.kind,
-                    signal_ins: sig.signal_ins(),
-                    signal_outs: sig.signal_outs,
-                    param_bindings: Vec::new(),
-                });
-                let fst = self.fresh_reg();
-                for _ in 1..sig.signal_outs {
-                    self.fresh_reg();
+        if let Some(fsig) = self.env.foreign_sigs.get(name).cloned() {
+            if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+                let signal_ins = sig
+                    .params
+                    .iter()
+                    .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                    .count();
+                if sig.params.len() == signal_ins {
+                    let instance = self.builtins.len();
+                    self.builtins.push(BuiltinInstance {
+                        name: name.to_string(),
+                        params: Vec::new(),
+                        resource: None,
+                        tape_index: None,
+                        kind: crate::builtin::BuiltinKind::Block,
+                        signal_ins,
+                        signal_outs: sig.signal_outs,
+                        param_bindings: Vec::new(),
+                    });
+                    let fst = self.fresh_reg();
+                    for _ in 1..sig.signal_outs {
+                        self.fresh_reg();
+                    }
+                    let srcs = args.to_vec();
+                    self.emit(Instr::CallBlock {
+                        dst: fst,
+                        srcs,
+                        instance,
+                    });
+                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
-                let srcs = args.to_vec();
-                self.emit(Instr::CallBlock {
-                    dst: fst,
-                    srcs,
-                    instance,
-                });
-                return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
             }
         }
         let bin = match name {
@@ -4683,29 +4503,34 @@ impl<'a> Lowerer<'a> {
             };
             if let (Some(re), Some(im)) = (re, im) {
                 let name = "complex".to_string();
-                if let Some(sig) = self.sigs.builtin_sig(&name) {
-                    let sig = sig.clone();
-                    let instance = self.builtins.len();
-                    self.builtins.push(BuiltinInstance {
-                        name,
-                        params: vec![re, im],
-                        resource: None,
-                        tape_index: None,
-                        kind: sig.kind,
-                        signal_ins: sig.signal_ins(),
-                        signal_outs: sig.signal_outs,
-                        param_bindings: Vec::new(),
-                    });
-                    let fst = self.fresh_reg();
-                    for _ in 1..sig.signal_outs {
-                        self.fresh_reg();
+                if let Some(fsig) = self.env.foreign_sigs.get(&name).cloned() {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&name, &fsig) {
+                        let instance = self.builtins.len();
+                        self.builtins.push(BuiltinInstance {
+                            name,
+                            params: vec![re, im],
+                            resource: None,
+                            tape_index: None,
+                            kind: crate::builtin::BuiltinKind::Block,
+                            signal_ins: sig
+                                .params
+                                .iter()
+                                .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                                .count(),
+                            signal_outs: sig.signal_outs,
+                            param_bindings: Vec::new(),
+                        });
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        self.emit(Instr::CallBlock {
+                            dst: fst,
+                            srcs: vec![],
+                            instance,
+                        });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
-                    self.emit(Instr::CallBlock {
-                        dst: fst,
-                        srcs: vec![],
-                        instance,
-                    });
-                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
             }
         }
@@ -4778,10 +4603,7 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
-                self.sigs
-                    .builtin_sig(name)
-                    .map(|s| s.has_variadic_signal())
-                    .unwrap_or(false)
+                false
             }
             _ => false,
         }
@@ -4841,6 +4663,21 @@ impl<'a> Lowerer<'a> {
         self.arity_with(e, &mut HashSet::new())
     }
 
+    /// The signal arity `(ins, outs)` of a catalog/FFI builtin by name, if
+    /// declared. Signal inputs = the count of `Signal` params; a variadic
+    /// signal contributes at least one (the fallback `(ins, 1)` for unknown
+    /// applies covers the exact channel span at lowering).
+    fn ffi_arity(&self, name: &str) -> Option<(usize, usize)> {
+        let fsig = self.env.foreign_sigs.get(name)?;
+        let sig = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig)?;
+        let ins = sig
+            .params
+            .iter()
+            .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+            .count();
+        Some((ins, sig.signal_outs))
+    }
+
     fn arity_with(
         &self,
         e: &Expr,
@@ -4858,8 +4695,8 @@ impl<'a> Lowerer<'a> {
                 "+" | "-" | "*" | "/" | "%" | "min" | "max" => (2, 1),
                 "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
                 _ => {
-                    if let Some(sig) = self.sigs.builtin_sig(name) {
-                        (sig.signal_ins(), sig.signal_outs)
+                    if let Some((ins, outs)) = self.ffi_arity(name) {
+                        (ins, outs)
                     } else if let Some(def) = self.defs.get(name) {
                         if def.is_decl() {
                             // Type declarations have no signal arity.
@@ -4878,8 +4715,8 @@ impl<'a> Lowerer<'a> {
                 }
             },
             Expr::Apply { name, args, .. } => {
-                if let Some(sig) = self.sigs.builtin_sig(name) {
-                    (sig.signal_ins(), sig.signal_outs)
+                if let Some((ins, outs)) = self.ffi_arity(name) {
+                    (ins, outs)
                 } else {
                     let mut ins = 0;
                     for a in args {
@@ -4980,25 +4817,20 @@ fn const_int(e: &Expr) -> Option<i64> {
     }
 }
 
-/// Back-compat: lower with no built-ins and a default sample rate of 44.1 kHz.
+/// Back-compat: lower with a default sample rate of 44.1 kHz.
 pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
-    lower_with(tp, &crate::builtin::NoSigs, 44_100.0)
+    lower_with(tp, 44_100.0)
 }
 
-/// Lower a fully type-checked program into IR with a signature source and sample rate.
-pub fn lower_with(
-    tp: &TypedProgram,
-    sigs: &dyn SignatureSource,
-    sample_rate: f32,
-) -> Result<Ir, CompileError> {
-    lower_with_cafs(tp, sigs, sample_rate, &HashSet::new())
+/// Lower a fully type-checked program into IR at the given sample rate.
+pub fn lower_with(tp: &TypedProgram, sample_rate: f32) -> Result<Ir, CompileError> {
+    lower_with_cafs(tp, sample_rate, &HashSet::new())
 }
 
 /// Like [`lower_with`], but treats the given names as closed CAFs that are
 /// lifted once and shared across reference sites.
 pub fn lower_with_cafs(
     tp: &TypedProgram,
-    sigs: &dyn SignatureSource,
     sample_rate: f32,
     cafs: &HashSet<String>,
 ) -> Result<Ir, CompileError> {
@@ -5018,7 +4850,6 @@ pub fn lower_with_cafs(
     let num_inputs = tp.process_ty.arity_in();
     let mut lw = Lowerer {
         defs,
-        sigs,
         cafs,
         caf_cache: HashMap::new(),
         caf_lifting: HashSet::new(),
@@ -5229,46 +5060,15 @@ mod tests {
         lower(&tp).unwrap()
     }
 
-    struct TestSigs;
-    impl crate::builtin::SignatureSource for TestSigs {
-        fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
-            use crate::builtin::{BuiltinKind, BuiltinSig};
-            match name {
-                "lowpass" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "lowpass",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                "onepole" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "onepole",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                "sine" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "sine",
-                    0,
-                    1,
-                    3,
-                    BuiltinKind::Block,
-                )))),
-                _ => None,
-            }
-        }
-    }
-
     fn ir_with(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program_with(&p, &TestSigs).unwrap();
-        lower_with(&tp, &TestSigs, 44_100.0).unwrap()
+        let tp = infer_program_with(&p).unwrap();
+        lower_with(&tp, 44_100.0).unwrap()
     }
 
     fn ir_with_cafs(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let typed = infer_program_with(&p).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5279,7 +5079,7 @@ mod tests {
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
         };
-        lower_with_cafs(&tp, &TestSigs, 44_100.0, &tp.cafs).unwrap()
+        lower_with_cafs(&tp, 44_100.0, &tp.cafs).unwrap()
     }
 
     /// Build a `Lowerer` for testing lowering helpers (`free_vars`) directly on
@@ -5288,7 +5088,6 @@ mod tests {
     fn lw<'a>(env: &'a TypeEnv, cafs: &'a HashSet<String>) -> Lowerer<'a> {
         Lowerer {
             defs: HashMap::new(),
-            sigs: &TestSigs,
             cafs,
             caf_cache: HashMap::new(),
             caf_lifting: HashSet::new(),
@@ -5516,7 +5315,7 @@ mod tests {
             "osc = sine 440 0.5 0; main = _ : lowpass osc 0.7".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let typed = infer_program_with(&p).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5527,7 +5326,7 @@ mod tests {
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 
@@ -5551,7 +5350,7 @@ mod tests {
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 
@@ -5565,7 +5364,7 @@ mod tests {
             "a = b; b = a; main = _ : lowpass a 0.7".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let typed = infer_program_with(&p).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5576,7 +5375,7 @@ mod tests {
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 
@@ -5606,7 +5405,7 @@ mod tests {
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 

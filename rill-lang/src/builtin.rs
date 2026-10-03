@@ -2,7 +2,9 @@
 //!
 //! `BlockBuiltin` (`rill_core::Algorithm`, opaque whole-buffer) is the only
 //! built-in form. Concrete bindings live outside this crate (e.g. `rill-adrift`);
-//! the language owns the registry contract.
+//! the language owns the registry contract. Built-in SIGNATURES come from the FFI
+//! catalog (`foreign fn` declarations in `TypeEnv::foreign_sigs`); this registry
+//! holds only the Rust FACTORIES that build runtime instances.
 
 use std::collections::HashMap;
 
@@ -29,161 +31,6 @@ pub trait MultichannelBlockBuiltin<T: Transcendental>:
 pub enum BuiltinKind {
     /// Whole-buffer `Algorithm` (1→1).
     Block,
-}
-
-/// The type of a parameter in a built-in function signature.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ParamType {
-    /// A signal wire argument — contributes to the built-in's input arity.
-    Signal,
-    /// A compile-time f64 constant.
-    Float,
-    /// A compile-time i64 constant.
-    Int,
-    /// A compile-time string literal.
-    String,
-    /// A compile-time boolean.
-    Bool,
-    /// A compile-time record literal with a known schema.
-    Record(RecordSchema),
-    /// A compile-time enum value with allowed variants.
-    Enum(&'static [&'static str]),
-    /// A compile-time symbolic reference to a named resource (e.g. a tape loop).
-    Resource,
-    /// Zero or more arguments of the inner type.
-    Variadic(Box<ParamType>),
-}
-
-/// Schema for a record literal.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RecordSchema {
-    /// Fields in declaration order.
-    pub fields: Vec<RecordField>,
-}
-
-/// A single field in a record schema.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RecordField {
-    /// Field name.
-    pub name: &'static str,
-    /// Field type.
-    pub ty: ParamType,
-    /// Default value, if any.
-    pub default: Option<f64>,
-}
-
-impl RecordSchema {
-    /// Create a schema from a field list.
-    pub fn new(fields: Vec<RecordField>) -> Self {
-        Self { fields }
-    }
-}
-
-/// Type-checker-facing signature of a built-in (independent of `T`).
-#[derive(Debug, Clone, PartialEq)]
-pub struct BuiltinSig {
-    /// Registered name.
-    pub name: &'static str,
-    /// Parameter list: first N entries are signal inputs, remainder are compile-time params.
-    pub params: Vec<ParamType>,
-    /// Number of signal outputs (1 in this increment).
-    pub signal_outs: usize,
-    /// Sample vs block.
-    pub kind: BuiltinKind,
-    /// Names of compile-time parameters in `params` order (after signal inputs).
-    /// When non-empty, graph-level `build_ir()` uses these names to match recipe
-    /// params to builtin arg positions — eliminating ordering fragility from
-    /// `HashMap`-based param bags. Left empty for backward-compatible registrations.
-    pub param_names: Vec<&'static str>,
-}
-
-impl BuiltinSig {
-    /// Convenience constructor for SISO built-ins with only Float params.
-    /// Maintains backward compatibility during migration.
-    pub fn simple(
-        name: &'static str,
-        signal_ins: usize,
-        signal_outs: usize,
-        num_params: usize,
-        kind: BuiltinKind,
-    ) -> Self {
-        let mut params = Vec::with_capacity(signal_ins + num_params);
-        for _ in 0..signal_ins {
-            params.push(ParamType::Signal);
-        }
-        for _ in 0..num_params {
-            params.push(ParamType::Float);
-        }
-        Self {
-            name,
-            params,
-            signal_outs,
-            kind,
-            param_names: Vec::new(),
-        }
-    }
-
-    /// Attach human-readable names to compile-time parameters.
-    ///
-    /// `names.len()` must equal the number of non-signal params in `self.params`.
-    /// When set, graph-level `build_ir()` in `rill-graph` uses these names to
-    /// match recipe param keys to builtin arg positions, fixing the ordering
-    /// fragility of `HashMap`-based param bags.
-    pub fn with_names(mut self, names: Vec<&'static str>) -> Self {
-        self.param_names = names;
-        self
-    }
-
-    /// Number of signal inputs = count of Signal params (non-variadic).
-    pub fn signal_ins(&self) -> usize {
-        self.params
-            .iter()
-            .filter(|p| matches!(p, ParamType::Signal))
-            .count()
-    }
-
-    /// Whether the built-in takes variadic signal inputs (e.g. a mixer).
-    pub fn has_variadic_signal(&self) -> bool {
-        self.params.iter().any(
-            |p| matches!(p, ParamType::Variadic(inner) if matches!(**inner, ParamType::Signal)),
-        )
-    }
-
-    /// Minimum number of Apply arguments (excludes Signal params).
-    pub fn min_args(&self) -> usize {
-        let mut count = 0;
-        for p in &self.params {
-            match p {
-                ParamType::Signal | ParamType::Variadic(_) => {}
-                ParamType::Record(schema) => {
-                    // A record whose fields all have defaults is optional.
-                    if !schema.fields.iter().all(|f| f.default.is_some()) {
-                        count += 1;
-                    }
-                }
-                _ => count += 1,
-            }
-        }
-        count
-    }
-
-    /// Maximum number of Apply arguments (None if variadic; excludes Signal params).
-    pub fn max_args(&self) -> Option<usize> {
-        if self
-            .params
-            .iter()
-            .any(|p| matches!(p, ParamType::Variadic(_)))
-        {
-            None
-        } else {
-            Some(
-                self.params
-                    .iter()
-                    .filter(|p| !matches!(p, ParamType::Signal))
-                    .count(),
-            )
-        }
-    }
 }
 
 /// A boxed factory building an instance from folded params + a sample rate.
@@ -237,8 +84,6 @@ enum Factory<T: Transcendental> {
 
 /// A registry entry.
 pub struct Entry<T: Transcendental> {
-    /// The signature.
-    pub sig: BuiltinSig,
     factory: Factory<T>,
 }
 
@@ -320,65 +165,61 @@ impl<T: Transcendental> Registry<T> {
         }
     }
 
-    /// Register a whole-buffer (`Algorithm`) built-in.
+    /// Register a whole-buffer (`Algorithm`) built-in factory by name.
     pub fn register_block(
         &mut self,
-        sig: BuiltinSig,
+        name: impl Into<String>,
         factory: impl Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync + 'static,
     ) {
-        debug_assert_eq!(sig.kind, BuiltinKind::Block);
         self.entries.insert(
-            sig.name.to_string(),
+            name.into(),
             Entry {
-                sig,
                 factory: Factory::Block(Box::new(factory)),
             },
         );
     }
 
-    /// Register a whole-buffer multi-channel built-in.
+    /// Register a whole-buffer multi-channel built-in factory by name.
     pub fn register_multichannel_block(
         &mut self,
-        sig: BuiltinSig,
+        name: impl Into<String>,
         factory: impl Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>>
             + Send
             + Sync
             + 'static,
     ) {
-        debug_assert_eq!(sig.kind, BuiltinKind::Block);
         self.entries.insert(
-            sig.name.to_string(),
+            name.into(),
             Entry {
-                sig,
                 factory: Factory::MultichannelBlock(Box::new(factory)),
             },
         );
     }
 
-    /// Register a resource-backed whole-buffer built-in. The factory receives
-    /// the resource registry to resolve named resources (e.g. tape loops).
+    /// Register a resource-backed whole-buffer built-in factory by name. The
+    /// factory receives the resource registry to resolve named resources
+    /// (e.g. tape loops).
     pub fn register_resource_block(
         &mut self,
-        sig: BuiltinSig,
+        name: impl Into<String>,
         factory: impl Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>>
             + Send
             + Sync
             + 'static,
     ) {
-        debug_assert_eq!(sig.kind, BuiltinKind::Block);
         self.entries.insert(
-            sig.name.to_string(),
+            name.into(),
             Entry {
-                sig,
                 factory: Factory::ResourceBlock(Box::new(factory)),
             },
         );
     }
 
-    /// Register a resource-backed multi-channel whole-buffer built-in.
+    /// Register a resource-backed multi-channel whole-buffer built-in factory
+    /// by name.
     pub fn register_resource_multichannel_block(
         &mut self,
-        sig: BuiltinSig,
+        name: impl Into<String>,
         factory: impl Fn(
                 usize,
                 &[f64],
@@ -390,11 +231,9 @@ impl<T: Transcendental> Registry<T> {
             + Sync
             + 'static,
     ) {
-        debug_assert_eq!(sig.kind, BuiltinKind::Block);
         self.entries.insert(
-            sig.name.to_string(),
+            name.into(),
             Entry {
-                sig,
                 factory: Factory::ResourceMultichannelBlock(Box::new(factory)),
             },
         );
@@ -413,25 +252,5 @@ impl<T: Transcendental> Registry<T> {
             Factory::ResourceBlock(_) => BuiltinFactoryKind::ResourceBlock,
             Factory::ResourceMultichannelBlock(_) => BuiltinFactoryKind::ResourceMultichannelBlock,
         })
-    }
-}
-
-/// A `T`-independent signature lookup used by the type checker and lowering.
-pub trait SignatureSource {
-    /// The signature for `name`, if registered.
-    fn builtin_sig(&self, name: &str) -> Option<&BuiltinSig>;
-}
-
-impl<T: Transcendental> SignatureSource for Registry<T> {
-    fn builtin_sig(&self, name: &str) -> Option<&BuiltinSig> {
-        self.entries.get(name).map(|e| &e.sig)
-    }
-}
-
-/// A signature source with no built-ins (used by `compile()` / existing tests).
-pub struct NoSigs;
-impl SignatureSource for NoSigs {
-    fn builtin_sig(&self, _name: &str) -> Option<&BuiltinSig> {
-        None
     }
 }

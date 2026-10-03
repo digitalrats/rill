@@ -11,7 +11,6 @@ use super::ty::{
 };
 use super::unify::{unify_scalar, unify_value};
 use crate::ast::{Def, Expr, MatchArm, Pattern, Program};
-use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::reduce::pattern_vars;
 
@@ -46,7 +45,7 @@ pub struct TypedProgram {
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
 /// and a signature source for built-in resolution.
-struct Ctx<'a> {
+struct Ctx {
     next: TypeVarId,
     subst: Subst,
     defs: HashMap<String, Scheme>,
@@ -55,7 +54,6 @@ struct Ctx<'a> {
     /// referenced definition at application time (see [`func_target`]).
     def_bodies: HashMap<String, Expr>,
     locals: HashMap<String, ArrowTy>,
-    sigs: &'a dyn SignatureSource,
     /// The compile-time type environment (aliases, newtypes, data types).
     env: TypeEnv,
     /// Recursion guard for typeclass method inlining: resolved
@@ -70,7 +68,7 @@ struct Ctx<'a> {
     type_var_bindings: HashMap<String, ValueTy>,
 }
 
-impl Ctx<'_> {
+impl Ctx {
     fn fresh(&mut self) -> Scalar {
         let v = self.next;
         self.next += 1;
@@ -119,7 +117,7 @@ impl Ctx<'_> {
 }
 
 /// Names of sum types that declare a constructor with the given name.
-fn sum_types_with_ctor(ctx: &Ctx<'_>, ctor: &str) -> Vec<String> {
+fn sum_types_with_ctor(ctx: &Ctx, ctor: &str) -> Vec<String> {
     ctx.env
         .data_types
         .iter()
@@ -131,7 +129,7 @@ fn sum_types_with_ctor(ctx: &Ctx<'_>, ctor: &str) -> Vec<String> {
 }
 
 /// The payload value types of `ctor` within the sum type `sum_name`.
-fn sum_ctor_payload(ctx: &Ctx<'_>, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy>> {
+fn sum_ctor_payload(ctx: &Ctx, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy>> {
     match ctx.env.data_types.get(sum_name) {
         Some(DataInfo::Sum(ctors)) => ctors
             .iter()
@@ -192,7 +190,7 @@ pub(crate) fn data_field_vty(
 /// while user sums are monomorphic `Data`. A fresh live value variable fills
 /// each builtin type parameter (the shape's `Var(1)`/`Var(2)` placeholders are
 /// NOT live unification vars — see [`TypeEnv::with_builtins`]).
-fn fresh_sum_vty(ctx: &mut Ctx<'_>, sum_name: &str) -> ValueTy {
+fn fresh_sum_vty(ctx: &mut Ctx, sum_name: &str) -> ValueTy {
     match ctx.env.ctor_arity(sum_name) {
         Some(arity) => {
             let args = (0..arity).map(|_| ctx.fresh_vty()).collect();
@@ -253,7 +251,7 @@ pub(crate) fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueT
 /// Infer an expression that must yield exactly one output and no inputs — a
 /// constant or a per-block value. Signal-rate constants (literals) are coerced
 /// to their value type; returns the resulting `ValueTy`.
-fn infer_const_value(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ValueTy, CompileError> {
+fn infer_const_value(ctx: &mut Ctx, e: &Expr) -> Result<ValueTy, CompileError> {
     let span = e.span();
     let t = infer_expr(ctx, e)?;
     if t.arity_in() != 0 || t.arity_out() != 1 {
@@ -282,7 +280,7 @@ fn infer_const_value(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ValueTy, CompileErro
 
 /// Whether `e` is a reference (possibly chained) to a definition whose body is
 /// a constant literal — a numeric scalar the value track can capture by value.
-fn is_const_value_ref(ctx: &Ctx<'_>, e: &Expr) -> bool {
+fn is_const_value_ref(ctx: &Ctx, e: &Expr) -> bool {
     let mut cur = e;
     let mut seen = HashSet::new();
     while let Expr::Ref(name, _) = cur {
@@ -547,7 +545,7 @@ fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
 /// slots against the concrete constructor application. The caller computed
 /// `idx` via [`TypeEnv::class_var_arg_index`], so the argument is always a
 /// `TApp` headed by the class variable.
-fn class_var_pattern(ctx: &mut Ctx<'_>, sig: &crate::ast::TypeExpr, idx: usize) -> ValueTy {
+fn class_var_pattern(ctx: &mut Ctx, sig: &crate::ast::TypeExpr, idx: usize) -> ValueTy {
     let container_te = match sig {
         crate::ast::TypeExpr::TFunc(args, _) => args.get(idx).cloned(),
         _ => None,
@@ -570,18 +568,14 @@ fn class_var_pattern(ctx: &mut Ctx<'_>, sig: &crate::ast::TypeExpr, idx: usize) 
 /// cannot flow through the value track, so they are rejected here — at
 /// inference, with a clear message — rather than failing obscurely during
 /// lowering.
-fn infer_method_value_vty(
-    ctx: &mut Ctx<'_>,
-    e: &Expr,
-    what: &str,
-) -> Result<ValueTy, CompileError> {
+fn infer_method_value_vty(ctx: &mut Ctx, e: &Expr, what: &str) -> Result<ValueTy, CompileError> {
     infer_method_value_vty_expected(ctx, e, what, None)
 }
 
 /// [`infer_method_value_vty`] with an expected value type (used for
 /// result-directed typeclass dispatch inside method-call arguments).
 fn infer_method_value_vty_expected(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     e: &Expr,
     what: &str,
     expected: Option<ValueTy>,
@@ -616,7 +610,7 @@ fn infer_method_value_vty_expected(
 /// Whether `e` is a bare reference to a nullary method of `class_name` (e.g.
 /// `mempty` in `mappend xs mempty`) — such an argument resolves by the selector
 /// argument's concrete type.
-fn is_bare_nullary_method_ref(ctx: &Ctx<'_>, e: &Expr, class_name: &str) -> bool {
+fn is_bare_nullary_method_ref(ctx: &Ctx, e: &Expr, class_name: &str) -> bool {
     match e {
         Expr::Ref(name, _) => ctx.env.is_nullary_method(class_name, name.as_str()),
         _ => false,
@@ -635,7 +629,7 @@ fn is_bare_nullary_method_ref(ctx: &Ctx<'_>, e: &Expr, class_name: &str) -> bool
 /// empty for a non-constraint instance).
 #[allow(clippy::type_complexity)]
 fn bind_constraint_instance(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     class_name: &str,
     ctor: &str,
     container_vty: &ValueTy,
@@ -704,7 +698,7 @@ fn bind_constraint_instance(
 /// `g : a -> b` and `xs : f a` agree on `a`. Used to validate instance method
 /// bodies against the class contract.
 fn signature_param_tys(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     class_var: &str,
     ctor: &str,
     sig: &crate::ast::TypeExpr,
@@ -835,7 +829,7 @@ pub(crate) fn prepend_instance_head_args(
 /// must match the class variable's arity (`Pair` is arity 2, so it cannot be a
 /// `Functor`, which needs arity 1). The recursion guard applies here too, so
 /// self-inlining bodies are rejected even when the instance is dead code.
-fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
+fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
     // Clone the (class, type) keys so inference (which mutates ctx) does not
     // invalidate the iteration borrow.
     let keys: Vec<(String, String)> = ctx
@@ -952,17 +946,16 @@ fn validate_instances(ctx: &mut Ctx<'_>) -> Result<(), CompileError> {
 
 /// Back-compat: infer with no built-ins.
 pub fn infer_program(program: &Program) -> Result<TypedProgram, CompileError> {
-    infer_program_with(program, &crate::builtin::NoSigs)
+    infer_program_with(program)
 }
 
-/// Infer with a signature source for built-in resolution.
+/// Infer a program. Built-in signatures come from the FFI catalog in the type
+/// environment (`foreign fn` declarations); no external signature source is
+/// needed.
 ///
 /// Top-level definitions are mutually recursive: all names are visible
 /// to all bodies.
-pub fn infer_program_with(
-    program: &Program,
-    sigs: &dyn SignatureSource,
-) -> Result<TypedProgram, CompileError> {
+pub fn infer_program_with(program: &Program) -> Result<TypedProgram, CompileError> {
     // Build the type environment in two phases so declaration ORDER does not
     // matter. Phase 1 registers the pure name-mapping declarations (synonyms,
     // newtypes, typeclasses, instances); phase 2 resolves data-type
@@ -1068,7 +1061,6 @@ pub fn infer_program_with(
         defs: HashMap::new(),
         def_bodies: HashMap::new(),
         locals: HashMap::new(),
-        sigs,
         env,
         method_lifting: HashSet::new(),
         type_var_bindings: HashMap::new(),
@@ -1162,7 +1154,7 @@ pub fn infer_program_with(
 /// the parameter is a value. The failed attempt's substitution and fresh-var
 /// counter are rolled back so the retry starts from a clean context. A def
 /// with no λ-parameters that fails is genuinely broken and errors.
-fn infer_def_body(ctx: &mut Ctx<'_>, def: &Def) -> Result<ArrowTy, CompileError> {
+fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     let saved_locals = ctx.locals.clone();
     if def.params().is_empty() {
         let r = infer_expr(ctx, def.body());
@@ -1207,7 +1199,7 @@ fn infer_def_body(ctx: &mut Ctx<'_>, def: &Def) -> Result<ArrowTy, CompileError>
 /// Infer a group of mutually-recursive definitions (top-level, where, or let).
 /// Two-phase: first register placeholder schemes for all names, then infer
 /// each body with the full mutual environment.
-fn infer_def_group(ctx: &mut Ctx<'_>, defs: &[Def]) -> Result<(), CompileError> {
+fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
     if defs.is_empty() {
         return Ok(());
     }
@@ -1335,7 +1327,7 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
 /// into the running result type. The arm's pattern vars must already be bound
 /// in `ctx.locals`.
 fn infer_guarded_arm_body(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     arm: &MatchArm,
     result: &mut Option<ValueTy>,
 ) -> Result<(), CompileError> {
@@ -1378,7 +1370,7 @@ fn arm_is_guarded(arm: &MatchArm) -> bool {
 /// only when the matched type is not yet a known sum (a top-level wire
 /// scrutinee still typed by a fresh var).
 fn bind_pattern(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     pattern: &Pattern,
     vty: &ValueTy,
     fallback_sum: &str,
@@ -1458,7 +1450,7 @@ fn bind_pattern(
 /// pattern's bound variables (`n | n > 0 => ...` needs `n`). Returns the
 /// unified arm-body result value type.
 fn check_match_arms(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     sum_name: &str,
     scrutinee_vty: &ValueTy,
     arms: &[MatchArm],
@@ -1478,7 +1470,7 @@ fn check_match_arms(
 /// Pin a literal pattern's type to the scrutinee type (so a `Wire` scrutinee
 /// infers `Int` from a `0` arm) and bind variable patterns.
 fn check_scalar_pattern(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     pattern: &Pattern,
     scrutinee_vty: &ValueTy,
     arm_span: Span,
@@ -1507,7 +1499,7 @@ fn check_scalar_pattern(
 
 /// Scalar totality: a `Wild`/`Var` arm, or (for Bool) both literals.
 fn check_exhaustive_scalar(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     arms: &[MatchArm],
     scrutinee_vty: &ValueTy,
     span: Span,
@@ -1545,7 +1537,7 @@ fn check_exhaustive_scalar(
 /// Compile-time totality for sums: every constructor is covered by an
 /// unguarded arm, or an unguarded Wild/Var arm exists.
 fn check_exhaustive_sum(
-    ctx: &Ctx<'_>,
+    ctx: &Ctx,
     sum_name: &str,
     arms: &[MatchArm],
     span: Span,
@@ -1588,7 +1580,7 @@ fn check_exhaustive_sum(
 }
 
 /// Infer the diagram type of an expression, synthesizing concrete arities.
-fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
+fn infer_expr(ctx: &mut Ctx, e: &Expr) -> Result<ArrowTy, CompileError> {
     infer_expr_expected(ctx, e, None)
 }
 
@@ -1598,7 +1590,7 @@ fn infer_expr(ctx: &mut Ctx<'_>, e: &Expr) -> Result<ArrowTy, CompileError> {
 /// is expected to produce. `None` means "unknown" — such a method then errors
 /// with "expected type unknown".
 fn infer_expr_expected(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     e: &Expr,
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
@@ -2162,7 +2154,7 @@ fn infer_expr_expected(
     }
 }
 
-fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, CompileError> {
+fn infer_ref(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, CompileError> {
     infer_ref_expected(ctx, name, span, None)
 }
 
@@ -2171,7 +2163,7 @@ fn infer_ref(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, Compi
 /// no class-var-applied argument) is resolved by the expected type's concrete
 /// name; without an expected type it errors.
 fn infer_ref_expected(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     name: &str,
     span: Span,
     expected: Option<ValueTy>,
@@ -2267,7 +2259,7 @@ fn infer_ref_expected(
 
 /// The original `infer_ref` body: resolve a named reference (data type, sum
 /// constructor, newtype, nullary constructor, method, builtin, def, local).
-fn infer_ref_inner(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy, CompileError> {
+fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, CompileError> {
     // Data-type names and constructors are checked before builtins/user defs:
     // `Point` (record type) is a value channel; a bare sum constructor like
     // `Circle` must be applied to its payload.
@@ -2386,15 +2378,6 @@ fn infer_ref_inner(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy,
             }
         }
     }
-    if let Some(sig) = ctx.sigs.builtin_sig(name) {
-        if sig.params.len() == sig.signal_ins() {
-            return Ok(ArrowTy::uniform(
-                sig.signal_ins(),
-                sig.signal_outs,
-                Scalar::Float,
-            ));
-        }
-    }
     if let Some(t) = ctx.locals.get(name) {
         return Ok(t.clone());
     }
@@ -2424,7 +2407,7 @@ fn infer_ref_inner(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy,
 /// definition, with λ-parameters). The structural `ValueTy::Func` no longer
 /// carries the referenced name, so it is recovered from the AST bodies here.
 /// (A later task replaces this with signature-based dispatch.)
-fn func_target(ctx: &Ctx<'_>, name: &str) -> String {
+fn func_target(ctx: &Ctx, name: &str) -> String {
     let mut cur = name.to_string();
     for _ in 0..=ctx.defs.len() {
         let is_func_value = ctx.defs.get(cur.as_str()).is_some_and(|s| {
@@ -2459,7 +2442,7 @@ pub(crate) fn type_expr_mentions(te: &crate::ast::TypeExpr, var: &str) -> bool {
 /// Infer an `Apply`, threaded with an optional expected value type for
 /// result-directed typeclass dispatch (`pure`, `return`, `mempty`).
 fn infer_apply_expected(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     name: &str,
     args: &[Expr],
     span: Span,
@@ -2471,7 +2454,7 @@ fn infer_apply_expected(
 /// `(expr) a b` — apply a closure-valued expression. Infer the callee, unify it
 /// against a fresh `Func` signature, infer and check args, return the result.
 fn infer_apply_expr(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     callee: &Expr,
     args: &[Expr],
     span: Span,
@@ -2524,7 +2507,7 @@ fn infer_apply_expr(
 }
 
 fn infer_apply_impl(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     name: &str,
     args: &[Expr],
     span: Span,
@@ -2664,7 +2647,7 @@ fn infer_apply_impl(
                 fn fresh_placeholder_id(
                     k: u32,
                     bindings: &mut HashMap<u32, ValueTy>,
-                    ctx: &mut Ctx<'_>,
+                    ctx: &mut Ctx,
                 ) -> u32 {
                     match bindings.get(&k) {
                         Some(ValueTy::Var(f)) | Some(ValueTy::TyConVar(f)) => *f,
@@ -2680,7 +2663,7 @@ fn infer_apply_impl(
                 fn freshen_placeholder(
                     fty: &ValueTy,
                     bindings: &mut HashMap<u32, ValueTy>,
-                    ctx: &mut Ctx<'_>,
+                    ctx: &mut Ctx,
                 ) -> ValueTy {
                     match fty {
                         ValueTy::Var(k) => ValueTy::Var(fresh_placeholder_id(*k, bindings, ctx)),
@@ -3474,163 +3457,6 @@ fn infer_apply_impl(
             return Ok(ArrowTy::uniform(signal_ins, sig.signal_outs, Scalar::Float));
         }
     }
-    if let Some(sig) = ctx.sigs.builtin_sig(name).cloned() {
-        let min = sig.min_args();
-        let max = sig.max_args();
-        if args.len() < min {
-            return Err(CompileError::Type {
-                msg: format!(
-                    "built-in `{name}` expects at least {min} arg(s), got {}",
-                    args.len()
-                ),
-                span,
-            });
-        }
-        if let Some(max) = max {
-            if args.len() > max {
-                return Err(CompileError::Type {
-                    msg: format!(
-                        "built-in `{name}` expects at most {max} arg(s), got {}",
-                        args.len()
-                    ),
-                    span,
-                });
-            }
-        }
-
-        let mut signal_ins = 0;
-        let mut pos = 0;
-
-        for ptype in &sig.params {
-            match ptype {
-                ParamType::Signal => {
-                    signal_ins += 1;
-                }
-                ParamType::Float | ParamType::Int => {
-                    if pos >= args.len() {
-                        break;
-                    }
-                    match &args[pos] {
-                        Expr::Ref(ref_name, _) if ctx.locals.contains_key(ref_name) => {}
-                        _ => {
-                            let at = infer_expr(ctx, &args[pos])?;
-                            if at.arity_in() != 0 || at.arity_out() != 1 {
-                                return Err(CompileError::Type {
-                                    msg: format!(
-                                        "param at position {pos} of `{name}` must be constant or param reference"
-                                    ),
-                                    span: args[pos].span(),
-                                });
-                            }
-                        }
-                    }
-                    pos += 1;
-                }
-                ParamType::String => {
-                    if pos >= args.len() {
-                        break;
-                    }
-                    match &args[pos] {
-                        Expr::Str(_, _) => {}
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: format!("argument {pos} of `{name}` must be a string literal"),
-                                span: args[pos].span(),
-                            });
-                        }
-                    }
-                    pos += 1;
-                }
-                ParamType::Bool => {
-                    if pos >= args.len() {
-                        break;
-                    }
-                    pos += 1;
-                }
-                ParamType::Enum(variants) => {
-                    if pos >= args.len() {
-                        break;
-                    }
-                    match &args[pos] {
-                        Expr::Ref(v, _) if variants.contains(&v.as_str()) => {}
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "argument {pos} of `{name}` must be one of: {}",
-                                    variants.join(", ")
-                                ),
-                                span: args[pos].span(),
-                            });
-                        }
-                    }
-                    pos += 1;
-                }
-                ParamType::Resource => {
-                    if pos >= args.len() {
-                        break;
-                    }
-                    match &args[pos] {
-                        Expr::Ref(_, _) => {}
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "resource argument {pos} of `{name}` must be a symbolic reference"
-                                ),
-                                span: args[pos].span(),
-                            });
-                        }
-                    }
-                    pos += 1;
-                }
-                ParamType::Record(_schema) => {
-                    if pos >= args.len() {
-                        break;
-                    }
-                    match &args[pos] {
-                        Expr::Record(_, _) => {}
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: format!("argument {pos} of `{name}` must be a record literal"),
-                                span: args[pos].span(),
-                            });
-                        }
-                    }
-                    pos += 1;
-                }
-                ParamType::Variadic(inner) => match &**inner {
-                    ParamType::Signal => {
-                        for arg in &args[pos..] {
-                            let ty = infer_expr(ctx, arg)?;
-                            if ty.arity_out() == 0 {
-                                return Err(CompileError::Type {
-                                    msg: format!(
-                                        "variadic signal argument of `{name}` has no outputs"
-                                    ),
-                                    span: arg.span(),
-                                });
-                            }
-                            signal_ins += ty.arity_in();
-                        }
-                    }
-                    _ => {
-                        for arg in &args[pos..] {
-                            let at = infer_expr(ctx, arg)?;
-                            if at.arity_in() != 0 || at.arity_out() != 1 {
-                                return Err(CompileError::Type {
-                                    msg: format!(
-                                        "variadic param of `{name}` must be constant or param reference"
-                                    ),
-                                    span: arg.span(),
-                                });
-                            }
-                        }
-                    }
-                },
-            }
-        }
-
-        return Ok(ArrowTy::uniform(signal_ins, sig.signal_outs, Scalar::Float));
-    }
     // A first-class function value bound to a LOCAL (a lambda parameter, a
     // let/match binding): `f x` where `f` is a `Func`. Locals SHADOW top-level
     // defs of the same name (lexical scoping), so this runs before the def
@@ -3836,7 +3662,7 @@ fn infer_apply_impl(
 /// the result value type. Mirrors the lowerer's `value_builtin_ty` signatures
 /// (Task 6.3).
 fn infer_collection_call(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     name: &str,
     args: &[Expr],
     span: Span,
@@ -3845,7 +3671,7 @@ fn infer_collection_call(
         msg: format!("`{name}` expects {expected} argument(s), got {got}"),
         span,
     };
-    let arg_vty = |ctx: &mut Ctx<'_>, i: usize| -> Result<ValueTy, CompileError> {
+    let arg_vty = |ctx: &mut Ctx, i: usize| -> Result<ValueTy, CompileError> {
         match args.get(i) {
             Some(e) => infer_const_value(ctx, e),
             None => Err(arity_err(&(i + 1).to_string(), args.len())),
@@ -3855,7 +3681,7 @@ fn infer_collection_call(
     // concrete key type must have a derived `Ord` instance (see
     // `derive_eq_ord`). `Func` gets no instance, so a function-typed key is a
     // compile error; an unresolved type var cannot select an instance either.
-    let check_ord = |ctx: &mut Ctx<'_>, ty: &ValueTy, what: &str| -> Result<(), CompileError> {
+    let check_ord = |ctx: &mut Ctx, ty: &ValueTy, what: &str| -> Result<(), CompileError> {
         let ty = ctx.subst.resolve_value(ty);
         match ctx.env.type_name_of_vty(&ty) {
             Some(name) => {
@@ -3887,7 +3713,7 @@ fn infer_collection_call(
     // structural signature must match the expected arity exactly — a wrong-arity
     // closure would otherwise pass `value_ins` to the pre-sized call scratch and
     // panic the runtime path.
-    let expect_closure = |ctx: &mut Ctx<'_>, want: usize, what: &str| -> Result<(), CompileError> {
+    let expect_closure = |ctx: &mut Ctx, want: usize, what: &str| -> Result<(), CompileError> {
         let ft = arg_vty(ctx, 0)?;
         let ok =
             matches!(&ft, ValueTy::Func(arg_tys, _) if arg_tys.is_empty() || arg_tys.len() == want);
@@ -4102,14 +3928,14 @@ fn infer_param(args: &[Expr], span: Span) -> Result<ArrowTy, CompileError> {
     Ok(ArrowTy::uniform(0, 1, Scalar::Float))
 }
 
-fn expr_has_variadic_signal(ctx: &Ctx<'_>, e: &Expr) -> bool {
+fn expr_has_variadic_signal(ctx: &Ctx, e: &Expr) -> bool {
     let name = match e {
         Expr::Apply { name, .. } => name,
         Expr::Ref(name, _) => name,
         _ => return false,
     };
-    // FFI catalog first: a foreign sig with a VariadicSignal tail consumes
-    // every remaining channel in a merge/split.
+    // FFI catalog: a foreign sig with a VariadicSignal tail consumes every
+    // remaining channel in a merge/split.
     if let Some(fsig) = ctx.env.foreign_sigs.get(name.as_str()) {
         if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig) {
             if sig
@@ -4121,18 +3947,10 @@ fn expr_has_variadic_signal(ctx: &Ctx<'_>, e: &Expr) -> bool {
             }
         }
     }
-    ctx.sigs
-        .builtin_sig(name)
-        .map(|s| s.has_variadic_signal())
-        .unwrap_or(false)
+    false
 }
 
-fn infer_seq(
-    ctx: &mut Ctx<'_>,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn infer_seq(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
     seq(ctx, &a, &b, span)
@@ -4157,12 +3975,7 @@ fn tuple_operand_vty(t: &ArrowTy, e: &Expr) -> Option<ValueTy> {
     }
 }
 
-fn infer_par(
-    ctx: &mut Ctx<'_>,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn infer_par(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
     // Channel tuple: `value , value` → `Pair a b`; `signal , signal` keeps the
@@ -4189,58 +4002,33 @@ fn infer_par(
     Ok(par(&a, &b))
 }
 
-fn infer_split(
-    ctx: &mut Ctx<'_>,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn infer_split(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
     let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
     split(ctx, &a, &b, span, rhs_variadic)
 }
 
-fn infer_merge(
-    ctx: &mut Ctx<'_>,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn infer_merge(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
     let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
     merge(ctx, &a, &b, span, rhs_variadic)
 }
 
-fn infer_loop(
-    ctx: &mut Ctx<'_>,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn infer_loop(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
     feedback(ctx, &a, &b, span)
 }
 
-fn infer_delay(
-    ctx: &mut Ctx<'_>,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn infer_delay(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
     delay(ctx, &a, &b, span)
 }
 
-fn infer_arith(
-    ctx: &mut Ctx<'_>,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
     // Value-track arithmetic: a value operand (a lambda parameter, a value
@@ -4298,7 +4086,7 @@ pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
     ArrowTy { ins, outs }
 }
 
-fn seq(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
+fn seq(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     reject_value_channels(a, span)?;
     if a.arity_out() != b.arity_in() {
         return Err(CompileError::Type {
@@ -4320,7 +4108,7 @@ fn seq(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowT
 }
 
 fn split(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     a: &ArrowTy,
     b: &ArrowTy,
     span: Span,
@@ -4357,7 +4145,7 @@ fn split(
 }
 
 fn merge(
-    ctx: &mut Ctx<'_>,
+    ctx: &mut Ctx,
     a: &ArrowTy,
     b: &ArrowTy,
     span: Span,
@@ -4393,12 +4181,7 @@ fn merge(
     })
 }
 
-fn feedback(
-    ctx: &mut Ctx<'_>,
-    a: &ArrowTy,
-    b: &ArrowTy,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
+fn feedback(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     let (ai, ao, bi, bo) = (a.arity_in(), a.arity_out(), b.arity_in(), b.arity_out());
     reject_value_channels(a, span)?;
     reject_value_channels(b, span)?;
@@ -4422,7 +4205,7 @@ fn feedback(
     })
 }
 
-fn delay(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
+fn delay(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     reject_value_channels(a, span)?;
     if a.arity_out() != 1 {
         return Err(CompileError::Type {
@@ -4446,7 +4229,7 @@ fn delay(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<Arro
     })
 }
 
-fn arith(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
+fn arith(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     reject_value_channels(a, span)?;
     reject_value_channels(b, span)?;
     if a.arity_out() != 1 || b.arity_out() != 1 {
@@ -4464,7 +4247,7 @@ fn arith(ctx: &mut Ctx<'_>, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<Arro
     })
 }
 
-fn check_all_numeric(_ctx: &mut Ctx<'_>, _t: &ArrowTy, _span: Span) -> Result<(), CompileError> {
+fn check_all_numeric(_ctx: &mut Ctx, _t: &ArrowTy, _span: Span) -> Result<(), CompileError> {
     Ok(())
 }
 
@@ -4582,42 +4365,8 @@ mod tests {
         assert!(ty_of("main = let g = _ * 0.5 in _ ; main = g").is_err());
     }
 
-    struct TestSigs;
-    impl crate::builtin::SignatureSource for TestSigs {
-        fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
-            use crate::builtin::{BuiltinKind, BuiltinSig};
-            match name {
-                "lowpass" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "lowpass",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                "onepole" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "onepole",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                "sine" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "sine",
-                    0,
-                    1,
-                    3,
-                    BuiltinKind::Block,
-                )))),
-                _ => None,
-            }
-        }
-    }
-
     fn ty_with(src: &str) -> Result<TypedProgram, CompileError> {
-        infer_program_with(
-            &parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap(),
-            &TestSigs,
-        )
+        infer_program_with(&parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap())
     }
 
     #[test]

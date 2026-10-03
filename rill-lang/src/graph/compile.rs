@@ -133,7 +133,7 @@ fn compile_sub<T: Transcendental + 'static, const BUF: usize>(
         let src = render_recording(spec, region, registry);
         crate::parser::parse(&crate::lexer::tokenize(&src)?, src.as_bytes())?
     } else {
-        crate::graph::reconstruct::reconstruct(&sub, registry)?
+        crate::graph::reconstruct::reconstruct(&sub)?
     };
     crate::compile_program_with_resources::<T, BUF>(&program, registry, sample_rate, resources)
 }

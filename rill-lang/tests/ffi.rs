@@ -210,7 +210,7 @@ fn foreign_fn_lowers_to_callblock() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = lower_with_cafs(&typed, &rill_lang::builtin::NoSigs, 44100.0, &typed.cafs).unwrap();
+    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     assert!(
         ir.builtins
             .iter()
@@ -255,7 +255,7 @@ fn foreign_fn_multi_signal_wires_distinct_inputs() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = lower_with_cafs(&typed, &rill_lang::builtin::NoSigs, 44100.0, &typed.cafs).unwrap();
+    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let cross_idx = ir
         .builtins
         .iter()
@@ -672,7 +672,7 @@ fn combinator_sugar_lowers_positionally() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = lower_with_cafs(&typed, &rill_lang::builtin::NoSigs, 44100.0, &typed.cafs).unwrap();
+    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "onepole").unwrap();
     assert_eq!(bi.signal_ins, 1);
     assert_eq!(bi.params, vec![200.0, 0.7]);
@@ -859,13 +859,7 @@ fn record_param_flattens_schema_fields() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(
-        &typed,
-        &rill_lang::builtin::NoSigs,
-        44100.0,
-        &typed.cafs,
-    )
-    .unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
     assert_eq!(bi.params, vec![0.5]);
 }
@@ -882,13 +876,7 @@ fn record_param_missing_fields_use_zero_defaults() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(
-        &typed,
-        &rill_lang::builtin::NoSigs,
-        44100.0,
-        &typed.cafs,
-    )
-    .unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "cfg").unwrap();
     assert_eq!(bi.params, vec![1.5, 0.0]);
 }
@@ -921,13 +909,7 @@ fn resource_param_wires_tape_ref() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(
-        &typed,
-        &rill_lang::builtin::NoSigs,
-        44100.0,
-        &typed.cafs,
-    )
-    .unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "read_head").unwrap();
     assert_eq!(bi.resource.as_deref(), Some("tape_0"));
     assert_eq!(bi.params, vec![0.1]);
@@ -1077,13 +1059,7 @@ fn record_default_ffi_applies() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(
-        &typed,
-        &rill_lang::builtin::NoSigs,
-        44100.0,
-        &typed.cafs,
-    )
-    .unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
     assert_eq!(bi.params, vec![0.5]);
 }
@@ -1099,13 +1075,7 @@ fn band_list_flattens_band_fields() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(
-        &typed,
-        &rill_lang::builtin::NoSigs,
-        44100.0,
-        &typed.cafs,
-    )
-    .unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir
         .builtins
         .iter()
@@ -1797,4 +1767,60 @@ fn main_is_not_extracted_as_tape_declaration() {
         ),
         Ok(_) => panic!("expected a compile error for `main = tape_loop`"),
     }
+}
+
+// --- SP-3b Task 12 follow-ups: mixer 3+ channels, eq 2+ bands ---
+
+#[test]
+fn mixer_ffi_three_channels() {
+    // `mixer` is a variadic-signal builtin: 3 channels in → 2 outs (bus + master
+    // vol 1.0). Regression guard for variadic channel counting past 2.
+    use rill_lang::ffi::ForeignRegistry;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_router::register::register_foreign_router(&mut ffi);
+
+    let src = r#"
+        main = mixer _ _ _ { buses: 0, master_vol: 1.0 };
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let ch0 = [1.0f32; 4];
+    let ch1 = [2.0f32; 4];
+    let ch2 = [3.0f32; 4];
+    let mut l = [0.0f32; 4];
+    let mut r = [0.0f32; 4];
+    let inputs: [&[f32]; 3] = [&ch0, &ch1, &ch2];
+    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
+    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
+    // channel_vols default 0.8 · master_vol 1.0 → (1 + 2 + 3)·0.8 = 4.8.
+    assert!(
+        (l[0] - 4.8).abs() < 1e-5,
+        "3-channel mixer sum: l[0]={}, expected ~4.8",
+        l[0]
+    );
+    assert!(r.iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn eq_parametric_ffi_two_bands() {
+    // `eq_parametric` with TWO bands: the BandList flattening must feed both
+    // bands' params to the factory in order (2·4 = 8 f64s) and run finite.
+    use rill_lang::ffi::ForeignRegistry;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_router::register::register_foreign_router(&mut ffi);
+
+    let src = r#"
+        main = _ : eq_parametric { bands: [
+            { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 },
+            { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
+        ] };
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 4]], &mut [&mut out]).unwrap();
+    assert!(
+        out.iter().all(|v| v.is_finite()),
+        "2-band eq_parametric output must be finite, got {out:?}"
+    );
 }

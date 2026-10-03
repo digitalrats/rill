@@ -1,7 +1,7 @@
 //! Self-registration for rill-lang's own builtins (complex) + the FFI
 //! factories for the DSP crates (rill-digital-effects, rill-core-dsp).
 
-use crate::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
+use crate::builtin::{BlockBuiltin, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ProcessResult};
 
@@ -176,42 +176,18 @@ pub fn register_core_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
 
 /// Register complex number built-ins (dsl: complex, conj, re, im, norm, arg, cmul, cadd).
 fn register_complex<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    reg.register_block(
-        BuiltinSig::simple("complex", 0, 2, 2, BuiltinKind::Block).with_names(vec!["re", "im"]),
-        |p, _sr| {
-            let re = T::from_f64(p[0]);
-            let im = T::from_f64(p[1]);
-            Box::new(ComplexGenBuiltin { re, im })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("conj", 2, 2, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(ComplexConjBuiltin),
-    );
-    reg.register_block(
-        BuiltinSig::simple("re", 2, 1, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(ComplexReBuiltin),
-    );
-    reg.register_block(
-        BuiltinSig::simple("im", 2, 1, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(ComplexImBuiltin),
-    );
-    reg.register_block(
-        BuiltinSig::simple("norm", 2, 1, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(ComplexNormBuiltin),
-    );
-    reg.register_block(
-        BuiltinSig::simple("arg", 2, 1, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(ComplexArgBuiltin),
-    );
-    reg.register_block(
-        BuiltinSig::simple("cmul", 4, 2, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(ComplexMulBuiltin),
-    );
-    reg.register_block(
-        BuiltinSig::simple("cadd", 4, 2, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(ComplexAddBuiltin),
-    );
+    reg.register_block("complex", |p, _sr| {
+        let re = T::from_f64(p[0]);
+        let im = T::from_f64(p[1]);
+        Box::new(ComplexGenBuiltin { re, im })
+    });
+    reg.register_block("conj", |_p, _sr| Box::new(ComplexConjBuiltin));
+    reg.register_block("re", |_p, _sr| Box::new(ComplexReBuiltin));
+    reg.register_block("im", |_p, _sr| Box::new(ComplexImBuiltin));
+    reg.register_block("norm", |_p, _sr| Box::new(ComplexNormBuiltin));
+    reg.register_block("arg", |_p, _sr| Box::new(ComplexArgBuiltin));
+    reg.register_block("cmul", |_p, _sr| Box::new(ComplexMulBuiltin));
+    reg.register_block("cadd", |_p, _sr| Box::new(ComplexAddBuiltin));
 }
 
 // ============================================================================
@@ -495,152 +471,113 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform,
     };
 
-    reg.register_block(
-        BuiltinSig::simple("onepole", 1, 1, 2, BuiltinKind::Block).with_names(vec!["cutoff", "q"]),
-        |p, sr| {
-            let mut inner = OnePole::<T>::new(FilterParams {
-                filter_type: FilterType::LowPass,
-                cutoff: p[0] as f32,
-                q: p[1] as f32,
-                gain_db: 0.0,
-            });
-            Algorithm::init(&mut inner, sr);
-            Box::new(OnePoleBuiltin { inner })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("moog", 1, 1, 2, BuiltinKind::Block)
-            .with_names(vec!["cutoff", "resonance"]),
-        |p, sr| {
-            let mut inner = MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
-            Algorithm::init(&mut inner, sr);
-            Box::new(MoogBuiltin { inner })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("lowpass", 1, 1, 2, BuiltinKind::Block).with_names(vec!["cutoff", "q"]),
-        |p, sr| {
-            let mut b = Biquad::<T>::new(FilterParams {
-                filter_type: FilterType::LowPass,
-                cutoff: p[0] as f32,
-                q: p[1] as f32,
-                gain_db: 0.0,
-            });
-            Algorithm::init(&mut b, sr);
-            Box::new(BiquadBuiltin { inner: b })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("highpass", 1, 1, 2, BuiltinKind::Block).with_names(vec!["cutoff", "q"]),
-        |p, sr| {
-            let mut b = Biquad::<T>::new(FilterParams {
-                filter_type: FilterType::HighPass,
-                cutoff: p[0] as f32,
-                q: p[1] as f32,
-                gain_db: 0.0,
-            });
-            Algorithm::init(&mut b, sr);
-            Box::new(BiquadBuiltin { inner: b })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("biquad", 1, 1, 4, BuiltinKind::Block)
-            .with_names(vec!["type", "cutoff", "q", "gain_db"]),
-        |p, sr| {
-            let ft = match p[0] as u8 {
-                0 => FilterType::LowPass,
-                1 => FilterType::HighPass,
-                2 => FilterType::BandPass,
-                3 => FilterType::Notch,
-                4 => FilterType::Peak,
-                5 => FilterType::LowShelf,
-                6 => FilterType::HighShelf,
-                _ => FilterType::LowPass,
-            };
-            let mut b = Biquad::<T>::new(FilterParams {
-                filter_type: ft,
-                cutoff: p[1] as f32,
-                q: p[2] as f32,
-                gain_db: p[3] as f32,
-            });
-            Algorithm::init(&mut b, sr);
-            Box::new(GeneralBiquadBuiltin { inner: b })
-        },
-    );
+    reg.register_block("onepole", |p, sr| {
+        let mut inner = OnePole::<T>::new(FilterParams {
+            filter_type: FilterType::LowPass,
+            cutoff: p[0] as f32,
+            q: p[1] as f32,
+            gain_db: 0.0,
+        });
+        Algorithm::init(&mut inner, sr);
+        Box::new(OnePoleBuiltin { inner })
+    });
+    reg.register_block("moog", |p, sr| {
+        let mut inner = MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
+        Algorithm::init(&mut inner, sr);
+        Box::new(MoogBuiltin { inner })
+    });
+    reg.register_block("lowpass", |p, sr| {
+        let mut b = Biquad::<T>::new(FilterParams {
+            filter_type: FilterType::LowPass,
+            cutoff: p[0] as f32,
+            q: p[1] as f32,
+            gain_db: 0.0,
+        });
+        Algorithm::init(&mut b, sr);
+        Box::new(BiquadBuiltin { inner: b })
+    });
+    reg.register_block("highpass", |p, sr| {
+        let mut b = Biquad::<T>::new(FilterParams {
+            filter_type: FilterType::HighPass,
+            cutoff: p[0] as f32,
+            q: p[1] as f32,
+            gain_db: 0.0,
+        });
+        Algorithm::init(&mut b, sr);
+        Box::new(BiquadBuiltin { inner: b })
+    });
+    reg.register_block("biquad", |p, sr| {
+        let ft = match p[0] as u8 {
+            0 => FilterType::LowPass,
+            1 => FilterType::HighPass,
+            2 => FilterType::BandPass,
+            3 => FilterType::Notch,
+            4 => FilterType::Peak,
+            5 => FilterType::LowShelf,
+            6 => FilterType::HighShelf,
+            _ => FilterType::LowPass,
+        };
+        let mut b = Biquad::<T>::new(FilterParams {
+            filter_type: ft,
+            cutoff: p[1] as f32,
+            q: p[2] as f32,
+            gain_db: p[3] as f32,
+        });
+        Algorithm::init(&mut b, sr);
+        Box::new(GeneralBiquadBuiltin { inner: b })
+    });
 
-    reg.register_block(
-        BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block)
-            .with_names(vec!["freq", "amp", "phase"]),
-        |p, sr| {
-            let freq = p[0] as f32;
-            let amp = T::from_f64(p[1]);
-            let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, amp);
-            osc.set_phase(T::from_f64(p[2]));
-            Algorithm::init(&mut osc, sr);
-            Box::new(OscBuiltin { osc })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("saw", 0, 1, 3, BuiltinKind::Block)
-            .with_names(vec!["freq", "amp", "phase"]),
-        |p, sr| {
-            let freq = p[0] as f32;
-            let amp = T::from_f64(p[1]);
-            let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, amp);
-            osc.set_phase(T::from_f64(p[2]));
-            Algorithm::init(&mut osc, sr);
-            Box::new(OscBuiltin { osc })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("square", 0, 1, 3, BuiltinKind::Block)
-            .with_names(vec!["freq", "amp", "phase"]),
-        |p, sr| {
-            let freq = p[0] as f32;
-            let amp = T::from_f64(p[1]);
-            let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, amp);
-            osc.set_phase(T::from_f64(p[2]));
-            Algorithm::init(&mut osc, sr);
-            Box::new(OscBuiltin { osc })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("triangle", 0, 1, 3, BuiltinKind::Block)
-            .with_names(vec!["freq", "amp", "phase"]),
-        |p, sr| {
-            let freq = p[0] as f32;
-            let amp = T::from_f64(p[1]);
-            let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, amp);
-            osc.set_phase(T::from_f64(p[2]));
-            Algorithm::init(&mut osc, sr);
-            Box::new(OscBuiltin { osc })
-        },
-    );
-    reg.register_block(
-        BuiltinSig::simple("noise", 0, 1, 2, BuiltinKind::Block).with_names(vec!["type", "amp"]),
-        |p, _sr| {
-            let amp = T::from_f64(p[1]);
-            let gen = NoiseGenerator::<T>::new(
-                match p[0].round() as i32 {
-                    1 => NoiseType::Pink,
-                    2 => NoiseType::Brown,
-                    _ => NoiseType::White,
-                },
-                amp,
-            );
-            Box::new(NoiseGenBuiltin { gen })
-        },
-    );
+    reg.register_block("sine", |p, sr| {
+        let freq = p[0] as f32;
+        let amp = T::from_f64(p[1]);
+        let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, amp);
+        osc.set_phase(T::from_f64(p[2]));
+        Algorithm::init(&mut osc, sr);
+        Box::new(OscBuiltin { osc })
+    });
+    reg.register_block("saw", |p, sr| {
+        let freq = p[0] as f32;
+        let amp = T::from_f64(p[1]);
+        let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, amp);
+        osc.set_phase(T::from_f64(p[2]));
+        Algorithm::init(&mut osc, sr);
+        Box::new(OscBuiltin { osc })
+    });
+    reg.register_block("square", |p, sr| {
+        let freq = p[0] as f32;
+        let amp = T::from_f64(p[1]);
+        let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, amp);
+        osc.set_phase(T::from_f64(p[2]));
+        Algorithm::init(&mut osc, sr);
+        Box::new(OscBuiltin { osc })
+    });
+    reg.register_block("triangle", |p, sr| {
+        let freq = p[0] as f32;
+        let amp = T::from_f64(p[1]);
+        let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, amp);
+        osc.set_phase(T::from_f64(p[2]));
+        Algorithm::init(&mut osc, sr);
+        Box::new(OscBuiltin { osc })
+    });
+    reg.register_block("noise", |p, _sr| {
+        let amp = T::from_f64(p[1]);
+        let gen = NoiseGenerator::<T>::new(
+            match p[0].round() as i32 {
+                1 => NoiseType::Pink,
+                2 => NoiseType::Brown,
+                _ => NoiseType::White,
+            },
+            amp,
+        );
+        Box::new(NoiseGenBuiltin { gen })
+    });
 
-    reg.register_block(
-        BuiltinSig::simple("integrator", 1, 1, 0, BuiltinKind::Block),
-        |_p, _sr| Box::new(IntegratorBuiltin::<T>::new()),
-    );
-    reg.register_block(
-        BuiltinSig::simple("leaky_integrator", 1, 1, 1, BuiltinKind::Block)
-            .with_names(vec!["coeff"]),
-        |p, _sr| Box::new(LeakyIntegratorBuiltin::<T>::new(T::from_f64(p[0]))),
-    );
+    reg.register_block("integrator", |_p, _sr| {
+        Box::new(IntegratorBuiltin::<T>::new())
+    });
+    reg.register_block("leaky_integrator", |p, _sr| {
+        Box::new(LeakyIntegratorBuiltin::<T>::new(T::from_f64(p[0])))
+    });
 }
 
 // ============================================================================

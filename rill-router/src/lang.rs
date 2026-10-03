@@ -3,10 +3,7 @@ use std::marker::PhantomData;
 
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, MultichannelAlgorithm, ParamValue, ProcessResult};
-use rill_lang::builtin::{
-    BlockBuiltin, BuiltinKind, BuiltinSig, MultichannelBlockBuiltin, ParamType, RecordField,
-    RecordSchema, Registry,
-};
+use rill_lang::builtin::{BlockBuiltin, MultichannelBlockBuiltin, Registry};
 
 use crate::builtins::dry_wet::DryWetBuiltin;
 use crate::builtins::eq::{BandType, EqBandConfig, EqBuiltin, EqConfig, EqState};
@@ -120,138 +117,50 @@ impl<T: Transcendental> MultichannelBlockBuiltin<T> for MonoToStereoBuiltin<T> {
 
 /// The legacy `Registry` registration (graph-compile path + downstream crates).
 ///
-/// `register_lang_builtins` in [`crate::register`] forwards here; SP-3b Task 12
-/// drops this legacy bridge once the graph path compiles against the FFI
-/// catalog + `ForeignRegistry`.
+/// `register_lang_builtins` in [`crate::register`] forwards here. Signatures
+/// come from the FFI catalog; this registers only the FACTORIES (the
+/// `ForeignRegistry` path `register_foreign_router` registers the same
+/// factories for `compile_with_ffi`).
 pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    reg.register_block(
-        BuiltinSig::simple("graphic_eq", 1, 1, 1, BuiltinKind::Block).with_names(vec!["gain"]),
-        |p, sr| {
-            let factory = BiquadFactory;
-            let mut eq = GraphicEq::new_third_octave(factory, sr);
-            eq.set_output_gain(p[0] as f32);
-            eq.init(sr);
-            Box::new(GraphicEqBuiltin::<T> {
-                eq,
-                scratch_in: vec![0.0f32; 64],
-                scratch_out: vec![0.0f32; 64],
-                _phantom: PhantomData,
-            })
-        },
-    );
+    reg.register_block("graphic_eq", |p, sr| {
+        let factory = BiquadFactory;
+        let mut eq = GraphicEq::new_third_octave(factory, sr);
+        eq.set_output_gain(p[0] as f32);
+        eq.init(sr);
+        Box::new(GraphicEqBuiltin::<T> {
+            eq,
+            scratch_in: vec![0.0f32; 64],
+            scratch_out: vec![0.0f32; 64],
+            _phantom: PhantomData,
+        })
+    });
 
-    reg.register_multichannel_block(
-        BuiltinSig {
-            name: "mono_to_stereo",
-            params: vec![ParamType::Signal, ParamType::Float, ParamType::Float],
-            signal_outs: 2,
-            kind: BuiltinKind::Block,
-            param_names: vec!["pan", "smoothing"],
-        },
-        |_signal_ins, params, _sr| {
-            Box::new(MonoToStereoBuiltin::<T> {
-                inner: MonoToStereo::new(PanLaw::ConstantPower, params[0] as f32, params[1] as f32),
-            })
-        },
-    );
+    reg.register_multichannel_block("mono_to_stereo", |_signal_ins, params, _sr| {
+        Box::new(MonoToStereoBuiltin::<T> {
+            inner: MonoToStereo::new(PanLaw::ConstantPower, params[0] as f32, params[1] as f32),
+        })
+    });
 
     // --- Mixer / eq_parametric / dry_wet (moved from rill-lang, SP-3b Task 7) ---
 
-    reg.register_multichannel_block(
-        BuiltinSig {
-            name: "mixer",
-            params: vec![
-                ParamType::Variadic(Box::new(ParamType::Signal)),
-                ParamType::Record(RecordSchema::new(vec![
-                    RecordField {
-                        name: "buses",
-                        ty: ParamType::Int,
-                        default: Some(0.0),
-                    },
-                    RecordField {
-                        name: "master_vol",
-                        ty: ParamType::Float,
-                        default: Some(1.0),
-                    },
-                ])),
-            ],
-            signal_outs: 2,
-            kind: BuiltinKind::Block,
-            param_names: Vec::new(),
-        },
-        |signal_ins, params, _sr| -> Box<dyn MultichannelBlockBuiltin<T>> {
-            let num_channels = signal_ins.max(1);
-            let mut config = MixerConfig::new(num_channels, 0);
-            if params.len() > 1 {
-                config.master_vol = params[1];
-            }
-            Box::new(MixerAlgorithmWrapper::<T>::new(config))
-        },
-    );
+    reg.register_multichannel_block("mixer", |signal_ins, params, _sr| {
+        let num_channels = signal_ins.max(1);
+        let mut config = MixerConfig::new(num_channels, 0);
+        if params.len() > 1 {
+            config.master_vol = params[1];
+        }
+        Box::new(MixerAlgorithmWrapper::<T>::new(config))
+    });
 
-    reg.register_block(
-        BuiltinSig {
-            name: "eq_parametric",
-            params: vec![
-                ParamType::Signal,
-                ParamType::Record(RecordSchema::new(vec![RecordField {
-                    name: "bands",
-                    ty: ParamType::Variadic(Box::new(ParamType::Record(RecordSchema::new(vec![
-                        RecordField {
-                            name: "freq",
-                            ty: ParamType::Float,
-                            default: Some(1000.0),
-                        },
-                        RecordField {
-                            name: "q",
-                            ty: ParamType::Float,
-                            default: Some(1.0),
-                        },
-                        RecordField {
-                            name: "gain_db",
-                            ty: ParamType::Float,
-                            default: Some(0.0),
-                        },
-                        RecordField {
-                            name: "band_type",
-                            ty: ParamType::Int,
-                            default: Some(0.0),
-                        },
-                    ])))),
-                    default: None,
-                }])),
-            ],
-            signal_outs: 1,
-            kind: BuiltinKind::Block,
-            param_names: Vec::new(),
-        },
-        |_params: &[f64], sample_rate: f32| -> Box<dyn BlockBuiltin<T>> {
-            let inner = EqState::new(EqConfig { bands: vec![] }, sample_rate);
-            Box::new(EqBuiltin::new(inner))
-        },
-    );
+    reg.register_block("eq_parametric", |_params: &[f64], sample_rate: f32| {
+        let inner = EqState::new(EqConfig { bands: vec![] }, sample_rate);
+        Box::new(EqBuiltin::new(inner))
+    });
 
-    reg.register_multichannel_block(
-        BuiltinSig {
-            name: "dry_wet",
-            params: vec![
-                ParamType::Signal,
-                ParamType::Signal,
-                ParamType::Record(RecordSchema::new(vec![RecordField {
-                    name: "mix",
-                    ty: ParamType::Float,
-                    default: Some(0.5),
-                }])),
-            ],
-            signal_outs: 2,
-            kind: BuiltinKind::Block,
-            param_names: Vec::new(),
-        },
-        |_signal_ins, params, _sr| -> Box<dyn MultichannelBlockBuiltin<T>> {
-            let mix = params.first().copied().unwrap_or(0.5);
-            Box::new(DryWetBuiltin::<T>::new(mix))
-        },
-    );
+    reg.register_multichannel_block("dry_wet", |_signal_ins, params, _sr| {
+        let mix = params.first().copied().unwrap_or(0.5);
+        Box::new(DryWetBuiltin::<T>::new(mix))
+    });
 }
 
 /// The `band_type` field value → [`BandType`] mapping, mirroring the `BandType`

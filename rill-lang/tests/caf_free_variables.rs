@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use rill_core::traits::{Algorithm, MultichannelAlgorithm, ProcessResult};
 use rill_lang::builtin::BlockBuiltin;
-use rill_lang::builtin::{BuiltinKind, BuiltinSig, Registry};
+use rill_lang::builtin::Registry;
 use rill_lang::{compile, compile_with};
 
 /// A real block oscillator (0 signal in, 1 out; params freq/amp/phase) whose
@@ -67,10 +67,9 @@ fn sine_registry() -> (Registry<f32>, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut registry = Registry::<f32>::new();
     let shared = calls.clone();
-    registry.register_block(
-        BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block),
-        move |params, sample_rate| Box::new(SineOsc::new(params, sample_rate, shared.clone())),
-    );
+    registry.register_block("sine", move |params, sample_rate| {
+        Box::new(SineOsc::new(params, sample_rate, shared.clone()))
+    });
     (registry, calls)
 }
 

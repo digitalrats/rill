@@ -169,33 +169,9 @@ fn tarjan_scc(n: usize, adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
 mod tests {
     use super::*;
     use crate::lexer::tokenize;
-    use crate::lower::{lower, lower_with};
+    use crate::lower::lower;
     use crate::parser::parse;
-    use crate::types::infer::{infer_program, infer_program_with};
-
-    struct TestSigs;
-    impl crate::builtin::SignatureSource for TestSigs {
-        fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
-            use crate::builtin::{BuiltinKind, BuiltinSig};
-            match name {
-                "lowpass" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "lowpass",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                "onepole" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "onepole",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                _ => None,
-            }
-        }
-    }
+    use crate::types::infer::infer_program;
 
     fn schedule_of(src: &str) -> Schedule {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
@@ -206,8 +182,8 @@ mod tests {
 
     fn schedule_of_with(src: &str) -> (Ir, Schedule) {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program_with(&p, &TestSigs).unwrap();
-        let ir = lower_with(&tp, &TestSigs, 44_100.0).unwrap();
+        let tp = infer_program(&p).unwrap();
+        let ir = lower(&tp).unwrap();
         let sched = build_schedule(&ir);
         (ir, sched)
     }

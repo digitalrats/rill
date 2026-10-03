@@ -51,7 +51,7 @@ pub struct GraphSpec {
 pub struct GraphSpecNode {
     /// Direct builtin name (no prefix, no alias).
     pub type_name: String,
-    /// Named parameters in `BuiltinSig::param_names` order (default 0.0).
+    /// Named parameters in `FfiSig::param_names` order (default 0.0).
     pub params: HashMap<String, f64>,
     /// Backend classification: `Active`, `Passive`, or `None` (pure transform).
     pub backend: Option<NodeBackendKind>,

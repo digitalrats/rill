@@ -344,8 +344,8 @@ main = _;
 /// Inline catalog of foreign builtin declarations auto-registered into
 /// [`TypeEnv::foreign_sigs`] (and their record `data` types into
 /// [`TypeEnv::data_types`]). Programs resolve these names without a
-/// user-written `foreign fn` per program — this is the in-language migration
-/// target for the legacy `BuiltinSig` catalog (SP-3b).
+/// user-written `foreign fn` per program — the single signature source since
+/// the legacy `BuiltinSig` machinery was removed (SP-3b Task 12).
 ///
 /// Scope note: signal-input builtins are listed here because the
 /// Faust-combinator sugar (see [`crate::desugar`]) keeps their legacy call
