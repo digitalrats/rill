@@ -1,8 +1,10 @@
+//! BackendFactory — constructor registry for I/O backends (moved from rill-graph).
+
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+use rill_adrift::backend_factory::BackendFactory;
 use rill_core::io::{BackendMeta, IoDriver, IoResult};
-use rill_graph::backend_factory::BackendFactory;
 
 struct DummyDriver;
 
@@ -31,6 +33,7 @@ fn rill_io_backends_are_active_sampler_is_passive() {
     f.register("sampler", BackendMeta::passive(), |_| {
         Err("passive backends produce no driver; not constructed via factory".into())
     });
+    assert!(f.contains("null"));
     assert_eq!(f.is_active("null"), Some(true));
     assert_eq!(f.is_active("sampler"), Some(false));
     assert_eq!(f.is_active("missing"), None);

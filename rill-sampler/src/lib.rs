@@ -38,17 +38,8 @@ pub use rill_core;
 /// Re-export of the `rill_core_dsp` crate.
 pub use rill_core_dsp;
 
-/// Register graph nodes and lang builtins for sampler.
+/// Register sampler language builtins (sampler + tape heads).
 pub mod register;
-
-/// Register sampler backends (passive — no driver/callback) into a
-/// [`BackendFactory`](rill_graph::backend_factory::BackendFactory).
-#[cfg(feature = "graph")]
-pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
-    factory.register("sampler", rill_core::io::BackendMeta::passive(), |_| {
-        Err("passive backends produce no driver; not constructed via factory".into())
-    });
-}
 
 /// rill-lang builtins for sampler types.
 #[cfg(feature = "lang")]

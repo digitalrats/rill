@@ -8,12 +8,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use rill_adrift::backend_factory::{BackendFactory, OutputBundle};
 use rill_adrift::registration;
 use rill_adrift::rill_core::{
     queues::{CommandEnum, SetParameter, SignalOrigin},
     traits::{ParamValue, ParameterId, SignalSlab},
 };
-use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
 use rill_lang::program_runner::ProgramRunner;
 use rill_lang::runtime::Runtime;
 use serde::Deserialize;

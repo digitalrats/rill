@@ -16,9 +16,6 @@
 
 mod graph;
 
-/// Backend factory for constructing I/O backends by name.
-pub mod backend_factory;
-
 /// Graph serialization (JSON / CBOR). Feature-gated behind `serialization`.
 #[cfg(feature = "serialization")]
 pub mod serialization;

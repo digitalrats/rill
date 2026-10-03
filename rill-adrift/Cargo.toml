@@ -89,7 +89,7 @@ telemetry = ["dep:rill-telemetry"]
 debug = ["telemetry", "rill-telemetry/debug", "rill-patchbay/debug", "rill-graph/debug", "rill-lang/debug", "dep:dashmap"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "rill-lang/model"]
-sampler = ["dep:rill-sampler", "rill-sampler/graph", "rill-sampler/lang"]
+sampler = ["dep:rill-sampler", "rill-sampler/lang"]
 fft = ["dep:rill-fft", "rill-fft/lang"]
 serialization = [
     "rill-graph/serialization",

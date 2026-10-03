@@ -1,4 +1,8 @@
 //! # BackendFactory — constructor registry for I/O backends
+//!
+//! The backend factory lives in rill-adrift (not rill-graph): rill-graph is
+//! purely an alternative program representation, while backend construction is
+//! an application-level concern (`ModularSystem` consumes it here).
 
 use std::collections::HashMap;
 use std::sync::Arc;

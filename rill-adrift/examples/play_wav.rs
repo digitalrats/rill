@@ -19,8 +19,8 @@ use rill_core::time::ClockTick;
 use rill_core::traits::{Algorithm, ParamValue, SignalSlab};
 use rill_core_dsp::generators::SamplePlayer;
 
+use rill_adrift::backend_factory::{BackendFactory, OutputBundle};
 use rill_adrift::registration;
-use rill_adrift::rill_graph::backend_factory::{BackendFactory, OutputBundle};
 
 const RATE: f32 = 44100.0;
 

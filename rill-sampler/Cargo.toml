@@ -11,7 +11,6 @@ documentation = "https://docs.rs/rill-sampler"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-dsp = { workspace = true }
-rill-graph = { workspace = true, optional = true }
 rill-lang = { workspace = true, optional = true }
 
 hound = { version = "3.5", optional = true }
@@ -22,7 +21,6 @@ rill-lang = { workspace = true }
 [features]
 default = ["wav"]
 wav = ["dep:hound"]
-graph = ["rill-graph"]
 lang = ["rill-lang"]
 
 [[test]]
