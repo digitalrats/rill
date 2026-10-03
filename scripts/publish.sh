@@ -21,11 +21,9 @@
 #  11  rill-digital-effects
 #  12  rill-router
 #  13  rill-fft
-#  14  rill-analog-filters
-#  15  rill-analog-effects
-#  16  rill-sampler
-#  17  rill-patchbay
-#  18  rill-adrift
+#  14  rill-sampler
+#  15  rill-patchbay
+#  16  rill-adrift
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -43,8 +41,6 @@ rill-lofi
     rill-digital-effects
     rill-router
     rill-fft
-    rill-analog-filters
-    rill-analog-effects
     rill-sampler
     rill-patchbay
     rill-osc

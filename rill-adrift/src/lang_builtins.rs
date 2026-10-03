@@ -3,7 +3,7 @@
 use rill_core::math::Transcendental;
 
 /// Build a complete builtin registry: DSP primitives, oscillators, complex
-/// arithmetic, mixer, EQ, dry/wet, and optionally analog models and FFT nodes.
+/// arithmetic, mixer, EQ, dry/wet, and optionally FFT and sampler nodes.
 pub fn full_registry<T: Transcendental + 'static>() -> rill_lang::builtin::Registry<T> {
     let mut reg = rill_lang::builtin::Registry::new();
 
@@ -15,8 +15,6 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_lang::builtin::Regis
     // Feature-gated
     #[cfg(feature = "fft")]
     rill_fft::register::register_lang_builtins(&mut reg);
-    #[cfg(feature = "analog")]
-    rill_analog_effects::register::register_lang_builtins(&mut reg);
     #[cfg(feature = "sampler")]
     rill_sampler::register::register_lang_builtins(&mut reg);
 

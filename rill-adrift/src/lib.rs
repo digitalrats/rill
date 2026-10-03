@@ -24,12 +24,6 @@ pub use rill_osc as osc;
 #[cfg(feature = "analog")]
 pub use rill_core_model as core_model;
 
-#[cfg(feature = "analog")]
-pub use rill_analog_filters as analog_filters;
-
-#[cfg(feature = "analog")]
-pub use rill_analog_effects as analog_effects;
-
 #[cfg(feature = "sampler")]
 pub use rill_sampler as sampler;
 

@@ -11,9 +11,7 @@ members = [
     "rill-router",
     "rill-lofi",
     "rill-io",
-"rill-core-model",
-    "rill-analog-filters",
-    "rill-analog-effects",
+    "rill-core-model",
     "rill-osc",
     "rill-sampler",
     "rill-adrift",
@@ -56,8 +54,6 @@ rill-router = { path = "rill-router", version = "0.6.0-M2" }
 rill-lofi = { path = "rill-lofi", version = "0.6.0-M2" }
 rill-io = { path = "rill-io", version = "0.6.0-M2" }
 rill-telemetry = { path = "rill-telemetry", version = "0.6.0-M2" }
-rill-analog-filters = { path = "rill-analog-filters", version = "0.6.0-M2" }
-rill-analog-effects = { path = "rill-analog-effects", version = "0.6.0-M2" }
 rill-osc = { path = "rill-osc", version = "0.6.0-M2" }
 rill-sampler = { path = "rill-sampler", version = "0.6.0-M2" }
 rill-adrift = { path = "rill-adrift", version = "0.6.0-M2" }
