@@ -568,6 +568,10 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
 }
 
 /// Recognize the `+ ~ _` / `+ ~ (_ * k)` integrator short forms.
+///
+/// The desugared calls bind the signal arg positionally (`integrator _`,
+/// `leaky_integrator _ k`) — the FFI model (and the inline foreign catalog)
+/// requires the signal as a positional apply arg.
 fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
     let is_plus = matches!(lhs, Expr::Ref(name, _) if name == "+");
     if !is_plus {
@@ -576,7 +580,7 @@ fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
     match rhs {
         Expr::Wire(_) => Some(Expr::Apply {
             name: "integrator".to_string(),
-            args: vec![],
+            args: vec![Expr::Wire(span)],
             span,
         }),
         Expr::Arith {
@@ -586,7 +590,7 @@ fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
             ..
         } if matches!(w.as_ref(), Expr::Wire(_)) => Some(Expr::Apply {
             name: "leaky_integrator".to_string(),
-            args: vec![(**k).clone()],
+            args: vec![Expr::Wire(span), (**k).clone()],
             span,
         }),
         _ => None,

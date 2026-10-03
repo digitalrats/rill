@@ -527,6 +527,155 @@ fn builtin_catalog_complex_ops_resolve() {
 }
 
 #[test]
+fn signal_input_builtin_legacy_call_style_sugar() {
+    // `_ : onepole 200.0 0.7` — the legacy combinator style must desugar to
+    // `onepole _ 200.0 0.7` (positional signal arg), so the FFI declaration
+    // types and lowers without rewriting the program.
+    let src = r#"
+        foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+        main = _ : onepole 200.0 0.7;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_binds_both_seq_operands() {
+    // `onepole 200.0 0.7 : onepole 1000.0 0.9` — the LEFT operand of `:` is a
+    // signal-input builtin in combinator style too; both sides get a Wire.
+    let src = r#"
+        main = onepole 200.0 0.7 : onepole 1000.0 0.9;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_binds_loop_operand() {
+    // `+ ~ onepole 500.0 0.5` — the feedback right operand is an arrow; the
+    // sugar binds its missing signal wire.
+    let src = r#"
+        main = + ~ onepole 500.0 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_binds_par_operand_with_two_signals() {
+    // `_, _ : crossfade 0.5` — a 2-signal-in builtin (user-declared FFI) binds
+    // BOTH leading wires; the trailing scalar stays a call arg.
+    let src = r#"
+        foreign fn crossfade : FixedBuffer f32 -> FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = _, _ : crossfade 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 2);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_binds_split_operand() {
+    // `onepole 200.0 0.7 <: _ , _` — fan-out: the 1-out builtin distributes
+    // over the 2-in Par.
+    let src = r#"
+        main = onepole 200.0 0.7 <: _ , _;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 2);
+}
+
+#[test]
+fn combinator_sugar_binds_merge_operand() {
+    // `_ , _ :> onepole 200.0 0.7` — fan-in: the 2 outputs sum into the
+    // 1-in builtin.
+    let src = r#"
+        main = _ , _ :> onepole 200.0 0.7;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 2);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_does_not_double_bind_positional_call() {
+    // `_ : onepole _ 200.0 0.7` — the signal arg is already supplied
+    // positionally; the sugar must leave the call alone.
+    let src = r#"
+        main = _ : onepole _ 200.0 0.7;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_binds_gain_scalar_only_call() {
+    // `_ : gain 0.5` — a foreign with ONE leading signal param and ONE scalar.
+    // The supplied arg is exactly the trailing scalar; the sugar prepends the
+    // single wire (`gain _ 0.5`), not zero (the supplied arg is NOT a signal).
+    let src = r#"
+        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        main = _ : gain 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_rewrites_where_block_defs() {
+    // A combinator call inside a `where` definition desugars too (where defs
+    // are inferred as their own def group, so the pass must descend).
+    let src = r#"
+        main = x where { x = _ : onepole 200.0 0.7; }
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
+fn combinator_sugar_lowers_positionally() {
+    // End-to-end: the desugared `onepole _ 200.0 0.7` folds the scalars and
+    // wires one signal input through the FFI lowering path.
+    use rill_lang::lower::lower_with_cafs;
+
+    let src = r#"
+        main = _ : onepole 200.0 0.7;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = lower_with_cafs(&typed, &rill_lang::builtin::NoSigs, 44100.0, &typed.cafs).unwrap();
+    let bi = ir.builtins.iter().find(|b| b.name == "onepole").unwrap();
+    assert_eq!(bi.signal_ins, 1);
+    assert_eq!(bi.params, vec![200.0, 0.7]);
+}
+
+#[test]
 fn builtin_catalog_registers_record_data_types() {
     // The record types the catalog's record-param builtins need (mixer/eq/
     // dry_wet) register as `data` declarations — Task 4's record-param

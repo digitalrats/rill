@@ -962,6 +962,9 @@ pub fn infer_program_with(
     // field/payload types against the COMPLETE alias/newtype environment. A
     // single-pass registration would wrongly reject
     // `data P = { x: Angles }; type Angles = Float; ...`.
+    // The program is cloned so the Faust-combinator sugar (below) can rewrite
+    // it in place; inference, reduce and lower all consume the desugared form.
+    let mut program = program.clone();
     let mut env = TypeEnv::with_builtins();
     // Typeclass/instance declarations are registered by `register_decls` (the
     // same path the category prelude uses).
@@ -1036,6 +1039,12 @@ pub fn infer_program_with(
     // otherwise materialise an unbounded subtree and exhaust the arena at
     // runtime (spec §9.1).
     env.check_acyclic()?;
+
+    // Faust-combinator sugar: a foreign fn used as an arrow in a combinator
+    // (`_ : onepole 200.0 0.7`) auto-binds its missing leading signal params to
+    // Wire before any body is typed. `foreign_sigs` is complete here (the
+    // builtin catalog + the user `foreign fn` declarations registered above).
+    crate::desugar::desugar_foreign_combinators(&mut program, &env);
 
     // Reject recursive function definitions (v1's acyclic call contract): a
     // runtime dispatch chain must terminate, so the call stack is statically

@@ -14,6 +14,8 @@ pub mod backend;
 pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
+/// Faust-combinator sugar: foreign builtins keep their legacy arrow call style.
+mod desugar;
 pub mod error;
 /// FFI factory registry: foreign-declared builtins' Rust implementations.
 pub mod ffi;

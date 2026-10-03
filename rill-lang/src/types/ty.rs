@@ -340,13 +340,10 @@ main = _;
 /// user-written `foreign fn` per program — this is the in-language migration
 /// target for the legacy `BuiltinSig` catalog (SP-3b).
 ///
-/// Scope note: only declarations whose apply-arg convention matches the FFI
-/// model (signal wires are POSITIONAL apply args, `gain _ 0.5`) are listed.
-/// Builtins that existing DSL programs wire through the `:` combinator
-/// (`_ : onepole 200.0 0.7`, `+ ~ _` → `integrator`, the `lofi`/`spectral*`
-/// pipelines) keep resolving through the legacy `BuiltinSig` path until their
-/// call sites migrate; registering their FFI sigs here would shadow that path
-/// and break them with an arity error. The record-param builtins
+/// Scope note: signal-input builtins are listed here because the
+/// Faust-combinator sugar (see [`crate::desugar`]) keeps their legacy call
+/// style working — `_ : onepole 200.0 0.7` desugars to the positional
+/// `onepole _ 200.0 0.7` before inference. The record-param builtins
 /// (`mixer`/`eq_parametric`/`dry_wet`) register their `data` types now; their
 /// `foreign fn` declarations land in Task 4 (record params resolve at infer
 /// only then). `tape_loop` (`Int -> Tape f32`) is deferred to Task 11 — its
@@ -368,6 +365,24 @@ foreign fn cmul : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Fixed
 foreign fn cadd : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
 foreign fn ay38910 : Float -> Float -> FixedBuffer f32;
 foreign fn sampler : Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+
+foreign fn integrator : FixedBuffer f32 -> FixedBuffer f32;
+foreign fn leaky_integrator : FixedBuffer f32 -> Float -> FixedBuffer f32;
+foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn lowpass : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn highpass : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn delay : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn distortion : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn limiter : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn graphic_eq : FixedBuffer f32 -> Float -> FixedBuffer f32;
+foreign fn mono_to_stereo : FixedBuffer f32 -> Float -> Float -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn spectralgate : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn spectraldelay : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn convolver : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn analog_moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn lofi : FixedBuffer f32 -> Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
 
 data MixerConfig = { buses: Int, master_vol: Float };
 data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };
