@@ -432,9 +432,11 @@ fn foreign_fn_multichannel_runs_end_to_end() {
 
 #[test]
 fn complex_ops_build_with_block_factory() {
-    // `conj` is a 2→2 builtin registered as a Block factory. `is_multi` must
-    // select the variant by FACTORY KIND, not signal arity — otherwise build
-    // panics with "registry build_multichannel_block failed".
+    // `conj` is a 2→2 builtin registered as a Block factory. Variant selection
+    // must follow FACTORY KIND, not signal arity — otherwise
+    // `build_multichannel_block` finds no matching variant, `compile_with_ffi`
+    // returns CompileError::Unsupported("foreign built-in 'conj' is not
+    // registered"), and the `.unwrap()` below panics at build.
     use rill_core::builtin::BlockBuiltin;
     use rill_core::traits::Algorithm;
     use rill_lang::ffi::ForeignRegistry;

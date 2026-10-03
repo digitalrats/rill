@@ -5,11 +5,12 @@
 //! foreign call's `Instr::CallBlock` is resolved here at `RillProgram::build`
 //! when the name is not in the legacy rill-core `Registry<T>`.
 //!
-//! The runtime dispatches by [`crate::program::BuiltinInst`] variant: a 1→1
-//! builtin runs through `Algorithm::process`, a multi-channel builtin through
-//! `MultichannelAlgorithm::process`. The registry therefore builds the exact
-//! variant `RillProgram::build` selects via `is_multi` — a single-channel
-//! foreign builtin must be built as a [`BlockBuiltin`], never wrapped into a
+//! The runtime dispatches by [`crate::program::BuiltinInst`] variant: a `Block`
+//! builtin runs through `Algorithm::process`, a multichannel builtin through
+//! `MultichannelAlgorithm::process`. Variant selection is by factory kind, not
+//! signal arity — a `Block` factory is a whole-buffer block builtin that may
+//! serve multi-channel signal arity via the interpreter's interleaved path, so
+//! it stays a [`BlockBuiltin`] regardless of arity and is never wrapped into a
 //! multichannel adapter.
 
 use std::collections::HashMap;
@@ -45,7 +46,7 @@ impl<T: Transcendental> ForeignRegistry<T> {
         }
     }
 
-    /// Register a single-channel (1→1) block builtin.
+    /// Register a whole-buffer `Block` factory.
     pub fn register_block(
         &mut self,
         name: impl Into<String>,
@@ -68,7 +69,7 @@ impl<T: Transcendental> ForeignRegistry<T> {
             .insert(name.into(), Factory::MultichannelBlock(Box::new(factory)));
     }
 
-    /// Build a single-channel (1→1) instance for `name`, if registered.
+    /// Build a whole-buffer `Block` factory instance for `name`, if registered.
     pub(crate) fn build_block(
         &self,
         name: &str,
