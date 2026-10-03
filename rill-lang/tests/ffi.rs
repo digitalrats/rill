@@ -964,3 +964,73 @@ fn foreign_variadic_signal_merge_accepts_channels() {
     assert_eq!(typed.process_ty.arity_in(), 2);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
+
+#[cfg(feature = "dsp")]
+#[test]
+fn digital_effects_ffi_end_to_end() {
+    // `delay` is in the catalog (Task 3b); `register_foreign_digital_effects`
+    // registers its factory, so `_ : delay …` compiles and runs through the FFI
+    // path. The algorithm lives in rill-digital-effects (algorithms-only).
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_digital_effects;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_digital_effects(&mut ffi);
+
+    let src = r#"
+        main = _ : delay 0.1 0.3 0.5;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    // Fresh delay line: wet = 0, so the first block is the dry path at mix 0.5.
+    assert!(
+        (out[0] - 0.5).abs() < 1e-6,
+        "delay dry path: out[0]={}",
+        out[0]
+    );
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn digital_effects_distortion_runs() {
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_digital_effects;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_digital_effects(&mut ffi);
+
+    let src = r#"
+        main = _ : distortion 2.0 1.0;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    // Soft-clip: tanh(2.0) with output gain 1.0.
+    let expected = 2.0f32.tanh();
+    assert!(
+        (out[0] - expected).abs() < 1e-4,
+        "distortion soft-clip: out[0]={} expected ~{expected}",
+        out[0]
+    );
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn digital_effects_limiter_runs() {
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_digital_effects;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_digital_effects(&mut ffi);
+
+    let src = r#"
+        main = _ : limiter (-6.0) 0.1;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    // Lookahead warm-up: the limiter passes the first `lookahead_samples` (220)
+    // unchanged, so the 4-sample block is a passthrough.
+    assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
+}

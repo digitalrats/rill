@@ -11,7 +11,6 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_lang::builtin::Regis
     rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
     rill_lang::register::register_core_builtins(&mut reg);
     rill_router::register::register_lang_builtins(&mut reg);
-    rill_digital_effects::register::register_lang_builtins(&mut reg);
 
     // Feature-gated
     #[cfg(feature = "fft")]

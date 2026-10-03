@@ -451,3 +451,82 @@ fn register_dry_wet<T: Transcendental + 'static>(reg: &mut Registry<T>) {
         },
     );
 }
+
+// ============================================================================
+// rill-digital-effects FFI factories (feature `dsp`)
+// ============================================================================
+
+/// Register the rill-digital-effects builtins (delay/distortion/limiter) as FFI
+/// factories. The algorithms live in `rill-digital-effects` (a pure library,
+/// no rill-lang dependency); rill-lang supplies the wrapper structs
+/// implementing `BlockBuiltin`. Call this on the `ForeignRegistry` you pass to
+/// `compile_with_ffi` (or any other FFI assembly point).
+#[cfg(feature = "dsp")]
+pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
+    ffi: &mut crate::ffi::ForeignRegistry<T>,
+) {
+    use rill_digital_effects::{Delay, Distortion, DistortionType, Limiter};
+
+    struct DelayBuiltin<T: Transcendental>(Delay<T, 64>);
+    impl<T: Transcendental> Algorithm<T> for DelayBuiltin<T> {
+        fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+            Algorithm::process(&mut self.0, input, output)
+        }
+        fn reset(&mut self) {
+            Algorithm::reset(&mut self.0);
+        }
+        fn init(&mut self, sample_rate: f32) {
+            Algorithm::init(&mut self.0, sample_rate);
+        }
+    }
+    impl<T: Transcendental> BlockBuiltin<T> for DelayBuiltin<T> {}
+
+    struct DistortionBuiltin<T: Transcendental>(Distortion<T, 64>);
+    impl<T: Transcendental> Algorithm<T> for DistortionBuiltin<T> {
+        fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+            Algorithm::process(&mut self.0, input, output)
+        }
+        fn reset(&mut self) {
+            Algorithm::reset(&mut self.0);
+        }
+        fn init(&mut self, sample_rate: f32) {
+            Algorithm::init(&mut self.0, sample_rate);
+        }
+    }
+    impl<T: Transcendental> BlockBuiltin<T> for DistortionBuiltin<T> {}
+
+    struct LimiterBuiltin<T: Transcendental>(Limiter<T, 64>);
+    impl<T: Transcendental> Algorithm<T> for LimiterBuiltin<T> {
+        fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+            match input {
+                Some(inp) => self.0.process_block(inp, output),
+                None => output.fill(T::ZERO),
+            }
+            Ok(())
+        }
+        fn reset(&mut self) {
+            Algorithm::reset(&mut self.0);
+        }
+        fn init(&mut self, sample_rate: f32) {
+            Algorithm::init(&mut self.0, sample_rate);
+        }
+    }
+    impl<T: Transcendental> BlockBuiltin<T> for LimiterBuiltin<T> {}
+
+    ffi.register_block("delay", |p: &[f64], sr: f32| {
+        let mut d = Delay::<T, 64>::with_params(sr, p[0] as f32, p[1] as f32, p[2] as f32);
+        Algorithm::init(&mut d, sr);
+        Box::new(DelayBuiltin(d))
+    });
+    ffi.register_block("distortion", |p: &[f64], sr: f32| {
+        let mut d = Distortion::<T, 64>::with_params(DistortionType::SoftClip, p[0] as f32, 1.0);
+        d.set_output_gain(p[1] as f32);
+        Algorithm::init(&mut d, sr);
+        Box::new(DistortionBuiltin(d))
+    });
+    ffi.register_block("limiter", |p: &[f64], sr: f32| {
+        let mut l = Limiter::<T, 64>::new(sr, p[0] as f32, 1.0, p[1] as f32, 0.0);
+        Algorithm::init(&mut l, sr);
+        Box::new(LimiterBuiltin(l))
+    });
+}
