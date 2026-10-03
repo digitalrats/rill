@@ -8,7 +8,7 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_lang::builtin::Regis
     let mut reg = rill_lang::builtin::Registry::new();
 
     // Always available
-    rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
+    rill_lang::register::register_core_dsp_builtins(&mut reg);
     rill_lang::register::register_core_builtins(&mut reg);
     rill_router::register::register_lang_builtins(&mut reg);
 

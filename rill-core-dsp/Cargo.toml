@@ -10,7 +10,6 @@ documentation = "https://docs.rs/rill-core-dsp"
 
 [dependencies]
 rill-core = { workspace = true }
-rill-lang = { workspace = true, optional = true }
 num-traits = "0.2"
 num-complex = "0.4"
 thiserror = "1.0"
@@ -46,7 +45,6 @@ path = "benches/conv_direct_bench.rs"
 
 [features]
 default = []
-lang = ["rill-lang"]
 simd = ["rill-core/simd"]  # SIMD оптимизации через rill-core
 f64 = []                   # Включить поддержку f64
 fast_math = []             # Быстрые приближённые математические функции (меньшая точность)

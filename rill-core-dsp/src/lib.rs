@@ -30,8 +30,6 @@ pub mod direct_conv;
 pub mod effect;
 pub mod filters;
 pub mod generators;
-#[cfg(feature = "lang")]
-pub mod lang;
 pub mod mapping;
 pub mod math;
 pub mod smoothing;

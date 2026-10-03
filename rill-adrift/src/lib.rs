@@ -5,7 +5,6 @@ pub use rill_core;
 pub use rill_core_actor;
 pub use rill_core_dsp;
 pub use rill_digital_effects;
-pub use rill_digital_filters;
 pub use rill_graph;
 pub use rill_patchbay;
 pub use rill_router;

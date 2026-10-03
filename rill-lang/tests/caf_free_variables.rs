@@ -134,7 +134,7 @@ fn shared_oscillator_runs_one_instance_per_tick() {
 #[test]
 fn open_block_inlined_twice_stays_independent() {
     let mut registry = Registry::<f32>::new();
-    rill_core_dsp::lang::register::register_lang_builtins(&mut registry);
+    rill_lang::register::register_core_dsp_builtins(&mut registry);
     let mut prog = compile_with::<f32>("integ = + ~ _; main = integ , integ", &registry, 44100.0)
         .expect("open block compiles");
 

@@ -18,15 +18,14 @@
 #   8  rill-telemetry
 #   9  rill-lofi
 #  10  rill-io
-#  11  rill-digital-filters
-#  12  rill-digital-effects
-#  13  rill-router
-#  14  rill-fft
-#  15  rill-analog-filters
-#  16  rill-analog-effects
-#  17  rill-sampler
-#  18  rill-patchbay
-#  19  rill-adrift
+#  11  rill-digital-effects
+#  12  rill-router
+#  13  rill-fft
+#  14  rill-analog-filters
+#  15  rill-analog-effects
+#  16  rill-sampler
+#  17  rill-patchbay
+#  18  rill-adrift
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -39,9 +38,8 @@ CRATES=(
     rill-core-model
     rill-graph
     rill-telemetry
-    rill-lofi
+rill-lofi
     rill-io
-    rill-digital-filters
     rill-digital-effects
     rill-router
     rill-fft

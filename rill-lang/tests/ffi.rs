@@ -1082,3 +1082,42 @@ fn digital_effects_limiter_runs() {
     // unchanged, so the 4-sample block is a passthrough.
     assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
 }
+
+#[cfg(feature = "dsp")]
+#[test]
+fn generators_ffi_end_to_end() {
+    // `sine` is in the catalog; a registered factory makes it run. The FFI
+    // registry holds rill-lang's own generator/integrator wrappers around the
+    // rill-core-dsp algorithms (SP-3b Task 6) — the same factories the legacy
+    // registry served.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_generators;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_generators(&mut ffi);
+
+    let src = r#"main = sine 440.0 1.0 0.0;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    // Sine at t=0, amp 1.0, phase 0.0: starts at 0.0 and rises.
+    assert_eq!(out[0], 0.0);
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn integrator_ffi_end_to_end() {
+    // `integrator` is a 1→1 running-sum builtin registered as an FFI Block
+    // factory; the combinator-sugar `+ ~ _` desugars to it.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_generators;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_generators(&mut ffi);
+
+    let src = r#"main = + ~ _;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
+    assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
+}
