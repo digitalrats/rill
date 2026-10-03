@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Migrate all ~38 legacy builtins (registered via `rill_core::builtin::{BuiltinSig, ParamType, Registry}`) onto the SP-3a FFI layer (`foreign fn` declarations + `rill_lang::ffi::ForeignRegistry`), then **remove `BuiltinSig`/`ParamType`/`SignatureSource`** from the codebase. Nothing registration-related or rill-lang-related remains in `rill-core`.
+**Goal:** Migrate all ~38 legacy builtins (registered via `rill_core::builtin::{BuiltinSig, ParamType, Registry}`) onto the SP-3a FFI layer (`foreign fn` declarations + `rill_lang::ffi::ForeignRegistry`), then **remove `BuiltinSig`/`ParamType`/`SignatureSource`** from the codebase. Nothing registration-related or rill-lang-related remains in `rill-core`. A Faust-combinator sugar pass keeps signal-input builtins callable in the legacy combinator style (`_ : onepole 200.0 0.7`) so migrating them does not break existing programs.
 
 **Architecture:** `rill_lang::builtin` becomes the definition (it already re-exports `rill_core::builtin::*`); the signal-signature contract lives in the language. Each implementation crate (with a `lang` feature + rill-lang dependency) registers factories directly into `rill_lang::ffi::ForeignRegistry`. `BuiltinSig`/`ParamType`/`SignatureSource` are deleted; inference/lowering/graph-reconstruction consume `FfiSig` instead. Dead crates/code (rill-digital-filters, rill-analog-filters, rill-analog-effects, `register_graph_nodes` stubs, `rill-lang/src/builtins` mixer/eq/dry_wet duplicates) are removed. Tape moves to a `tape_loop` constructor function (`Tape` as a `Buffer` family member).
 
@@ -176,7 +176,9 @@ git commit -m 'refactor(rill-lang): move builtin registry module from rill-core 
 
 - [ ] **Step 1: Add the catalog**
 
-In `rill-lang/src/types/ty.rs`, add a `BUILTIN_FOREIGN_DECLS: &str` constant with the `foreign fn` declarations for the catalog (the ones being migrated — see the catalog in the plan's Target map). It is parsed like the preludes but its defs feed `foreign_sigs` only (not `data_types`):
+**SCOPE NOTE (updated):** the catalog in this task covers the builtins whose FFI signatures work WITHOUT the combinator-sugar (Task 3b): the 0-input generators (`sine`/`saw`/`square`/`triangle`/`noise`), the complex ops (`complex`/`conj`/`re`/`im`/`norm`/`arg`/`cmul`/`cadd`), `sampler`, `ay38910`, and the record `data` types. The signal-input builtins (`onepole`/`lowpass`/`biquad`/`delay`/`mixer`/… ) are added to the catalog in **Task 3b** together with the combinator-sugar that makes their legacy call style work. This keeps Task 3's catalog regression-safe.
+
+In `rill-lang/src/types/ty.rs`, add a `BUILTIN_FOREIGN_DECLS: &str` constant with the `foreign fn` declarations for the catalog (the 0-input + complex ops subset; see the plan's Target map). It is parsed like the preludes but its defs feed `foreign_sigs` only (not `data_types`):
 
 ```rust
 pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
@@ -185,9 +187,7 @@ foreign fn saw    : Float -> Float -> Float -> FixedBuffer f32;
 foreign fn square : Float -> Float -> Float -> FixedBuffer f32;
 foreign fn triangle : Float -> Float -> Float -> FixedBuffer f32;
 foreign fn noise  : Float -> Float -> FixedBuffer f32;
-foreign fn integrator : FixedBuffer f32 -> FixedBuffer f32;
-foreign fn leaky_integrator : FixedBuffer f32 -> Float -> FixedBuffer f32;
-foreign fn complex : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn complex : Float -> Float -> Pair (FixedBuffer f32) (FixedBuffer f32);
 foreign fn conj : FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
 foreign fn re   : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
 foreign fn im   : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
@@ -195,22 +195,8 @@ foreign fn norm : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
 foreign fn arg  : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
 foreign fn cmul : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
 foreign fn cadd : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
-foreign fn delay : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
-foreign fn distortion : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
-foreign fn limiter : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
-foreign fn graphic_eq : FixedBuffer f32 -> Float -> FixedBuffer f32;
-foreign fn mono_to_stereo : FixedBuffer f32 -> Float -> Float -> Pair (FixedBuffer f32) (FixedBuffer f32);
-foreign fn mixer : List (FixedBuffer f32) -> MixerConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
-foreign fn eq_parametric : FixedBuffer f32 -> EqConfig -> FixedBuffer f32;
-foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
-foreign fn spectralgate : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
-foreign fn spectraldelay : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
-foreign fn convolver : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
-foreign fn analog_moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
 foreign fn sampler : Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
-foreign fn lofi : FixedBuffer f32 -> Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
 foreign fn ay38910 : Float -> Float -> FixedBuffer f32;
-foreign fn tape_loop : Int -> Tape f32;
 
 main = _;
 "#;
@@ -260,6 +246,156 @@ Run: `cargo test -p rill-lang --test ffi builtin_catalog_is_auto_registered`, fu
 ```bash
 git add rill-lang/src/types/ty.rs rill-lang/src/types/ffi.rs rill-lang/tests/ffi.rs
 git commit -m 'feat(rill-lang): inline builtin foreign catalog auto-registered into TypeEnv'
+```
+
+---
+
+## Task 3b: Faust-combinator sugar — signal-input builtins keep legacy call style
+
+**Problem.** Legacy programs call signal-input builtins combinatorially — the signal wire is fed through `:`, `~`, `,`, `<:`, `:>` rather than as a positional FFI arg:
+
+```rill
+main = _ : onepole 200.0 0.7;      // legacy: Apply("onepole",[200.0,0.7]) as a 1→1 arrow
+main = + ~ onepole 500.0 0.5;      // feedback
+```
+
+The FFI declaration `onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32` requires a positional signal arg (`onepole _ 200.0 0.7`). Without sugar, migrating `onepole` into the catalog breaks every existing `_ : onepole …` program. **User decision (2026-10-03): implement Faust-combinator sugar for ALL combinators (`:`, `~`, `,`, `<:`, `:>`) now** so signal-input builtins migrate with zero program rewrite, and extend the catalog with them.
+
+**Design.** A `foreign fn`-declared name used in a combinator as an ARROW (not as a positional apply) auto-binds the missing leading `FixedBuffer` params to `Wire` (`_`) in declaration order. Concretely:
+- `Seq(lhs, Apply(name, args))` where `name` is foreign with `n_sig` leading `FixedBuffer` params and `args.len() == param_count - n_sig` → rewrite to `Seq(lhs, Apply(name, [Wire × n_sig] ++ args))`.
+- Same for `Loop` (`~`), `Par` (`,`), `Split` (`<:`), `Merge` (`:>`) where an operand is such an Apply.
+- The rewrite happens in `reduce.rs` (single pass over the AST after parsing, before infer) so infer/lower see the positionally-bound form.
+
+**Mechanism decision (user: "в плане"):** implement as a desugaring pass in `reduce.rs` that consults the foreign catalog (`TypeEnv::foreign_sigs` → `ffi_sig_from_typeexpr` → `FfiParam::Signal` count). `reduce.rs` currently runs before `TypeEnv` is built; if that's a problem, run the pass inside `infer` as the first step (a pre-infer AST rewrite), or in `parser` with a static name table. **Prefer the `reduce.rs`/pre-infer AST rewrite** — it keeps infer/lower unchanged and applies uniformly to all combinators. If `reduce.rs` cannot access `foreign_sigs` cheaply, add a lightweight `is_foreign_with_signals(name)` helper backed by the catalog constant (parsed once).
+
+**Files:** `rill-lang/src/reduce.rs` (or a new `rill-lang/src/desugar.rs` called from `infer_program`/`lower`), `rill-lang/src/types/ty.rs` (catalog — add the signal-input builtins), `rill-lang/src/types/ffi.rs`, `rill-lang/tests/ffi.rs`
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `rill-lang/tests/ffi.rs`:
+
+```rust
+#[test]
+fn signal_input_builtin_legacy_call_style_sugar() {
+    // `_ : onepole 200.0 0.7` — the legacy combinator style must desugar to
+    // `onepole _ 200.0 0.7` (positional signal arg), so the FFI declaration
+    // types and lowers without rewriting the program.
+    let src = r#"
+        foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+        main = _ : onepole 200.0 0.7;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cargo test -p rill-lang --test ffi signal_input_builtin_legacy_call_style_sugar`
+Expected: FAIL — `onepole` is not declared (`unknown identifier`) or an arity error (the FFI path needs 3 args, the call provides 2).
+
+- [ ] **Step 3: Add the signal-input builtins to the catalog**
+
+Extend `BUILTIN_FOREIGN_DECLS` (from Task 3) with the signal-input builtins, each verified against the real registration file:
+
+```rill
+foreign fn integrator : FixedBuffer f32 -> FixedBuffer f32;
+foreign fn leaky_integrator : FixedBuffer f32 -> Float -> FixedBuffer f32;
+foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn lowpass : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn highpass : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn delay : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn distortion : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn limiter : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn graphic_eq : FixedBuffer f32 -> Float -> FixedBuffer f32;
+foreign fn mono_to_stereo : FixedBuffer f32 -> Float -> Float -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn mixer : List (FixedBuffer f32) -> MixerConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn eq_parametric : FixedBuffer f32 -> EqConfig -> FixedBuffer f32;
+foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn spectralgate : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn spectraldelay : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn convolver : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn analog_moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn lofi : FixedBuffer f32 -> Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+```
+
+**Verify each against the real registration** (see Task 3's list). Note: `mixer`'s `List (FixedBuffer f32)` variadic signal + record is the tricky one — the sugar binds `VariadicSignal` to the remaining signal wires; `dry_wet` (2 signal ins) binds 2 wires.
+
+- [ ] **Step 4: Implement the combinator-sugar desugaring**
+
+Add a pass (in `reduce.rs` or a new `desugar.rs`) that rewrites the AST before infer. For each combinator whose operand is `Expr::Apply { name, args, .. }` (or `Expr::Ref(name)`), look up the foreign sig; count leading `FfiParam::Signal` (and `VariadicSignal` → remaining) params; if `args.len() == param_count - sig_count` (signals not supplied), prepend `Expr::Wire` for each missing signal slot:
+
+```rust
+fn desugar_foreign_combinators(prog: &mut Program, env: &TypeEnv) {
+    for def in &mut prog.defs {
+        if let Def::Local { body, .. } = def {
+            *body = rewrite(body, env);
+        }
+    }
+}
+
+fn rewrite(e: &Expr, env: &TypeEnv) -> Expr {
+    match e {
+        Expr::Seq(l, r, sp) => Expr::Seq(Box::new(rewrite(l, env)), Box::new(bind_signal_args(r, env)), *sp),
+        Expr::Loop(l, r, sp) => Expr::Loop(Box::new(rewrite(l, env)), Box::new(bind_signal_args(r, env)), *sp),
+        Expr::Par(l, r, sp) => Expr::Par(Box::new(rewrite(l, env)), Box::new(bind_signal_args(r, env)), *sp),
+        Expr::Split(l, r, sp) => Expr::Split(Box::new(rewrite(l, env)), Box::new(bind_signal_args(r, env)), *sp),
+        Expr::Merge(l, r, sp) => Expr::Merge(Box::new(rewrite(l, env)), Box::new(bind_signal_args(r, env)), *sp),
+        _ => clone_with_children_rewritten(e, |x| rewrite(x, env)),
+    }
+}
+
+fn bind_signal_args(e: &Expr, env: &TypeEnv) -> Expr {
+    let name = match e {
+        Expr::Apply { name, .. } => name,
+        Expr::Ref(name, _) => name,  // a bare foreign name used as an arrow
+        _ => return e.clone(),
+    };
+    let Some(sig) = env.foreign_sigs.get(name.as_str()).and_then(ffi_sig_from_typeexpr) else {
+        return e.clone();
+    };
+    let sig_count = sig.params.iter().filter(|p| matches!(p, FfiParam::Signal)).count();
+    let variadic = sig.params.iter().any(|p| matches!(p, FfiParam::VariadicSignal));
+    let supplied = match e {
+        Expr::Apply { args, .. } => args.len(),
+        _ => 0,
+    };
+    let missing = sig_count - supplied.min(sig_count);  // scalar params not yet supplied
+    if missing <= 0 && !variadic {
+        return e.clone();
+    }
+    // Prepend `missing` Wire args (and, for variadic signal, the remaining
+    // wires are bound at infer via the VariadicSignal path).
+    let wires = vec![Expr::Wire(Span::default()); missing];
+    match e {
+        Expr::Apply { name, args, span } => {
+            let mut new_args = wires;
+            new_args.extend(args.iter().cloned());
+            Expr::Apply { name: name.clone(), args: new_args, span: *span }
+        }
+        Expr::Ref(name, span) => Expr::Apply { name: name.clone(), args: wires, span: *span },
+        _ => unreachable!(),
+    }
+}
+```
+
+**Precise arity rule:** the missing count = `(# of Signal/VariadicSignal params) - (# of args already supplied that are wires/signals)`. The simplest correct v1 rule: if `args.len() < total_param_count` AND the args are the trailing scalar params (i.e. the leading signal params are absent), prepend exactly `n_sig` wires. Implement this carefully with a test matrix: `_ : onepole 200.0 0.7` (1 sig, 2 scalars → prepend 1 wire), `+ ~ onepole 500.0 0.5`, `_, _ : dry_wet {mix}` (2 sig → 2 wires), `_ : mixer {buses, master_vol}` (variadic → prepend the list), `graphic_eq` (1→1), `mono_to_stereo` (1→2). Verify each against its registration.
+
+**Call the pass** from `infer_program_with` (and `infer_program`) before the phase-1 registration, so `TypeEnv::foreign_sigs` is available. If `reduce.rs` is cleaner (it runs after parse, before infer), the `TypeEnv` is NOT yet built there — so prefer calling the desugar from `infer_program_with` where `env` exists, or build a minimal env. **Note the placement decision in your report.**
+
+- [ ] **Step 5: Run test to verify it passes + regression**
+
+Run: `cargo test -p rill-lang --test ffi signal_input_builtin_legacy_call_style_sugar` and full `cargo test -p rill-lang`. The existing `_ : onepole …` / `_ : lowpass …` / `+ ~ onepole …` tests (lower.rs:5163, 5178, 5223; infer.rs:4507-4523; schedule.rs:248; render.rs:517) must now type through the FFI catalog — **fix any that fail** (they may need a foreign-sig-compatible shape, but the desugar should make them pass unchanged).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A && git commit -m 'feat(rill-lang): Faust-combinator sugar — signal-input builtins keep legacy call style'
 ```
 
 ---
@@ -582,9 +718,10 @@ git add -A && git commit -m 'docs(rill-lang): SP-3b builtin migration outcome �
 - §3 FFI registry as runtime API of rill-lang; DSP crates register via `ForeignRegistry`: Tasks 5-9, 12 ✓
 - §4 parameter mapping onto existing types (Record≈Data, Variadic≈List, scalars): Tasks 3, 4 ✓
 - §5 tape stays on shared-buffer path, via `tape_loop` constructor: Task 11 ✓
-- User decisions: is_multi fix (T1), inline catalog (T3), mixer/eq/dry_wet → rill-router + delete duplicates (T7), generators/integrators/filters → rill-lang dsp feature (T6, T8), analog_moog → model feature (T9), delete rill-digital-filters/analog-* (T6, T10), rill-core-model drops rill-lang (T9), rill-graph survives on FfiSig (T4) ✓
+- User decisions: is_multi fix (T1), inline catalog (T3), **Faust-combinator sugar so signal-input builtins keep legacy call style (T3b, added 2026-10-03 — user chose "all combinators at once", mechanism decided in-plan as a reduce/infer AST rewrite)** ✓
+- mixer/eq/dry_wet → rill-router + delete duplicates (T7), generators/integrators/filters → rill-lang dsp feature (T6, T8), analog_moog → model feature (T9), delete rill-digital-filters/analog-* (T6, T10), rill-core-model drops rill-lang (T9), rill-graph survives on FfiSig (T4) ✓
 - **Dead-code discipline:** everything verified-dead is deleted; nothing with real consumers is touched ✓
 
-**Placeholder scan:** the catalog signatures in Task 3 carry a **verification warning** (double-check each arity/param against the real registration files) — this is a correctness checkpoint, not a placeholder; every other step has concrete code/commands. No TBD/TODO.
+**Placeholder scan:** the catalog signatures in Task 3/3b carry a **verification warning** (double-check each arity/param against the real registration files) — this is a correctness checkpoint, not a placeholder; every other step has concrete code/commands. No TBD/TODO.
 
-**Type consistency:** `FfiParam::{Signal,Scalar,VariadicSignal,Record,Resource}` and `FfiSig::{params,signal_outs,param_names}` are consistent across T3/T4/T12; `BuiltinFactoryKind` is shared between `Registry` and `ForeignRegistry` (T1); `tape_loop : Int -> Tape f32` appears identically in the catalog (T3) and SIGNAL_PRELUDE (T11).
+**Type consistency:** `FfiParam::{Signal,Scalar,VariadicSignal,Record,Resource}` and `FfiSig::{params,signal_outs,param_names}` are consistent across T3/T3b/T4/T12; `BuiltinFactoryKind` is shared between `Registry` and `ForeignRegistry` (T1); `tape_loop : Int -> Tape f32` appears identically in the catalog (T3) and SIGNAL_PRELUDE (T11); the combinator-sugar rule (`Seq(lhs, Apply(name,args))` → prepend `Wire`s) is consistent across all five combinators in T3b.
