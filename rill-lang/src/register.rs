@@ -282,7 +282,8 @@ impl<T: Transcendental> MultichannelBlockBuiltin<T> for DryWetBuiltin<T> {
 // Registration functions
 // ============================================================================
 
-/// Register rill-lang core builtins. Call after rill_core_dsp::register_lang_builtins().
+/// Register rill-lang core builtins. Call after
+/// [`register_core_dsp_builtins`](register_core_dsp_builtins).
 pub fn register_core_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     register_complex(reg);
 
