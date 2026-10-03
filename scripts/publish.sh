@@ -8,22 +8,22 @@
 #   ./scripts/publish.sh --resume N # start from crate N (1-indexed)
 #
 # Dependency order (leaf → root):
-#   1  rill-core
-#   2  rill-core-actor
-#   3  rill-osc
-#   4  rill-core-dsp
-#   5  rill-core-model
-#   6  rill-lang
-#   7  rill-graph
-#   8  rill-telemetry
-#   9  rill-lofi
-#  10  rill-io
-#  11  rill-digital-effects
-#  12  rill-router
-#  13  rill-fft
-#  14  rill-sampler
-#  15  rill-patchbay
-#  16  rill-adrift
+#   1   rill-core
+#   2   rill-core-actor
+#   3   rill-osc
+#   4   rill-core-dsp
+#   5   rill-core-model
+#   6   rill-io
+#   7   rill-digital-effects
+#   8   rill-lofi
+#   9   rill-lang
+#  10   rill-telemetry
+#  11   rill-graph
+#  12   rill-router
+#  13   rill-fft
+#  14   rill-sampler
+#  15   rill-patchbay
+#  16   rill-adrift
 
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -31,19 +31,19 @@ cd "$(git rev-parse --show-toplevel)"
 CRATES=(
     rill-core
     rill-core-actor
+    rill-osc
     rill-core-dsp
-    rill-lang
     rill-core-model
-    rill-graph
-    rill-telemetry
-rill-lofi
     rill-io
     rill-digital-effects
+    rill-lofi
+    rill-lang
+    rill-telemetry
+    rill-graph
     rill-router
     rill-fft
     rill-sampler
     rill-patchbay
-    rill-osc
     rill-adrift
 )
 
