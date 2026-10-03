@@ -60,7 +60,7 @@ but juxtaposed is canonical.
 Built-ins are configured with **record literals** `{ key: val }`:
 
 ```faust
-main = mixer _1 _2 { channels: 3, gain: 0.8 };
+main = mixer _1 _2 { buses: 2, master_vol: 0.8 };
 main = eq_parametric _ { bands: [{ freq: 1000.0, q: 0.7, gain_db: 3.0 }] };
 ```
 
@@ -86,7 +86,7 @@ Multi-channel programs implement `MultichannelAlgorithm<T>` when compiled with
 the `router` feature:
 
 ```faust
-main = mixer _1 _2 { channels: 2, buses: 0 };  // 2→2
+main = mixer _1 _2 { buses: 0, master_vol: 1.0 };  // 2→2
 main = dry_wet _ _effected { mix: 0.5 };        // 2→1 (interleaved)
 ```
 
@@ -159,12 +159,13 @@ rill-lang supports calling stateful DSP/model built-ins from
 | Integrators | `integrator`, `leaky_integrator` (block) | always |
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
-| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassettedeck` (block) | `analog` |
+| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq`, `mono_to_stereo` (block) | `router` |
+| Analog | `analog_moog` (block) | `model` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
 | Sampler | `sampler` (block) | `sampler` |
 | Lofi | `lofi`, `ay38910` (block) | `lofi` |
+| Tape | `tape_loop`, `write_head`, `read_head` | `sampler` |
 
 Built-ins use **unified argument syntax**: signals are first-class arguments
 passed by juxtaposition (e.g. `lowpass _ 1000.0 0.7`). Some built-ins accept
@@ -172,7 +173,7 @@ variadic signal inputs — `mixer` takes any number of signals followed by a
 record:
 
 ```faust
-main = mixer _ ch2 ch3 ch4 { channels: 4, buses: 2 };
+main = mixer _ ch2 ch3 ch4 { buses: 4, master_vol: 1.0 };
 main = dry_wet _ wet { mix: 0.7 };
 main = eq_parametric _ { bands: [{ freq: 500.0, q: 2.0, gain_db: -3.0 }] };
 ```
@@ -182,7 +183,114 @@ All built-ins are whole-buffer `BlockBuiltin`s — opaque block steps implementi
 so the engine stays block-only and SIMD-friendly. Bindings and registries live in
 `rill-adrift`
 (`lang_builtins::full_registry`), with per-crate `register_lang_builtins()`
-functions for selective registration.
+functions for selective registration. For declaring Rust-implemented built-ins in
+the language, see *FFI (foreign functions)* below.
+
+## FFI (foreign functions)
+
+The **FFI layer** is the language-side contract for calling Rust-implemented
+built-ins: a built-in algorithm's signature is written **in rill-lang**, and the
+Rust implementation is matched by name through a factory registry at compile
+time. **The language owns the signature; Rust owns the implementation.**
+
+A foreign built-in is declared with the `foreign fn name : TypeExpr;` syntax.
+The signature is a curried arrow (`a -> b -> r`). Signal channels are typed
+`FixedBuffer f32`; scalar parameters use the scalar value types `Float` /
+`Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer f32)`:
+
+```faust
+foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn add    : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32;
+```
+
+Parameters occupy positional argument slots in declaration order — the signal
+channel at slot 0, the scalar at slot 1:
+
+```faust
+foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+main = gain _ 0.5;
+```
+
+The result type is one or more `FixedBuffer` channels (`FixedBuffer f32` → 1
+out; `(FixedBuffer f32, FixedBuffer f32)` → 2 outs). A `List (FixedBuffer f32)`
+variadic parameter must be **last** — a mid-signature variadic does not resolve
+as a foreign built-in.
+
+### The signal-track types
+
+`SIGNAL_PRELUDE` ships the buffer family and the `Buffer` typeclass:
+
+```faust
+typeclass Buffer b where { }
+instance Buffer (FixedBuffer a) where { }
+instance Buffer (Tape f32) where { }
+```
+
+- **`FixedBuffer a`** — the signal-channel type. A `foreign fn` signal parameter
+  is strictly a `FixedBuffer[BUF]` at the runtime boundary (i.e. the const-generic
+  `FixedBuffer<f32, BUF>`, block-sized, no heap on the RT path).
+- **`Tape a`** — a shared-buffer handle (a tape loop). A `Buffer` family member
+  like `FixedBuffer`; its runtime representation is an index into the program's
+  shared tape cells (see *Tape loops* below).
+- **`Buffer`** — a typeclass over buffer types; the home of buffer math in later
+  stages.
+
+### The FFI registry
+
+Rust implementations are registered by name on `rill_lang::ffi::ForeignRegistry<T>`:
+
+```rust
+use rill_lang::ffi::ForeignRegistry;
+
+let mut ffi = ForeignRegistry::<f32>::new();
+ffi.register_block("gain", |params: &[f64], sample_rate: f32| {
+    // -> Box<dyn BlockBuiltin<f32>>  (a 1→1 block builtin)
+});
+ffi.register_multichannel_block("add", |ins: usize, params: &[f64], sample_rate: f32| {
+    // -> Box<dyn MultichannelBlockBuiltin<f32>>  (an N→M block builtin)
+});
+let prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+```
+
+`register_block` registers a single-channel (1→1) built-in;
+`register_multichannel_block` an N→M one — the runtime dispatches by the
+`BuiltinInst` variant. `compile_with_ffi` compiles source against the registry,
+returning `RillProgram<T, 256>`. A foreign call whose name is not registered
+fails at `RillProgram::build` with `foreign built-in '...' is not registered`.
+
+### The builtin catalog
+
+The builtin catalog is **part of the language**: every migrated built-in is
+declared with `foreign fn` in the auto-registered catalog
+(`BUILTIN_FOREIGN_DECLS` in `rill-lang/src/types/ty.rs`), which populates
+`TypeEnv::foreign_sigs`. Programs resolve these names without writing a
+`foreign fn` per program. The DSP crates (`rill-core-dsp`,
+`rill-digital-effects`, `rill-core-model`, `rill-router`) register their Rust
+**factories** on `ForeignRegistry` (see `register_foreign_*` in
+`rill-lang/src/register.rs` and the crates' `lang` modules).
+
+### Reserved names
+
+- **`foreign`** — a lexer keyword, reserved for `foreign fn` declarations.
+- **`FixedBuffer`** — the built-in signal-channel type constructor (arity 1).
+- **`Buffer`** — the built-in typeclass over buffer types.
+- **`Tape`** — the built-in shared-buffer handle constructor (arity 1).
+
+### Tape loops
+
+A tape loop is created with the `tape_loop` foreign constructor
+(`Int -> Tape f32`) and shared by the tape head builtins `write_head` /
+`read_head` (registered by `rill-sampler`). NAMED bindings share one buffer:
+
+```faust
+tape = tape_loop 1024;
+main = (write_head _ _ tape 0.5 0.3) , read_head tape 0.1;
+```
+
+Each inline `tape_loop <capacity>` call allocates a **fresh** tape; to share a
+tape between a write head and its read heads, bind it to a name as above. The
+legacy `TapeLoop <capacity>` declaration spelling is still accepted.
 
 ## Two parameter models
 
@@ -307,23 +415,28 @@ p = Point { x: 2.0, y: 3.0 };
 main = p.x;                                    // field projection -> Float(2.0)
 ```
 
-Values live in a **fixed-capacity arena** with reference counting and
-copy-on-write mutation (`p.x := 3.0`). Local variables — including `main`'s
-λ-parameters — are persistent runtime-stack cells that `SetParameter` writes
-into directly. Data types are acyclic by construction (compile-time check),
-and the arena capacity is a static bound. `typeclass` methods resolve at
-compile time (no runtime dispatch).
+Values live in a **page-based arena** in the style of Alexandrescu's
+"Affordable Allocator": a pre-allocated pool of value slots (an embedded free
+list — a freed slot stores the next free index in place of its payload) plus a
+size-classed **payload buffer pool** for collection/record element buffers, so
+collection ops perform **no heap allocation** on the processing path in the
+default (RT) mode. Copy-on-write mutation (`p.x := 3.0`), reference counting,
+and acyclic-by-construction data types are unchanged; the pool is bounded by a
+conservative build-time budget, and a program that exhausts it (default mode)
+or grows it (`growable-arena` feature, non-RT) hits a detectable no-op /
+runtime error. `typeclass` methods resolve at compile time (no runtime
+dispatch).
 
 ### Builtin value types and type constructors
 
 The value track ships scalar value types and builtin **type constructors**
-applied by juxtaposition (`List Float 16` — the capacity is a `Nat` argument):
+applied by juxtaposition (`List Float`):
 
 | Type | Kind | Meaning |
 |---|---|---|
 | `Bool`, `String` | `*` | scalar value types (value track only) |
-| `List a n`, `Set a n` | `* → Nat → *` | ordered list / unordered set, capacity `n` |
-| `Map k v n` | `* → * → Nat → *` | key→value map, capacity `n` |
+| `List a`, `Set a` | `* → *` | ordered list / unordered set (**open** — grow up to the pool) |
+| `Map k v` | `* → * → *` | key→value map (**open**) |
 | `Maybe a` | `* → *` | optional `a` (`Just a` / `Nothing`) |
 | `Pair a b` | `* → * → *` | pair (`{ first, second }`) |
 | `Either a b` | `* → * → *` | sum (`Left a` / `Right b`) |
@@ -331,28 +444,28 @@ applied by juxtaposition (`List Float 16` — the capacity is a `Nat` argument):
 ### First-class collections
 
 `List`/`Map`/`Set` are first-class arena containers with Haskell-style ops.
-Capacities are **strict bounds** carried in the type — a growing operation
-(`cons`, `insert` of a new key, a literal) past capacity is a runtime
-`ProcessError::Processing`; `map`/`filter`/`tail` preserve the capacity.
+Collections are **open** — there is no capacity in the type, and `cons`/
+`insert` grow freely up to the pre-allocated pool budget (exceeding it in the
+default RT mode is a detectable no-op, not a per-container error).
 `map`/`fold`/`filter` take the function **first**; `cons` **prepends**
-(Haskell `x : xs`); empty containers are `list n` / `empty_map n` /
-`empty_set n`; `insert` is overloaded by arity (Map 3-arg, Set 2-arg);
-`not` is a prefix builtin.
+(Haskell `x : xs`); empty containers are `list` / `empty_map` / `empty_set`;
+`insert` is overloaded by arity (Map 3-arg, Set 2-arg); `not` is a prefix
+builtin.
 
 ```faust
-xs  = [1.0, 2.0, 3.0];            // List Float 3
-ys  = cons 10.0 (list 4);         // prepend; capacity 4 from the runtime arg
+xs  = [1.0, 2.0, 3.0];            // List Float
+ys  = cons 10.0 (list);           // prepend; the list grows
 h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
 n   = length xs;                  // Int
 z   = map (fn x -> x * 2.0) xs;   // function first
 s   = fold (fn a b -> a + b) 0.0 xs;   // Float
-f   = filter (fn x -> x > 1.0) xs;     // List Float 3
+f   = filter (fn x -> x > 1.0) xs;     // List Float
 
-m  = { "a": 1.0, "b": 2.0 };      // Map String Float 2
+m  = { "a": 1.0, "b": 2.0 };      // Map String Float
 m1 = insert "a" 9.0 m;            // replace-on-duplicate
 v  = lookup "a" m;                // Maybe Float
 b  = member "a" m;                // Bool
-st = insert 1 (empty_set 8);      // Set Int 8
+st = insert 1 (empty_set);        // Set Int
 ```
 
 Map keys and set elements can be **any acyclic value type**: the compiler
@@ -365,8 +478,7 @@ function-typed key is a compile error.
 `data` can take type parameters and `typeclass` can range over a type
 **constructor** (kind `* → *` / `* → * → *`). Resolution is compile-time
 **inline** — `fmap` over a `List` compiles directly to the `map` builtin, with
-zero runtime dispatch; capacities flow from argument to result through the
-instance, so `fmap` preserves the list capacity:
+zero runtime dispatch:
 
 ```faust
 data Box a = { value: a };
@@ -380,6 +492,145 @@ main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
 
 Kind arity is inferred from method signatures and checked — `instance Functor
 Pair` (Pair has arity 2) is a kind error.
+
+### Builtin category typeclasses (`Functor`/`Applicative`/`Monad`/`Monoid`/`Arrow`)
+
+The category-theory classes ship **built in** — declared in a language prelude
+registered at compile time, so a program never redeclares them but may add its
+own instances. Methods resolve at compile time by **inline** lowering (zero
+runtime dispatch), and `instance Monad T` **auto-derives** `Applicative T` and
+`Functor T` (explicit instances always win):
+
+```faust
+typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
+typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
+typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
+typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
+```
+
+Builtin instances: `Functor`/`Monad` for `List`, `Maybe`, `Either a`;
+`Monoid` for `List` (`append_list`), `String` (`concat_string`), `Float`, `Int`.
+
+**Result-directed dispatch (`mempty`).** A nullary method has no selector
+argument, so it resolves by its *expected result type* — `mappend xs mempty`
+resolves `mempty` by the type of `xs`:
+
+```faust
+main = length (mappend [1.0, 2.0] mempty);   // List Float, mempty = list -> Int(2)
+main = mappend mempty 3.5;                    // Float, mempty = 0.0 -> Float(3.5)
+```
+
+Using `mempty` where its result type is unknown is a compile error.
+
+**`do`-notation** desugars to nested `bind` (Haskell `<-`):
+
+```faust
+mx = Just 1.0;
+my = Just 2.0;
+main = match (do { x <- mx; y <- my; pure (x + y); }) of { Nothing => 0.0; Just z => z; };
+// == bind mx (fn x -> bind my (fn y -> pure (x + y))) -> Just 3.0
+```
+
+`do { x <- mx; let y = e; stmt; expr; }` supports `<-` binds, `let` bindings,
+and bare monadic statements (each desugars to `bind`); the final statement is
+the block's result. Note that `a < -b` is a comparison followed by negation —
+parenthesize: `a < (-b)`.
+
+#### `Arrow` and `Kleisli`
+
+The prelude also declares **`Kleisli`**, the free category over a monad (an
+arrow `a -> m b` inside the container `m`), and **`Arrow`**, the category of
+container morphisms:
+
+```faust
+data Kleisli m a b = { unKleisli: a -> m b };
+
+typeclass Arrow a where {
+    arr:     (b -> c) -> a b c;
+    first:   a b c -> a (Pair b d) (Pair c d);
+    compose: a b c -> a c d -> a b d;
+    second:  a b c -> a (Pair d b) (Pair d c) =
+        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+    both:    a b c -> a d e -> a (Pair b d) (Pair c e) =
+        f g (compose (first f) (second g));
+    fan:     a b c -> a b d -> a b (Pair c d) =
+        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+}
+
+instance (Monad m) => Arrow (Kleisli m) where {
+    arr f        = Kleisli (fn x -> return (f x));
+    first k      = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+}
+```
+
+This is the first **constraint-qualified instance** in the prelude. The
+instance head `Kleisli m` is a partial application: the leading head argument
+`m` is bound at the **call site** from the concrete container's leading type
+arguments — `Kleisli Maybe Float Float` binds `m := Maybe` — and the
+`Monad m` constraint is then discharged by ordinary instance lookup
+(`instance Monad Maybe`), so the bodies may call `return`/`bind` directly.
+
+**`second`/`both`/`fan` are default methods** — the typeclass declares a
+default body (with parameters, parenthesized) that any instance may override.
+Resolution precedence is **instance body > class default > compile error**:
+`instance (Monad m) => Arrow (Kleisli m)` provides `arr`/`first`/`compose`,
+and `second`/`both`/`fan` fall back to the class defaults built from them.
+The `second` default body is written `= k (compose …)` — `k` is the parameter
+and the body is parenthesized.
+
+```faust
+apply k x = let u = k.unKleisli in u x;
+main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
+    Just v => v; Nothing => 0.0;
+};
+// -> Just 8.0, i.e. (3 + 1) * 2
+```
+
+**Status.** `arr`/`first`/`compose` are fully working end-to-end — the example
+above compiles, runs, and produces `Just 8.0`. `second`/`both`/`fan` are
+declared and **compile** (their default bodies lower), but their **runtime
+execution is not yet supported**: the arena-capacity heuristic undercounts the
+deep closure chains these defaults build, so a program that actually calls
+them panics at build time with `value buffer pool exhausted at build time`.
+This is a known, deferred follow-up — do not rely on `second`/`both`/`fan` at
+runtime yet.
+
+#### Channel tuples, tuple types, and projections
+
+The `,` combinator now doubles as a **channel tuple** — it unifies on the
+track of its operands. `signal,signal` stays the block-diagram parallel
+composition; `value,value` builds a `Pair { first, second }`; a **mixed**
+`value , signal` is a compile error (one channel cannot live on both tracks):
+
+```faust
+main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
+main = (1.0, 2.0).first;  // -> Float(1.0)
+```
+
+In **type position**, the same syntax desugars to the pair type: `(b, d)` is
+sugar for `Pair b d` — that is how the Arrow methods above spell their pair
+arguments (`a (Pair b d) (Pair c d)` ≡ `a (b, d) (c, d)`).
+
+A **field projection is a first-class function value** — a projected closure
+can be applied directly, parenthesized or bare:
+
+```faust
+data Box = { f: Float -> Float };
+b = Box { f: fn x -> x * 2.0 };
+main = (b.f) 3.0;         // parenthesized projection applied: Float(6.0)
+main = b.f 3.0;           // bare projection applied too
+```
+
+A **single-field record** can be constructed newtype-style, passing the field
+value directly instead of a record literal — `Kleisli (fn x -> …)` is exactly
+`Kleisli { unKleisli: fn x -> … }`. The prelude instance bodies above use this
+shorthand (`arr f = Kleisli (fn x -> return (f x));`).
+
+Reserved method/builtin names from the prelude: `fmap`, `pure`, `ap`,
+`return`, `bind`, `mempty`, `mappend`, `concat_map`, `append_list`,
+`concat_string`, plus the Arrow methods and the Kleisli data type: `arr`,
+`first`, `compose`, `second`, `both`, `fan`, `Kleisli`.
 
 ## First-class functions and closures
 
@@ -432,10 +683,11 @@ MVP. The value track ships first-class Haskell-style collections
 `Either`, `Bool`/`String` value types) and higher-kinded types (parameterized
 `data`, kind polymorphism over type constructors, compile-time inline
 resolution), with runtime control flow on the value track (`if`/`match`).
-Deferred to follow-on work: the Cranelift `jit` feature, foreign
-references to existing rill DSP primitives, a SIMD-aware IR, runtime typeclass
-dispatch, user-written `Eq`/`Ord` instances and hash-based containers, and
-`strict`/`complete` compiler modes.
+Deferred to follow-on work: the Cranelift `jit` feature, migrating the
+existing rill DSP primitives onto the FFI layer (the `foreign fn` mechanism
+itself is live — see *FFI*), a SIMD-aware IR, runtime typeclass dispatch,
+user-written `Eq`/`Ord` instances and hash-based containers, and `strict`/
+`complete` compiler modes.
 
 ## License
 

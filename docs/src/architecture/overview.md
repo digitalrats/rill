@@ -11,10 +11,9 @@ independently.
 │  rill-osc  │  rill-graph  │  rill-patchbay  │  rill-sampler │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)  │
-│  rill-digital-filters  │  rill-digital  │
-│  -effects  │  rill-router  │  rill-lofi                     │
-│  rill-core-model  │  rill-analog-filters  │  rill-analog      │
-│  -effects  │  rill-lang  │  rill-fft                         │
+│  rill-digital-effects  │  rill-router  │  rill-lofi          │
+│  rill-core-model  (WDF, analog filters)  │  rill-lang        │
+│  rill-fft                                                      │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (PortAudio / ALSA / PipeWire / JACK)               │
 ├─────────────────────────────────────────────────────────────┤

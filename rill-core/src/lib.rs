@@ -75,9 +75,6 @@ pub mod interpolate;
 /// Generic multi-channel signal I/O abstraction
 pub mod io;
 
-/// Built-in function registry for signal processing DSLs
-pub mod builtin;
-
 // ============================================================================
 // Error Types
 // ============================================================================
@@ -95,8 +92,6 @@ pub use traits::{
     Algorithm, AsAny, IntoParamValue, MultichannelAlgorithm, ParamMetadata, ParamRange, ParamType,
     ParamValue, ParameterError, ParameterId, Params, ProcessError, ProcessResult, SisoAdapter,
 };
-
-pub use builtin::MultichannelBlockBuiltin;
 
 // Re-export math abstractions
 pub use math::{Scalar, Transcendental};

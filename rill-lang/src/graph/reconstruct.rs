@@ -11,25 +11,27 @@
 use rill_core::math::Transcendental;
 
 use crate::ast::{Def, Expr, Program};
-use crate::builtin::{Registry, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::graph::spec::{GraphEdgeKind, GraphSpec};
+use crate::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+use crate::types::ty::TypeEnv;
 
 /// Compile a [`GraphSpec`] into a runnable [`crate::program_engine::ProgramEngine`].
 pub fn compile_spec<T: Transcendental + 'static, const BUF: usize>(
     spec: &GraphSpec,
-    registry: &Registry<T>,
+    registry: &crate::builtin::Registry<T>,
     sample_rate: f32,
 ) -> Result<crate::program_engine::ProgramEngine<T, BUF>, CompileError> {
-    let program = reconstruct(spec, registry)?;
+    let program = reconstruct(spec)?;
     crate::compile_program::<T, BUF>(&program, registry, sample_rate)
 }
 
 /// Reconstruct a [`GraphSpec`] into an rill-lang AST `Program`.
-pub fn reconstruct<T: Transcendental + 'static>(
-    spec: &GraphSpec,
-    registry: &Registry<T>,
-) -> Result<Program, CompileError> {
+///
+/// Every node's builtin must be in the FFI catalog (`foreign fn` in
+/// `TypeEnv::foreign_sigs`) — that catalog is the single signature source (the
+/// legacy `BuiltinSig` machinery was removed).
+pub fn reconstruct(spec: &GraphSpec) -> Result<Program, CompileError> {
     let n = spec.nodes.len();
     let dummy = Span::new(0, 0);
 
@@ -43,28 +45,51 @@ pub fn reconstruct<T: Transcendental + 'static>(
         signal_outs: usize,
     }
 
+    // The FFI catalog is the signature source; a fresh `TypeEnv` with the
+    // builtin preludes (the same env inference builds) carries `foreign_sigs`.
+    let ffi_env = TypeEnv::with_builtins();
+    let catalog_meta =
+        |node: &crate::graph::spec::GraphSpecNode| -> Result<NodeMeta, CompileError> {
+            let te = ffi_env
+                .foreign_sigs
+                .get(node.type_name.as_str())
+                .ok_or_else(|| {
+                    CompileError::Unsupported(format!(
+                        "unknown builtin '{}' (not in the FFI catalog)",
+                        node.type_name
+                    ))
+                })?;
+            let sig = ffi_sig_from_typeexpr(&node.type_name, te).ok_or_else(|| {
+                CompileError::Unsupported(format!(
+                    "builtin '{}' has a non-signal signature shape",
+                    node.type_name
+                ))
+            })?;
+            let param_names = sig.param_names.clone();
+            let param_values: Vec<f64> = param_names
+                .iter()
+                .map(|name| node.params.get(name).copied().unwrap_or(0.0))
+                .collect();
+            let has_resource = sig.params.iter().any(|p| matches!(p, FfiParam::Resource));
+            let signal_ins = sig
+                .params
+                .iter()
+                .filter(|p| matches!(p, FfiParam::Signal))
+                .count();
+            Ok(NodeMeta {
+                builtin_name: node.type_name.clone(),
+                param_values,
+                param_names,
+                has_resource,
+                signal_ins,
+                signal_outs: sig.signal_outs,
+            })
+        };
+
     let mut metas = Vec::with_capacity(n);
     for node in &spec.nodes {
-        let sig = registry.builtin_sig(&node.type_name).ok_or_else(|| {
-            CompileError::Unsupported(format!("unknown builtin '{}'", node.type_name))
-        })?;
-        let param_names: Vec<String> = sig.param_names.iter().map(|s| s.to_string()).collect();
-        let param_values: Vec<f64> = param_names
-            .iter()
-            .map(|name| node.params.get(name).copied().unwrap_or(0.0))
-            .collect();
-        let has_resource = sig
-            .params
-            .iter()
-            .any(|p| matches!(p, crate::builtin::ParamType::Resource));
-        metas.push(NodeMeta {
-            builtin_name: node.type_name.clone(),
-            param_values,
-            param_names,
-            has_resource,
-            signal_ins: sig.signal_ins(),
-            signal_outs: sig.signal_outs,
-        });
+        let meta = catalog_meta(node)?;
+        metas.push(meta);
     }
 
     // --- Topological sort over signal edges (feedback edges excluded) --------

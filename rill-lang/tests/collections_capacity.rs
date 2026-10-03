@@ -45,7 +45,7 @@ fn map_build_and_pin_across_ticks() {
     // is rebuilt each tick, so its key/value slots must survive the tick-end
     // clear and stay addressable on the next tick.
     let mut prog = compile::<f32>(
-        "m = insert \"a\" 1.0 (insert \"x\" 2.0 (empty_map 4)); main = member \"x\" m;",
+        "m = insert \"a\" 1.0 (insert \"x\" 2.0 (empty_map)); main = member \"x\" m;",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

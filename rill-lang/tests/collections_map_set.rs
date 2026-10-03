@@ -20,7 +20,7 @@ fn map_insert_lookup_member() {
 
 #[test]
 fn set_member_after_insert() {
-    let mut prog = compile::<f32>("s = insert 5 (empty_set 8); main = member 5 s;").unwrap();
+    let mut prog = compile::<f32>("s = insert 5 (empty_set); main = member 5 s;").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -47,15 +47,17 @@ fn tail_and_filter_preserve_capacity() {
 }
 
 #[test]
-fn map_insert_new_key_overflows_at_capacity() {
-    // { "a": 1.0 } has cap 1, len 1; inserting a NEW key overflows.
-    let mut prog = compile::<f32>("m = { \"a\": 1.0 }; main = insert \"b\" 2.0 m;").unwrap();
+fn map_insert_new_key_grows_past_literal_entries() {
+    // Open collections: inserting a NEW key past the former literal capacity is
+    // no longer a runtime error — the map grows.
+    let mut prog =
+        compile::<f32>("m = { \"a\": 1.0 }; main = length (insert \"b\" 2.0 m);").unwrap();
     let mut out = [0.0f32; 4];
-    let res = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
-    assert!(res.is_err(), "insert of a new key past capacity must error");
-    assert!(
-        format!("{:?}", res.unwrap_err()).contains("capacity exceeded"),
-        "expected capacity message"
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2)
     );
 }
 
@@ -79,7 +81,7 @@ fn set_insert_duplicate_does_not_overflow() {
     // The first insert fills the cap-1 set; the duplicate insert must be a
     // no-op, not an overflow.
     let mut prog =
-        compile::<f32>("s = insert 5 (insert 5 (empty_set 1)); main = member 5 s;").unwrap();
+        compile::<f32>("s = insert 5 (insert 5 (empty_set)); main = member 5 s;").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -152,7 +154,7 @@ fn func_key_is_compile_error() {
 fn compound_data_key_is_accepted() {
     // A List key is a concrete data type with a derived Ord instance.
     let mut prog =
-        compile::<f32>("k = [1, 2]; m = insert k 1.0 (empty_map 4); main = length [1.0, 2.0];")
+        compile::<f32>("k = [1, 2]; m = insert k 1.0 (empty_map); main = length [1.0, 2.0];")
             .unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -168,7 +170,7 @@ fn newtype_key_has_derived_ord() {
     // spec §2.5 derives Eq/Ord for newtypes by their inner: a Map keyed by Hz
     // must compile (the runtime value_cmp unwraps newtypes).
     let mut prog = compile::<f32>(
-        "newtype Hz = Float; k = Hz 440.0; m = insert k 1.0 (empty_map 4); main = length [1.0];",
+        "newtype Hz = Float; k = Hz 440.0; m = insert k 1.0 (empty_map); main = length [1.0];",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -193,8 +195,7 @@ fn length_of_map_and_set() {
         &rill_lang::arena::Value::Int(2)
     );
 
-    let mut prog =
-        compile::<f32>("main = length (insert 1.0 (insert 2.0 (empty_set 4)));").unwrap();
+    let mut prog = compile::<f32>("main = length (insert 1.0 (insert 2.0 (empty_set)));").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();

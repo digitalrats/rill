@@ -261,8 +261,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         rill_lang::program_runner::ProgramRunner::new(engine, Some(parent_ref));
 
                     if let Some((ref name, ref params)) = backend_name {
-                        let mut bf: rill_graph::backend_factory::BackendFactory =
-                            Default::default();
+                        let mut bf: crate::backend_factory::BackendFactory = Default::default();
                         crate::registration::register_backends(&mut bf);
                         match bf.create_any(name, params) {
                             Ok((driver, capture, playback)) => {

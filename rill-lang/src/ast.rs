@@ -10,17 +10,33 @@ pub type TypeName = String;
 
 /// A type expression in a declaration: concrete names, type variables,
 /// constructor application, function types, and capacity literals.
+/// A type-expression node in a declaration signature.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum TypeExpr {
-    /// A concrete type or type variable name (`Float`, `a`).
+    /// A concrete type name or a type variable.
     TName(String),
-    /// Constructor application: `f a`, `List Float 16`.
+    /// A constructor application: `f a`, `List Float`.
     TApp(String, Vec<TypeExpr>),
-    /// Curried function type: `(a -> b) -> f a -> f b`.
+    /// A curried function type: `a -> b`.
     TFunc(Vec<TypeExpr>, Box<TypeExpr>),
-    /// Capacity literal (a `Nat` argument): `16` in `List Float 16`.
-    TCap(usize),
+}
+
+impl TypeExpr {
+    /// The number of function arguments (0 for a non-function type).
+    pub fn arg_count(&self) -> usize {
+        match self {
+            TypeExpr::TFunc(args, _) => args.len(),
+            _ => 0,
+        }
+    }
+    /// The argument type expressions (empty for a non-function type).
+    pub fn arg_types(&self) -> &[TypeExpr] {
+        match self {
+            TypeExpr::TFunc(args, _) => args,
+            _ => &[],
+        }
+    }
 }
 
 /// Arithmetic operators (elementwise, 2→1).
@@ -130,6 +146,16 @@ pub enum Expr {
         /// Argument expressions.
         args: Vec<Expr>,
         /// Full span of the application.
+        span: Span,
+    },
+    /// Application of an arbitrary expression (not just a name) to arguments:
+    /// `(k.unKleisli) p.first`, `(fn x -> x) 1.0`.
+    ApplyExpr {
+        /// The callee expression (a closure-valued projection, lambda, …).
+        callee: Box<Expr>,
+        /// Argument expressions.
+        args: Vec<Expr>,
+        /// Full span.
         span: Span,
     },
     /// Unary negation `-expr`.
@@ -277,6 +303,7 @@ impl Expr {
             | Expr::Loop(_, _, s)
             | Expr::Delay(_, _, s) => *s,
             Expr::Apply { span, .. }
+            | Expr::ApplyExpr { span, .. }
             | Expr::Arith { span, .. }
             | Expr::Let { span, .. }
             | Expr::Record(_, span)
@@ -381,6 +408,10 @@ pub enum Def {
         var: String,
         /// Methods: (method name, signature type expression).
         methods: Vec<(String, TypeExpr)>,
+        /// Default method bodies: (method name, parameter bindings, body expr).
+        /// `second k = …` — a default the class provides for instances that omit
+        /// the method (precedence: instance body > default > error).
+        defaults: Vec<(String, Vec<Param>, Expr)>,
         /// Span.
         span: Span,
     },
@@ -392,8 +423,25 @@ pub enum Def {
         class: String,
         /// Concrete type the instance is for.
         ty: TypeName,
+        /// Optional constraint list: (class, type variable) before `=>`,
+        /// e.g. `Monad m` in `instance Monad m => Arrow (Kleisli m)`.
+        constraints: Vec<(String, String)>,
+        /// Head type-constructor args (partial application). `Kleisli m` →
+        /// head `Kleisli`, `head_args = ["m"]`; a plain `List` → `head_args = []`.
+        head_args: Vec<String>,
         /// Method bodies: (method name, parameter bindings, body expr).
         method_bodies: Vec<(String, Vec<Param>, Expr)>,
+        /// Span.
+        span: Span,
+    },
+    /// `foreign fn name : TypeExpr;` — a foreign (Rust-implemented) builtin whose
+    /// signature is declared in the language. The language owns the contract; a
+    /// runtime factory bound by name provides the implementation.
+    Foreign {
+        /// Foreign function name (the builtin's registry name).
+        name: String,
+        /// Carried type signature: `FixedBuffer f32 -> Float -> ... -> FixedBuffer f32`.
+        sig: TypeExpr,
         /// Span.
         span: Span,
     },
@@ -411,6 +459,7 @@ impl Def {
             Def::Newtype { name, .. } => name,
             Def::Typeclass { name, .. } => name,
             Def::Instance { class, .. } => class,
+            Def::Foreign { name, .. } => name,
         }
     }
 
@@ -444,9 +493,9 @@ impl Def {
     }
 
     /// Whether this definition is a type declaration (`data`, `type`,
-    /// `newtype`, `typeclass`, `instance`) rather than a signal expression
-    /// definition. Declaration variants carry no inferable body — the
-    /// inference/lowering pipeline skips them via this flag.
+    /// `newtype`, `typeclass`, `instance`, `foreign`) rather than a signal
+    /// expression definition. Declaration variants carry no inferable body —
+    /// the inference/lowering pipeline skips them via this flag.
     pub fn is_decl(&self) -> bool {
         matches!(
             self,
@@ -456,6 +505,7 @@ impl Def {
                 | Def::Newtype { .. }
                 | Def::Typeclass { .. }
                 | Def::Instance { .. }
+                | Def::Foreign { .. }
         )
     }
 }
@@ -486,7 +536,7 @@ mod type_expr_tests {
             vec![TypeExpr::TName("a".into())],
             Box::new(TypeExpr::TApp(
                 "List".into(),
-                vec![TypeExpr::TName("a".into()), TypeExpr::TCap(16)],
+                vec![TypeExpr::TName("a".into())],
             )),
         );
         assert!(matches!(t, TypeExpr::TFunc(..)));

@@ -11,24 +11,45 @@ documentation = "https://docs.rs/rill-lang"
 [dependencies]
 rill-core = { workspace = true }
 rill-core-actor = { workspace = true }
+rill-core-dsp = { workspace = true, optional = true }
+rill-digital-effects = { workspace = true, optional = true }
+rill-core-model = { workspace = true, optional = true }
 indexmap = "2"
 thiserror = "1.0"
 serde = { workspace = true, optional = true, features = ["derive"] }
 
 [features]
-default = ["router"]
-router = []
+default = []
+dsp = ["dep:rill-digital-effects", "dep:rill-core-dsp"]
+model = ["dep:rill-core-model"]
 serde = ["dep:serde"]
 debug = []
+growable-arena = []
 
 [dev-dependencies]
 float-cmp = "0.9"
 serde_json = "1.0"
 criterion = { workspace = true, features = ["html_reports"] }
-rill-digital-effects = { workspace = true }
-rill-core-dsp = { workspace = true }
 rill-router = { workspace = true, features = ["lang"] }
-rill-sampler = { workspace = true }
+rill-sampler = { workspace = true, features = ["lang"] }
+rill-fft = { workspace = true, features = ["lang"] }
+rill-lofi = { workspace = true, features = ["lang"] }
+
+[[test]]
+name = "graph_reconstruct"
+required-features = ["dsp"]
+
+[[test]]
+name = "graph_partition"
+required-features = ["dsp"]
+
+[[test]]
+name = "duplex_runtime"
+required-features = ["dsp"]
+
+[[test]]
+name = "caf_free_variables"
+required-features = ["dsp"]
 
 [[bench]]
 name = "lang_bench"

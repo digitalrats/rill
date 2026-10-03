@@ -188,7 +188,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Convert the graph to an rill-lang AST `Program`.
     ///
     /// Each graph node becomes an [`Expr::Apply`](rill_lang::ast::Expr::Apply) with parameters ordered
-    /// according to the builtin's `BuiltinSig::param_names`. Nodes are
+    /// according to the builtin's `FfiSig::param_names`. Nodes are
     /// chained via [`Expr::Seq`](rill_lang::ast::Expr::Seq) according to their signal connections.
     ///
     /// Only simple chain topologies are supported (fan-out/fan-in will

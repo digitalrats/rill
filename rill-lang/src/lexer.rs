@@ -65,6 +65,8 @@ pub enum Tok {
     KwTypeclass,
     /// `instance` keyword — concrete typeclass instance.
     KwInstance,
+    /// `foreign` keyword — foreign fn declaration.
+    KwForeign,
     /// `match` keyword — pattern matching over a sum value.
     KwMatch,
     /// `of` keyword — separator in `match x of { .. }`.
@@ -115,6 +117,10 @@ pub enum Tok {
     KwTrue,
     /// `false` keyword.
     KwFalse,
+    /// `do` keyword — monadic sequencing block.
+    KwDo,
+    /// `<-` — do-block monadic binding.
+    LArrow,
     /// End of input.
     Eof,
     /// Imaginary literal, e.g. `3i`, `2.5i`.
@@ -234,6 +240,15 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             });
             continue;
         }
+        if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
+            // `<-` — do-block monadic binding (disjoint from `<:` and `<=`).
+            i += 2;
+            out.push(Token {
+                tok: Tok::LArrow,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
         if c == b'|' && i + 1 < bytes.len() && bytes[i + 1] == b'|' {
             i += 2;
             out.push(Token {
@@ -314,13 +329,18 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "type" if !followed_by_paren => Tok::KwType,
                 "newtype" if !followed_by_paren => Tok::KwNewtype,
                 "typeclass" if !followed_by_paren => Tok::KwTypeclass,
-                "instance" if !followed_by_paren => Tok::KwInstance,
+                // `instance` is always a keyword — its head may start with a
+                // parenthesized constraint list (`instance (Monad m) => …`), so
+                // the `followed_by_paren` call-guard must not apply here.
+                "instance" => Tok::KwInstance,
+                "foreign" if !followed_by_paren => Tok::KwForeign,
                 "match" => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "if" if !followed_by_paren => Tok::KwIf,
                 "then" if !followed_by_paren => Tok::KwThen,
                 "else" if !followed_by_paren => Tok::KwElse,
                 "fn" if !followed_by_paren => Tok::KwFn,
+                "do" if !followed_by_paren => Tok::KwDo,
                 "true" if !followed_by_paren => Tok::KwTrue,
                 "false" if !followed_by_paren => Tok::KwFalse,
                 _ => Tok::Ident(text.to_string()),
@@ -536,13 +556,14 @@ mod tests {
     #[test]
     fn lexes_new_declaration_keywords() {
         assert_eq!(
-            kinds("data type newtype typeclass instance match of"),
+            kinds("data type newtype typeclass instance foreign match of"),
             vec![
                 Tok::KwData,
                 Tok::KwType,
                 Tok::KwNewtype,
                 Tok::KwTypeclass,
                 Tok::KwInstance,
+                Tok::KwForeign,
                 Tok::KwMatch,
                 Tok::KwOf,
                 Tok::Eof,

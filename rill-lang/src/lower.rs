@@ -3,7 +3,6 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
-use crate::builtin::{ParamType, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::ir::{
     BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
@@ -11,6 +10,84 @@ use crate::ir::{
 };
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
+
+/// Match a concrete value type against a structural pattern that may contain
+/// fresh `Var` positions (a record's freshened field type), recording each
+/// fresh var → concrete-type binding positionally. A `TyConApp` pattern head
+/// binds to the concrete constructor's head (`m := Maybe`). Returns `false` on
+/// any structural mismatch, leaving `bindings` partial (callers only use it on
+/// success).
+///
+/// Used by the field-projection expected threading: `(compose …).unKleisli`
+/// expected `Float -> Maybe Float` pins the record's type args (`m := Maybe`,
+/// `a := Float`) before the record — a method chain — is lowered, so
+/// `return`/`bind` inside the inlined instance bodies see the concrete monad.
+fn match_field_expected(
+    pattern: &ValueTy,
+    concrete: &ValueTy,
+    bindings: &mut Vec<(u32, ValueTy)>,
+) -> bool {
+    match pattern {
+        ValueTy::Var(v) => {
+            if let Some((_, existing)) = bindings.iter().find(|(b, _)| b == v) {
+                return existing == concrete;
+            }
+            bindings.push((*v, concrete.clone()));
+            true
+        }
+        ValueTy::TyConApp(f, pat_args) => match concrete {
+            ValueTy::App(c, c_args) | ValueTy::Data(c, c_args) | ValueTy::Newtype(c, c_args) => {
+                if pat_args.len() != c_args.len() {
+                    return false;
+                }
+                if let Some((_, existing)) = bindings.iter().find(|(b, _)| b == f) {
+                    if !matches!(existing, ValueTy::App(h, _) | ValueTy::Data(h, _) | ValueTy::Newtype(h, _) if h == c)
+                    {
+                        return false;
+                    }
+                } else {
+                    bindings.push((*f, ValueTy::App(c.clone(), vec![])));
+                }
+                pat_args
+                    .iter()
+                    .zip(c_args.iter())
+                    .all(|(p, c)| match_field_expected(p, c, bindings))
+            }
+            _ => false,
+        },
+        ValueTy::Func(pat_args, pat_rets) => match concrete {
+            ValueTy::Func(c_args, c_rets) => {
+                pat_args.len() == c_args.len()
+                    && pat_rets.len() == c_rets.len()
+                    && pat_args
+                        .iter()
+                        .zip(c_args.iter())
+                        .all(|(p, c)| match_field_expected(p, c, bindings))
+                    && pat_rets
+                        .iter()
+                        .zip(c_rets.iter())
+                        .all(|(p, c)| match_field_expected(p, c, bindings))
+            }
+            _ => false,
+        },
+        ValueTy::Data(n, pat_args) | ValueTy::Newtype(n, pat_args) | ValueTy::App(n, pat_args) => {
+            match concrete {
+                ValueTy::Data(c, c_args)
+                | ValueTy::Newtype(c, c_args)
+                | ValueTy::App(c, c_args) => {
+                    n == c
+                        && pat_args.len() == c_args.len()
+                        && pat_args
+                            .iter()
+                            .zip(c_args.iter())
+                            .all(|(p, c)| match_field_expected(p, c, bindings))
+                }
+                _ => false,
+            }
+        }
+        _ => pattern == concrete,
+    }
+}
 
 /// Whether a value instruction allocates a fresh arena slot when executed.
 ///
@@ -52,25 +129,11 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
     )
 }
 
-/// The type arguments of a `List` value type (`[elem, Cap(n)]`), if `t` is one.
+/// The type arguments of a `List` value type (`[elem]`), if `t` is one.
 fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     match t {
         ValueTy::App(name, inner) if name == "List" => Some(inner),
         _ => None,
-    }
-}
-
-/// The capacity field of a container value type (`List`, `Map`, `Set`), read
-/// from its trailing `Cap(n)` argument; 0 for a non-container.
-fn container_cap(t: &ValueTy) -> usize {
-    match t {
-        ValueTy::App(name, inner) if matches!(name.as_str(), "List" | "Map" | "Set") => {
-            match inner.last() {
-                Some(ValueTy::Cap(n)) => *n,
-                _ => 0,
-            }
-        }
-        _ => 0,
     }
 }
 
@@ -101,7 +164,6 @@ fn logic_op_from_ast(op: crate::ast::LogicOp) -> LogicOp {
 
 struct Lowerer<'a> {
     defs: HashMap<String, Def>,
-    sigs: &'a dyn SignatureSource,
     cafs: &'a HashSet<String>,
     /// Lowered registers of each lifted CAF, keyed by `(name, call-site args)`.
     /// Task 5 threads the caller's signal args into a value-CAF's body (a
@@ -135,6 +197,9 @@ struct Lowerer<'a> {
     value_entry: usize,
     /// Next value register index (SSA value registers are per-tick scratch).
     next_value_reg: usize,
+    /// Fresh type-variable counter (for `signature_param_tys_conv` in the
+    /// typeclass method-call lowering, which threads expected types).
+    next_tyvar: u32,
     /// Value registers holding the program's value outputs (value-channel main).
     value_regs_out: Vec<usize>,
     /// Static value type of each value output, parallel to [`Self::value_regs_out`].
@@ -173,6 +238,12 @@ struct Lowerer<'a> {
     /// Recursion guard for typeclass method inlining: resolved (class, type,
     /// method) calls currently on the expansion path.
     method_lifting: HashSet<(String, String, String)>,
+    /// Head-argument bindings of a constraint instance (`instance (Monad m) =>
+    /// Arrow (Kleisli m)`): head arg name → concrete type taken from the
+    /// call-site concrete container's LEADING args. The instance body's own
+    /// record construction resolves against the same concrete type via the
+    /// expected-type threading.
+    head_arg_bindings: HashMap<String, ValueTy>,
     /// Compiled function bodies (lambda literals), indexed by
     /// [`ValueInstr::ValueMakeClosure`]'s `fragment` field.
     fragments: Vec<std::sync::Arc<FragmentIr>>,
@@ -180,7 +251,7 @@ struct Lowerer<'a> {
     /// fragment (empty at the program level). A `Ref` to one of these inside
     /// the fragment emits a `ValueReadCell { cell: capture_index }` reading the
     /// call's env frame.
-    fragment_captures: Vec<String>,
+    fragment_captures: Vec<(String, ValueTy)>,
     /// Resolved λ-parameter value types of every named lambda-literal
     /// definition (from inference). Lowering types fragment-local parameter
     /// registers with these: a higher-order parameter is a `Func` (so the
@@ -191,6 +262,21 @@ struct Lowerer<'a> {
     /// is a NAMED lambda-literal definition. Consumed by the `Expr::Lambda`
     /// arm; anonymous lambdas leave it unset and default to `Float`.
     pending_param_tys: Option<Vec<ValueTy>>,
+    /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
+    /// the AST. A resource param's `Ref(name)` resolves to the capacity here to
+    /// assign a tape index; a `Ref` NOT present stays a name-based resource
+    /// binding (the graph duplex path's externally-shared registry).
+    tape_decls: HashMap<String, usize>,
+    /// Tape cell capacities, one entry per tape; the index IS the tape index
+    /// referenced by [`BuiltinInstance::tape_index`]. A NAMED declaration
+    /// (`name = tape_loop <capacity>`) gets one cell per name — repeated
+    /// `Ref(name)` uses share it (write head + read heads on one tape). An
+    /// INLINE `tape_loop <capacity>` call allocates a FRESH cell per occurrence
+    /// (each constructor call is a distinct tape).
+    tapes: Vec<usize>,
+    /// Tape index per named declaration (`name -> index into [`Self::tapes`]`),
+    /// so all `Ref(name)` uses of the same declared tape resolve to one cell.
+    named_tapes: HashMap<String, usize>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -214,6 +300,29 @@ impl<'a> Lowerer<'a> {
         self.value_blocks[self.cur_value_block].instrs.push(i);
     }
 
+    /// Resolve an INLINE `tape_loop <capacity>` call to a tape index, always
+    /// appending a fresh cell — each constructor call is a distinct tape. To
+    /// share a tape between heads, bind it to a name (`tape = tape_loop
+    /// <capacity>`) and reference the name; named tapes dedupe by name (see
+    /// [`Self::resolve_named_tape`]).
+    fn resolve_tape(&mut self, capacity: usize) -> usize {
+        self.tapes.push(capacity);
+        self.tapes.len() - 1
+    }
+
+    /// Resolve a NAMED tape declaration to a tape index, creating one cell per
+    /// name on first use. All `Ref(name)` uses share that cell, so a write head
+    /// and its read heads reference the same buffer.
+    fn resolve_named_tape(&mut self, name: &str, capacity: usize) -> usize {
+        if let Some(&i) = self.named_tapes.get(name) {
+            return i;
+        }
+        let i = self.tapes.len();
+        self.tapes.push(capacity);
+        self.named_tapes.insert(name.to_string(), i);
+        i
+    }
+
     fn new_value_block(&mut self) -> usize {
         self.value_blocks.push(ValueBlock::default());
         self.value_blocks.len() - 1
@@ -235,6 +344,16 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Worst-case element estimate for open collections. Exact counts are
+    /// data-dependent (a `concat_map` result length is unknown statically), so
+    /// this is a conservative per-op estimate; the runtime safety net is pool
+    /// exhaustion (default mode) or pool growth (`growable-arena`).
+    const ELEM_EST: usize = 16;
+    /// Multiplier on the estimated slot/buffer budgets for the default RT mode
+    /// so legitimate open-collection programs do not trip the exhaustion error.
+    /// Tuned against the collection stress tests (Task 8).
+    const POOL_SAFETY_MULTIPLIER: usize = 4;
+
     /// Lower a value expression to a value register, returning its static value
     /// type. Signal expressions lower to block registers through [`Self::lower`];
     /// value expressions (record/field/match/ctor/literal-in-value-position)
@@ -245,6 +364,16 @@ impl<'a> Lowerer<'a> {
     /// through because field indices (records) and constructor indices (sums)
     /// depend on the concrete data type of the value.
     fn lower_value(&mut self, e: &Expr) -> Result<(usize, ValueTy), CompileError> {
+        self.lower_value_expected(e, None)
+    }
+
+    /// [`Self::lower_value`] with an optional expected value type, used for
+    /// result-directed typeclass dispatch (`mempty`, `pure`, `return`).
+    fn lower_value_expected(
+        &mut self,
+        e: &Expr,
+        expected: Option<&ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
         match e {
             Expr::Int(v, _) => {
                 let dst = self.fresh_value_reg();
@@ -264,17 +393,116 @@ impl<'a> Lowerer<'a> {
                 let dst = self.fresh_value_reg();
                 Ok((dst, ValueTy::Var(0)))
             }
-            Expr::Ref(name, span) => self.lower_value_ref(name, *span),
+            Expr::Ref(name, span) => self.lower_value_ref_expected(name, *span, expected),
             Expr::FieldProject {
                 record,
                 field,
                 span,
             } => {
-                let (rec_reg, rec_vty) = self.lower_value(record)?;
+                // A result-directed typeclass call in record position
+                // (`(arr f).unKleisli`) selects its instance by the record
+                // type, which only the FIELD name identifies (`unKleisli` →
+                // `Kleisli m a b`). When the field names exactly one record
+                // type, thread it as the expected type so the record's own
+                // lowering resolves (a projection on a concrete expression is
+                // unaffected — the expected is only a hint).
+                let rec_candidates: Vec<String> = self
+                    .env
+                    .data_types
+                    .iter()
+                    .filter_map(|(n, info)| match info {
+                        DataInfo::Record(fields) if fields.iter().any(|(f, _)| f == field) => {
+                            Some(n.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let rec_expected: Option<ValueTy> = if rec_candidates.len() == 1 {
+                    let arity = self
+                        .env
+                        .data_arities
+                        .get(&rec_candidates[0])
+                        .copied()
+                        .unwrap_or(0);
+                    let args = (0..arity)
+                        .map(|_| {
+                            let v = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            ValueTy::Var(v)
+                        })
+                        .collect::<Vec<_>>();
+                    Some(ValueTy::Data(rec_candidates[0].clone(), args))
+                } else {
+                    None
+                };
+                // Bind the record's type args from the projection's OWN expected
+                // result type when possible: `(compose (arr f) (arr g)).unKleisli`
+                // applied in a `Just`-matched scrutinee is expected
+                // `Float -> Maybe Float`, so substituting that expected against
+                // the record's field type `a -> m b` pins `m := Maybe`,
+                // `a := Float` BEFORE the record (a method chain) is lowered —
+                // the concrete monad then resolves `return`/`bind` inside the
+                // inlined instance bodies. Mismatch/unknown → keep the fresh
+                // args (the record's own lowering stays as before).
+                let rec_expected = match (&rec_expected, expected) {
+                    (Some(ValueTy::Data(rname, rargs)), Some(exp)) => {
+                        let fty = match self.env.data_types.get(rname) {
+                            Some(DataInfo::Record(fields)) => fields
+                                .iter()
+                                .find(|(f, _)| f == field)
+                                .map(|(_, t)| t.clone()),
+                            _ => None,
+                        };
+                        let bound = fty.and_then(|ft| {
+                            let mut bindings: Vec<(u32, ValueTy)> = Vec::new();
+                            let pat = crate::types::infer::substitute_field_params(&ft, rargs);
+                            if match_field_expected(&pat, exp, &mut bindings) {
+                                Some(
+                                    rargs
+                                        .iter()
+                                        .map(|a| match a {
+                                            ValueTy::Var(v) => bindings
+                                                .iter()
+                                                .find(|(b, _)| b == v)
+                                                .map(|(_, t)| t.clone())
+                                                .unwrap_or_else(|| a.clone()),
+                                            _ => a.clone(),
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )
+                            } else {
+                                None
+                            }
+                        });
+                        match bound {
+                            Some(args) => Some(ValueTy::Data(rname.clone(), args)),
+                            None => rec_expected,
+                        }
+                    }
+                    _ => rec_expected,
+                };
+                let (rec_reg, rec_vty) = match &rec_expected {
+                    Some(e) => self.lower_value_expected(record, Some(e))?,
+                    None => self.lower_value(record)?,
+                };
                 let rec_name = match &rec_vty {
                     ValueTy::Data(n, _) => n.clone(),
                     // Builtin records (`Pair a b`) are parameterized as `App`.
                     ValueTy::App(n, _) if self.env.ctor_arity(n).is_some() => n.clone(),
+                    // An unresolved record (a lambda parameter typed
+                    // structurally, e.g. `p` of the swap lambda `fn p -> Pair {
+                    // first: p.second, … }`): the field name uniquely identifies
+                    // the record type (`first`/`second` → `Pair`) — use the
+                    // threaded candidate.
+                    ValueTy::Var(_) => match &rec_expected {
+                        Some(ValueTy::Data(n, _)) | Some(ValueTy::App(n, _)) => n.clone(),
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: "field projection requires a record value".into(),
+                                span: *span,
+                            });
+                        }
+                    },
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field projection requires a record value".into(),
@@ -303,7 +531,28 @@ impl<'a> Lowerer<'a> {
                     slot: rec_reg,
                     field: field_index,
                 });
-                Ok((dst, fields[field_index].1.clone()))
+                // The projected field's static type: the env field type with the
+                // record's type args substituted (a parameterized record), so a
+                // downstream method call (`bind (k1.unKleisli x)`) sees the
+                // concrete monad, not placeholder ids.
+                let field_ty = &fields[field_index].1;
+                let rec_args: Option<Vec<ValueTy>> = match &rec_vty {
+                    ValueTy::Data(_, args) | ValueTy::App(_, args) if !args.is_empty() => {
+                        Some(args.clone())
+                    }
+                    ValueTy::Var(_) => match &rec_expected {
+                        Some(ValueTy::Data(_, args)) | Some(ValueTy::App(_, args)) => {
+                            Some(args.clone())
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let ret_ty = match rec_args {
+                    Some(args) => crate::types::infer::substitute_field_params(field_ty, &args),
+                    None => field_ty.clone(),
+                };
+                Ok((dst, ret_ty))
             }
             Expr::FieldUpdate {
                 record,
@@ -351,7 +600,34 @@ impl<'a> Lowerer<'a> {
                 arms,
                 span,
             } => {
-                let (scrutinee_reg, scrutinee_vty) = self.lower_value(scrutinee)?;
+                // Lower the scrutinee with the arm-derived sum type as expected
+                // when the arms pin it by constructor (`Just v` / `Nothing` →
+                // `Maybe`). A result-directed method chain inside the scrutinee
+                // (`(compose (arr f) (arr g)).unKleisli 3.0`) then resolves its
+                // monad from that concrete pin type before the method bodies are
+                // lowered. A scrutinee whose own static type already pins the sum
+                // is unaffected — the expected is only a hint.
+                let pre_sum: Option<String> = if arms
+                    .iter()
+                    .any(|a| matches!(a.pattern, Pattern::Ctor(_, _)))
+                {
+                    self.resolve_match_sum(arms, *span).ok()
+                } else {
+                    None
+                };
+                let scrutinee_expected: Option<ValueTy> = match &pre_sum {
+                    Some(n) if self.env.ctor_arity(n).is_some() => {
+                        let v = self.next_tyvar;
+                        self.next_tyvar += 1;
+                        Some(ValueTy::App(n.clone(), vec![ValueTy::Var(v)]))
+                    }
+                    Some(n) => Some(ValueTy::Data(n.clone(), vec![])),
+                    None => None,
+                };
+                let (scrutinee_reg, scrutinee_vty) = match &scrutinee_expected {
+                    Some(se) => self.lower_value_expected(scrutinee, Some(se))?,
+                    None => self.lower_value(scrutinee)?,
+                };
                 // The sum type: a concrete scrutinee type pins it; otherwise the
                 // arm constructors determine it (mirroring inference's
                 // intersection of candidate sum types). A scalar match (only
@@ -606,8 +882,17 @@ impl<'a> Lowerer<'a> {
                                     span: *span,
                                 });
                             }
-                            let fields_expr = match &call_args[0] {
-                                Expr::Record(f, _) => f,
+                            // The single argument may be a record literal matched by field
+                            // name or — for a single-field record — the field
+                            // VALUE directly, newtype-style: `Box (fn x -> x *
+                            // 2.0)` ≡ `Box { f: fn x -> x * 2.0 }`.
+                            let fields_expr: Vec<(String, Expr)> = match &call_args[0] {
+                                Expr::Record(f, _) => {
+                                    f.iter().map(|(n, e)| (n.clone(), e.clone())).collect()
+                                }
+                                _ if fields.len() == 1 => {
+                                    vec![(fields[0].0.clone(), call_args[0].clone())]
+                                }
                                 _ => {
                                     return Err(CompileError::Type {
                                         msg: format!(
@@ -618,7 +903,19 @@ impl<'a> Lowerer<'a> {
                                 }
                             };
                             // Lower each field value in declared-field order so the
-                            // runtime record matches the type's field layout.
+                            // runtime record matches the type's field layout. The
+                            // record's concrete type args (threaded from the outer
+                            // expected type) substitute each field type's
+                            // placeholder positions; the substituted field type is
+                            // then threaded as the field value's EXPECTED type so a
+                            // result-directed method call inside the value
+                            // (`Kleisli (fn x -> return (f x))` → `return`) resolves
+                            // by the concrete monad.
+                            let rec_args: Option<Vec<ValueTy>> = match expected {
+                                Some(ValueTy::Data(n, a)) if n == name => Some(a.clone()),
+                                Some(ValueTy::App(n, a)) if n == name => Some(a.clone()),
+                                _ => None,
+                            };
                             let mut field_regs = Vec::with_capacity(fields.len());
                             for (fname, _) in &fields {
                                 let fexpr = fields_expr
@@ -631,7 +928,21 @@ impl<'a> Lowerer<'a> {
                                         ),
                                         span: *span,
                                     })?;
-                                let (fr, _) = self.lower_value(fexpr)?;
+                                let fty = fields
+                                    .iter()
+                                    .find(|(f, _)| f == fname)
+                                    .map(|(_, t)| t.clone());
+                                let field_expected = match (&rec_args, fty) {
+                                    (Some(a), Some(ft)) if !a.is_empty() => {
+                                        Some(crate::types::infer::substitute_field_params(&ft, a))
+                                    }
+                                    (Some(_), Some(ft)) => Some(ft),
+                                    _ => None,
+                                };
+                                let (fr, _) = match field_expected {
+                                    Some(fe) => self.lower_value_expected(fexpr, Some(&fe))?,
+                                    None => self.lower_value(fexpr)?,
+                                };
                                 field_regs.push(fr);
                             }
                             let dst = self.fresh_value_reg();
@@ -639,7 +950,16 @@ impl<'a> Lowerer<'a> {
                                 dst,
                                 fields: field_regs,
                             });
-                            return Ok((dst, ValueTy::Data(name.clone(), vec![])));
+                            // Propagate the record's concrete type args when the
+                            // outer expected carries them, so a projection /
+                            // subsequent method call sees the parameterized type
+                            // (`k1.unKleisli` of a `Kleisli Maybe Float Float`
+                            // parameter is `Float -> Maybe Float`).
+                            let ret = match rec_args {
+                                Some(a) if !a.is_empty() => ValueTy::Data(name.clone(), a),
+                                _ => ValueTy::Data(name.clone(), vec![]),
+                            };
+                            return Ok((dst, ret));
                         }
                         DataInfo::Sum(_) => {
                             return Err(CompileError::Type {
@@ -698,6 +1018,15 @@ impl<'a> Lowerer<'a> {
                 // fires when no user def of that name exists. Constructor
                 // classes (`Functor f`) resolve by the class-var-applied
                 // argument's constructor head (`App("List", ..)` → `List`).
+                // Typeclass method call: the argument's static type selects the
+                // instance, and the method body is inlined with the parameters
+                // bound to the argument's registers — β-substitution at compile
+                // time, zero runtime dispatch. User definitions shadow class
+                // methods (a user `eq`/`lt` is a plain function), so this only
+                // fires when no user def of that name exists. Three resolution
+                // modes: result-directed (`pure`/`return`/`mempty`), arity-0
+                // (`Monoid mappend`, `Show show`), and constructor classes
+                // (`Functor f`, by the class-var-applied argument).
                 if !self.defs.contains_key(name) {
                     if let Some(class_name) = self.env.class_of_method(name) {
                         let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
@@ -707,42 +1036,74 @@ impl<'a> Lowerer<'a> {
                             .iter()
                             .find(|(m, _)| m == name)
                             .map(|(_, s)| s.clone());
-                        if class_info.arity == 0 {
-                            if call_args.len() != 1 {
-                                return Err(CompileError::Type {
-                                    msg: format!(
-                                        "method `{name}` of `{class_name}` expects 1 argument, got {}",
-                                        call_args.len()
-                                    ),
-                                    span: *span,
-                                });
-                            }
-                            let (arg_reg, arg_vty) = self.lower_value(&call_args[0])?;
-                            let ty_name = match self.env.type_name_of_vty(&arg_vty) {
+                        let sig = sig.as_ref().unwrap();
+                        // Argument count: a `TFunc` signature carries its
+                        // argument list; a bare class-var signature (`show: a`)
+                        // takes exactly one selector argument.
+                        let n_sig_args = match sig {
+                            crate::ast::TypeExpr::TFunc(args, _) => args.len(),
+                            _ => 1,
+                        };
+                        // Result-directed methods (`pure a`, `return x`): a
+                        // function signature whose arguments never mention the
+                        // class variable — the container comes only from the
+                        // expected RESULT type. A bare signature (`show: a`,
+                        // `mempty: m`) is NOT result-directed in an apply: it
+                        // resolves by the selector argument (arity-0 path).
+                        let result_directed = matches!(
+                            sig,
+                            crate::ast::TypeExpr::TFunc(args, _)
+                                if !args.is_empty()
+                                    && args
+                                        .iter()
+                                        .all(|a| !crate::types::infer::type_expr_mentions(a, &class_var))
+                        );
+                        if result_directed {
+                            // `pure x` / `return x`: the container comes from the
+                            // expected result type. No class-var-applied argument.
+                            let exp = match expected {
                                 Some(t) => t,
                                 None => {
                                     return Err(CompileError::Type {
-                                    msg: format!(
-                                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
-                                    ),
-                                    span: call_args[0].span(),
-                                });
+                                        msg: format!(
+                                            "cannot resolve method `{name}` of `{class_name}`: expected type unknown"
+                                        ),
+                                        span: *span,
+                                    });
                                 }
                             };
-                            let (_, params, body) =
-                                match self.env.resolve_method(name, ty_name.as_str()) {
-                                    Some(r) => r,
+                            let ty_name = match self.env.type_name_of_vty(exp) {
+                                Some(t) => t,
+                                None => {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                                        ),
+                                        span: *span,
+                                    });
+                                }
+                            };
+                            // Constraint instance: bind head args from the
+                            // expected container's leading args and discharge
+                            // the constraints before inlining the body.
+                            self.bind_head_args_and_discharge(&class_name, &ty_name, exp, *span)?;
+                            let (_, params, body) = match self
+                                .env
+                                .resolve_method(name, ty_name.as_str())
+                            {
+                                Some(r) => r,
+                                None => match self.env.class_default(&class_name, name) {
+                                    Some((params, body)) => (class_name.clone(), params, body),
                                     None => {
                                         return Err(CompileError::Type {
-                                            msg: format!(
-                                            "no instance of `{class_name}` for type `{ty_name}`"
-                                        ),
-                                            span: *span,
-                                        });
+                                                msg: format!(
+                                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                                ),
+                                                span: *span,
+                                            });
                                     }
-                                };
-                            // Recursion guard: a method that inlines itself (directly
-                            // or transitively) is a compile error, not a stack overflow.
+                                },
+                            };
                             let key = (class_name, ty_name.clone(), name.to_string());
                             if self.method_lifting.contains(&key) {
                                 return Err(CompileError::Type {
@@ -755,10 +1116,134 @@ impl<'a> Lowerer<'a> {
                             self.method_lifting.insert(key.clone());
                             let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
                             let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
-                            if let Some(p) = params.first() {
-                                scope.insert(p.clone(), (arg_reg, arg_vty.clone()));
+                            // Bind every param to its lowered argument register
+                            // (`pure x`/`return x` have one element arg). Lower
+                            // each arg with its signature param type as expected
+                            // so a lambda argument (`arr (fn p -> …)`) types its
+                            // parameters structurally (`p` of the swap lambda
+                            // stays a record, not Float).
+                            let arg_param_tys = crate::types::infer::signature_param_tys_conv(
+                                self.env,
+                                &class_var,
+                                &ty_name,
+                                sig,
+                                || {
+                                    let v = self.next_tyvar;
+                                    self.next_tyvar += 1;
+                                    ValueTy::Var(v)
+                                },
+                            );
+                            for (i, (p, a)) in params.iter().zip(call_args.iter()).enumerate() {
+                                let exp = arg_param_tys.get(i).cloned();
+                                let (r, t) = match exp {
+                                    Some(e) => self.lower_value_expected(a, Some(&e))?,
+                                    None => self.lower_value(a)?,
+                                };
+                                scope.insert(p.clone(), (r, t));
+                                ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
+                            }
+                            self.value_locals.push(scope);
+                            self.value_local_ctors.push(ctor_scope);
+                            let res = self.lower_value_expected(&body, Some(exp));
+                            self.value_locals.pop();
+                            self.value_local_ctors.pop();
+                            self.method_lifting.remove(&key);
+                            return res;
+                        }
+                        if class_info.arity == 0 {
+                            if call_args.len() != n_sig_args {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
+                                        call_args.len()
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            // Selector: the first argument that is not a bare
+                            // nullary method ref (`mappend xs mempty` — `xs`
+                            // selects; `mempty` resolves by that type name).
+                            let selector_idx = call_args
+                                .iter()
+                                .position(|a| !self.is_bare_nullary_method_ref(a, &class_name))
+                                .unwrap_or(0);
+                            let (arg_reg, arg_vty) = self.lower_value(&call_args[selector_idx])?;
+                            let ty_name = match self.env.type_name_of_vty(&arg_vty) {
+                                Some(t) => t,
+                                None => {
+                                    return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                                    ),
+                                    span: call_args[selector_idx].span(),
+                                });
+                                }
+                            };
+                            let (_, params, body) = match self
+                                .env
+                                .resolve_method(name, ty_name.as_str())
+                            {
+                                Some(r) => r,
+                                None => match self.env.class_default(&class_name, name) {
+                                    Some((params, body)) => (class_name.clone(), params, body),
+                                    None => {
+                                        return Err(CompileError::Type {
+                                                msg: format!(
+                                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                                ),
+                                                span: *span,
+                                            });
+                                    }
+                                },
+                            };
+                            let key = (class_name.clone(), ty_name.clone(), name.to_string());
+                            if self.method_lifting.contains(&key) {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "recursive typeclass method `{name}` for type `{ty_name}`"
+                                    ),
+                                    span: *span,
+                                });
+                            }
+                            self.method_lifting.insert(key.clone());
+                            let param_tys = crate::types::infer::signature_param_tys_conv(
+                                self.env,
+                                &class_var,
+                                &ty_name,
+                                sig,
+                                || {
+                                    let v = self.next_tyvar;
+                                    self.next_tyvar += 1;
+                                    ValueTy::Var(v)
+                                },
+                            );
+                            let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                            let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                            for (i, p) in params.iter().enumerate() {
+                                let (r, t) = if i == selector_idx {
+                                    (arg_reg, arg_vty.clone())
+                                } else if !self
+                                    .is_bare_nullary_method_ref(&call_args[i], &class_name)
+                                {
+                                    self.lower_value(&call_args[i])?
+                                } else {
+                                    // Nullary arg (`mempty`): inline ITS
+                                    // instance body with the signature param
+                                    // type as expected so `list` stays open.
+                                    let arg_name = match &call_args[i] {
+                                        Expr::Ref(n, _) => n.as_str(),
+                                        _ => unreachable!("nullary arg must be a Ref"),
+                                    };
+                                    let (_, _, nbody) = self
+                                        .env
+                                        .resolve_method(arg_name, ty_name.as_str())
+                                        .unwrap();
+                                    let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                                    self.lower_value_expected(&nbody, Some(&exp))?
+                                };
+                                scope.insert(p.clone(), (r, t));
                                 ctor_scope
-                                    .insert(p.clone(), self.static_scrutinee_ctor(&call_args[0]));
+                                    .insert(p.clone(), self.static_scrutinee_ctor(&call_args[i]));
                             }
                             self.value_locals.push(scope);
                             self.value_local_ctors.push(ctor_scope);
@@ -769,21 +1254,20 @@ impl<'a> Lowerer<'a> {
                             return res;
                         }
                         // Constructor class: the class-var-applied argument's
-                        // concrete type head selects the instance. Lower all
-                        // args, then bind each method param to its register.
+                        // concrete type head selects the instance. Lower the
+                        // container argument first (to find the constructor),
+                        // then the rest with the signature's param type as
+                        // expected so `bind mx (fn x -> return x)` resolves
+                        // `return` by the monad.
                         let container_idx = self
                             .env
-                            .class_var_arg_index(sig.as_ref().unwrap(), &class_var)
+                            .class_var_arg_index(sig, &class_var)
                             .ok_or_else(|| CompileError::Type {
                             msg: format!(
                                 "method `{name}` of `{class_name}` has no class-var-applied argument"
                             ),
                             span: *span,
                         })?;
-                        let n_sig_args = match sig.as_ref().unwrap() {
-                            crate::ast::TypeExpr::TFunc(as_, _) => as_.len(),
-                            _ => 1,
-                        };
                         if call_args.len() != n_sig_args {
                             return Err(CompileError::Type {
                                 msg: format!(
@@ -793,14 +1277,66 @@ impl<'a> Lowerer<'a> {
                                 span: *span,
                             });
                         }
-                        let mut arg_regs = Vec::with_capacity(call_args.len());
-                        let mut arg_vtys = Vec::with_capacity(call_args.len());
-                        for a in call_args {
-                            let (r, t) = self.lower_value(a)?;
-                            arg_regs.push(r);
-                            arg_vtys.push(t);
+                        // Phase 1: lower the container argument and resolve the
+                        // constructor. The container arg may itself be a
+                        // result-directed method call (`arr f` in
+                        // `compose (arr f) (arr g)`) that needs an expected
+                        // type to resolve. When the enclosing expression
+                        // expects a concrete container (`Data("Kleisli", [..])`
+                        // threaded from a field projection / match), derive the
+                        // container arg's expected type from it: the instance
+                        // head's args (`m`) from the expected's leading args,
+                        // the remaining class-var slots freshened.
+                        let container_expected: Option<ValueTy> = match &expected {
+                            Some(ValueTy::Data(c, args)) | Some(ValueTy::App(c, args)) => {
+                                let inst = self
+                                    .env
+                                    .instances
+                                    .get(&class_name)
+                                    .and_then(|by_ty| by_ty.get(c));
+                                match inst {
+                                    Some(i) => {
+                                        let head_len = i.head_args.len();
+                                        let mut cargs: Vec<ValueTy> =
+                                            args.iter().take(head_len).cloned().collect();
+                                        while cargs.len() < head_len + class_info.arity {
+                                            let v = self.next_tyvar;
+                                            self.next_tyvar += 1;
+                                            cargs.push(ValueTy::Var(v));
+                                        }
+                                        Some(match expected {
+                                            Some(ValueTy::Data(..)) => {
+                                                ValueTy::Data(c.clone(), cargs)
+                                            }
+                                            _ => ValueTy::App(c.clone(), cargs),
+                                        })
+                                    }
+                                    None => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        let (container_reg, container_vty) = match container_expected {
+                            Some(ce) => {
+                                self.lower_value_expected(&call_args[container_idx], Some(&ce))?
+                            }
+                            None => self.lower_value(&call_args[container_idx])?,
+                        };
+                        // Constraint instance: bind head args from the
+                        // container's LEADING args and discharge the
+                        // constraints before resolving the constructor.
+                        match &container_vty {
+                            ValueTy::App(c, _) | ValueTy::Data(c, _) => {
+                                self.bind_head_args_and_discharge(
+                                    &class_name,
+                                    c,
+                                    &container_vty,
+                                    *span,
+                                )?;
+                            }
+                            _ => {}
                         }
-                        let ctor = match &arg_vtys[container_idx] {
+                        let ctor = match &container_vty {
                             ValueTy::App(c, _) | ValueTy::Data(c, _) => c.clone(),
                             _ => {
                                 return Err(CompileError::Type {
@@ -813,14 +1349,17 @@ impl<'a> Lowerer<'a> {
                         };
                         let (_, params, body) = match self.env.resolve_method(name, ctor.as_str()) {
                             Some(r) => r,
-                            None => {
-                                return Err(CompileError::Type {
-                                    msg: format!(
-                                        "no instance of `{class_name}` for constructor `{ctor}`"
-                                    ),
-                                    span: *span,
-                                });
-                            }
+                            None => match self.env.class_default(&class_name, name) {
+                                Some((params, body)) => (class_name.clone(), params, body),
+                                None => {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "no instance of `{class_name}` for constructor `{ctor}` and no default for `{name}`"
+                                        ),
+                                        span: *span,
+                                    });
+                                }
+                            },
                         };
                         if params.len() != call_args.len() {
                             return Err(CompileError::Type {
@@ -832,7 +1371,71 @@ impl<'a> Lowerer<'a> {
                                 span: *span,
                             });
                         }
-                        let key = (class_name, ctor.clone(), name.to_string());
+                        // Phase 2: lower the remaining args with their signature
+                        // param type as expected, then bind all params.
+                        let mut param_tys = crate::types::infer::signature_param_tys_conv(
+                            self.env,
+                            &class_var,
+                            &ctor,
+                            sig,
+                            || {
+                                let v = self.next_tyvar;
+                                self.next_tyvar += 1;
+                                ValueTy::Var(v)
+                            },
+                        );
+                        // A partial instance head (`Kleisli m` → head arg `m`):
+                        // the signature-converted container type drops the head
+                        // (`a b c` → `Data("Kleisli", [b, c])`). Prepend the head
+                        // args bound at the call site (`m := Maybe`) so the arg
+                        // expected types carry the full concrete container — a
+                        // result-directed second arg (`arr g`) resolves `return`
+                        // by the monad.
+                        crate::types::infer::prepend_instance_head_args(
+                            self.env,
+                            &class_name,
+                            &mut param_tys,
+                            &ctor,
+                            &self.head_arg_bindings,
+                            || {
+                                let v = self.next_tyvar;
+                                self.next_tyvar += 1;
+                                ValueTy::Var(v)
+                            },
+                        );
+                        let mut arg_regs = Vec::with_capacity(call_args.len());
+                        let mut arg_vtys = Vec::with_capacity(call_args.len());
+                        for (i, a) in call_args.iter().enumerate() {
+                            if i == container_idx {
+                                arg_regs.push(container_reg);
+                                arg_vtys.push(container_vty.clone());
+                            } else {
+                                let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                                let (r, t) = self.lower_value_expected(a, Some(&exp))?;
+                                arg_regs.push(r);
+                                arg_vtys.push(t);
+                            }
+                        }
+                        let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                        let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                        for (p, (r, t)) in params.iter().zip(arg_regs.into_iter().zip(arg_vtys)) {
+                            scope.insert(p.clone(), (r, t));
+                        }
+                        for (p, a) in params.iter().zip(call_args) {
+                            ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
+                        }
+                        // The recursion guard is armed ONLY around the inlined
+                        // BODY — not while the arguments are lowered. Arguments
+                        // may legally inline other methods' defaults that
+                        // reference this method (the method-lifting composition:
+                        // `both`'s default `compose (first f) (second g)` reaches
+                        // `compose` again through `second`'s default body while
+                        // the outer `compose`'s SECOND argument is lowered).
+                        // That is not recursion — `compose`'s own body never
+                        // calls `compose`. Genuine recursion (a body that calls
+                        // its own method name) is still caught: the key is held
+                        // while the body lowers.
+                        let key = (class_name.clone(), ctor.clone(), name.to_string());
                         if self.method_lifting.contains(&key) {
                             return Err(CompileError::Type {
                                 msg: format!(
@@ -842,17 +1445,16 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                         self.method_lifting.insert(key.clone());
-                        let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
-                        let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
-                        for (p, (r, t)) in params.iter().zip(arg_regs.into_iter().zip(arg_vtys)) {
-                            scope.insert(p.clone(), (r, t));
-                        }
-                        for (p, a) in params.iter().zip(call_args) {
-                            ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
-                        }
                         self.value_locals.push(scope);
                         self.value_local_ctors.push(ctor_scope);
-                        let res = self.lower_value(&body);
+                        // Lower the inlined body with the method's expected
+                        // result type so a result-directed call inside a DEFAULT
+                        // body (`second`'s `arr swap`) resolves by the concrete
+                        // container.
+                        let res = match expected {
+                            Some(exp) => self.lower_value_expected(&body, Some(exp)),
+                            None => self.lower_value(&body),
+                        };
                         self.value_locals.pop();
                         self.value_local_ctors.pop();
                         self.method_lifting.remove(&key);
@@ -944,6 +1546,60 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
+            Expr::ApplyExpr { callee, args, span } => {
+                // Thread the call's expected result type into the callee as a
+                // `Func` signature so a result-directed method chain in callee
+                // position (`(compose …).unKleisli` in a `Just`-matched
+                // scrutinee) resolves its monad from the concrete result type
+                // before the callee is lowered.
+                let callee_expected: Option<ValueTy> = expected.map(|exp| {
+                    let fresh_args: Vec<ValueTy> = (0..args.len())
+                        .map(|_| {
+                            let v = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            ValueTy::Var(v)
+                        })
+                        .collect();
+                    ValueTy::Func(fresh_args, vec![exp.clone()])
+                });
+                let (cr, cty) = match &callee_expected {
+                    Some(ce) => self.lower_value_expected(callee, Some(ce))?,
+                    None => self.lower_value(callee)?,
+                };
+                let (arg_tys, ret_tys) = match &cty {
+                    ValueTy::Func(a, r) => (a.clone(), r.clone()),
+                    _ => {
+                        return Err(CompileError::Type {
+                            msg: "applied expression must be a function value".into(),
+                            span: *span,
+                        });
+                    }
+                };
+                // Inference enforces exact arity (infer_apply_expr); this guard is defensive/unreachable via compilation.
+                if args.len() > arg_tys.len() {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "expression expects {} argument(s), got {}",
+                            arg_tys.len(),
+                            args.len()
+                        ),
+                        span: *span,
+                    });
+                }
+                let mut arg_regs = Vec::with_capacity(args.len());
+                for a in args {
+                    let (ar, _) = self.lower_value(a)?;
+                    arg_regs.push(ar);
+                }
+                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueCallFunc {
+                    dst,
+                    closure_slot: cr,
+                    args: arg_regs,
+                });
+                Ok((dst, ret_ty))
+            }
             Expr::Arith { op, lhs, rhs, span } => {
                 // Value-track arithmetic: lower both operands as values, emit
                 // the matching element-wise instruction, and yield a Float
@@ -991,13 +1647,37 @@ impl<'a> Lowerer<'a> {
                 let free = self.free_vars(body, &param_names);
                 // A named lambda-literal definition carries its resolved
                 // parameter types from inference (set by `lower_value_ref`); an
-                // anonymous lambda defaults to Float parameters.
+                // anonymous lambda defaults to Float parameters — unless its
+                // expected type is a `Func` signature, which types the params
+                // structurally (the swap lambda `fn p -> Pair { first: p.second,
+                // … }` of `arr (fn p -> …)` keeps `p` a `Pair`, not Float).
                 let param_tys: Vec<ValueTy> = self
                     .pending_param_tys
                     .take()
+                    .or_else(|| match expected {
+                        Some(ValueTy::Func(arg_tys, _)) if arg_tys.len() == params.len() => {
+                            Some(arg_tys.clone())
+                        }
+                        _ => None,
+                    })
                     .unwrap_or_else(|| vec![ValueTy::Float; params.len()]);
-                let (fragment_id, ret_ty) =
-                    self.lower_fragment(params, body, &free, &param_tys, *span)?;
+                // The lambda's BODY is expected to produce the lambda's RESULT
+                // type (not the whole `Func` type the caller expects) — a
+                // result-directed method call inside (`bind mx (fn x -> return
+                // x)`) resolves by that type.
+                let body_expected = match expected {
+                    Some(ValueTy::Func(_, rets)) => rets.first().cloned(),
+                    _ => None,
+                };
+                let (fragment_id, ret_ty) = self.lower_fragment(
+                    params,
+                    body,
+                    &free,
+                    &self.capture_tys(&free),
+                    &param_tys,
+                    body_expected.as_ref(),
+                    *span,
+                )?;
                 let env_reg = self.emit_env_snapshot(&free, *span)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
@@ -1028,14 +1708,10 @@ impl<'a> Lowerer<'a> {
                     regs.push(r);
                     elem_ty = t;
                 }
-                let cap = regs.len();
+                let _ = regs.len();
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueListLit {
-                    dst,
-                    elems: regs,
-                    cap,
-                });
-                let ret = ValueTy::App("List".into(), vec![elem_ty, ValueTy::Cap(cap)]);
+                self.emit_value(ValueInstr::ValueListLit { dst, elems: regs });
+                let ret = ValueTy::App("List".into(), vec![elem_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
             }
@@ -1053,18 +1729,10 @@ impl<'a> Lowerer<'a> {
                     vals.push(vr);
                     val_ty = vt;
                 }
-                let cap = keys.len();
+                let _ = keys.len();
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueMapLit {
-                    dst,
-                    keys,
-                    vals,
-                    cap,
-                });
-                let ret = ValueTy::App(
-                    "Map".into(),
-                    vec![ValueTy::String, val_ty, ValueTy::Cap(cap)],
-                );
+                self.emit_value(ValueInstr::ValueMapLit { dst, keys, vals });
+                let ret = ValueTy::App("Map".into(), vec![ValueTy::String, val_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
             }
@@ -1091,6 +1759,33 @@ impl<'a> Lowerer<'a> {
                     b,
                 });
                 Ok((dst, ValueTy::Bool))
+            }
+            Expr::Let { defs, body, .. } => {
+                // Expression-level `let x = e in body` in value position: the
+                // defs are plain inlined bindings (v1 value defs are per-tick
+                // re-evaluated expressions), so lower each into the def table
+                // and lower the body. Mirrors `infer_expr_expected`'s Let arm.
+                let saved = self.defs.clone();
+                for d in defs {
+                    self.defs.insert(d.name().to_string(), d.clone());
+                }
+                let res = self.lower_value_expected(body, expected);
+                self.defs = saved;
+                res
+            }
+            Expr::Par(lhs, rhs, _) => {
+                // Channel tuple in value position: `value , value` is
+                // `Pair { first, second }`. Field order matches the declared
+                // `Pair` field order, so fields[0]/fields[1] are `first`/`second`;
+                // the returned type carries the exact element types.
+                let (lr, lt) = self.lower_value(lhs)?;
+                let (rr, rt) = self.lower_value(rhs)?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstructRecord {
+                    dst,
+                    fields: vec![lr, rr],
+                });
+                Ok((dst, ValueTy::App("Pair".into(), vec![lt, rt])))
             }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
@@ -1119,17 +1814,16 @@ impl<'a> Lowerer<'a> {
             ("member", _) => Member,
             ("empty_map", _) => MapEmpty,
             ("empty_set", _) => SetEmpty,
+            ("concat_map", 2) => ConcatMap,
+            ("append_list", 2) => AppendList,
+            ("concat_string", 2) => ConcatString,
             _ => return None,
         })
     }
 
     /// Result static type of a collection op applied to the given argument
-    /// types. Element/value types are read from the container argument, and
-    /// the result capacity mirrors the SOURCE container's `Cap` (the runtime
-    /// ops preserve the source cap, so the static type is exact). The
-    /// empty-container constructors (`list`/`empty_map`/`empty_set`) carry
-    /// `Cap(0)`: their value is a single container slot, and element slots are
-    /// allocated per cons/insert/map op (each counted by `is_alloc_producing`).
+    /// types. Element/value types are read from the container argument. Open
+    /// collections carry no capacity.
     fn value_builtin_ty(
         &self,
         name: &str,
@@ -1190,12 +1884,9 @@ impl<'a> Lowerer<'a> {
             "length" => Ok(ValueTy::Int),
             "map" => {
                 // The result list's ELEMENT type is the closure's RETURN type
-                // (`map : (a -> b) -> List a n -> List b n`), read from the
-                // lowered `Func` signature of `args[0]`; a closure with no
-                // known return falls back to the source element type. The
-                // capacity mirrors the SOURCE list's cap: map allocates
-                // cap(source) element slots + the result container in one op,
-                // so a Cap(0) result type would undercount the arena bound.
+                // (`map : (a -> b) -> List a -> List b`), read from the lowered
+                // `Func` signature of `args[0]`; a closure with no known return
+                // falls back to the source element type.
                 let elem = match args.first() {
                     Some(ValueTy::Func(_, rets)) => rets.first().cloned().unwrap_or(ValueTy::Float),
                     _ => match args.get(1).and_then(list_type_args) {
@@ -1203,15 +1894,26 @@ impl<'a> Lowerer<'a> {
                         _ => ValueTy::Float,
                     },
                 };
-                let cap = args.get(1).map(container_cap).unwrap_or(0);
-                Ok(ValueTy::App("List".into(), vec![elem, ValueTy::Cap(cap)]))
+                Ok(ValueTy::App("List".into(), vec![elem]))
             }
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
-            "list" => Ok(ValueTy::App(
-                "List".into(),
-                vec![ValueTy::Float, ValueTy::Cap(0)],
-            )),
+            "concat_map" => {
+                let elem = match args.get(1).and_then(list_type_args) {
+                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
+                    _ => ValueTy::Float,
+                };
+                Ok(ValueTy::App("List".into(), vec![elem]))
+            }
+            "append_list" => match args.first().and_then(list_type_args) {
+                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                _ => Err(CompileError::Type {
+                    msg: format!("append_list expects a List, got {:?}", args.first()),
+                    span,
+                }),
+            },
+            "concat_string" => Ok(ValueTy::String),
+            "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Float])),
             "insert" => match args.len() {
                 3 => {
                     check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
@@ -1220,10 +1922,6 @@ impl<'a> Lowerer<'a> {
                         vec![
                             args.first().cloned().unwrap_or(ValueTy::Float),
                             args.get(1).cloned().unwrap_or(ValueTy::Float),
-                            // The result map carries the SOURCE map's capacity (the
-                            // COW insert keeps the source bound): a Cap(0) result
-                            // type would undercount the arena bound.
-                            ValueTy::Cap(args.get(2).map(container_cap).unwrap_or(0)),
                         ],
                     ))
                 }
@@ -1231,10 +1929,7 @@ impl<'a> Lowerer<'a> {
                     check_ord(args.first().unwrap_or(&ValueTy::Float), "element")?;
                     Ok(ValueTy::App(
                         "Set".into(),
-                        vec![
-                            args.first().cloned().unwrap_or(ValueTy::Float),
-                            ValueTy::Cap(args.get(1).map(container_cap).unwrap_or(0)),
-                        ],
+                        vec![args.first().cloned().unwrap_or(ValueTy::Float)],
                     ))
                 }
             },
@@ -1254,16 +1949,105 @@ impl<'a> Lowerer<'a> {
             }
             "empty_map" => Ok(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(0)],
+                vec![ValueTy::String, ValueTy::Float],
             )),
-            "empty_set" => Ok(ValueTy::App(
-                "Set".into(),
-                vec![ValueTy::Float, ValueTy::Cap(0)],
-            )),
+            "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Float])),
             _ => Err(CompileError::Unsupported(format!(
                 "unknown collection op {name}"
             ))),
         }
+    }
+
+    /// Whether `e` is a bare reference to a nullary method of `class_name` (e.g.
+    /// `mempty` in `mappend xs mempty`) — such an argument resolves by the
+    /// selector argument's concrete type.
+    fn is_bare_nullary_method_ref(&self, e: &Expr, class_name: &str) -> bool {
+        match e {
+            Expr::Ref(name, _) => self.env.is_nullary_method(class_name, name.as_str()),
+            _ => false,
+        }
+    }
+
+    /// Bind a constraint instance's head args from the LEADING args of the
+    /// call-site concrete container (`instance (Monad m) => Arrow (Kleisli m)`:
+    /// `Kleisli Maybe Float Float` + head `Kleisli m` → `m := Maybe`), recording
+    /// each binding in [`Self::head_arg_bindings`], then discharge every
+    /// constraint by instance lookup of the bound type. A head arg that is not
+    /// concrete at the call site is DEFERRED (recorded, not checked) — the
+    /// concrete binding emerges when the surrounding expression's type is
+    /// pinned. Returns the instance's `(head_args, constraints)` (both empty
+    /// for a non-constraint instance).
+    #[allow(clippy::type_complexity)]
+    fn bind_head_args_and_discharge(
+        &mut self,
+        class_name: &str,
+        ctor: &str,
+        container_vty: &ValueTy,
+        span: Span,
+    ) -> Result<(Vec<String>, Vec<(String, String)>), CompileError> {
+        let inst = self
+            .env
+            .instances
+            .get(class_name)
+            .and_then(|by_ty| by_ty.get(ctor))
+            .cloned();
+        let (head_args, constraints) = match &inst {
+            Some(i) => (i.head_args.clone(), i.constraints.clone()),
+            None => (vec![], vec![]),
+        };
+        let concrete_args = match container_vty {
+            ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+            _ => vec![],
+        };
+        if concrete_args.is_empty() && !head_args.is_empty() {
+            // The container's type args are unknown at the call site (the
+            // lowerer's inlined record literal carries no parameterization).
+            // Defer the head binding and constraint discharge — inference
+            // already discharged them with the concrete args.
+            return Ok((vec![], vec![]));
+        }
+        for (k, hv) in head_args.iter().enumerate() {
+            if let Some(ca) = concrete_args.get(k) {
+                self.head_arg_bindings.insert(hv.clone(), ca.clone());
+            } else {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "head argument `{hv}` of `{ctor}` is not concrete at the call site"
+                    ),
+                    span,
+                });
+            }
+        }
+        for (cclass, cv) in &constraints {
+            let bound =
+                self.head_arg_bindings
+                    .get(cv)
+                    .cloned()
+                    .ok_or_else(|| CompileError::Type {
+                        msg: format!("constraint `{cclass} {cv}` has an unbound type variable"),
+                        span,
+                    })?;
+            let tname = self.env.type_name_of_vty(&bound);
+            if let Some(tname) = tname {
+                if !self
+                    .env
+                    .instances
+                    .get(cclass.as_str())
+                    .map(|m| m.contains_key(tname.as_str()))
+                    .unwrap_or(false)
+                {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "no instance of `{cclass}` for type `{tname}` (constraint of `{class_name}`)"
+                        ),
+                        span,
+                    });
+                }
+            }
+            // An unresolved type variable defers the discharge to the point
+            // where the head arg becomes concrete (the body's own resolution).
+        }
+        Ok((head_args, constraints))
     }
 
     /// Resolve a `Ref` in value position: a value local (match-arm binding) or a
@@ -1273,20 +2057,148 @@ impl<'a> Lowerer<'a> {
         name: &str,
         span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
+        self.lower_value_ref_expected(name, span, None)
+    }
+
+    /// [`Self::lower_value_ref`] with an optional expected value type. A
+    /// result-directed typeclass method (`mempty`) resolves by the expected
+    /// type's concrete name.
+    fn lower_value_ref_expected(
+        &mut self,
+        name: &str,
+        span: Span,
+        expected: Option<&ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if !self.defs.contains_key(name) && !self.value_locals.iter().any(|s| s.contains_key(name))
+        {
+            if let Some(class_name) = self.env.class_of_method(name) {
+                let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
+                let class_var = class_info.var.clone();
+                let sig = class_info
+                    .methods
+                    .iter()
+                    .find(|(m, _)| m == name)
+                    .map(|(_, s)| s.clone());
+                let result_directed = match &sig {
+                    Some(crate::ast::TypeExpr::TFunc(args, _)) => args
+                        .iter()
+                        .all(|a| !crate::types::infer::type_expr_mentions(a, &class_var)),
+                    Some(_) => true,
+                    None => false,
+                };
+                if result_directed {
+                    let exp = match expected {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "cannot resolve method `{name}` of `{class_name}`: expected type unknown"
+                                ),
+                                span,
+                            });
+                        }
+                    };
+                    let ty_name = match self.env.type_name_of_vty(exp) {
+                        Some(t) => t,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                                ),
+                                span,
+                            });
+                        }
+                    };
+                    let (_, params, body) = match self.env.resolve_method(name, ty_name.as_str()) {
+                        Some(r) => r,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                                span,
+                            });
+                        }
+                    };
+                    let key = (class_name, ty_name.clone(), name.to_string());
+                    if self.method_lifting.contains(&key) {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "recursive typeclass method `{name}` for type `{ty_name}`"
+                            ),
+                            span,
+                        });
+                    }
+                    self.method_lifting.insert(key.clone());
+                    let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+                    // Result-directed methods take no arguments (`mempty`) or a
+                    // single element argument (`pure x`/`return x`) — bind any
+                    // params to fresh registers.
+                    let arg_reg = self.fresh_value_reg();
+                    for p in params.iter() {
+                        scope.insert(p.clone(), (arg_reg, ValueTy::Float));
+                        ctor_scope.insert(p.clone(), None);
+                    }
+                    self.value_locals.push(scope);
+                    self.value_local_ctors.push(ctor_scope);
+                    let res = self.lower_value_expected(&body, Some(exp));
+                    self.value_locals.pop();
+                    self.value_local_ctors.pop();
+                    self.method_lifting.remove(&key);
+                    return res;
+                }
+            }
+        }
+        self.lower_value_ref_inner(name, span)
+    }
+
+    /// The original [`Self::lower_value_ref`] body.
+    fn lower_value_ref_inner(
+        &mut self,
+        name: &str,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
         for scope in self.value_locals.iter().rev() {
             if let Some(&(reg, ref vty)) = scope.get(name) {
                 return Ok((reg, vty.clone()));
             }
         }
-        if let Some(idx) = self.fragment_captures.iter().position(|f| f == name) {
+        // Bare zero-argument collection constructors: `list`, `empty_map`,
+        // `empty_set` in value position are empty-container builtin calls (the
+        // capacity argument was removed — open collections).
+        if let Some(op) = match name {
+            "list" => Some(ValueBuiltinOp::ListEmpty),
+            "empty_map" => Some(ValueBuiltinOp::MapEmpty),
+            "empty_set" => Some(ValueBuiltinOp::SetEmpty),
+            _ => None,
+        } {
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueCallBuiltin {
+                dst,
+                op,
+                args: vec![],
+            });
+            let ret = match op {
+                ValueBuiltinOp::ListEmpty => ValueTy::App("List".into(), vec![ValueTy::Float]),
+                ValueBuiltinOp::MapEmpty => {
+                    ValueTy::App("Map".into(), vec![ValueTy::String, ValueTy::Float])
+                }
+                _ => ValueTy::App("Set".into(), vec![ValueTy::Float]),
+            };
+            self.note_container(&ret);
+            return Ok((dst, ret));
+        }
+        if let Some(idx) = self.fragment_captures.iter().position(|(f, _)| f == name) {
             // A free variable of the enclosing lambda: read it from the call's
             // env frame. `idx` is the name's position in the fragment's capture
             // list, which `run_fragment` binds as frame cell `idx` (the env
-            // Record field order == capture order). v1 captures are scalar
-            // values, so the static type is Float.
+            // Record field order == capture order). The static type is the
+            // capture's type at the closure's definition site (a captured
+            // record parameter stays its `Data` type, so a field projection /
+            // method call inside the fragment resolves).
+            let ty = self.fragment_captures[idx].1.clone();
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueReadCell { dst, cell: idx });
-            return Ok((dst, ValueTy::Float));
+            return Ok((dst, ty));
         }
         if let Some(&cell) = self.main_cell_locals.get(name) {
             // A main λ-parameter in value position: copy the persistent cell's
@@ -1367,8 +2279,15 @@ impl<'a> Lowerer<'a> {
                     def_params.iter().map(|p| p.name.clone()).collect();
                 let free = self.free_vars(&body, &param_names);
                 let param_tys = vec![ValueTy::Float; def_params.len()];
-                let (fragment_id, ret_ty) =
-                    self.lower_fragment(&def_params, &body, &free, &param_tys, dspan)?;
+                let (fragment_id, ret_ty) = self.lower_fragment(
+                    &def_params,
+                    &body,
+                    &free,
+                    &self.capture_tys(&free),
+                    &param_tys,
+                    None,
+                    dspan,
+                )?;
                 let env_reg = self.emit_env_snapshot(&free, dspan)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
@@ -1397,6 +2316,30 @@ impl<'a> Lowerer<'a> {
         free
     }
 
+    /// The static types of a lambda's free variables, in the same order as
+    /// [`Self::free_vars`]: resolved from the enclosing value scopes (a captured
+    /// record parameter keeps its `Data` type, so a field projection / method
+    /// call inside the fragment resolves), a main λ-parameter cell, defaulting
+    /// to Float for an unknown capture (matching the v1 scalar-capture default).
+    fn capture_tys(&self, free: &[String]) -> Vec<ValueTy> {
+        free.iter()
+            .map(|n| {
+                for scope in self.value_locals.iter().rev() {
+                    if let Some((_, ty)) = scope.get(n) {
+                        return ty.clone();
+                    }
+                }
+                // A name captured by an ENCLOSING fragment (a lambda inside a
+                // lambda) keeps its capture type (`k2` of the outer compose
+                // lambda, itself a `Kleisli`).
+                if let Some((_, ty)) = self.fragment_captures.iter().find(|(f, _)| f == n) {
+                    return ty.clone();
+                }
+                ValueTy::Float
+            })
+            .collect()
+    }
+
     fn free_vars_impl(
         &self,
         e: &Expr,
@@ -1406,7 +2349,12 @@ impl<'a> Lowerer<'a> {
     ) {
         match e {
             Expr::Ref(name, _) => {
-                if !bound.contains(name) && seen.insert(name.clone()) {
+                // Top-level value defs are inlined at each use site (see
+                // `lower_value_ref_inner`), so they are never captured.
+                if !bound.contains(name)
+                    && !self.defs.contains_key(name)
+                    && seen.insert(name.clone())
+                {
                     out.push(name.clone());
                 }
             }
@@ -1430,10 +2378,23 @@ impl<'a> Lowerer<'a> {
                     let is_ctor = self.env.data_types.contains_key(name)
                         || self.env.newtypes.contains_key(name)
                         || self.sum_ctor(name).is_some();
-                    if !is_ctor {
+                    // Typeclass methods (`pure`, `return`, `fmap`, `bind`, …)
+                    // resolve at compile time via inlining — they are not
+                    // runtime values and must not be captured by the env
+                    // snapshot. Top-level value defs are likewise inlined at
+                    // each use site (`lower_value_ref_inner`).
+                    let is_class_method = self.env.class_of_method(name).is_some();
+                    let is_top_level_def = self.defs.contains_key(name);
+                    if !is_ctor && !is_class_method && !is_top_level_def {
                         out.push(name.clone());
                     }
                 }
+                for a in args {
+                    self.free_vars_impl(a, bound, out, seen);
+                }
+            }
+            Expr::ApplyExpr { callee, args, .. } => {
+                self.free_vars_impl(callee, bound, out, seen);
                 for a in args {
                     self.free_vars_impl(a, bound, out, seen);
                 }
@@ -1541,12 +2502,15 @@ impl<'a> Lowerer<'a> {
     /// name emits `ValueReadCell { cell: capture_index }` where
     /// `capture_index` is the name's position in `free` (the env Record field
     /// order, bound by `run_fragment` as temp-frame cells).
+    #[allow(clippy::too_many_arguments)]
     fn lower_fragment(
         &mut self,
         params: &[Param],
         body: &Expr,
         free: &[String],
+        capture_tys: &[ValueTy],
         param_tys: &[ValueTy],
+        expected_body: Option<&ValueTy>,
         _span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
         let saved_blocks = std::mem::take(&mut self.value_blocks);
@@ -1555,6 +2519,11 @@ impl<'a> Lowerer<'a> {
         let saved_next = self.next_value_reg;
         let saved_locals = std::mem::take(&mut self.value_locals);
         let saved_captures = std::mem::take(&mut self.fragment_captures);
+        // A fragment is a deferred computation: typeclass method calls inside
+        // resolve at the fragment's own call sites, not against the enclosing
+        // method-inlining path (clear the recursion guard).
+        let saved_lifting = self.method_lifting.clone();
+        self.method_lifting.clear();
 
         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
         for (i, p) in params.iter().enumerate() {
@@ -1563,10 +2532,14 @@ impl<'a> Lowerer<'a> {
         }
         self.value_locals.push(scope);
         self.value_local_ctors.push(HashMap::new());
-        self.fragment_captures = free.to_vec();
+        self.fragment_captures = free
+            .iter()
+            .cloned()
+            .zip(capture_tys.iter().cloned())
+            .collect();
         self.next_value_reg = params.len();
 
-        let res = self.lower_value(body);
+        let res = self.lower_value_expected(body, expected_body);
         let body_result = match res {
             Ok(r) => r,
             Err(e) => {
@@ -1604,6 +2577,7 @@ impl<'a> Lowerer<'a> {
         self.value_locals = saved_locals;
         self.value_local_ctors.pop();
         self.fragment_captures = saved_captures;
+        self.method_lifting = saved_lifting;
         Ok((id, result_ty))
     }
 
@@ -2466,10 +3440,15 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Float
             | ValueTy::Bool
             | ValueTy::String
-            | ValueTy::Cap(_)
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
             | ValueTy::TyConVar(_) => 1,
+            ValueTy::TyConApp(_, args) => {
+                1 + args
+                    .iter()
+                    .map(|t| self.subtree_size_impl(t, visiting))
+                    .sum::<usize>()
+            }
             ValueTy::App(name, args) => match name.as_str() {
                 "Maybe" => {
                     1 + args
@@ -2492,20 +3471,12 @@ impl<'a> Lowerer<'a> {
                 }
                 "List" | "Set" => {
                     let elem = &args[0];
-                    let cap = match &args[1] {
-                        ValueTy::Cap(n) => *n,
-                        _ => 0,
-                    };
-                    1 + cap * self.subtree_size_impl(elem, visiting)
+                    1 + Self::ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
                 "Map" => {
                     let k = &args[0];
                     let v = &args[1];
-                    let cap = match &args[2] {
-                        ValueTy::Cap(n) => *n,
-                        _ => 0,
-                    };
-                    1 + cap
+                    1 + Self::ELEM_EST
                         * (self.subtree_size_impl(k, visiting)
                             + self.subtree_size_impl(v, visiting))
                 }
@@ -2580,28 +3551,36 @@ impl<'a> Lowerer<'a> {
             }
             Expr::Imag(v, _) => {
                 let name = "complex".to_string();
-                if let Some(sig) = self.sigs.builtin_sig(&name) {
-                    let sig = sig.clone();
-                    let instance = self.builtins.len();
-                    self.builtins.push(BuiltinInstance {
-                        name,
-                        params: vec![0.0, *v],
-                        resource: None,
-                        kind: sig.kind,
-                        signal_ins: sig.signal_ins(),
-                        signal_outs: sig.signal_outs,
-                        param_bindings: Vec::new(),
-                    });
-                    let fst = self.fresh_reg();
-                    for _ in 1..sig.signal_outs {
-                        self.fresh_reg();
+                if let Some(fsig) = self.env.foreign_sigs.get(&name).cloned() {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&name, &fsig) {
+                        let instance = self.builtins.len();
+                        self.builtins.push(BuiltinInstance {
+                            name,
+                            params: vec![0.0, *v],
+                            resource: None,
+                            tape_index: None,
+                            kind: crate::builtin::BuiltinKind::Block,
+                            signal_ins: sig
+                                .params
+                                .iter()
+                                .filter(|p| {
+                                    matches!(p, crate::types::ffi::FfiParam::Signal)
+                                })
+                                .count(),
+                            signal_outs: sig.signal_outs,
+                            param_bindings: Vec::new(),
+                        });
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        self.emit(Instr::CallBlock {
+                            dst: fst,
+                            srcs: vec![],
+                            instance,
+                        });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
-                    self.emit(Instr::CallBlock {
-                        dst: fst,
-                        srcs: vec![],
-                        instance,
-                    });
-                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
                 let dst = self.fresh_reg();
                 self.emit(Instr::Const { dst, value: 0.0 });
@@ -2685,195 +3664,370 @@ impl<'a> Lowerer<'a> {
                         span: *span,
                     });
                 }
-                if let Some(sig) = self.sigs.builtin_sig(name).cloned() {
-                    let mut param_values = Vec::new();
-                    let mut param_bindings = Vec::new();
-                    let mut signal_srcs = Vec::new();
-                    let mut signal_pos = 0;
-                    let mut param_pos = 0;
-                    let mut resource: Option<String> = None;
-
-                    for ptype in &sig.params {
-                        match ptype {
-                            ParamType::Signal => {
-                                if signal_pos >= args.len() {
-                                    return Err(CompileError::Type {
-                                        msg: format!("missing signal input for `{name}`"),
-                                        span: *span,
-                                    });
-                                }
-                                signal_srcs.push(args[signal_pos]);
-                                signal_pos += 1;
-                            }
-                            ParamType::Resource => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                match &call_args[param_pos] {
-                                    Expr::Ref(res_name, _) => {
-                                        resource = Some(res_name.clone());
-                                    }
-                                    other => {
-                                        return Err(CompileError::Type {
+                // Foreign (FFI) declaration: walk the language-side signature,
+                // folding scalar params and lowering signal args interleaved — a
+                // single positional cursor over call_args mirrors inference
+                // (`gain _ 0.5` → the Wire at [0], the constant at [1]).
+                if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+                        let variadic_idx = sig
+                            .params
+                            .iter()
+                            .position(|p| {
+                                matches!(p, crate::types::ffi::FfiParam::VariadicSignal)
+                            });
+                        let mut param_values = Vec::new();
+                        let mut param_bindings = Vec::new();
+                        let mut signal_srcs = Vec::new();
+                        let mut resource: Option<String> = None;
+                        let mut tape_index: Option<usize> = None;
+                        let mut pos = 0usize;
+                        let mut signal_index = 0usize;
+                        for p in &sig.params {
+                            match p {
+                                crate::types::ffi::FfiParam::Signal => {
+                                    let src = if pos >= call_args.len() {
+                                        // Combinator-fed signal: no explicit
+                                        // wire call arg — bind the next wiring
+                                        // register (the graph-reconstruct
+                                        // `(_, _) :> dry_wet` style feeds the
+                                        // channels via the combinator).
+                                        if signal_index >= args.len() {
+                                            return Err(CompileError::Type {
+                                                msg: format!(
+                                                    "missing signal input for `{name}`"
+                                                ),
+                                                span: *span,
+                                            });
+                                        }
+                                        args[signal_index]
+                                    } else if matches!(&call_args[pos], Expr::Wire(_)) {
+                                        // A Wire in the k-th Signal slot binds the k-th
+                                        // wiring register; a generator (0-in) yields its
+                                        // outs via `self.lower`.
+                                        let reg = *args.get(signal_index).ok_or_else(|| {
+                                            CompileError::Type {
+                                                msg: format!(
+                                                    "signal argument {pos} of `{name}`: not \
+                                                     enough wiring inputs"
+                                                ),
+                                                span: call_args[pos].span(),
+                                            }
+                                        })?;
+                                        reg
+                                    } else {
+                                        let outs = self.lower(&call_args[pos], args)?;
+                                        *outs.first().ok_or_else(|| CompileError::Type {
                                             msg: format!(
-                                                "resource argument of `{name}` must be a symbolic reference",
+                                                "signal argument {pos} of `{name}` has no outputs"
                                             ),
-                                            span: other.span(),
-                                        });
+                                            span: call_args[pos].span(),
+                                        })?
+                                    };
+                                    // A foreign signal slot is a single channel in v1.
+                                    signal_srcs.push(src);
+                                    signal_index += 1;
+                                    pos += 1;
+                                }
+                                crate::types::ffi::FfiParam::VariadicSignal => {
+                                    // The variadic's explicit signal span stops
+                                    // before the trailing non-variadic params
+                                    // (each consumes one trailing call arg —
+                                    // mixer's trailing `Record` config).
+                                    let trailing = variadic_idx.map(|i| sig.params.len() - i - 1)
+                                    .unwrap_or(0);
+                                    let end = call_args.len().saturating_sub(trailing);
+                                    for (i, arg) in call_args[pos..end].iter().enumerate() {
+                                        // The i-th Wire in the variadic span binds the
+                                        // (signal_index + i)-th wiring register.
+                                        let src = if matches!(arg, Expr::Wire(_)) {
+                                            let reg = *args
+                                                .get(signal_index + i)
+                                                .ok_or_else(|| CompileError::Type {
+                                                    msg: format!(
+                                                        "variadic signal argument of `{name}`: \
+                                                         not enough wiring inputs"
+                                                    ),
+                                                    span: arg.span(),
+                                                })?;
+                                            reg
+                                        } else {
+                                            let outs = self.lower(arg, args)?;
+                                            *outs.first().ok_or_else(|| CompileError::Type {
+                                                msg: format!(
+                                                    "signal argument of `{name}` has no outputs"
+                                                ),
+                                                span: arg.span(),
+                                            })?
+                                        };
+                                        signal_srcs.push(src);
                                     }
+                                    signal_index += end.saturating_sub(pos);
+                                    // Any remaining wiring registers are the
+                                    // combinator-fed signal channels (the
+                                    // graph-reconstruct `(_, _) :> mixer` style
+                                    // feeds the channels via `Merge`, not as
+                                    // explicit call args).
+                                    while signal_index < args.len() {
+                                        signal_srcs.push(args[signal_index]);
+                                        signal_index += 1;
+                                    }
+                                    pos = end;
                                 }
-                                param_pos += 1;
-                            }
-                            ParamType::Float | ParamType::Int => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                if let Expr::Ref(ref_name, _) = &call_args[param_pos] {
-                                    if let Some(&pidx) = self.param_names.get(ref_name) {
+                                crate::types::ffi::FfiParam::Scalar => {
+                                    if pos >= call_args.len() {
+                                        break;
+                                    }
+                                    if let Expr::Ref(ref_name, _) = &call_args[pos] {
+                                        if let Some(&pidx) = self.param_names.get(ref_name) {
+                                            param_values.push(0.0);
+                                            param_bindings.push((param_values.len() - 1, pidx));
+                                            pos += 1;
+                                            continue;
+                                        }
+                                    }
+                                    if let Expr::ActorParam {
+                                        name,
+                                        default,
+                                        span,
+                                    } = &call_args[pos]
+                                    {
+                                        let default_val = if let Some(d) = default {
+                                            const_f64(d).unwrap_or(0.0)
+                                        } else {
+                                            0.0
+                                        };
+                                        let idx = self.intern_param(
+                                            name.clone(),
+                                            default_val,
+                                            f64::NEG_INFINITY,
+                                            f64::INFINITY,
+                                            *span,
+                                        )?;
                                         param_values.push(0.0);
-                                        param_bindings.push((param_values.len() - 1, pidx));
-                                        param_pos += 1;
+                                        param_bindings.push((param_values.len() - 1, idx));
+                                        pos += 1;
                                         continue;
                                     }
-                                }
-                                if let Expr::ActorParam {
-                                    name,
-                                    default,
-                                    span,
-                                } = &call_args[param_pos]
-                                {
-                                    let default_val = if let Some(d) = default {
-                                        const_f64(d).unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    };
-                                    let idx = self.intern_param(
-                                        name.clone(),
-                                        default_val,
-                                        f64::NEG_INFINITY,
-                                        f64::INFINITY,
-                                        *span,
-                                    )?;
-                                    param_values.push(0.0);
-                                    param_bindings.push((param_values.len() - 1, idx));
-                                    param_pos += 1;
-                                    continue;
-                                }
-                                let v = self.caf_const(&call_args[param_pos]).ok_or_else(|| {
-                                    CompileError::Type {
-                                        msg: format!(
-                                            "param at position {param_pos} of `{name}` \
-                                                 must be a constant or parameter reference"
-                                        ),
-                                        span: call_args[param_pos].span(),
-                                    }
-                                })?;
-                                param_values.push(v);
-                                param_pos += 1;
-                            }
-                            ParamType::String => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Bool => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                match &call_args[param_pos] {
-                                    Expr::Int(0, _) => param_values.push(0.0),
-                                    Expr::Int(1, _) => param_values.push(1.0),
-                                    _ => param_values.push(1.0),
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Enum(_) => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                param_pos += 1;
-                            }
-                            ParamType::Record(schema) => {
-                                if param_pos >= call_args.len() {
-                                    break;
-                                }
-                                if let Expr::Record(fields, field_span) = &call_args[param_pos] {
-                                    let mut field_values: HashMap<&str, f64> = HashMap::new();
-                                    for (field_name, field_expr) in fields {
-                                        if let Some(val) = self.caf_const(field_expr) {
-                                            field_values.insert(field_name.as_str(), val);
+                                    let v = self.caf_const(&call_args[pos]).ok_or_else(|| {
+                                        CompileError::Type {
+                                            msg: format!(
+                                                "param at position {pos} of `{name}` must be a \
+                                                 constant or parameter reference"
+                                            ),
+                                            span: call_args[pos].span(),
                                         }
-                                    }
-                                    // Push schema field values in schema order so the
-                                    // built-in factory can read its configuration.
-                                    for field in &schema.fields {
-                                        let val = field_values
-                                            .get(field.name)
-                                            .copied()
-                                            .unwrap_or(field.default.unwrap_or(0.0));
-                                        param_values.push(val);
-                                    }
-                                    for (field_name, field_expr) in fields {
-                                        if let Some(val) = self.caf_const(field_expr) {
-                                            self.intern_param(
-                                                field_name.clone(),
-                                                val,
-                                                f64::NEG_INFINITY,
-                                                f64::INFINITY,
-                                                *field_span,
-                                            )?;
-                                        }
-                                    }
+                                    })?;
+                                    param_values.push(v);
+                                    pos += 1;
                                 }
-                                param_pos += 1;
-                            }
-                            ParamType::Variadic(inner) => match &**inner {
-                                ParamType::Signal => {
-                                    for &reg in &args[signal_pos..] {
-                                        signal_srcs.push(reg);
+                                crate::types::ffi::FfiParam::Record(rec_ty) => {
+                                    if pos >= call_args.len() {
+                                        break;
                                     }
-                                    signal_pos = args.len();
-                                }
-                                _ => {
-                                    for arg in &call_args[param_pos..] {
-                                        if let Expr::Ref(ref_name, _) = arg {
-                                            if let Some(&pidx) = self.param_names.get(ref_name) {
-                                                param_values.push(0.0);
-                                                param_bindings.push((param_values.len() - 1, pidx));
-                                                continue;
+                                    // Flatten the record literal's schema fields
+                                    // into `param_values` in schema order (the
+                                    // factory reads its config from the flat
+                                    // list), mirroring the legacy record arm. A
+                                    // `BandList` field (`bands: List EqBand`)
+                                    // flattens each list element (a band record)
+                                    // in the band schema's field order.
+                                    if let Expr::Record(fields, field_span) = &call_args[pos] {
+                                        let schema = crate::types::ffi::ffi_record_schema(self.env, rec_ty)
+                                        .ok_or_else(|| CompileError::Type {
+                                            msg: format!(
+                                                "unknown record type `{rec_ty}` for foreign `{name}`"
+                                            ),
+                                            span: call_args[pos].span(),
+                                        })?;
+                                        let mut field_values: HashMap<&str, f64> = HashMap::new();
+                                        for (field_name, field_expr) in fields {
+                                            if let Some(val) = self.caf_const(field_expr) {
+                                                field_values.insert(field_name.as_str(), val);
                                             }
                                         }
-                                        if let Some(val) = self.caf_const(arg) {
-                                            param_values.push(val);
+                                        for (fname, fscalar, default) in &schema.fields {
+                                            match fscalar {
+                                                crate::types::ffi::FfiScalar::Float
+                                                | crate::types::ffi::FfiScalar::Int => {
+                                                    let val = field_values
+                                                        .get(fname.as_str())
+                                                        .copied()
+                                                        .unwrap_or(default.unwrap_or(0.0));
+                                                    param_values.push(val);
+                                                }
+                                                crate::types::ffi::FfiScalar::BandList(
+                                                    band_ty,
+                                                ) => {
+                                                    // The field's value is a list
+                                                    // literal of band records.
+                                                    let field_expr = fields
+                                                        .iter()
+                                                        .find(|(n, _)| n == fname)
+                                                        .map(|(_, e)| e)
+                                                        .cloned();
+                                                    if let Some(
+                                                        Expr::ListLit(elems, _)
+                                                    ) = field_expr
+                                                    {
+                                                        let band_schema = crate::types::ffi::ffi_record_schema(self.env, band_ty)
+                                                        .ok_or_else(|| CompileError::Type {
+                                                            msg: format!(
+                                                                "unknown band record type `{band_ty}` for foreign `{name}`"
+                                                            ),
+                                                            span: *field_span,
+                                                        })?;
+                                                        for elem in elems {
+                                                            let Expr::Record(
+                                                                band_fields,
+                                                                _,
+                                                            ) = elem
+                                                            else {
+                                                                return Err(CompileError::Type {
+                                                                    msg: format!(
+                                                                        "band element of `{name}` must be a record literal"
+                                                                    ),
+                                                                    span: elem.span(),
+                                                                });
+                                                            };
+                                                            let mut band_values: HashMap<
+                                                                String,
+                                                                f64,
+                                                            > = HashMap::new();
+                                                            for (bf, be) in band_fields {
+                                                                if let Some(val) =
+                                                                    self.caf_const(&be)
+                                                                {
+                                                                    band_values.insert(
+                                                                        bf.clone(),
+                                                                        val,
+                                                                    );
+                                                                }
+                                                            }
+                                                            for (bfname, bfscalar, bdefault) in
+                                                                &band_schema.fields
+                                                            {
+                                                                match bfscalar {
+                                                                    crate::types::ffi::FfiScalar::Float
+                                                                    | crate::types::ffi::FfiScalar::Int => {
+                                                                        param_values.push(
+                                                                            band_values
+                                                                                .get(bfname.as_str())
+                                                                                .copied()
+                                                                                .unwrap_or(
+                                                                                    bdefault
+                                                                                        .unwrap_or(
+                                                                                            0.0,
+                                                                                        ),
+                                                                                ),
+                                                                        );
+                                                                    }
+                                                                    _ => {}
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        for (field_name, field_expr) in fields {
+                                            if let Some(val) = self.caf_const(field_expr) {
+                                                self.intern_param(
+                                                    field_name.clone(),
+                                                    val,
+                                                    f64::NEG_INFINITY,
+                                                    f64::INFINITY,
+                                                    *field_span,
+                                                )?;
+                                            }
                                         }
                                     }
-                                    param_pos = call_args.len();
+                                    pos += 1;
                                 }
-                            },
+                                crate::types::ffi::FfiParam::Resource => {
+                                    if pos >= call_args.len() {
+                                        break;
+                                    }
+                                    // A resource arg is either a symbolic `Ref`
+                                    // to a declared tape name or an inline
+                                    // `tape_loop <capacity>` constructor. The
+                                    // new DSL path resolves both to a tape INDEX
+                                    // (the program's `Vec<SharedCell>`); a `Ref`
+                                    // absent from the declared-tape map stays a
+                                    // name-based resource binding (the graph
+                                    // duplex path's externally-shared registry).
+                                    match &call_args[pos] {
+                                        Expr::Ref(res_name, _) => {
+                                            match self.tape_decls.get(res_name.as_str()) {
+                                                Some(&cap) => {
+                                                    tape_index = Some(
+                                                        self.resolve_named_tape(res_name, cap),
+                                                    );
+                                                }
+                                                None => {
+                                                    resource = Some(res_name.clone());
+                                                }
+                                            }
+                                        }
+                                        Expr::Apply { name: ctor, args: ctor_args, .. }
+                                            if ctor == "tape_loop" =>
+                                        {
+                                            // `tape_loop : Int -> Tape f32` —
+                                            // exactly one integer-constant arg.
+                                            let cap = match ctor_args.as_slice() {
+                                                [Expr::Int(v, _)] => *v as usize,
+                                                _ => {
+                                                    return Err(CompileError::Type {
+                                                        msg: "tape_loop takes exactly one positive integer capacity"
+                                                            .to_string(),
+                                                        span: call_args[pos].span(),
+                                                    })
+                                                }
+                                            };
+                                            if cap == 0 {
+                                                return Err(CompileError::Type {
+                                                    msg: "tape_loop capacity must be > 0"
+                                                        .to_string(),
+                                                    span: call_args[pos].span(),
+                                                });
+                                            }
+                                            tape_index = Some(self.resolve_tape(cap));
+                                        }
+                                        other => {
+                                            return Err(CompileError::Type {
+                                                msg: format!(
+                                                    "resource argument of `{name}` must be a symbolic reference or a `tape_loop` constructor"
+                                                ),
+                                                span: other.span(),
+                                            });
+                                        }
+                                    }
+                                    pos += 1;
+                                }
+                            }
                         }
+                        let instance = self.builtins.len();
+                        self.builtins.push(BuiltinInstance {
+                            name: name.clone(),
+                            params: param_values,
+                            resource,
+                            tape_index,
+                            kind: crate::builtin::BuiltinKind::Block,
+                            signal_ins: signal_srcs.len(),
+                            signal_outs: sig.signal_outs,
+                            param_bindings,
+                        });
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        self.emit(Instr::CallBlock {
+                            dst: fst,
+                            srcs: signal_srcs,
+                            instance,
+                        });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
-
-                    let instance = self.builtins.len();
-                    self.builtins.push(BuiltinInstance {
-                        name: name.clone(),
-                        params: param_values,
-                        resource,
-                        kind: sig.kind,
-                        signal_ins: signal_srcs.len(),
-                        signal_outs: sig.signal_outs,
-                        param_bindings,
-                    });
-                    let fst = self.fresh_reg();
-                    for _ in 1..sig.signal_outs {
-                        self.fresh_reg();
-                    }
-                    self.emit(Instr::CallBlock {
-                        dst: fst,
-                        srcs: signal_srcs,
-                        instance,
-                    });
-                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
                 let mut arg_regs = Vec::new();
                 for a in call_args {
@@ -2944,6 +4098,11 @@ impl<'a> Lowerer<'a> {
                 msg:
                     "field projection is a value expression; it cannot be used in a signal position"
                         .into(),
+                span: *span,
+            }),
+            Expr::ApplyExpr { span, .. } => Err(CompileError::Type {
+                msg: "expression application is a value expression; it cannot be used in a signal position"
+                    .into(),
                 span: *span,
             }),
             Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
@@ -3049,30 +4208,37 @@ impl<'a> Lowerer<'a> {
         args: &[usize],
         _span: Span,
     ) -> Result<Vec<usize>, CompileError> {
-        if let Some(sig) = self.sigs.builtin_sig(name) {
-            if sig.clone().params.len() == sig.clone().signal_ins() {
-                let sig = sig.clone();
-                let instance = self.builtins.len();
-                self.builtins.push(BuiltinInstance {
-                    name: name.to_string(),
-                    params: Vec::new(),
-                    resource: None,
-                    kind: sig.kind,
-                    signal_ins: sig.signal_ins(),
-                    signal_outs: sig.signal_outs,
-                    param_bindings: Vec::new(),
-                });
-                let fst = self.fresh_reg();
-                for _ in 1..sig.signal_outs {
-                    self.fresh_reg();
+        if let Some(fsig) = self.env.foreign_sigs.get(name).cloned() {
+            if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+                let signal_ins = sig
+                    .params
+                    .iter()
+                    .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                    .count();
+                if sig.params.len() == signal_ins {
+                    let instance = self.builtins.len();
+                    self.builtins.push(BuiltinInstance {
+                        name: name.to_string(),
+                        params: Vec::new(),
+                        resource: None,
+                        tape_index: None,
+                        kind: crate::builtin::BuiltinKind::Block,
+                        signal_ins,
+                        signal_outs: sig.signal_outs,
+                        param_bindings: Vec::new(),
+                    });
+                    let fst = self.fresh_reg();
+                    for _ in 1..sig.signal_outs {
+                        self.fresh_reg();
+                    }
+                    let srcs = args.to_vec();
+                    self.emit(Instr::CallBlock {
+                        dst: fst,
+                        srcs,
+                        instance,
+                    });
+                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
-                let srcs = args.to_vec();
-                self.emit(Instr::CallBlock {
-                    dst: fst,
-                    srcs,
-                    instance,
-                });
-                return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
             }
         }
         let bin = match name {
@@ -3337,28 +4503,34 @@ impl<'a> Lowerer<'a> {
             };
             if let (Some(re), Some(im)) = (re, im) {
                 let name = "complex".to_string();
-                if let Some(sig) = self.sigs.builtin_sig(&name) {
-                    let sig = sig.clone();
-                    let instance = self.builtins.len();
-                    self.builtins.push(BuiltinInstance {
-                        name,
-                        params: vec![re, im],
-                        resource: None,
-                        kind: sig.kind,
-                        signal_ins: sig.signal_ins(),
-                        signal_outs: sig.signal_outs,
-                        param_bindings: Vec::new(),
-                    });
-                    let fst = self.fresh_reg();
-                    for _ in 1..sig.signal_outs {
-                        self.fresh_reg();
+                if let Some(fsig) = self.env.foreign_sigs.get(&name).cloned() {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&name, &fsig) {
+                        let instance = self.builtins.len();
+                        self.builtins.push(BuiltinInstance {
+                            name,
+                            params: vec![re, im],
+                            resource: None,
+                            tape_index: None,
+                            kind: crate::builtin::BuiltinKind::Block,
+                            signal_ins: sig
+                                .params
+                                .iter()
+                                .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                                .count(),
+                            signal_outs: sig.signal_outs,
+                            param_bindings: Vec::new(),
+                        });
+                        let fst = self.fresh_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_reg();
+                        }
+                        self.emit(Instr::CallBlock {
+                            dst: fst,
+                            srcs: vec![],
+                            instance,
+                        });
+                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
-                    self.emit(Instr::CallBlock {
-                        dst: fst,
-                        srcs: vec![],
-                        instance,
-                    });
-                    return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                 }
             }
         }
@@ -3418,11 +4590,21 @@ impl<'a> Lowerer<'a> {
     /// Whether `rhs` is a built-in that takes variadic signal inputs.
     fn rhs_variadic(&self, rhs: &Expr) -> bool {
         match rhs {
-            Expr::Apply { name, .. } | Expr::Ref(name, _) => self
-                .sigs
-                .builtin_sig(name)
-                .map(|s| s.has_variadic_signal())
-                .unwrap_or(false),
+            Expr::Apply { name, .. } | Expr::Ref(name, _) => {
+                // FFI catalog first: a foreign sig with a VariadicSignal tail.
+                if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()) {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig) {
+                        if sig
+                            .params
+                            .iter()
+                            .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
             _ => false,
         }
     }
@@ -3481,6 +4663,21 @@ impl<'a> Lowerer<'a> {
         self.arity_with(e, &mut HashSet::new())
     }
 
+    /// The signal arity `(ins, outs)` of a catalog/FFI builtin by name, if
+    /// declared. Signal inputs = the count of `Signal` params (variadic-signal
+    /// channels excluded), mirroring the legacy `BuiltinSig::signal_ins()`
+    /// semantics.
+    fn ffi_arity(&self, name: &str) -> Option<(usize, usize)> {
+        let fsig = self.env.foreign_sigs.get(name)?;
+        let sig = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig)?;
+        let ins = sig
+            .params
+            .iter()
+            .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+            .count();
+        Some((ins, sig.signal_outs))
+    }
+
     fn arity_with(
         &self,
         e: &Expr,
@@ -3498,8 +4695,8 @@ impl<'a> Lowerer<'a> {
                 "+" | "-" | "*" | "/" | "%" | "min" | "max" => (2, 1),
                 "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
                 _ => {
-                    if let Some(sig) = self.sigs.builtin_sig(name) {
-                        (sig.signal_ins(), sig.signal_outs)
+                    if let Some((ins, outs)) = self.ffi_arity(name) {
+                        (ins, outs)
                     } else if let Some(def) = self.defs.get(name) {
                         if def.is_decl() {
                             // Type declarations have no signal arity.
@@ -3518,8 +4715,8 @@ impl<'a> Lowerer<'a> {
                 }
             },
             Expr::Apply { name, args, .. } => {
-                if let Some(sig) = self.sigs.builtin_sig(name) {
-                    (sig.signal_ins(), sig.signal_outs)
+                if let Some((ins, outs)) = self.ffi_arity(name) {
+                    (ins, outs)
                 } else {
                     let mut ins = 0;
                     for a in args {
@@ -3573,7 +4770,8 @@ impl<'a> Lowerer<'a> {
             | Expr::ListLit(..)
             | Expr::MapLit(..)
             | Expr::Cmp { .. }
-            | Expr::Logic { .. } => (0, 1),
+            | Expr::Logic { .. }
+            | Expr::ApplyExpr { .. } => (0, 1),
             Expr::Lambda { .. } => (0, 1),
         })
     }
@@ -3619,25 +4817,20 @@ fn const_int(e: &Expr) -> Option<i64> {
     }
 }
 
-/// Back-compat: lower with no built-ins and a default sample rate of 44.1 kHz.
+/// Back-compat: lower with a default sample rate of 44.1 kHz.
 pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
-    lower_with(tp, &crate::builtin::NoSigs, 44_100.0)
+    lower_with(tp, 44_100.0)
 }
 
-/// Lower a fully type-checked program into IR with a signature source and sample rate.
-pub fn lower_with(
-    tp: &TypedProgram,
-    sigs: &dyn SignatureSource,
-    sample_rate: f32,
-) -> Result<Ir, CompileError> {
-    lower_with_cafs(tp, sigs, sample_rate, &HashSet::new())
+/// Lower a fully type-checked program into IR at the given sample rate.
+pub fn lower_with(tp: &TypedProgram, sample_rate: f32) -> Result<Ir, CompileError> {
+    lower_with_cafs(tp, sample_rate, &HashSet::new())
 }
 
 /// Like [`lower_with`], but treats the given names as closed CAFs that are
 /// lifted once and shared across reference sites.
 pub fn lower_with_cafs(
     tp: &TypedProgram,
-    sigs: &dyn SignatureSource,
     sample_rate: f32,
     cafs: &HashSet<String>,
 ) -> Result<Ir, CompileError> {
@@ -3657,7 +4850,6 @@ pub fn lower_with_cafs(
     let num_inputs = tp.process_ty.arity_in();
     let mut lw = Lowerer {
         defs,
-        sigs,
         cafs,
         caf_cache: HashMap::new(),
         caf_lifting: HashSet::new(),
@@ -3675,6 +4867,7 @@ pub fn lower_with_cafs(
         cur_value_block: 0,
         value_entry: 0,
         next_value_reg: 0,
+        next_tyvar: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
         container_tys: Vec::new(),
@@ -3684,10 +4877,14 @@ pub fn lower_with_cafs(
         env: &tp.type_env,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
+        head_arg_bindings: HashMap::new(),
         fragments: Vec::new(),
         fragment_captures: Vec::new(),
         fn_param_tys: tp.fn_param_tys.clone(),
         pending_param_tys: None,
+        tape_decls: tp.tape_decls.iter().cloned().collect(),
+        tapes: Vec::new(),
+        named_tapes: HashMap::new(),
     };
 
     for (cell_idx, p) in main.params().iter().enumerate() {
@@ -3772,14 +4969,10 @@ pub fn lower_with_cafs(
                 + f.sig.value_outs
         })
         .sum::<usize>();
-    // Container-typed subexpressions pin their element slots while live, so
-    // each contributes its full subtree size (1 + cap × elem slots) to the
-    // bound. `value_builtin_ty` propagates the source cap for map/filter/cons/
-    // tail/insert, so these types carry the exact capacities the runtime
-    // allocates (a Cap(0) map/filter result type would undercount by cap(elem)
-    // element slots). Empty `list`/`empty_map`/`empty_set` legitimately have
-    // Cap(0): the empty container occupies one slot and element slots are
-    // allocated by the cons/insert ops themselves, each already counted.
+    // Container-typed subexpressions pin their element slots while live. Open
+    // collections have no type-level capacity, so `subtree_size` uses the
+    // conservative `ELEM_EST`; the default RT mode applies `POOL_SAFETY_MULTIPLIER`
+    // so legitimate growth does not exhaust the pool.
     let container_capacity = lw
         .container_tys
         .iter()
@@ -3798,6 +4991,13 @@ pub fn lower_with_cafs(
         + container_capacity
         + num_main_cells
         + fragment_capacity;
+    let slot_capacity = value_capacity * Lowerer::POOL_SAFETY_MULTIPLIER;
+    // Payload buffer budget: every live slot may hold one pooled payload
+    // buffer (a Record/Sum/List/Set payload). `value_capacity` bounds the
+    // peak live slots; `ELEM_EST` bounds each buffer's refs. Covers literals
+    // (their subtree is already in `value_capacity`) and runtime match/ctor
+    // payloads without separate tracking.
+    let buffer_budget = value_capacity * Lowerer::ELEM_EST;
     // Pre-allocated function-call scratch: the runtime call stack never holds
     // more than one frame per fragment (recursion is rejected at inference, so
     // no fragment can recur on a dispatch chain), so the total fragment count
@@ -3836,9 +5036,11 @@ pub fn lower_with_cafs(
         fragments: lw.fragments,
         max_call_regs,
         value_state: ValueLayout {
-            capacity: value_capacity,
+            capacity: slot_capacity,
+            buffer_budget,
             value_state_slots: 0,
         },
+        tapes: lw.tapes,
     })
 }
 
@@ -3858,46 +5060,15 @@ mod tests {
         lower(&tp).unwrap()
     }
 
-    struct TestSigs;
-    impl crate::builtin::SignatureSource for TestSigs {
-        fn builtin_sig(&self, name: &str) -> Option<&crate::builtin::BuiltinSig> {
-            use crate::builtin::{BuiltinKind, BuiltinSig};
-            match name {
-                "lowpass" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "lowpass",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                "onepole" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "onepole",
-                    1,
-                    1,
-                    2,
-                    BuiltinKind::Block,
-                )))),
-                "sine" => Some(Box::leak(Box::new(BuiltinSig::simple(
-                    "sine",
-                    0,
-                    1,
-                    3,
-                    BuiltinKind::Block,
-                )))),
-                _ => None,
-            }
-        }
-    }
-
     fn ir_with(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program_with(&p, &TestSigs).unwrap();
-        lower_with(&tp, &TestSigs, 44_100.0).unwrap()
+        let tp = infer_program_with(&p).unwrap();
+        lower_with(&tp, 44_100.0).unwrap()
     }
 
     fn ir_with_cafs(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let typed = infer_program_with(&p).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -3906,8 +5077,9 @@ mod tests {
             cafs,
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
-        lower_with_cafs(&tp, &TestSigs, 44_100.0, &tp.cafs).unwrap()
+        lower_with_cafs(&tp, 44_100.0, &tp.cafs).unwrap()
     }
 
     /// Build a `Lowerer` for testing lowering helpers (`free_vars`) directly on
@@ -3916,7 +5088,6 @@ mod tests {
     fn lw<'a>(env: &'a TypeEnv, cafs: &'a HashSet<String>) -> Lowerer<'a> {
         Lowerer {
             defs: HashMap::new(),
-            sigs: &TestSigs,
             cafs,
             caf_cache: HashMap::new(),
             caf_lifting: HashSet::new(),
@@ -3934,6 +5105,7 @@ mod tests {
             cur_value_block: 0,
             value_entry: 0,
             next_value_reg: 0,
+            next_tyvar: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
             container_tys: Vec::new(),
@@ -3943,10 +5115,14 @@ mod tests {
             env,
             value_inline: HashSet::new(),
             method_lifting: HashSet::new(),
+            head_arg_bindings: HashMap::new(),
             fragments: Vec::new(),
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),
             pending_param_tys: None,
+            tape_decls: HashMap::new(),
+            tapes: Vec::new(),
+            named_tapes: HashMap::new(),
         }
     }
 
@@ -4139,7 +5315,7 @@ mod tests {
             "osc = sine 440 0.5 0; main = _ : lowpass osc 0.7".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let typed = infer_program_with(&p).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -4148,8 +5324,9 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 
@@ -4171,8 +5348,9 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 
@@ -4186,7 +5364,7 @@ mod tests {
             "a = b; b = a; main = _ : lowpass a 0.7".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program_with(&p, &TestSigs).unwrap();
+        let typed = infer_program_with(&p).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -4195,8 +5373,9 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 
@@ -4224,8 +5403,9 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
-        let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
     }
 
@@ -4399,30 +5579,26 @@ mod tests {
     }
 
     #[test]
-    fn collection_subtree_sizes_are_exact() {
+    fn collection_subtree_sizes_use_open_collection_estimate() {
+        // Open collections: the estimator is ELEM_EST element slots per
+        // container (element counts are data-dependent, not in the type).
         let env = TypeEnv::default();
         let empty = HashSet::new();
         let lw = lw(&env, &empty);
         assert_eq!(
-            lw.subtree_size(&ValueTy::App(
-                "List".into(),
-                vec![ValueTy::Float, ValueTy::Cap(16)]
-            )),
-            1 + 16
+            lw.subtree_size(&ValueTy::App("List".into(), vec![ValueTy::Float])),
+            1 + Lowerer::ELEM_EST
         );
         assert_eq!(
             lw.subtree_size(&ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float, ValueTy::Cap(4)]
+                vec![ValueTy::String, ValueTy::Float]
             )),
-            1 + 4 * 2
+            1 + Lowerer::ELEM_EST * 2
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App(
-                "Set".into(),
-                vec![ValueTy::Int, ValueTy::Cap(8)]
-            )),
-            1 + 8
+            lw.subtree_size(&ValueTy::App("Set".into(), vec![ValueTy::Int])),
+            1 + Lowerer::ELEM_EST
         );
         assert_eq!(
             lw.subtree_size(&ValueTy::App("Maybe".into(), vec![ValueTy::Float])),

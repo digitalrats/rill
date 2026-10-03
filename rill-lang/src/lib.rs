@@ -14,7 +14,11 @@ pub mod backend;
 pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
+/// Faust-combinator sugar: foreign builtins keep their legacy arrow call style.
+mod desugar;
 pub mod error;
+/// FFI factory registry: foreign-declared builtins' Rust implementations.
+pub mod ffi;
 /// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → [`CompiledStream`](graph::CompiledStream).
 pub mod graph;
 pub mod ir;
@@ -43,7 +47,7 @@ pub use ir::{Instr, Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{BuiltinKind, BuiltinSig, ParamType, RecordField, RecordSchema, Registry};
+pub use builtin::{BuiltinKind, Registry};
 
 use rill_core::math::Transcendental;
 use rill_core_actor::Mailbox;
@@ -66,9 +70,14 @@ use std::sync::Arc;
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
+    let (program, tape_decls) = extract_resources(&program)?;
     let mut typed = types::infer::infer_program(&program)?;
+    typed.tape_decls = tape_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.capacity))
+        .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, 44_100.0, &typed.cafs)?;
+    let ir = lower::lower_with_cafs(&typed, 44_100.0, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
     Ok(RillProgram::<T, 256>::new(ir))
 }
@@ -82,11 +91,39 @@ pub fn compile_with<T: Transcendental>(
 ) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    let mut typed = types::infer::infer_program_with(&program, registry)?;
+    let (program, tape_decls) = extract_resources(&program)?;
+    let mut typed = types::infer::infer_program_with(&program)?;
+    typed.tape_decls = tape_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.capacity))
+        .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
+    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
-    RillProgram::<T, 256>::new_with(ir, registry, sample_rate)
+    RillProgram::<T, 256>::new_with(ir, registry, sample_rate, None)
+}
+
+/// Compile source against a foreign registry: `foreign fn` builtins resolve
+/// their Rust implementations from `ffi` (a fresh, empty legacy built-in
+/// registry is used for the built-in path). Uses the default block size
+/// (`BUF = 256`).
+pub fn compile_with_ffi<T: Transcendental>(
+    src: &str,
+    ffi: &crate::ffi::ForeignRegistry<T>,
+    sample_rate: f32,
+) -> Result<RillProgram<T, 256>, CompileError> {
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let (program, tape_decls) = extract_resources(&program)?;
+    let mut typed = types::infer::infer_program(&program)?;
+    typed.tape_decls = tape_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.capacity))
+        .collect();
+    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
+    let registry = Registry::<T>::new();
+    RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
 }
 
 /// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
@@ -120,58 +157,51 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
-    resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+    mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    let (program, resource_decls) = extract_resources(program);
+    let (program, resource_decls) = extract_resources(program)?;
 
-    let mut typed = types::infer::infer_program_with(&program, registry)?;
+    let mut typed = types::infer::infer_program_with(&program)?;
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
 
-    // The declared-resource check only applies when the registry is auto-created
-    // from the source's `TapeLoop` declarations. When a caller-supplied registry
-    // is used, its presence is validated below.
+    // The DSL `tape_loop` path (no external registry) resolves a resource
+    // param's `Ref(name)` to a tape INDEX via the extracted declarations. The
+    // caller-supplied-registry path (graph duplex) keeps name-based bindings —
+    // its `Ref`s resolve against the shared external registry at build.
     if resources.is_none() {
+        typed.tape_decls = resource_decls
+            .iter()
+            .map(|d| (d.name.clone(), d.capacity))
+            .collect();
+    }
+    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
+
+    if let Some(res) = &mut resources {
         for bi in &ir.builtins {
-            if let Some(res) = &bi.resource {
-                if !resource_decls.iter().any(|d| &d.name == res) {
+            if let Some(name) = &bi.resource {
+                if res.reader(name).is_none() {
                     return Err(CompileError::Unsupported(format!(
-                        "built-in '{}' references undeclared resource '{}'",
-                        bi.name, res
+                        "resource '{}' not found in the provided registry",
+                        name
                     )));
                 }
             }
         }
+        let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res, None)?;
+        let mailbox = Arc::new(Mailbox::new(64));
+        return Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox));
     }
 
-    let mut owned = rill_core::buffer::ResourceRegistry::<T>::new();
-    let res: &mut rill_core::buffer::ResourceRegistry<T> = match resources {
-        Some(r) => {
-            for bi in &ir.builtins {
-                if let Some(name) = &bi.resource {
-                    if r.reader(name).is_none() {
-                        return Err(CompileError::Unsupported(format!(
-                            "resource '{}' not found in the provided registry",
-                            name
-                        )));
-                    }
-                }
-            }
-            r
+    // DSL path: every tape binding must resolve to a declared `tape_loop` cell.
+    for bi in &ir.builtins {
+        if let Some(res) = &bi.resource {
+            return Err(CompileError::Unsupported(format!(
+                "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>` or pass a registry)",
+                bi.name, res
+            )));
         }
-        None => {
-            for decl in &resource_decls {
-                let tape =
-                    rill_core::buffer::TapeLoop::<T>::new(decl.capacity).ok_or_else(|| {
-                        CompileError::Unsupported(format!("tape '{}' has zero capacity", decl.name))
-                    })?;
-                owned.register_buffer(decl.name.clone(), Box::new(tape));
-            }
-            &mut owned
-        }
-    };
-
-    let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res)?;
+    }
+    let rp = RillProgram::<T, BUF>::new_with(ir, registry, sample_rate, None)?;
     let mailbox = Arc::new(Mailbox::new(64));
     Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox))
 }
@@ -198,14 +228,28 @@ pub struct ResourceDecl {
     pub capacity: usize,
 }
 
-/// Extract top-level `name = TapeLoop <capacity>` resource declarations,
-/// returning the remaining signal program plus the declarations.
-fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec<ResourceDecl>) {
+/// Extract top-level `name = tape_loop <capacity>` (and the legacy
+/// `name = TapeLoop <capacity>`) resource declarations, returning the remaining
+/// signal program plus the declarations.
+///
+/// The `TapeLoop` spelling is kept for the graph-duplex path
+/// (`graph/compile.rs::render_recording` still emits it against the
+/// externally-shared `ResourceRegistry`); the DSL path uses `tape_loop`.
+fn extract_resources(
+    program: &crate::ast::Program,
+) -> Result<(crate::ast::Program, Vec<ResourceDecl>), CompileError> {
     use crate::ast::{Def, Expr};
     let mut decls = Vec::new();
     let mut defs = Vec::with_capacity(program.defs.len());
     for def in &program.defs {
         let mut is_resource = false;
+        // Never treat `main` as a resource declaration — `main = tape_loop
+        // <capacity>` is a plausible typo that must surface as a type error on
+        // `main`, not as a missing-`main` error.
+        if def.name() == "main" {
+            defs.push(def.clone());
+            continue;
+        }
         if let Def::Local {
             name,
             body: Expr::Apply {
@@ -214,17 +258,28 @@ fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec
             ..
         } = def
         {
-            if ctor == "TapeLoop" {
-                if let Some(cap) = args.first().and_then(|a| match a {
-                    Expr::Int(v, _) => Some(*v as usize),
-                    Expr::Float(v, _) => Some(*v as usize),
-                    _ => None,
-                }) {
-                    decls.push(ResourceDecl {
-                        name: name.clone(),
-                        capacity: cap,
-                    });
-                    is_resource = true;
+            if ctor == "tape_loop" || ctor == "TapeLoop" {
+                match args.as_slice() {
+                    [Expr::Int(v, _)] => {
+                        let cap = *v as usize;
+                        if cap == 0 {
+                            return Err(CompileError::Unsupported(format!(
+                                "tape '{}' has zero capacity",
+                                name
+                            )));
+                        }
+                        decls.push(ResourceDecl {
+                            name: name.clone(),
+                            capacity: cap,
+                        });
+                        is_resource = true;
+                    }
+                    _ => {
+                        return Err(CompileError::Unsupported(format!(
+                            "tape '{}' declaration needs a single positive integer capacity",
+                            name
+                        )));
+                    }
                 }
             }
         }
@@ -232,13 +287,13 @@ fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec
             defs.push(def.clone());
         }
     }
-    (crate::ast::Program { defs }, decls)
+    Ok((crate::ast::Program { defs }, decls))
 }
 
 #[cfg(test)]
 mod ir_tests {
     use super::*;
-    use crate::builtin::{BuiltinKind, BuiltinSig, Registry};
+    use crate::builtin::Registry;
 
     struct TestOsc;
     impl rill_core::traits::Algorithm<f32> for TestOsc {
@@ -252,14 +307,11 @@ mod ir_tests {
         }
         fn reset(&mut self) {}
     }
-    impl rill_core::builtin::BlockBuiltin<f32> for TestOsc {}
+    impl crate::builtin::BlockBuiltin<f32> for TestOsc {}
 
     fn sine_registry() -> Registry<f32> {
         let mut registry = Registry::<f32>::new();
-        registry.register_block(
-            BuiltinSig::simple("sine", 0, 1, 3, BuiltinKind::Block),
-            |_, _| Box::new(TestOsc),
-        );
+        registry.register_block("sine", |_, _| Box::new(TestOsc));
         registry
     }
 
@@ -288,22 +340,16 @@ mod ir_tests {
     #[test]
     fn lang_chiptune_ir_structure() {
         let mut registry = Registry::<f32>::new();
-        registry.register_block(
-            BuiltinSig::simple("ay38910", 0, 1, 2, BuiltinKind::Block),
-            |_, _| panic!("not instantiated"),
-        );
+        registry.register_block("ay38910", |_, _| panic!("not instantiated"));
         // lofi: 1 signal in (from pipeline :), 1 out, 7 params
-        registry.register_block(
-            BuiltinSig::simple("lofi", 1, 1, 7, BuiltinKind::Block),
-            |_, _| panic!("not instantiated"),
-        );
+        registry.register_block("lofi", |_, _| panic!("not instantiated"));
 
         let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
         let tokens = lexer::tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
-        let mut typed = types::infer::infer_program_with(&program, &registry).unwrap();
+        let mut typed = types::infer::infer_program_with(&program).unwrap();
         typed.program = reduce::reduce(&typed.program);
-        let ir = lower::lower_with(&typed, &registry, 44100.0).unwrap();
+        let ir = lower::lower_with(&typed, 44100.0).unwrap();
         assert!(ir.num_inputs > 0);
         assert!(ir.num_outputs > 0);
     }

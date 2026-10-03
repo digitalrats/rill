@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::Expr;
+use crate::ast::{Def, Expr};
 use crate::error::{CompileError, Span};
 
 use super::unify::unify_value;
@@ -63,10 +63,8 @@ pub enum ValueTy {
     Data(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
     Newtype(String, Vec<ValueTy>),
-    /// Builtin constructor application: `List Float 16`.
+    /// Builtin constructor application: `List Float`.
     App(String, Vec<ValueTy>),
-    /// Capacity literal (`Nat` argument).
-    Cap(usize),
     /// Function type: value-argument types and value-result types. Signal-wire
     /// arguments are positional wire-captures at the call site, not part of the
     /// type.
@@ -76,6 +74,11 @@ pub enum ValueTy {
     /// Type-constructor variable (kind `* -> *` or higher), bound by a
     /// typeclass class variable.
     TyConVar(TypeVarId),
+    /// Application of a type-constructor *variable* to arguments: `m b` in a
+    /// data-field type (`data K m a b = { f: a -> m b }`). The head is the id of
+    /// the data-type's type parameter (same id space as `Var`/`TyConVar`); when it
+    /// resolves to a concrete constructor the application becomes `App(c, args)`.
+    TyConApp(TypeVarId, Vec<ValueTy>),
 }
 
 /// A signal or value channel.
@@ -209,6 +212,10 @@ pub struct TypeclassInfo {
     pub arity: usize,
     /// Method dictionary: method name → signature type expression.
     pub methods: Vec<(String, crate::ast::TypeExpr)>,
+    /// Default method bodies: method name → (params, body). An instance that
+    /// omits a method uses its class default (precedence: instance body >
+    /// default > error).
+    pub defaults: HashMap<String, (Vec<String>, Expr)>,
 }
 
 /// A concrete `instance` declaration: which class it implements, the concrete
@@ -219,6 +226,11 @@ pub struct InstanceInfo {
     pub class: String,
     /// The concrete type name bound to the class variable.
     pub ty: String,
+    /// Constraint list: (class, type var), e.g. `(Monad, "m")`.
+    pub constraints: Vec<(String, String)>,
+    /// Type-constructor args bound by the instance head (partial application):
+    /// `Kleisli m` → `["m"]` (arity 3 total, 1 bound ⇒ 2 remaining).
+    pub head_args: Vec<String>,
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
 }
@@ -240,9 +252,9 @@ pub struct TypeEnv {
     pub typeclasses: HashMap<String, TypeclassInfo>,
     /// Instances grouped by class, then by bound type name.
     pub instances: HashMap<String, HashMap<String, InstanceInfo>>,
-    /// Builtin type constructors: name → (value arity, whether the final
-    /// argument is a capacity). `List a n` has arity 2, has-cap true.
-    pub ctor_kinds: HashMap<String, (usize, bool)>,
+    /// Builtin type constructors: name → value arity. `List a` has arity 1,
+    /// `Map k v` arity 2. Open collections carry no capacity.
+    pub ctor_kinds: HashMap<String, usize>,
     /// User-declared parameterized data types: name → number of type
     /// parameters (`data Box a` → 1). Used to kind-check constructor instances
     /// against a class's arity (`Functor f` needs `Box a`, not `Pair a b`).
@@ -256,19 +268,244 @@ pub struct TypeEnv {
     /// an instance fail the kind check with a clean "not a type constructor"
     /// / arity message instead. See `validate_instances`.
     pub data_arities: HashMap<String, usize>,
+    /// Foreign function declarations: name → declared `TypeExpr` signature.
+    /// The language-side contract for Rust-implemented builtins (SP-3a FFI layer).
+    pub foreign_sigs: HashMap<String, crate::ast::TypeExpr>,
+}
+
+/// Built-in category-theory typeclasses, declared in rill-lang itself and
+/// registered by [`TypeEnv::with_builtins`]. Users never redeclare them but may
+/// add their own instances. `instance Monad T` auto-derives `Applicative T` and
+/// `Functor T` (see [`TypeEnv::derive_superclass_instances`]).
+pub(crate) const CATEGORY_PRELUDE: &str = r#"
+typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
+typeclass Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
+typeclass Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
+typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
+
+instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
+instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
+instance Monoid List where { mempty = list; mappend a b = append_list a b; }
+
+instance Functor List where { fmap g xs = map g xs; }
+instance Functor Maybe where {
+    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+}
+
+instance Monad Maybe where {
+    return x = Just x;
+    bind m f = match m of { Nothing => Nothing; Just x => f x; };
+}
+instance Monad List where {
+    return x = cons x (list);
+    bind xs f = concat_map f xs;
+}
+
+data Kleisli m a b = { unKleisli: a -> m b };
+
+typeclass Arrow a where {
+    arr: (b -> c) -> a b c;
+    first: a b c -> a (Pair b d) (Pair c d);
+    compose: a b c -> a c d -> a b d;
+    second: a b c -> a (Pair d b) (Pair d c) =
+        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+    both: a b c -> a d e -> a (Pair b d) (Pair c e) =
+        f g (compose (first f) (second g));
+    fan: a b c -> a b d -> a b (Pair c d) =
+        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+}
+
+instance (Monad m) => Arrow (Kleisli m) where {
+    arr f = Kleisli (fn x -> return (f x));
+    first k = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+}
+
+main = _;
+"#;
+
+/// Built-in signal-track declarations: the first-class buffer type and the
+/// `Buffer` typeclass. Registered by [`TypeEnv::with_builtins`]. The home of the
+/// Faust combinators and buffer math in later stages.
+///
+/// `Tape a` is the shared-buffer handle — a `Buffer` family member alongside
+/// `FixedBuffer a`. It is a marker record (empty field list): its runtime
+/// representation is an index into the program's `Vec<SharedCell>` (Task 11),
+/// so it needs no carrier fields.
+pub(crate) const SIGNAL_PRELUDE: &str = r#"
+typeclass Buffer b where { }
+instance Buffer (FixedBuffer a) where { }
+data Tape a = { };
+instance Buffer (Tape f32) where { }
+
+main = _;
+"#;
+
+/// Inline catalog of foreign builtin declarations auto-registered into
+/// [`TypeEnv::foreign_sigs`] (and their record `data` types into
+/// [`TypeEnv::data_types`]). Programs resolve these names without a
+/// user-written `foreign fn` per program — the single signature source since
+/// the legacy `BuiltinSig` machinery was removed (SP-3b Task 12).
+///
+/// Scope note: signal-input builtins are listed here because the
+/// Faust-combinator sugar (see [`crate::desugar`]) keeps their legacy call
+/// style working — `_ : onepole 200.0 0.7` desugars to the positional
+/// `onepole _ 200.0 0.7` before inference. The record-param builtins
+/// (`mixer`/`eq_parametric`/`dry_wet`) declare their record configs here too
+/// (`mixer`'s leading `List (FixedBuffer f32)` is a VariadicSignal followed
+/// only by a record — [`crate::types::ffi::ffi_sig_from_typeexpr`] accepts the
+/// shape). `tape_loop` (`Int -> Tape f32`) is a resource CONSTRUCTOR: its
+/// `Tape f32` result is not a `FixedBuffer`/`Pair`, so
+/// [`crate::types::ffi::ffi_sig_from_typeexpr`] rejects it by design — lowering
+/// recognizes `tape_loop <capacity>` directly (like the legacy `TapeLoop`
+/// declaration) and produces the tape index, which flows to `write_head` /
+/// `read_head` via their `Tape f32` resource params (Task 11).
+pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
+foreign fn sine : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn saw : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn square : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn triangle : Float -> Float -> Float -> FixedBuffer f32;
+foreign fn noise : Float -> Float -> FixedBuffer f32;
+foreign fn complex : Float -> Float -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn conj : FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn re : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn im : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn norm : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn arg : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+foreign fn cmul : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn cadd : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn ay38910 : Float -> Float -> FixedBuffer f32;
+foreign fn sampler : Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+
+foreign fn integrator : FixedBuffer f32 -> FixedBuffer f32;
+foreign fn leaky_integrator : FixedBuffer f32 -> Float -> FixedBuffer f32;
+foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn lowpass : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn highpass : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn delay : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn distortion : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn limiter : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn graphic_eq : FixedBuffer f32 -> Float -> FixedBuffer f32;
+foreign fn mono_to_stereo : FixedBuffer f32 -> Float -> Float -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn spectralgate : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn spectraldelay : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn convolver : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn analog_moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn lofi : FixedBuffer f32 -> Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn mixer : List (FixedBuffer f32) -> MixerConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn eq_parametric : FixedBuffer f32 -> EqConfig -> FixedBuffer f32;
+foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+
+foreign fn tape_loop : Int -> Tape f32;
+foreign fn write_head : FixedBuffer f32 -> FixedBuffer f32 -> Tape f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
+
+data MixerConfig = { buses: Int, master_vol: Float };
+data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };
+data EqConfig = { bands: List EqBand };
+data DryWetConfig = { mix: Float };
+
+main = _;
+"#;
+
+/// Derived instance bodies for the superclass chain, written in rill-lang.
+/// `instance Monad T` ⇒ `Applicative T` (`pure` = `return`, `ap` via `bind`) and
+/// `Functor T` (`fmap` via `bind`); `instance Applicative T` ⇒ `Functor T`
+/// (`fmap` via `ap`/`pure`). Referenced by [`TypeEnv::derive_superclass_instances`].
+const APPLICATIVE_FROM_MONAD: &str =
+    "pure x = return x; ap mf mx = bind mf (fn f -> bind mx (fn x -> return (f x)));";
+const FUNCTOR_FROM_MONAD: &str = "fmap g x = bind x (fn y -> return (g y));";
+const FUNCTOR_FROM_APPLICATIVE: &str = "fmap g x = ap (pure g) x;";
+
+/// Parse an `instance C T where { <template> }` source fragment and build the
+/// [`InstanceInfo`]. Used by superclass auto-derivation.
+fn instance_from_template(ty: &str, class: &str, bodies: &str) -> InstanceInfo {
+    let src = format!("instance {class} {ty} where {{ {bodies} }}; main = _;");
+    let toks = crate::lexer::tokenize(&src);
+    debug_assert!(toks.is_ok(), "derived instance template must lex");
+    let program = crate::parser::parse(&toks.ok().unwrap(), src.as_bytes());
+    debug_assert!(program.is_ok(), "derived instance template must parse");
+    let defs = program.ok().unwrap().defs;
+    let inst = defs
+        .iter()
+        .find(|d| matches!(d, Def::Instance { .. }))
+        .cloned()
+        .unwrap();
+    let Def::Instance { method_bodies, .. } = inst else {
+        unreachable!("derived instance template produced an instance")
+    };
+    let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
+    for (mname, params, body) in method_bodies {
+        let bindings = params.iter().map(|p| p.name.clone()).collect();
+        methods.insert(mname.clone(), (bindings, body));
+    }
+    InstanceInfo {
+        class: class.to_string(),
+        ty: ty.to_string(),
+        constraints: vec![],
+        head_args: vec![],
+        methods,
+    }
+}
+
+/// Parse a prelude/catalog fragment and register its defs: `Def::Data` through
+/// the phase-2 path ([`crate::types::infer::data_field_vty`], the same path
+/// user data declarations use) and every other declaration
+/// (`typeclass`/`instance`/`foreign fn`) through
+/// [`TypeEnv::register_decls`]. A parse failure is a compiler bug (the
+/// constants are fixed) — assert loudly.
+fn register_prelude(env: &mut TypeEnv, src: &str) {
+    let toks = crate::lexer::tokenize(src);
+    debug_assert!(toks.is_ok(), "prelude must lex");
+    let program = crate::parser::parse(&toks.ok().unwrap(), src.as_bytes());
+    debug_assert!(program.is_ok(), "prelude must parse");
+    let defs = program.ok().unwrap().defs;
+    // Prelude `data` declarations (`data Kleisli m a b = …`, the catalog's
+    // record types) register here. User `data` declarations register in
+    // infer phase 2 (`infer_program_with`) — `register_decls` deliberately
+    // does NOT handle `Def::Data`, so a declaration reaches exactly one
+    // registration path (no double-register).
+    for def in &defs {
+        if let Def::Data {
+            name,
+            tyvars,
+            fields,
+            ..
+        } = def
+        {
+            let fields_ty = fields
+                .iter()
+                .map(|(f, t)| {
+                    let ft = crate::types::infer::data_field_vty(env, tyvars, t);
+                    (f.clone(), ft)
+                })
+                .collect();
+            env.data_types
+                .insert(name.clone(), DataInfo::Record(fields_ty));
+            if !tyvars.is_empty() {
+                env.data_arities.insert(name.clone(), tyvars.len());
+            }
+        }
+    }
+    env.register_decls(&defs);
 }
 
 impl TypeEnv {
-    /// A `TypeEnv` with the builtin constructor table and the builtin
-    /// `Maybe`/`Pair`/`Either` type shapes registered.
+    /// A `TypeEnv` with the builtin constructor table, the builtin
+    /// `Maybe`/`Pair`/`Either` type shapes, and the category-theory prelude
+    /// (`Functor`/`Applicative`/`Monad`/`Monoid` classes + instances)
+    /// registered.
     pub fn with_builtins() -> Self {
         let ctor_kinds = [
-            ("List".to_string(), (2usize, true)),
-            ("Maybe".to_string(), (1usize, false)),
-            ("Set".to_string(), (2usize, true)),
-            ("Map".to_string(), (3usize, true)),
-            ("Pair".to_string(), (2usize, false)),
-            ("Either".to_string(), (2usize, false)),
+            ("List".to_string(), 1usize),
+            ("Maybe".to_string(), 1usize),
+            ("Set".to_string(), 1usize),
+            ("Map".to_string(), 2usize),
+            ("Pair".to_string(), 2usize),
+            ("Either".to_string(), 2usize),
+            ("FixedBuffer".to_string(), 1usize),
         ]
         .into_iter()
         .collect();
@@ -314,6 +551,7 @@ impl TypeEnv {
                             Box::new(crate::ast::TypeExpr::TName("Bool".into())),
                         ),
                     )],
+                    defaults: HashMap::new(),
                 },
             ),
             (
@@ -328,14 +566,159 @@ impl TypeEnv {
                             Box::new(crate::ast::TypeExpr::TName("Bool".into())),
                         ),
                     )],
+                    defaults: HashMap::new(),
                 },
             ),
         ]);
-        TypeEnv {
+        let mut env = TypeEnv {
             ctor_kinds,
             data_types,
             typeclasses,
             ..TypeEnv::default()
+        };
+        // Category-theory prelude: declared in rill-lang itself so the classes
+        // and instances are first-class entities. A parse failure here is a
+        // compiler bug (the constant is fixed) — assert loudly.
+        register_prelude(&mut env, CATEGORY_PRELUDE);
+        env.derive_superclass_instances();
+        // Signal-track prelude: the `Buffer` typeclass + `FixedBuffer` type.
+        register_prelude(&mut env, SIGNAL_PRELUDE);
+        env.derive_superclass_instances();
+        // Builtin foreign catalog: the migrated legacy builtins' declarations
+        // plus the record types their params need. Parsed the same way as the
+        // preludes — a parse failure here is a compiler bug.
+        register_prelude(&mut env, BUILTIN_FOREIGN_DECLS);
+        env
+    }
+
+    /// Register declaration defs (`typeclass`/`instance`/`foreign fn`) into the
+    /// env. Extracted from inference phase 1 so the category prelude (parsed in
+    /// [`Self::with_builtins`]) and user declarations share one registration
+    /// path.
+    pub fn register_decls(&mut self, defs: &[Def]) {
+        for def in defs {
+            match def {
+                Def::Typeclass {
+                    name,
+                    var,
+                    methods,
+                    defaults,
+                    ..
+                } => {
+                    self.typeclasses.insert(
+                        name.clone(),
+                        TypeclassInfo {
+                            var: var.clone(),
+                            arity: methods
+                                .iter()
+                                .map(|(_, sig)| Self::class_var_arity(var, sig))
+                                .max()
+                                .unwrap_or(0),
+                            methods: methods.clone(),
+                            defaults: defaults
+                                .iter()
+                                .map(|(m, ps, b)| {
+                                    (
+                                        m.clone(),
+                                        (ps.iter().map(|p| p.name.clone()).collect(), b.clone()),
+                                    )
+                                })
+                                .collect(),
+                        },
+                    );
+                }
+                Def::Instance {
+                    class,
+                    ty,
+                    constraints,
+                    head_args,
+                    method_bodies,
+                    ..
+                } => {
+                    let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
+                    for (mname, params, body) in method_bodies {
+                        let bindings = params.iter().map(|p| p.name.clone()).collect();
+                        methods.insert(mname.clone(), (bindings, body.clone()));
+                    }
+                    self.instances.entry(class.clone()).or_default().insert(
+                        ty.clone(),
+                        InstanceInfo {
+                            class: class.clone(),
+                            ty: ty.clone(),
+                            constraints: constraints.clone(),
+                            head_args: head_args.clone(),
+                            methods,
+                        },
+                    );
+                }
+                Def::Foreign { name, sig, .. } => {
+                    self.foreign_sigs.insert(name.clone(), sig.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Superclass auto-derivation: `instance Monad T` synthesizes
+    /// `Applicative T` and `Functor T`; `instance Applicative T` synthesizes
+    /// `Functor T`. Explicit instances always win. The derived bodies are the
+    /// standard definitions, parsed from templates.
+    pub(crate) fn derive_superclass_instances(&mut self) {
+        let monad_tys = self
+            .instances
+            .get("Monad")
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or(vec![]);
+        let applicative_tys = self
+            .instances
+            .get("Applicative")
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or(vec![]);
+        for t in monad_tys {
+            if !self
+                .instances
+                .entry("Applicative".to_string())
+                .or_default()
+                .contains_key(&t)
+            {
+                self.instances
+                    .entry("Applicative".to_string())
+                    .or_default()
+                    .insert(
+                        t.clone(),
+                        instance_from_template(t.as_str(), "Applicative", APPLICATIVE_FROM_MONAD),
+                    );
+            }
+            if !self
+                .instances
+                .entry("Functor".to_string())
+                .or_default()
+                .contains_key(&t)
+            {
+                self.instances
+                    .entry("Functor".to_string())
+                    .or_default()
+                    .insert(
+                        t.clone(),
+                        instance_from_template(t.as_str(), "Functor", FUNCTOR_FROM_MONAD),
+                    );
+            }
+        }
+        for t in applicative_tys {
+            if !self
+                .instances
+                .entry("Functor".to_string())
+                .or_default()
+                .contains_key(&t)
+            {
+                self.instances
+                    .entry("Functor".to_string())
+                    .or_default()
+                    .insert(
+                        t.clone(),
+                        instance_from_template(t.as_str(), "Functor", FUNCTOR_FROM_APPLICATIVE),
+                    );
+            }
         }
     }
 
@@ -402,6 +785,8 @@ impl TypeEnv {
                 by_ty.entry(n.clone()).or_insert_with(|| InstanceInfo {
                     class: class.to_string(),
                     ty: n.clone(),
+                    constraints: vec![], // derived marker — no constraint list
+                    head_args: vec![],   // derived marker — full application
                     methods: HashMap::new(), // derived marker — empty body
                 });
             }
@@ -410,20 +795,28 @@ impl TypeEnv {
 
     /// Value arity of a builtin constructor (`None` if not a builtin).
     pub fn ctor_arity(&self, name: &str) -> Option<usize> {
-        self.ctor_kinds.get(name).map(|(a, _)| *a)
+        self.ctor_kinds.get(name).copied()
     }
-    /// Whether the final argument of the constructor is a capacity.
-    pub fn ctor_has_cap(&self, name: &str) -> Option<bool> {
-        self.ctor_kinds.get(name).map(|(_, c)| *c)
-    }
-    /// The number of VALUE arguments a constructor takes, excluding a capacity
-    /// slot. Builtin constructors come from [`Self::ctor_kinds`]; user
-    /// parameterized data types (`data Box a`) from [`Self::data_arities`].
+    /// The number of VALUE arguments a constructor takes. Builtin constructors
+    /// come from [`Self::ctor_kinds`]; user parameterized data types
+    /// (`data Box a`) from [`Self::data_arities`].
     pub fn ctor_value_arity(&self, name: &str) -> Option<usize> {
-        if let Some((a, cap)) = self.ctor_kinds.get(name) {
-            return Some(*a - usize::from(*cap));
+        if let Some(a) = self.ctor_kinds.get(name) {
+            return Some(*a);
         }
         self.data_arities.get(name).copied()
+    }
+
+    /// Arity remaining after the instance head's bound args: `Kleisli m` (total 3,
+    /// bound 1) → 2. For a non-partial head, `total`.
+    ///
+    /// Wired up by SP-2 Task 6 (constraint-instance resolution); no callers
+    /// yet, so the transient `dead_code` is allowed here rather than suppressed
+    /// globally.
+    #[allow(dead_code)]
+    pub(crate) fn instance_head_arity(&self, ty: &str, head_args: &[String]) -> Option<usize> {
+        let total = self.ctor_value_arity(ty)?;
+        Some(total.saturating_sub(head_args.len()))
     }
 
     /// Resolve a DSL type name to a value type, following type synonyms and
@@ -449,6 +842,15 @@ impl TypeEnv {
                 }
             }
         }
+    }
+
+    /// Whether `method` is declared with zero arguments (e.g. `mempty: m`).
+    pub(crate) fn is_nullary_method(&self, class: &str, method: &str) -> bool {
+        self.typeclasses
+            .get(class)
+            .and_then(|c| c.methods.iter().find(|(m, _)| m == method))
+            .map(|(_, s)| s.arg_count() == 0)
+            .unwrap_or(false)
     }
 
     /// Find the class whose method dictionary declares `method`. Returns
@@ -487,11 +889,10 @@ impl TypeEnv {
     }
 
     /// Match a class-var signature pattern against a concrete value type.
-    /// `f a` (pattern head is the class var) matches `App("List", [Int, Cap 4])`
+    /// `f a` (pattern head is the class var) matches `App("List", [Int])`
     /// by binding the class var to the constructor and unifying the remaining
-    /// pattern args with the concrete's non-Cap args (the Cap slot is carried
-    /// through unchanged — capacity flows argument → result).
-    /// Returns the bound constructor name on success.
+    /// pattern args with the concrete's args positionally. Open collections
+    /// carry no capacity slot. Returns the bound constructor name on success.
     pub fn match_ctor_pattern(
         &self,
         class_var: &str,
@@ -508,29 +909,14 @@ impl TypeEnv {
                     ValueTy::App(c, a) | ValueTy::Data(c, a) => (c, a),
                     _ => return None,
                 };
-                // Match the non-Cap args positionally; the Cap slot unifies
-                // or is left free.
-                let mut pi = 0;
-                for ca in c_args {
-                    if let ValueTy::Cap(_) = ca {
-                        continue;
-                    }
-                    if pi >= p_args.len() {
-                        return None;
-                    }
-                    if unify_value(&p_args[pi], ca, subst, Span::new(0, 0)).is_err() {
-                        return None;
-                    }
-                    pi += 1;
-                }
-                // A pattern that applies MORE type args than the concrete's
-                // non-Cap slots is not a match (`f a b` vs `App("List", [t])`).
-                // The kind check normally rejects this up front, but the guard
-                // keeps the pattern matcher total. Partial subst bindings from
-                // the unified prefix are acceptable on failure — unification
-                // here is speculative (a later step returns None anyway).
-                if pi != p_args.len() {
+                // Match the pattern args positionally against the concrete's.
+                if p_args.len() != c_args.len() {
                     return None;
+                }
+                for (pa, ca) in p_args.iter().zip(c_args.iter()) {
+                    if unify_value(pa, ca, subst, Span::new(0, 0)).is_err() {
+                        return None;
+                    }
                 }
                 return Some(c.clone());
             }
@@ -646,6 +1032,14 @@ impl TypeEnv {
         }
         None
     }
+
+    /// The default body for `method` of `class`, if the class declares one.
+    /// Precedence: instance body > default > error.
+    pub(crate) fn class_default(&self, class: &str, method: &str) -> Option<(Vec<String>, Expr)> {
+        self.typeclasses
+            .get(class)
+            .and_then(|c| c.defaults.get(method).cloned())
+    }
 }
 
 impl Subst {
@@ -692,6 +1086,20 @@ impl Subst {
                     .map(|r| self.resolve_value_depth(r, depth + 1))
                     .collect(),
             ),
+            ValueTy::TyConApp(f, args) => {
+                // Resolve the head variable; a bound head (a concrete
+                // constructor) rewrites the application to `App(c, args)`.
+                let resolved_args: Vec<ValueTy> = args
+                    .iter()
+                    .map(|a| self.resolve_value_depth(a, depth + 1))
+                    .collect();
+                let resolved = self.resolve_value_depth(&ValueTy::TyConVar(*f), depth + 1);
+                match resolved {
+                    ValueTy::TyConVar(_) => ValueTy::TyConApp(*f, resolved_args),
+                    ValueTy::App(c, _) => ValueTy::App(c, resolved_args),
+                    _other => ValueTy::TyConApp(*f, resolved_args),
+                }
+            }
             ValueTy::Data(name, args) | ValueTy::Newtype(name, args) | ValueTy::App(name, args) => {
                 let resolved: Vec<ValueTy> = args
                     .iter()
@@ -744,8 +1152,8 @@ mod hkt_value_ty_tests {
     use super::*;
 
     #[test]
-    fn app_and_cap_construct() {
-        let t = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(16)]);
+    fn app_constructs() {
+        let t = ValueTy::App("List".into(), vec![ValueTy::Float]);
         assert!(matches!(t, ValueTy::App(..)));
     }
 
@@ -759,12 +1167,10 @@ mod hkt_value_ty_tests {
     fn match_ctor_pattern_rejects_extra_pattern_args() {
         let env = TypeEnv::with_builtins();
         let mut subst = Subst::default();
-        // Pattern `f a b` (two type args) against `App("List", [Float, Cap(4)])`
-        // (one non-Cap slot): the extra `b` slot must reject the match. Without
-        // the trailing-arg guard this silently returned `Some("List")`, leaving
-        // the `b` slot unbound.
+        // Pattern `f a b` (two type args) against `App("List", [Float])`
+        // (one slot): the extra `b` slot must reject the match.
         let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0), ValueTy::Var(1)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             None
@@ -775,14 +1181,14 @@ mod hkt_value_ty_tests {
     fn match_ctor_pattern_matches_consumed_pattern_args() {
         let env = TypeEnv::with_builtins();
         let mut subst = Subst::default();
-        // `f a` (one arg) against a List (one non-Cap slot + Cap) still matches.
+        // `f a` (one arg) against a List (one slot) matches.
         let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float, ValueTy::Cap(4)]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             Some("List".to_string())
         );
-        // `f a b` (two args) against a Pair (two non-Cap slots) matches.
+        // `f a b` (two args) against a Pair (two slots) matches.
         let pat2 = ValueTy::App("f".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
         let concrete2 = ValueTy::App("Pair".into(), vec![ValueTy::Float, ValueTy::Int]);
         assert_eq!(
@@ -823,20 +1229,14 @@ mod ctor_table_tests {
     use super::*;
 
     #[test]
-    fn builtin_ctor_kinds_and_capacity_flags() {
+    fn builtin_ctor_kinds_and_arities() {
         let env = TypeEnv::with_builtins();
-        assert!(env.ctor_arity("List") == Some(2)); // elem + cap
-        assert!(env.ctor_has_cap("List") == Some(true));
+        assert!(env.ctor_arity("List") == Some(1)); // elem
         assert!(env.ctor_arity("Maybe") == Some(1));
-        assert!(env.ctor_has_cap("Maybe") == Some(false));
-        assert!(env.ctor_arity("Set") == Some(2));
-        assert!(env.ctor_has_cap("Set") == Some(true));
-        assert!(env.ctor_arity("Map") == Some(3));
-        assert!(env.ctor_has_cap("Map") == Some(true));
+        assert!(env.ctor_arity("Set") == Some(1));
+        assert!(env.ctor_arity("Map") == Some(2));
         assert!(env.ctor_arity("Pair") == Some(2));
-        assert!(env.ctor_has_cap("Pair") == Some(false));
         assert!(env.ctor_arity("Either") == Some(2));
-        assert!(env.ctor_has_cap("Either") == Some(false));
         assert!(env.ctor_arity("Nope").is_none());
     }
 
@@ -845,6 +1245,19 @@ mod ctor_table_tests {
         // The injected Maybe/Pair/Either shapes must satisfy the v1 acyclicity
         // contract (the arena-capacity bound depends on it).
         TypeEnv::with_builtins().check_acyclic().unwrap();
+    }
+
+    #[test]
+    fn instance_head_arity_after_bound_args() {
+        let env = TypeEnv::with_builtins();
+        // `(Pair a)` — total 2, bound 1 ⇒ 1 remaining.
+        assert_eq!(env.instance_head_arity("Pair", &["a".to_string()]), Some(1));
+        // `(List a)` — total 1, bound 1 ⇒ fully applied.
+        assert_eq!(env.instance_head_arity("List", &["a".to_string()]), Some(0));
+        // A non-partial head: total arity unchanged.
+        assert_eq!(env.instance_head_arity("Pair", &[]), Some(2));
+        // Unknown constructor: None.
+        assert_eq!(env.instance_head_arity("Nope", &[]), None);
     }
 }
 

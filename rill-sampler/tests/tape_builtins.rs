@@ -2,8 +2,8 @@ use rill_core::buffer::TapeLoop;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_sampler::tape::lang::register_tape_builtins;
 
-fn reg() -> rill_core::builtin::Registry<f32> {
-    let mut r = rill_core::builtin::Registry::new();
+fn reg() -> rill_lang::builtin::Registry<f32> {
+    let mut r = rill_lang::builtin::Registry::new();
     register_tape_builtins(&mut r);
     rill_lang::register::register_core_builtins(&mut r);
     r

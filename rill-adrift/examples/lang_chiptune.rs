@@ -59,7 +59,7 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
         .unwrap_or_else(|| "portaudio".into());
     let backend_display = backend_name.clone();
 
-    use rill_adrift::rill_graph::backend_factory::BackendFactory;
+    use rill_adrift::backend_factory::BackendFactory;
     let mut be: BackendFactory = Default::default();
     rill_adrift::registration::register_backends(&mut be);
 

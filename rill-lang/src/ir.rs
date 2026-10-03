@@ -215,6 +215,13 @@ pub enum ValueBuiltinOp {
     MapEmpty,
     /// Allocate an empty set with a capacity.
     SetEmpty,
+    /// Bind (concat-map) a function over a list, splicing the results
+    /// (`bind xs f` for the `Monad List` instance).
+    ConcatMap,
+    /// Concatenate two lists (`Monoid List.mappend`).
+    AppendList,
+    /// Concatenate two strings (`Monoid String.mappend`).
+    ConcatString,
 }
 
 /// Value-track comparison operators.
@@ -512,8 +519,6 @@ pub enum ValueInstr {
         dst: usize,
         /// Element value registers (refs).
         elems: Vec<usize>,
-        /// Allocated capacity for the list.
-        cap: usize,
     },
     /// Map literal with string keys.
     ValueMapLit {
@@ -523,8 +528,6 @@ pub enum ValueInstr {
         keys: Vec<usize>,
         /// Value value registers (refs).
         vals: Vec<usize>,
-        /// Allocated capacity for the map.
-        cap: usize,
     },
     /// Value-track comparison.
     ValueCompare {
@@ -582,6 +585,9 @@ pub enum ValueInstr {
 pub struct ValueLayout {
     /// Number of arena slots pre-allocated for the whole program.
     pub capacity: usize,
+    /// Ref-slot budget of the pre-allocated payload buffer pool (collection and
+    /// record element buffers served by `Arena::take_buf`).
+    pub buffer_budget: usize,
     /// Number of per-tick value-state slots (feedback/delay of values).
     pub value_state_slots: usize,
 }
@@ -658,6 +664,10 @@ pub struct BuiltinInstance {
     pub params: Vec<f64>,
     /// Optional named resource (e.g. a tape loop) this built-in binds to.
     pub resource: Option<String>,
+    /// Index into [`Ir::tapes`] of the shared tape cell this built-in binds to.
+    /// The new `tape_loop` path resolves heads by index; the legacy named
+    /// resource path uses [`Self::resource`] against an external registry.
+    pub tape_index: Option<usize>,
     /// Sample vs block.
     pub kind: BuiltinKind,
     /// Number of signal input channels.
@@ -734,6 +744,12 @@ pub struct Ir {
     pub max_call_regs: usize,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
+    /// Shared tape cells: one capacity per tape, indexed by
+    /// [`BuiltinInstance::tape_index`]. Populated by lowering as it resolves
+    /// inline `tape_loop <capacity>` constructor calls (a FRESH cell per call)
+    /// and named `name = tape_loop <capacity>` declarations (one cell per
+    /// name); the build allocates a `rill_core::buffer::SharedCell` per entry.
+    pub tapes: Vec<usize>,
 }
 
 #[cfg(test)]
@@ -769,7 +785,10 @@ mod value_builtin_tests {
             ValueBuiltinOp::InsertSet,
             ValueBuiltinOp::MapEmpty,
             ValueBuiltinOp::SetEmpty,
+            ValueBuiltinOp::ConcatMap,
+            ValueBuiltinOp::AppendList,
+            ValueBuiltinOp::ConcatString,
         ];
-        assert_eq!(ops.len(), 14);
+        assert_eq!(ops.len(), 17);
     }
 }

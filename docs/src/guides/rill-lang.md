@@ -235,9 +235,9 @@ Three consequences of the CAF model:
   keep macro semantics — they are re-instantiated per enclosing call, matching
   Haskell.
 - **Global buffers.** A buffer resource declared at top level (e.g.
-  `tape = TapeLoop 4096`) is closed, so functions capture it as a free variable;
-  the existing `write_head`/`read_head` machinery resolves it at lowering. No
-  new buffer syntax is needed.
+  `tape = tape_loop 4096`) is closed, so functions capture it as a free variable;
+  the `write_head`/`read_head` builtins resolve it at lowering. The tape is a
+  `Buffer` family member created by the `tape_loop` constructor.
 - **Recursion.** A self-referential closed definition (`a = a`) is a compile
   error, not a stack overflow.
 
@@ -261,7 +261,7 @@ Built-ins that accept structured configuration use **record literals**
 `{ key: val }`:
 
 ```faust
-main = mixer _1 _2 { channels: 2, buses: 0, master_vol: 0.8 };
+main = mixer _1 _2 { buses: 0, master_vol: 0.8 };
 main = dry_wet _ wet { mix: 0.5 };
 main = eq_parametric _ { bands: [
     { freq: 500.0, q: 2.0, gain_db: -3.0, band_type: 0 },
@@ -381,12 +381,13 @@ only on `rill-core`.
 | Integrators | `integrator`, `leaky_integrator` (block) | always |
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
-| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassettedeck` (block) | `analog` |
+| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq`, `mono_to_stereo` (block) | `router` |
+| Analog | `analog_moog` (block) | `model` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
 | Sampler | `sampler` (block) | `sampler` |
 | Lofi | `lofi`, `ay38910` (block) | `lofi` |
+| Tape | `tape_loop`, `write_head`, `read_head` | `sampler` |
 
 ### Calling convention
 
@@ -396,7 +397,7 @@ arguments, scalars follow, and configuration is passed as a record:
 ```faust
 main = lowpass _ 1000.0 0.7;           // filter: signal, cutoff, resonance
 main = sine 440.0 0.5 0.0;             // oscillator: freq, amp, phase (no signal in)
-main = mixer _ ch2 ch3 { channels: 3 }; // variadic signal args + record
+main = mixer _ ch2 ch3 { buses: 0, master_vol: 1.0 }; // variadic signal args + record
 ```
 
 Parameters are **compile-time constants** (float or integer literals, optionally
@@ -420,26 +421,32 @@ error (`block built-in cannot be used inside a feedback loop`).
 
 ### Using built-ins from Rust
 
-The umbrella registry (`rill_adrift::lang_builtins::full_registry`) aggregates
-all workspace built-ins. For selective registration, individual crates expose
-`register_lang_builtins()` functions:
+The builtin **catalog** lives in the language (`foreign fn` declarations
+auto-registered from `rill_lang::types::ty::BUILTIN_FOREIGN_DECLS`). Rust
+implementations are registered as **factories** on the
+`rill_lang::ffi::ForeignRegistry` via each crate's `register_foreign_*`:
 
 ```rust,no_run
-use rill_lang::compile_with;
-use rill_lang::builtin::Registry;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::compile_with_ffi;
 
-let mut reg = Registry::<f32>::new();
-rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
-rill_lang::register::register_core_builtins(&mut reg);
+let mut ffi = ForeignRegistry::<f32>::new();
+rill_lang::register::register_foreign_generators(&mut ffi);
+rill_lang::register::register_foreign_filters(&mut ffi);
+rill_router::register::register_foreign_router(&mut ffi);
 
-let mut prog = compile_with::<f32>(
-    "main = lowpass _ 1000.0 0.7;",
-    &reg,
+let mut prog = compile_with_ffi::<f32>(
+    "main = _ : lowpass 1000.0 0.7;",
+    &ffi,
     48_000.0,
 ).unwrap();
 let mut out = [0.0f32; 4];
 prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
 ```
+
+For the graph path, `rill_adrift::lang_builtins::full_registry` still builds a
+factory-only `rill_lang::builtin::Registry<T>` (the legacy graph-compile path
+uses it to resolve factories by name; signatures come from the catalog).
 
 Or to compile directly into a graph engine with actor mailbox support:
 
@@ -616,7 +623,7 @@ programs implement `MultichannelAlgorithm<T>` when compiled with the `router`
 feature:
 
 ```faust
-main = mixer _1 _2 _3 { channels: 3, buses: 2 };  // 3→4 (2 master + 2 bus)
+main = mixer _1 _2 _3 { buses: 2, master_vol: 1.0 };  // 3→2 (bus + master)
 main = dry_wet _ wet_signals { mix: 0.5 };          // 2→2
 ```
 
@@ -847,7 +854,7 @@ phase of the interpreter (the signal track stays whole-buffer SIMD).
 | `type Angles = Float` | type synonym (pure substitution) |
 | `newtype Hz = Float` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
 | `Bool`, `String` | scalar value types (value track only); literals `true`/`false`, `"text"` |
-| `List a n`, `Map k v n`, `Set a n` | builtin containers; capacity `n` is a strict bound (exceeding it is a runtime `ProcessError::Processing`) |
+| `List a`, `Map k v`, `Set a` | builtin containers (**open** — grow up to the pre-allocated arena pool) |
 | `Maybe a`, `Pair a b`, `Either a b` | builtin data types: `Maybe a = Just a \| Nothing`, `Pair a b = { first, second }`, `Either a b = Left a \| Right b` |
 | `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Float where { show f = ...; }` |
 | `fn x -> x * 2.0` | first-class function (lambda literal); see below |
@@ -861,15 +868,14 @@ A `data` value output is inspected via `RillProgram::value_outputs()`.
 
 The builtin containers and data types are **type constructors**: they take
 type arguments, applied by **juxtaposition** (consistent with the DSL) — e.g.
-`List Float 16` is `List` applied to `Float` and the capacity literal `16`.
-Container capacities are a `Nat` pseudo-type carried as a constructor argument.
-`Bool`/`String` are leaf value types (kind `*`).
+`List Float` is `List` applied to `Float`. Collections are **open** (no
+capacity argument). `Bool`/`String` are leaf value types (kind `*`).
 
 | Constructor | Kind | Meaning |
 |---|---|---|
-| `List a n` | `* → Nat → *` | ordered sequence of `a`, capacity `n` |
-| `Set a n` | `* → Nat → *` | unordered set of `a`, capacity `n` |
-| `Map k v n` | `* → * → Nat → *` | key→value map, capacity `n` |
+| `List a` | `* → *` | ordered sequence of `a` (open) |
+| `Set a` | `* → *` | unordered set of `a` (open) |
+| `Map k v` | `* → * → *` | key→value map (open) |
 | `Maybe a` | `* → *` | optional `a` |
 | `Pair a b` | `* → * → *` | pair of `a` and `b` |
 | `Either a b` | `* → * → *` | sum of `a` or `b` |
@@ -881,59 +887,53 @@ machinery — they are injected into the type environment at compile time.
 ### First-class collections
 
 Lists, maps, and sets are first-class arena values with Haskell-style
-operations. Collection **capacities are strict bounds** carried in the type:
-an operation that grows a container (`cons`, `insert` of a new key, a literal)
-requires `len < n` at runtime; exceeding it is a runtime user error surfaced as
-`ProcessError::Processing` ("`list capacity exceeded`", "`map capacity
-exceeded`", "`set capacity exceeded`") — `process()` returns the error and the
-per-tick arena is released. `map`, `filter`, and `tail` preserve the capacity;
-`length` needs none. Replacing a duplicate key (map) or inserting a duplicate
-element (set) does not count toward the bound.
+operations. Collections are **open**: there is no capacity in the type, and
+`cons`/`insert` grow freely. Values live in a **page-based arena**
+(Alexandrescu-style): a pre-allocated slot pool (embedded free list) plus a
+size-classed **payload buffer pool**, so collection ops perform **no heap
+allocation** on the processing path in the default (RT) mode. The pool is
+bounded by a conservative build-time budget; exceeding it in the default mode
+is a detectable no-op (a build-budget bug), and the `growable-arena` feature
+(non-RT) grows the pool instead. `map`, `filter`, and `tail` preserve the
+shape; `length` needs none.
 
 ```faust
-xs  = [1.0, 2.0, 3.0];          // List Float 3 — capacity from literal length
-e   = list 4;                   // empty list, runtime capacity 4
-ys  = cons 10.0 e;              // prepends; 1 element ≤ 4 — capacity preserved
+xs  = [1.0, 2.0, 3.0];          // List Float
+e   = list;                     // empty list
+ys  = cons 10.0 e;              // prepends; the list grows
 h   = head xs;                  // Maybe Float: Just 1.0 / Nothing
-t   = tail xs;                  // List Float 3 — capacity preserved
+t   = tail xs;                  // List Float
 n   = length xs;                // Int
-z   = map (fn x -> x * 2.0) xs;           // List Float 3 — function first
+z   = map (fn x -> x * 2.0) xs;           // List Float — function first
 s   = fold (fn a b -> a + b) 0.0 xs;      // Float
-f   = filter (fn x -> x > 1.0) xs;        // List Float 3
-bad = cons 9.0 xs;              // runtime error: len 3 ≥ cap 3
+f   = filter (fn x -> x > 1.0) xs;        // List Float
 
-For literal forms (`[e1, …]`) the capacity is part of the static type
-(`List T n`). For the runtime-sized constructors (`list n`, `empty_map n`,
-`empty_set n`) the capacity comes from the `n` argument at runtime; the static
-type carries the container's element type, and the bound is enforced when
-`cons`/`insert` grow the container.
-
-m  = { "a": 1.0, "b": 2.0 };   // Map String Float 2
-m1 = insert "a" 9.0 m;         // replace-on-duplicate; len stays 2
-m2 = empty_map 8;              // empty Map k v 8 (`map` is the HOF builtin)
+m  = { "a": 1.0, "b": 2.0 };   // Map String Float
+m1 = insert "a" 9.0 m;         // replace-on-duplicate
+m2 = empty_map;                // empty Map k v (`map` is the HOF builtin)
 v  = lookup "a" m;             // Maybe Float
 b  = member "a" m;             // Bool
 
-st = empty_set 8;              // empty Set a 8
-s1 = insert 1 st;              // Set Int 8
+st = empty_set;                // empty Set a
+s1 = insert 1 st;              // Set Int
 b2 = member 1 s1;              // Bool
 ```
 
 | Operation | Signature | Meaning |
 |---|---|---|
-| `cons x xs` | `a → List a n → List a n` | prepend `x` (Haskell `x : xs`); error if `len = n` |
-| `head xs` | `List a n → Maybe a` | first element, or `Nothing` for the empty list |
-| `tail xs` | `List a n → List a n` | drop the first element (capacity preserved) |
-| `length xs` | `List a n → Int` | element count |
-| `map f xs` | `(a → b) → List a n → List b n` | apply `f` to each element |
-| `fold f z xs` | `(b → a → b) → b → List a n → b` | left fold — the closure is called `(acc, elem)` |
-| `filter p xs` | `(a → Bool) → List a n → List a n` | keep elements satisfying `p` |
-| `list n` | `Nat → List a n` | empty list of capacity `n` |
-| `empty_map n` | `Nat → Map k v n` | empty map of capacity `n` |
-| `empty_set n` | `Nat → Set a n` | empty set of capacity `n` |
-| `insert k v m` / `insert k s` | `k → v → Map k v n → Map k v n` / `k → Set a n → Set a n` | insert (replace-on-duplicate); overloaded by arity |
-| `lookup k m` | `k → Map k v n → Maybe v` | value for key, or `Nothing` |
-| `member k c` | `k → Map k v n → Bool` / `a → Set a n → Bool` | membership test |
+| `cons x xs` | `a → List a → List a` | prepend `x` (Haskell `x : xs`) |
+| `head xs` | `List a → Maybe a` | first element, or `Nothing` for the empty list |
+| `tail xs` | `List a → List a` | drop the first element |
+| `length xs` | `List a → Int` | element count |
+| `map f xs` | `(a → b) → List a → List b` | apply `f` to each element |
+| `fold f z xs` | `(b → a → b) → b → List a → b` | left fold — the closure is called `(acc, elem)` |
+| `filter p xs` | `(a → Bool) → List a → List a` | keep elements satisfying `p` |
+| `list` | `List a` | empty list |
+| `empty_map` | `Map k v` | empty map |
+| `empty_set` | `Set a` | empty set |
+| `insert k v m` / `insert k s` | `k → v → Map k v → Map k v` / `k → Set a → Set a` | insert (replace-on-duplicate); overloaded by arity |
+| `lookup k m` | `k → Map k v → Maybe v` | value for key, or `Nothing` |
+| `member k c` | `k → Map k v → Bool` / `a → Set a → Bool` | membership test |
 
 List literals `[e1, e2, …]` are `List T n` with `n` = literal length; map
 literals `{ "k": v, … }` are `Map String T n`. Bool literals `true`/`false`,
@@ -994,32 +994,163 @@ main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
   from its use in method signatures (`f a` → 1, `f a b` → 2, bare `a` → 0) and
   checked against the instance: `instance Functor Pair` (Pair has arity 2) is a
   **kind error**.
-- **Capacity flow** — a kind variable matches the **head constructor**, ignoring
-  `Nat` capacity arguments. Unifying `f a` with `List Float 16` binds `f :=
-  List`, `a := Float`, and the capacity flows from argument to result — `fmap`
-  over a `List` preserves its capacity.
 - **Compile-time inline resolution** — `fmap g xs` unifies the method signature
   with the argument type, instantiates the instance body, β-substitutes the
   arguments, and inlines the result. `fmap` over `List` compiles directly to the
   `map` builtin call — **zero runtime dispatch, no dictionaries**, preserving the
   existing typeclass property.
+- Open collections carry no capacity — a kind variable matches the **head
+  constructor** (`f a` with `List Float` binds `f := List`, `a := Float`).
 - Parameterized user **sums** are not registered as type constructors in v1:
   `data Opt a = Some a | None` works as an ordinary (monomorphic) data type
   (construction + match) but cannot be a typeclass instance.
 
-### Memory model: arena + RC + COW
+### Builtin category typeclasses
 
-Value data lives in a **fixed-capacity arena** owned by the `RillProgram`,
-pre-allocated at build time (no heap growth on the RT path). Slots are managed
-by non-atomic reference counting (single-threaded DAG) with **copy-on-write**:
+The category-theory classes `Functor`/`Applicative`/`Monad`/`Monoid`/`Arrow`
+are **built in** — declared in a language prelude (`CATEGORY_PRELUDE`) parsed
+and registered in `TypeEnv::with_builtins()`, so a program never redeclares
+them but may add its own instances. Methods resolve at compile time by
+**inline** lowering — zero runtime dispatch, no dictionaries.
+
+```faust
+typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
+typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
+typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
+typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
+```
+
+- **Auto-derivation** — `instance Monad T` synthesizes `Applicative T`
+  (`pure = return`, `ap` via `bind`) and `Functor T` (`fmap` via `bind`);
+  `instance Applicative T` synthesizes `Functor T` (`fmap = ap (pure g)`).
+  Explicit instances always win, so the prelude's `fmap = map` for `List`
+  survives.
+- **Result-directed `mempty`** — a nullary method resolves by its **expected
+  result type** (`mappend xs mempty` picks the instance by `xs`'s type). A bare
+  `mempty` with an unknown expected type is a compile error.
+- **`do`-notation** — `do { x <- mx; let y = e; stmt; expr; }` desugars in the
+  parser to nested `bind` (`<-` → `bind e (fn x -> rest)`, `let` → `Expr::Let`,
+  bare statements → `bind e (fn _ -> rest)`); the final statement is the block's
+  result. `a < -b` needs parentheses (`a < (-b)`).
+
+#### `Arrow` and `Kleisli`
+
+The prelude also declares **`Kleisli`**, the free category over a monad (an
+arrow `a -> m b` inside the container `m`), and **`Arrow`**, the category of
+container morphisms:
+
+```faust
+data Kleisli m a b = { unKleisli: a -> m b };
+
+typeclass Arrow a where {
+    arr:     (b -> c) -> a b c;
+    first:   a b c -> a (Pair b d) (Pair c d);
+    compose: a b c -> a c d -> a b d;
+    second:  a b c -> a (Pair d b) (Pair d c) =
+        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+    both:    a b c -> a d e -> a (Pair b d) (Pair c e) =
+        f g (compose (first f) (second g));
+    fan:     a b c -> a b d -> a b (Pair c d) =
+        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+}
+
+instance (Monad m) => Arrow (Kleisli m) where {
+    arr f        = Kleisli (fn x -> return (f x));
+    first k      = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+}
+```
+
+- **Constraint-qualified instances** — `instance (Monad m) => Arrow (Kleisli
+  m)` is the first instance with a **constraint list** before the class name
+  and a **partial-application head** (`Kleisli m`). The leading head argument
+  `m` is bound at the **call site** from the concrete container's leading type
+  arguments — `Kleisli Maybe Float Float` binds `m := Maybe` — and the
+  `Monad m` constraint is then discharged by ordinary instance lookup
+  (`instance Monad Maybe`). The instance body may therefore call `return` /
+  `bind` on the monad directly. A constraint that has no instance is a compile
+  error; there is no kind-polymorphic fallback.
+- **Default methods** — `second`/`both`/`fan` have **default bodies** in the
+  typeclass declaration, written `= param (body)` — a parameter (here `k`)
+  followed by a **parenthesized** expression (`second: … = k (compose …)`).
+  The default body may itself call other typeclass methods (including other
+  defaults — `both` calls `first` and `second`; `fan` calls `both`), which is
+  **not** recursion: only a body that re-enters its own method is rejected.
+  Resolution precedence is **instance body > class default > compile error**:
+  `instance (Monad m) => Arrow (Kleisli m)` supplies `arr`/`first`/`compose`,
+  and `second`/`both`/`fan` fall back to the defaults built from them.
+- **`arr`/`first`/`compose` are end-to-end runnable** — the canonical program
+  composes two arrows and applies the result:
+
+  ```faust
+  apply k x = let u = k.unKleisli in u x;
+  main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
+      Just v => v; Nothing => 0.0;
+  };
+  // -> Just 8.0, i.e. (3 + 1) * 2
+  ```
+
+- **Known limitation: `second`/`both`/`fan` compile but do not yet run.** The
+  default bodies are valid and lower to IR, but their **runtime execution is
+  deferred**: the arena-capacity heuristic undercounts the deep closure chains
+  these defaults build, so a program that calls them panics at build time with
+  `value buffer pool exhausted at build time`. This is a known follow-up (the
+  correct IR is verified; it needs a larger budget estimate). Do not present
+  `second`/`both`/`fan` as runnable.
+
+#### Channel tuples, tuple types, and projections
+
+The `,` combinator doubles as a **channel tuple** that unifies on the track of
+its operands: `signal,signal` stays the block-diagram parallel composition;
+`value,value` builds a `Pair { first, second }`; a **mixed** `value , signal`
+is a compile error (one channel cannot live on both tracks):
+
+```faust
+main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
+main = (1.0, 2.0).first;  // -> Float(1.0)
+```
+
+In **type position**, `(b, d)` is sugar for `Pair b d` — the Arrow signatures
+above are `a (Pair b d) (Pair c d)` ≡ `a (b, d) (c, d)`.
+
+A **field projection is a first-class function value**: `(b.f) 3.0` applies
+the projected closure, and the bare `b.f 3.0` form works too (this is the
+shape the Kleisli instance bodies write — `k.unKleisli p.first`).
+
+A **single-field record** can be constructed newtype-style by passing the
+field value directly: `Kleisli (fn x -> …)` is exactly
+`Kleisli { unKleisli: fn x -> … }`. The prelude instance bodies use this
+shorthand (`arr f = Kleisli (fn x -> return (f x));`).
+
+Reserved names added by the prelude: the Arrow methods `arr`, `first`,
+`compose`, `second`, `both`, `fan`, and the data type `Kleisli` (alongside the
+existing `fmap`, `pure`, `ap`, `return`, `bind`, `mempty`, `mappend`,
+`concat_map`, `append_list`, `concat_string`).
+
+Builtin instances: `Functor`/`Monad` for `List` (`fmap = map`, `bind =
+concat_map`), `Maybe`, `Either a`; `Monoid` for `List` (`append_list`), `String`
+(`concat_string`), `Float`, `Int`. New value-track IR ops back the category
+instances: `ConcatMap`, `AppendList`, `ConcatString` — all buffer-pool-backed,
+no per-tick heap allocation.
+
+### Memory model: page arena + RC + COW
+
+Value data lives in a **page-based arena** in the style of Alexandrescu's
+"Affordable Allocator", owned by the `RillProgram` and pre-allocated at build
+time (no heap growth on the RT path). Value slots form an **embedded free list**
+(a freed slot stores the next free index in place of its payload), and collection/
+record payload buffers come from a **size-classed buffer pool**, so collection
+ops allocate nothing per tick in the default (RT) mode. Slots are managed by
+non-atomic reference counting (single-threaded DAG) with **copy-on-write**:
 mutating a field of a shared value copies it first. Local variables (including
 `main`'s λ-parameters) are **runtime-stack cells** — persistent arena slots that
 `SetParameter` writes into directly.
 
 Acyclicity is guaranteed at compile time: a `data`/`newtype` type that
-(transitively) references itself is rejected. The arena capacity bound is
-computed from the value instructions and the static subtree sizes of value
-outputs, so a well-formed program never exhausts the arena.
+(transitively) references itself is rejected. The arena slot and buffer budgets
+are computed from the value instructions and the static subtree sizes of value
+outputs, so a well-formed program never exhausts them in the default mode; the
+`growable-arena` feature (non-RT) grows the pool instead.
 
 ### First-class functions and closures
 

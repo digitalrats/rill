@@ -1,5 +1,71 @@
 # CHANGELOG
 
+## [Unreleased]
+
+### rill-lang
+
+- **SP-3b: builtin migration to the FFI layer — `FfiSig` is the contract.**
+  Every built-in's signature now lives **in the language**: an auto-registered
+  catalog of `foreign fn` declarations (`BUILTIN_FOREIGN_DECLS` in
+  `types/ty.rs`) populates `TypeEnv::foreign_sigs`, and `FfiSig`/`FfiParam`
+  (`Signal`/`Scalar`/`VariadicSignal`/`Record`/`Resource`) describe each built-in
+  for inference, lowering, and graph reconstruction. The legacy
+  `BuiltinSig`/`ParamType`/`RecordSchema`/`RecordField`/`SignatureSource`/
+  `NoSigs` machinery and the `sigs` plumbing through `compile*`/`lower*` are
+  **removed**. `Registry<T>` is factory-only (`register_*(name, factory)`); the
+  single runtime factory registry is `rill_lang::ffi::ForeignRegistry`.
+  Faust-combinator sugar keeps legacy call style for signal-input builtins
+  (`_ : onepole 200.0 0.7`). Deleted crates: `rill-digital-filters`,
+  `rill-analog-filters`, `rill-analog-effects`; their algorithms were folded
+  into `rill-core-dsp`/`rill-core-model` (algorithms-only; `CassetteDeck` was
+  dropped) with factories registered in rill-lang under the `dsp`/`model`
+  features; `mixer`/`eq_parametric`/`dry_wet` moved to `rill-router`.
+- **Tape loops as a first-class `Buffer` member.** `data Tape a` +
+  `instance Buffer (Tape f32)` in `SIGNAL_PRELUDE`; a `tape_loop : Int -> Tape
+  f32` foreign constructor allocates a shared tape cell. NAMED bindings
+  (`tape = tape_loop <cap>`) share one buffer across `write_head`/`read_head`;
+  inline `tape_loop <cap>` calls allocate fresh cells per call. Tape cells are
+  program-local (rill buffers are single-threaded — never transferred across
+  threads); the heads' handles keep the buffers alive.
+- **Builtin category typeclasses + value-track category core.** `Functor`,
+  `Applicative`, `Monad`, `Monoid` ship built in via a language prelude
+  (`CATEGORY_PRELUDE`) parsed and registered in `TypeEnv::with_builtins()` —
+  no runtime dispatch, compile-time inline method resolution. Builtin instances
+  for `List`/`Maybe`/`Either a` (Functor/Monad) and `List`/`String`/`Float`/
+  `Int` (Monoid). `instance Monad T` auto-derives `Applicative T` and `Functor
+  T` (explicit instances win). **Result-directed `mempty`**: a nullary method
+  resolves by its expected result type (`mappend xs mempty`). **`do`-notation**
+  desugars in the parser to nested `bind` (`x <- e`, `let x = e`, bare
+  statements). New value-track IR ops: `ConcatMap` (List bind), `AppendList`
+  (List mappend), `ConcatString` (String mappend). Bare `list` is polymorphic
+  (`List ?a`) so `mempty = list` unifies with any element type.
+- **`Arrow`/`Kleisli`, constraint-qualified instances, and channel tuples.**
+  The category prelude adds `data Kleisli m a b = { unKleisli: a -> m b }` and
+  `typeclass Arrow a` (`arr`/`first`/`compose` methods; `second`/`both`/`fan`
+  default bodies), with `instance (Monad m) => Arrow (Kleisli m)` — the first
+  **constraint-qualified instance**: the head argument binds at the call site
+  (`Kleisli Maybe Float Float` → `m := Maybe`) and the `Monad m` constraint
+  discharges by instance lookup. **Default methods** resolve instance body >
+  class default > compile error. The `,` combinator is now a **channel tuple**:
+  `value,value` → `Pair { first, second }`, `signal,signal` → parallel
+  composition, mixed → compile error; `(b, d)` in type position is `Pair b d`.
+  Field projections apply as first-class functions (`(k.unKleisli) p.first`,
+  `b.f x`), and a single-field record constructs newtype-style
+  (`Kleisli (fn x -> …)` ≡ `Kleisli { unKleisli: fn x -> … }`). `arr`/`first`/
+  `compose` are end-to-end runnable; `second`/`both`/`fan` compile but their
+  runtime execution is deferred (arena-capacity undercount for deep closure
+  chains — known follow-up). New reserved names: `arr`, `first`, `compose`,
+  `second`, `both`, `fan`, `Kleisli`.
+- **Open collections + page-based arena.** `List`/`Map`/`Set` drop their
+  type-level capacity (`Cap`) and become **open** — `cons`/`insert` grow freely
+  up to a pre-allocated pool. The value arena is reworked in the style of
+  Alexandrescu's "Affordable Allocator": an **embedded free list** for slots (a
+  freed slot stores the next free index in place of its payload) plus a
+  **size-classed payload buffer pool**, so collection ops perform **no per-tick
+  heap allocation** in the default (RT) mode. `list`/`empty_map`/`empty_set`
+  take no capacity argument. The `growable-arena` feature (non-RT) grows the
+  pool on exhaustion instead of reporting a build-time budget bug.
+
 ## [0.6.0-M2] — 2026-08-02
 
 ### rill-lang

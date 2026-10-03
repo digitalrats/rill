@@ -20,8 +20,3 @@ pub mod limiter;
 pub use delay::Delay;
 pub use distortion::{Distortion, DistortionType};
 pub use limiter::Limiter;
-
-/// rill-lang builtin registration for digital effects.
-pub mod lang;
-/// Register graph nodes and lang builtins for digital effects.
-pub mod register;

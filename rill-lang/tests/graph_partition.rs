@@ -10,7 +10,7 @@ use rill_lang::graph::{compile, CompiledStream};
 
 fn test_registry() -> Registry<f32> {
     let mut reg = Registry::new();
-    rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
+    rill_lang::register::register_core_dsp_builtins(&mut reg);
     rill_lang::register::register_core_builtins(&mut reg);
     rill_router::register::register_lang_builtins(&mut reg);
     rill_sampler::tape::lang::register_tape_builtins(&mut reg);

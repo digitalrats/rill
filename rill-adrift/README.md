@@ -15,7 +15,7 @@ crates for signal processing application development.
 | `fft` | `rill-fft` (FFT/spectral processing) | yes |
 | `serialization` | graph/patchbay serialization (JSON/CBOR) | yes |
 | `portaudio` | PortAudio backend (implies `io`) | yes |
-| `analog` | `rill-core-model` + `rill-analog-filters` + `rill-analog-effects` | no |
+| `analog` | `rill-core-model` (WDF algorithms) + `rill-lang/model` (analog_moog factory) | no |
 | `alsa` | ALSA backend (implies `io`) | no |
 | `jack` | JACK backend (implies `io`) | no |
 | `pipewire` | PipeWire backend (implies `io`) | no |
@@ -45,9 +45,8 @@ let system = ModularSystem::<BUF_SIZE>::new(ModularConfig::default());
 
 ## Always-on core (no feature gate)
 
-- `rill-core`, `rill-core-dsp`, `rill-graph`,
-  `rill-digital-filters`, `rill-digital-effects`, `rill-router`,
-  `rill-patchbay`, `rill-lang`
+- `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
+  `rill-digital-effects`, `rill-router`, `rill-patchbay`, `rill-lang`
 
 ## Links
 

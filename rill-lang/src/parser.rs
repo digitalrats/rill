@@ -151,6 +151,16 @@ fn is_pattern_start(tok: &Tok) -> bool {
     )
 }
 
+/// One statement inside a `do { … }` block.
+enum DoStmt {
+    /// `x <- e` — monadic bind: `bind e (fn x -> rest)`.
+    Bind(String, Expr),
+    /// `let x = e` — inline binding: `let x = e in rest`.
+    Let(String, Expr),
+    /// `e;` — bare statement: `bind e (fn _ -> rest)`.
+    Stmt(Expr),
+}
+
 impl<'a> Parser<'a> {
     fn new(toks: &'a [Token], src: &'a [u8]) -> Self {
         Self { toks, src, pos: 0 }
@@ -189,6 +199,14 @@ impl<'a> Parser<'a> {
                 span: t.span,
             }),
         }
+    }
+
+    fn pos(&self) -> usize {
+        self.pos
+    }
+
+    fn seek(&mut self, pos: usize) {
+        self.pos = pos;
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, CompileError> {
@@ -303,6 +321,7 @@ impl<'a> Parser<'a> {
             Tok::KwNewtype => return self.parse_newtype_def(),
             Tok::KwTypeclass => return self.parse_typeclass_def(),
             Tok::KwInstance => return self.parse_instance_def(),
+            Tok::KwForeign => return self.parse_foreign_def(),
             _ => {}
         }
         let start = self.peek().span.start;
@@ -418,22 +437,38 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse the inside of a `(…)` type grouping: a single grouped type
+    /// expression, or `(b, d)` tuple sugar desugared to `TApp("Pair", [b, d])`.
+    /// Only the binary tuple is supported. The opening `LParen` must already be
+    /// consumed; this eats the closing `RParen`.
+    fn parse_paren_type(&mut self) -> Result<TypeExpr, CompileError> {
+        let first = self.parse_type_expr()?;
+        if self.peek().tok == Tok::Comma {
+            let mut items = vec![first];
+            while self.peek().tok == Tok::Comma {
+                self.bump();
+                items.push(self.parse_type_single()?);
+            }
+            if items.len() != 2 {
+                return Err(self.error("tuples in types are binary (use Pair)"));
+            }
+            self.eat(&Tok::RParen)?;
+            return Ok(TypeExpr::TApp("Pair".into(), items));
+        }
+        self.eat(&Tok::RParen)?;
+        Ok(first)
+    }
+
     /// Parse a single, non-absorbing type atom: a bare type or type-variable
-    /// name, a capacity int, or a parenthesized type expression. It does not
-    /// consume following juxtaposed atoms — the caller's application and
-    /// currying loops collect those.
+    /// name, or a parenthesized type expression. It does not consume following
+    /// juxtaposed atoms — the caller's application and currying loops collect
+    /// those.
     fn parse_type_single(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
         match t.tok {
-            Tok::Int(n) => {
-                self.bump();
-                Ok(TypeExpr::TCap(n as usize))
-            }
             Tok::LParen => {
                 self.bump();
-                let inner = self.parse_type_expr()?;
-                self.eat(&Tok::RParen)?;
-                Ok(inner)
+                self.parse_paren_type()
             }
             Tok::Ident(name) => {
                 self.bump();
@@ -444,25 +479,19 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a type atom: a single atom, or a name applied to juxtaposed atoms
-    /// (`List Float 16`, `f a`). Juxtaposed arguments stay flat — each is one
+    /// (`List Float`, `f a`). Juxtaposed arguments stay flat — each is one
     /// non-absorbing [`Parser::parse_type_single`].
     fn parse_type_atom(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
         match t.tok {
-            Tok::Int(n) => {
-                self.bump();
-                Ok(TypeExpr::TCap(n as usize))
-            }
             Tok::LParen => {
                 self.bump();
-                let inner = self.parse_type_expr()?;
-                self.eat(&Tok::RParen)?;
-                Ok(inner)
+                self.parse_paren_type()
             }
             Tok::Ident(name) => {
                 self.bump();
                 let mut args = Vec::new();
-                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::LParen) {
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::LParen) {
                     args.push(self.parse_type_single()?);
                 }
                 if args.is_empty() {
@@ -518,7 +547,10 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `typeclass C a where { m: sig; }` — method dictionary.
+    /// `typeclass C a where { m: sig; }` — method dictionary. A method may
+    /// declare a class-level default body after its signature:
+    /// `second: sig = k body;` — the default instances omit (precedence:
+    /// instance body > default > error).
     fn parse_typeclass_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
         let (name, _) = self.expect_ident()?;
@@ -526,11 +558,28 @@ impl<'a> Parser<'a> {
         self.eat(&Tok::KwWhere)?;
         self.eat(&Tok::LBrace)?;
         let mut methods = Vec::new();
+        let mut defaults = Vec::new();
         while self.peek().tok != Tok::RBrace {
             let (mname, _) = self.expect_ident()?;
             self.eat(&Tok::Colon)?;
             let sig = self.parse_type_expr()?;
-            methods.push((mname, sig));
+            let mut default = None;
+            if self.peek().tok == Tok::Eq {
+                self.bump();
+                // Zero or more parameter bindings before the body:
+                // `second k = …`, `both f g = …`.
+                let mut dparams = Vec::new();
+                while matches!(self.peek().tok, Tok::Ident(_)) {
+                    let (p, ps) = self.expect_ident()?;
+                    dparams.push(Param { name: p, span: ps });
+                }
+                let body = self.parse_expr(0, true)?;
+                default = Some((dparams, body));
+            }
+            methods.push((mname.clone(), sig));
+            if let Some((p, b)) = default {
+                defaults.push((mname, p, b));
+            }
             self.eat(&Tok::Semi)?;
         }
         self.eat(&Tok::RBrace)?;
@@ -538,6 +587,7 @@ impl<'a> Parser<'a> {
             name,
             var,
             methods,
+            defaults,
             span: self.span_from(start),
         })
     }
@@ -545,10 +595,48 @@ impl<'a> Parser<'a> {
     /// `instance C T where { m p1 p2 = body; }` — concrete instance. Each
     /// method optionally binds one or more parameters (`show f = f`,
     /// `fmap g xs = map g xs`), β-substituted at each call site.
+    ///
+    /// The head may be constraint-qualified and/or partially applied:
+    /// `instance (Monad m) => Arrow (Kleisli m) where { … }`.
     fn parse_instance_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
+        let mut constraints = Vec::new();
+        if self.peek().tok == Tok::LParen {
+            // `(Monad m) =>` (comma-separated constraints inside parens).
+            self.bump();
+            loop {
+                let (class, _) = self.expect_ident()?;
+                let (var, _) = self.expect_ident()?;
+                constraints.push((class, var));
+                if self.peek().tok == Tok::RParen {
+                    self.bump();
+                    break;
+                }
+                if self.peek().tok == Tok::Comma {
+                    self.bump();
+                    continue;
+                }
+                return Err(self.error("expected ')' or ',' in instance constraint list"));
+            }
+            self.eat(&Tok::FatArrow)?;
+        }
         let (class, _) = self.expect_ident()?;
-        let (ty, _) = self.expect_ident()?;
+        // Head: either a bare type (`List`) or a parenthesized partial application
+        // (`(Kleisli m)`).
+        let (ty, head_args) = if self.peek().tok == Tok::LParen {
+            self.bump();
+            let (h, _) = self.expect_ident()?;
+            let mut args = Vec::new();
+            while matches!(self.peek().tok, Tok::Ident(_)) {
+                let (a, _) = self.expect_ident()?;
+                args.push(a);
+            }
+            self.eat(&Tok::RParen)?;
+            (h, args)
+        } else {
+            let (t, _) = self.expect_ident()?;
+            (t, Vec::new())
+        };
         self.eat(&Tok::KwWhere)?;
         self.eat(&Tok::LBrace)?;
         let mut method_bodies = Vec::new();
@@ -573,7 +661,27 @@ impl<'a> Parser<'a> {
         Ok(Def::Instance {
             class,
             ty,
+            constraints,
+            head_args,
             method_bodies,
+            span: self.span_from(start),
+        })
+    }
+
+    /// `foreign fn name : TypeExpr;` — a foreign builtin signature declared in the
+    /// language. Parsed by the standard type parser; the carried arrow's `FixedBuffer`
+    /// channels are the signal-track parameters. Like every sibling def parser
+    /// (data/sum/typeclass/instance/alias/newtype), leaves the trailing `;` for the
+    /// caller (`parse_program` / `parse_where_block`) to consume.
+    fn parse_foreign_def(&mut self) -> Result<Def, CompileError> {
+        let start = self.bump().span.start;
+        self.eat(&Tok::KwFn)?;
+        let (name, _) = self.expect_ident()?;
+        self.eat(&Tok::Colon)?;
+        let sig = self.parse_type_expr()?;
+        Ok(Def::Foreign {
+            name,
+            sig,
             span: self.span_from(start),
         })
     }
@@ -806,15 +914,33 @@ impl<'a> Parser<'a> {
                     span,
                 })
             }
+            Tok::KwDo => self.parse_do_block(),
             Tok::Ident(name) => {
                 let start = t.span.start;
                 self.bump();
                 if self.peek().tok == Tok::Dot {
-                    self.parse_field(Expr::Ref(name, t.span), start)
+                    let proj = self.parse_field(Expr::Ref(name, t.span), start)?;
+                    if is_atom_start(&self.peek().tok) {
+                        // `k.unKleisli p.first` — apply a field projection as
+                        // the callee (field access binds tighter than
+                        // application).
+                        let mut args = Vec::new();
+                        while is_atom_start(&self.peek().tok) {
+                            args.push(self.parse_atom(true)?);
+                        }
+                        let span = self.span_from(start);
+                        Ok(Expr::ApplyExpr {
+                            callee: Box::new(proj),
+                            args,
+                            span,
+                        })
+                    } else {
+                        Ok(proj)
+                    }
                 } else if is_atom_start(&self.peek().tok) {
                     let mut args = Vec::new();
                     while is_atom_start(&self.peek().tok) {
-                        args.push(self.parse_atom()?);
+                        args.push(self.parse_atom(true)?);
                     }
                     let span = t.span.merge(args.last().unwrap().span());
                     Ok(Expr::Apply { name, args, span })
@@ -822,8 +948,109 @@ impl<'a> Parser<'a> {
                     Ok(Expr::Ref(name, t.span))
                 }
             }
-            _ => self.parse_atom(),
+            _ => self.parse_atom(false),
         }
+    }
+
+    /// `do { stmt; stmt; expr }` — monadic sequencing, desugared here to nested
+    /// `bind e (fn x -> rest)` (Haskell `<-`), `let` statements to `Expr::Let`,
+    /// and bare statement expressions to `bind e (fn _ -> rest)`.
+    fn parse_do_block(&mut self) -> Result<Expr, CompileError> {
+        let start = self.bump().span.start; // consume `do`
+        self.eat(&Tok::LBrace)?;
+        let mut stmts: Vec<DoStmt> = Vec::new();
+        let mut result: Option<Expr> = None;
+        while self.peek().tok != Tok::RBrace {
+            if matches!(self.peek().tok, Tok::Ident(_)) {
+                // `x <- e` (bind) or `let x = e` (let) or a bare expression.
+                let save = self.pos();
+                if let Ok((n, _)) = self.expect_ident() {
+                    if self.peek().tok == Tok::LArrow {
+                        self.bump();
+                        let e = self.parse_expr(0, true)?;
+                        stmts.push(DoStmt::Bind(n, e));
+                        self.eat(&Tok::Semi)?;
+                        continue;
+                    }
+                }
+                self.seek(save);
+            }
+            if matches!(self.peek().tok, Tok::KwLet) {
+                self.bump();
+                let (n, _) = self.expect_ident()?;
+                self.eat(&Tok::Eq)?;
+                let e = self.parse_expr(0, true)?;
+                stmts.push(DoStmt::Let(n, e));
+                self.eat(&Tok::Semi)?;
+                continue;
+            }
+            let e = self.parse_expr(0, true)?;
+            if self.peek().tok == Tok::Semi {
+                self.bump();
+                // A trailing `;` before `}`: the statement is the block's
+                // result expression (`do { x <- mx; pure x; }`).
+                if self.peek().tok == Tok::RBrace {
+                    result = Some(e);
+                    break;
+                }
+                stmts.push(DoStmt::Stmt(e));
+            } else {
+                result = Some(e);
+                break;
+            }
+        }
+        self.eat(&Tok::RBrace)?;
+        let mut rest = result.ok_or_else(|| self.error("do block must end with an expression"))?;
+        for s in stmts.iter().rev() {
+            match s {
+                DoStmt::Bind(x, e) => {
+                    let span = self.span_from(start);
+                    let lam = Expr::Lambda {
+                        params: vec![Param {
+                            name: x.clone(),
+                            span,
+                        }],
+                        body: Box::new(rest),
+                        span,
+                    };
+                    rest = Expr::Apply {
+                        name: "bind".to_string(),
+                        args: vec![e.clone(), lam],
+                        span,
+                    };
+                }
+                DoStmt::Let(x, e) => {
+                    let span = self.span_from(start);
+                    rest = Expr::Let {
+                        defs: vec![Def::Local {
+                            name: x.clone(),
+                            body: e.clone(),
+                            where_defs: vec![],
+                            span,
+                        }],
+                        body: Box::new(rest),
+                        span,
+                    };
+                }
+                DoStmt::Stmt(e) => {
+                    let span = self.span_from(start);
+                    let lam = Expr::Lambda {
+                        params: vec![Param {
+                            name: "_".to_string(),
+                            span,
+                        }],
+                        body: Box::new(rest),
+                        span,
+                    };
+                    rest = Expr::Apply {
+                        name: "bind".to_string(),
+                        args: vec![e.clone(), lam],
+                        span,
+                    };
+                }
+            }
+        }
+        Ok(rest)
     }
 
     /// Parse a `.field` or `.field := value` postfix after a leading record
@@ -895,7 +1122,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_atom(&mut self) -> Result<Expr, CompileError> {
+    /// Parse a single atom. `arg_list` is true when the atom is a juxtaposed
+    /// argument of an enclosing application: a parenthesized expression in that
+    /// position is a plain argument and must not absorb the following atoms as
+    /// its own application (`fmap (fn x -> x) [1.0]` — the lambda is fmap's
+    /// first argument). A bare parenthesized expression (`arg_list == false`)
+    /// followed by atom-starting tokens is an application of the parenthesized
+    /// callee: `(k.unKleisli) p.first`.
+    fn parse_atom(&mut self, arg_list: bool) -> Result<Expr, CompileError> {
         let t = self.bump();
         match t.tok {
             Tok::Int(v) => Ok(Expr::Int(v, t.span)),
@@ -926,7 +1160,8 @@ impl<'a> Parser<'a> {
             Tok::Percent => Ok(Expr::Ref("%".into(), t.span)),
             Tok::Ident(name) => {
                 if self.peek().tok == Tok::Dot {
-                    self.parse_field(Expr::Ref(name, t.span), t.span.start)
+                    let proj = self.parse_field(Expr::Ref(name, t.span), t.span.start)?;
+                    Ok(proj)
                 } else {
                     Ok(Expr::Ref(name, t.span))
                 }
@@ -937,6 +1172,18 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::RParen)?;
                 if self.peek().tok == Tok::Dot {
                     self.parse_field(inner, start)
+                } else if !arg_list && is_atom_start(&self.peek().tok) {
+                    // `(expr) arg1 arg2` — apply a parenthesized expression.
+                    let mut args = Vec::new();
+                    while is_atom_start(&self.peek().tok) {
+                        args.push(self.parse_atom(true)?);
+                    }
+                    let span = self.span_from(start);
+                    Ok(Expr::ApplyExpr {
+                        callee: Box::new(inner),
+                        args,
+                        span,
+                    })
                 } else {
                     Ok(inner)
                 }
@@ -1445,16 +1692,65 @@ mod tests {
     }
 
     #[test]
-    fn parses_capacity_in_type_application() {
-        let p = prog("data V = { xs: List Float 16 }; main = _");
+    fn parses_typeclass_default_bodies() {
+        // `mname : sig = p1 p2 body;` — a class-level default body the
+        // instances may omit. Params bind between `=` and the body.
+        let p = prog("typeclass Arrow a where { arr: (b -> c) -> a b c; second: a b c -> a (Pair d b) (Pair d c) = k (compose (first k)); both: a b c -> a d e -> a (Pair b d) (Pair c e) = f g (compose (first f) (second g)); }; main = _");
+        match &p.defs[0] {
+            Def::Typeclass { name, defaults, .. } => {
+                assert_eq!(name, "Arrow");
+                assert_eq!(defaults.len(), 2);
+                // `second k = compose (first k)` — one param `k`.
+                assert_eq!(defaults[0].0, "second");
+                assert_eq!(defaults[0].1.len(), 1);
+                assert_eq!(defaults[0].1[0].name, "k");
+                // `both f g = …` — two params.
+                assert_eq!(defaults[1].0, "both");
+                assert_eq!(defaults[1].1.len(), 2);
+                assert_eq!(defaults[1].1[0].name, "f");
+                assert_eq!(defaults[1].1[1].name, "g");
+            }
+            other => panic!("expected Typeclass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tuple_type_desugars_to_pair() {
+        // `(Float, Float)` in type position must desugar to `TApp("Pair", …)` —
+        // typeclass defs store the raw TypeExpr (no resolution), so compilation
+        // alone cannot catch a wrong desugar target.
+        let p = prog("typeclass T a where { m: a (Float, Float) -> Float; }; main = _");
+        match &p.defs[0] {
+            Def::Typeclass { methods, .. } => {
+                assert_eq!(
+                    methods[0].1,
+                    TypeExpr::TFunc(
+                        vec![TypeExpr::TApp(
+                            "a".into(),
+                            vec![TypeExpr::TApp(
+                                "Pair".into(),
+                                vec![
+                                    TypeExpr::TName("Float".into()),
+                                    TypeExpr::TName("Float".into())
+                                ]
+                            )]
+                        )],
+                        Box::new(TypeExpr::TName("Float".into()))
+                    )
+                );
+            }
+            other => panic!("expected Typeclass, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_type_application() {
+        let p = prog("data V = { xs: List Float }; main = _");
         match &p.defs[0] {
             Def::Data { fields, .. } => {
                 assert_eq!(
                     fields[0].1,
-                    TypeExpr::TApp(
-                        "List".into(),
-                        vec![TypeExpr::TName("Float".into()), TypeExpr::TCap(16)]
-                    )
+                    TypeExpr::TApp("List".into(), vec![TypeExpr::TName("Float".into())])
                 );
             }
             other => panic!("expected Data, got {other:?}"),
@@ -1465,6 +1761,70 @@ mod tests {
     fn parses_instance_declaration() {
         let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Instance { .. })));
+    }
+
+    #[test]
+    fn parses_foreign_def_in_brace_where_block() {
+        // `foreign fn` inside a brace-style where-block: the def parser must
+        // leave the trailing `;` for `parse_where_block` to consume
+        // (regression: it used to eat its own semi, double-eating and failing
+        // on the next def with "expected Semi").
+        let p = prog(
+            "main = x where { foreign fn biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }",
+        );
+        let main = p.main_def().unwrap();
+        assert_eq!(main.where_defs().len(), 2);
+        match &main.where_defs()[0] {
+            Def::Foreign { name, .. } => assert_eq!(name, "biquad"),
+            other => panic!("expected Foreign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_constraint_instance_head() {
+        let p = prog("instance (Monad m) => Arrow (Kleisli m) where { arr f = f; }; main = _");
+        let inst = p
+            .defs
+            .iter()
+            .find(|d| matches!(d, Def::Instance { .. }))
+            .unwrap();
+        let Def::Instance {
+            class,
+            ty,
+            constraints,
+            head_args,
+            method_bodies,
+            ..
+        } = inst
+        else {
+            unreachable!("expected an instance def")
+        };
+        assert_eq!(class, "Arrow");
+        assert_eq!(ty, "Kleisli");
+        assert_eq!(constraints, &[("Monad".to_string(), "m".to_string())]);
+        assert_eq!(head_args, &["m".to_string()]);
+        assert_eq!(method_bodies.len(), 1);
+    }
+
+    #[test]
+    fn plain_instance_has_empty_constraints_and_head_args() {
+        // Backward compatibility: `instance C T where { … }` (no constraint
+        // list, no parenthesized head) must keep both new fields empty.
+        let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
+        let Def::Instance {
+            constraints,
+            head_args,
+            ..
+        } = p
+            .defs
+            .iter()
+            .find(|d| matches!(d, Def::Instance { .. }))
+            .unwrap()
+        else {
+            unreachable!("expected an instance def")
+        };
+        assert!(constraints.is_empty());
+        assert!(head_args.is_empty());
     }
 
     #[test]

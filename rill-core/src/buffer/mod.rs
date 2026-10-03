@@ -51,8 +51,8 @@ pub use delay::DelayLine;
 pub use fan::{FanInBuffer, FanOutBuffer};
 pub use pipe::PipeBuffer;
 pub use registry::{
-    shared_handles, DelayBuffer, Reader, Reader as BufferReader, ResourceRegistry, SharedReader,
-    SharedWriter, Writer, Writer as BufferWriter,
+    shared_handles, DelayBuffer, Reader, Reader as BufferReader, ResourceRegistry, SharedCell,
+    SharedReader, SharedWriter, Writer, Writer as BufferWriter,
 };
 pub use ring::RingBuffer;
 pub use storage::{AtomicCell, AtomicCellError};

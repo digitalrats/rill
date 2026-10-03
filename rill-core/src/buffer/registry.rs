@@ -71,7 +71,12 @@ pub trait DelayBuffer<T: Transcendental>: 'static {
 ///
 /// Lives on the signal thread; the graph is single-threaded, so writer and
 /// readers never overlap (nodes run sequentially in topological order).
-struct SharedCell<T: Transcendental> {
+///
+/// A program owns one cell per tape (`Vec<SharedCell<T>>`); heads receive
+/// [`SharedWriter`]/[`SharedReader`] handles cloned from the same cell, so a
+/// write head and its read heads share one buffer. The caller is responsible
+/// for the single-writer convention (at most one active writer per cell).
+pub struct SharedCell<T: Transcendental> {
     inner: Rc<UnsafeCell<Box<dyn DelayBuffer<T>>>>,
 }
 
@@ -84,10 +89,30 @@ impl<T: Transcendental> Clone for SharedCell<T> {
 }
 
 impl<T: Transcendental> SharedCell<T> {
-    fn new(buffer: Box<dyn DelayBuffer<T>>) -> Self {
+    /// Wrap a buffer into a shared cell. Use [`shared_handles`] to split it
+    /// into a writer/reader pair directly.
+    pub fn new(buffer: Box<dyn DelayBuffer<T>>) -> Self {
         Self {
             inner: Rc::new(UnsafeCell::new(buffer)),
         }
+    }
+
+    /// A write handle over this cell. Multiple calls return independent
+    /// handles to the same buffer; the single-writer convention is the
+    /// caller's responsibility.
+    pub fn writer(&self) -> SharedWriter<T> {
+        SharedWriter { cell: self.clone() }
+    }
+
+    /// A read handle over this cell. Cloneable — one per reader.
+    pub fn reader(&self) -> SharedReader<T> {
+        SharedReader { cell: self.clone() }
+    }
+
+    /// Maximum capacity in samples.
+    #[allow(unsafe_code)]
+    pub fn capacity(&self) -> usize {
+        unsafe { &*self.inner.get() }.capacity()
     }
 }
 
@@ -266,5 +291,18 @@ mod tests {
         reader.read_block(0, &mut out);
         assert_eq!(out[0], 1.0);
         assert_eq!(out[1], 2.0);
+    }
+
+    #[test]
+    fn shared_cell_writer_reader_share_buffer() {
+        use crate::buffer::TapeLoop;
+        let cell = SharedCell::new(Box::new(TapeLoop::<f32>::new(64).unwrap()));
+        let mut writer = cell.writer();
+        let reader = cell.reader();
+        assert_eq!(cell.capacity(), 64);
+        writer.write_block(&[1.0, 2.0, 3.0]);
+        let mut out = [0.0f32; 3];
+        reader.read_block(0, &mut out);
+        assert_eq!(out, [1.0, 2.0, 3.0]);
     }
 }

@@ -5,7 +5,6 @@ pub use rill_core;
 pub use rill_core_actor;
 pub use rill_core_dsp;
 pub use rill_digital_effects;
-pub use rill_digital_filters;
 pub use rill_graph;
 pub use rill_patchbay;
 pub use rill_router;
@@ -25,12 +24,6 @@ pub use rill_osc as osc;
 #[cfg(feature = "analog")]
 pub use rill_core_model as core_model;
 
-#[cfg(feature = "analog")]
-pub use rill_analog_filters as analog_filters;
-
-#[cfg(feature = "analog")]
-pub use rill_analog_effects as analog_effects;
-
 #[cfg(feature = "sampler")]
 pub use rill_sampler as sampler;
 
@@ -44,6 +37,9 @@ pub mod lang_builtins;
 
 /// Centralised node type registration for the Rill ecosystem.
 pub mod registration;
+
+/// Constructor registry for I/O backends (used by [`modular`]).
+pub mod backend_factory;
 
 pub mod modular;
 

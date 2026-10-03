@@ -75,9 +75,16 @@ fn block_builtin_in_feedback_compiles() {
 #[cfg(feature = "analog")]
 #[test]
 fn analog_moog_smoke() {
-    let reg = full_registry::<f32>();
-    assert!(reg.get("analog_moog").is_some());
-    assert!(compile_with::<f32>("main = _ : analog_moog 800.0 0.5", &reg, 48_000.0).is_ok());
+    // `analog_moog` moved out of rill-core-model into rill-lang's `model`
+    // feature (SP-3b Task 9): the legacy `full_registry` no longer carries it,
+    // the FFI factory does.
+    use rill_lang::compile_with_ffi;
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_model;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_model(&mut ffi);
+    assert!(compile_with_ffi::<f32>("main = _ : analog_moog 800.0 0.5", &ffi, 48_000.0).is_ok());
 }
 
 #[test]

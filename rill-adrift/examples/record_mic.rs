@@ -9,11 +9,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
+use rill_adrift::backend_factory::{BackendFactory, InputBundle};
 use rill_adrift::registration;
 use rill_adrift::rill_core::io::{IoPlayback, SpmcPlayback};
 use rill_adrift::rill_core::queues::SpscQueue;
 use rill_adrift::rill_core::traits::ParamValue;
-use rill_adrift::rill_graph::backend_factory::{BackendFactory, InputBundle};
 use rill_lang::program_runner::ProgramRunner;
 use rill_lang::runtime::Runtime;
 

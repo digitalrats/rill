@@ -1,8 +1,8 @@
-/// rill-lang builtins for rill-sampler.
-use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 use rill_core_dsp::generators::SamplePlayer;
+/// rill-lang builtins for rill-sampler.
+use rill_lang::builtin::{BlockBuiltin, Registry};
 
 struct SamplerBuiltin<T: Transcendental> {
     inner: SamplePlayer<T>,
@@ -54,18 +54,30 @@ impl<T: Transcendental> BlockBuiltin<T> for SamplerBuiltin<T> {
 }
 
 pub fn register_sampler_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    reg.register_block(
-        BuiltinSig::simple("sampler", 0, 1, 5, BuiltinKind::Block)
-            .with_names(vec!["gate", "rate", "amp", "cubic", "source"]),
-        |p, _sr| {
-            let mut player = SamplePlayer::new(Vec::new());
-            player.set_gate(p[0] > 0.0);
-            player.set_playback_rate(p[1].clamp(0.0, 4.0));
-            player.set_cubic(p[3] > 0.0);
-            Box::new(SamplerBuiltin {
-                inner: player,
-                amplitude: T::from_f64(p[2].clamp(0.0, 1.0)),
-            })
-        },
-    );
+    reg.register_block("sampler", |p, _sr| {
+        let mut player = SamplePlayer::new(Vec::new());
+        player.set_gate(p[0] > 0.0);
+        player.set_playback_rate(p[1].clamp(0.0, 4.0));
+        player.set_cubic(p[3] > 0.0);
+        Box::new(SamplerBuiltin {
+            inner: player,
+            amplitude: T::from_f64(p[2].clamp(0.0, 1.0)),
+        })
+    });
+}
+
+/// Register the sampler builtin as an FFI factory (for `compile_with_ffi`).
+pub fn register_foreign_sampler_builtins<T: Transcendental + 'static>(
+    ffi: &mut rill_lang::ffi::ForeignRegistry<T>,
+) {
+    ffi.register_block("sampler", |p: &[f64], _sr: f32| {
+        let mut player = SamplePlayer::new(Vec::new());
+        player.set_gate(p[0] > 0.0);
+        player.set_playback_rate(p[1].clamp(0.0, 4.0));
+        player.set_cubic(p[3] > 0.0);
+        Box::new(SamplerBuiltin {
+            inner: player,
+            amplitude: T::from_f64(p[2].clamp(0.0, 1.0)),
+        })
+    });
 }

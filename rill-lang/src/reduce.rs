@@ -60,6 +60,11 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 span: *span,
             }
         }
+        Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {
+            callee: Box::new(substitute(callee, subst)),
+            args: args.iter().map(|a| substitute(a, subst)).collect(),
+            span: *span,
+        },
         Expr::Seq(lhs, rhs, span) => Expr::Seq(
             Box::new(substitute(lhs, subst)),
             Box::new(substitute(rhs, subst)),
@@ -204,7 +209,61 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
             rhs: Box::new(substitute(rhs, subst)),
             span: *span,
         },
+        Expr::Let { defs, body, span } => {
+            // Let bindings shadow outer names inside the body: drop them from
+            // the substitution while descending. The def bodies themselves are
+            // substituted with the outer map (they may reference the enclosing
+            // function's parameters).
+            let mut inner = subst.clone();
+            for d in defs {
+                inner.remove(d.name());
+            }
+            Expr::Let {
+                defs: defs.iter().map(|d| substitute_def(d, subst)).collect(),
+                body: Box::new(substitute(body, &inner)),
+                span: *span,
+            }
+        }
         _ => e.clone(),
+    }
+}
+
+/// Substitute inside a definition's body (and its `where` defs), used when
+/// descending into a `Let` block.
+fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
+    match def {
+        Def::Anchor {
+            name,
+            params,
+            body,
+            where_defs,
+            span,
+        } => Def::Anchor {
+            name: name.clone(),
+            params: params.clone(),
+            // A let-Anchor's own λ-params are not shadowed (only affects constructs already broken at base).
+            body: substitute(body, subst),
+            where_defs: where_defs
+                .iter()
+                .map(|w| substitute_def(w, subst))
+                .collect(),
+            span: *span,
+        },
+        Def::Local {
+            name,
+            body,
+            where_defs,
+            span,
+        } => Def::Local {
+            name: name.clone(),
+            body: substitute(body, subst),
+            where_defs: where_defs
+                .iter()
+                .map(|w| substitute_def(w, subst))
+                .collect(),
+            span: *span,
+        },
+        other => other.clone(),
     }
 }
 
@@ -341,7 +400,16 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                                 args: reduced_args[np..].to_vec(),
                                 span: *span,
                             },
-                            other => other,
+                            // A nullary func-value def whose body is not a `Ref`
+                            // (a field projection, a lambda, an application
+                            // chain): re-apply the leftover arguments to the
+                            // inlined callee so they are not dropped
+                            // (`let u = k.f in u x`).
+                            other => Expr::ApplyExpr {
+                                callee: Box::new(other),
+                                args: reduced_args[np..].to_vec(),
+                                span: *span,
+                            },
                         }
                     } else {
                         inlined
@@ -358,6 +426,11 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                 }
             }
         }
+        Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {
+            callee: Box::new(reduce_expr(callee, ctx, cafs)),
+            args: args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect(),
+            span: *span,
+        },
         Expr::Let {
             defs,
             body,
@@ -451,11 +524,54 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
             span: *span,
         },
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+        } => {
+            // A match-arm binding shadows an outer name of the same spelling:
+            // drop it from the reduction context while descending into the arm
+            // body. Reducing the scrutinee β-reduces def calls inside it (a
+            // `match (apply ...) of` scrutinee inlines `apply`), so lowering
+            // never sees a λ-def call whose params it cannot bind.
+            let inner_ctx: HashMap<String, Def> = arms
+                .iter()
+                .flat_map(|arm| pattern_vars(&arm.pattern))
+                .fold(ctx.clone(), |mut c, v| {
+                    c.remove(&v);
+                    c
+                });
+            Expr::Match {
+                scrutinee: Box::new(reduce_expr(scrutinee, ctx, cafs)),
+                arms: arms
+                    .iter()
+                    .map(|arm| MatchArm {
+                        pattern: arm.pattern.clone(),
+                        guards: arm
+                            .guards
+                            .iter()
+                            .map(|(g, b)| {
+                                (
+                                    reduce_expr(g, &inner_ctx, cafs),
+                                    reduce_expr(b, &inner_ctx, cafs),
+                                )
+                            })
+                            .collect(),
+                        span: arm.span,
+                    })
+                    .collect(),
+                span: *span,
+            }
+        }
         _ => e.clone(),
     }
 }
 
 /// Recognize the `+ ~ _` / `+ ~ (_ * k)` integrator short forms.
+///
+/// The desugared calls bind the signal arg positionally (`integrator _`,
+/// `leaky_integrator _ k`) — the FFI model (and the inline foreign catalog)
+/// requires the signal as a positional apply arg.
 fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
     let is_plus = matches!(lhs, Expr::Ref(name, _) if name == "+");
     if !is_plus {
@@ -464,7 +580,7 @@ fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
     match rhs {
         Expr::Wire(_) => Some(Expr::Apply {
             name: "integrator".to_string(),
-            args: vec![],
+            args: vec![Expr::Wire(span)],
             span,
         }),
         Expr::Arith {
@@ -474,7 +590,7 @@ fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
             ..
         } if matches!(w.as_ref(), Expr::Wire(_)) => Some(Expr::Apply {
             name: "leaky_integrator".to_string(),
-            args: vec![(**k).clone()],
+            args: vec![Expr::Wire(span), (**k).clone()],
             span,
         }),
         _ => None,
@@ -589,6 +705,9 @@ mod tests {
                 contains_name(lhs.as_ref(), name) || contains_name(rhs.as_ref(), name)
             }
             Expr::Apply { args, .. } => args.iter().any(|a| contains_name(a, name)),
+            Expr::ApplyExpr { callee, args, .. } => {
+                contains_name(callee.as_ref(), name) || args.iter().any(|a| contains_name(a, name))
+            }
             Expr::Neg(i, _) => contains_name(i.as_ref(), name),
             Expr::Let { defs, body, .. } => {
                 defs.iter().any(|d| contains_name(d.body(), name))

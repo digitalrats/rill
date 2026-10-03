@@ -1,8 +1,8 @@
 //! Global PipeWire context — lazily initialised once.
 //!
 //! In the new architecture backends are created externally via
-//! `BackendFactory` and implement `IoDriver` + optionally
-//! `IoCapture` / `IoPlayback`.
+//! `rill_adrift::backend_factory::BackendFactory` and implement `IoDriver` +
+//! optionally `IoCapture` / `IoPlayback`.
 
 use rill_core::io::IoDriver;
 

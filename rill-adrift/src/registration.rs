@@ -264,9 +264,9 @@ fn register_clock_module(factory: &mut rill_patchbay::module_factory::ModuleFact
     factory.register(ClockConstructor);
 }
 
-/// Register all built-in backends into a [`BackendFactory`](rill_graph::backend_factory::BackendFactory).
+/// Register all built-in backends into a [`BackendFactory`](crate::backend_factory::BackendFactory).
 #[cfg(feature = "io")]
-pub fn register_backends(factory: &mut rill_graph::backend_factory::BackendFactory) {
+pub fn register_backends(factory: &mut crate::backend_factory::BackendFactory) {
     use std::sync::Arc;
 
     factory.register("null", rill_core::io::BackendMeta::active(), |p| {

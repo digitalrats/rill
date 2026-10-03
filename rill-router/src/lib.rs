@@ -21,4 +21,7 @@ pub use pan::{MonoToStereo, PanLaw};
 pub mod register;
 
 #[cfg(feature = "lang")]
+/// DSL-facing builtin wrappers (mixer/EQ/dry-wet states) for the rill-lang FFI.
+mod builtins;
+#[cfg(feature = "lang")]
 mod lang;

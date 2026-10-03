@@ -15,10 +15,9 @@ effects, and analog circuit modelling.
 │  rill-osc  │  rill-graph  │  rill-patchbay  │  rill-sampler │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-core-dsp  (Algorithm trait, filters, generators, FX)   │
-│  rill-digital-filters  │  rill-digital  │
-│  -effects  │  rill-router  │  rill-lofi                       │
-│  rill-core-model  │  rill-analog-filters  │  rill-analog     │
-│  -effects  │  rill-lang  │  rill-fft                          │
+│  rill-digital-effects  │  rill-router  │  rill-lofi          │
+│  rill-core-model  (WDF, analog filters)  │  rill-lang        │
+│  rill-fft                                                      │
 ├─────────────────────────────────────────────────────────────┤
 │  rill-io (PortAudio / ALSA / PipeWire / JACK)                  │
 ├─────────────────────────────────────────────────────────────┤
@@ -236,7 +235,6 @@ topology definition.
 | **rill-lang** | Faust-style signal DSL — compiles to `Algorithm<T>` |
 | **rill-fft** | FFT, frequency‑domain convolution, spectrum analysis, spectral effects |
 | **rill-graph** | Static DAG signal graph with GraphBuilder |
-| **rill-digital-filters** | Biquad, SVF, comb, MoogLadder filter nodes |
 | **rill-digital-effects** | Delay, Distortion, Limiter nodes |
 | **rill-router** | EQ + mixer + routing |
 | **rill-patchbay** | Automation: LFO, envelopes, sequencer, sensors, servos |
@@ -244,10 +242,8 @@ topology definition.
 | **rill-io** | Audio I/O: PortAudio, ALSA, PipeWire, JACK |
 | **rill-telemetry** | Real-time probes, collectors, debug IPC |
 | **rill-analyzer** | **[CLI]** Interactive gdb-style debugger for signal graph inspection |
-| **rill-analog-filters** | WDF-based analog filters (MoogLadder) |
-| **rill-analog-effects** | Cassette deck, tape bridge/delay models |
 | **rill-osc** | OSC server and networking |
-| **rill-sampler** | Sample playback, time-series reader, WAV loading |
+| **rill-sampler** | Sample playback, time-series reader, WAV loading, tape write/read heads |
 | **rill-adrift** | Umbrella crate (re-exports all) |
 
 ## Feature flags (rill-adrift)
@@ -260,15 +256,13 @@ topology definition.
 | `osc` | `rill-osc` (tokio) | yes |
 | `sampler` | `rill-sampler` | yes |
 | `fft` | `rill-fft` (FFT, convolution, spectral effects) | yes |
-| `lang` | `rill-lang` (signal DSL, complex builtins) | no |
 | `debug` | Diagnostic & debug infrastructure (probes, command log, rill-analyzer IPC) | no |
-| `analog` | WDF + analog filters + effects | no |
+| `analog` | `rill-core-model` (WDF + analog filters) + `rill-lang/model` | no |
 | `serialization` | Graph/patchbay JSON/CBOR | no |
 | `alsa` / `portaudio` / `jack` / `pipewire` | I/O backends (implies `io`) | no |
 
 Always-on: `rill-core`, `rill-core-actor`, `rill-core-dsp`, `rill-graph`,
-`rill-digital-filters`, `rill-digital-effects`,
-`rill-router`, `rill-patchbay`.
+`rill-digital-effects`, `rill-router`, `rill-patchbay`, `rill-lang`.
 
 ## Dependencies
 
@@ -277,7 +271,6 @@ graph TD
     CORE[rill-core] --> CORE_DSP[rill-core-dsp]
     CORE --> CORE_ACTOR[rill-core-actor]
     CORE --> GRAPH[rill-graph]
-    CORE_DSP --> FILTERS[rill-digital-filters]
     CORE_DSP --> EFFECTS[rill-digital-effects]
     CORE_DSP --> ROUTER[rill-router]
     CORE_DSP --> FFT[rill-fft]
@@ -286,8 +279,6 @@ graph TD
     CORE --> LOFI[rill-lofi]
     CORE --> TELEMETRY[rill-telemetry]
     CORE --> CORE_WDF[rill-core-model]
-    CORE_WDF --> ANALOG_FILTERS[rill-analog-filters]
-    CORE_WDF --> ANALOG_EFFECTS[rill-analog-effects]
     CORE --> SAMPLER[rill-sampler]
     CORE_DSP --> SAMPLER
     CORE --> LANG[rill-lang]

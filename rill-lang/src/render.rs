@@ -135,6 +135,12 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             write!(buf, "}}").ok();
             Ok(())
         }
+        Def::Foreign { name, sig, .. } => {
+            write!(buf, "{pad}foreign fn {name}: ").ok();
+            render_type_expr(sig, buf);
+            write!(buf, ";").ok();
+            Ok(())
+        }
     }
 }
 
@@ -163,9 +169,6 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             write!(buf, " -> ").ok();
             render_type_expr(ret, buf);
             write!(buf, ")").ok();
-        }
-        TypeExpr::TCap(n) => {
-            write!(buf, "{n}").ok();
         }
     }
 }
@@ -206,6 +209,16 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
         }
         Expr::Apply { name, args, .. } => {
             write!(buf, "{name}").ok();
+            for a in args {
+                write!(buf, " ").ok();
+                render_expr(a, buf, 20)?; // application args are tight
+            }
+            Ok(())
+        }
+        Expr::ApplyExpr { callee, args, .. } => {
+            write!(buf, "(").ok();
+            render_expr(callee, buf, 0)?;
+            write!(buf, ")").ok();
             for a in args {
                 write!(buf, " ").ok();
                 render_expr(a, buf, 20)?; // application args are tight
@@ -578,6 +591,24 @@ mod tests {
     fn render_roundtrip_if() {
         let dsl = roundtrip_main("main = if true then 1.0 else 2.0;");
         assert_eq!(dsl, "main = if true then 1.0 else 2.0");
+    }
+
+    #[test]
+    fn render_roundtrip_foreign_decl() {
+        // A `foreign fn` declaration renders a trailing `;` (render.rs
+        // Def::Foreign arm) that the top-level parse loop — not the def parser
+        // — consumes. Full-program round-trip must stay idempotent.
+        let src = "foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;\nmain = 1.0;";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
+        let first = render(&program).unwrap();
+        let tokens2 = crate::lexer::tokenize(&first).unwrap();
+        let reparsed = crate::parser::parse(&tokens2, first.as_bytes()).unwrap();
+        let second = render(&reparsed).unwrap();
+        assert_eq!(
+            first, second,
+            "render → parse → render is not idempotent for: {src}\nfirst: {first}\nsecond: {second}"
+        );
     }
 
     #[test]
