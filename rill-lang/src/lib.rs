@@ -293,7 +293,7 @@ fn extract_resources(
 #[cfg(test)]
 mod ir_tests {
     use super::*;
-    use crate::builtin::{BuiltinKind, Registry};
+    use crate::builtin::Registry;
 
     struct TestOsc;
     impl rill_core::traits::Algorithm<f32> for TestOsc {

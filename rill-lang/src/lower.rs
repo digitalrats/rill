@@ -4664,9 +4664,9 @@ impl<'a> Lowerer<'a> {
     }
 
     /// The signal arity `(ins, outs)` of a catalog/FFI builtin by name, if
-    /// declared. Signal inputs = the count of `Signal` params; a variadic
-    /// signal contributes at least one (the fallback `(ins, 1)` for unknown
-    /// applies covers the exact channel span at lowering).
+    /// declared. Signal inputs = the count of `Signal` params (variadic-signal
+    /// channels excluded), mirroring the legacy `BuiltinSig::signal_ins()`
+    /// semantics.
     fn ffi_arity(&self, name: &str) -> Option<(usize, usize)> {
         let fsig = self.env.foreign_sigs.get(name)?;
         let sig = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig)?;
