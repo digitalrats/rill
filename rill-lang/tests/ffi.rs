@@ -1017,6 +1017,54 @@ fn digital_effects_distortion_runs() {
 
 #[cfg(feature = "dsp")]
 #[test]
+fn digital_effects_delay_live_param_reaches_algorithm() {
+    // Regression: the FFI wrapper's `set_param` must route a live SetParameter
+    // into the algorithm. Empty `BlockBuiltin` impls silently dropped it, so
+    // `main t = _ : delay t 0.0 1.0` ran at the clamped minimum forever.
+    // `t` is a main λ-param → param_bindings (0, 0); mix = 1.0 makes the
+    // output pure wet, so the output equals the delayed tap.
+    use rill_core::traits::ParamValue;
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_digital_effects;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_digital_effects(&mut ffi);
+
+    let src = r#"
+        main t = _ : delay t 0.0 1.0;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+
+    // Default t = 0.0 clamps to 0.01 s → 441 samples at 44.1 kHz.
+    let t_idx = prog.param_index("t").expect("param `t`");
+    assert_eq!(t_idx, 0);
+
+    // Fill the delay line (3 blocks of 256 = 768 samples > 441).
+    let mut out = [0.0f32; 256];
+    let ones = [1.0f32; 256];
+    for _ in 0..3 {
+        MultichannelAlgorithm::process(&mut prog, &[&ones], &mut [&mut out]).unwrap();
+    }
+    // The wet tap 441 samples back reads a written region: pure wet output.
+    assert!(
+        (out[0] - 1.0).abs() < 1e-6,
+        "wet tap at default delay: out[0]={}",
+        out[0]
+    );
+
+    // Lengthen the delay via SetParameter → the tap moves to a never-written
+    // region of the delay line → the pure-wet output drops to 0.0.
+    prog.set_param(t_idx, ParamValue::Float(0.3));
+    MultichannelAlgorithm::process(&mut prog, &[&ones], &mut [&mut out]).unwrap();
+    assert!(
+        out[0].abs() < 1e-6,
+        "after SetParameter(t, 0.3) the tap must move: out[0]={}",
+        out[0]
+    );
+}
+
+#[cfg(feature = "dsp")]
+#[test]
 fn digital_effects_limiter_runs() {
     use rill_lang::ffi::ForeignRegistry;
     use rill_lang::register::register_foreign_digital_effects;

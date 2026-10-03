@@ -479,7 +479,21 @@ pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
             Algorithm::init(&mut self.0, sample_rate);
         }
     }
-    impl<T: Transcendental> BlockBuiltin<T> for DelayBuiltin<T> {}
+    impl<T: Transcendental> BlockBuiltin<T> for DelayBuiltin<T> {
+        fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+            let v = match value {
+                rill_core::traits::ParamValue::Float(f) => *f,
+                rill_core::traits::ParamValue::Int(i) => *i as f32,
+                _ => 0.0,
+            };
+            match index {
+                0 => self.0.set_delay_time(v),
+                1 => self.0.set_feedback(v),
+                2 => self.0.set_mix(v),
+                _ => {}
+            }
+        }
+    }
 
     struct DistortionBuiltin<T: Transcendental>(Distortion<T, 64>);
     impl<T: Transcendental> Algorithm<T> for DistortionBuiltin<T> {
@@ -493,7 +507,20 @@ pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
             Algorithm::init(&mut self.0, sample_rate);
         }
     }
-    impl<T: Transcendental> BlockBuiltin<T> for DistortionBuiltin<T> {}
+    impl<T: Transcendental> BlockBuiltin<T> for DistortionBuiltin<T> {
+        fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+            let v = match value {
+                rill_core::traits::ParamValue::Float(f) => *f,
+                rill_core::traits::ParamValue::Int(i) => *i as f32,
+                _ => 0.0,
+            };
+            match index {
+                0 => self.0.set_drive(v),
+                1 => self.0.set_output_gain(v),
+                _ => {}
+            }
+        }
+    }
 
     struct LimiterBuiltin<T: Transcendental>(Limiter<T, 64>);
     impl<T: Transcendental> Algorithm<T> for LimiterBuiltin<T> {
@@ -511,7 +538,20 @@ pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
             Algorithm::init(&mut self.0, sample_rate);
         }
     }
-    impl<T: Transcendental> BlockBuiltin<T> for LimiterBuiltin<T> {}
+    impl<T: Transcendental> BlockBuiltin<T> for LimiterBuiltin<T> {
+        fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+            let v = match value {
+                rill_core::traits::ParamValue::Float(f) => *f,
+                rill_core::traits::ParamValue::Int(i) => *i as f32,
+                _ => 0.0,
+            };
+            match index {
+                0 => self.0.set_threshold(v),
+                1 => self.0.set_release(v),
+                _ => {}
+            }
+        }
+    }
 
     ffi.register_block("delay", |p: &[f64], sr: f32| {
         let mut d = Delay::<T, 64>::with_params(sr, p[0] as f32, p[1] as f32, p[2] as f32);
