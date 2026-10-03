@@ -16,15 +16,35 @@
 use std::collections::HashMap;
 
 use crate::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
+use rill_core::buffer::{SharedReader, SharedWriter};
 use rill_core::math::Transcendental;
 
 type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
 type MultichannelBlockFactory<T> =
     Box<dyn Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
+/// A resource-backed factory: resolves its shared tape cell by INDEX (the
+/// `tape_loop` path) instead of a name against an external registry. Receives
+/// both the write and read handles of the cell; a head uses the one it needs.
+type ResourceBlockFactory<T> = Box<
+    dyn Fn(&[f64], f32, SharedWriter<T>, SharedReader<T>) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
+>;
+type ResourceMultichannelBlockFactory<T> = Box<
+    dyn Fn(
+            usize,
+            &[f64],
+            f32,
+            SharedWriter<T>,
+            SharedReader<T>,
+        ) -> Box<dyn MultichannelBlockBuiltin<T>>
+        + Send
+        + Sync,
+>;
 
 enum Factory<T: Transcendental> {
     Block(BlockFactory<T>),
     MultichannelBlock(MultichannelBlockFactory<T>),
+    ResourceBlock(ResourceBlockFactory<T>),
+    ResourceMultichannelBlock(ResourceMultichannelBlockFactory<T>),
 }
 
 /// A registry of Rust implementations for foreign-declared builtins.
@@ -69,6 +89,43 @@ impl<T: Transcendental> ForeignRegistry<T> {
             .insert(name.into(), Factory::MultichannelBlock(Box::new(factory)));
     }
 
+    /// Register a resource-backed whole-buffer `Block` factory. The factory
+    /// receives the shared tape cell's writer/reader handles (resolved by tape
+    /// index at build) instead of a resource name.
+    pub fn register_resource_block(
+        &mut self,
+        name: impl Into<String>,
+        factory: impl Fn(&[f64], f32, SharedWriter<T>, SharedReader<T>) -> Box<dyn BlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.entries
+            .insert(name.into(), Factory::ResourceBlock(Box::new(factory)));
+    }
+
+    /// Register a resource-backed multi-channel block builtin. The factory
+    /// receives the shared tape cell's writer/reader handles.
+    pub fn register_resource_multichannel_block(
+        &mut self,
+        name: impl Into<String>,
+        factory: impl Fn(
+                usize,
+                &[f64],
+                f32,
+                SharedWriter<T>,
+                SharedReader<T>,
+            ) -> Box<dyn MultichannelBlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.entries.insert(
+            name.into(),
+            Factory::ResourceMultichannelBlock(Box::new(factory)),
+        );
+    }
+
     /// Build a whole-buffer `Block` factory instance for `name`, if registered.
     pub(crate) fn build_block(
         &self,
@@ -78,7 +135,9 @@ impl<T: Transcendental> ForeignRegistry<T> {
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match self.entries.get(name)? {
             Factory::Block(f) => Some(f(params, sample_rate)),
-            Factory::MultichannelBlock(_) => None,
+            Factory::MultichannelBlock(_)
+            | Factory::ResourceBlock(_)
+            | Factory::ResourceMultichannelBlock(_) => None,
         }
     }
 
@@ -92,7 +151,44 @@ impl<T: Transcendental> ForeignRegistry<T> {
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match self.entries.get(name)? {
             Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate)),
-            Factory::Block(_) => None,
+            Factory::Block(_)
+            | Factory::ResourceBlock(_)
+            | Factory::ResourceMultichannelBlock(_) => None,
+        }
+    }
+
+    /// Build a resource-backed `Block` instance for `name` against a shared
+    /// tape cell's writer/reader handles.
+    pub(crate) fn build_resource_block(
+        &self,
+        name: &str,
+        params: &[f64],
+        sample_rate: f32,
+        writer: SharedWriter<T>,
+        reader: SharedReader<T>,
+    ) -> Option<Box<dyn BlockBuiltin<T>>> {
+        match self.entries.get(name)? {
+            Factory::ResourceBlock(f) => Some(f(params, sample_rate, writer, reader)),
+            _ => None,
+        }
+    }
+
+    /// Build a resource-backed multi-channel instance for `name` against a
+    /// shared tape cell's writer/reader handles.
+    pub(crate) fn build_resource_multichannel_block(
+        &self,
+        name: &str,
+        signal_ins: usize,
+        params: &[f64],
+        sample_rate: f32,
+        writer: SharedWriter<T>,
+        reader: SharedReader<T>,
+    ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
+        match self.entries.get(name)? {
+            Factory::ResourceMultichannelBlock(f) => {
+                Some(f(signal_ins, params, sample_rate, writer, reader))
+            }
+            _ => None,
         }
     }
 
@@ -101,6 +197,8 @@ impl<T: Transcendental> ForeignRegistry<T> {
         self.entries.get(name).map(|f| match f {
             Factory::Block(_) => BuiltinFactoryKind::Block,
             Factory::MultichannelBlock(_) => BuiltinFactoryKind::MultichannelBlock,
+            Factory::ResourceBlock(_) => BuiltinFactoryKind::ResourceBlock,
+            Factory::ResourceMultichannelBlock(_) => BuiltinFactoryKind::ResourceMultichannelBlock,
         })
     }
 }

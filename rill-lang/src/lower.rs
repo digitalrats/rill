@@ -264,6 +264,16 @@ struct Lowerer<'a> {
     /// is a NAMED lambda-literal definition. Consumed by the `Expr::Lambda`
     /// arm; anonymous lambdas leave it unset and default to `Float`.
     pending_param_tys: Option<Vec<ValueTy>>,
+    /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
+    /// the AST. A resource param's `Ref(name)` resolves to the capacity here to
+    /// assign a tape index; a `Ref` NOT present stays a name-based resource
+    /// binding (the graph duplex path's externally-shared registry).
+    tape_decls: HashMap<String, usize>,
+    /// Tape cell capacities, one entry per tape; the index IS the tape index
+    /// referenced by [`BuiltinInstance::tape_index`]. Deduplicated by capacity
+    /// — inline `tape_loop <capacity>` calls and named declarations of the same
+    /// capacity share one cell.
+    tapes: Vec<usize>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -285,6 +295,18 @@ impl<'a> Lowerer<'a> {
 
     fn emit_value(&mut self, i: ValueInstr) {
         self.value_blocks[self.cur_value_block].instrs.push(i);
+    }
+
+    /// Resolve a tape capacity to a tape index, appending a new cell on first
+    /// use. Deduplication is by capacity: inline `tape_loop <capacity>` calls
+    /// and named declarations of the same capacity share one shared cell, so a
+    /// write head and its read heads reference the same buffer.
+    fn resolve_tape(&mut self, capacity: usize) -> usize {
+        if let Some(i) = self.tapes.iter().position(|&c| c == capacity) {
+            return i;
+        }
+        self.tapes.push(capacity);
+        self.tapes.len() - 1
     }
 
     fn new_value_block(&mut self) -> usize {
@@ -3522,6 +3544,7 @@ impl<'a> Lowerer<'a> {
                         name,
                         params: vec![0.0, *v],
                         resource: None,
+                        tape_index: None,
                         kind: sig.kind,
                         signal_ins: sig.signal_ins(),
                         signal_outs: sig.signal_outs,
@@ -3636,6 +3659,7 @@ impl<'a> Lowerer<'a> {
                         let mut param_bindings = Vec::new();
                         let mut signal_srcs = Vec::new();
                         let mut resource: Option<String> = None;
+                        let mut tape_index: Option<usize> = None;
                         let mut pos = 0usize;
                         let mut signal_index = 0usize;
                         for p in &sig.params {
@@ -3903,17 +3927,54 @@ impl<'a> Lowerer<'a> {
                                     if pos >= call_args.len() {
                                         break;
                                     }
-                                    // A symbolic `Ref` to the shared tape; the
-                                    // build path resolves the name in the
-                                    // resource registry.
+                                    // A resource arg is either a symbolic `Ref`
+                                    // to a declared tape name or an inline
+                                    // `tape_loop <capacity>` constructor. The
+                                    // new DSL path resolves both to a tape INDEX
+                                    // (the program's `Vec<SharedCell>`); a `Ref`
+                                    // absent from the declared-tape map stays a
+                                    // name-based resource binding (the graph
+                                    // duplex path's externally-shared registry).
                                     match &call_args[pos] {
                                         Expr::Ref(res_name, _) => {
-                                            resource = Some(res_name.clone());
+                                            match self.tape_decls.get(res_name.as_str()) {
+                                                Some(&cap) => {
+                                                    tape_index =
+                                                        Some(self.resolve_tape(cap));
+                                                }
+                                                None => {
+                                                    resource = Some(res_name.clone());
+                                                }
+                                            }
+                                        }
+                                        Expr::Apply { name: ctor, args: ctor_args, .. }
+                                            if ctor == "tape_loop" =>
+                                        {
+                                            let cap = ctor_args
+                                                .first()
+                                                .and_then(|a| match a {
+                                                    Expr::Int(v, _) => Some(*v as usize),
+                                                    Expr::Float(v, _) => Some(*v as usize),
+                                                    _ => None,
+                                                })
+                                                .ok_or_else(|| CompileError::Type {
+                                                    msg: "tape_loop capacity must be an integer constant"
+                                                        .to_string(),
+                                                    span: call_args[pos].span(),
+                                                })?;
+                                            if cap == 0 {
+                                                return Err(CompileError::Type {
+                                                    msg: "tape_loop capacity must be > 0"
+                                                        .to_string(),
+                                                    span: call_args[pos].span(),
+                                                });
+                                            }
+                                            tape_index = Some(self.resolve_tape(cap));
                                         }
                                         other => {
                                             return Err(CompileError::Type {
                                                 msg: format!(
-                                                    "resource argument of `{name}` must be a symbolic reference"
+                                                    "resource argument of `{name}` must be a symbolic reference or a `tape_loop` constructor"
                                                 ),
                                                 span: other.span(),
                                             });
@@ -3928,6 +3989,7 @@ impl<'a> Lowerer<'a> {
                             name: name.clone(),
                             params: param_values,
                             resource,
+                            tape_index,
                             kind: crate::builtin::BuiltinKind::Block,
                             signal_ins: signal_srcs.len(),
                             signal_outs: sig.signal_outs,
@@ -4119,6 +4181,7 @@ impl<'a> Lowerer<'a> {
                         name: name.clone(),
                         params: param_values,
                         resource,
+                        tape_index: None,
                         kind: sig.kind,
                         signal_ins: signal_srcs.len(),
                         signal_outs: sig.signal_outs,
@@ -4322,6 +4385,7 @@ impl<'a> Lowerer<'a> {
                     name: name.to_string(),
                     params: Vec::new(),
                     resource: None,
+                    tape_index: None,
                     kind: sig.kind,
                     signal_ins: sig.signal_ins(),
                     signal_outs: sig.signal_outs,
@@ -4609,6 +4673,7 @@ impl<'a> Lowerer<'a> {
                         name,
                         params: vec![re, im],
                         resource: None,
+                        tape_index: None,
                         kind: sig.kind,
                         signal_ins: sig.signal_ins(),
                         signal_outs: sig.signal_outs,
@@ -4969,6 +5034,8 @@ pub fn lower_with_cafs(
         fragment_captures: Vec::new(),
         fn_param_tys: tp.fn_param_tys.clone(),
         pending_param_tys: None,
+        tape_decls: tp.tape_decls.iter().cloned().collect(),
+        tapes: Vec::new(),
     };
 
     for (cell_idx, p) in main.params().iter().enumerate() {
@@ -5124,6 +5191,7 @@ pub fn lower_with_cafs(
             buffer_budget,
             value_state_slots: 0,
         },
+        tapes: lw.tapes,
     })
 }
 
@@ -5191,6 +5259,7 @@ mod tests {
             cafs,
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
         lower_with_cafs(&tp, &TestSigs, 44_100.0, &tp.cafs).unwrap()
     }
@@ -5234,6 +5303,8 @@ mod tests {
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),
             pending_param_tys: None,
+            tape_decls: HashMap::new(),
+            tapes: Vec::new(),
         }
     }
 
@@ -5435,6 +5506,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
         let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -5458,6 +5530,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
         let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -5482,6 +5555,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
         let res = lower_with_cafs(&tp, &TestSigs, 44100.0, &cafs);
         assert!(res.is_err());
@@ -5511,6 +5585,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            tape_decls: Vec::new(),
         };
         let res = lower_with_cafs(&tp, &crate::builtin::NoSigs, 44100.0, &cafs);
         assert!(res.is_err());

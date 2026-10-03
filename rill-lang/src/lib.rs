@@ -70,7 +70,12 @@ use std::sync::Arc;
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
+    let (program, tape_decls) = extract_resources(&program);
     let mut typed = types::infer::infer_program(&program)?;
+    typed.tape_decls = tape_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.capacity))
+        .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
     let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, 44_100.0, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
@@ -86,7 +91,12 @@ pub fn compile_with<T: Transcendental>(
 ) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
+    let (program, tape_decls) = extract_resources(&program);
     let mut typed = types::infer::infer_program_with(&program, registry)?;
+    typed.tape_decls = tape_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.capacity))
+        .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
     let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
     // regalloc::allocate(&mut ir);
@@ -104,7 +114,12 @@ pub fn compile_with_ffi<T: Transcendental>(
 ) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
+    let (program, tape_decls) = extract_resources(&program);
     let mut typed = types::infer::infer_program(&program)?;
+    typed.tape_decls = tape_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.capacity))
+        .collect();
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
     let ir = lower::lower_with_cafs(&typed, &crate::builtin::NoSigs, sample_rate, &typed.cafs)?;
     let registry = Registry::<T>::new();
@@ -142,58 +157,51 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
     program: &crate::ast::Program,
     registry: &Registry<T>,
     sample_rate: f32,
-    resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+    mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     let (program, resource_decls) = extract_resources(program);
 
     let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+
+    // The DSL `tape_loop` path (no external registry) resolves a resource
+    // param's `Ref(name)` to a tape INDEX via the extracted declarations. The
+    // caller-supplied-registry path (graph duplex) keeps name-based bindings —
+    // its `Ref`s resolve against the shared external registry at build.
+    if resources.is_none() {
+        typed.tape_decls = resource_decls
+            .iter()
+            .map(|d| (d.name.clone(), d.capacity))
+            .collect();
+    }
     let ir = lower::lower_with_cafs(&typed, registry, sample_rate, &typed.cafs)?;
 
-    // The declared-resource check only applies when the registry is auto-created
-    // from the source's `TapeLoop` declarations. When a caller-supplied registry
-    // is used, its presence is validated below.
-    if resources.is_none() {
+    if let Some(res) = &mut resources {
         for bi in &ir.builtins {
-            if let Some(res) = &bi.resource {
-                if !resource_decls.iter().any(|d| &d.name == res) {
+            if let Some(name) = &bi.resource {
+                if res.reader(name).is_none() {
                     return Err(CompileError::Unsupported(format!(
-                        "built-in '{}' references undeclared resource '{}'",
-                        bi.name, res
+                        "resource '{}' not found in the provided registry",
+                        name
                     )));
                 }
             }
         }
+        let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res, None)?;
+        let mailbox = Arc::new(Mailbox::new(64));
+        return Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox));
     }
 
-    let mut owned = rill_core::buffer::ResourceRegistry::<T>::new();
-    let res: &mut rill_core::buffer::ResourceRegistry<T> = match resources {
-        Some(r) => {
-            for bi in &ir.builtins {
-                if let Some(name) = &bi.resource {
-                    if r.reader(name).is_none() {
-                        return Err(CompileError::Unsupported(format!(
-                            "resource '{}' not found in the provided registry",
-                            name
-                        )));
-                    }
-                }
-            }
-            r
+    // DSL path: every tape binding must resolve to a declared `tape_loop` cell.
+    for bi in &ir.builtins {
+        if let Some(res) = &bi.resource {
+            return Err(CompileError::Unsupported(format!(
+                "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>` or pass a registry)",
+                bi.name, res
+            )));
         }
-        None => {
-            for decl in &resource_decls {
-                let tape =
-                    rill_core::buffer::TapeLoop::<T>::new(decl.capacity).ok_or_else(|| {
-                        CompileError::Unsupported(format!("tape '{}' has zero capacity", decl.name))
-                    })?;
-                owned.register_buffer(decl.name.clone(), Box::new(tape));
-            }
-            &mut owned
-        }
-    };
-
-    let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res, None)?;
+    }
+    let rp = RillProgram::<T, BUF>::new_with(ir, registry, sample_rate, None)?;
     let mailbox = Arc::new(Mailbox::new(64));
     Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox))
 }
@@ -220,8 +228,13 @@ pub struct ResourceDecl {
     pub capacity: usize,
 }
 
-/// Extract top-level `name = TapeLoop <capacity>` resource declarations,
-/// returning the remaining signal program plus the declarations.
+/// Extract top-level `name = tape_loop <capacity>` (and the legacy
+/// `name = TapeLoop <capacity>`) resource declarations, returning the remaining
+/// signal program plus the declarations.
+///
+/// The `TapeLoop` spelling is kept during the SP-3b transition: the graph
+/// duplex path (`graph/compile.rs::render_recording`) still emits it. Task 12
+/// drops it once that path migrates to `tape_loop`.
 fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec<ResourceDecl>) {
     use crate::ast::{Def, Expr};
     let mut decls = Vec::new();
@@ -236,7 +249,7 @@ fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec
             ..
         } = def
         {
-            if ctor == "TapeLoop" {
+            if ctor == "tape_loop" || ctor == "TapeLoop" {
                 if let Some(cap) = args.first().and_then(|a| match a {
                     Expr::Int(v, _) => Some(*v as usize),
                     Expr::Float(v, _) => Some(*v as usize),

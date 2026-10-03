@@ -36,6 +36,12 @@ pub struct TypedProgram {
     /// parameter is its `Data` type, and field projection / function dispatch
     /// resolve at compile time.
     pub fn_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
+    /// the AST before inference (see [`crate::lib::extract_resources`]). Lowering
+    /// resolves a resource param's `Ref(name)` against these to assign the
+    /// tape INDEX; a `Ref` absent from the map stays a name-based resource
+    /// binding (the graph duplex path's externally-shared registry).
+    pub tape_decls: Vec<(String, usize)>,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -1143,6 +1149,7 @@ pub fn infer_program_with(
         cafs,
         type_env: ctx.env.clone(),
         fn_param_tys,
+        tape_decls: Vec::new(),
     })
 }
 
@@ -3444,14 +3451,17 @@ fn infer_apply_impl(
                             break;
                         }
                         // A resource param is a symbolic `Ref` to a declared
-                        // tape name; lowering records it and the build path
-                        // resolves it in the resource registry.
+                        // tape name, or an inline `tape_loop <capacity>`
+                        // constructor call. Lowering records the tape (name or
+                        // constructor) and the build path resolves it to a
+                        // shared cell by index.
                         match &args[pos] {
                             Expr::Ref(..) => {}
+                            Expr::Apply { name, .. } if name == "tape_loop" => {}
                             other => {
                                 return Err(CompileError::Type {
                                     msg: format!(
-                                        "resource argument {pos} of `{name}` must be a symbolic reference"
+                                        "resource argument {pos} of `{name}` must be a symbolic reference or a `tape_loop` constructor"
                                     ),
                                     span: other.span(),
                                 });

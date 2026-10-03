@@ -327,9 +327,16 @@ main = _;
 /// Built-in signal-track declarations: the first-class buffer type and the
 /// `Buffer` typeclass. Registered by [`TypeEnv::with_builtins`]. The home of the
 /// Faust combinators and buffer math in later stages.
+///
+/// `Tape a` is the shared-buffer handle — a `Buffer` family member alongside
+/// `FixedBuffer a`. It is a marker record (empty field list): its runtime
+/// representation is an index into the program's `Vec<SharedCell>` (Task 11),
+/// so it needs no carrier fields.
 pub(crate) const SIGNAL_PRELUDE: &str = r#"
 typeclass Buffer b where { }
 instance Buffer (FixedBuffer a) where { }
+data Tape a = { };
+instance Buffer (Tape f32) where { }
 
 main = _;
 "#;
@@ -347,9 +354,12 @@ main = _;
 /// (`mixer`/`eq_parametric`/`dry_wet`) declare their record configs here too
 /// (`mixer`'s leading `List (FixedBuffer f32)` is a VariadicSignal followed
 /// only by a record — [`crate::types::ffi::ffi_sig_from_typeexpr`] accepts the
-/// shape). `tape_loop` (`Int -> Tape f32`) is deferred to Task 11 — its
+/// shape). `tape_loop` (`Int -> Tape f32`) is a resource CONSTRUCTOR: its
 /// `Tape f32` result is not a `FixedBuffer`/`Pair`, so
-/// [`crate::types::ffi::ffi_sig_from_typeexpr`] rejects it.
+/// [`crate::types::ffi::ffi_sig_from_typeexpr`] rejects it by design — lowering
+/// recognizes `tape_loop <capacity>` directly (like the legacy `TapeLoop`
+/// declaration) and produces the tape index, which flows to `write_head` /
+/// `read_head` via their `Tape f32` resource params (Task 11).
 pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
 foreign fn sine : Float -> Float -> Float -> FixedBuffer f32;
 foreign fn saw : Float -> Float -> Float -> FixedBuffer f32;
@@ -387,6 +397,10 @@ foreign fn lofi : FixedBuffer f32 -> Float -> Float -> Float -> Float -> Float -
 foreign fn mixer : List (FixedBuffer f32) -> MixerConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
 foreign fn eq_parametric : FixedBuffer f32 -> EqConfig -> FixedBuffer f32;
 foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+
+foreign fn tape_loop : Int -> Tape f32;
+foreign fn write_head : FixedBuffer f32 -> FixedBuffer f32 -> Tape f32 -> Float -> Float -> FixedBuffer f32;
+foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
 
 data MixerConfig = { buses: Int, master_vol: Float };
 data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };

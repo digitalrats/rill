@@ -3,7 +3,7 @@
 //! `process()` performs no heap allocation after warm-up.
 
 use crate::builtin::{BuiltinFactoryKind, MultichannelBlockBuiltin};
-use rill_core::buffer::FixedBuffer;
+use rill_core::buffer::{FixedBuffer, SharedCell};
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
@@ -160,6 +160,7 @@ fn build_builtin<T: Transcendental>(
     registry: &crate::builtin::Registry<T>,
     foreign: Option<&crate::ffi::ForeignRegistry<T>>,
     resources: &mut Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+    tapes: &[SharedCell<T>],
     sample_rate: f32,
 ) -> Result<BuiltinInst<T>, CompileError> {
     let legacy_kind = registry.kind(&bi.name);
@@ -173,45 +174,94 @@ fn build_builtin<T: Transcendental>(
             BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
         )
     }) || bi.resource.is_some();
+    // An FFI resource factory resolves its shared cell by tape index (the new
+    // `tape_loop` path) instead of a name against an external registry.
+    let ffi_is_resource = bi.tape_index.is_some()
+        || ffi_kind.is_some_and(|k| {
+            matches!(
+                k,
+                BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
+            )
+        });
+    let resolve_tape = |bi: &BuiltinInstance| -> Result<
+        (
+            rill_core::buffer::SharedWriter<T>,
+            rill_core::buffer::SharedReader<T>,
+        ),
+        CompileError,
+    > {
+        let idx = bi.tape_index.ok_or_else(|| {
+            CompileError::Unsupported(format!(
+                "built-in '{}' is registered as resource-backed but carries no tape index",
+                bi.name
+            ))
+        })?;
+        let cell = tapes.get(idx).ok_or_else(|| {
+            CompileError::Unsupported(format!(
+                "built-in '{}' references tape index {idx}, but only {} tape(s) are declared",
+                bi.name,
+                tapes.len()
+            ))
+        })?;
+        Ok((cell.writer(), cell.reader()))
+    };
     match kind {
         Some(
             BuiltinFactoryKind::MultichannelBlock | BuiltinFactoryKind::ResourceMultichannelBlock,
         ) => {
-            let mut b: Box<dyn MultichannelBlockBuiltin<T>> =
-                if let Some(entry) = registry.get(&bi.name) {
-                    if is_resource {
-                        let res = bi.resource.as_deref().ok_or_else(|| {
+            let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(entry) =
+                registry.get(&bi.name)
+            {
+                if is_resource {
+                    let res = bi.resource.as_deref().ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "built-in '{}' requires a resource name",
+                            bi.name
+                        ))
+                    })?;
+                    let reg = resources.as_deref_mut().ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "built-in '{}' requires a resource registry",
+                            bi.name
+                        ))
+                    })?;
+                    entry
+                        .build_resource_multichannel_block(
+                            bi.signal_ins,
+                            &bi.params,
+                            sample_rate,
+                            reg,
+                            res,
+                        )
+                        .ok_or_else(|| {
                             CompileError::Unsupported(format!(
-                                "built-in '{}' requires a resource name",
+                                "resource built-in '{}' is not registered as resource-backed",
                                 bi.name
                             ))
-                        })?;
-                        let reg = resources.as_deref_mut().ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "built-in '{}' requires a resource registry",
-                                bi.name
-                            ))
-                        })?;
-                        entry
-                            .build_resource_multichannel_block(
-                                bi.signal_ins,
-                                &bi.params,
-                                sample_rate,
-                                reg,
-                                res,
-                            )
-                            .ok_or_else(|| {
-                                CompileError::Unsupported(format!(
-                                    "resource built-in '{}' is not registered as resource-backed",
-                                    bi.name
-                                ))
-                            })?
-                    } else {
-                        entry
-                            .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
-                            .expect("registry build_multichannel_block failed")
-                    }
-                } else if let Some(ffi) = foreign {
+                        })?
+                } else {
+                    entry
+                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
+                        .expect("registry build_multichannel_block failed")
+                }
+            } else if let Some(ffi) = foreign {
+                if ffi_is_resource {
+                    let (w, r) = resolve_tape(bi)?;
+                    ffi.build_resource_multichannel_block(
+                        &bi.name,
+                        bi.signal_ins,
+                        &bi.params,
+                        sample_rate,
+                        w,
+                        r,
+                    )
+                    .ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "foreign resource built-in '{}' is not registered",
+                            bi.name
+                        ))
+                    })?
+                } else {
                     ffi.build_multichannel_block(&bi.name, bi.signal_ins, &bi.params, sample_rate)
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
@@ -219,12 +269,13 @@ fn build_builtin<T: Transcendental>(
                                 bi.name
                             ))
                         })?
-                } else {
-                    return Err(CompileError::Unsupported(format!(
-                        "unknown built-in '{}'",
-                        bi.name
-                    )));
-                };
+                }
+            } else {
+                return Err(CompileError::Unsupported(format!(
+                    "unknown built-in '{}'",
+                    bi.name
+                )));
+            };
             MultichannelAlgorithm::reset(b.as_mut());
             Ok(BuiltinInst::MultichannelBlock(b))
         }
@@ -257,13 +308,24 @@ fn build_builtin<T: Transcendental>(
                         .expect("registry build_block failed for block builtin")
                 }
             } else if let Some(ffi) = foreign {
-                ffi.build_block(&bi.name, &bi.params, sample_rate)
-                    .ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "foreign built-in '{}' is not registered",
-                            bi.name
-                        ))
-                    })?
+                if ffi_is_resource {
+                    let (w, r) = resolve_tape(bi)?;
+                    ffi.build_resource_block(&bi.name, &bi.params, sample_rate, w, r)
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "foreign resource built-in '{}' is not registered",
+                                bi.name
+                            ))
+                        })?
+                } else {
+                    ffi.build_block(&bi.name, &bi.params, sample_rate)
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "foreign built-in '{}' is not registered",
+                                bi.name
+                            ))
+                        })?
+                }
             } else {
                 return Err(CompileError::Unsupported(format!(
                     "unknown built-in '{}'",
@@ -377,9 +439,26 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
         foreign: Option<&crate::ffi::ForeignRegistry<T>>,
     ) -> Result<Self, CompileError> {
+        // Allocate one shared cell per `tape_loop <capacity>` call (indexed by
+        // `BuiltinInstance::tape_index`). Tape heads referencing the same index
+        // get writer/reader handles over the same cell. The cells are LOCAL to
+        // assembly: the `SharedWriter`/`SharedReader` handles held by the tape
+        // heads are `Rc` clones into these cells and keep the buffers alive,
+        // so the program itself stays `Send` (rill buffers are single-threaded
+        // and must not be transferred between threads).
+        let tapes: Vec<SharedCell<T>> = ir
+            .tapes
+            .iter()
+            .map(|&cap| {
+                let tape = rill_core::buffer::TapeLoop::<T>::new(cap).ok_or_else(|| {
+                    CompileError::Unsupported(format!("tape_loop capacity must be > 0 (got {cap})"))
+                })?;
+                Ok(SharedCell::new(Box::new(tape)))
+            })
+            .collect::<Result<_, CompileError>>()?;
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
-            let b = build_builtin(bi, registry, foreign, &mut resources, sample_rate)?;
+            let b = build_builtin(bi, registry, foreign, &mut resources, &tapes, sample_rate)?;
             builtins.push(b);
         }
 
@@ -722,6 +801,7 @@ mod program_value_tests {
                 buffer_budget: 0,
                 value_state_slots: 2,
             },
+            tapes: Vec::new(),
         };
         let prog = RillProgram::<f32, 256>::new(ir);
         assert_eq!(prog.arena.capacity(), 4);
@@ -752,6 +832,7 @@ mod program_value_tests {
                 buffer_budget: 0,
                 value_state_slots: 1,
             },
+            tapes: Vec::new(),
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);
         // Three counted refs to the same value: one per value-state slot,

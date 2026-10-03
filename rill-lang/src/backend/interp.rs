@@ -2273,6 +2273,7 @@ mod closure_dispatch_tests {
                 buffer_budget: 0,
                 value_state_slots: 0,
             },
+            tapes: Vec::new(),
             fragments: vec![std::sync::Arc::new(FragmentIr {
                 value_blocks: vec![ValueBlock {
                     instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }],
@@ -2334,6 +2335,7 @@ mod value_track_tests {
                 buffer_budget: 64,
                 value_state_slots,
             },
+            tapes: Vec::new(),
         };
         RillProgram::<f32, 256>::new(ir)
     }

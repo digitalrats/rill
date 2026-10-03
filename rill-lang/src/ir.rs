@@ -664,6 +664,10 @@ pub struct BuiltinInstance {
     pub params: Vec<f64>,
     /// Optional named resource (e.g. a tape loop) this built-in binds to.
     pub resource: Option<String>,
+    /// Index into [`Ir::tapes`] of the shared tape cell this built-in binds to.
+    /// The new `tape_loop` path resolves heads by index; the legacy named
+    /// resource path uses [`Self::resource`] against an external registry.
+    pub tape_index: Option<usize>,
     /// Sample vs block.
     pub kind: BuiltinKind,
     /// Number of signal input channels.
@@ -740,6 +744,12 @@ pub struct Ir {
     pub max_call_regs: usize,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
+    /// Shared tape cells: one capacity per tape, indexed by
+    /// [`BuiltinInstance::tape_index`]. Populated by lowering as it resolves
+    /// `tape_loop <capacity>` constructor calls (and named `name = tape_loop
+    /// <capacity>` declarations); the build allocates a
+    /// `rill_core::buffer::SharedCell` per entry.
+    pub tapes: Vec<usize>,
 }
 
 #[cfg(test)]

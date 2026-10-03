@@ -22,7 +22,7 @@ pub mod recorder;
 pub mod tape;
 /// Re-export of the tape head resource-backed builtins registration.
 #[cfg(feature = "lang")]
-pub use tape::lang::register_tape_builtins;
+pub use tape::lang::{register_tape_builtins, register_tape_ffi};
 /// Unevenly-sampled time series reader and source node.
 pub mod timeseries;
 

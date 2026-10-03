@@ -1637,3 +1637,59 @@ fn integrator_ffi_end_to_end() {
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
     assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
 }
+
+// --- SP-3b Task 11: tape_loop constructor + Tape as a Buffer member ---
+
+#[test]
+fn tape_loop_read_head_compiles_and_runs() {
+    // `tape_loop <capacity>` is a foreign constructor producing a `Tape f32`
+    // (a `Buffer` family member); `read_head` takes it as its resource param.
+    // The plan's Task 11 smoke: `main = read_head (tape_loop 1024) 0.1;`
+    // compiles, builds a shared tape cell, and runs finite.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_sampler::tape::lang::register_tape_ffi;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_tape_ffi(&mut ffi);
+
+    let src = r#"main = read_head (tape_loop 1024) 0.1;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 64];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert!(
+        out.iter().all(|v| v.is_finite()),
+        "read_head on a fresh tape must be finite, got {out:?}"
+    );
+}
+
+#[test]
+fn tape_loop_write_read_share_one_cell() {
+    // Two `tape_loop 1024` calls dedupe to ONE shared cell (same capacity → same
+    // index), so `write_head` and `read_head` in the same program reference the
+    // same buffer. Writing constant samples must make the read head eventually
+    // return non-zero taps (delay 0.1s at 44.1 kHz = 4410 samples ≈ 69 blocks).
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_sampler::tape::lang::register_tape_ffi;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_tape_ffi(&mut ffi);
+
+    // write_head (2-in: dry+fb) and read_head (0-in) run in parallel; both bind
+    // the tape_loop 1024 cell (deduplicated by capacity).
+    let src = r#"
+        main = write_head _ _ (tape_loop 1024) 0.0 0.0, read_head (tape_loop 1024) 0.1;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let dry = [1.0f32; 64];
+    let fb = [0.0f32; 64];
+    let mut out = [0.0f32; 64];
+    // Warm up past the 0.1s delay, then observe the read head's output channel.
+    for _ in 0..120 {
+        MultichannelAlgorithm::process(&mut prog, &[&dry, &fb], &mut [&mut [0.0f32; 64], &mut out])
+            .unwrap();
+    }
+    assert!(
+        out.iter().any(|v| v.abs() > 1e-3),
+        "read_head must see the write head's samples through the shared cell, got {out:?}"
+    );
+}
