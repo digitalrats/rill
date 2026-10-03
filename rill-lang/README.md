@@ -60,7 +60,7 @@ but juxtaposed is canonical.
 Built-ins are configured with **record literals** `{ key: val }`:
 
 ```faust
-main = mixer _1 _2 { channels: 3, gain: 0.8 };
+main = mixer _1 _2 { buses: 2, master_vol: 0.8 };
 main = eq_parametric _ { bands: [{ freq: 1000.0, q: 0.7, gain_db: 3.0 }] };
 ```
 
@@ -86,7 +86,7 @@ Multi-channel programs implement `MultichannelAlgorithm<T>` when compiled with
 the `router` feature:
 
 ```faust
-main = mixer _1 _2 { channels: 2, buses: 0 };  // 2→2
+main = mixer _1 _2 { buses: 0, master_vol: 1.0 };  // 2→2
 main = dry_wet _ _effected { mix: 0.5 };        // 2→1 (interleaved)
 ```
 
@@ -159,12 +159,13 @@ rill-lang supports calling stateful DSP/model built-ins from
 | Integrators | `integrator`, `leaky_integrator` (block) | always |
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
-| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassettedeck` (block) | `analog` |
+| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq`, `mono_to_stereo` (block) | `router` |
+| Analog | `analog_moog` (block) | `model` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
 | Sampler | `sampler` (block) | `sampler` |
 | Lofi | `lofi`, `ay38910` (block) | `lofi` |
+| Tape | `tape_loop`, `write_head`, `read_head` | `sampler` |
 
 Built-ins use **unified argument syntax**: signals are first-class arguments
 passed by juxtaposition (e.g. `lowpass _ 1000.0 0.7`). Some built-ins accept
@@ -172,7 +173,7 @@ variadic signal inputs — `mixer` takes any number of signals followed by a
 record:
 
 ```faust
-main = mixer _ ch2 ch3 ch4 { channels: 4, buses: 2 };
+main = mixer _ ch2 ch3 ch4 { buses: 4, master_vol: 1.0 };
 main = dry_wet _ wet { mix: 0.7 };
 main = eq_parametric _ { bands: [{ freq: 500.0, q: 2.0, gain_db: -3.0 }] };
 ```

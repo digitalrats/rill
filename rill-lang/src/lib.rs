@@ -232,9 +232,9 @@ pub struct ResourceDecl {
 /// `name = TapeLoop <capacity>`) resource declarations, returning the remaining
 /// signal program plus the declarations.
 ///
-/// The `TapeLoop` spelling is kept during the SP-3b transition: the graph
-/// duplex path (`graph/compile.rs::render_recording`) still emits it. Task 12
-/// drops it once that path migrates to `tape_loop`.
+/// The `TapeLoop` spelling is kept for the graph-duplex path
+/// (`graph/compile.rs::render_recording` still emits it against the
+/// externally-shared `ResourceRegistry`); the DSL path uses `tape_loop`.
 fn extract_resources(
     program: &crate::ast::Program,
 ) -> Result<(crate::ast::Program, Vec<ResourceDecl>), CompileError> {

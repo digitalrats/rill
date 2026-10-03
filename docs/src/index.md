@@ -24,11 +24,11 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 | **Actor** | `rill-core-actor` — lock-free actor model (ActorRef, ActorSystem) |
 | **DSP** | `rill-core-dsp` — algorithms, filters, generators, delay, vector ops |
 | **Graph** | `rill-graph` — static DAG signal graph, `GraphBuilder`; `build_ir()` produces `GraphIr` compiled by `rill-lang` into a `CompiledGraphEngine` |
-| **Effects** | `rill-digital-filters`, `rill-digital-effects`, `rill-router` |
+| **Effects** | `rill-digital-effects`, `rill-router` |
 | **FFT** | `rill-fft` — radix-2 FFT, frequency-domain convolution, spectral effects |
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
 | **Language** | `rill-lang` — Faust-style functional signal DSL, compiles to `Algorithm<T>` or `MultichannelAlgorithm<T>`, or to `CompiledGraphEngine` for whole-graph compilation |
-| **Analog** | `rill-core-model`, `rill-analog-filters`, `rill-analog-effects` — WDF circuit modeling |
+| **Analog** | `rill-core-model` — WDF circuit modeling (analog filters + physical models) |
 | **I/O** | `rill-io` — ALSA, PortAudio, PipeWire, JACK backends (pure I/O, no engine) |
 | **Network** | `rill-osc` — OSC server and networking; powers `rill-patchbay` OSC sensors for graph control |
 | **Monitoring** | `rill-telemetry` — probes, collectors |

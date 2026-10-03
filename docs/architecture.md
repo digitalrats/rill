@@ -364,11 +364,12 @@ osc.process_block(&[], &mut input);
 filter.process_block(&input, &mut output);
 ```
 
-### `rill-digital-filters` (0.6.0-M2, ✅ active)
-Graph nodes for digital filters: biquad, one-pole, SVF, Butterworth, Chebyshev, comb. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp::filters`.
-
 ### `rill-digital-effects` (0.6.0-M2, ✅ active)
 Graph nodes for digital effects: Delay, Distortion, Limiter. Implements the `Processor` trait from `rill-core`, using delay algorithms from `rill-core-dsp::delay`.
+
+> **`rill-digital-filters` was deleted in SP-3b** (its Biquad/SVF/comb/MoogLadder
+> algorithms live in `rill-core-dsp`; rill-lang registers their builtin factories
+> under the `dsp` feature).
 
 ### `rill-fft` (0.6.0-M2, ✅ active)
 Radix-2 FFT, frequency-domain convolution, spectrum analysis, and spectral effects. Provides `ComplexFft`, `RealFft`, convolution engine, and spectral gates/delays. Implements the `Processor` trait from `rill-core` based on DSP algorithms from `rill-core-dsp`.
@@ -457,26 +458,13 @@ ladder.set_resonance(0.7.into());
 let y = ladder.process_sample(0.5.into());
 ```
 
-### `rill-analog-filters` (0.6.0-M2, ✅ active)
-WDF-based analog filters. Includes `WdfMoogLadderProcessor` — a Node wrapper around `rill_core_model::wdf::MoogLadder<f64>`. Provides graph nodes for the processor.
+### `rill-analog-filters`/`rill-analog-effects` — deleted in SP-3b
 
-```rust
-use rill_analog_filters::WdfMoogLadderProcessor;
-
-let mut processor = WdfMoogLadderProcessor::<f32, 64>::new(44100.0);
-processor.set_parameter(&ParameterId::new("cutoff").unwrap(), ParamValue::Float(5000.0));
-```
-
-### `rill-analog-effects` (0.6.0-M2, ✅ active)
-Analog circuit models: operational amplifiers (OperationalAmplifier with slew-rate, bandwidth, rail-clamping), cassette decks (CassetteDeckModel with tape saturation emulation, wow and flutter, noise), preamps. Depends on `rill-core` and `rill-core-model`.
-
-```rust
-use rill_analog_effects::OperationalAmplifier;
-
-let mut opamp = OperationalAmplifier::new(44100.0);
-opamp.set_slew_rate(0.5);
-let output = opamp.process(0.3);
-```
+> These two crates were **deleted** in SP-3b. Their WDF analog-filter
+> algorithms (`WdfMoogLadder`) and circuit models (`OperationalAmplifier`,
+> `CassetteDeck`) were folded into `rill-core-model`; `CassetteDeck` was dropped
+> (no consumers). The `analog_moog` builtin factory is registered by rill-lang
+> under the `model` feature.
 
 ### `rill-io` (0.6.0-M2, active)
 Audio input/output. Pure I/O backends — no engine, no processors.
@@ -640,7 +628,6 @@ graph TD
     CORE[rill-core] --> CORE_DSP[rill-core-dsp]
     CORE --> CORE_ACTOR[rill-core-actor]
     CORE --> GRAPH[rill-graph]
-    CORE_DSP --> FILTERS[rill-digital-filters]
     CORE_DSP --> EFFECTS[rill-digital-effects]
     CORE_DSP --> FFT[rill-fft]
     CORE_DSP --> ROUTER[rill-router]
@@ -650,17 +637,12 @@ graph TD
     CORE --> IO[rill-io]
     CORE --> LOFI[rill-lofi]
     CORE --> TELEMETRY[rill-telemetry]
-    CORE --> ANALOG_FILTERS[rill-analog-filters]
-    CORE --> ANALOG_EFFECTS[rill-analog-effects]
     CORE --> CORE_WDF[rill-core-model]
-    CORE_WDF --> ANALOG_FILTERS
-    CORE_WDF --> ANALOG_EFFECTS
     
     style CORE fill:#90ee90
     style CORE_DSP fill:#90ee90
     style CORE_ACTOR fill:#90ee90
     style GRAPH fill:#90ee90
-    style FILTERS fill:#90ee90
     style EFFECTS fill:#90ee90
     style FFT fill:#90ee90
     style ROUTER fill:#90ee90
@@ -670,8 +652,6 @@ graph TD
     style LOFI fill:#90ee90
     style TELEMETRY fill:#90ee90
     style CORE_WDF fill:#90ee90
-    style ANALOG_FILTERS fill:#90ee90
-    style ANALOG_EFFECTS fill:#90ee90
     
     %% Planned
     SERVER[rill-osc<br/>(OSC server)]

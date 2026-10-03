@@ -261,7 +261,7 @@ Built-ins that accept structured configuration use **record literals**
 `{ key: val }`:
 
 ```faust
-main = mixer _1 _2 { channels: 2, buses: 0, master_vol: 0.8 };
+main = mixer _1 _2 { buses: 0, master_vol: 0.8 };
 main = dry_wet _ wet { mix: 0.5 };
 main = eq_parametric _ { bands: [
     { freq: 500.0, q: 2.0, gain_db: -3.0, band_type: 0 },
@@ -381,12 +381,13 @@ only on `rill-core`.
 | Integrators | `integrator`, `leaky_integrator` (block) | always |
 | Oscillators | `sine`, `saw`, `square`, `triangle`, `noise` (block) | always |
 | Effects | `delay`, `distortion`, `limiter` (block) | always |
-| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq` (block) | `router` |
-| Analog | `analog_moog`, `cassettedeck` (block) | `analog` |
+| Mixer/EQ | `mixer`, `eq_parametric`, `dry_wet`, `graphic_eq`, `mono_to_stereo` (block) | `router` |
+| Analog | `analog_moog` (block) | `model` |
 | Spectral | `spectralgate`, `spectraldelay`, `convolver` (block) | `fft` |
 | Complex | `complex`, `conj`, `re`, `im`, `norm`, `arg`, `cmul`, `cadd` | always |
 | Sampler | `sampler` (block) | `sampler` |
 | Lofi | `lofi`, `ay38910` (block) | `lofi` |
+| Tape | `tape_loop`, `write_head`, `read_head` | `sampler` |
 
 ### Calling convention
 
@@ -396,7 +397,7 @@ arguments, scalars follow, and configuration is passed as a record:
 ```faust
 main = lowpass _ 1000.0 0.7;           // filter: signal, cutoff, resonance
 main = sine 440.0 0.5 0.0;             // oscillator: freq, amp, phase (no signal in)
-main = mixer _ ch2 ch3 { channels: 3 }; // variadic signal args + record
+main = mixer _ ch2 ch3 { buses: 0, master_vol: 1.0 }; // variadic signal args + record
 ```
 
 Parameters are **compile-time constants** (float or integer literals, optionally
@@ -622,7 +623,7 @@ programs implement `MultichannelAlgorithm<T>` when compiled with the `router`
 feature:
 
 ```faust
-main = mixer _1 _2 _3 { channels: 3, buses: 2 };  // 3→4 (2 master + 2 bus)
+main = mixer _1 _2 _3 { buses: 2, master_vol: 1.0 };  // 3→2 (bus + master)
 main = dry_wet _ wet_signals { mix: 0.5 };          // 2→2
 ```
 

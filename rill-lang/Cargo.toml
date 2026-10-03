@@ -32,6 +32,8 @@ serde_json = "1.0"
 criterion = { workspace = true, features = ["html_reports"] }
 rill-router = { workspace = true, features = ["lang"] }
 rill-sampler = { workspace = true, features = ["lang"] }
+rill-fft = { workspace = true, features = ["lang"] }
+rill-lofi = { workspace = true, features = ["lang"] }
 
 [[test]]
 name = "graph_reconstruct"

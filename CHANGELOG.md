@@ -16,10 +16,10 @@
   single runtime factory registry is `rill_lang::ffi::ForeignRegistry`.
   Faust-combinator sugar keeps legacy call style for signal-input builtins
   (`_ : onepole 200.0 0.7`). Deleted crates: `rill-digital-filters`,
-  `rill-analog-filters`, `rill-analog-effects`; their algorithms moved to
-  `rill-core-dsp`/`rill-core-model` (algorithms-only) with factories registered
-  in rill-lang under the `dsp`/`model` features; `mixer`/`eq_parametric`/
-  `dry_wet` moved to `rill-router`.
+  `rill-analog-filters`, `rill-analog-effects`; their algorithms were folded
+  into `rill-core-dsp`/`rill-core-model` (algorithms-only; `CassetteDeck` was
+  dropped) with factories registered in rill-lang under the `dsp`/`model`
+  features; `mixer`/`eq_parametric`/`dry_wet` moved to `rill-router`.
 - **Tape loops as a first-class `Buffer` member.** `data Tape a` +
   `instance Buffer (Tape f32)` in `SIGNAL_PRELUDE`; a `tape_loop : Int -> Tape
   f32` foreign constructor allocates a shared tape cell. NAMED bindings

@@ -413,13 +413,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> Processor<T, BUF_SIZE>
 ### Wiring custom nodes into the factory
 
 ```rust
-use rill_graph::NodeFactory;
-
-let mut factory = NodeFactory::<f32, 64>::new();
-
-// Per-crate registration (rill-core-dsp, rill-digital-filters, rill-router, etc.)
-rill_core_dsp::lang::register::register_lang_builtins_for_factory(&mut factory);
-
 // Custom app nodes
 factory.register_fn("app/gain", |id, params| {
     /* … */

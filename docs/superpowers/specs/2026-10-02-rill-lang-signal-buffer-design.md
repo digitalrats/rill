@@ -174,7 +174,7 @@ compile path (SP-3b Task 11).
 
 - `write_head`/`read_head` are catalog FFI builtins (`rill-sampler` registers
   their factories as `register_resource_*`), **inside** the FFI layer.
-- The FFI layer covers the remaining ~42 builtins (all `Signal`/`Float`
+- The FFI layer covers the remaining ~38 builtins (all `Signal`/`Float`
   signatures, plus `mixer`/`eq_parametric`/`dry_wet` via `List`/`Data` types).
 - The single shared cell per named tape is not a workaround for memory
   management: in the static dataflow model, liveness = program lifetime and the
@@ -221,5 +221,5 @@ step:
 - Zero new external dependencies. No `unsafe`.
 - Regression: existing signal programs (combinators, builtin calls, tape) compile
   unchanged — the block track and `ResourceRegistry` are untouched.
-- The ~42 FFI-covered builtins keep their exact current arity/param behavior.
+- The ~38 FFI-covered builtins keep their exact current arity/param behavior.
 - Branch: `feature/rill-lang-categories`; conventional commits, single-quoted `-m`.

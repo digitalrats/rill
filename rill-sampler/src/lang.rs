@@ -65,3 +65,19 @@ pub fn register_sampler_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         })
     });
 }
+
+/// Register the sampler builtin as an FFI factory (for `compile_with_ffi`).
+pub fn register_foreign_sampler_builtins<T: Transcendental + 'static>(
+    ffi: &mut rill_lang::ffi::ForeignRegistry<T>,
+) {
+    ffi.register_block("sampler", |p: &[f64], _sr: f32| {
+        let mut player = SamplePlayer::new(Vec::new());
+        player.set_gate(p[0] > 0.0);
+        player.set_playback_rate(p[1].clamp(0.0, 4.0));
+        player.set_cubic(p[3] > 0.0);
+        Box::new(SamplerBuiltin {
+            inner: player,
+            amplitude: T::from_f64(p[2].clamp(0.0, 1.0)),
+        })
+    });
+}

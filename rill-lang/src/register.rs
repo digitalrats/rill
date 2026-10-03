@@ -453,11 +453,12 @@ pub fn register_foreign_filters<T: Transcendental + 'static>(
 }
 
 /// Register the rill-core-dsp generators/integrators/filters into the legacy
-/// [`Registry`]. Transitional bridge: the graph-compile path
-/// (`compile_spec`/`compile_graph`) and downstream crates (rill-adrift) still
-/// consume the legacy `Registry<T>`; SP-3b Task 13 wires them onto
-/// `compile_with_ffi` + the foreign registrations above. Mirrors the deleted
-/// `rill-core-dsp::lang::register::register_lang_builtins` exactly.
+/// [`Registry`]. Factory-only bridge: the graph-compile path
+/// (`compile_spec`/`compile_graph`) and downstream crates (rill-adrift) consume
+/// the legacy `Registry<T>` (signatures come from the catalog); the equivalent
+/// `register_foreign_*` functions above target `ForeignRegistry` for
+/// `compile_with_ffi`. Mirrors the deleted
+/// `rill-core-dsp::lang::register::register_lang_builtins` factories exactly.
 #[cfg(feature = "dsp")]
 pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     use crate::builtins::filters::{
