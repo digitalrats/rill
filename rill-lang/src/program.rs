@@ -190,6 +190,19 @@ fn build_builtin<T: Transcendental>(
         ),
         CompileError,
     > {
+        // A name-based resource binding (`bi.resource = Some(name)`) with no
+        // external registry means the source referenced a tape name that was
+        // never declared (`tape = tape_loop <capacity>`) and no registry was
+        // supplied — report the real cause instead of the index-based
+        // fallthrough error.
+        if let Some(name) = &bi.resource {
+            if resources.is_none() {
+                return Err(CompileError::Unsupported(format!(
+                    "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>` or pass a registry)",
+                    bi.name, name
+                )));
+            }
+        }
         let idx = bi.tape_index.ok_or_else(|| {
             CompileError::Unsupported(format!(
                 "built-in '{}' is registered as resource-backed but carries no tape index",

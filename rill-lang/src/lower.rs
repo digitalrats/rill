@@ -270,10 +270,15 @@ struct Lowerer<'a> {
     /// binding (the graph duplex path's externally-shared registry).
     tape_decls: HashMap<String, usize>,
     /// Tape cell capacities, one entry per tape; the index IS the tape index
-    /// referenced by [`BuiltinInstance::tape_index`]. Deduplicated by capacity
-    /// — inline `tape_loop <capacity>` calls and named declarations of the same
-    /// capacity share one cell.
+    /// referenced by [`BuiltinInstance::tape_index`]. A NAMED declaration
+    /// (`name = tape_loop <capacity>`) gets one cell per name — repeated
+    /// `Ref(name)` uses share it (write head + read heads on one tape). An
+    /// INLINE `tape_loop <capacity>` call allocates a FRESH cell per occurrence
+    /// (each constructor call is a distinct tape).
     tapes: Vec<usize>,
+    /// Tape index per named declaration (`name -> index into [`Self::tapes`]`),
+    /// so all `Ref(name)` uses of the same declared tape resolve to one cell.
+    named_tapes: HashMap<String, usize>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -297,16 +302,27 @@ impl<'a> Lowerer<'a> {
         self.value_blocks[self.cur_value_block].instrs.push(i);
     }
 
-    /// Resolve a tape capacity to a tape index, appending a new cell on first
-    /// use. Deduplication is by capacity: inline `tape_loop <capacity>` calls
-    /// and named declarations of the same capacity share one shared cell, so a
-    /// write head and its read heads reference the same buffer.
+    /// Resolve an INLINE `tape_loop <capacity>` call to a tape index, always
+    /// appending a fresh cell — each constructor call is a distinct tape. To
+    /// share a tape between heads, bind it to a name (`tape = tape_loop
+    /// <capacity>`) and reference the name; named tapes dedupe by name (see
+    /// [`Self::resolve_named_tape`]).
     fn resolve_tape(&mut self, capacity: usize) -> usize {
-        if let Some(i) = self.tapes.iter().position(|&c| c == capacity) {
-            return i;
-        }
         self.tapes.push(capacity);
         self.tapes.len() - 1
+    }
+
+    /// Resolve a NAMED tape declaration to a tape index, creating one cell per
+    /// name on first use. All `Ref(name)` uses share that cell, so a write head
+    /// and its read heads reference the same buffer.
+    fn resolve_named_tape(&mut self, name: &str, capacity: usize) -> usize {
+        if let Some(&i) = self.named_tapes.get(name) {
+            return i;
+        }
+        let i = self.tapes.len();
+        self.tapes.push(capacity);
+        self.named_tapes.insert(name.to_string(), i);
+        i
     }
 
     fn new_value_block(&mut self) -> usize {
@@ -3939,8 +3955,9 @@ impl<'a> Lowerer<'a> {
                                         Expr::Ref(res_name, _) => {
                                             match self.tape_decls.get(res_name.as_str()) {
                                                 Some(&cap) => {
-                                                    tape_index =
-                                                        Some(self.resolve_tape(cap));
+                                                    tape_index = Some(
+                                                        self.resolve_named_tape(res_name, cap),
+                                                    );
                                                 }
                                                 None => {
                                                     resource = Some(res_name.clone());
@@ -3950,18 +3967,18 @@ impl<'a> Lowerer<'a> {
                                         Expr::Apply { name: ctor, args: ctor_args, .. }
                                             if ctor == "tape_loop" =>
                                         {
-                                            let cap = ctor_args
-                                                .first()
-                                                .and_then(|a| match a {
-                                                    Expr::Int(v, _) => Some(*v as usize),
-                                                    Expr::Float(v, _) => Some(*v as usize),
-                                                    _ => None,
-                                                })
-                                                .ok_or_else(|| CompileError::Type {
-                                                    msg: "tape_loop capacity must be an integer constant"
-                                                        .to_string(),
-                                                    span: call_args[pos].span(),
-                                                })?;
+                                            // `tape_loop : Int -> Tape f32` —
+                                            // exactly one integer-constant arg.
+                                            let cap = match ctor_args.as_slice() {
+                                                [Expr::Int(v, _)] => *v as usize,
+                                                _ => {
+                                                    return Err(CompileError::Type {
+                                                        msg: "tape_loop takes exactly one positive integer capacity"
+                                                            .to_string(),
+                                                        span: call_args[pos].span(),
+                                                    })
+                                                }
+                                            };
                                             if cap == 0 {
                                                 return Err(CompileError::Type {
                                                     msg: "tape_loop capacity must be > 0"
@@ -5036,6 +5053,7 @@ pub fn lower_with_cafs(
         pending_param_tys: None,
         tape_decls: tp.tape_decls.iter().cloned().collect(),
         tapes: Vec::new(),
+        named_tapes: HashMap::new(),
     };
 
     for (cell_idx, p) in main.params().iter().enumerate() {
@@ -5305,6 +5323,7 @@ mod tests {
             pending_param_tys: None,
             tape_decls: HashMap::new(),
             tapes: Vec::new(),
+            named_tapes: HashMap::new(),
         }
     }
 

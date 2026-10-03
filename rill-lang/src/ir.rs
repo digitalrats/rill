@@ -746,9 +746,9 @@ pub struct Ir {
     pub value_state: ValueLayout,
     /// Shared tape cells: one capacity per tape, indexed by
     /// [`BuiltinInstance::tape_index`]. Populated by lowering as it resolves
-    /// `tape_loop <capacity>` constructor calls (and named `name = tape_loop
-    /// <capacity>` declarations); the build allocates a
-    /// `rill_core::buffer::SharedCell` per entry.
+    /// inline `tape_loop <capacity>` constructor calls (a FRESH cell per call)
+    /// and named `name = tape_loop <capacity>` declarations (one cell per
+    /// name); the build allocates a `rill_core::buffer::SharedCell` per entry.
     pub tapes: Vec<usize>,
 }
 

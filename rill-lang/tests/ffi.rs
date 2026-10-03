@@ -1664,9 +1664,9 @@ fn tape_loop_read_head_compiles_and_runs() {
 
 #[test]
 fn tape_loop_write_read_share_one_cell() {
-    // Two `tape_loop 1024` calls dedupe to ONE shared cell (same capacity → same
-    // index), so `write_head` and `read_head` in the same program reference the
-    // same buffer. Writing constant samples must make the read head eventually
+    // A NAMED tape binding (`tape = tape_loop 1024`) creates one cell; both
+    // `write_head` and `read_head` reference it by name, so they share one
+    // buffer. Writing constant samples must make the read head eventually
     // return non-zero taps (delay 0.1s at 44.1 kHz = 4410 samples ≈ 69 blocks).
     use rill_lang::ffi::ForeignRegistry;
     use rill_sampler::tape::lang::register_tape_ffi;
@@ -1675,9 +1675,10 @@ fn tape_loop_write_read_share_one_cell() {
     register_tape_ffi(&mut ffi);
 
     // write_head (2-in: dry+fb) and read_head (0-in) run in parallel; both bind
-    // the tape_loop 1024 cell (deduplicated by capacity).
+    // the SAME named tape (one cell per name).
     let src = r#"
-        main = write_head _ _ (tape_loop 1024) 0.0 0.0, read_head (tape_loop 1024) 0.1;
+        tape = tape_loop 1024;
+        main = write_head _ _ tape 0.0 0.0, read_head tape 0.1;
     "#;
     let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let dry = [1.0f32; 64];
@@ -1690,6 +1691,110 @@ fn tape_loop_write_read_share_one_cell() {
     }
     assert!(
         out.iter().any(|v| v.abs() > 1e-3),
-        "read_head must see the write head's samples through the shared cell, got {out:?}"
+        "read_head must see the write head's samples through the named shared cell, got {out:?}"
     );
+}
+
+#[test]
+fn inline_tape_loop_calls_are_distinct_tapes() {
+    // Two INLINE `tape_loop <capacity>` occurrences are DISTINCT tapes (each
+    // constructor call allocates a fresh cell). Two read heads on two inline
+    // `tape_loop 8` calls read different buffers, so writing nothing to either
+    // must read zero — and critically the single-writer invariant is preserved:
+    // each inline tape gets its own writer, never two writers on one buffer.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_sampler::tape::lang::register_tape_ffi;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_tape_ffi(&mut ffi);
+
+    let src = r#"
+        main = read_head (tape_loop 8) 0.1, read_head (tape_loop 8) 0.1;
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut o1 = [0.0f32; 8];
+    let mut o2 = [1.0f32; 8];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut o1, &mut o2]).unwrap();
+    assert!(
+        o1.iter().all(|v| *v == 0.0) && o2.iter().all(|v| *v == 0.0),
+        "fresh inline tapes must read zeros, got {o1:?} and {o2:?}"
+    );
+}
+
+#[test]
+fn tape_loop_float_capacity_is_rejected() {
+    // `tape_loop` is declared `Int -> Tape f32`; a Float capacity (`1024.5`)
+    // must be a compile error, not silently truncated to 1024.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_sampler::tape::lang::register_tape_ffi;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_tape_ffi(&mut ffi);
+
+    let src = r#"main = read_head (tape_loop 1024.5) 0.1;"#;
+    match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+        Err(e) => assert!(
+            e.to_string().contains("capacity"),
+            "expected a capacity error, got: {e}"
+        ),
+        Ok(_) => panic!("expected a compile error for a Float tape_loop capacity"),
+    }
+}
+
+#[test]
+fn tape_loop_zero_capacity_is_rejected() {
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_sampler::tape::lang::register_tape_ffi;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_tape_ffi(&mut ffi);
+
+    let src = r#"main = read_head (tape_loop 0) 0.1;"#;
+    assert!(
+        rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).is_err(),
+        "zero-capacity tape_loop must be rejected"
+    );
+}
+
+#[test]
+fn undeclared_resource_ref_is_reported_on_source_path() {
+    // A `Ref` to a tape that was never declared (`missing`) must produce the
+    // actionable "references undeclared resource 'missing' (declare it with
+    // `tape = tape_loop <capacity>`…)" error on the source-level compile path —
+    // not the confusing "carries no tape index" fallthrough.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_sampler::tape::lang::register_tape_ffi;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_tape_ffi(&mut ffi);
+
+    let src = r#"main = read_head missing 0.1;"#;
+    match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+        Err(e) => assert!(
+            e.to_string().contains("undeclared resource 'missing'"),
+            "expected the undeclared-resource diagnostic, got: {e}"
+        ),
+        Ok(_) => panic!("expected a compile error for an undeclared tape ref"),
+    }
+}
+
+#[test]
+fn main_is_not_extracted_as_tape_declaration() {
+    // `main = tape_loop 1024` is a plausible typo; `extract_resources` must not
+    // eat `main` as a resource declaration (which would surface as a confusing
+    // "program must contain a main definition" error).
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_sampler::tape::lang::register_tape_ffi;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_tape_ffi(&mut ffi);
+
+    let src = r#"main = tape_loop 1024;"#;
+    match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+        Err(e) => assert!(
+            !e.to_string().contains("must contain a `main`"),
+            "the typo must not be reported as a missing main, got: {e}"
+        ),
+        Ok(_) => panic!("expected a compile error for `main = tape_loop`"),
+    }
 }

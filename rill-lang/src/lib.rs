@@ -70,7 +70,7 @@ use std::sync::Arc;
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    let (program, tape_decls) = extract_resources(&program);
+    let (program, tape_decls) = extract_resources(&program)?;
     let mut typed = types::infer::infer_program(&program)?;
     typed.tape_decls = tape_decls
         .iter()
@@ -91,7 +91,7 @@ pub fn compile_with<T: Transcendental>(
 ) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    let (program, tape_decls) = extract_resources(&program);
+    let (program, tape_decls) = extract_resources(&program)?;
     let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.tape_decls = tape_decls
         .iter()
@@ -114,7 +114,7 @@ pub fn compile_with_ffi<T: Transcendental>(
 ) -> Result<RillProgram<T, 256>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    let (program, tape_decls) = extract_resources(&program);
+    let (program, tape_decls) = extract_resources(&program)?;
     let mut typed = types::infer::infer_program(&program)?;
     typed.tape_decls = tape_decls
         .iter()
@@ -159,7 +159,7 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
     sample_rate: f32,
     mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    let (program, resource_decls) = extract_resources(program);
+    let (program, resource_decls) = extract_resources(program)?;
 
     let mut typed = types::infer::infer_program_with(&program, registry)?;
     typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
@@ -235,12 +235,21 @@ pub struct ResourceDecl {
 /// The `TapeLoop` spelling is kept during the SP-3b transition: the graph
 /// duplex path (`graph/compile.rs::render_recording`) still emits it. Task 12
 /// drops it once that path migrates to `tape_loop`.
-fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec<ResourceDecl>) {
+fn extract_resources(
+    program: &crate::ast::Program,
+) -> Result<(crate::ast::Program, Vec<ResourceDecl>), CompileError> {
     use crate::ast::{Def, Expr};
     let mut decls = Vec::new();
     let mut defs = Vec::with_capacity(program.defs.len());
     for def in &program.defs {
         let mut is_resource = false;
+        // Never treat `main` as a resource declaration — `main = tape_loop
+        // <capacity>` is a plausible typo that must surface as a type error on
+        // `main`, not as a missing-`main` error.
+        if def.name() == "main" {
+            defs.push(def.clone());
+            continue;
+        }
         if let Def::Local {
             name,
             body: Expr::Apply {
@@ -250,16 +259,27 @@ fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec
         } = def
         {
             if ctor == "tape_loop" || ctor == "TapeLoop" {
-                if let Some(cap) = args.first().and_then(|a| match a {
-                    Expr::Int(v, _) => Some(*v as usize),
-                    Expr::Float(v, _) => Some(*v as usize),
-                    _ => None,
-                }) {
-                    decls.push(ResourceDecl {
-                        name: name.clone(),
-                        capacity: cap,
-                    });
-                    is_resource = true;
+                match args.as_slice() {
+                    [Expr::Int(v, _)] => {
+                        let cap = *v as usize;
+                        if cap == 0 {
+                            return Err(CompileError::Unsupported(format!(
+                                "tape '{}' has zero capacity",
+                                name
+                            )));
+                        }
+                        decls.push(ResourceDecl {
+                            name: name.clone(),
+                            capacity: cap,
+                        });
+                        is_resource = true;
+                    }
+                    _ => {
+                        return Err(CompileError::Unsupported(format!(
+                            "tape '{}' declaration needs a single positive integer capacity",
+                            name
+                        )));
+                    }
                 }
             }
         }
@@ -267,7 +287,7 @@ fn extract_resources(program: &crate::ast::Program) -> (crate::ast::Program, Vec
             defs.push(def.clone());
         }
     }
-    (crate::ast::Program { defs }, decls)
+    Ok((crate::ast::Program { defs }, decls))
 }
 
 #[cfg(test)]
