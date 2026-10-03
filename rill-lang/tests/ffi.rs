@@ -1102,6 +1102,186 @@ fn generators_ffi_end_to_end() {
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     // Sine at t=0, amp 1.0, phase 0.0: starts at 0.0 and rises.
     assert_eq!(out[0], 0.0);
+    // Sample 1 must follow sin(2π·f·n/sr + phase) — the oscillator's actual
+    // formula (BasicOscillator::scalar_sine: phase·2π → sin → ·amp). A silent
+    // oscillator (or a phase-agnostic stub) would leave this 0.0.
+    let expected = (std::f32::consts::PI * 2.0 * (440.0f32 / 44100.0f32)).sin();
+    assert!(
+        (out[1] - expected).abs() < 1e-3,
+        "sine sample 1 must oscillate at the requested freq/amp: out[1]={}, expected ~{expected}",
+        out[1]
+    );
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn saw_ffi_end_to_end() {
+    // `saw` is a 0-in catalog builtin; the registered factory must run it. A
+    // band-limited saw starts at phase 0 → raw `2·0 - 1 = -1.0` (amp 1.0).
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_generators;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_generators(&mut ffi);
+
+    let src = r#"main = saw 440.0 1.0 0.0;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert!(
+        (out[0] + 1.0).abs() < 1e-6,
+        "saw at phase 0 must be -amp: out[0]={}",
+        out[0]
+    );
+    assert!(out.iter().all(|s| s.is_finite()));
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn square_ffi_end_to_end() {
+    // `square` at phase 0 (phase < 0.5) outputs +amp = 1.0; the 440 Hz
+    // frequency stays well inside the first half-period for a 4-sample block.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_generators;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_generators(&mut ffi);
+
+    let src = r#"main = square 440.0 1.0 0.0;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert!(
+        (out[0] - 1.0).abs() < 1e-6,
+        "square at phase 0 must be +amp: out[0]={}",
+        out[0]
+    );
+    assert!(out.iter().all(|s| s.is_finite()));
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn triangle_ffi_end_to_end() {
+    // `triangle` at phase 0: |0 - 0.5|·4 - 1 = 1.0 (amp 1.0).
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_generators;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_generators(&mut ffi);
+
+    let src = r#"main = triangle 440.0 1.0 0.0;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert!(
+        (out[0] - 1.0).abs() < 1e-6,
+        "triangle at phase 0 must be +amp: out[0]={}",
+        out[0]
+    );
+    assert!(out.iter().all(|s| s.is_finite()));
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn noise_ffi_end_to_end() {
+    // `noise 1.0 0.5` — pink noise, amp 0.5 (deterministic fixed seed). White
+    // noise is essentially never all-zero for a 64-sample block; the assertion
+    // only requires non-all-zero + finite + within the ±1 amplitude bound.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_generators;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_generators(&mut ffi);
+
+    let src = r#"main = noise 1.0 0.5;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 64];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    assert!(
+        out.iter().any(|&s| s != 0.0),
+        "noise must produce non-zero samples, got all zeros"
+    );
+    assert!(out.iter().all(|s| s.is_finite() && s.abs() <= 1.0));
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn leaky_integrator_ffi_end_to_end() {
+    // `leaky_integrator` is a 1→1 catalog builtin: out[n] = x[n] + coeff·out[n-1].
+    // With coeff 0.5 and a constant-1 input, the running sum is exact.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_generators;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_generators(&mut ffi);
+
+    let src = r#"main = _ : leaky_integrator 0.5;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
+    let expected = [1.0, 1.5, 1.75, 1.875];
+    assert!(
+        out.iter()
+            .zip(expected.iter())
+            .all(|(&o, &e)| (o - e).abs() < 1e-6),
+        "leaky_integrator(0.5) over ones: got {out:?}, expected {expected:?}"
+    );
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn lowpass_ffi_end_to_end() {
+    // `register_foreign_filters` is the only FFI register fn with zero direct
+    // coverage — this exercises its `lowpass` factory (cutoff, q) end-to-end.
+    // A lowpass at 1000 Hz on a DC step (all-ones): the filter starts from a
+    // zero state, so the first samples are far below the 1.0 input (transient
+    // attenuation toward the unity DC gain). A passthrough/identity builtin
+    // would emit 1.0 immediately.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_filters;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_filters(&mut ffi);
+
+    let src = r#"main = _ : lowpass 1000.0 0.7;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 64];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
+    assert!(
+        out.iter().all(|s| s.is_finite()),
+        "lowpass output must be finite, got {out:?}"
+    );
+    assert!(
+        (0.0..0.1).contains(&out[0]),
+        "lowpass step transient must start near zero (b0 ≈ 0.0046), got out[0]={}",
+        out[0]
+    );
+}
+
+#[cfg(feature = "dsp")]
+#[test]
+fn biquad_ffi_end_to_end() {
+    // The general `biquad` factory (type/cutoff/q/gain_db). type 0 = LowPass at
+    // 1000 Hz, q 0.7 — same step-transient behaviour as `lowpass`.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_filters;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_filters(&mut ffi);
+
+    let src = r#"main = _ : biquad 0.0 1000.0 0.7 0.0;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 64];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
+    assert!(
+        out.iter().all(|s| s.is_finite()),
+        "biquad output must be finite, got {out:?}"
+    );
+    assert!(
+        (0.0..0.1).contains(&out[0]),
+        "biquad(lowpass 1000 Hz) step transient must start near zero, got out[0]={}",
+        out[0]
+    );
 }
 
 #[cfg(feature = "dsp")]
