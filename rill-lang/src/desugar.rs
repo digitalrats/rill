@@ -1,5 +1,5 @@
 //! Faust-combinator sugar: a foreign fn used as an arrow in a combinator
-//! (`Seq`/`Loop`/`Par`/`Split`/`Merge`) auto-binds its missing leading
+//! (`Seq`/`Loop`/`Par`/`Split`/`Merge`/`Delay`) auto-binds its missing leading
 //! `FixedBuffer` (signal) params to `Wire`. Legacy `_ : onepole 200.0 0.7`
 //! desugars to `onepole _ 200.0 0.7` — the FFI model binds signals
 //! positionally, and this pass keeps existing programs working.
@@ -67,9 +67,15 @@ fn rewrite(e: &Expr, env: &TypeEnv) -> Expr {
             Box::new(bind_signal_args(&rewrite(r, env), env)),
             *sp,
         ),
-        // Recurse into other expression kinds so a builtin call nested inside a
-        // combinator operand that is NOT itself a top-level Apply is still
-        // handled.
+        // `A @ n`: the lhs is the delayed signal arrow and needs the sugar; the
+        // rhs is the constant delay-length literal and is left as-is.
+        Expr::Delay(l, r, sp) => Expr::Delay(
+            Box::new(bind_signal_args(&rewrite(l, env), env)),
+            Box::new(rewrite(r, env)),
+            *sp,
+        ),
+        // Recurse into Apply arguments and `let` defs/bodies so a builtin call
+        // nested deeper than a direct combinator operand is still handled.
         Expr::Apply { name, args, span } => {
             let args = args.iter().map(|a| rewrite(a, env)).collect();
             Expr::Apply {

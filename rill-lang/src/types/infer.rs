@@ -19,7 +19,8 @@ use crate::reduce::pattern_vars;
 /// type of the output and the final substitution.
 #[derive(Debug, Clone)]
 pub struct TypedProgram {
-    /// The original program (unchanged AST).
+    /// The program, desugared (foreign-fn combinator operands bound to signal
+    /// wires) but otherwise unchanged; the caller's source is untouched.
     pub program: Program,
     /// Resolved diagram type of the body.
     pub process_ty: ArrowTy,

@@ -676,6 +676,21 @@ fn combinator_sugar_lowers_positionally() {
 }
 
 #[test]
+fn combinator_sugar_binds_delay_lhs() {
+    // `onepole 200.0 0.7 @ 3` — the Delay (`@`) combinator's lhs is a foreign
+    // builtin used as an arrow; the sugar must bind its missing signal wire.
+    let src = r#"
+        foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+        main = _ : onepole 200.0 0.7 @ 3;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+#[test]
 fn builtin_catalog_registers_record_data_types() {
     // The record types the catalog's record-param builtins need (mixer/eq/
     // dry_wet) register as `data` declarations — Task 4's record-param
