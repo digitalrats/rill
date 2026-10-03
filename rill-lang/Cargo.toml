@@ -13,6 +13,7 @@ rill-core = { workspace = true }
 rill-core-actor = { workspace = true }
 rill-core-dsp = { workspace = true, optional = true }
 rill-digital-effects = { workspace = true, optional = true }
+rill-core-model = { workspace = true, optional = true }
 indexmap = "2"
 thiserror = "1.0"
 serde = { workspace = true, optional = true, features = ["derive"] }
@@ -20,6 +21,7 @@ serde = { workspace = true, optional = true, features = ["derive"] }
 [features]
 default = []
 dsp = ["dep:rill-digital-effects", "dep:rill-core-dsp"]
+model = ["dep:rill-core-model"]
 serde = ["dep:serde"]
 debug = []
 growable-arena = []

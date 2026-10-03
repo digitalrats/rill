@@ -642,3 +642,33 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         |p, _sr| Box::new(LeakyIntegratorBuiltin::<T>::new(T::from_f64(p[0]))),
     );
 }
+
+// ============================================================================
+// rill-core-model FFI factories (feature `model`)
+// ============================================================================
+
+/// Register the rill-core-model analog filter builtin (`analog_moog`) as an
+/// FFI factory. The algorithm lives in `rill-core-model` (a pure library, no
+/// rill-lang dependency); the wrapper struct implementing `BlockBuiltin` lives
+/// in [`crate::builtins::model`]. Call this on the `ForeignRegistry` you pass
+/// to `compile_with_ffi` (or any other FFI assembly point). Mirrors the deleted
+/// `rill-core-model::register::register_lang_builtins` factory exactly.
+#[cfg(feature = "model")]
+pub fn register_foreign_model<T: Transcendental + 'static>(
+    ffi: &mut crate::ffi::ForeignRegistry<T>,
+) {
+    use crate::builtins::model::AnalogMoogBuiltin;
+    use rill_core_model::wdf::RcPole;
+
+    ffi.register_block("analog_moog", |p: &[f64], sr: f32| {
+        let pole = RcPole::new(T::ZERO);
+        let mut inner = rill_core_model::wdf::MoogLadder::<T>::new(
+            pole,
+            T::from_f32(p[0] as f32),
+            T::from_f32(p[1] as f32),
+            T::from_f32(sr),
+        );
+        Algorithm::init(&mut inner, sr);
+        Box::new(AnalogMoogBuiltin { inner })
+    });
+}

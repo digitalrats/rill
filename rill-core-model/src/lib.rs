@@ -66,8 +66,6 @@ pub use modal::ModalModel;
 pub use plate::PlateModel;
 pub use string::StringModel;
 
-pub mod register;
-
 /// Base WDF element trait.
 ///
 /// Every WDF element has a port resistance and processes incident

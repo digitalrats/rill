@@ -16,8 +16,6 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_lang::builtin::Regis
     #[cfg(feature = "fft")]
     rill_fft::register::register_lang_builtins(&mut reg);
     #[cfg(feature = "analog")]
-    rill_core_model::register::register_lang_builtins(&mut reg);
-    #[cfg(feature = "analog")]
     rill_analog_effects::register::register_lang_builtins(&mut reg);
     #[cfg(feature = "sampler")]
     rill_sampler::register::register_lang_builtins(&mut reg);

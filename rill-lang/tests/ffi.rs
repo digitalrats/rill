@@ -1114,6 +1114,31 @@ fn band_list_flattens_band_fields() {
     assert_eq!(bi.params, vec![1000.0, 1.0, 0.0, 0.0]);
 }
 
+// --- SP-3b Task 9: rill-core-model FFI E2E (analog_moog) ---
+
+#[cfg(feature = "model")]
+#[test]
+fn analog_moog_ffi_end_to_end() {
+    // `analog_moog` is in the catalog (Task 3b); `register_foreign_model`
+    // registers the WDF MoogLadder factory (moved from rill-core-model,
+    // SP-3b Task 9), so the combinator call compiles and runs through the
+    // FFI path.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_model;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register_foreign_model(&mut ffi);
+
+    let src = r#"main = _ : analog_moog 500.0 0.7;"#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
+    assert!(
+        out.iter().all(|v| v.is_finite()),
+        "analog_moog output must be finite, got {out:?}"
+    );
+}
+
 // --- SP-3b Task 7: rill-router FFI E2E (mixer/eq_parametric/dry_wet) ---
 
 #[test]
