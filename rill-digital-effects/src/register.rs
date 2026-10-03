@@ -5,8 +5,9 @@ pub fn register_graph_nodes<const BUF_SIZE: usize>(_factory: &mut ()) {
 }
 
 /// Register rill-lang builtins for digital effects (delay, distortion, limiter).
+#[cfg(feature = "lang")]
 pub fn register_lang_builtins<T: rill_core::math::Transcendental>(
-    reg: &mut rill_core::builtin::Registry<T>,
+    reg: &mut rill_lang::builtin::Registry<T>,
 ) {
     crate::lang::register::register_lang_builtins(reg);
 }

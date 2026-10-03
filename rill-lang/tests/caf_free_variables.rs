@@ -8,8 +8,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rill_core::builtin::BlockBuiltin;
 use rill_core::traits::{Algorithm, MultichannelAlgorithm, ProcessResult};
+use rill_lang::builtin::BlockBuiltin;
 use rill_lang::builtin::{BuiltinKind, BuiltinSig, Registry};
 use rill_lang::{compile, compile_with};
 

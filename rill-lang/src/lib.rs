@@ -272,7 +272,7 @@ mod ir_tests {
         }
         fn reset(&mut self) {}
     }
-    impl rill_core::builtin::BlockBuiltin<f32> for TestOsc {}
+    impl crate::builtin::BlockBuiltin<f32> for TestOsc {}
 
     fn sine_registry() -> Registry<f32> {
         let mut registry = Registry::<f32>::new();

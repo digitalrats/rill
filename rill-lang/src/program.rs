@@ -2,8 +2,8 @@
 //! [`rill_core::Algorithm`]. Owns its IR, schedule, and pre-allocated state;
 //! `process()` performs no heap allocation after warm-up.
 
+use crate::builtin::{BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::buffer::FixedBuffer;
-use rill_core::builtin::{BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};

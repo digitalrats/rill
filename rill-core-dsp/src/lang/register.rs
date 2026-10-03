@@ -1,6 +1,6 @@
-use rill_core::builtin::{BuiltinKind, BuiltinSig, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
+use rill_lang::builtin::{BuiltinKind, BuiltinSig, Registry};
 
 use crate::filters::{Biquad, FilterParams, FilterType, MoogLadder, OnePole};
 use crate::generators::{BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform};

@@ -24,3 +24,7 @@ default = ["wav"]
 wav = ["dep:hound"]
 graph = ["rill-graph"]
 lang = ["rill-lang"]
+
+[[test]]
+name = "tape_builtins"
+required-features = ["lang"]

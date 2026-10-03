@@ -1,8 +1,8 @@
-/// rill-lang builtins for rill-sampler.
-use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
 use rill_core_dsp::generators::SamplePlayer;
+/// rill-lang builtins for rill-sampler.
+use rill_lang::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 
 struct SamplerBuiltin<T: Transcendental> {
     inner: SamplePlayer<T>,

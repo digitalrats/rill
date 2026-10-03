@@ -27,9 +27,9 @@ float-cmp = "0.9"
 serde_json = "1.0"
 criterion = { workspace = true, features = ["html_reports"] }
 rill-digital-effects = { workspace = true }
-rill-core-dsp = { workspace = true }
+rill-core-dsp = { workspace = true, features = ["lang"] }
 rill-router = { workspace = true, features = ["lang"] }
-rill-sampler = { workspace = true }
+rill-sampler = { workspace = true, features = ["lang"] }
 
 [[bench]]
 name = "lang_bench"

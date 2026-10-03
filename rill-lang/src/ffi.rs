@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use rill_core::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
+use crate::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::math::Transcendental;
 
 type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;

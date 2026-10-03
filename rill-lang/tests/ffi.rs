@@ -346,8 +346,8 @@ fn foreign_fn_non_terminal_variadic_fails_inference() {
 
 #[test]
 fn foreign_fn_runs_end_to_end() {
-    use rill_core::builtin::BlockBuiltin;
     use rill_core::traits::Algorithm;
+    use rill_lang::builtin::BlockBuiltin;
     use rill_lang::ffi::ForeignRegistry;
 
     // A trivial gain builtin implemented in the test.
@@ -385,8 +385,8 @@ fn foreign_fn_runs_end_to_end() {
 
 #[test]
 fn foreign_fn_multichannel_runs_end_to_end() {
-    use rill_core::builtin::MultichannelBlockBuiltin;
     use rill_core::traits::MultichannelAlgorithm;
+    use rill_lang::builtin::MultichannelBlockBuiltin;
     use rill_lang::ffi::ForeignRegistry;
 
     // A 2→1 foreign builtin: sums two input channels.
@@ -437,8 +437,8 @@ fn complex_ops_build_with_block_factory() {
     // `build_multichannel_block` finds no matching variant, `compile_with_ffi`
     // returns CompileError::Unsupported("foreign built-in 'conj' is not
     // registered"), and the `.unwrap()` below panics at build.
-    use rill_core::builtin::BlockBuiltin;
     use rill_core::traits::Algorithm;
+    use rill_lang::builtin::BlockBuiltin;
     use rill_lang::ffi::ForeignRegistry;
 
     struct Conj;

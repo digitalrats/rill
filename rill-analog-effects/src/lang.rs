@@ -1,9 +1,9 @@
 /// rill-lang builtins for rill-analog-effects.
 use std::marker::PhantomData;
 
-use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, ParamValue, ProcessResult};
+use rill_lang::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 
 use crate::CassetteDeck;
 

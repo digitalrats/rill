@@ -2,9 +2,9 @@
 //! 1-out, writes the shared tape) and `read_head` (0-in, 1-out, reads a delayed
 //! tap). They reference a named shared buffer via the generic resource registry.
 
-use rill_core::builtin::{BuiltinKind, BuiltinSig, ParamType, Registry};
 use rill_core::math::Transcendental;
 use rill_core::traits::Algorithm;
+use rill_lang::builtin::{BuiltinKind, BuiltinSig, ParamType, Registry};
 
 use crate::tape::read_head::ReadHead;
 use crate::tape::write_head::WriteHead;
@@ -56,8 +56,8 @@ pub fn register_tape_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
     );
 }
 
-impl<T: Transcendental, const B: usize> rill_core::builtin::BlockBuiltin<T> for ReadHead<T, B> {}
-impl<T: Transcendental, const B: usize> rill_core::builtin::MultichannelBlockBuiltin<T>
+impl<T: Transcendental, const B: usize> rill_lang::builtin::BlockBuiltin<T> for ReadHead<T, B> {}
+impl<T: Transcendental, const B: usize> rill_lang::builtin::MultichannelBlockBuiltin<T>
     for WriteHead<T, B>
 {
 }

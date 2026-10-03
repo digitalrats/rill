@@ -4,8 +4,8 @@ use rill_core::math::Transcendental;
 
 /// Build a complete builtin registry: DSP primitives, oscillators, complex
 /// arithmetic, mixer, EQ, dry/wet, and optionally analog models and FFT nodes.
-pub fn full_registry<T: Transcendental + 'static>() -> rill_core::builtin::Registry<T> {
-    let mut reg = rill_core::builtin::Registry::new();
+pub fn full_registry<T: Transcendental + 'static>() -> rill_lang::builtin::Registry<T> {
+    let mut reg = rill_lang::builtin::Registry::new();
 
     // Always available
     rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
@@ -28,7 +28,7 @@ pub fn full_registry<T: Transcendental + 'static>() -> rill_core::builtin::Regis
 
 /// Build a lofi-capable registry (concrete `f32`).
 #[cfg(feature = "lofi")]
-pub fn full_registry_f32() -> rill_core::builtin::Registry<f32> {
+pub fn full_registry_f32() -> rill_lang::builtin::Registry<f32> {
     let mut reg = full_registry::<f32>();
     rill_lofi::register::register_lang_builtins(&mut reg);
     reg

@@ -1,7 +1,7 @@
-use rill_core::builtin::BlockBuiltin;
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::ProcessResult;
+use rill_lang::builtin::BlockBuiltin;
 
 use crate::filters::MoogLadder;
 use crate::lang::pv_f32;

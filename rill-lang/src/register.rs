@@ -1,8 +1,8 @@
 //! Self-registration for rill-lang's own builtins (mixer, eq, dry/wet, complex).
 
-use rill_core::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
+use crate::builtin::{BlockBuiltin, BuiltinKind, BuiltinSig, Registry};
 #[cfg(feature = "router")]
-use rill_core::builtin::{MultichannelBlockBuiltin, ParamType, RecordField, RecordSchema};
+use crate::builtin::{MultichannelBlockBuiltin, ParamType, RecordField, RecordSchema};
 use rill_core::math::Transcendental;
 #[cfg(feature = "router")]
 use rill_core::traits::MultichannelAlgorithm;

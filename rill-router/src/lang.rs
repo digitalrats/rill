@@ -1,11 +1,11 @@
 /// rill-lang builtins for rill-router.
 use std::marker::PhantomData;
 
-use rill_core::builtin::{
-    BlockBuiltin, BuiltinKind, BuiltinSig, MultichannelBlockBuiltin, ParamType, Registry,
-};
 use rill_core::math::Transcendental;
 use rill_core::traits::{Algorithm, MultichannelAlgorithm, ParamValue, ProcessResult};
+use rill_lang::builtin::{
+    BlockBuiltin, BuiltinKind, BuiltinSig, MultichannelBlockBuiltin, ParamType, Registry,
+};
 
 use crate::eq::{FilterFactory, GraphicEq};
 use crate::pan::{MonoToStereo, PanLaw};
