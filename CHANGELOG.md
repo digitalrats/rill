@@ -4,6 +4,29 @@
 
 ### rill-lang
 
+- **SP-3b: builtin migration to the FFI layer — `FfiSig` is the contract.**
+  Every built-in's signature now lives **in the language**: an auto-registered
+  catalog of `foreign fn` declarations (`BUILTIN_FOREIGN_DECLS` in
+  `types/ty.rs`) populates `TypeEnv::foreign_sigs`, and `FfiSig`/`FfiParam`
+  (`Signal`/`Scalar`/`VariadicSignal`/`Record`/`Resource`) describe each built-in
+  for inference, lowering, and graph reconstruction. The legacy
+  `BuiltinSig`/`ParamType`/`RecordSchema`/`RecordField`/`SignatureSource`/
+  `NoSigs` machinery and the `sigs` plumbing through `compile*`/`lower*` are
+  **removed**. `Registry<T>` is factory-only (`register_*(name, factory)`); the
+  single runtime factory registry is `rill_lang::ffi::ForeignRegistry`.
+  Faust-combinator sugar keeps legacy call style for signal-input builtins
+  (`_ : onepole 200.0 0.7`). Deleted crates: `rill-digital-filters`,
+  `rill-analog-filters`, `rill-analog-effects`; their algorithms moved to
+  `rill-core-dsp`/`rill-core-model` (algorithms-only) with factories registered
+  in rill-lang under the `dsp`/`model` features; `mixer`/`eq_parametric`/
+  `dry_wet` moved to `rill-router`.
+- **Tape loops as a first-class `Buffer` member.** `data Tape a` +
+  `instance Buffer (Tape f32)` in `SIGNAL_PRELUDE`; a `tape_loop : Int -> Tape
+  f32` foreign constructor allocates a shared tape cell. NAMED bindings
+  (`tape = tape_loop <cap>`) share one buffer across `write_head`/`read_head`;
+  inline `tape_loop <cap>` calls allocate fresh cells per call. Tape cells are
+  program-local (rill buffers are single-threaded — never transferred across
+  threads); the heads' handles keep the buffers alive.
 - **Builtin category typeclasses + value-track category core.** `Functor`,
   `Applicative`, `Monad`, `Monoid` ship built in via a language prelude
   (`CATEGORY_PRELUDE`) parsed and registered in `TypeEnv::with_builtins()` —

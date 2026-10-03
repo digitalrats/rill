@@ -235,9 +235,9 @@ Three consequences of the CAF model:
   keep macro semantics — they are re-instantiated per enclosing call, matching
   Haskell.
 - **Global buffers.** A buffer resource declared at top level (e.g.
-  `tape = TapeLoop 4096`) is closed, so functions capture it as a free variable;
-  the existing `write_head`/`read_head` machinery resolves it at lowering. No
-  new buffer syntax is needed.
+  `tape = tape_loop 4096`) is closed, so functions capture it as a free variable;
+  the `write_head`/`read_head` builtins resolve it at lowering. The tape is a
+  `Buffer` family member created by the `tape_loop` constructor.
 - **Recursion.** A self-referential closed definition (`a = a`) is a compile
   error, not a stack overflow.
 
@@ -420,26 +420,32 @@ error (`block built-in cannot be used inside a feedback loop`).
 
 ### Using built-ins from Rust
 
-The umbrella registry (`rill_adrift::lang_builtins::full_registry`) aggregates
-all workspace built-ins. For selective registration, individual crates expose
-`register_lang_builtins()` functions:
+The builtin **catalog** lives in the language (`foreign fn` declarations
+auto-registered from `rill_lang::types::ty::BUILTIN_FOREIGN_DECLS`). Rust
+implementations are registered as **factories** on the
+`rill_lang::ffi::ForeignRegistry` via each crate's `register_foreign_*`:
 
 ```rust,no_run
-use rill_lang::compile_with;
-use rill_lang::builtin::Registry;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::compile_with_ffi;
 
-let mut reg = Registry::<f32>::new();
-rill_core_dsp::lang::register::register_lang_builtins(&mut reg);
-rill_lang::register::register_core_builtins(&mut reg);
+let mut ffi = ForeignRegistry::<f32>::new();
+rill_lang::register::register_foreign_generators(&mut ffi);
+rill_lang::register::register_foreign_filters(&mut ffi);
+rill_router::register::register_foreign_router(&mut ffi);
 
-let mut prog = compile_with::<f32>(
-    "main = lowpass _ 1000.0 0.7;",
-    &reg,
+let mut prog = compile_with_ffi::<f32>(
+    "main = _ : lowpass 1000.0 0.7;",
+    &ffi,
     48_000.0,
 ).unwrap();
 let mut out = [0.0f32; 4];
 prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
 ```
+
+For the graph path, `rill_adrift::lang_builtins::full_registry` still builds a
+factory-only `rill_lang::builtin::Registry<T>` (the legacy graph-compile path
+uses it to resolve factories by name; signatures come from the catalog).
 
 Or to compile directly into a graph engine with actor mailbox support:
 

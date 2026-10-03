@@ -1,6 +1,7 @@
 # rill-lang: Signal Track as First-Class Buffers — FFI Layer Design (SP-3)
 
-> **Status:** Approved (user, 2026-10-02).
+> **Status:** Implemented (SP-3a + SP-3b, 2026-10-03). See
+> `docs/superpowers/plans/2026-10-02-rill-lang-sp3b-builtin-migration.md`.
 > **Date:** 2026-10-02
 > **Branch:** `feature/rill-lang-categories`
 > **Scope:** SP-3 of the categories work. Introduce an **FFI layer in rill-lang**:
@@ -162,21 +163,25 @@ the compiler allocates the buffer once and hands a `SharedWriter`/`SharedReader`
 pair to the heads via `registry.writer(name)` / `registry.reader(name)`
 (`rill-sampler/src/tape/lang.rs:28-54`), both referencing one `SharedCell`.
 
-**Decision:** the tape heads are the **only** builtins with a `Resource`
-parameter, and any alternative (a first-class `TapeLoop` value parameter) requires
-the buffer-descriptor / "big objects" machinery — new structural elements not
-justified by SP-3's goals. Therefore:
+**Decision (SP-3b outcome):** the tape heads moved onto the FFI layer through a
+`tape_loop` foreign constructor (`Int -> Tape f32`). `Tape` is a `Buffer`
+family member whose runtime representation is an index into a program's shared
+tape cells; `write_head`/`read_head` take it as a `Resource` param. A NAMED
+binding (`tape = tape_loop <capacity>`) creates one cell shared by every
+`Ref(tape)`; an INLINE `tape_loop <capacity>` allocates a fresh cell per call.
+The legacy name-based `ResourceRegistry` path remains only for the graph-duplex
+compile path (SP-3b Task 11).
 
-- `write_head`/`read_head` remain on the existing `ResourceRegistry` path,
-  **outside the FFI layer**, in SP-3.
+- `write_head`/`read_head` are catalog FFI builtins (`rill-sampler` registers
+  their factories as `register_resource_*`), **inside** the FFI layer.
 - The FFI layer covers the remaining ~42 builtins (all `Signal`/`Float`
   signatures, plus `mixer`/`eq_parametric`/`dry_wet` via `List`/`Data` types).
-- The `ResourceRegistry` is not a workaround for memory management: in the static
-  dataflow model, liveness = program lifetime and the buffer is allocated at build
-  time. A true "resource with automatic release" (`use`/refcount) only becomes
-  meaningful in Turing-complete programs — the future `(arg..) -> IO` refactor,
-  where buffers become values with managed lifetimes. The tape heads move there
-  and `Resource` dies naturally.
+- The single shared cell per named tape is not a workaround for memory
+  management: in the static dataflow model, liveness = program lifetime and the
+  buffer is allocated at build time. A true "resource with automatic release"
+  (`use`/refcount) only becomes meaningful in Turing-complete programs — the
+  future `(arg..) -> IO` refactor, where buffers become values with managed
+  lifetimes. The tape heads move there and `Resource` dies naturally.
 
 ---
 

@@ -2,7 +2,7 @@
 
 ## Workspace layout
 
-Cargo workspace — 20 active crates:
+Cargo workspace — 17 active crates:
 
 | Crate | Status |
 |---|---|
@@ -10,22 +10,22 @@ Cargo workspace — 20 active crates:
 | `rill-core-actor` | Active — actor model (ActorRef, Actor, ActorSystem) for lock-free message passing |
 | `rill-core-dsp` | Active — DSP algorithm trait, filters, generators, delay, vector ops, sample player |
 | `rill-graph` | Active — signal graph (DAG) with topological sort |
-| `rill-digital-filters` | Active — Biquad, SVF, comb, MoogLadder filters |
-| `rill-digital-effects` | Active — Delay, Distortion, Limiter |
+| `rill-digital-effects` | Active — Delay, Distortion, Limiter (algorithms-only; factories register via rill-lang FFI) |
 | `rill-router` | Active — EQ + mixer + routing |
 | `rill-patchbay` | Active — automation (LFO, envelopes, sensors, servos) |
 | `rill-lofi` | Active — lo-fi emulation |
 | `rill-io` | Active — I/O backends (PortAudio, ALSA, PipeWire, JACK) |
 | `rill-telemetry` | Active — probes, collectors |
 | `rill-core-model` | Active — WDF elements, adapters, analysis, physical modeling (string, plate, modal, cavity) |
-| `rill-analog-filters` | Active — WDF-based analog filters (WdfMoogLadder) |
-| `rill-analog-effects` | Active — cassette deck, tape bridge/delay models |
 | `rill-osc` | Active — OSC server and networking |
-| `rill-sampler` | Active — sample playback, time-series reader, WAV loading |
+| `rill-sampler` | Active — sample playback, time-series reader, WAV loading, tape write/read heads |
 | `rill-fft` | Active — FFT, frequency-domain convolution, spectrum analysis, spectral effects |
 | `rill-lang` | Active — Faust-style functional DSL for signal processing, compiles to `Algorithm<T>` |
 | `rill-adrift` | Active — umbrella crate for signal processing applications |
 | `rill-analyzer` | Active — CLI debugger for signal graph inspection |
+
+Deleted in SP-3b (algorithms moved to rill-core-dsp / rill-core-model):
+`rill-digital-filters`, `rill-analog-filters`, `rill-analog-effects`.
 
 Dependency tree:
 - **`rill-core`** — foundation (depended on by all crates except `rill-osc`)
@@ -35,12 +35,10 @@ Dependency tree:
 - **`rill-osc`** — standalone crate (no internal workspace deps)
 
   Crates depending on both `rill-core` + `rill-core-dsp`:
-  `rill-digital-filters`, `rill-digital-effects`, `rill-router`, `rill-fft`, `rill-sampler`
+  `rill-digital-effects`, `rill-router`, `rill-fft`, `rill-sampler`
 - **`rill-core-model`** — WDF + physical modeling, depends on `rill-core`
-- **`rill-analog-filters`** — depends on `rill-core` + `rill-core-model`
-- **`rill-analog-effects`** — depends on `rill-core` + `rill-core-model`
 - **`rill-sampler`** — graph nodes for sample playback and time-series reading; depends on `rill-core` + `rill-core-dsp`
-- **`rill-lang`** — signal processing DSL, depends on `rill-core` only
+- **`rill-lang`** — signal processing DSL; depends on `rill-core` + `rill-core-actor`, with optional feature-gated deps: `dsp` = `rill-core-dsp` + `rill-digital-effects`, `model` = `rill-core-model` (algorithms-only crates whose factories rill-lang registers as FFI builtins). Builtin signatures live in the language (`foreign fn` catalog in `types/ty.rs`); `rill_lang::ffi::ForeignRegistry` is the single factory registry.
 - **`rill-fft`** — FFT and frequency-domain processing, depends on `rill-core` + `rill-core-dsp`
 - **`rill-adrift`** — umbrella, re-exports all workspace crates; feature-gates `io`, `lofi`, `telemetry`, `osc`, `analog`, `sampler`, `fft`, `lang`
 
@@ -56,7 +54,7 @@ crate to the **nature of the thing being modeled**, not to its interface shape.
 | **`rill-core-model`** | Physical element models | Models of **real physical elements** using precise modeling techniques (WDF, modal analysis, physical acoustics). A circuit-level component, a string, a plate, an acoustic cavity. | WDF resistor/capacitor/diode, `StringModel`, `PlateModel`, `ModalCavity` |
 | **`rill-lofi`** | Vintage hardware emulation | **Concrete analog circuits and hardware devices** — sound chips (AY-3-8910, SID, NES APU), samplers (Akai S900, Fairlight CMI), passive circuit elements (AC-coupling capacitor as DC blocker). «Ancient circuit design» with nostalgic value. Models the **artefact**, not the pure math. | `Ay38910Chip`, `NesChip`, `DcBlocker`, `AkaiS900Emulator` |
 | **`rill-core-dsp`** | Pure mathematical algorithms | **Abstract DSP algorithms** without hardware provenance — filters defined by transfer functions, generators defined by waveforms, effects defined by math. NOT a physical element model. Consider this crate **last** when modeling a real circuit element. | `Biquad`, `OnePole`, `Butterworth`, `ChebyshevI`, `CombFilter`, `SineOscillator` |
-| **`rill-analog-*`** | Analog circuit models via WDF | Analog filters and effects built on `rill-core-model` primitives. Uses WDF methodology for circuit-level accuracy. | `WdfMoogLadder`, `OpAmpModel`, `TapeDeckModel` |
+| **`rill-core-model` (analog WDF, `model` feature)** | Analog circuit models via WDF | Analog filters and effects built on `rill-core-model` primitives (the `rill-analog-*` crates were folded back here in SP-3b). Uses WDF methodology for circuit-level accuracy. | `WdfMoogLadder`, `OpAmpModel`, `TapeDeckModel` |
 
 ### Decision flow
 
@@ -130,7 +128,7 @@ mdbook serve docs/                # dev server at localhost:3000
 ## Code conventions
 
 - **Safety & Unsafe Policy:**
-    - `#![deny(unsafe_code)]` set in 9 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-analog-filters`, `rill-analog-effects`, `rill-lang`, `rill-fft`.
+    - `#![deny(unsafe_code)]` set in 7 crates: `rill-core`, `rill-core-dsp`, `rill-graph`, `rill-core-model`, `rill-patchbay`, `rill-lang`, `rill-fft`.
     - **Always ask explicit permission before suggesting `unsafe`**, even in crates without the deny.
     - Prefer existing abstractions (buffers, SIMD wrappers) over raw pointer manipulation.
     - Architectural safety over micro-optimizations unless a bottleneck is proven.

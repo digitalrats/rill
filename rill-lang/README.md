@@ -218,17 +218,20 @@ as a foreign built-in.
 
 ### The signal-track types
 
-`SIGNAL_PRELUDE` ships two built-in names, registered the same way as the
-category prelude:
+`SIGNAL_PRELUDE` ships the buffer family and the `Buffer` typeclass:
 
 ```faust
 typeclass Buffer b where { }
 instance Buffer (FixedBuffer a) where { }
+instance Buffer (Tape f32) where { }
 ```
 
 - **`FixedBuffer a`** — the signal-channel type. A `foreign fn` signal parameter
   is strictly a `FixedBuffer[BUF]` at the runtime boundary (i.e. the const-generic
   `FixedBuffer<f32, BUF>`, block-sized, no heap on the RT path).
+- **`Tape a`** — a shared-buffer handle (a tape loop). A `Buffer` family member
+  like `FixedBuffer`; its runtime representation is an index into the program's
+  shared tape cells (see *Tape loops* below).
 - **`Buffer`** — a typeclass over buffer types; the home of buffer math in later
   stages.
 
@@ -251,27 +254,42 @@ let prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
 
 `register_block` registers a single-channel (1→1) built-in;
 `register_multichannel_block` an N→M one — the runtime dispatches by the
-`BuiltinInst` variant exactly as it does for legacy built-ins. `compile_with_ffi`
-compiles source against the registry and a fresh, empty legacy built-in
-registry, returning `RillProgram<T, 256>`. A foreign call whose name is not
-registered fails at `RillProgram::build` with `foreign built-in '...' is not
-registered`.
+`BuiltinInst` variant. `compile_with_ffi` compiles source against the registry,
+returning `RillProgram<T, 256>`. A foreign call whose name is not registered
+fails at `RillProgram::build` with `foreign built-in '...' is not registered`.
+
+### The builtin catalog
+
+The builtin catalog is **part of the language**: every migrated built-in is
+declared with `foreign fn` in the auto-registered catalog
+(`BUILTIN_FOREIGN_DECLS` in `rill-lang/src/types/ty.rs`), which populates
+`TypeEnv::foreign_sigs`. Programs resolve these names without writing a
+`foreign fn` per program. The DSP crates (`rill-core-dsp`,
+`rill-digital-effects`, `rill-core-model`, `rill-router`) register their Rust
+**factories** on `ForeignRegistry` (see `register_foreign_*` in
+`rill-lang/src/register.rs` and the crates' `lang` modules).
 
 ### Reserved names
 
 - **`foreign`** — a lexer keyword, reserved for `foreign fn` declarations.
 - **`FixedBuffer`** — the built-in signal-channel type constructor (arity 1).
 - **`Buffer`** — the built-in typeclass over buffer types.
+- **`Tape`** — the built-in shared-buffer handle constructor (arity 1).
 
-### Coexistence with legacy built-ins
+### Tape loops
 
-The FFI layer is the first step toward removing the legacy
-`BuiltinSig`/`ParamType` machinery; today the two **coexist**. Legacy built-ins
-(registered via the rill-core `Registry<T>`, consumed by `compile_with`) and
-foreign-declared built-ins (via `ForeignRegistry<T>`, consumed by
-`compile_with_ffi`) share the same IR and runtime. A `foreign fn` name takes
-precedence over a legacy built-in at inference and lowering; an unregistered
-foreign name is a compile error.
+A tape loop is created with the `tape_loop` foreign constructor
+(`Int -> Tape f32`) and shared by the tape head builtins `write_head` /
+`read_head` (registered by `rill-sampler`). NAMED bindings share one buffer:
+
+```faust
+tape = tape_loop 1024;
+main = (write_head _ _ tape 0.5 0.3) , read_head tape 0.1;
+```
+
+Each inline `tape_loop <capacity>` call allocates a **fresh** tape; to share a
+tape between a write head and its read heads, bind it to a name as above. The
+legacy `TapeLoop <capacity>` declaration spelling is still accepted.
 
 ## Two parameter models
 
