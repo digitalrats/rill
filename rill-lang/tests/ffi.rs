@@ -1180,6 +1180,36 @@ fn mixer_ffi_end_to_end() {
 }
 
 #[test]
+fn mixer_ffi_explicit_wires_not_doubled() {
+    // `mixer _ _ { ... }` — the FFI positional style supplies the signal
+    // channels as explicit wire call args. The variadic lowering must consume
+    // each explicit wire once and then stop (a regression: the combinator-fed
+    // while-loop re-pushed already-consumed wires, doubling signal_ins → a
+    // 2-channel mix computed as 4 channels, 4.8 instead of 2.4).
+    use rill_lang::ffi::ForeignRegistry;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_router::register::register_foreign_router(&mut ffi);
+
+    let src = r#"
+        main = mixer _ _ { buses: 0, master_vol: 1.0 };
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let ch0 = [1.0f32; 4];
+    let ch1 = [2.0f32; 4];
+    let mut l = [0.0f32; 4];
+    let mut r = [0.0f32; 4];
+    let inputs: [&[f32]; 2] = [&ch0, &ch1];
+    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
+    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
+    assert!(
+        (l[0] - 2.4).abs() < 1e-5,
+        "mixer explicit-wire stereo sum must be ~2.4, got l[0]={}",
+        l[0]
+    );
+}
+
+#[test]
 fn eq_parametric_ffi_end_to_end() {
     // `eq_parametric` with a `bands` list — the BandList flattening (Follow-up
     // B) feeds the factory's per-band params. A unity-gain peak band passes

@@ -3717,6 +3717,7 @@ impl<'a> Lowerer<'a> {
                                         };
                                         signal_srcs.push(src);
                                     }
+                                    signal_index += end.saturating_sub(pos);
                                     // Any remaining wiring registers are the
                                     // combinator-fed signal channels (the
                                     // graph-reconstruct `(_, _) :> mixer` style
