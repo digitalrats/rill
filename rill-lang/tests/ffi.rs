@@ -818,7 +818,8 @@ fn tape_param_maps_to_resource() {
 #[test]
 fn ffi_record_schema_reads_data_types() {
     // `ffi_record_schema` mirrors the legacy RecordSchema from the catalog's
-    // `data` declarations: field name + scalar type in declaration order.
+    // `data` declarations: field name + scalar type in declaration order, with
+    // the legacy `RecordField::default` values (SP-3b Task 7, follow-up A).
     use rill_lang::types::ffi::{ffi_record_schema, FfiScalar};
 
     let env = TypeEnv::with_builtins();
@@ -826,8 +827,8 @@ fn ffi_record_schema_reads_data_types() {
     assert_eq!(
         schema.fields,
         vec![
-            ("buses".to_string(), FfiScalar::Int, None),
-            ("master_vol".to_string(), FfiScalar::Float, None),
+            ("buses".to_string(), FfiScalar::Int, Some(0.0)),
+            ("master_vol".to_string(), FfiScalar::Float, Some(1.0)),
         ]
     );
     assert!(ffi_record_schema(&env, "NoSuchType").is_none());
@@ -963,6 +964,286 @@ fn foreign_variadic_signal_merge_accepts_channels() {
     let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 2);
     assert_eq!(typed.process_ty.arity_out(), 1);
+}
+
+// --- SP-3b Task 7: record defaults + List EqBand band-list (router migration) ---
+
+#[test]
+fn ffi_record_schema_carries_legacy_defaults() {
+    // Follow-up A (Task 4 review): the FFI record schema must carry the legacy
+    // RecordField defaults (dry_wet mix 0.5, mixer buses 0 / master_vol 1.0) —
+    // otherwise a migrated omitted-field default silently becomes 0.0.
+    use rill_lang::types::ffi::ffi_record_schema;
+
+    let env = TypeEnv::with_builtins();
+    let mixer = ffi_record_schema(&env, "MixerConfig").expect("MixerConfig schema");
+    assert_eq!(
+        mixer.fields,
+        vec![
+            (
+                "buses".to_string(),
+                rill_lang::types::ffi::FfiScalar::Int,
+                Some(0.0)
+            ),
+            (
+                "master_vol".to_string(),
+                rill_lang::types::ffi::FfiScalar::Float,
+                Some(1.0)
+            ),
+        ]
+    );
+    let dry_wet = ffi_record_schema(&env, "DryWetConfig").expect("DryWetConfig schema");
+    assert_eq!(
+        dry_wet.fields,
+        vec![(
+            "mix".to_string(),
+            rill_lang::types::ffi::FfiScalar::Float,
+            Some(0.5)
+        )]
+    );
+}
+
+#[test]
+fn ffi_record_schema_bandlist_field() {
+    // Follow-up B (Task 4 review): `EqConfig = { bands: List EqBand }` — the
+    // list-of-record field must be representable in the schema (a `BandList`
+    // field carrying the band record type name), not silently dropped.
+    use rill_lang::types::ffi::{ffi_record_schema, FfiScalar};
+
+    let env = TypeEnv::with_builtins();
+    let eq = ffi_record_schema(&env, "EqConfig").expect("EqConfig schema");
+    assert_eq!(eq.fields.len(), 1);
+    let (fname, fscalar, fdefault) = &eq.fields[0];
+    assert_eq!(*fname, "bands");
+    let band_ty: &str = match fscalar {
+        rill_lang::types::ffi::FfiScalar::BandList(bt) => bt.as_str(),
+        other => panic!("bands field must be a BandList, got {other:?}"),
+    };
+    assert_eq!(band_ty, "EqBand");
+    assert!(fdefault.is_none());
+    // The band schema itself flattens with its legacy defaults.
+    let band = ffi_record_schema(&env, "EqBand").expect("EqBand schema");
+    assert_eq!(
+        band.fields,
+        vec![
+            ("freq".to_string(), FfiScalar::Float, Some(1000.0)),
+            ("q".to_string(), FfiScalar::Float, Some(1.0)),
+            ("gain_db".to_string(), FfiScalar::Float, Some(0.0)),
+            ("band_type".to_string(), FfiScalar::Int, Some(0.0)),
+        ]
+    );
+}
+
+#[test]
+fn ffi_sig_accepts_mixer_variadic_record() {
+    // Step 2 (option a): `List (FixedBuffer f32) -> MixerConfig -> Pair ...` —
+    // a LEADING VariadicSignal followed only by a record param is valid (the
+    // variadic is the mixer's signal channels, the record the config scalar).
+    use rill_lang::ast::TypeExpr;
+    use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+
+    let te = TypeExpr::TFunc(
+        vec![
+            TypeExpr::TApp(
+                "List".into(),
+                vec![TypeExpr::TApp(
+                    "FixedBuffer".into(),
+                    vec![TypeExpr::TName("f32".into())],
+                )],
+            ),
+            TypeExpr::TName("MixerConfig".into()),
+        ],
+        Box::new(TypeExpr::TApp(
+            "Pair".into(),
+            vec![
+                TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]),
+                TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]),
+            ],
+        )),
+    );
+    let sig = ffi_sig_from_typeexpr("mixer", &te).expect("mixer FFI sig");
+    assert!(matches!(&sig.params[0], FfiParam::VariadicSignal));
+    assert!(matches!(&sig.params[1], FfiParam::Record(ty) if ty == "MixerConfig"));
+    assert_eq!(sig.signal_outs, 2);
+}
+
+#[test]
+fn record_default_ffi_applies() {
+    // Follow-up A end-to-end: `dry_wet { }` (empty record) must apply the
+    // legacy `mix: 0.5` default — not silently 0.0.
+    let src = r#"
+        main = _ , _ : dry_wet { };
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(
+        &typed,
+        &rill_lang::builtin::NoSigs,
+        44100.0,
+        &typed.cafs,
+    )
+    .unwrap();
+    let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
+    assert_eq!(bi.params, vec![0.5]);
+}
+
+#[test]
+fn band_list_flattens_band_fields() {
+    // Follow-up B end-to-end: `eq_parametric { bands: [ { freq: 1000.0, q: 1.0,
+    // gain_db: 0.0, band_type: 0.0 } ] }` flattens each band's fields in schema
+    // order into the folded param list.
+    let src = r#"
+        main = _ : eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] };
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(
+        &typed,
+        &rill_lang::builtin::NoSigs,
+        44100.0,
+        &typed.cafs,
+    )
+    .unwrap();
+    let bi = ir
+        .builtins
+        .iter()
+        .find(|b| b.name == "eq_parametric")
+        .unwrap();
+    assert_eq!(bi.params, vec![1000.0, 1.0, 0.0, 0.0]);
+}
+
+// --- SP-3b Task 7: rill-router FFI E2E (mixer/eq_parametric/dry_wet) ---
+
+#[test]
+fn dry_wet_ffi_end_to_end() {
+    // `dry_wet` is in the catalog; `register_foreign_router` registers its
+    // factory, so `_ , _ : dry_wet { mix: 0.5 }` compiles and runs through the
+    // FFI path. mix 0.5 → output = dry·0.5 + wet·0.5 (both L and R).
+    use rill_lang::ffi::ForeignRegistry;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_router::register::register_foreign_router(&mut ffi);
+
+    let src = r#"
+        main = _ , _ : dry_wet { mix: 0.5 };
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let dry = [2.0f32; 4];
+    let wet = [4.0f32; 4];
+    let mut l = [0.0f32; 4];
+    let mut r = [0.0f32; 4];
+    let inputs: [&[f32]; 2] = [&dry, &wet];
+    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
+    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
+    assert!(
+        (l[0] - 3.0).abs() < 1e-5,
+        "mix=0.5 must blend dry(2) and wet(4) to 3.0, got l[0]={}",
+        l[0]
+    );
+    assert!(
+        (r[0] - 3.0).abs() < 1e-5,
+        "both outputs receive the blend, got r[0]={}",
+        r[0]
+    );
+}
+
+#[test]
+fn mixer_ffi_end_to_end() {
+    // `mixer` (variadic signal + `MixerConfig` record) is in the catalog; the
+    // factory is registered via `register_foreign_router`. The 2-in stereo sum
+    // runs and yields 2 outs (master_vol 1.0, default channel vol 0.8).
+    use rill_lang::ffi::ForeignRegistry;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_router::register::register_foreign_router(&mut ffi);
+
+    let src = r#"
+        main = (_, _) :> mixer { buses: 0, master_vol: 1.0 };
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let ch0 = [1.0f32; 4];
+    let ch1 = [2.0f32; 4];
+    let mut l = [0.0f32; 4];
+    let mut r = [0.0f32; 4];
+    let inputs: [&[f32]; 2] = [&ch0, &ch1];
+    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
+    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
+    // channel_vols default 0.8 · master_vol 1.0 → (1 + 2)·0.8 = 2.4.
+    assert!(
+        (l[0] - 2.4).abs() < 1e-5,
+        "mixer stereo sum: l[0]={}, expected ~2.4",
+        l[0]
+    );
+    assert!(r.iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn eq_parametric_ffi_end_to_end() {
+    // `eq_parametric` with a `bands` list — the BandList flattening (Follow-up
+    // B) feeds the factory's per-band params. A unity-gain peak band passes
+    // the first sample unchanged (b0 = 1); the run proves the band config
+    // reached the factory.
+    use rill_lang::ffi::ForeignRegistry;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    rill_router::register::register_foreign_router(&mut ffi);
+
+    let src = r#"
+        main = _ : eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] };
+    "#;
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 4]], &mut [&mut out]).unwrap();
+    assert!(
+        out.iter().all(|v| v.is_finite()),
+        "eq_parametric output must be finite, got {out:?}"
+    );
+    assert!(
+        (out[0] - 1.0).abs() < 1e-5,
+        "unity-gain peak band: first sample must pass unchanged, got out[0]={}",
+        out[0]
+    );
+}
+
+#[test]
+fn foreign_param_names_never_fallback_to_index_for_catalog() {
+    // Follow-up C: every catalog builtin with scalar params must have real
+    // display names — a missed `foreign_param_names` entry would silently fall
+    // back to param0/param1 and corrupt graph reconstruction's param ordering.
+    use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+
+    let env = TypeEnv::with_builtins();
+    let mut scalar_builtins = 0usize;
+    for (name, te) in &env.foreign_sigs {
+        let Some(sig) = ffi_sig_from_typeexpr(name, te) else {
+            continue;
+        };
+        let n_scalar = sig
+            .params
+            .iter()
+            .filter(|p| matches!(p, FfiParam::Scalar))
+            .count();
+        if n_scalar == 0 {
+            continue;
+        }
+        scalar_builtins += 1;
+        let names = sig.param_names.clone();
+        assert_eq!(
+            names.len(),
+            n_scalar,
+            "catalog builtin `{name}` must name every scalar param"
+        );
+        assert!(
+            names.iter().all(|n| !n.starts_with("param")),
+            "catalog builtin `{name}` must have real param names, got {names:?}"
+        );
+    }
+    assert!(
+        scalar_builtins > 0,
+        "catalog must contain scalar-param builtins to guard against drift"
+    );
 }
 
 #[cfg(feature = "dsp")]

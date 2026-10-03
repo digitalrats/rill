@@ -40,7 +40,7 @@ rill-core-model = { workspace = true, optional = true }
 rill-analog-filters = { workspace = true, optional = true }
 rill-analog-effects = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
-rill-lang = { workspace = true, features = ["router", "dsp"] }
+rill-lang = { workspace = true, features = ["dsp"] }
 rill-fft = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)

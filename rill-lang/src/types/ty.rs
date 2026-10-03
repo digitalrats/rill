@@ -344,9 +344,10 @@ main = _;
 /// Faust-combinator sugar (see [`crate::desugar`]) keeps their legacy call
 /// style working — `_ : onepole 200.0 0.7` desugars to the positional
 /// `onepole _ 200.0 0.7` before inference. The record-param builtins
-/// (`mixer`/`eq_parametric`/`dry_wet`) register their `data` types now; their
-/// `foreign fn` declarations land in Task 4 (record params resolve at infer
-/// only then). `tape_loop` (`Int -> Tape f32`) is deferred to Task 11 — its
+/// (`mixer`/`eq_parametric`/`dry_wet`) declare their record configs here too
+/// (`mixer`'s leading `List (FixedBuffer f32)` is a VariadicSignal followed
+/// only by a record — [`crate::types::ffi::ffi_sig_from_typeexpr`] accepts the
+/// shape). `tape_loop` (`Int -> Tape f32`) is deferred to Task 11 — its
 /// `Tape f32` result is not a `FixedBuffer`/`Pair`, so
 /// [`crate::types::ffi::ffi_sig_from_typeexpr`] rejects it.
 pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
@@ -383,6 +384,9 @@ foreign fn spectraldelay : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
 foreign fn convolver : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
 foreign fn analog_moog : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
 foreign fn lofi : FixedBuffer f32 -> Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn mixer : List (FixedBuffer f32) -> MixerConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+foreign fn eq_parametric : FixedBuffer f32 -> EqConfig -> FixedBuffer f32;
+foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
 
 data MixerConfig = { buses: Int, master_vol: Float };
 data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };

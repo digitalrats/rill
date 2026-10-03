@@ -1,4 +1,11 @@
+//! Parametric EQ DSL builtin: state + `BlockBuiltin` wrapper.
+//!
+//! Moved from `rill-lang/src/builtins/eq.rs` (SP-3b Task 7) — the DSL-facing
+//! cascaded biquad EQ the rill-lang foreign decl `eq_parametric : FixedBuffer
+//! f32 -> EqConfig -> FixedBuffer f32` lowers into.
+
 use rill_core::math::Transcendental;
+use rill_lang::builtin::BlockBuiltin;
 
 /// Biquad filter type for EQ bands.
 pub enum BandType {
@@ -180,6 +187,35 @@ fn compute_biquad(band: &EqBandConfig, sr: f64) -> BiquadCoeffs {
         a2: a2 * a0_inv,
     }
 }
+
+/// The DSL-facing EQ: wraps [`EqState`] as a [`BlockBuiltin`].
+pub struct EqBuiltin<T: Transcendental> {
+    inner: EqState<T>,
+}
+
+impl<T: Transcendental> EqBuiltin<T> {
+    /// Wrap a fresh EQ state as a block builtin.
+    pub fn new(inner: EqState<T>) -> Self {
+        Self { inner }
+    }
+}
+
+impl<T: Transcendental> rill_core::traits::Algorithm<T> for EqBuiltin<T> {
+    fn process(
+        &mut self,
+        input: Option<&[T]>,
+        output: &mut [T],
+    ) -> rill_core::traits::ProcessResult<()> {
+        match input {
+            Some(inp) => self.inner.process_slice(inp, output),
+            None => output.fill(T::ZERO),
+        }
+        Ok(())
+    }
+    fn reset(&mut self) {}
+}
+
+impl<T: Transcendental> BlockBuiltin<T> for EqBuiltin<T> {}
 
 #[cfg(test)]
 mod tests {

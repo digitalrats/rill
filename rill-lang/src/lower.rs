@@ -3626,6 +3626,12 @@ impl<'a> Lowerer<'a> {
                 // (`gain _ 0.5` → the Wire at [0], the constant at [1]).
                 if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
                     if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+                        let variadic_idx = sig
+                            .params
+                            .iter()
+                            .position(|p| {
+                                matches!(p, crate::types::ffi::FfiParam::VariadicSignal)
+                            });
                         let mut param_values = Vec::new();
                         let mut param_bindings = Vec::new();
                         let mut signal_srcs = Vec::new();
@@ -3635,16 +3641,25 @@ impl<'a> Lowerer<'a> {
                         for p in &sig.params {
                             match p {
                                 crate::types::ffi::FfiParam::Signal => {
-                                    if pos >= call_args.len() {
-                                        return Err(CompileError::Type {
-                                            msg: format!("missing signal input for `{name}`"),
-                                            span: *span,
-                                        });
-                                    }
-                                    // A Wire in the k-th Signal slot binds the k-th
-                                    // wiring register; a generator (0-in) yields its
-                                    // outs via `self.lower`.
-                                    let src = if matches!(&call_args[pos], Expr::Wire(_)) {
+                                    let src = if pos >= call_args.len() {
+                                        // Combinator-fed signal: no explicit
+                                        // wire call arg — bind the next wiring
+                                        // register (the graph-reconstruct
+                                        // `(_, _) :> dry_wet` style feeds the
+                                        // channels via the combinator).
+                                        if signal_index >= args.len() {
+                                            return Err(CompileError::Type {
+                                                msg: format!(
+                                                    "missing signal input for `{name}`"
+                                                ),
+                                                span: *span,
+                                            });
+                                        }
+                                        args[signal_index]
+                                    } else if matches!(&call_args[pos], Expr::Wire(_)) {
+                                        // A Wire in the k-th Signal slot binds the k-th
+                                        // wiring register; a generator (0-in) yields its
+                                        // outs via `self.lower`.
                                         let reg = *args.get(signal_index).ok_or_else(|| {
                                             CompileError::Type {
                                                 msg: format!(
@@ -3670,7 +3685,14 @@ impl<'a> Lowerer<'a> {
                                     pos += 1;
                                 }
                                 crate::types::ffi::FfiParam::VariadicSignal => {
-                                    for (i, arg) in call_args[pos..].iter().enumerate() {
+                                    // The variadic's explicit signal span stops
+                                    // before the trailing non-variadic params
+                                    // (each consumes one trailing call arg —
+                                    // mixer's trailing `Record` config).
+                                    let trailing = variadic_idx.map(|i| sig.params.len() - i - 1)
+                                    .unwrap_or(0);
+                                    let end = call_args.len().saturating_sub(trailing);
+                                    for (i, arg) in call_args[pos..end].iter().enumerate() {
                                         // The i-th Wire in the variadic span binds the
                                         // (signal_index + i)-th wiring register.
                                         let src = if matches!(arg, Expr::Wire(_)) {
@@ -3695,8 +3717,16 @@ impl<'a> Lowerer<'a> {
                                         };
                                         signal_srcs.push(src);
                                     }
-                                    signal_index += call_args.len() - pos;
-                                    pos = call_args.len();
+                                    // Any remaining wiring registers are the
+                                    // combinator-fed signal channels (the
+                                    // graph-reconstruct `(_, _) :> mixer` style
+                                    // feeds the channels via `Merge`, not as
+                                    // explicit call args).
+                                    while signal_index < args.len() {
+                                        signal_srcs.push(args[signal_index]);
+                                        signal_index += 1;
+                                    }
+                                    pos = end;
                                 }
                                 crate::types::ffi::FfiParam::Scalar => {
                                     if pos >= call_args.len() {
@@ -3752,7 +3782,10 @@ impl<'a> Lowerer<'a> {
                                     // Flatten the record literal's schema fields
                                     // into `param_values` in schema order (the
                                     // factory reads its config from the flat
-                                    // list), mirroring the legacy record arm.
+                                    // list), mirroring the legacy record arm. A
+                                    // `BandList` field (`bands: List EqBand`)
+                                    // flattens each list element (a band record)
+                                    // in the band schema's field order.
                                     if let Expr::Record(fields, field_span) = &call_args[pos] {
                                         let schema = crate::types::ffi::ffi_record_schema(self.env, rec_ty)
                                         .ok_or_else(|| CompileError::Type {
@@ -3767,12 +3800,89 @@ impl<'a> Lowerer<'a> {
                                                 field_values.insert(field_name.as_str(), val);
                                             }
                                         }
-                                        for (fname, _fscalar, default) in &schema.fields {
-                                            let val = field_values
-                                                .get(fname.as_str())
-                                                .copied()
-                                                .unwrap_or(default.unwrap_or(0.0));
-                                            param_values.push(val);
+                                        for (fname, fscalar, default) in &schema.fields {
+                                            match fscalar {
+                                                crate::types::ffi::FfiScalar::Float
+                                                | crate::types::ffi::FfiScalar::Int => {
+                                                    let val = field_values
+                                                        .get(fname.as_str())
+                                                        .copied()
+                                                        .unwrap_or(default.unwrap_or(0.0));
+                                                    param_values.push(val);
+                                                }
+                                                crate::types::ffi::FfiScalar::BandList(
+                                                    band_ty,
+                                                ) => {
+                                                    // The field's value is a list
+                                                    // literal of band records.
+                                                    let field_expr = fields
+                                                        .iter()
+                                                        .find(|(n, _)| n == fname)
+                                                        .map(|(_, e)| e)
+                                                        .cloned();
+                                                    if let Some(
+                                                        Expr::ListLit(elems, _)
+                                                    ) = field_expr
+                                                    {
+                                                        let band_schema = crate::types::ffi::ffi_record_schema(self.env, band_ty)
+                                                        .ok_or_else(|| CompileError::Type {
+                                                            msg: format!(
+                                                                "unknown band record type `{band_ty}` for foreign `{name}`"
+                                                            ),
+                                                            span: *field_span,
+                                                        })?;
+                                                        for elem in elems {
+                                                            let Expr::Record(
+                                                                band_fields,
+                                                                _,
+                                                            ) = elem
+                                                            else {
+                                                                return Err(CompileError::Type {
+                                                                    msg: format!(
+                                                                        "band element of `{name}` must be a record literal"
+                                                                    ),
+                                                                    span: elem.span(),
+                                                                });
+                                                            };
+                                                            let mut band_values: HashMap<
+                                                                String,
+                                                                f64,
+                                                            > = HashMap::new();
+                                                            for (bf, be) in band_fields {
+                                                                if let Some(val) =
+                                                                    self.caf_const(&be)
+                                                                {
+                                                                    band_values.insert(
+                                                                        bf.clone(),
+                                                                        val,
+                                                                    );
+                                                                }
+                                                            }
+                                                            for (bfname, bfscalar, bdefault) in
+                                                                &band_schema.fields
+                                                            {
+                                                                match bfscalar {
+                                                                    crate::types::ffi::FfiScalar::Float
+                                                                    | crate::types::ffi::FfiScalar::Int => {
+                                                                        param_values.push(
+                                                                            band_values
+                                                                                .get(bfname.as_str())
+                                                                                .copied()
+                                                                                .unwrap_or(
+                                                                                    bdefault
+                                                                                        .unwrap_or(
+                                                                                            0.0,
+                                                                                        ),
+                                                                                ),
+                                                                        );
+                                                                    }
+                                                                    _ => {}
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                         for (field_name, field_expr) in fields {
                                             if let Some(val) = self.caf_const(field_expr) {

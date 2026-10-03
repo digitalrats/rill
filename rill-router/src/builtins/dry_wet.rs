@@ -1,5 +1,13 @@
+//! Dry/wet blend DSL builtin: state + `MultichannelBlockBuiltin` wrapper.
+//!
+//! Moved from `rill-lang/src/builtins/dry_wet.rs` (SP-3b Task 7) — the
+//! DSL-facing crossfade the rill-lang foreign decl `dry_wet : FixedBuffer f32
+//! -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer
+//! f32)` lowers into.
+
 use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
+use rill_lang::builtin::MultichannelBlockBuiltin;
 
 /// Configuration for dry/wet signal blend.
 pub struct DryWetConfig {
@@ -50,6 +58,44 @@ impl DryWetState {
             outputs[1][sample] = dry * dry_gain + wet * wet_gain;
         }
         Ok(())
+    }
+}
+
+/// The DSL-facing dry/wet: wraps [`DryWetState`] as a
+/// [`MultichannelBlockBuiltin`].
+pub struct DryWetBuiltin<T: Transcendental> {
+    state: DryWetState,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T: Transcendental> DryWetBuiltin<T> {
+    pub fn new(mix: f64) -> Self {
+        Self {
+            state: DryWetState::new(DryWetConfig { mix }),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T: Transcendental> rill_core::traits::MultichannelAlgorithm<T> for DryWetBuiltin<T> {
+    fn num_inputs(&self) -> usize {
+        self.state.num_inputs()
+    }
+    fn num_outputs(&self) -> usize {
+        self.state.num_outputs()
+    }
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        self.state.process::<T>(inputs, outputs)
+    }
+    fn reset(&mut self) {}
+}
+
+impl<T: Transcendental> MultichannelBlockBuiltin<T> for DryWetBuiltin<T> {
+    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+        if index == 0 {
+            let mix = value.as_f32().unwrap_or(0.5) as f64;
+            self.state = DryWetState::new(DryWetConfig { mix });
+        }
     }
 }
 

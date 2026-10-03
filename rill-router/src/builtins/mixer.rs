@@ -1,6 +1,13 @@
+//! Multi-channel mixer DSL builtin: state + `MultichannelBlockBuiltin` wrapper.
+//!
+//! Moved from `rill-lang/src/builtins/mixer.rs` (SP-3b Task 7) — the DSL-facing
+//! mixer the rill-lang foreign decl `mixer : List (FixedBuffer f32) ->
+//! MixerConfig -> Pair (FixedBuffer f32) (FixedBuffer f32)` lowers into.
+
 use rill_core::buffer::FixedBuffer;
 use rill_core::math::Transcendental;
 use rill_core::traits::ProcessResult;
+use rill_lang::builtin::MultichannelBlockBuiltin;
 
 /// Per-channel configuration: sends list is `(bus_index, level, pre_fader)`.
 #[derive(Debug, Clone)]
@@ -151,6 +158,38 @@ impl<T: Transcendental, const BUF_SIZE: usize> MixerState<T, BUF_SIZE> {
         Ok(())
     }
 }
+
+/// The DSL-facing mixer: wraps [`MixerState`] as a [`MultichannelBlockBuiltin`].
+pub struct MixerAlgorithmWrapper<T: Transcendental> {
+    state: MixerState<T, 512>,
+    cfg: MixerConfig,
+}
+
+impl<T: Transcendental> MixerAlgorithmWrapper<T> {
+    pub fn new(config: MixerConfig) -> Self {
+        Self {
+            state: MixerState::<T, 512>::new(config.clone()),
+            cfg: config,
+        }
+    }
+}
+
+impl<T: Transcendental> rill_core::traits::MultichannelAlgorithm<T> for MixerAlgorithmWrapper<T> {
+    fn num_inputs(&self) -> usize {
+        self.state.num_inputs()
+    }
+    fn num_outputs(&self) -> usize {
+        self.state.num_outputs()
+    }
+    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
+        self.state.process(inputs, outputs)
+    }
+    fn reset(&mut self) {
+        self.state = MixerState::<T, 512>::new(self.cfg.clone());
+    }
+}
+
+impl<T: Transcendental> MultichannelBlockBuiltin<T> for MixerAlgorithmWrapper<T> {}
 
 #[cfg(test)]
 mod tests {

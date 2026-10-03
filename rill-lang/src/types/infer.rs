@@ -3279,11 +3279,49 @@ fn infer_apply_impl(
     // remaining args.
     if let Some(fsig) = ctx.env.foreign_sigs.get(name).cloned() {
         if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
-            let min_args = sig
+            let variadic_idx = sig
                 .params
                 .iter()
-                .filter(|p| !matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
-                .count();
+                .position(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal));
+            // Required params = non-variadic params that must appear as call
+            // args: Signal slots (positional wires) + scalars/resources +
+            // non-all-default records. An all-default record is optional
+            // (mirrors legacy `BuiltinSig::min_args`). A call may omit a
+            // TRAILING run of required Signal slots — those are fed by the
+            // combinator (the graph-reconstruct `(_, _) :> mixer` style emits
+            // no signal call args) — but omitting a scalar/record is an arity
+            // error.
+            let required_params: Vec<crate::types::ffi::FfiParam> = sig
+                .params
+                .iter()
+                .filter(|p| match p {
+                    crate::types::ffi::FfiParam::VariadicSignal => false,
+                    crate::types::ffi::FfiParam::Record(rec_ty) => {
+                        let schema = crate::types::ffi::ffi_record_schema(&ctx.env, rec_ty);
+                        !schema.is_some_and(|s| s.fields.iter().all(|(_, _, d)| d.is_some()))
+                    }
+                    _ => true,
+                })
+                .cloned()
+                .collect();
+            let required = required_params.len();
+            if args.len() < required {
+                let deficit = required - args.len();
+                let missing_are_signals = required_params
+                    .iter()
+                    .rev()
+                    .take(deficit)
+                    .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal));
+                if !missing_are_signals {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "foreign `{name}` expects at least {required} arg(s), got {}",
+                            args.len()
+                        ),
+                        span,
+                    });
+                }
+            }
             let max_args = if sig
                 .params
                 .iter()
@@ -3291,17 +3329,8 @@ fn infer_apply_impl(
             {
                 None
             } else {
-                Some(min_args)
+                Some(sig.params.len())
             };
-            if args.len() < min_args {
-                return Err(CompileError::Type {
-                    msg: format!(
-                        "foreign `{name}` expects at least {min_args} arg(s), got {}",
-                        args.len()
-                    ),
-                    span,
-                });
-            }
             if let Some(max) = max_args {
                 if args.len() > max {
                     return Err(CompileError::Type {
@@ -3318,6 +3347,16 @@ fn infer_apply_impl(
             for p in &sig.params {
                 match p {
                     crate::types::ffi::FfiParam::Signal => {
+                        if pos >= args.len() {
+                            // Combinator-fed signal: no explicit wire call arg
+                            // (the graph-reconstruct `(_, _) :> dry_wet` style
+                            // feeds the channels via the combinator, not the
+                            // Apply). The channel contributes to the arity; the
+                            // remaining params consume no call args.
+                            signal_ins += 1;
+                            pos += 1;
+                            continue;
+                        }
                         // A foreign signal slot holds a signal-channel expression
                         // (a wire or a 0-in generator like `sine 440.0`) — a
                         // VALUE-rate channel (a string, a record, a lambda) is a
@@ -3337,8 +3376,12 @@ fn infer_apply_impl(
                         pos += 1;
                     }
                     crate::types::ffi::FfiParam::VariadicSignal => {
-                        // All remaining args after the fixed params are signal wires.
-                        for arg in &args[pos..] {
+                        // The variadic's explicit signal span stops before the
+                        // trailing non-variadic params (each consumes one
+                        // trailing call arg — mixer's trailing `Record` config).
+                        let trailing = variadic_idx.map(|i| sig.params.len() - i - 1).unwrap_or(0);
+                        let end = args.len().saturating_sub(trailing);
+                        for arg in &args[pos..end] {
                             let ty = infer_expr(ctx, arg)?;
                             if ty.arity_out() == 0 {
                                 return Err(CompileError::Type {
@@ -3350,7 +3393,7 @@ fn infer_apply_impl(
                             }
                             signal_ins += ty.arity_in();
                         }
-                        pos = args.len();
+                        pos = end;
                     }
                     crate::types::ffi::FfiParam::Scalar => {
                         if pos >= args.len() {

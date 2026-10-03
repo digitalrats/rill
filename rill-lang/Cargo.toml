@@ -18,8 +18,7 @@ thiserror = "1.0"
 serde = { workspace = true, optional = true, features = ["derive"] }
 
 [features]
-default = ["router"]
-router = []
+default = []
 dsp = ["dep:rill-digital-effects", "dep:rill-core-dsp"]
 serde = ["dep:serde"]
 debug = []

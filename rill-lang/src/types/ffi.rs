@@ -41,21 +41,53 @@ pub struct FfiSig {
 
 /// A record schema (field name, scalar type, default), mirroring the legacy
 /// `RecordSchema`. Filled from a `data` declaration's fields; the catalog's
-/// `data` syntax carries no defaults, so `default` is `None` for catalog types.
+/// `data` syntax carries no defaults, so `default` is sourced from
+/// [`foreign_record_defaults`] (the legacy `RecordField::default` values).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FfiRecordSchema {
-    /// Fields in declaration order. A non-scalar field (e.g. `bands: List
-    /// EqBand`) is omitted — a list-typed field flattens to zero params in v1.
+    /// Fields in declaration order. A list-of-record field (`bands: List
+    /// EqBand`) is represented as [`FfiScalar::BandList`] carrying the band
+    /// record type name — it flattens to one band-record's fields per element.
     pub fields: Vec<(String, FfiScalar, Option<f64>)>,
 }
 
 /// The scalar element type of a record field.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FfiScalar {
     /// A `Float`-typed field.
     Float,
     /// An `Int`-typed field.
     Int,
+    /// A `List`-typed field of band records (`bands: List EqBand`): a sequence
+    /// of band records, each flattened in schema order. Holds the band record
+    /// type name.
+    BandList(String),
+}
+
+/// The legacy `RecordField::default` values for the migrated record configs
+/// (`dry_wet`/`mixer`/`eq`), verified against `rill-lang/src/register.rs`'s
+/// `RecordSchema::new` calls. The catalog `data` syntax carries no defaults, so
+/// the FFI schema sources them from here — an omitted field keeps its legacy
+/// default instead of silently becoming 0.0.
+pub(crate) fn foreign_record_defaults(type_name: &str, field_name: &str) -> Option<f64> {
+    const TABLE: &[(&str, &[(&str, f64)])] = &[
+        ("DryWetConfig", &[("mix", 0.5)]),
+        ("MixerConfig", &[("buses", 0.0), ("master_vol", 1.0)]),
+        (
+            "EqBand",
+            &[
+                ("freq", 1000.0),
+                ("q", 1.0),
+                ("gain_db", 0.0),
+                ("band_type", 0.0),
+            ],
+        ),
+    ];
+    TABLE
+        .iter()
+        .find(|(t, _)| *t == type_name)
+        .and_then(|(_, fields)| fields.iter().find(|(f, _)| *f == field_name))
+        .map(|(_, v)| *v)
 }
 
 /// The catalog-backed scalar-param display names, mirroring the legacy
@@ -114,9 +146,11 @@ pub fn foreign_param_names(name: &str) -> Vec<String> {
 
 /// Read a record type's scalar fields from `TypeEnv::data_types`, converting
 /// `ValueTy::Float` → [`FfiScalar::Float`] and `ValueTy::Int` →
-/// [`FfiScalar::Int`]. A non-scalar field (a nested record, a `List` of bands)
-/// is skipped — it flattens to zero params in v1. Returns `None` when the type
-/// is not a declared record.
+/// [`FfiScalar::Int`]. A `List`-typed field of band records (`bands: List
+/// EqBand`) becomes [`FfiScalar::BandList`] carrying the band record type
+/// name. Defaults come from [`foreign_record_defaults`] (the legacy
+/// `RecordField::default` values). Returns `None` when the type is not a
+/// declared record.
 pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSchema> {
     let fields = match env.data_types.get(type_name)? {
         DataInfo::Record(fields) => fields,
@@ -124,10 +158,23 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
     };
     let mut out = Vec::new();
     for (name, vty) in fields {
+        let default = foreign_record_defaults(type_name, name.as_str());
         match vty {
-            ValueTy::Float => out.push((name.clone(), FfiScalar::Float, None)),
-            ValueTy::Int => out.push((name.clone(), FfiScalar::Int, None)),
-            _ => {} // non-scalar field (e.g. `bands: List EqBand`) — no params.
+            ValueTy::Float => out.push((name.clone(), FfiScalar::Float, default)),
+            ValueTy::Int => out.push((name.clone(), FfiScalar::Int, default)),
+            // `bands: List EqBand` — a sequence of band records, each flattened
+            // in the band schema's field order at lowering.
+            ValueTy::App(head, args)
+                if head == "List"
+                    && args.len() == 1
+                    && matches!(&args[0], ValueTy::Data(_band_ty, _)) =>
+            {
+                let ValueTy::Data(band_ty, _) = &args[0] else {
+                    unreachable!()
+                };
+                out.push((name.clone(), FfiScalar::BandList(band_ty.clone()), default));
+            }
+            _ => {} // other non-scalar fields contribute no params.
         }
     }
     Some(FfiRecordSchema { fields: out })
@@ -160,17 +207,22 @@ pub fn ffi_sig_from_typeexpr(name: &str, te: &TypeExpr) -> Option<FfiSig> {
                 ret = r;
             }
             other => {
-                // A VariadicSignal that is not the LAST param is ambiguous:
-                // lowering folds every remaining call arg (including a trailing
-                // scalar) as a signal while inference counts a different arity.
-                // Reject the whole descriptor so the name does not resolve as a
-                // foreign builtin.
-                if params
+                // A VariadicSignal that is not the LAST param is ambiguous —
+                // lowering would fold the trailing call args (a trailing scalar)
+                // as signals while inference counts a different arity. EXCEPT a
+                // trailing RECORD param: the record is the config scalar and the
+                // variadic's signal span stops before it (mixer's `List
+                // (FixedBuffer f32) -> MixerConfig`). `[Signal, VariadicSignal,
+                // Scalar]` stays invalid.
+                if let Some(i) = params
                     .iter()
                     .rposition(|p| matches!(p, FfiParam::VariadicSignal))
-                    .is_some_and(|i| i != params.len() - 1)
                 {
-                    return None;
+                    let trailing = &params[i + 1..];
+                    let only_records = trailing.iter().all(|p| matches!(p, FfiParam::Record(_)));
+                    if i != params.len() - 1 && !only_records {
+                        return None;
+                    }
                 }
                 return Some(FfiSig {
                     param_names: param_names_for(name, &params),

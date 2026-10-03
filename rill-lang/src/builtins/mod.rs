@@ -1,14 +1,8 @@
 //! Built-in signal processing algorithms for the rill-lang DSL.
 //!
-//! These are standalone RT-safe structs that implement multi-channel
-//! signal processing — mixer, EQ, and dry/wet blend.
-
-/// Dry/wet signal blend (crossfade between two signals).
-pub mod dry_wet;
-/// Biquad filter cascade (parametric EQ) with RBJ cookbook coefficients.
-pub mod eq;
-/// Multi-channel mixer with per-channel pan, volume, muting, and aux sends.
-pub mod mixer;
+//! These are standalone RT-safe structs that implement signal processing for
+//! the rill-lang catalog's FFI factories. The mixer/eq/dry-wet builtins moved
+//! to `rill-router` (SP-3b Task 7); this module holds the DSP-crate wrappers.
 
 #[cfg(feature = "dsp")]
 /// Builtin wrappers for the rill-core-dsp filters (biquad/onepole/moog).
