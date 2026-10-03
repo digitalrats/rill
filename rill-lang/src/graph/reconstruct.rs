@@ -14,6 +14,8 @@ use crate::ast::{Def, Expr, Program};
 use crate::builtin::{Registry, SignatureSource};
 use crate::error::{CompileError, Span};
 use crate::graph::spec::{GraphEdgeKind, GraphSpec};
+use crate::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+use crate::types::ty::TypeEnv;
 
 /// Compile a [`GraphSpec`] into a runnable [`crate::program_engine::ProgramEngine`].
 pub fn compile_spec<T: Transcendental + 'static, const BUF: usize>(
@@ -43,8 +45,12 @@ pub fn reconstruct<T: Transcendental + 'static>(
         signal_outs: usize,
     }
 
-    let mut metas = Vec::with_capacity(n);
-    for node in &spec.nodes {
+    // The FFI catalog is the primary signature source; a fresh `TypeEnv` with
+    // the builtin preludes (the same env inference builds) carries
+    // `foreign_sigs`. Names not yet migrated (mixer/eq/dry_wet, tape heads)
+    // fall back to the legacy `registry.builtin_sig`.
+    let ffi_env = TypeEnv::with_builtins();
+    let legacy_meta = |node: &crate::graph::spec::GraphSpecNode| -> Result<NodeMeta, CompileError> {
         let sig = registry.builtin_sig(&node.type_name).ok_or_else(|| {
             CompileError::Unsupported(format!("unknown builtin '{}'", node.type_name))
         })?;
@@ -57,14 +63,46 @@ pub fn reconstruct<T: Transcendental + 'static>(
             .params
             .iter()
             .any(|p| matches!(p, crate::builtin::ParamType::Resource));
-        metas.push(NodeMeta {
+        Ok(NodeMeta {
             builtin_name: node.type_name.clone(),
             param_values,
             param_names,
             has_resource,
             signal_ins: sig.signal_ins(),
             signal_outs: sig.signal_outs,
-        });
+        })
+    };
+
+    let mut metas = Vec::with_capacity(n);
+    for node in &spec.nodes {
+        let meta = match ffi_env.foreign_sigs.get(node.type_name.as_str()) {
+            Some(te) => match ffi_sig_from_typeexpr(&node.type_name, te) {
+                Some(sig) => {
+                    let param_names = sig.param_names.clone();
+                    let param_values: Vec<f64> = param_names
+                        .iter()
+                        .map(|name| node.params.get(name).copied().unwrap_or(0.0))
+                        .collect();
+                    let has_resource = sig.params.iter().any(|p| matches!(p, FfiParam::Resource));
+                    let signal_ins = sig
+                        .params
+                        .iter()
+                        .filter(|p| matches!(p, FfiParam::Signal))
+                        .count();
+                    NodeMeta {
+                        builtin_name: node.type_name.clone(),
+                        param_values,
+                        param_names,
+                        has_resource,
+                        signal_ins,
+                        signal_outs: sig.signal_outs,
+                    }
+                }
+                None => legacy_meta(node)?,
+            },
+            None => legacy_meta(node)?,
+        };
+        metas.push(meta);
     }
 
     // --- Topological sort over signal edges (feedback edges excluded) --------

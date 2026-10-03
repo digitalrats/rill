@@ -2364,7 +2364,7 @@ fn infer_ref_inner(ctx: &mut Ctx<'_>, name: &str, span: Span) -> Result<ArrowTy,
     // Foreign (FFI) declaration: type through the language-side signature. A bare
     // ref is valid when every param is a signal channel (no scalar params yet).
     if let Some(fsig) = ctx.env.foreign_sigs.get(name).cloned() {
-        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&fsig) {
+        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
             if sig
                 .params
                 .iter()
@@ -3278,7 +3278,7 @@ fn infer_apply_impl(
     // at args[0], the constant at args[1]); a variadic signal tail consumes all
     // remaining args.
     if let Some(fsig) = ctx.env.foreign_sigs.get(name).cloned() {
-        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&fsig) {
+        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
             let min_args = sig
                 .params
                 .iter()
@@ -3367,12 +3367,54 @@ fn infer_apply_impl(
                         }
                         pos += 1;
                     }
-                    crate::types::ffi::FfiParam::Record(_) => {
-                        // SP-3b — not yet resolved at inference.
-                        return Err(CompileError::Type {
-                            msg: format!("foreign `{name}` has a record parameter (SP-3b)"),
-                            span,
-                        });
+                    crate::types::ffi::FfiParam::Record(rec_ty) => {
+                        if pos >= args.len() {
+                            break;
+                        }
+                        // A record param takes a record literal of the named
+                        // data type; lowering flattens its schema fields into
+                        // the folded param list.
+                        match &args[pos] {
+                            Expr::Record(..) => {
+                                if !ctx.env.data_types.contains_key(rec_ty.as_str()) {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "unknown record type `{rec_ty}` for foreign `{name}`"
+                                        ),
+                                        span: args[pos].span(),
+                                    });
+                                }
+                            }
+                            other => {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "argument {pos} of `{name}` must be a record literal"
+                                    ),
+                                    span: other.span(),
+                                });
+                            }
+                        }
+                        pos += 1;
+                    }
+                    crate::types::ffi::FfiParam::Resource => {
+                        if pos >= args.len() {
+                            break;
+                        }
+                        // A resource param is a symbolic `Ref` to a declared
+                        // tape name; lowering records it and the build path
+                        // resolves it in the resource registry.
+                        match &args[pos] {
+                            Expr::Ref(..) => {}
+                            other => {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "resource argument {pos} of `{name}` must be a symbolic reference"
+                                    ),
+                                    span: other.span(),
+                                });
+                            }
+                        }
+                        pos += 1;
                     }
                 }
             }
@@ -4013,6 +4055,19 @@ fn expr_has_variadic_signal(ctx: &Ctx<'_>, e: &Expr) -> bool {
         Expr::Ref(name, _) => name,
         _ => return false,
     };
+    // FFI catalog first: a foreign sig with a VariadicSignal tail consumes
+    // every remaining channel in a merge/split.
+    if let Some(fsig) = ctx.env.foreign_sigs.get(name.as_str()) {
+        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig) {
+            if sig
+                .params
+                .iter()
+                .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
+            {
+                return true;
+            }
+        }
+    }
     ctx.sigs
         .builtin_sig(name)
         .map(|s| s.has_variadic_signal())

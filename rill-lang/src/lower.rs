@@ -3625,10 +3625,11 @@ impl<'a> Lowerer<'a> {
                 // single positional cursor over call_args mirrors inference
                 // (`gain _ 0.5` → the Wire at [0], the constant at [1]).
                 if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
-                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&fsig) {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
                         let mut param_values = Vec::new();
                         let mut param_bindings = Vec::new();
                         let mut signal_srcs = Vec::new();
+                        let mut resource: Option<String> = None;
                         let mut pos = 0usize;
                         let mut signal_index = 0usize;
                         for p in &sig.params {
@@ -3744,11 +3745,70 @@ impl<'a> Lowerer<'a> {
                                     param_values.push(v);
                                     pos += 1;
                                 }
-                                crate::types::ffi::FfiParam::Record(_) => {
-                                    return Err(CompileError::Type {
-                                        msg: format!("foreign `{name}` has a record parameter (SP-3b)"),
-                                        span: *span,
-                                    });
+                                crate::types::ffi::FfiParam::Record(rec_ty) => {
+                                    if pos >= call_args.len() {
+                                        break;
+                                    }
+                                    // Flatten the record literal's schema fields
+                                    // into `param_values` in schema order (the
+                                    // factory reads its config from the flat
+                                    // list), mirroring the legacy record arm.
+                                    if let Expr::Record(fields, field_span) = &call_args[pos] {
+                                        let schema = crate::types::ffi::ffi_record_schema(self.env, rec_ty)
+                                        .ok_or_else(|| CompileError::Type {
+                                            msg: format!(
+                                                "unknown record type `{rec_ty}` for foreign `{name}`"
+                                            ),
+                                            span: call_args[pos].span(),
+                                        })?;
+                                        let mut field_values: HashMap<&str, f64> = HashMap::new();
+                                        for (field_name, field_expr) in fields {
+                                            if let Some(val) = self.caf_const(field_expr) {
+                                                field_values.insert(field_name.as_str(), val);
+                                            }
+                                        }
+                                        for (fname, _fscalar, default) in &schema.fields {
+                                            let val = field_values
+                                                .get(fname.as_str())
+                                                .copied()
+                                                .unwrap_or(default.unwrap_or(0.0));
+                                            param_values.push(val);
+                                        }
+                                        for (field_name, field_expr) in fields {
+                                            if let Some(val) = self.caf_const(field_expr) {
+                                                self.intern_param(
+                                                    field_name.clone(),
+                                                    val,
+                                                    f64::NEG_INFINITY,
+                                                    f64::INFINITY,
+                                                    *field_span,
+                                                )?;
+                                            }
+                                        }
+                                    }
+                                    pos += 1;
+                                }
+                                crate::types::ffi::FfiParam::Resource => {
+                                    if pos >= call_args.len() {
+                                        break;
+                                    }
+                                    // A symbolic `Ref` to the shared tape; the
+                                    // build path resolves the name in the
+                                    // resource registry.
+                                    match &call_args[pos] {
+                                        Expr::Ref(res_name, _) => {
+                                            resource = Some(res_name.clone());
+                                        }
+                                        other => {
+                                            return Err(CompileError::Type {
+                                                msg: format!(
+                                                    "resource argument of `{name}` must be a symbolic reference"
+                                                ),
+                                                span: other.span(),
+                                            });
+                                        }
+                                    }
+                                    pos += 1;
                                 }
                             }
                         }
@@ -3756,7 +3816,7 @@ impl<'a> Lowerer<'a> {
                         self.builtins.push(BuiltinInstance {
                             name: name.clone(),
                             params: param_values,
-                            resource: None,
+                            resource,
                             kind: crate::builtin::BuiltinKind::Block,
                             signal_ins: signal_srcs.len(),
                             signal_outs: sig.signal_outs,
@@ -4512,11 +4572,24 @@ impl<'a> Lowerer<'a> {
     /// Whether `rhs` is a built-in that takes variadic signal inputs.
     fn rhs_variadic(&self, rhs: &Expr) -> bool {
         match rhs {
-            Expr::Apply { name, .. } | Expr::Ref(name, _) => self
-                .sigs
-                .builtin_sig(name)
-                .map(|s| s.has_variadic_signal())
-                .unwrap_or(false),
+            Expr::Apply { name, .. } | Expr::Ref(name, _) => {
+                // FFI catalog first: a foreign sig with a VariadicSignal tail.
+                if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()) {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig) {
+                        if sig
+                            .params
+                            .iter()
+                            .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                self.sigs
+                    .builtin_sig(name)
+                    .map(|s| s.has_variadic_signal())
+                    .unwrap_or(false)
+            }
             _ => false,
         }
     }

@@ -110,11 +110,12 @@ fn foreign_sig_describes_signal_and_scalar_params() {
             vec![TypeExpr::TName("Float".into())],
         )),
     );
-    let sig = ffi_sig_from_typeexpr(&te).expect("FFI sig");
+    let sig = ffi_sig_from_typeexpr("biquad", &te).expect("FFI sig");
     assert_eq!(sig.params.len(), 4);
     assert!(matches!(sig.params[0], FfiParam::Signal));
     assert!(matches!(sig.params[1], FfiParam::Scalar));
     assert_eq!(sig.signal_outs, 1);
+    assert_eq!(sig.param_names, vec!["type", "cutoff", "q"]);
 }
 
 #[test]
@@ -135,7 +136,7 @@ fn foreign_sig_from_parser_flat_curried_form() {
             _ => None,
         })
         .expect("foreign fn biquad not found");
-    let ffi = ffi_sig_from_typeexpr(sig).expect("FFI sig from parser output");
+    let ffi = ffi_sig_from_typeexpr("biquad", sig).expect("FFI sig from parser output");
     assert_eq!(ffi.params.len(), 4);
     assert!(matches!(ffi.params[0], FfiParam::Signal));
     assert!(matches!(ffi.params[1], FfiParam::Scalar));
@@ -266,9 +267,11 @@ fn foreign_fn_multi_signal_wires_distinct_inputs() {
     let calls: Vec<_> = ir
         .instrs
         .iter()
-        .filter_map(|i| match i {
-            rill_lang::ir::Instr::CallBlock { instance, .. } if *instance == cross_idx => Some(i),
-            _ => None,
+        .filter(|i| {
+            matches!(
+                i,
+                rill_lang::ir::Instr::CallBlock { instance, .. } if *instance == cross_idx
+            )
         })
         .collect();
     assert_eq!(calls.len(), 1);
@@ -306,7 +309,7 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
             vec![rill_lang::ast::TypeExpr::TName("Float".into())],
         )),
     );
-    assert_eq!(ffi_sig_from_typeexpr(&te), None);
+    assert_eq!(ffi_sig_from_typeexpr("bad", &te), None);
 
     // A terminal VariadicSignal is still accepted (`List (FixedBuffer f32) ->
     // FixedBuffer f32`).
@@ -323,7 +326,7 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
             vec![rill_lang::ast::TypeExpr::TName("Float".into())],
         )),
     );
-    let sig = ffi_sig_from_typeexpr(&ok).expect("terminal variadic is accepted");
+    let sig = ffi_sig_from_typeexpr("sum_all", &ok).expect("terminal variadic is accepted");
     assert!(matches!(sig.params[0], FfiParam::VariadicSignal));
 }
 
@@ -715,4 +718,249 @@ fn builtin_catalog_registers_record_data_types() {
         }
         other => panic!("EqConfig must be a record, got {other:?}"),
     }
+}
+
+#[test]
+fn ffi_sig_param_names_filled_from_catalog_table() {
+    // The name table (mirroring legacy `BuiltinSig::param_names`) supplies
+    // display names for scalar params in declaration order — reconstruct
+    // consumes them to order GraphSpec node params.
+    use rill_lang::ast::TypeExpr;
+    use rill_lang::types::ffi::ffi_sig_from_typeexpr;
+
+    let out = TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]);
+    let f = |n: &str| TypeExpr::TName(n.into());
+    let fb = |n: &str| TypeExpr::TApp(n.into(), vec![TypeExpr::TName("f32".into())]);
+
+    let sig = ffi_sig_from_typeexpr(
+        "sine",
+        &TypeExpr::TFunc(
+            vec![f("Float"), f("Float"), f("Float")],
+            Box::new(out.clone()),
+        ),
+    )
+    .expect("sine FFI sig");
+    assert_eq!(sig.param_names, vec!["freq", "amp", "phase"]);
+
+    let sig = ffi_sig_from_typeexpr(
+        "biquad",
+        &TypeExpr::TFunc(
+            vec![
+                fb("FixedBuffer"),
+                f("Float"),
+                f("Float"),
+                f("Float"),
+                f("Float"),
+            ],
+            Box::new(out.clone()),
+        ),
+    )
+    .expect("biquad FFI sig");
+    assert_eq!(sig.param_names, vec!["type", "cutoff", "q", "gain_db"]);
+
+    let sig = ffi_sig_from_typeexpr(
+        "dry_wet",
+        &TypeExpr::TFunc(
+            vec![fb("FixedBuffer"), fb("FixedBuffer"), f("DryWetConfig")],
+            Box::new(out),
+        ),
+    )
+    .expect("dry_wet FFI sig");
+    // dry_wet's record config has no scalar display names (legacy param_names
+    // was empty) — the record flattens through its schema at lowering.
+    assert!(sig.param_names.is_empty());
+}
+
+#[test]
+fn ffi_sig_param_names_fallback_to_index_for_unknown() {
+    // A builtin not in the name table gets index-based names (param0, param1…)
+    // so graph reconstruction still orders its scalar params.
+    use rill_lang::ast::TypeExpr;
+    use rill_lang::types::ffi::ffi_sig_from_typeexpr;
+
+    let te = TypeExpr::TFunc(
+        vec![
+            TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]),
+            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Float".into()),
+        ],
+        Box::new(TypeExpr::TApp(
+            "FixedBuffer".into(),
+            vec![TypeExpr::TName("f32".into())],
+        )),
+    );
+    let sig = ffi_sig_from_typeexpr("not_a_catalog_builtin", &te).unwrap();
+    assert_eq!(sig.param_names, vec!["param0", "param1"]);
+}
+
+#[test]
+fn tape_param_maps_to_resource() {
+    // `Tape a` — a shared-buffer handle — is a Resource param (the tape arg is
+    // a symbolic `Ref`, wired to the shared buffer at build, not a signal).
+    use rill_lang::ast::TypeExpr;
+    use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
+
+    let te = TypeExpr::TFunc(
+        vec![
+            TypeExpr::TApp("Tape".into(), vec![TypeExpr::TName("f32".into())]),
+            TypeExpr::TName("Float".into()),
+        ],
+        Box::new(TypeExpr::TApp(
+            "FixedBuffer".into(),
+            vec![TypeExpr::TName("f32".into())],
+        )),
+    );
+    let sig = ffi_sig_from_typeexpr("read_head", &te).unwrap();
+    assert!(matches!(sig.params[0], FfiParam::Resource));
+    assert!(matches!(sig.params[1], FfiParam::Scalar));
+}
+
+#[test]
+fn ffi_record_schema_reads_data_types() {
+    // `ffi_record_schema` mirrors the legacy RecordSchema from the catalog's
+    // `data` declarations: field name + scalar type in declaration order.
+    use rill_lang::types::ffi::{ffi_record_schema, FfiScalar};
+
+    let env = TypeEnv::with_builtins();
+    let schema = ffi_record_schema(&env, "MixerConfig").expect("MixerConfig schema");
+    assert_eq!(
+        schema.fields,
+        vec![
+            ("buses".to_string(), FfiScalar::Int, None),
+            ("master_vol".to_string(), FfiScalar::Float, None),
+        ]
+    );
+    assert!(ffi_record_schema(&env, "NoSuchType").is_none());
+}
+
+#[test]
+fn record_param_infer_accepts_record_literal() {
+    // The FFI infer arm validates a Record param's arg is a record literal of
+    // the named data type (previously an unconditional SP-3b error).
+    let src = r#"
+        foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+        main = dry_wet _ _ { mix: 0.5 };
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 2);
+    assert_eq!(typed.process_ty.arity_out(), 2);
+}
+
+#[test]
+fn record_param_flattens_schema_fields() {
+    // `dry_wet` takes a DryWetConfig record `{ mix: 0.5 }` → one f64 param.
+    let src = r#"
+        foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+        main = dry_wet _ _ { mix: 0.5 };
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(
+        &typed,
+        &rill_lang::builtin::NoSigs,
+        44100.0,
+        &typed.cafs,
+    )
+    .unwrap();
+    let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
+    assert_eq!(bi.params, vec![0.5]);
+}
+
+#[test]
+fn record_param_missing_fields_use_zero_defaults() {
+    // A partial record fills the omitted schema field with its default (0.0 in
+    // the FFI schema — the catalog `data` declaration carries no defaults).
+    let src = r#"
+        data TestCfg = { a: Float, b: Float };
+        foreign fn cfg : TestCfg -> FixedBuffer f32;
+        main = cfg { a: 1.5 };
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(
+        &typed,
+        &rill_lang::builtin::NoSigs,
+        44100.0,
+        &typed.cafs,
+    )
+    .unwrap();
+    let bi = ir.builtins.iter().find(|b| b.name == "cfg").unwrap();
+    assert_eq!(bi.params, vec![1.5, 0.0]);
+}
+
+#[test]
+fn record_param_rejects_non_record_arg() {
+    let src = r#"
+        foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
+        main = dry_wet _ _ 0.5;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    match rill_lang::types::infer::infer_program(&prog) {
+        Err(e) => assert!(
+            e.to_string().contains("record literal"),
+            "expected a record-literal error, got: {e}"
+        ),
+        Ok(_) => panic!("expected a type error for a non-record record param"),
+    }
+}
+
+#[test]
+fn resource_param_wires_tape_ref() {
+    // A `Tape f32` param is a Resource: lowering sets the builtin's resource to
+    // the symbolic `Ref` name (the build path resolves it in the registry).
+    let src = r#"
+        foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
+        main = read_head tape_0 0.1;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(
+        &typed,
+        &rill_lang::builtin::NoSigs,
+        44100.0,
+        &typed.cafs,
+    )
+    .unwrap();
+    let bi = ir.builtins.iter().find(|b| b.name == "read_head").unwrap();
+    assert_eq!(bi.resource.as_deref(), Some("tape_0"));
+    assert_eq!(bi.params, vec![0.1]);
+}
+
+#[test]
+fn resource_param_rejects_non_ref_arg() {
+    let src = r#"
+        foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
+        main = read_head 0.5 0.1;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    match rill_lang::types::infer::infer_program(&prog) {
+        Err(e) => assert!(
+            e.to_string().contains("symbolic reference"),
+            "expected a symbolic-reference error, got: {e}"
+        ),
+        Ok(_) => panic!("expected a type error for a non-Ref resource param"),
+    }
+}
+
+#[test]
+fn foreign_variadic_signal_merge_accepts_channels() {
+    // `expr_has_variadic_signal` must recognize a foreign sig's VariadicSignal:
+    // `_, _ :> sum_all _ _` merges both channels into the variadic input (the
+    // rhs is an Apply, the shape reconstruct emits for a variadic builtin).
+    let src = r#"
+        foreign fn sum_all : List (FixedBuffer f32) -> FixedBuffer f32;
+        main = _ , _ :> sum_all _ _;
+    "#;
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    assert_eq!(typed.process_ty.arity_in(), 2);
+    assert_eq!(typed.process_ty.arity_out(), 1);
 }

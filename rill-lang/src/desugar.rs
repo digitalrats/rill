@@ -118,7 +118,7 @@ fn bind_signal_args(e: &Expr, env: &TypeEnv) -> Expr {
     let Some(te) = env.foreign_sigs.get(name.as_str()) else {
         return e.clone();
     };
-    let Some(sig) = ffi_sig_from_typeexpr(te) else {
+    let Some(sig) = ffi_sig_from_typeexpr(name, te) else {
         return e.clone();
     };
     // The rule: the supplied args are exactly the trailing scalar params (the
