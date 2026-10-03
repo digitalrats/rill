@@ -209,6 +209,25 @@ type ResourceMultichannelBlockFactory<T> = Box<
         + Sync,
 >;
 
+/// How a registered built-in factory builds its runtime instance.
+///
+/// Mirrors the [`Factory`] variants. Runtime variant selection follows the
+/// factory kind rather than the signal arity: a `Block` factory can serve a
+/// multi-channel arity through the interpreter's interleaved path, so a name
+/// must not be forced into the multichannel variant merely because it has
+/// more than one input or output channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinFactoryKind {
+    /// A whole-buffer single-channel factory.
+    Block,
+    /// A whole-buffer multi-channel factory.
+    MultichannelBlock,
+    /// A resource-backed whole-buffer single-channel factory.
+    ResourceBlock,
+    /// A resource-backed whole-buffer multi-channel factory.
+    ResourceMultichannelBlock,
+}
+
 enum Factory<T: Transcendental> {
     Block(BlockFactory<T>),
     MultichannelBlock(MultichannelBlockFactory<T>),
@@ -384,6 +403,16 @@ impl<T: Transcendental> Registry<T> {
     /// Look up an entry by name.
     pub fn get(&self, name: &str) -> Option<&Entry<T>> {
         self.entries.get(name)
+    }
+
+    /// The factory kind registered for `name`, if any.
+    pub fn kind(&self, name: &str) -> Option<BuiltinFactoryKind> {
+        self.entries.get(name).map(|e| match &e.factory {
+            Factory::Block(_) => BuiltinFactoryKind::Block,
+            Factory::MultichannelBlock(_) => BuiltinFactoryKind::MultichannelBlock,
+            Factory::ResourceBlock(_) => BuiltinFactoryKind::ResourceBlock,
+            Factory::ResourceMultichannelBlock(_) => BuiltinFactoryKind::ResourceMultichannelBlock,
+        })
     }
 }
 

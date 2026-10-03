@@ -431,6 +431,52 @@ fn foreign_fn_multichannel_runs_end_to_end() {
 }
 
 #[test]
+fn complex_ops_build_with_block_factory() {
+    // `conj` is a 2→2 builtin registered as a Block factory. `is_multi` must
+    // select the variant by FACTORY KIND, not signal arity — otherwise build
+    // panics with "registry build_multichannel_block failed".
+    use rill_core::builtin::BlockBuiltin;
+    use rill_core::traits::Algorithm;
+    use rill_lang::ffi::ForeignRegistry;
+
+    struct Conj;
+    impl<T: rill_core::math::Transcendental> Algorithm<T> for Conj {
+        fn process(
+            &mut self,
+            input: Option<&[T]>,
+            output: &mut [T],
+        ) -> rill_core::ProcessResult<()> {
+            let x = input.unwrap_or(&[]);
+            output[..x.len()].copy_from_slice(x);
+            for o in output[x.len()..].iter_mut() {
+                *o = T::ZERO;
+            }
+            Ok(())
+        }
+        fn reset(&mut self) {}
+    }
+    impl<T: rill_core::math::Transcendental> BlockBuiltin<T> for Conj {}
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    ffi.register_block("conj", |_p: &[f64], _sr: f32| Box::new(Conj));
+
+    let src = r#"
+        foreign fn conj : FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
+        main = conj _ _;
+    "#;
+    // Must compile and run, not panic at build.
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(
+        &mut prog,
+        &[&[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0]],
+        &mut [&mut out],
+    )
+    .unwrap();
+    assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
+}
+
+#[test]
 fn foreign_fn_not_registered_is_compile_error() {
     use rill_lang::ffi::ForeignRegistry;
 

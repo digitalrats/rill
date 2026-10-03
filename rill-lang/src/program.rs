@@ -3,7 +3,7 @@
 //! `process()` performs no heap allocation after warm-up.
 
 use rill_core::buffer::FixedBuffer;
-use rill_core::builtin::MultichannelBlockBuiltin;
+use rill_core::builtin::{BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
@@ -148,6 +148,13 @@ impl<T: Transcendental, const MAX_DELAY: usize> DelayRing<T, MAX_DELAY> {
 
 /// Build a single runtime built-in instance for `bi`, resolving the factory
 /// from the legacy rill-core `Registry` or the FFI `ForeignRegistry`.
+///
+/// The runtime `BuiltinInst` variant is selected by the registered FACTORY KIND,
+/// not by the signal arity: a `Block` factory (legacy or FFI) builds the
+/// `Block` variant even for a multi-channel arity — the interpreter's
+/// interleaved `Block` path serves those channels. Selecting by arity instead
+/// routed a multi-channel `Block` factory into `build_multichannel_block`,
+/// which has no matching variant and `.expect` panics.
 fn build_builtin<T: Transcendental>(
     bi: &BuiltinInstance,
     registry: &crate::builtin::Registry<T>,
@@ -155,11 +162,81 @@ fn build_builtin<T: Transcendental>(
     resources: &mut Option<&mut rill_core::buffer::ResourceRegistry<T>>,
     sample_rate: f32,
 ) -> Result<BuiltinInst<T>, CompileError> {
-    let is_multi = bi.signal_ins > 1 || bi.signal_outs > 1;
-    if is_multi {
-        let mut b: Box<dyn MultichannelBlockBuiltin<T>> =
-            if let Some(entry) = registry.get(&bi.name) {
-                if let Some(res) = &bi.resource {
+    let legacy_kind = registry.kind(&bi.name);
+    let ffi_kind = foreign.and_then(|f| f.kind(&bi.name));
+    let kind = legacy_kind.or(ffi_kind);
+    // A resource-backed factory resolves its named resource through the
+    // resource branch, as does any built-in carrying a resource binding.
+    let is_resource = legacy_kind.is_some_and(|k| {
+        matches!(
+            k,
+            BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
+        )
+    }) || bi.resource.is_some();
+    match kind {
+        Some(
+            BuiltinFactoryKind::MultichannelBlock | BuiltinFactoryKind::ResourceMultichannelBlock,
+        ) => {
+            let mut b: Box<dyn MultichannelBlockBuiltin<T>> =
+                if let Some(entry) = registry.get(&bi.name) {
+                    if is_resource {
+                        let res = bi.resource.as_deref().ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "built-in '{}' requires a resource name",
+                                bi.name
+                            ))
+                        })?;
+                        let reg = resources.as_deref_mut().ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "built-in '{}' requires a resource registry",
+                                bi.name
+                            ))
+                        })?;
+                        entry
+                            .build_resource_multichannel_block(
+                                bi.signal_ins,
+                                &bi.params,
+                                sample_rate,
+                                reg,
+                                res,
+                            )
+                            .ok_or_else(|| {
+                                CompileError::Unsupported(format!(
+                                    "resource built-in '{}' is not registered as resource-backed",
+                                    bi.name
+                                ))
+                            })?
+                    } else {
+                        entry
+                            .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
+                            .expect("registry build_multichannel_block failed")
+                    }
+                } else if let Some(ffi) = foreign {
+                    ffi.build_multichannel_block(&bi.name, bi.signal_ins, &bi.params, sample_rate)
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "foreign built-in '{}' is not registered",
+                                bi.name
+                            ))
+                        })?
+                } else {
+                    return Err(CompileError::Unsupported(format!(
+                        "unknown built-in '{}'",
+                        bi.name
+                    )));
+                };
+            MultichannelAlgorithm::reset(b.as_mut());
+            Ok(BuiltinInst::MultichannelBlock(b))
+        }
+        Some(BuiltinFactoryKind::Block | BuiltinFactoryKind::ResourceBlock) | None => {
+            let mut b: Box<dyn BlockBuiltin<T>> = if let Some(entry) = registry.get(&bi.name) {
+                if is_resource {
+                    let res = bi.resource.as_deref().ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "built-in '{}' requires a resource name",
+                            bi.name
+                        ))
+                    })?;
                     let reg = resources.as_deref_mut().ok_or_else(|| {
                         CompileError::Unsupported(format!(
                             "built-in '{}' requires a resource registry",
@@ -167,13 +244,7 @@ fn build_builtin<T: Transcendental>(
                         ))
                     })?;
                     entry
-                        .build_resource_multichannel_block(
-                            bi.signal_ins,
-                            &bi.params,
-                            sample_rate,
-                            reg,
-                            res,
-                        )
+                        .build_resource_block(&bi.params, sample_rate, reg, res)
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
                                 "resource built-in '{}' is not registered as resource-backed",
@@ -182,11 +253,11 @@ fn build_builtin<T: Transcendental>(
                         })?
                 } else {
                     entry
-                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
-                        .expect("registry build_multichannel_block failed")
+                        .build_block(&bi.params, sample_rate)
+                        .expect("registry build_block failed for block builtin")
                 }
             } else if let Some(ffi) = foreign {
-                ffi.build_multichannel_block(&bi.name, bi.signal_ins, &bi.params, sample_rate)
+                ffi.build_block(&bi.name, &bi.params, sample_rate)
                     .ok_or_else(|| {
                         CompileError::Unsupported(format!(
                             "foreign built-in '{}' is not registered",
@@ -199,46 +270,9 @@ fn build_builtin<T: Transcendental>(
                     bi.name
                 )));
             };
-        MultichannelAlgorithm::reset(b.as_mut());
-        Ok(BuiltinInst::MultichannelBlock(b))
-    } else {
-        let mut b: Box<dyn BlockBuiltin<T>> = if let Some(entry) = registry.get(&bi.name) {
-            if let Some(res) = &bi.resource {
-                let reg = resources.as_deref_mut().ok_or_else(|| {
-                    CompileError::Unsupported(format!(
-                        "built-in '{}' requires a resource registry",
-                        bi.name
-                    ))
-                })?;
-                entry
-                    .build_resource_block(&bi.params, sample_rate, reg, res)
-                    .ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "resource built-in '{}' is not registered as resource-backed",
-                            bi.name
-                        ))
-                    })?
-            } else {
-                entry
-                    .build_block(&bi.params, sample_rate)
-                    .expect("registry build_block failed for block builtin")
-            }
-        } else if let Some(ffi) = foreign {
-            ffi.build_block(&bi.name, &bi.params, sample_rate)
-                .ok_or_else(|| {
-                    CompileError::Unsupported(format!(
-                        "foreign built-in '{}' is not registered",
-                        bi.name
-                    ))
-                })?
-        } else {
-            return Err(CompileError::Unsupported(format!(
-                "unknown built-in '{}'",
-                bi.name
-            )));
-        };
-        Algorithm::init(b.as_mut(), sample_rate);
-        Ok(BuiltinInst::Block(b))
+            Algorithm::init(b.as_mut(), sample_rate);
+            Ok(BuiltinInst::Block(b))
+        }
     }
 }
 

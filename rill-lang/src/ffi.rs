@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use rill_core::builtin::{BlockBuiltin, MultichannelBlockBuiltin};
+use rill_core::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::math::Transcendental;
 
 type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
@@ -93,5 +93,13 @@ impl<T: Transcendental> ForeignRegistry<T> {
             Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate)),
             Factory::Block(_) => None,
         }
+    }
+
+    /// The factory kind registered for `name`, if any.
+    pub(crate) fn kind(&self, name: &str) -> Option<BuiltinFactoryKind> {
+        self.entries.get(name).map(|f| match f {
+            Factory::Block(_) => BuiltinFactoryKind::Block,
+            Factory::MultichannelBlock(_) => BuiltinFactoryKind::MultichannelBlock,
+        })
     }
 }
