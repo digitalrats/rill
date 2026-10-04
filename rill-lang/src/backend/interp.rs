@@ -1052,6 +1052,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
             exec_value_call_builtin(prog, *op, args, *dst, drops);
         }
+        ValueInstr::ValueLazy { .. } => {
+            unimplemented!("ValueLazy: A6")
+        }
+        ValueInstr::ValueForce { .. } => {
+            unimplemented!("ValueForce: A6")
+        }
     }
 }
 
@@ -1999,6 +2005,12 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             op: *op,
             args: args.iter().map(|a| a + base).collect(),
         },
+        ValueInstr::ValueLazy { .. } => {
+            unimplemented!("ValueLazy: A6")
+        }
+        ValueInstr::ValueForce { .. } => {
+            unimplemented!("ValueForce: A6")
+        }
     }
 }
 

@@ -578,6 +578,22 @@ pub enum ValueInstr {
         /// Argument value registers.
         args: Vec<usize>,
     },
+    /// Create a lazy binding: allocate a `Value::Thunk` + `Value::ThunkCell(Unforced)`.
+    ValueLazy {
+        /// Destination value register.
+        dst: usize,
+        /// Captured environment record register (arena ref).
+        env: usize,
+        /// Index into `Ir::fragments` (the suspended body).
+        fragment: usize,
+    },
+    /// Force a value to WHNF, result into `dst`.
+    ValueForce {
+        /// Destination value register.
+        dst: usize,
+        /// Source value register.
+        src: usize,
+    },
 }
 
 /// Layout for value-track persistent storage.
@@ -761,6 +777,16 @@ mod value_ir_tests {
         let l = ValueLayout::default();
         assert_eq!(l.capacity, 0);
         assert_eq!(l.value_state_slots, 0);
+    }
+
+    #[test]
+    fn lazy_and_force_instructions_exist() {
+        let _ = ValueInstr::ValueLazy {
+            dst: 0,
+            env: 1,
+            fragment: 2,
+        };
+        let _ = ValueInstr::ValueForce { dst: 0, src: 1 };
     }
 }
 
