@@ -12,6 +12,7 @@ use super::ty::{
 use super::unify::{unify_scalar, unify_value};
 use crate::ast::{Def, Expr, MatchArm, Pattern, Program};
 use crate::error::{CompileError, Span};
+use crate::mode::Mode;
 use crate::reduce::pattern_vars;
 
 /// The typed result of inference: the program's definitions plus the resolved
@@ -41,6 +42,9 @@ pub struct TypedProgram {
     /// tape INDEX; a `Ref` absent from the map stays a name-based resource
     /// binding (the graph duplex path's externally-shared registry).
     pub tape_decls: Vec<(String, usize)>,
+    /// The evaluation mode this program was compiled under (the file pragma,
+    /// or the API-supplied mode when the file carries none).
+    pub mode: Mode,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -945,8 +949,8 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
 }
 
 /// Back-compat: infer with no built-ins.
-pub fn infer_program(program: &Program) -> Result<TypedProgram, CompileError> {
-    infer_program_with(program)
+pub fn infer_program(program: &Program, mode: Mode) -> Result<TypedProgram, CompileError> {
+    infer_program_with(program, mode)
 }
 
 /// Infer a program. Built-in signatures come from the FFI catalog in the type
@@ -954,8 +958,9 @@ pub fn infer_program(program: &Program) -> Result<TypedProgram, CompileError> {
 /// needed.
 ///
 /// Top-level definitions are mutually recursive: all names are visible
-/// to all bodies.
-pub fn infer_program_with(program: &Program) -> Result<TypedProgram, CompileError> {
+/// to all bodies. `mode` is carried onto the returned [`TypedProgram`]; the
+/// strict/complete distinction gates later pipeline stages (reduce, lower).
+pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram, CompileError> {
     // Build the type environment in two phases so declaration ORDER does not
     // matter. Phase 1 registers the pure name-mapping declarations (synonyms,
     // newtypes, typeclasses, instances); phase 2 resolves data-type
@@ -1142,6 +1147,7 @@ pub fn infer_program_with(program: &Program) -> Result<TypedProgram, CompileErro
         type_env: ctx.env.clone(),
         fn_param_tys,
         tape_decls: Vec::new(),
+        mode,
     })
 }
 
@@ -4275,7 +4281,10 @@ mod tests {
     use crate::parser::parse;
 
     fn ty_of(src: &str) -> Result<TypedProgram, CompileError> {
-        infer_program(&parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap())
+        infer_program(
+            &parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap(),
+            Mode::default(),
+        )
     }
 
     #[test]
@@ -4366,7 +4375,10 @@ mod tests {
     }
 
     fn ty_with(src: &str) -> Result<TypedProgram, CompileError> {
-        infer_program_with(&parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap())
+        infer_program_with(
+            &parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap(),
+            Mode::default(),
+        )
     }
 
     #[test]

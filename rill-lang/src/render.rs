@@ -491,6 +491,7 @@ mod tests {
     fn render_simple_apply() {
         let prog = Program {
             mode: Mode::Strict,
+            mode_explicit: false,
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![],
@@ -511,6 +512,7 @@ mod tests {
     fn render_pipeline() {
         let prog = Program {
             mode: Mode::Strict,
+            mode_explicit: false,
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![],
@@ -535,6 +537,7 @@ mod tests {
     fn render_with_param() {
         let prog = Program {
             mode: Mode::Strict,
+            mode_explicit: false,
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![crate::ast::Param {
@@ -559,6 +562,7 @@ mod tests {
     fn render_lambda() {
         let prog = Program {
             mode: Mode::Strict,
+            mode_explicit: false,
             defs: vec![Def::Local {
                 name: "double".into(),
                 body: Expr::Lambda {
@@ -591,6 +595,7 @@ mod tests {
         let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
         let main_program = Program {
             mode: Mode::Strict,
+            mode_explicit: false,
             defs: vec![program.main_def().unwrap().clone()],
         };
         let first = render(&main_program).unwrap();

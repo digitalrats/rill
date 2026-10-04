@@ -175,14 +175,14 @@ mod tests {
 
     fn schedule_of(src: &str) -> Schedule {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program(&p).unwrap();
+        let tp = infer_program(&p, p.mode).unwrap();
         let ir = lower(&tp).unwrap();
         build_schedule(&ir)
     }
 
     fn schedule_of_with(src: &str) -> (Ir, Schedule) {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program(&p).unwrap();
+        let tp = infer_program(&p, p.mode).unwrap();
         let ir = lower(&tp).unwrap();
         let sched = build_schedule(&ir);
         (ir, sched)

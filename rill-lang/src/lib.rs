@@ -54,6 +54,8 @@ use rill_core::math::Transcendental;
 use rill_core_actor::Mailbox;
 use std::sync::Arc;
 
+use crate::mode::Mode;
+
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
 /// Uses the runtime-safe default block size (`BUF = 256`); each block passed to
@@ -69,17 +71,20 @@ use std::sync::Arc;
 /// assert_eq!(out, [1.0, 2.0]);
 /// ```
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
-    let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens, src.as_bytes())?;
-    let (program, tape_decls) = extract_resources(&program)?;
-    let mut typed = types::infer::infer_program(&program)?;
-    typed.tape_decls = tape_decls
-        .iter()
-        .map(|d| (d.name.clone(), d.capacity))
-        .collect();
-    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, 44_100.0, &typed.cafs)?;
-    // regalloc::allocate(&mut ir);
+    compile_with_mode::<T>(src, Mode::Strict)
+}
+
+/// Compile rill-lang source under an explicit evaluation mode into a runnable
+/// [`RillProgram`] for scalar type `T`.
+///
+/// The file's own `{-# MODE ... #-}` pragma overrides `mode`; the API key is
+/// the default only when the file carries no pragma. Uses the runtime-safe
+/// default block size (`BUF = 256`).
+pub fn compile_with_mode<T: Transcendental>(
+    src: &str,
+    mode: Mode,
+) -> Result<RillProgram<T, 256>, CompileError> {
+    let ir = compile_to_ir(src, 44_100.0, mode)?;
     Ok(RillProgram::<T, 256>::new(ir))
 }
 
@@ -90,17 +95,19 @@ pub fn compile_with<T: Transcendental>(
     registry: &Registry<T>,
     sample_rate: f32,
 ) -> Result<RillProgram<T, 256>, CompileError> {
-    let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens, src.as_bytes())?;
-    let (program, tape_decls) = extract_resources(&program)?;
-    let mut typed = types::infer::infer_program_with(&program)?;
-    typed.tape_decls = tape_decls
-        .iter()
-        .map(|d| (d.name.clone(), d.capacity))
-        .collect();
-    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
-    // regalloc::allocate(&mut ir);
+    compile_with_mode_with(src, registry, sample_rate, Mode::Strict)
+}
+
+/// Like [`compile_with`], under an explicit evaluation mode (the file's
+/// `{-# MODE ... #-}` pragma overrides the API key). Uses the default block
+/// size (`BUF = 256`).
+pub fn compile_with_mode_with<T: Transcendental>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    mode: Mode,
+) -> Result<RillProgram<T, 256>, CompileError> {
+    let ir = compile_to_ir(src, sample_rate, mode)?;
     RillProgram::<T, 256>::new_with(ir, registry, sample_rate, None)
 }
 
@@ -113,18 +120,47 @@ pub fn compile_with_ffi<T: Transcendental>(
     ffi: &crate::ffi::ForeignRegistry<T>,
     sample_rate: f32,
 ) -> Result<RillProgram<T, 256>, CompileError> {
+    compile_with_ffi_mode(src, ffi, sample_rate, Mode::Strict)
+}
+
+/// Like [`compile_with_ffi`], under an explicit evaluation mode (the file's
+/// `{-# MODE ... #-}` pragma overrides the API key). Uses the default block
+/// size (`BUF = 256`).
+pub fn compile_with_ffi_mode<T: Transcendental>(
+    src: &str,
+    ffi: &crate::ffi::ForeignRegistry<T>,
+    sample_rate: f32,
+    mode: Mode,
+) -> Result<RillProgram<T, 256>, CompileError> {
+    let ir = compile_to_ir(src, sample_rate, mode)?;
+    let registry = Registry::<T>::new();
+    RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
+}
+
+/// Resolve the effective evaluation mode for a parsed program: the file's
+/// `{-# MODE ... #-}` pragma wins; the API-supplied mode is the default only
+/// when the file carries no pragma.
+fn apply_api_mode(program: &mut crate::ast::Program, api_mode: Mode) {
+    if !program.mode_explicit {
+        program.mode = api_mode;
+    }
+}
+
+/// The shared source-compile pipeline: tokenize → parse → resource extraction
+/// → mode resolution → infer → reduce → lower. The effective mode (pragma or
+/// API key) is threaded onto the [`TypedProgram`](types::infer::TypedProgram).
+fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    let (program, tape_decls) = extract_resources(&program)?;
-    let mut typed = types::infer::infer_program(&program)?;
+    let (mut program, tape_decls) = extract_resources(&program)?;
+    apply_api_mode(&mut program, mode);
+    let mut typed = types::infer::infer_program(&program, program.mode)?;
     typed.tape_decls = tape_decls
         .iter()
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
-    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
-    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
-    let registry = Registry::<T>::new();
-    RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
+    typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
+    lower::lower_with_cafs_mode(&typed, sample_rate, &typed.cafs, typed.mode)
 }
 
 /// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
@@ -133,7 +169,18 @@ pub fn compile_program<T: Transcendental, const BUF: usize>(
     registry: &Registry<T>,
     sample_rate: f32,
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    compile_program_inner(program, registry, sample_rate, None)
+    compile_program_mode(program, registry, sample_rate, Mode::Strict)
+}
+
+/// Like [`compile_program`], under an explicit evaluation mode (the file's
+/// `{-# MODE ... #-}` pragma overrides the API key).
+pub fn compile_program_mode<T: Transcendental, const BUF: usize>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    mode: Mode,
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
+    compile_program_inner(program, registry, sample_rate, None, mode)
 }
 
 /// Compile an AST program against a pre-built resource registry.
@@ -151,7 +198,19 @@ pub fn compile_program_with_resources<T: Transcendental, const BUF: usize>(
     sample_rate: f32,
     resources: &mut rill_core::buffer::ResourceRegistry<T>,
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    compile_program_inner(program, registry, sample_rate, Some(resources))
+    compile_program_with_resources_mode(program, registry, sample_rate, resources, Mode::Strict)
+}
+
+/// Like [`compile_program_with_resources`], under an explicit evaluation mode
+/// (the file's `{-# MODE ... #-}` pragma overrides the API key).
+pub fn compile_program_with_resources_mode<T: Transcendental, const BUF: usize>(
+    program: &crate::ast::Program,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    resources: &mut rill_core::buffer::ResourceRegistry<T>,
+    mode: Mode,
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
+    compile_program_inner(program, registry, sample_rate, Some(resources), mode)
 }
 
 fn compile_program_inner<T: Transcendental, const BUF: usize>(
@@ -159,11 +218,13 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
     registry: &Registry<T>,
     sample_rate: f32,
     mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+    api_mode: Mode,
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    let (program, resource_decls) = extract_resources(program)?;
+    let (mut program, resource_decls) = extract_resources(program)?;
+    apply_api_mode(&mut program, api_mode);
 
-    let mut typed = types::infer::infer_program_with(&program)?;
-    typed.program = reduce::reduce_with_cafs(&typed.program, &typed.cafs);
+    let mut typed = types::infer::infer_program_with(&program, program.mode)?;
+    typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
 
     // The DSL `tape_loop` path (no external registry) resolves a resource
     // param's `Ref(name)` to a tape INDEX via the extracted declarations. The
@@ -175,7 +236,7 @@ fn compile_program_inner<T: Transcendental, const BUF: usize>(
             .map(|d| (d.name.clone(), d.capacity))
             .collect();
     }
-    let ir = lower::lower_with_cafs(&typed, sample_rate, &typed.cafs)?;
+    let ir = lower::lower_with_cafs_mode(&typed, sample_rate, &typed.cafs, typed.mode)?;
 
     if let Some(res) = &mut resources {
         for bi in &ir.builtins {
@@ -216,9 +277,20 @@ pub fn compile_graph<T: Transcendental, const BUF: usize>(
     registry: &Registry<T>,
     sample_rate: f32,
 ) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
+    compile_graph_mode(src, registry, sample_rate, Mode::Strict)
+}
+
+/// Like [`compile_graph`], under an explicit evaluation mode (the file's
+/// `{-# MODE ... #-}` pragma overrides the API key).
+pub fn compile_graph_mode<T: Transcendental, const BUF: usize>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    mode: Mode,
+) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
-    compile_program::<T, BUF>(&program, registry, sample_rate)
+    compile_program_mode::<T, BUF>(&program, registry, sample_rate, mode)
 }
 
 /// A named resource declaration (e.g. a tape loop) from the DSL.
@@ -292,6 +364,7 @@ fn extract_resources(
         crate::ast::Program {
             defs,
             mode: program.mode,
+            mode_explicit: program.mode_explicit,
         },
         decls,
     ))
@@ -354,10 +427,49 @@ mod ir_tests {
         let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
         let tokens = lexer::tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
-        let mut typed = types::infer::infer_program_with(&program).unwrap();
+        let mut typed = types::infer::infer_program_with(&program, program.mode).unwrap();
         typed.program = reduce::reduce(&typed.program);
         let ir = lower::lower_with(&typed, 44100.0).unwrap();
         assert!(ir.num_inputs > 0);
         assert!(ir.num_outputs > 0);
+    }
+
+    #[test]
+    fn complete_mode_is_carried_to_typed_program() {
+        let tokens = lexer::tokenize("{-# MODE complete #-}\nmain = _").unwrap();
+        let program = parser::parse(&tokens, "{-# MODE complete #-}\nmain = _".as_bytes()).unwrap();
+        let typed = types::infer::infer_program(&program, crate::mode::Mode::Complete).unwrap();
+        assert_eq!(typed.mode, crate::mode::Mode::Complete);
+    }
+
+    #[test]
+    fn api_mode_is_default_when_no_pragma() {
+        let tokens = lexer::tokenize("main = _").unwrap();
+        let mut program = parser::parse(&tokens, "main = _".as_bytes()).unwrap();
+        apply_api_mode(&mut program, crate::mode::Mode::Complete);
+        assert_eq!(program.mode, crate::mode::Mode::Complete);
+        assert!(!program.mode_explicit);
+    }
+
+    #[test]
+    fn pragma_wins_over_api_mode() {
+        let tokens = lexer::tokenize("{-# MODE complete #-}\nmain = _").unwrap();
+        let mut program =
+            parser::parse(&tokens, "{-# MODE complete #-}\nmain = _".as_bytes()).unwrap();
+        assert!(program.mode_explicit);
+        apply_api_mode(&mut program, crate::mode::Mode::Strict);
+        assert_eq!(program.mode, crate::mode::Mode::Complete);
+    }
+
+    #[test]
+    fn compile_with_mode_complete_compiles() {
+        let res = compile_with_mode::<f32>("main = _", crate::mode::Mode::Complete);
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn pragma_flows_through_public_compile() {
+        let res = compile::<f32>("{-# MODE complete #-}\nmain = _");
+        assert!(res.is_ok());
     }
 }

@@ -521,6 +521,11 @@ pub struct Program {
     /// Evaluation mode selected by a leading `{-# MODE ... #-}` pragma.
     #[cfg_attr(feature = "serde", serde(default))]
     pub mode: Mode,
+    /// Whether `mode` came from an explicit `{-# MODE ... #-}` pragma (as
+    /// opposed to the default). When true, the pragma wins over any
+    /// API-supplied mode; when false, an API-supplied mode is the default.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub mode_explicit: bool,
 }
 
 impl Program {

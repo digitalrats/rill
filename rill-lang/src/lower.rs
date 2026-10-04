@@ -8,6 +8,7 @@ use crate::ir::{
     BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
     StateLayout, UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueLayout, ValueTerm,
 };
+use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
 
@@ -4834,6 +4835,18 @@ pub fn lower_with_cafs(
     sample_rate: f32,
     cafs: &HashSet<String>,
 ) -> Result<Ir, CompileError> {
+    lower_with_cafs_mode(tp, sample_rate, cafs, tp.mode)
+}
+
+/// Like [`lower_with_cafs`], carrying the evaluation mode. The mode will gate
+/// mode-specific lowering in a later task (thunk-emitting value lowering in
+/// `complete` mode); for now it is accepted and ignored.
+pub fn lower_with_cafs_mode(
+    tp: &TypedProgram,
+    sample_rate: f32,
+    cafs: &HashSet<String>,
+    _mode: Mode,
+) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
     let main = program
         .main_def()
@@ -5056,19 +5069,19 @@ mod tests {
 
     fn ir_of(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program(&p).unwrap();
+        let tp = infer_program(&p, p.mode).unwrap();
         lower(&tp).unwrap()
     }
 
     fn ir_with(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program_with(&p).unwrap();
+        let tp = infer_program_with(&p, p.mode).unwrap();
         lower_with(&tp, 44_100.0).unwrap()
     }
 
     fn ir_with_cafs(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let typed = infer_program_with(&p).unwrap();
+        let typed = infer_program_with(&p, p.mode).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5078,6 +5091,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
+            mode: typed.mode,
         };
         lower_with_cafs(&tp, 44_100.0, &tp.cafs).unwrap()
     }
@@ -5206,7 +5220,7 @@ mod tests {
             "main = _ @ 70000".as_bytes(),
         )
         .unwrap();
-        let tp = infer_program(&p).unwrap();
+        let tp = infer_program(&p, p.mode).unwrap();
         assert!(lower(&tp).is_err());
     }
 
@@ -5315,7 +5329,7 @@ mod tests {
             "osc = sine 440 0.5 0; main = _ : lowpass osc 0.7".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program_with(&p).unwrap();
+        let typed = infer_program_with(&p, p.mode).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5325,6 +5339,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
+            mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
@@ -5339,7 +5354,7 @@ mod tests {
             "a = b; b = a; main = a".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program(&p).unwrap();
+        let typed = infer_program(&p, p.mode).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5349,6 +5364,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
+            mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
@@ -5364,7 +5380,7 @@ mod tests {
             "a = b; b = a; main = _ : lowpass a 0.7".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program_with(&p).unwrap();
+        let typed = infer_program_with(&p, p.mode).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5374,6 +5390,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
+            mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
@@ -5394,7 +5411,7 @@ mod tests {
             "a = a; main = a".as_bytes(),
         )
         .unwrap();
-        let typed = infer_program(&p).unwrap();
+        let typed = infer_program(&p, p.mode).unwrap();
         let cafs = typed.cafs.clone();
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
@@ -5404,6 +5421,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             tape_decls: Vec::new(),
+            mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
         assert!(res.is_err());
@@ -5445,7 +5463,7 @@ mod tests {
             "newtype Hz = Float; main = Hz".as_bytes(),
         )
         .unwrap();
-        assert!(infer_program(&p).is_err());
+        assert!(infer_program(&p, p.mode).is_err());
     }
 
     #[test]
@@ -5503,7 +5521,7 @@ mod tests {
                    main = match _ of { Circle r => r; Rect w h => w; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
-        let tp = infer_program(&p).unwrap();
+        let tp = infer_program(&p, p.mode).unwrap();
         let ir = lower(&tp).unwrap();
         assert!(
             ir.value_blocks
@@ -5518,7 +5536,7 @@ mod tests {
         let src = "main = match 0 of { 0 => 1.0; _ => 2.0; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
-        let tp = infer_program(&p).unwrap();
+        let tp = infer_program(&p, p.mode).unwrap();
         let ir = lower(&tp).unwrap();
         assert!(
             ir.value_blocks
@@ -5542,7 +5560,7 @@ mod tests {
                 .as_bytes(),
         )
         .unwrap();
-        let tp = infer_program(&p).unwrap();
+        let tp = infer_program(&p, p.mode).unwrap();
         let ir = lower(&tp).unwrap();
         assert!(
             ir.value_blocks

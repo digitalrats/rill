@@ -173,7 +173,7 @@ fn foreign_fn_types_as_signal_arrow() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     // `process_ty` is the diagram type of the whole program (main).
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
@@ -188,7 +188,7 @@ fn foreign_fn_wrong_arity_is_error() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    match rill_lang::types::infer::infer_program(&prog) {
+    match rill_lang::types::infer::infer_program(&prog, prog.mode) {
         Err(e) => assert!(
             e.to_string().contains("expects at least"),
             "expected an arity error, got: {e}"
@@ -209,7 +209,7 @@ fn foreign_fn_lowers_to_callblock() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     assert!(
         ir.builtins
@@ -232,7 +232,7 @@ fn foreign_fn_signal_slot_rejects_value() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    match rill_lang::types::infer::infer_program(&prog) {
+    match rill_lang::types::infer::infer_program(&prog, prog.mode) {
         Err(e) => assert!(
             e.to_string().contains("must be a signal"),
             "expected a signal-slot rate error, got: {e}"
@@ -254,7 +254,7 @@ fn foreign_fn_multi_signal_wires_distinct_inputs() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let cross_idx = ir
         .builtins
@@ -342,7 +342,7 @@ fn foreign_fn_non_terminal_variadic_fails_inference() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     assert!(
-        rill_lang::types::infer::infer_program(&prog).is_err(),
+        rill_lang::types::infer::infer_program(&prog, prog.mode).is_err(),
         "non-terminal variadic signal must be rejected at inference"
     );
 }
@@ -512,7 +512,7 @@ fn builtin_catalog_is_auto_registered() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 0);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -526,7 +526,7 @@ fn builtin_catalog_complex_ops_resolve() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 0);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -542,7 +542,7 @@ fn signal_input_builtin_legacy_call_style_sugar() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -556,7 +556,7 @@ fn combinator_sugar_binds_both_seq_operands() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -570,7 +570,7 @@ fn combinator_sugar_binds_loop_operand() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -585,7 +585,7 @@ fn combinator_sugar_binds_par_operand_with_two_signals() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 2);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -599,7 +599,7 @@ fn combinator_sugar_binds_split_operand() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 2);
 }
@@ -613,7 +613,7 @@ fn combinator_sugar_binds_merge_operand() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 2);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -627,7 +627,7 @@ fn combinator_sugar_does_not_double_bind_positional_call() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -643,7 +643,7 @@ fn combinator_sugar_binds_gain_scalar_only_call() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -657,7 +657,7 @@ fn combinator_sugar_rewrites_where_block_defs() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -673,7 +673,7 @@ fn combinator_sugar_lowers_positionally() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "onepole").unwrap();
     assert_eq!(bi.signal_ins, 1);
@@ -690,7 +690,7 @@ fn combinator_sugar_binds_delay_lhs() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 1);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -846,7 +846,7 @@ fn record_param_infer_accepts_record_literal() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 2);
     assert_eq!(typed.process_ty.arity_out(), 2);
 }
@@ -860,7 +860,7 @@ fn record_param_flattens_schema_fields() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
     assert_eq!(bi.params, vec![0.5]);
@@ -877,7 +877,7 @@ fn record_param_missing_fields_use_zero_defaults() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "cfg").unwrap();
     assert_eq!(bi.params, vec![1.5, 0.0]);
@@ -891,7 +891,7 @@ fn record_param_rejects_non_record_arg() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    match rill_lang::types::infer::infer_program(&prog) {
+    match rill_lang::types::infer::infer_program(&prog, prog.mode) {
         Err(e) => assert!(
             e.to_string().contains("record literal"),
             "expected a record-literal error, got: {e}"
@@ -910,7 +910,7 @@ fn resource_param_wires_tape_ref() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "read_head").unwrap();
     assert_eq!(bi.resource.as_deref(), Some("tape_0"));
@@ -925,7 +925,7 @@ fn resource_param_rejects_non_ref_arg() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    match rill_lang::types::infer::infer_program(&prog) {
+    match rill_lang::types::infer::infer_program(&prog, prog.mode) {
         Err(e) => assert!(
             e.to_string().contains("symbolic reference"),
             "expected a symbolic-reference error, got: {e}"
@@ -945,7 +945,7 @@ fn foreign_variadic_signal_merge_accepts_channels() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     assert_eq!(typed.process_ty.arity_in(), 2);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
@@ -1060,7 +1060,7 @@ fn record_default_ffi_applies() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
     assert_eq!(bi.params, vec![0.5]);
@@ -1076,7 +1076,7 @@ fn band_list_flattens_band_fields() {
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir
         .builtins

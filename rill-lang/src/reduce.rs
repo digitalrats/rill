@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{ArithOp, Def, Expr, MatchArm, Pattern, Program};
 use crate::error::Span;
+use crate::mode::Mode;
 
 /// All variable bindings introduced by a pattern (for shadowing-aware
 /// substitution).
@@ -617,6 +618,13 @@ fn merge_contexts(
 /// can lift them once and route multiple consumers to the single instance.
 /// Open blocks (macros) are still inlined as before.
 pub fn reduce_with_cafs(program: &Program, cafs: &HashSet<String>) -> Program {
+    reduce_with_cafs_mode(program, cafs, program.mode)
+}
+
+/// Like [`reduce_with_cafs`], carrying the evaluation mode. The mode is
+/// preserved on the returned program; a later task uses it for mode-aware
+/// reduction (recursion-aware CAF extraction in `complete` mode).
+pub fn reduce_with_cafs_mode(program: &Program, cafs: &HashSet<String>, _mode: Mode) -> Program {
     let top_ctx: HashMap<String, Def> = program
         .defs
         .iter()
@@ -641,6 +649,7 @@ pub fn reduce_with_cafs(program: &Program, cafs: &HashSet<String>) -> Program {
     let mut result = Program {
         defs: Vec::new(),
         mode: program.mode,
+        mode_explicit: program.mode_explicit,
     };
     for def in &reduced_defs {
         let mut ctx = final_ctx.clone();
@@ -681,7 +690,7 @@ mod tests {
     fn caf_names(src: &str) -> std::collections::HashSet<String> {
         let tokens = tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
-        let typed = infer_program(&program).unwrap();
+        let typed = infer_program(&program, program.mode).unwrap();
         typed.cafs
     }
 

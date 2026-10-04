@@ -357,6 +357,7 @@ pub fn reconstruct(spec: &GraphSpec) -> Result<Program, CompileError> {
     Ok(Program {
         defs,
         mode: crate::mode::Mode::default(),
+        mode_explicit: false,
     })
 }
 

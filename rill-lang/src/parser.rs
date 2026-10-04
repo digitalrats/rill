@@ -290,6 +290,7 @@ impl<'a> Parser<'a> {
 
     fn parse_program(&mut self) -> Result<Program, CompileError> {
         let mut mode = Mode::default();
+        let mut mode_explicit = false;
         loop {
             if !matches!(self.peek().tok, Tok::Pragma { .. }) {
                 break;
@@ -298,6 +299,7 @@ impl<'a> Parser<'a> {
             match token.tok {
                 Tok::Pragma { name, value } => {
                     if name == "MODE" {
+                        mode_explicit = true;
                         if value == "strict" {
                             mode = Mode::Strict;
                         } else if value == "complete" {
@@ -342,7 +344,11 @@ impl<'a> Parser<'a> {
                 span: Span::new(0, self.src.len()),
             });
         }
-        Ok(Program { mode, defs })
+        Ok(Program {
+            mode,
+            mode_explicit,
+            defs,
+        })
     }
 
     fn parse_top_def(&mut self) -> Result<Def, CompileError> {
@@ -1282,6 +1288,7 @@ mod tests {
         let src = "{-# MODE complete #-}\nmain = _";
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         assert_eq!(p.mode, crate::mode::Mode::Complete);
+        assert!(p.mode_explicit);
     }
 
     #[test]
@@ -1289,6 +1296,7 @@ mod tests {
         let src = "main = _";
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         assert_eq!(p.mode, crate::mode::Mode::Strict);
+        assert!(!p.mode_explicit);
     }
 
     #[test]
