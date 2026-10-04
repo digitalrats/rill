@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### rill-core
+
+- **SP-4 P1: memory subsystem + `Algorithm` relaxation.** The value arena moved
+  from `rill-lang` into `rill_core::memory` and was genericized: `Arena<V>` over
+  an `ArenaValue` payload trait (`visit_refs`/`clone_pooled`/`detach_payload`),
+  with the slot store on the shared grow-safe `ChunkedVec<T>` primitive (paged,
+  one pre-allocated page at RT; pages appended only under `growable-arena`).
+  `BufferPool` (size-classed payload buffers) moved as-is. `rill_lang::arena`
+  is now a re-export shim + `impl ArenaValue for Value`; `RillProgram` owns an
+  `Arena<Value>` with identical behavior (capacity bounds, exhaustion, RC/COW
+  semantics unchanged). **`Algorithm<T>` and `MultichannelAlgorithm<T>` dropped
+  their `Send + Sync` supertraits** — verified redundant: the signal graph is
+  built and run on one thread (the engine is compiled inside the signal-thread
+  closure; I/O callbacks are non-`Send` `FnMut`). The `unsafe impl Send/Sync`
+  on the tape `WriteHead`/`ReadHead` (needed only for the old registry bounds)
+  were removed; the `lang_chiptune`/`record_mic` examples now compile the engine
+  inside the signal thread.
+
 ### rill-lang
 
 - **SP-3b: builtin migration to the FFI layer — `FfiSig` is the contract.**
