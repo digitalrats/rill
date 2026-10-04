@@ -127,6 +127,19 @@ impl<T> Clone for RegionHandle<T> {
     }
 }
 
+impl<T> crate::buffer::RingStorage<T> for RegionHandle<T> {
+    fn len(&self) -> usize {
+        RegionHandle::len(self)
+    }
+    fn with_data(&self, f: impl FnOnce(&[T])) {
+        RegionHandle::with_data(self, f);
+    }
+    fn with_data_mut(&mut self, f: impl FnOnce(&mut [T])) {
+        // `RegionHandle::with_data_mut` takes `&self` (interior mutability).
+        RegionHandle::with_data_mut(self, f);
+    }
+}
+
 impl<T> std::fmt::Debug for RegionHandle<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RegionHandle")

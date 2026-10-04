@@ -41,6 +41,7 @@ mod registry;
 mod ring;
 mod storage;
 mod tape;
+mod tape_ring;
 
 // ============================================================================
 // Re-exports
@@ -57,6 +58,7 @@ pub use registry::{
 pub use ring::RingBuffer;
 pub use storage::{AtomicCell, AtomicCellError};
 pub use tape::TapeLoop;
+pub use tape_ring::{RingStorage, TapeRing};
 
 // ============================================================================
 // Constants
