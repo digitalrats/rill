@@ -18,6 +18,10 @@
 
 #![allow(unsafe_code)]
 
+pub mod arena;
 pub mod chunked;
+pub mod pool;
 
+pub use arena::{Arena, ArenaError, ArenaRef, ArenaValue};
 pub use chunked::ChunkedVec;
+pub use pool::BufferPool;
