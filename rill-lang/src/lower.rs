@@ -234,6 +234,9 @@ struct Lowerer<'a> {
     /// shapes) carried from inference — the single source of truth for name
     /// resolution in both infer and lower.
     env: &'a TypeEnv,
+    /// Evaluation mode: strict rejects recursion (the v1 acyclic-call
+    /// contract); complete allows it (lazy value track, later tasks).
+    mode: Mode,
     /// Recursion guard while inlining value definitions.
     value_inline: HashSet<String>,
     /// Recursion guard for typeclass method inlining: resolved (class, type,
@@ -2247,10 +2250,19 @@ impl<'a> Lowerer<'a> {
                 // shared state), so inlining the body at each use site is
                 // semantically identical to lifting it once.
                 if self.value_inline.contains(name) {
-                    return Err(CompileError::Type {
-                        msg: format!("recursive value definition `{name}`"),
-                        span,
-                    });
+                    if self.mode == Mode::Strict {
+                        return Err(CompileError::Type {
+                            msg: format!("recursive value definition `{name}`"),
+                            span,
+                        });
+                    }
+                    // Complete mode: recursion is allowed (lazy value track).
+                    // Break the cycle with a fresh unbound register — the
+                    // recursive reference is bottom until thunk-emitting
+                    // lowering arrives in a later task, and an unbound value
+                    // register reads as a detectable `None`.
+                    let dst = self.fresh_value_reg();
+                    return Ok((dst, ValueTy::Float));
                 }
                 self.value_inline.insert(name.to_string());
                 // A named lambda-literal definition lowers with its resolved
@@ -4377,10 +4389,19 @@ impl<'a> Lowerer<'a> {
                         return Ok(regs.clone());
                     }
                     if self.caf_lifting.contains(name) {
-                        return Err(CompileError::Type {
-                            msg: format!("recursive CAF definition `{name}`"),
-                            span: _span,
-                        });
+                        if self.mode == Mode::Strict {
+                            return Err(CompileError::Type {
+                                msg: format!("recursive CAF definition `{name}`"),
+                                span: _span,
+                            });
+                        }
+                        // Complete mode: recursion is allowed (lazy value
+                        // track). Break the cycle with a fresh placeholder
+                        // register — thunk-emitting lowering arrives in a
+                        // later task; until then the recursive reference
+                        // reads as silence (`FixedBuffer::new`).
+                        let dst = self.fresh_reg();
+                        return Ok(vec![dst]);
                     }
                     // Lift the closed body once: no signal inputs, so lower it
                     // with the caller's argument registers threaded through
@@ -4838,14 +4859,16 @@ pub fn lower_with_cafs(
     lower_with_cafs_mode(tp, sample_rate, cafs, tp.mode)
 }
 
-/// Like [`lower_with_cafs`], carrying the evaluation mode. The mode will gate
-/// mode-specific lowering in a later task (thunk-emitting value lowering in
-/// `complete` mode); for now it is accepted and ignored.
+/// Like [`lower_with_cafs`], carrying the evaluation mode. The mode gates
+/// recursion: strict rejects recursive CAF/value definitions (the v1 acyclic
+/// contract); complete allows them (thunk-emitting lowering in a later task —
+/// for now a recursive reference breaks the cycle with a fresh placeholder
+/// register).
 pub fn lower_with_cafs_mode(
     tp: &TypedProgram,
     sample_rate: f32,
     cafs: &HashSet<String>,
-    _mode: Mode,
+    mode: Mode,
 ) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
     let main = program
@@ -4888,6 +4911,7 @@ pub fn lower_with_cafs_mode(
         value_locals: Vec::new(),
         value_local_ctors: Vec::new(),
         env: &tp.type_env,
+        mode,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
         head_arg_bindings: HashMap::new(),
@@ -5127,6 +5151,7 @@ mod tests {
             value_locals: Vec::new(),
             value_local_ctors: Vec::new(),
             env,
+            mode: Mode::Strict,
             value_inline: HashSet::new(),
             method_lifting: HashSet::new(),
             head_arg_bindings: HashMap::new(),

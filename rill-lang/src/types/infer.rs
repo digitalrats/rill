@@ -1053,8 +1053,11 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
 
     // Reject recursive function definitions (v1's acyclic call contract): a
     // runtime dispatch chain must terminate, so the call stack is statically
-    // bounded (see `check_recursion`).
-    check_recursion(&program.defs)?;
+    // bounded (see `check_recursion`). Complete mode lifts the ban: recursion
+    // is supported via lazy thunks (bottom at runtime for a divergent def).
+    if mode == Mode::Strict {
+        check_recursion(&program.defs)?;
+    }
 
     // Derive `Eq`/`Ord` instances for every concrete data type (user + builtin)
     // and the scalar leaves, keeping any user-written instances intact.
