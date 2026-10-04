@@ -4,6 +4,15 @@
 
 ### rill-core
 
+- **SP-4 P2: region slabs + unified ring.** [`MemoryRegion`]/[`RegionHandle`]/
+  [`BufferAllocator`] — chunked, reference-counted slabs for large static
+  buffer memory (safe access via audited `unsafe` deref under the SP-4 §2.1
+  policy; Miri-checked). `TapeRing<T, S: RingStorage<T>>` unifies the
+  non-consuming write-head ring math behind `TapeLoop`, `DelayLine`, and the
+  `@` delay rings (`RingStorage` impls for `RegionHandle`, `Vec`, inline
+  arrays). `TapeLoop` is now a `TapeRing` over an owned `Vec` (its unused
+  `Buffer` impl was dropped; the `DelayBuffer` registry contract is unchanged).
+
 - **SP-4 P1: memory subsystem + `Algorithm` relaxation.** The value arena moved
   from `rill-lang` into `rill_core::memory` and was genericized: `Arena<V>` over
   an `ArenaValue` payload trait (`visit_refs`/`clone_pooled`/`detach_payload`),
@@ -21,6 +30,12 @@
   inside the signal thread.
 
 ### rill-lang
+
+- **SP-4 P2: region-backed `@` delay sites.** `RillProgram` carves every `@`
+  delay out of a program-local `BufferAllocator` (exactly sized to the delay
+  length) as a `RegionDelay` — a `TapeRing` over a `RegionHandle`. This
+  replaces the fixed `FixedBuffer<T, 65536>`-backed `DelayRing`.
+  `lang_bench runtime/delay` dropped **~10×** (65 ns vs 718 ns baseline).
 
 - **SP-3b: builtin migration to the FFI layer — `FfiSig` is the contract.**
   Every built-in's signature now lives **in the language**: an auto-registered
