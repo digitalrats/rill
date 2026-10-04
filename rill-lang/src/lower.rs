@@ -2262,6 +2262,11 @@ impl<'a> Lowerer<'a> {
                     // lowering arrives in a later task, and an unbound value
                     // register reads as a detectable `None`.
                     let dst = self.fresh_value_reg();
+                    // Hardcode: the recursive value's inferred static type is
+                    // unavailable here, so downstream static decisions (field
+                    // indices / ctor selection / method dispatch) run against
+                    // `Float`; exposure is currently low because recursive data
+                    // types are still blocked by `check_acyclic`.
                     return Ok((dst, ValueTy::Float));
                 }
                 self.value_inline.insert(name.to_string());
