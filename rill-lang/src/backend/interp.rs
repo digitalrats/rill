@@ -6,7 +6,7 @@ use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::ProcessError;
 
-use crate::arena::{Arena, ArenaRef, Value};
+use crate::arena::{Arena, ArenaRef, ThunkState, Value};
 use crate::ir::{
     BinArith, CmpOp, FragmentIr, Instr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr, ValueTerm,
 };
@@ -95,21 +95,31 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
 
     // Copy the value outputs (one per value output channel) into the program's
-    // stable `value_outputs` store. Each output is an INDEPENDENT counted owner:
-    // `copy` (rc++) so it survives the register clear below, and the previous
+    // stable `value_outputs` store. Each output is forced to WHNF first (a
+    // lazy output register holding a thunk materializes its head) and then
+    // copied (rc++) so it survives the register clear below; the previous
     // tick's output was already released at the start of this tick (see above)
     // so nothing leaks across ticks. `clear_value_regs` then drops the
     // register's refs (the per-tick scratch) while the output refs remain live.
-    for (i, &r) in prog.ir.value_output_regs.iter().enumerate() {
-        if let Some(Some(v)) = prog.value_regs.get(r) {
+    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let drops_mark = drops.len();
+    let output_regs = std::mem::take(&mut prog.ir.value_output_regs);
+    for (i, &r) in output_regs.iter().enumerate() {
+        if let Some(Some(v)) = prog.value_regs.get(r).copied() {
+            let head = force(prog, v, &mut drops);
             if let Some(prev) = prog.value_outputs[i].take() {
                 prog.arena.drop_ref(prev);
             }
-            if let Ok(c) = prog.arena.copy(*v) {
+            if let Ok(c) = prog.arena.copy(head) {
                 prog.value_outputs[i] = Some(c);
             }
         }
     }
+    prog.ir.value_output_regs = output_regs;
+    for r in drops.drain(drops_mark..) {
+        prog.arena.drop_ref(r);
+    }
+    prog.drops_scratch = drops;
 
     // Release this tick's per-tick value registers now that the value outputs
     // have been read (value outputs are copied after the block outputs above).
@@ -286,9 +296,19 @@ fn recount_children<T: Transcendental, const BUF: usize>(
                 _ = prog.arena.copy(*e);
             }
         }
-        // A6: Thunk/ThunkCell/Bottom not recounted yet — the lazy track MUST
-        // copy the thunk's env+cell and a Forced(r) result too (reconcile via
-        // `visit_refs` or the double-drop risk from the A4 review).
+        // A thunk owns its env record and memo cell; a forced cell owns its
+        // result. Mirroring `visit_refs` keeps the recount accounting balanced
+        // when a thunk/cell value is copied into a fresh slot.
+        Value::Thunk { env, cell, .. } => {
+            _ = prog.arena.copy(*env);
+            _ = prog.arena.copy(*cell);
+        }
+        Value::ThunkCell(ThunkState::Forced(r)) => {
+            _ = prog.arena.copy(*r);
+        }
+        // An unforced/forcing/bottom cell and bottom itself own nothing.
+        Value::ThunkCell(_) | Value::Bottom => {}
+        // Leaf values own no children.
         _ => {}
     }
 }
@@ -461,9 +481,17 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
                 prog.arena.drop_ref(*e);
             }
         }
-        // A6: Thunk/ThunkCell/Bottom not dropped yet — the lazy track MUST
-        // release the thunk's env+cell and a Forced(r) result too (reconcile
-        // via `visit_refs` or the double-drop risk from the A4 review).
+        // A thunk releases its env record and memo cell; a forced cell
+        // releases its result. Mirroring `visit_refs` keeps the raw-value drop
+        // (an alloc failure) balanced with the arena's own recursive drop.
+        Value::Thunk { env, cell, .. } => {
+            prog.arena.drop_ref(*env);
+            prog.arena.drop_ref(*cell);
+        }
+        Value::ThunkCell(ThunkState::Forced(r)) => prog.arena.drop_ref(*r),
+        // An unforced/forcing/bottom cell and bottom itself own nothing.
+        Value::ThunkCell(_) | Value::Bottom => {}
+        // Leaf values own no children.
         _ => {}
     }
 }
@@ -602,29 +630,20 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     b: usize,
     drops: &mut Vec<ArenaRef>,
 ) {
-    let av = prog
-        .value_regs
-        .get(a)
-        .copied()
-        .flatten()
-        .and_then(|r| match prog.arena.get(r) {
-            Some(v) => value_to_f64(v),
-            None => None,
-        })
-        .unwrap_or(0.0);
-    let bv = prog
-        .value_regs
-        .get(b)
-        .copied()
-        .flatten()
-        .and_then(|r| match prog.arena.get(r) {
-            Some(v) => value_to_f64(v),
-            None => None,
-        })
-        .unwrap_or(0.0);
+    let av = numeric_operand(prog, a, drops);
+    let bv = numeric_operand(prog, b, drops);
+    // Release the previous `dst` occupant AFTER the operands are read/forced,
+    // so `dst` may alias an operand without losing its value.
     if let Some(r) = prog.value_regs.get_mut(dst).and_then(|r| r.take()) {
         drops.push(r);
     }
+    // Bottom propagates through strict arithmetic.
+    if matches!(&av, Some(Err(()))) || matches!(&bv, Some(Err(()))) {
+        prog.value_regs[dst] = alloc_owned(prog, Value::Bottom);
+        return;
+    }
+    let av = av.map(|v| v.unwrap_or(0.0)).unwrap_or(0.0);
+    let bv = bv.map(|v| v.unwrap_or(0.0)).unwrap_or(0.0);
     let result = match op {
         ValueArith::Add => av + bv,
         ValueArith::Sub => av - bv,
@@ -632,6 +651,68 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
         ValueArith::Div => av / bv,
     };
     prog.value_regs[dst] = alloc_owned(prog, Value::Float(result));
+}
+
+/// Allocate a fresh `Value::Bottom` slot. `None` on arena exhaustion (a
+/// build-time budget bug — `debug_assert!` flags it; the caller falls back to
+/// a value it already holds).
+fn try_alloc_bottom<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+) -> Option<ArenaRef> {
+    match prog.arena.alloc(Value::Bottom) {
+        Ok(b) => Some(b),
+        Err(_) => {
+            debug_assert!(false, "value arena capacity exhausted at build time");
+            None
+        }
+    }
+}
+
+/// Write `Value::Bottom` into `dst`, releasing the previous occupant.
+fn write_bottom<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    dst: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    if let Some(old) = prog.value_regs.get_mut(dst).and_then(|r| r.take()) {
+        drops.push(old);
+    }
+    prog.value_regs[dst] = try_alloc_bottom(prog);
+}
+
+/// Force a value register's operand to WHNF and return the head ref.
+///
+/// The returned ref is a BORROWED view — the memo cell (or the caller's own
+/// operand) owns it. A caller that stores the ref must `copy` it first; a
+/// caller that only reads it must not drop it. `None` when the register is
+/// unbound.
+fn forced_operand<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let r = prog.value_regs.get(reg).copied().flatten()?;
+    Some(force(prog, r, drops))
+}
+
+/// Force a register's operand and read it as a scalar for strict arithmetic.
+///
+/// `Some(Ok(f))` when the forced operand is numeric (Int widens to `f64`);
+/// `Some(Err(()))` when it forced to bottom (propagate); `None` when the
+/// register is unbound. An unbound or non-numeric operand reads as `0.0`,
+/// matching the pre-lazy eager behavior.
+fn numeric_operand<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<Result<f64, ()>> {
+    let r = prog.value_regs.get(reg).copied().flatten()?;
+    let head = force(prog, r, drops);
+    match prog.arena.get(head) {
+        Some(Value::Bottom) => Some(Err(())),
+        Some(v) => Some(Ok(value_to_f64(v).unwrap_or(0.0))),
+        None => Some(Ok(0.0)),
+    }
 }
 
 fn exec_value_instr<T: Transcendental, const BUF: usize>(
@@ -740,9 +821,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
         }
         ValueInstr::ValueProject { dst, slot, field } => {
-            match prog.value_regs[*slot] {
+            match forced_operand(prog, *slot, drops) {
                 Some(rec) => {
                     let fref: Option<ArenaRef> = match prog.arena.get(rec) {
+                        Some(Value::Bottom) => {
+                            // Projecting bottom is bottom.
+                            write_bottom(prog, *dst, drops);
+                            return;
+                        }
                         Some(Value::Record(fields)) => fields.get(*field).cloned(),
                         _ => None,
                     };
@@ -820,9 +906,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             }
         }
         ValueInstr::ValueUnwrap { dst, src } => {
-            match prog.value_regs[*src] {
+            match forced_operand(prog, *src, drops) {
                 Some(sr) => {
                     let inner: Option<ArenaRef> = match prog.arena.get(sr) {
+                        Some(Value::Bottom) => {
+                            // Unwrapping bottom is bottom.
+                            write_bottom(prog, *dst, drops);
+                            return;
+                        }
                         Some(Value::Newtype(inner)) => Some(*inner),
                         _ => None,
                     };
@@ -932,12 +1023,23 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueMatch { dst, slot, ctor } => {
             // v1 static dispatch: the scrutinee's constructor is statically
-            // known (a literal sum), so exactly one arm matches. A non-matching
-            // arm (or an unbound scrutinee) writes None into every dst reg — a
-            // detectable no-op. Each dst reg owns its payload ref via a copy
-            // (rc++); the scrutinee keeps its own ownership of the sum.
-            let payload: Option<Vec<ArenaRef>> = match prog.value_regs.get(*slot).copied().flatten()
-            {
+            // known (a literal sum), so exactly one arm matches. The scrutinee
+            // is forced to WHNF first — a bottom scrutinee writes bottom into
+            // every dst reg (no arm is selected, control does not advance on
+            // its payload); a non-matching arm (or an unbound scrutinee)
+            // writes None into every dst reg — a detectable no-op. Each dst
+            // reg owns its payload ref via a copy (rc++); the scrutinee keeps
+            // its own ownership of the sum.
+            let scrutinee = forced_operand(prog, *slot, drops);
+            if let Some(sr) = scrutinee {
+                if matches!(prog.arena.get(sr), Some(Value::Bottom)) {
+                    for d in dst {
+                        write_bottom(prog, *d, drops);
+                    }
+                    return;
+                }
+            }
+            let payload: Option<Vec<ArenaRef>> = match scrutinee {
                 Some(sr) => match prog.arena.get(sr) {
                     Some(Value::Sum(c, fields)) if *c == *ctor => Some(fields.clone()),
                     _ => None,
@@ -1001,42 +1103,52 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
         }
         ValueInstr::ValueCompare { dst, op, a, b } => {
-            let res = match (prog.value_regs[*a], prog.value_regs[*b]) {
-                (Some(x), Some(y)) => {
-                    let c = value_cmp(&prog.arena, x, y);
-                    let b = match op {
-                        CmpOp::Eq => c == 0,
-                        CmpOp::Ne => c != 0,
-                        CmpOp::Lt => c < 0,
-                        CmpOp::Gt => c > 0,
-                        CmpOp::Le => c <= 0,
-                        CmpOp::Ge => c >= 0,
-                    };
-                    Some(Value::Bool(b))
-                }
+            let (ar, br) = (
+                forced_operand(prog, *a, drops),
+                forced_operand(prog, *b, drops),
+            );
+            let res = match (ar, br) {
+                (Some(x), Some(y)) => match (prog.arena.get(x), prog.arena.get(y)) {
+                    (Some(Value::Bottom), _) | (_, Some(Value::Bottom)) => Some(Value::Bottom),
+                    _ => {
+                        let c = value_cmp(&prog.arena, x, y);
+                        let b = match op {
+                            CmpOp::Eq => c == 0,
+                            CmpOp::Ne => c != 0,
+                            CmpOp::Lt => c < 0,
+                            CmpOp::Gt => c > 0,
+                            CmpOp::Le => c <= 0,
+                            CmpOp::Ge => c >= 0,
+                        };
+                        Some(Value::Bool(b))
+                    }
+                },
                 _ => None,
             };
             prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueLogic { dst, op, a, b } => {
-            let res = match (prog.value_regs[*a], prog.value_regs[*b]) {
-                (Some(x), Some(y)) => {
-                    let (ax, ay) = match (prog.arena.get(x), prog.arena.get(y)) {
-                        (Some(Value::Bool(p)), Some(Value::Bool(q))) => (*p, *q),
-                        _ => (false, false),
-                    };
-                    Some(Value::Bool(match op {
-                        LogicOp::And => ax && ay,
-                        LogicOp::Or => ax || ay,
-                    }))
-                }
+            let (ar, br) = (
+                forced_operand(prog, *a, drops),
+                forced_operand(prog, *b, drops),
+            );
+            let res = match (ar, br) {
+                (Some(x), Some(y)) => match (prog.arena.get(x), prog.arena.get(y)) {
+                    (Some(Value::Bottom), _) | (_, Some(Value::Bottom)) => Some(Value::Bottom),
+                    (Some(Value::Bool(p)), Some(Value::Bool(q))) => Some(Value::Bool(match op {
+                        LogicOp::And => *p && *q,
+                        LogicOp::Or => *p || *q,
+                    })),
+                    _ => None,
+                },
                 _ => None,
             };
             prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueNot { dst, src } => {
-            let b = match prog.value_regs[*src] {
+            let b = match forced_operand(prog, *src, drops) {
                 Some(r) => match prog.arena.get(r) {
+                    Some(Value::Bottom) => Some(Value::Bottom),
                     Some(Value::Bool(p)) => Some(Value::Bool(!*p)),
                     _ => None,
                 },
@@ -1052,11 +1164,62 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
             exec_value_call_builtin(prog, *op, args, *dst, drops);
         }
-        ValueInstr::ValueLazy { .. } => {
-            unimplemented!("ValueLazy: A6")
+        ValueInstr::ValueLazy { dst, env, fragment } => {
+            // Create a lazy binding: a fresh memo cell plus a thunk value
+            // referencing it and the captured env. The env register is read by
+            // value; the thunk COUNTS the env as a child (like a Closure), so
+            // the creating register keeps its own ownership. An unbound env
+            // (v1 named references) falls back to a fresh Void slot the thunk
+            // owns outright. The cell is created with rc 1 and is referenced
+            // only by this thunk value — copies of the thunk SHARE the slot
+            // (`ValueCopy`/`copy_owned`), never duplicating the cell, so
+            // forcing can mutate it in place.
+            let cell = match prog.arena.alloc(Value::ThunkCell(ThunkState::Unforced)) {
+                Ok(c) => c,
+                Err(_) => {
+                    prog.value_regs[*dst] = None;
+                    return;
+                }
+            };
+            let env_ref = match prog.value_regs.get(*env).copied().flatten() {
+                Some(r) => match prog.arena.copy(r) {
+                    Ok(c) => c,
+                    Err(_) => {
+                        prog.arena.drop_ref(cell);
+                        prog.value_regs[*dst] = None;
+                        return;
+                    }
+                },
+                None => match prog.arena.alloc(Value::Void) {
+                    Ok(v) => v,
+                    Err((err, _)) => {
+                        prog.arena.drop_ref(cell);
+                        prog.value_regs[*dst] = None;
+                        let _ = err;
+                        return;
+                    }
+                },
+            };
+            prog.value_regs[*dst] = alloc_owned(
+                prog,
+                Value::Thunk {
+                    fragment: *fragment as u32,
+                    env: env_ref,
+                    cell,
+                },
+            );
         }
-        ValueInstr::ValueForce { .. } => {
-            unimplemented!("ValueForce: A6")
+        ValueInstr::ValueForce { dst, src } => {
+            // Force the source to WHNF and share the head ref with `dst`. The
+            // head is borrowed from the source's memo cell (or is the source
+            // itself when already WHNF), so `dst` claims its own copy.
+            match prog.value_regs.get(*src).copied().flatten() {
+                Some(sr) => {
+                    let head = force(prog, sr, drops);
+                    prog.value_regs[*dst] = copy_owned(prog, head);
+                }
+                None => prog.value_regs[*dst] = None,
+            }
         }
     }
 }
@@ -1158,6 +1321,32 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     drops: &mut Vec<ArenaRef>,
 ) {
     use ValueBuiltinOp::*;
+    // Demand: force every collection argument to WHNF before dispatch, and
+    // propagate bottom. Each register is normalized to a fresh claim on its
+    // WHNF head (the memo cell keeps its own claim on a forced result), so the
+    // op bodies below read the heads unchanged. A bottom argument releases the
+    // original claim (the bottom slot survives via its cell) and writes bottom
+    // to the dst. In strict mode no thunks exist, so this is a no-op modulo RC.
+    for &a in args {
+        let Some(r) = prog.value_regs.get_mut(a).and_then(|r| r.take()) else {
+            continue;
+        };
+        let head = force(prog, r, drops);
+        if matches!(prog.arena.get(head), Some(Value::Bottom)) {
+            prog.arena.drop_ref(r);
+            write_bottom(prog, dst, drops);
+            return;
+        }
+        prog.value_regs[a] = match prog.arena.copy(head) {
+            Ok(c) => Some(c),
+            Err(_) => {
+                prog.arena.drop_ref(r);
+                prog.value_regs[dst] = None;
+                return;
+            }
+        };
+        prog.arena.drop_ref(r);
+    }
     match op {
         Cons => {
             // cons x xs: build a new List whose head is x followed by the
@@ -1847,6 +2036,234 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// Force `r` to WHNF and return the head ref. Idempotent via the memo cell.
+///
+/// The returned ref is a BORROWED view — the memo cell (or the caller's own
+/// operand) owns it. A caller that stores it must `copy` it first; a caller
+/// that only reads it must not drop it. `drops` is the shared deferred-drop
+/// scratch threaded from the value track: forcing runs the thunk body, whose
+/// instructions may queue drops.
+///
+/// Loop semantics (call-by-need): a value that is not a thunk is already WHNF.
+/// A thunk inspects its memo cell:
+/// - `Forced(res)`: memo hit — chase `res` (a result may itself be a thunk).
+/// - `Unforced`: mark the cell `Forcing` (the black-hole marker), run the body
+///   fragment with the captured env, memoize the result as `Forced(result)`.
+///   A body that RE-ENTERS this cell while it is `Forcing` has hit a black
+///   hole: the cell now memoizes a bottom slot and the thunk is divergent.
+/// - `Forcing`: re-entry — the black hole; the cell memoizes a bottom slot.
+/// - `Bottom`: a previously-divergent cell; memoize a bottom slot.
+///
+/// A divergent cell is memoized as `Forced(bottom_slot)` (rather than the bare
+/// `Bottom` state) so the bottom is borrowed like every other forced result,
+/// the SAME bottom ref is returned on every force, and no slot leaks.
+pub(crate) fn force<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    mut r: ArenaRef,
+    drops: &mut Vec<ArenaRef>,
+) -> ArenaRef {
+    loop {
+        let v = match prog.arena.get(r) {
+            Some(v) => v,
+            None => return r, // dangling: caller's bug; treat as-is
+        };
+        let Value::Thunk {
+            fragment,
+            env,
+            cell,
+        } = v
+        else {
+            return r; // already WHNF
+        };
+        let (fragment, env, cell) = (*fragment, *env, *cell);
+        let state: Option<Value> = prog.arena.get(cell).cloned();
+        match state {
+            Some(Value::ThunkCell(ThunkState::Forced(res))) => {
+                r = res;
+                continue;
+            }
+            Some(Value::ThunkCell(ThunkState::Bottom)) => {
+                // A previously-divergent cell: memoize a bottom slot and
+                // return it (borrowed, cell-owned).
+                let Some(b) = try_alloc_bottom(prog) else {
+                    return r;
+                };
+                *prog.arena.get_mut(cell).expect("cell rc 1") =
+                    Value::ThunkCell(ThunkState::Forced(b));
+                return b;
+            }
+            Some(Value::ThunkCell(ThunkState::Unforced)) => {
+                // Mark the cell Forcing (black hole) before dispatching.
+                *prog.arena.get_mut(cell).expect("cell rc 1") =
+                    Value::ThunkCell(ThunkState::Forcing);
+                let result = run_thunk_body(prog, fragment, env, drops);
+                // Re-entrancy guard: a body that forced ITSELF left a black-
+                // hole bottom behind while its cell was Forcing. Such a thunk
+                // is divergent — keep the bottom, discard the body result.
+                match prog.arena.get(cell).cloned() {
+                    Some(Value::ThunkCell(ThunkState::Forcing)) => {
+                        // Normal completion: memoize the body's result.
+                        *prog.arena.get_mut(cell).expect("cell rc 1") =
+                            Value::ThunkCell(ThunkState::Forced(result));
+                        r = result;
+                        continue;
+                    }
+                    Some(Value::ThunkCell(ThunkState::Forced(b))) => {
+                        prog.arena.drop_ref(result);
+                        r = b;
+                        continue;
+                    }
+                    Some(Value::ThunkCell(ThunkState::Bottom)) => {
+                        prog.arena.drop_ref(result);
+                        let Some(b) = try_alloc_bottom(prog) else {
+                            return r;
+                        };
+                        *prog.arena.get_mut(cell).expect("cell rc 1") =
+                            Value::ThunkCell(ThunkState::Forced(b));
+                        return b;
+                    }
+                    _ => {
+                        prog.arena.drop_ref(result);
+                        return r;
+                    }
+                }
+            }
+            Some(Value::ThunkCell(ThunkState::Forcing)) => {
+                // Black hole re-entry: divergent. Memoize a bottom slot.
+                let Some(b) = try_alloc_bottom(prog) else {
+                    return r;
+                };
+                *prog.arena.get_mut(cell).expect("cell rc 1") =
+                    Value::ThunkCell(ThunkState::Forced(b));
+                return b;
+            }
+            _ => return r,
+        }
+    }
+}
+
+/// Run a thunk's body fragment with the captured env record as its cells and
+/// return the produced result ref (a fresh owner, transferred to the caller's
+/// memo cell).
+///
+/// Mirrors [`run_fragment`]'s dispatch for a closure call with no argument
+/// registers: a thunk carries no stored arg registers — the env record IS the
+/// captured frame. Its fields become the capture cells, the body runs against
+/// a scratch register slice, and the fragment's output register is copied out
+/// before the slice is drained. A missing fragment id, or a body that produced
+/// no output, is a build bug and yields a fresh bottom (the thunk cannot
+/// compute).
+fn run_thunk_body<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    fragment_id: u32,
+    env_ref: ArenaRef,
+    drops: &mut Vec<ArenaRef>,
+) -> ArenaRef {
+    let Some(frag) = prog.ir.fragments.get(fragment_id as usize).cloned() else {
+        debug_assert!(false, "thunk body fragment {fragment_id} does not exist");
+        return try_alloc_bottom(prog).unwrap_or(env_ref);
+    };
+    // 1. Bind each env Record field as a capture cell: an INDEPENDENT copy of
+    //    the field's value appended to the shared capture-cell store (pre-sized
+    //    at construction — no allocation). The env record is untouched.
+    let cell_base = prog.frag_cells.len();
+    if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
+        let fields = fields.clone();
+        for f in &fields {
+            let cell = match prog.arena.get(*f).cloned() {
+                Some(v) => alloc_copy(prog, &v),
+                None => prog.arena.alloc(Value::Void).ok(),
+            };
+            if let Some(c) = cell {
+                prog.frag_cells.push(c);
+            }
+        }
+    }
+    let saved_cells_base = prog.frag_cells_base;
+    prog.frag_cells_base = cell_base;
+    // 2. Borrow the pre-allocated call-scratch slice for the fragment's local
+    //    registers (the store is pre-sized to `num_value_regs + max_call_regs`,
+    //    so the watermark can grow here — no reallocation on the RT path).
+    let base = prog.value_regs_top;
+    let top = base + frag.num_value_regs;
+    debug_assert!(
+        top <= prog.value_regs.len(),
+        "call scratch exceeds pre-allocated max_call_regs (lowering bound broken)"
+    );
+    prog.value_regs_top = top;
+    // 3. Run the fragment's value blocks with the register offset. Drops queue
+    //    on the threaded scratch above this call's mark and are drained below.
+    let drops_mark = drops.len();
+    let mut cur = frag.entry;
+    loop {
+        debug_assert!(
+            cur < frag.value_blocks.len(),
+            "fragment value-track fall-off-the-end: block {cur} does not exist"
+        );
+        let Some(b) = frag.value_blocks.get(cur) else {
+            break;
+        };
+        for i in &b.instrs {
+            let remapped = remap_value_instr(i, base);
+            exec_value_instr(prog, &remapped, drops);
+        }
+        cur = match b.term {
+            ValueTerm::Fallthrough(n) => n,
+            ValueTerm::Branch { cond, then, els } => {
+                if value_reg_is_true(prog, cond + base) {
+                    then
+                } else {
+                    els
+                }
+            }
+            ValueTerm::BranchCtor {
+                slot,
+                ctor,
+                then,
+                els,
+            } => {
+                if value_reg_ctor(prog, slot + base) == Some(ctor) {
+                    then
+                } else {
+                    els
+                }
+            }
+            ValueTerm::Halt => break,
+        };
+    }
+    for r in drops.drain(drops_mark..) {
+        prog.arena.drop_ref(r);
+    }
+    // 4. Copy the fragment's result OUT before the scratch is drained (the
+    //    output register's own ref is released below, leaving this copy).
+    let result: Option<ArenaRef> = match frag.output_value_regs.first() {
+        Some(or) => match prog.value_regs.get(base + *or).copied().flatten() {
+            Some(sr) => copy_owned(prog, sr),
+            None => None,
+        },
+        None => None,
+    };
+    // 5. Drain the scratch slice, unwind the watermark, release the capture
+    //    cells, and restore the caller's frame.
+    for i in base..prog.value_regs_top {
+        if let Some(r) = prog.value_regs[i].take() {
+            prog.arena.drop_ref(r);
+        }
+    }
+    prog.value_regs_top = base;
+    prog.frag_cells_base = saved_cells_base;
+    for c in prog.frag_cells.drain(cell_base..) {
+        prog.arena.drop_ref(c);
+    }
+    match result {
+        Some(r) => r,
+        None => {
+            debug_assert!(false, "thunk body fragment produced no result");
+            try_alloc_bottom(prog).unwrap_or(env_ref)
+        }
+    }
+}
+
 /// Clone `instr`, adding `base` to every fragment-local register field so the
 /// instruction runs against the scratch slice appended by [`run_fragment`].
 ///
@@ -2005,12 +2422,17 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             op: *op,
             args: args.iter().map(|a| a + base).collect(),
         },
-        ValueInstr::ValueLazy { .. } => {
-            unimplemented!("ValueLazy: A6")
-        }
-        ValueInstr::ValueForce { .. } => {
-            unimplemented!("ValueForce: A6")
-        }
+        ValueInstr::ValueLazy { dst, env, fragment } => ValueInstr::ValueLazy {
+            // `fragment` is a global index into `Ir::fragments` — leave it
+            // unoffset (mirrors `ValueMakeClosure`).
+            dst: dst + base,
+            env: env + base,
+            fragment: *fragment,
+        },
+        ValueInstr::ValueForce { dst, src } => ValueInstr::ValueForce {
+            dst: dst + base,
+            src: src + base,
+        },
     }
 }
 
@@ -2857,5 +3279,313 @@ mod value_cmp_tests {
             value_cmp(&a, l127, l200a) < 0,
             "127 < 200 across the i8 wrap"
         );
+    }
+}
+
+#[cfg(test)]
+mod lazy_track_tests {
+    use super::*;
+    use crate::arena::{ArenaRef, ThunkState, Value};
+    use crate::ir::{
+        FragmentIr, FuncSig, Ir, StateLayout, ValueBlock, ValueInstr, ValueLayout, ValueTerm,
+    };
+    use rill_core::traits::MultichannelAlgorithm;
+    use std::sync::Arc;
+
+    /// The shared thunk-body fragment: computes `ValueConstInt { value: 7 }`.
+    /// A thunk body is a closure with no argument registers — the env IS the
+    /// captured frame (`value_ins == 0`, one value out).
+    fn const7_fragment() -> Arc<FragmentIr> {
+        Arc::new(FragmentIr {
+            value_blocks: vec![ValueBlock {
+                instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }],
+                term: ValueTerm::Halt,
+            }],
+            entry: 0,
+            steps: Vec::new(),
+            num_value_regs: 1,
+            num_block_regs: 0,
+            output_value_regs: vec![0],
+            output_block_regs: Vec::new(),
+            num_capture_cells: 0,
+            sig: FuncSig {
+                value_ins: 0,
+                value_outs: 1,
+                signal_ins: 0,
+            },
+        })
+    }
+
+    fn prog_with(
+        value_blocks: Vec<ValueBlock>,
+        num_value_regs: usize,
+        value_output_regs: Vec<usize>,
+        fragments: Vec<Arc<FragmentIr>>,
+    ) -> RillProgram<f32, 256> {
+        let ir = Ir {
+            instrs: Vec::new(),
+            num_regs: 0,
+            output_regs: Vec::new(),
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            num_main_cells: 0,
+            value_blocks,
+            value_entry: 0,
+            num_value_regs,
+            value_output_regs,
+            value_funcs: Vec::new(),
+            fragments,
+            max_call_regs: 8,
+            value_state: ValueLayout {
+                capacity: 64,
+                buffer_budget: 64,
+                value_state_slots: 0,
+            },
+            tapes: Vec::new(),
+        };
+        RillProgram::<f32, 256>::new(ir)
+    }
+
+    fn empty_env(prog: &mut RillProgram<f32, 256>) -> ArenaRef {
+        prog.arena.alloc(Value::Record(vec![])).unwrap()
+    }
+
+    fn alloc_thunk(prog: &mut RillProgram<f32, 256>, state: ThunkState) -> (ArenaRef, ArenaRef) {
+        let env = empty_env(prog);
+        let cell = prog.arena.alloc(Value::ThunkCell(state)).unwrap();
+        let t = prog
+            .arena
+            .alloc(Value::Thunk {
+                fragment: 0,
+                env,
+                cell,
+            })
+            .unwrap();
+        (t, cell)
+    }
+
+    #[test]
+    fn force_unforced_thunk_runs_and_memoizes() {
+        // Force an Unforced thunk whose body produces Int(7): the first force
+        // runs the body and memoizes the result in the cell; the second force
+        // returns the SAME head ref without re-running the body.
+        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let (t, cell) = alloc_thunk(&mut prog, ThunkState::Unforced);
+        let mut drops = Vec::new();
+        let r1 = force(&mut prog, t, &mut drops);
+        let r2 = force(&mut prog, t, &mut drops);
+        assert_eq!(r1, r2, "memoization: both forces return the same head ref");
+        assert_eq!(prog.arena.get(r1).unwrap(), &Value::Int(7));
+        assert_eq!(
+            prog.arena.get(cell).unwrap(),
+            &Value::ThunkCell(ThunkState::Forced(r1)),
+            "the body ran exactly once and the cell memoized its result"
+        );
+    }
+
+    #[test]
+    fn force_black_hole_is_bottom() {
+        // A cell already in `Forcing` (the thunk was re-entered while forcing)
+        // is a black hole: forcing yields bottom and the cell memoizes it.
+        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let (t, cell) = alloc_thunk(&mut prog, ThunkState::Forcing);
+        let mut drops = Vec::new();
+        let b = force(&mut prog, t, &mut drops);
+        assert_eq!(
+            prog.arena.get(b).unwrap(),
+            &Value::Bottom,
+            "a black hole yields bottom"
+        );
+        assert_eq!(
+            prog.arena.get(cell).unwrap(),
+            &Value::ThunkCell(ThunkState::Forced(b)),
+            "the black hole is memoized as a bottom result"
+        );
+    }
+
+    #[test]
+    fn force_forced_returns_memo() {
+        // Force a thunk, share the thunk VALUE (rc++ on the same slot — the
+        // memo cell is shared, not copied), force the copy: the memoized ref
+        // is returned and the cell's rc stays 1.
+        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let (t, cell) = alloc_thunk(&mut prog, ThunkState::Unforced);
+        let mut drops = Vec::new();
+        let r1 = force(&mut prog, t, &mut drops);
+        let t2 = prog.arena.copy(t).unwrap();
+        assert_eq!(
+            prog.arena.rc(cell),
+            1,
+            "sharing the thunk shares the memo cell"
+        );
+        let r2 = force(&mut prog, t2, &mut drops);
+        assert_eq!(r1, r2, "the shared copy sees the same memoized result");
+        assert_eq!(
+            prog.arena.get(cell).unwrap(),
+            &Value::ThunkCell(ThunkState::Forced(r1))
+        );
+    }
+
+    #[test]
+    fn bottom_propagates_through_add() {
+        // A `Value::Bottom` operand of a strict `ValueAdd` yields bottom.
+        let mut prog = prog_with(
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstInt { dst: 0, value: 3 },
+                    ValueInstr::ValueAdd { dst: 2, a: 0, b: 1 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            3,
+            Vec::new(),
+            Vec::new(),
+        );
+        let bottom = prog.arena.alloc(Value::Bottom).unwrap();
+        prog.value_regs[1] = Some(bottom);
+        run_value_track(&mut prog).unwrap();
+        let res = prog.value_regs[2].unwrap();
+        assert_eq!(
+            prog.arena.get(res).unwrap(),
+            &Value::Bottom,
+            "strict ops propagate a bottom operand"
+        );
+    }
+
+    #[test]
+    fn strict_add_forces_thunk_operand() {
+        // ValueLazy suspends the const-7 fragment; the strict Add forces the
+        // operand to WHNF before reading it (7 + 1.5 = 8.5).
+        let mut prog = prog_with(
+            vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueConstFloat { dst: 2, value: 1.5 },
+                    ValueInstr::ValueLazy {
+                        dst: 1,
+                        env: 0,
+                        fragment: 0,
+                    },
+                    ValueInstr::ValueAdd { dst: 3, a: 1, b: 2 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            4,
+            Vec::new(),
+            vec![const7_fragment()],
+        );
+        let env = empty_env(&mut prog);
+        prog.value_regs[0] = Some(env);
+        run_value_track(&mut prog).unwrap();
+        let res = prog.value_regs[3].unwrap();
+        assert_eq!(prog.arena.get(res).unwrap(), &Value::Float(8.5), "7 + 1.5");
+    }
+
+    #[test]
+    fn match_on_bottom_writes_bottom_to_all_arms() {
+        // A Bottom scrutinee of ValueMatch writes bottom to every arm dst and
+        // never selects a payload.
+        let mut prog = prog_with(
+            vec![ValueBlock {
+                instrs: vec![ValueInstr::ValueMatch {
+                    dst: vec![1, 2],
+                    slot: 0,
+                    ctor: 0,
+                }],
+                term: ValueTerm::Halt,
+            }],
+            3,
+            Vec::new(),
+            Vec::new(),
+        );
+        let bottom = prog.arena.alloc(Value::Bottom).unwrap();
+        prog.value_regs[0] = Some(bottom);
+        run_value_track(&mut prog).unwrap();
+        assert_eq!(
+            prog.arena.get(prog.value_regs[1].unwrap()).unwrap(),
+            &Value::Bottom
+        );
+        assert_eq!(
+            prog.arena.get(prog.value_regs[2].unwrap()).unwrap(),
+            &Value::Bottom
+        );
+    }
+
+    #[test]
+    fn thunk_body_can_create_and_force_nested_thunk() {
+        // A thunk whose body itself allocates + forces a nested thunk: forcing
+        // the outer runs fragment 0 (with remapped ValueLazy/ValueForce over an
+        // unbound env → fresh Void fallback), which lazily builds the inner
+        // thunk over fragment 1 and forces it to Int(7).
+        let frag0 = Arc::new(FragmentIr {
+            value_blocks: vec![ValueBlock {
+                instrs: vec![
+                    ValueInstr::ValueLazy {
+                        dst: 1,
+                        env: 0,
+                        fragment: 1,
+                    },
+                    ValueInstr::ValueForce { dst: 2, src: 1 },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            entry: 0,
+            steps: Vec::new(),
+            num_value_regs: 3,
+            num_block_regs: 0,
+            output_value_regs: vec![2],
+            output_block_regs: Vec::new(),
+            num_capture_cells: 0,
+            sig: FuncSig {
+                value_ins: 0,
+                value_outs: 1,
+                signal_ins: 0,
+            },
+        });
+        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![frag0, const7_fragment()]);
+        let (t, cell) = alloc_thunk(&mut prog, ThunkState::Unforced);
+        let mut drops = Vec::new();
+        let r = force(&mut prog, t, &mut drops);
+        assert_eq!(
+            prog.arena.get(r).unwrap(),
+            &Value::Int(7),
+            "the outer thunk's body forced the nested thunk to WHNF"
+        );
+        assert_eq!(
+            prog.arena.get(cell).unwrap(),
+            &Value::ThunkCell(ThunkState::Forced(r))
+        );
+    }
+
+    #[test]
+    fn value_output_copy_forces_raw_thunk() {
+        // A lazy output register (a raw thunk, never explicitly forced) is
+        // forced to WHNF by the tick-end output copy.
+        let mut prog = prog_with(
+            vec![ValueBlock {
+                instrs: vec![ValueInstr::ValueLazy {
+                    dst: 1,
+                    env: 0,
+                    fragment: 0,
+                }],
+                term: ValueTerm::Halt,
+            }],
+            2,
+            vec![1],
+            vec![const7_fragment()],
+        );
+        let env = empty_env(&mut prog);
+        prog.value_regs[0] = Some(env);
+        let mut out = [0.0f32; 1];
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        let v = prog.value_outputs()[0].unwrap();
+        assert_eq!(
+            prog.arena().get(v).unwrap(),
+            &Value::Int(7),
+            "the output copy forces the lazy output to WHNF"
+        );
+        assert_eq!(prog.arena.live(), 1, "only the output survives the tick");
     }
 }
