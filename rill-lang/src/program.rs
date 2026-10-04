@@ -46,9 +46,6 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) block_state_next: Vec<FixedBuffer<T, BUF>>,
     /// Delay lines: region-backed ring buffers, one per `@` site.
     pub(crate) delays: Vec<RegionDelay<T>>,
-    /// Region allocator for large static buffer memory (tapes, delays, and
-    /// built-in algorithm buffers). Grows only at build time.
-    pub(crate) allocator: BufferAllocator<T>,
     /// Whole-buffer register store (fixed length `BUF` per register).
     pub(crate) block_regs: Vec<FixedBuffer<T, BUF>>,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
@@ -346,7 +343,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     pub fn new(ir: Ir) -> Self {
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let (delays, allocator) = Self::alloc_delays(&ir);
+        let (delays, _allocator) = Self::alloc_delays(&ir);
         let block_regs = vec![FixedBuffer::new(); ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
@@ -377,7 +374,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             block_state,
             block_state_next,
             delays,
-            allocator,
             block_regs,
             builtins: Vec::new(),
             params,
@@ -461,7 +457,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
 
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let (delays, allocator) = Self::alloc_delays(&ir);
+        let (delays, _allocator) = Self::alloc_delays(&ir);
         let block_regs = vec![FixedBuffer::new(); ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
@@ -492,7 +488,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             block_state,
             block_state_next,
             delays,
-            allocator,
             block_regs,
             builtins,
             params,
