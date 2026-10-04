@@ -108,7 +108,10 @@ pub use crate::buffer::{
 // Memory Types (arena, region slabs, pools)
 // ============================================================================
 
-pub use crate::memory::{Arena, ArenaError, ArenaRef, ArenaValue, BufferPool, ChunkedVec};
+pub use crate::memory::{
+    Arena, ArenaError, ArenaRef, ArenaValue, BufferAllocator, BufferPool, ChunkedVec, MemoryRegion,
+    RegionHandle,
+};
 
 // ============================================================================
 // Queue Types (from rill-patchbay integration)

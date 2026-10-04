@@ -21,7 +21,9 @@
 pub mod arena;
 pub mod chunked;
 pub mod pool;
+pub mod region;
 
 pub use arena::{Arena, ArenaError, ArenaRef, ArenaValue};
 pub use chunked::ChunkedVec;
 pub use pool::BufferPool;
+pub use region::{BufferAllocator, MemoryRegion, RegionHandle};
