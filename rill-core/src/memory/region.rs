@@ -100,7 +100,7 @@ impl<T> RegionHandle<T> {
     pub fn with_data(&self, f: impl FnOnce(&[T])) {
         let region = unsafe { &*self.region.get() };
         let end = self.offset + self.len;
-        f(&region.slab.slab_slice(self.offset, end));
+        f(region.slab.slab_slice(self.offset, end));
     }
 
     /// Write access to the handle's slice.
@@ -113,7 +113,7 @@ impl<T> RegionHandle<T> {
     pub fn with_data_mut(&self, f: impl FnOnce(&mut [T])) {
         let region = unsafe { &mut *self.region.get() };
         let end = self.offset + self.len;
-        f(&mut region.slab.slab_slice_mut(self.offset, end));
+        f(region.slab.slab_slice_mut(self.offset, end));
     }
 }
 

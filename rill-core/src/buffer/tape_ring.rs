@@ -16,6 +16,10 @@ use crate::math::Transcendental;
 pub trait RingStorage<T> {
     /// Usable length of the ring (tape capacity / delay length).
     fn len(&self) -> usize;
+    /// Whether the ring has zero usable length.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     /// Read access to the whole backing.
     fn with_data(&self, f: impl FnOnce(&[T]));
     /// Write access to the whole backing.
