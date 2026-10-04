@@ -4,6 +4,19 @@
 
 ### rill-core
 
+- **SP-4 P3: factory contract carries an optional `BufferAllocator`.**
+  `BlockFactory`/`MultichannelBlockFactory`/resource variants (in
+  `rill_lang::builtin` and `rill_lang::ffi`) now receive
+  `Option<&mut BufferAllocator<T>>` so built-in algorithms can carve large
+  internal buffers out of the program's region slab at build time. All ~70
+  registrations across `rill-lang`, `rill-lofi`, `rill-fft`, `rill-sampler`,
+  `rill-router` updated; non-migrated factories ignore the parameter. The
+  per-algorithm conversions (FFT scratch, wavetable tables, physical-model
+  grids, mixer buses) are **deferred**: they need typed access to
+  non-scalar buffers (`Complex<T>`, nested grids) that the scalar-typed
+  `BufferAllocator<T>` cannot serve without a byte-slab design — see the
+  SP-4 spec for the follow-up.
+
 - **SP-4 P2: region slabs + unified ring.** [`MemoryRegion`]/[`RegionHandle`]/
   [`BufferAllocator`] — chunked, reference-counted slabs for large static
   buffer memory (safe access via audited `unsafe` deref under the SP-4 §2.1
