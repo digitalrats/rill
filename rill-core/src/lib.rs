@@ -53,6 +53,9 @@ pub mod math;
 /// Lock-free, real-time safe signal buffers
 pub mod buffer;
 
+/// Centralized, RT-safe memory management (arena, region slabs, pools)
+pub mod memory;
+
 /// Real-time safe command queues for automation
 pub mod queues;
 
