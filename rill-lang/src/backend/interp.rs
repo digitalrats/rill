@@ -553,6 +553,9 @@ fn kind_rank(v: &Value) -> i8 {
         Set { .. } => 9,
         Closure(..) => 10,
         Void => 11,
+        Thunk { .. } => 12,
+        ThunkCell(_) => 13,
+        Bottom => 14,
     }
 }
 

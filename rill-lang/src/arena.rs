@@ -9,6 +9,19 @@
 
 pub use rill_core::memory::{Arena, ArenaError, ArenaRef, ArenaValue, BufferPool};
 
+/// Call-by-need state of a thunk cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ThunkState {
+    /// Not yet forced.
+    Unforced,
+    /// Being forced right now (black hole: re-entry ⇒ bottom).
+    Forcing,
+    /// Forced to WHNF; the memoized result ref.
+    Forced(ArenaRef),
+    /// Divergent; the value is bottom.
+    Bottom,
+}
+
 /// The kind of a [`Value`], used for runtime dispatch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ValueKind {
@@ -36,6 +49,10 @@ pub enum ValueKind {
     Set,
     /// The unit value.
     Void,
+    /// Suspended computation: body fragment + captured env + memo cell.
+    Thunk,
+    /// Divergent computation (bottom); propagates through strict ops.
+    Bottom,
 }
 
 /// A heap value stored in an [`Arena`] slot.
@@ -74,6 +91,19 @@ pub enum Value {
     },
     /// The unit value.
     Void,
+    /// Suspended computation: body fragment + captured env + memo cell.
+    Thunk {
+        /// Body fragment to run on forcing.
+        fragment: u32,
+        /// Captured environment record.
+        env: ArenaRef,
+        /// Memo/black-hole cell (ref to `Value::ThunkCell`).
+        cell: ArenaRef,
+    },
+    /// The force-state cell behind a thunk (rc 1; mutated by forcing).
+    ThunkCell(ThunkState),
+    /// Divergent computation (bottom); propagates through strict ops.
+    Bottom,
 }
 
 impl Value {
@@ -92,6 +122,9 @@ impl Value {
             Value::Map { .. } => ValueKind::Map,
             Value::Set { .. } => ValueKind::Set,
             Value::Void => ValueKind::Void,
+            Value::Thunk { .. } => ValueKind::Thunk,
+            Value::ThunkCell(_) => ValueKind::Thunk,
+            Value::Bottom => ValueKind::Bottom,
         }
     }
 }
@@ -122,6 +155,12 @@ impl ArenaValue for Value {
                     f(e);
                 }
             }
+            Value::Thunk { env, cell, .. } => {
+                f(*env);
+                f(*cell);
+            }
+            Value::ThunkCell(ThunkState::Forced(r)) => f(*r),
+            Value::ThunkCell(_) | Value::Bottom => {}
             _ => {}
         }
     }
@@ -170,5 +209,39 @@ impl ArenaValue for Value {
             Value::Set { elems } => Some(std::mem::take(elems)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thunk_visits_env_and_cell() {
+        let mut a = Arena::with_capacity(16);
+        let env = a.alloc(Value::Record(vec![])).unwrap();
+        let cell = a.alloc(Value::ThunkCell(ThunkState::Unforced)).unwrap();
+        let t = a
+            .alloc(Value::Thunk {
+                fragment: 0,
+                env,
+                cell,
+            })
+            .unwrap();
+        a.copy(cell).unwrap(); // extra ref on the cell
+        a.drop_ref(t);
+        // env freed (only the thunk owned it), cell survives via the extra ref.
+        assert_eq!(a.rc(env), 0);
+        assert_eq!(a.rc(cell), 1);
+    }
+
+    #[test]
+    fn thunk_cell_forced_keeps_result_alive() {
+        let mut a = Arena::with_capacity(16);
+        let res = a.alloc(Value::Int(7)).unwrap();
+        let cell = a.alloc(Value::ThunkCell(ThunkState::Forced(res))).unwrap();
+        a.copy(res).unwrap();
+        a.drop_ref(cell);
+        assert_eq!(a.rc(res), 1, "forced result survives via the copy");
     }
 }
