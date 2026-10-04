@@ -286,6 +286,9 @@ fn recount_children<T: Transcendental, const BUF: usize>(
                 _ = prog.arena.copy(*e);
             }
         }
+        // A6: Thunk/ThunkCell/Bottom not recounted yet — the lazy track MUST
+        // copy the thunk's env+cell and a Forced(r) result too (reconcile via
+        // `visit_refs` or the double-drop risk from the A4 review).
         _ => {}
     }
 }
@@ -458,6 +461,9 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
                 prog.arena.drop_ref(*e);
             }
         }
+        // A6: Thunk/ThunkCell/Bottom not dropped yet — the lazy track MUST
+        // release the thunk's env+cell and a Forced(r) result too (reconcile
+        // via `visit_refs` or the double-drop risk from the A4 review).
         _ => {}
     }
 }
