@@ -1,35 +1,35 @@
+//! # Tape loop — a large delay buffer for tape effects
+//!
+//! [`TapeLoop`] is a [`TapeRing`] over an owned `Vec` backing. Unlike
+//! [`DelayLine`](super::DelayLine), the capacity is a runtime value, so tapes
+//! can hold millions of samples without a const-generic inline array. The
+//! backing storage is abstracted via [`RingStorage`]; a region-backed variant
+//! (`RegionHandle` storage) is provided through the same ring.
+
 use crate::buffer::registry::DelayBuffer;
-use crate::buffer::Buffer;
+use crate::buffer::tape_ring::{RingStorage, TapeRing};
 use crate::math::Transcendental;
 
-/// Heap-allocated ring buffer for tape delay — single-threaded.
-///
-/// Unlike [`DelayLine`](super::DelayLine), `TapeLoop` does NOT use const generics
-/// for its capacity — the buffer is allocated on the heap at runtime.
-/// This allows arbitrarily large delay lines (millions of samples) without
-/// stack overflow.
-///
-/// # Thread safety
-///
-/// `TapeLoop` is **not** thread-safe. It uses plain `T`, not `AtomicCell`,
-/// because it is only accessed from the single signal thread. Sharing between
-/// heads goes through the [`Reader`](super::registry::Reader) /
-/// [`Writer`](super::registry::Writer) capability wrappers, never across threads.
-///
-/// # Example
-///
-/// ```rust
-/// use rill_core::buffer::TapeLoop;
-///
-/// let mut tape = TapeLoop::<f32>::new(96000).unwrap();
-/// tape.write(0.5);
-/// let sample = tape.read(100);
-/// ```
+/// Heap-backed tape loop. The backing is a [`TapeRing`] over an owned `Vec`.
 #[derive(Debug)]
-pub struct TapeLoop<T> {
-    buffer: Box<[T]>,
-    capacity: usize,
-    write_pos: usize,
+pub struct TapeLoop<T: Transcendental> {
+    inner: TapeRing<T, VecStorage<T>>,
+}
+
+/// Owned `Vec` storage implementing [`RingStorage`].
+#[derive(Debug)]
+pub(crate) struct VecStorage<T>(Vec<T>);
+
+impl<T: Transcendental> RingStorage<T> for VecStorage<T> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+    fn with_data(&self, f: impl FnOnce(&[T])) {
+        f(&self.0);
+    }
+    fn with_data_mut(&mut self, f: impl FnOnce(&mut [T])) {
+        f(&mut self.0);
+    }
 }
 
 impl<T: Transcendental> TapeLoop<T> {
@@ -43,107 +43,58 @@ impl<T: Transcendental> TapeLoop<T> {
             vec.push(T::ZERO);
         }
         Some(Self {
-            buffer: vec.into_boxed_slice(),
-            capacity,
-            write_pos: 0,
+            inner: TapeRing::new(VecStorage(vec)),
         })
     }
 
     /// Maximum capacity in samples.
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.inner.len()
     }
+
     /// Current write cursor position.
     pub fn write_pos(&self) -> usize {
-        self.write_pos
+        self.inner.write_pos()
     }
 
     /// Write a single sample and advance the write cursor.
     #[inline(always)]
     pub fn write(&mut self, sample: T) {
-        self.buffer[self.write_pos] = sample;
-        self.write_pos = (self.write_pos + 1) % self.capacity;
+        self.inner.write(sample);
     }
 
     /// Read a sample at `delay` samples behind the write position.
     #[inline(always)]
     pub fn read(&self, delay: usize) -> T {
-        let d = delay.min(self.capacity - 1);
-        let read_pos = if self.write_pos > d {
-            self.write_pos - 1 - d
-        } else {
-            self.capacity + self.write_pos - 1 - d
-        };
-        self.buffer[read_pos]
+        self.inner.read(delay)
     }
 
     /// Read with linear interpolation between samples.
     #[inline(always)]
     pub fn read_interpolated(&self, delay: f64) -> T {
-        let d = delay as usize;
-        let frac = T::from_f64(delay.fract());
-        let s1 = self.read(d);
-        let s2 = self.read(d + 1);
-        s1 + (s2 - s1) * frac
+        self.inner.read_interpolated(delay)
     }
 
     /// Write a full block of samples.
     #[inline(always)]
     pub fn write_block(&mut self, block: &[T]) {
-        let len = block.len().min(self.capacity);
-        for (i, &b) in block.iter().enumerate().take(len) {
-            self.buffer[(self.write_pos + i) % self.capacity] = b;
-        }
-        self.write_pos = (self.write_pos + len) % self.capacity;
+        self.inner.write_block(block);
     }
 
     /// Read a full block starting at `delay` samples behind write position.
     #[inline(always)]
     pub fn read_block(&self, delay: usize, output: &mut [T]) {
-        let len = output.len().min(self.capacity);
-        let d = delay.min(self.capacity - 1);
-        for (i, out) in output.iter_mut().enumerate().take(len) {
-            *out = self.read(d + len - 1 - i);
-        }
+        self.inner.read_block(delay, output);
     }
 
     /// Fill the entire buffer with a constant value.
     pub fn fill(&mut self, value: T) {
-        for slot in self.buffer.iter_mut() {
-            *slot = value;
-        }
+        self.inner.fill(value);
     }
 
     /// Reset write position and zero the buffer.
     pub fn clear(&mut self) {
-        for slot in self.buffer.iter_mut() {
-            *slot = T::ZERO;
-        }
-        self.write_pos = 0;
-    }
-}
-
-impl<T: Transcendental> Buffer<T> for TapeLoop<T> {
-    fn capacity(&self) -> usize {
-        self.capacity
-    }
-    fn len(&self) -> usize {
-        self.capacity
-    }
-    fn as_slice(&self) -> &[T] {
-        &self.buffer
-    }
-    fn as_mut_slice(&mut self) -> &mut [T] {
-        &mut self.buffer
-    }
-    fn fill(&mut self, value: T) {
-        self.fill(value);
-    }
-    fn copy_from(&mut self, src: &[T]) {
-        self.write_block(src);
-    }
-    fn clear(&mut self) {
-        self.clear();
+        self.inner.clear();
     }
 }
 
@@ -223,5 +174,17 @@ mod tests {
         tape.write(1.0);
         let v = tape.read_interpolated(0.5);
         assert!((v - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_fill_and_clear() {
+        let mut tape = TapeLoop::<f32>::new(4).unwrap();
+        tape.fill(5.0);
+        assert_eq!(tape.read(0), 5.0, "fill writes every slot");
+        tape.write(1.0);
+        assert_eq!(tape.read(0), 1.0, "write overwrites the head slot");
+        assert_eq!(tape.read(1), 5.0, "other slots keep the fill value");
+        tape.clear();
+        assert_eq!(tape.read(0), 0.0);
     }
 }

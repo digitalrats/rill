@@ -27,6 +27,7 @@ pub trait RingStorage<T> {
 }
 
 /// A non-consuming write-head ring over any [`RingStorage`].
+#[derive(Debug)]
 pub struct TapeRing<T, S: RingStorage<T>> {
     storage: S,
     head: usize,
@@ -51,12 +52,14 @@ impl<T: Transcendental, S: RingStorage<T>> TapeRing<T, S> {
         self.head = (self.head + 1) % n;
     }
 
-    /// Read a sample at `delay` behind the head (0 = most recent).
+    /// Read a sample at `delay` behind the head (0 = most recent). Delays
+    /// beyond the ring length clamp to the oldest sample (matching the
+    /// original `TapeLoop` behavior).
     #[inline(always)]
     pub fn read(&self, delay: usize) -> T {
         let n = self.storage.len();
-        debug_assert!(delay < n, "delay {delay} out of range (len {n})");
-        let pos = (self.head + n - delay - 1) % n;
+        let d = delay.min(n - 1);
+        let pos = (self.head + n - d - 1) % n;
         let mut out = T::ZERO;
         self.storage.with_data(|buf| out = buf[pos]);
         out
@@ -97,6 +100,17 @@ impl<T: Transcendental, S: RingStorage<T>> TapeRing<T, S> {
     pub fn clear(&mut self) {
         self.storage.with_data_mut(|buf| buf.fill(T::ZERO));
         self.head = 0;
+    }
+
+    /// Fill the entire backing with `value` without moving the head.
+    pub fn fill(&mut self, value: T) {
+        self.storage.with_data_mut(|buf| buf.fill(value));
+    }
+
+    /// Current write cursor position.
+    #[inline(always)]
+    pub fn write_pos(&self) -> usize {
+        self.head
     }
 
     /// Usable length.
