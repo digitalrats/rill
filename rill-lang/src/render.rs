@@ -7,11 +7,15 @@
 
 use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Pattern, Program, TypeExpr};
 use crate::error::CompileError;
+use crate::mode::Mode;
 use std::fmt::Write;
 
 /// Render a program as a rill-lang source string.
 pub fn render(program: &Program) -> Result<String, CompileError> {
     let mut buf = String::new();
+    if program.mode != Mode::Strict {
+        writeln!(buf, "{{-# MODE {} #-}}", mode_name(program.mode)).ok();
+    }
     for (i, def) in program.defs.iter().enumerate() {
         if i > 0 {
             buf.push('\n');
@@ -19,6 +23,14 @@ pub fn render(program: &Program) -> Result<String, CompileError> {
         render_def(def, &mut buf, 0)?;
     }
     Ok(buf)
+}
+
+/// The `{-# MODE ... #-}` spelling of an evaluation mode.
+fn mode_name(mode: Mode) -> String {
+    match mode {
+        Mode::Strict => "strict".into(),
+        Mode::Complete => "complete".into(),
+    }
 }
 
 fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileError> {
@@ -478,6 +490,7 @@ mod tests {
     #[test]
     fn render_simple_apply() {
         let prog = Program {
+            mode: Mode::Strict,
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![],
@@ -497,6 +510,7 @@ mod tests {
     #[test]
     fn render_pipeline() {
         let prog = Program {
+            mode: Mode::Strict,
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![],
@@ -520,6 +534,7 @@ mod tests {
     #[test]
     fn render_with_param() {
         let prog = Program {
+            mode: Mode::Strict,
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![crate::ast::Param {
@@ -543,6 +558,7 @@ mod tests {
     #[test]
     fn render_lambda() {
         let prog = Program {
+            mode: Mode::Strict,
             defs: vec![Def::Local {
                 name: "double".into(),
                 body: Expr::Lambda {
@@ -574,6 +590,7 @@ mod tests {
         let tokens = crate::lexer::tokenize(src).unwrap();
         let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
         let main_program = Program {
+            mode: Mode::Strict,
             defs: vec![program.main_def().unwrap().clone()],
         };
         let first = render(&main_program).unwrap();
@@ -678,5 +695,28 @@ mod tests {
         // `Just (Left y 1)`).
         let dsl = roundtrip_main("main = match x of { Just (Left y) 1 => y; _ => 0.0; };");
         assert_eq!(dsl, "main = match x of { Just (Left y) 1 => y; _ => 0.0; }");
+    }
+
+    #[test]
+    fn render_strict_default_emits_no_pragma() {
+        let src = "main = _ * 0.5";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
+        let dsl = render(&program).unwrap();
+        assert_eq!(dsl, "main = _ * 0.5");
+    }
+
+    #[test]
+    fn render_roundtrip_complete_pragma() {
+        // A `{-# MODE complete #-}` pragma renders first and survives a
+        // parse → render → parse → render round-trip.
+        let src = "{-# MODE complete #-}\nmain = _";
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
+        let first = render(&program).unwrap();
+        assert_eq!(first, "{-# MODE complete #-}\nmain = _");
+        let tokens2 = crate::lexer::tokenize(first.as_str()).unwrap();
+        let reparsed = crate::parser::parse(&tokens2, first.as_bytes()).unwrap();
+        assert_eq!(render(&reparsed).unwrap(), first);
     }
 }

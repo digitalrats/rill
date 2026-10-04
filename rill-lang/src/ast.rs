@@ -1,6 +1,7 @@
 //! Abstract syntax tree produced by the parser.
 
 use crate::error::Span;
+use crate::mode::Mode;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -517,6 +518,8 @@ impl Def {
 pub struct Program {
     /// Top-level definitions.
     pub defs: Vec<Def>,
+    /// Evaluation mode selected by a leading `{-# MODE ... #-}` pragma.
+    pub mode: Mode,
 }
 
 impl Program {

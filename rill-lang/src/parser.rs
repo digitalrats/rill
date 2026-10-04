@@ -3,6 +3,7 @@
 use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, MatchArm, Param, Pattern, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
+use crate::mode::Mode;
 
 /// An infix operator: a block-diagram combinator or an arithmetic operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -288,6 +289,32 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_program(&mut self) -> Result<Program, CompileError> {
+        let mut mode = Mode::default();
+        loop {
+            if !matches!(self.peek().tok, Tok::Pragma { .. }) {
+                break;
+            }
+            let token = self.bump();
+            match token.tok {
+                Tok::Pragma { name, value } => {
+                    if name == "MODE" {
+                        if value == "strict" {
+                            mode = Mode::Strict;
+                        } else if value == "complete" {
+                            mode = Mode::Complete;
+                        } else {
+                            return Err(CompileError::Pragma {
+                                msg: format!(
+                                    "unknown MODE value `{value}` (expected `strict` or `complete`)"
+                                ),
+                                span: token.span,
+                            });
+                        }
+                    }
+                }
+                _ => unreachable!("pragma token expected"),
+            }
+        }
         let mut defs = Vec::new();
         while self.peek().tok != Tok::Eof {
             defs.push(self.parse_top_def()?);
@@ -310,7 +337,7 @@ impl<'a> Parser<'a> {
                 span: Span::new(0, self.src.len()),
             });
         }
-        Ok(Program { defs })
+        Ok(Program { mode, defs })
     }
 
     fn parse_top_def(&mut self) -> Result<Def, CompileError> {
@@ -1243,6 +1270,33 @@ mod tests {
         let p = prog(src);
         let main = p.main_def().expect("no main def");
         main.body().clone()
+    }
+
+    #[test]
+    fn pragma_complete_parses() {
+        let src = "{-# MODE complete #-}\nmain = _";
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+        assert_eq!(p.mode, crate::mode::Mode::Complete);
+    }
+
+    #[test]
+    fn pragma_strict_is_default() {
+        let src = "main = _";
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+        assert_eq!(p.mode, crate::mode::Mode::Strict);
+    }
+
+    #[test]
+    fn pragma_overrides_previous() {
+        let src = "{-# MODE complete #-}\n{-# MODE strict #-}\nmain = _";
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+        assert_eq!(p.mode, crate::mode::Mode::Strict);
+    }
+
+    #[test]
+    fn bad_pragma_errors() {
+        let src = "{-# MODE nope #-}\nmain = _";
+        assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
     }
 
     #[test]

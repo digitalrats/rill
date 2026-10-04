@@ -354,7 +354,10 @@ pub fn reconstruct(spec: &GraphSpec) -> Result<Program, CompileError> {
         where_defs: vec![],
     }];
 
-    Ok(Program { defs })
+    Ok(Program {
+        defs,
+        mode: crate::mode::Mode::default(),
+    })
 }
 
 /// `expr <: (w_0, ..., w_{Ao-1})` where `w_k = _` when channel `k` is kept and

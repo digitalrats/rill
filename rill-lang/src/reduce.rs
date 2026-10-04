@@ -638,7 +638,10 @@ pub fn reduce_with_cafs(program: &Program, cafs: &HashSet<String>) -> Program {
         .iter()
         .map(|d| (d.name().to_string(), d.clone()))
         .collect();
-    let mut result = Program { defs: Vec::new() };
+    let mut result = Program {
+        defs: Vec::new(),
+        mode: program.mode,
+    };
     for def in &reduced_defs {
         let mut ctx = final_ctx.clone();
         for wd in def.where_defs() {

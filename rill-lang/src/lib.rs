@@ -24,6 +24,7 @@ pub mod graph;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
+pub mod mode;
 pub mod parser;
 pub mod prelude;
 pub mod program;
@@ -287,7 +288,13 @@ fn extract_resources(
             defs.push(def.clone());
         }
     }
-    Ok((crate::ast::Program { defs }, decls))
+    Ok((
+        crate::ast::Program {
+            defs,
+            mode: program.mode,
+        },
+        decls,
+    ))
 }
 
 #[cfg(test)]

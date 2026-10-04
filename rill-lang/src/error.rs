@@ -46,6 +46,14 @@ pub enum CompileError {
         /// Location in source.
         span: Span,
     },
+    /// A `{-# ... #-}` pragma directive with an unknown name or value.
+    #[error("bad pragma at {span:?}: {msg}")]
+    Pragma {
+        /// Human-readable cause.
+        msg: String,
+        /// Location in source.
+        span: Span,
+    },
     /// The type checker rejected the program (arity or scalar mismatch, etc.).
     #[error("type error at {span:?}: {msg}")]
     Type {

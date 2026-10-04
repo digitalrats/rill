@@ -125,6 +125,13 @@ pub enum Tok {
     Eof,
     /// Imaginary literal, e.g. `3i`, `2.5i`.
     Imag(f64),
+    /// `{-# name value #-}` pragma directive.
+    Pragma {
+        /// Pragma name, e.g. `MODE`.
+        name: String,
+        /// Pragma value, e.g. `strict` | `complete`.
+        value: String,
+    },
 }
 
 /// A token plus its source span.
@@ -160,6 +167,54 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             continue;
         }
         let start = i;
+        if c == b'{' && i + 2 < bytes.len() && bytes[i + 1] == b'-' && bytes[i + 2] == b'#' {
+            // `{-# name value #-}` — scan to the closing `#-}`.
+            let mut j = i + 3;
+            while j + 2 < bytes.len()
+                && !(bytes[j] == b'#' && bytes[j + 1] == b'-' && bytes[j + 2] == b'}')
+            {
+                j += 1;
+            }
+            if j + 2 >= bytes.len() {
+                return Err(CompileError::Lex {
+                    msg: "unterminated pragma (expected `#-}`)".into(),
+                    span: Span::new(start, bytes.len()),
+                });
+            }
+            let end = j + 3;
+            let content = &src[i + 3..j];
+            // Split the inner text on whitespace into exactly `name value`.
+            let mut words: Vec<&str> = Vec::new();
+            let mut k = i + 3;
+            while k < j {
+                while k < j && bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                if k >= j {
+                    break;
+                }
+                let wstart = k;
+                while k < j && !bytes[k].is_ascii_whitespace() {
+                    k += 1;
+                }
+                words.push(&src[wstart..k]);
+            }
+            if words.len() != 2 {
+                return Err(CompileError::Lex {
+                    msg: format!("bad pragma `{{-# {content} #-}}` (expected `name value`)"),
+                    span: Span::new(start, end),
+                });
+            }
+            out.push(Token {
+                tok: Tok::Pragma {
+                    name: words[0].to_string(),
+                    value: words[1].to_string(),
+                },
+                span: Span::new(start, end),
+            });
+            i = end;
+            continue;
+        }
         if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b':' {
             i += 2;
             out.push(Token {
@@ -490,6 +545,25 @@ mod tests {
     #[test]
     fn rejects_unterminated_string() {
         assert!(tokenize(r#""abc"#).is_err());
+    }
+
+    #[test]
+    fn lexes_pragma() {
+        assert_eq!(
+            kinds("{-# MODE complete #-}"),
+            vec![
+                Tok::Pragma {
+                    name: "MODE".into(),
+                    value: "complete".into()
+                },
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_pragma() {
+        assert!(tokenize("{-# MODE complete").is_err());
     }
 
     #[test]
