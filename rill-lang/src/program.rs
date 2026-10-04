@@ -3,8 +3,10 @@
 //! `process()` performs no heap allocation after warm-up.
 
 use crate::builtin::{BuiltinFactoryKind, MultichannelBlockBuiltin};
+use rill_core::buffer::TapeRing;
 use rill_core::buffer::{FixedBuffer, SharedCell};
 use rill_core::math::Transcendental;
+use rill_core::memory::{BufferAllocator, RegionHandle};
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
 
@@ -16,8 +18,9 @@ use crate::schedule::{build_schedule, Schedule};
 
 /// Upper bound on a single `@ n` delay line, in samples.
 ///
-/// Delay lengths are compile-time constants per site; every ring is a fixed
-/// [`FixedBuffer`] of this size (largest delay allowed by the `@` operator).
+/// Enforced at compile time by lowering (`lower.rs`); the runtime storage is a
+/// region-backed [`RegionDelay`] carved to the site's length, so the bound is
+/// a language limit, not a storage size.
 pub(crate) const MAX_DELAY_LEN: usize = 65536;
 
 /// Upper bound on built-in signal channels routed through one call site.
@@ -41,8 +44,11 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) block_state: Vec<FixedBuffer<T, BUF>>,
     /// Current-tick feedback writes, swapped with `block_state` at tick end.
     pub(crate) block_state_next: Vec<FixedBuffer<T, BUF>>,
-    /// Delay lines: block-level ring buffers, one per `@` site.
-    pub(crate) delays: Vec<DelayRing<T, MAX_DELAY_LEN>>,
+    /// Delay lines: region-backed ring buffers, one per `@` site.
+    pub(crate) delays: Vec<RegionDelay<T>>,
+    /// Region allocator for large static buffer memory (tapes, delays, and
+    /// built-in algorithm buffers). Grows only at build time.
+    pub(crate) allocator: BufferAllocator<T>,
     /// Whole-buffer register store (fixed length `BUF` per register).
     pub(crate) block_regs: Vec<FixedBuffer<T, BUF>>,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
@@ -101,48 +107,30 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) value_error: Option<ProcessError>,
 }
 
-/// A fixed-length ring buffer for one `@` delay site, processed whole-block.
+/// A region-backed `@` delay site: a [`TapeRing`] over a [`RegionHandle`].
 ///
-/// Backed by a [`FixedBuffer`] (no heap in the RT path); the ring's usable
-/// length is the site's compile-time delay length, clamped to `MAX_DELAY`.
-pub(crate) struct DelayRing<T: Transcendental, const MAX_DELAY: usize> {
-    buf: FixedBuffer<T, MAX_DELAY>,
-    head: usize,
-    len: usize,
-}
+/// The ring's usable length equals the site's compile-time delay length; the
+/// backing memory is carved from the program's [`BufferAllocator`] at build.
+pub(crate) struct RegionDelay<T: Transcendental>(TapeRing<T, RegionHandle<T>>);
 
-impl<T: Transcendental, const MAX_DELAY: usize> DelayRing<T, MAX_DELAY> {
-    pub(crate) fn new(len: usize) -> Self {
-        assert!(
-            (1..=MAX_DELAY).contains(&len),
-            "delay length {len} exceeds MAX_DELAY_LEN ({MAX_DELAY})"
-        );
-        Self {
-            buf: FixedBuffer::new(),
-            head: 0,
-            len,
-        }
+impl<T: Transcendental> RegionDelay<T> {
+    pub(crate) fn new(buf: RegionHandle<T>) -> Self {
+        Self(TapeRing::new(buf))
     }
 
-    /// Read a whole block of delayed samples into `out`.
+    /// Read a whole block of delayed samples into `out` (delay 0).
     pub(crate) fn read_block(&self, out: &mut [T]) {
-        for (i, o) in out.iter_mut().enumerate() {
-            *o = self.buf[(self.head + i) % self.len];
-        }
+        self.0.read_block(0, out);
     }
 
     /// Write a whole block into the ring buffer and advance the head.
     pub(crate) fn write_block(&mut self, input: &[T]) {
-        for (i, &v) in input.iter().enumerate() {
-            self.buf[(self.head + i) % self.len] = v;
-        }
-        self.head = (self.head + input.len()) % self.len;
+        self.0.write_block(input);
     }
 
     /// Zero the ring and reset the head.
     pub(crate) fn clear(&mut self) {
-        self.buf.fill(T::ZERO);
-        self.head = 0;
+        self.0.clear();
     }
 }
 
@@ -358,12 +346,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     pub fn new(ir: Ir) -> Self {
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let delays = ir
-            .state
-            .delay_lens
-            .iter()
-            .map(|&l| DelayRing::new(l))
-            .collect();
+        let (delays, allocator) = Self::alloc_delays(&ir);
         let block_regs = vec![FixedBuffer::new(); ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
@@ -394,6 +377,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             block_state,
             block_state_next,
             delays,
+            allocator,
             block_regs,
             builtins: Vec::new(),
             params,
@@ -477,12 +461,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
 
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let delays = ir
-            .state
-            .delay_lens
-            .iter()
-            .map(|&l| DelayRing::new(l))
-            .collect();
+        let (delays, allocator) = Self::alloc_delays(&ir);
         let block_regs = vec![FixedBuffer::new(); ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();
@@ -513,6 +492,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             block_state,
             block_state_next,
             delays,
+            allocator,
             block_regs,
             builtins,
             params,
@@ -558,6 +538,34 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
                 )
             })
             .collect()
+    }
+
+    /// Carve the `@` delay sites out of a fresh region allocator.
+    ///
+    /// The allocator is sized from the sum of delay lengths; its chunk capacity
+    /// is the largest delay length rounded up to a power of two, so every
+    /// handle fits within a single chunk (non-spanning). The allocator grows
+    /// on demand at build time.
+    fn alloc_delays(ir: &Ir) -> (Vec<RegionDelay<T>>, BufferAllocator<T>) {
+        let total: usize = ir.state.delay_lens.iter().sum();
+        let max_delay = ir.state.delay_lens.iter().copied().max().unwrap_or(1);
+        let chunk_cap = max_delay.max(1).next_power_of_two();
+        let mut allocator = BufferAllocator::new(total.max(1), chunk_cap, T::ZERO);
+        let delays = ir
+            .state
+            .delay_lens
+            .iter()
+            .map(|&l| {
+                let buf = allocator.allocate(l).unwrap_or_else(|| {
+                    allocator.grow(T::ZERO);
+                    allocator
+                        .allocate(l)
+                        .expect("allocator must satisfy a delay request after growth")
+                });
+                RegionDelay::new(buf)
+            })
+            .collect();
+        (delays, allocator)
     }
 
     /// Upper bound on the shared fragment capture-cell store: the worst-case
