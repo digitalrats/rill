@@ -65,7 +65,7 @@ impl<T> ChunkedVec<T> {
         for c in 0..chunks {
             let base = c * chunk_cap;
             let n = (capacity - base).min(chunk_cap);
-            let chunk: Vec<T> = (base..base + n).map(|i| make(i)).collect();
+            let chunk: Vec<T> = (base..base + n).map(&mut make).collect();
             s.chunks.push(chunk.into_boxed_slice());
         }
         s.len = capacity;
@@ -88,16 +88,16 @@ impl<T> ChunkedVec<T> {
         (i >> self.bits, i & (self.chunk_cap - 1))
     }
 
-    /// Immutable access.
+    /// Immutable access by logical index (panics when out of bounds).
     #[inline]
-    pub fn index(&self, i: usize) -> &T {
+    pub fn at(&self, i: usize) -> &T {
         let (c, o) = self.split(i);
         &self.chunks[c][o]
     }
 
-    /// Mutable access.
+    /// Mutable access by logical index (panics when out of bounds).
     #[inline]
-    pub fn index_mut(&mut self, i: usize) -> &mut T {
+    pub fn at_mut(&mut self, i: usize) -> &mut T {
         let (c, o) = self.split(i);
         &mut self.chunks[c][o]
     }
@@ -164,8 +164,8 @@ mod tests {
     fn logical_indices_are_contiguous_across_chunks() {
         let s = store();
         assert_eq!(s.len(), 5);
-        assert_eq!(s.index(0), &0u64);
-        assert_eq!(s.index(4), &4u64);
+        assert_eq!(s.at(0), &0u64);
+        assert_eq!(s.at(4), &4u64);
         assert_eq!(s.num_chunks(), 2);
     }
 
@@ -174,13 +174,13 @@ mod tests {
         let mut s = ChunkedVec::<u64>::with_capacity(0, 4, |_| 0);
         s.push_chunk(|base| base as u64);
         s.push_chunk(|base| base as u64);
-        assert_eq!(s.index(0), &0u64);
-        assert_eq!(s.index(4), &4u64);
-        assert_eq!(s.index(7), &7u64);
+        assert_eq!(s.at(0), &0u64);
+        assert_eq!(s.at(4), &4u64);
+        assert_eq!(s.at(7), &7u64);
         assert_eq!(s.len(), 8);
-        *s.index_mut(3) = 99;
-        assert_eq!(s.index(3), &99u64);
-        assert_eq!(s.index(4), &4u64, "existing data stable across growth");
+        *s.at_mut(3) = 99;
+        assert_eq!(s.at(3), &99u64);
+        assert_eq!(s.at(4), &4u64, "existing data stable across growth");
     }
 
     #[test]
@@ -194,7 +194,7 @@ mod tests {
     #[should_panic(expected = "index 5 out of bounds")]
     fn index_out_of_bounds_panics() {
         let s = store();
-        let _ = s.index(5);
+        let _ = s.at(5);
     }
 
     #[test]

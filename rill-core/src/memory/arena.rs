@@ -279,7 +279,7 @@ impl<V: ArenaValue> Arena<V> {
         if slots.num_chunks() == 1 {
             Some(&slots.chunk(0)[r as usize])
         } else {
-            Some(slots.index(r as usize))
+            Some(slots.at(r as usize))
         }
     }
 
@@ -291,7 +291,7 @@ impl<V: ArenaValue> Arena<V> {
         if slots.num_chunks() == 1 {
             Some(&mut slots.chunk_mut(0)[r as usize])
         } else {
-            Some(slots.index_mut(r as usize))
+            Some(slots.at_mut(r as usize))
         }
     }
 }
