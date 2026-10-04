@@ -230,10 +230,12 @@ impl<V: ArenaValue> Arena<V> {
         if rc <= 1 {
             return Ok(r);
         }
-        // Clone the value (pooled) and recount its children into the copy.
+        // Clone the value and recount its children into the copy. Uses plain
+        // `Clone` (matching the original COW semantics) so the payload pool is
+        // budgeted only for the collection ops, exactly as before the move.
         let val = match Self::slot_ref_in(&self.slots, r) {
             Some(Slot::Occupied { val, .. }) => match val.as_ref() {
-                Some(v) => v.clone_pooled(&mut self.pool)?,
+                Some(v) => v.clone(),
                 None => return Err(ArenaError::DanglingRef),
             },
             _ => return Err(ArenaError::DanglingRef),
@@ -322,8 +324,9 @@ mod tests {
             Ok(Node { kids: b })
         }
         fn detach_payload(&mut self) -> Option<Vec<ArenaRef>> {
-            let kids = std::mem::take(&mut self.kids);
-            (!kids.is_empty()).then_some(kids)
+            // Always return the payload buffer (capacity preserved even when
+            // empty) so the pool never drains on empty-payload drops.
+            Some(std::mem::take(&mut self.kids))
         }
     }
 

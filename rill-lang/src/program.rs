@@ -8,7 +8,7 @@ use rill_core::math::Transcendental;
 use rill_core::traits::MultichannelAlgorithm;
 use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
 
-use crate::arena::{Arena, BufferPool};
+use crate::arena::{Arena, BufferPool, Value};
 use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
 use crate::ir::{BuiltinInstance, Ir, ParamDef, ValueBlock};
@@ -54,7 +54,7 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Parameter metadata (name, default, range).
     pub(crate) params_meta: Vec<ParamDef>,
     /// Value arena (fixed capacity from IR).
-    pub(crate) arena: Arena,
+    pub(crate) arena: Arena<Value>,
     /// Persistent main λ-parameter cells, one per [`Ir::num_main_cells`]. Each
     /// cell is a `Void` arena slot allocated ONCE at construction — the value
     /// track never rebinds them, so a `SetParameter` write survives across
@@ -545,7 +545,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// Each cell is a `Void` slot owned solely by `main_cells`. Capacity is
     /// computed at build time to include these `count` slots, so allocation
     /// cannot fail in a correctly-lowered program.
-    fn alloc_main_cells(arena: &mut Arena, count: usize) -> Vec<Option<crate::arena::ArenaRef>> {
+    fn alloc_main_cells(
+        arena: &mut Arena<Value>,
+        count: usize,
+    ) -> Vec<Option<crate::arena::ArenaRef>> {
         (0..count)
             .map(|_| {
                 Some(
@@ -677,7 +680,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     }
 
     /// Access to the value arena, for inspecting output values (tests, tooling).
-    pub fn arena(&self) -> &Arena {
+    pub fn arena(&self) -> &Arena<Value> {
         &self.arena
     }
 

@@ -474,14 +474,14 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
 ///
 /// `Closure` values are unordered — reaching one is a lowering bug (the type
 /// checker rejects `Ord` over functions).
-fn value_cmp(arena: &Arena, a: ArenaRef, b: ArenaRef) -> i8 {
+fn value_cmp(arena: &Arena<Value>, a: ArenaRef, b: ArenaRef) -> i8 {
     match (arena.get(a), arena.get(b)) {
         (Some(va), Some(vb)) => value_cmp_ref(arena, va, vb),
         _ => 0,
     }
 }
 
-fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
+fn value_cmp_ref(arena: &Arena<Value>, a: &Value, b: &Value) -> i8 {
     use Value::*;
     match (a, b) {
         (Int(x), Int(y)) => x.cmp(y) as i8,
@@ -525,7 +525,7 @@ fn value_cmp_ref(arena: &Arena, a: &Value, b: &Value) -> i8 {
     }
 }
 
-fn cmp_ref_slices(arena: &Arena, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 {
+fn cmp_ref_slices(arena: &Arena<Value>, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 {
     for (i, x) in xs.iter().enumerate() {
         let Some(y) = ys.get(i) else {
             return 1;
@@ -2735,7 +2735,7 @@ mod value_cmp_tests {
         assert!(value_cmp(&a, b, r1) < 0, "Bool sorts before Int");
     }
 
-    fn int_list(a: &mut Arena, len: usize) -> ArenaRef {
+    fn int_list(a: &mut Arena<Value>, len: usize) -> ArenaRef {
         let elems: Vec<ArenaRef> = (0..len).map(|_| a.alloc(Value::Int(0)).unwrap()).collect();
         a.alloc(Value::List { elems }).unwrap()
     }
