@@ -310,6 +310,11 @@ impl<'a> Parser<'a> {
                                 span: token.span,
                             });
                         }
+                    } else {
+                        return Err(CompileError::Pragma {
+                            msg: format!("unknown pragma `{name}` (expected `MODE`)"),
+                            span: token.span,
+                        });
                     }
                 }
                 _ => unreachable!("pragma token expected"),
@@ -1296,6 +1301,12 @@ mod tests {
     #[test]
     fn bad_pragma_errors() {
         let src = "{-# MODE nope #-}\nmain = _";
+        assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn bad_pragma_unknown_name_errors() {
+        let src = "{-# FOO bar #-}\nmain = _";
         assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
     }
 

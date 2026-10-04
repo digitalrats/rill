@@ -567,6 +567,12 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_pragma() {
+        assert!(tokenize("{-# MODE #-}").is_err());
+        assert!(tokenize("{-# MODE complete extra #-}").is_err());
+    }
+
+    #[test]
     fn lexes_main_keyword() {
         assert_eq!(
             kinds("main foo bar"),

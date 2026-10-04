@@ -519,6 +519,7 @@ pub struct Program {
     /// Top-level definitions.
     pub defs: Vec<Def>,
     /// Evaluation mode selected by a leading `{-# MODE ... #-}` pragma.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub mode: Mode,
 }
 
