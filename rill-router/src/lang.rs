@@ -122,7 +122,7 @@ impl<T: Transcendental> MultichannelBlockBuiltin<T> for MonoToStereoBuiltin<T> {
 /// `ForeignRegistry` path `register_foreign_router` registers the same
 /// factories for `compile_with_ffi`).
 pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    reg.register_block("graphic_eq", |p, sr| {
+    reg.register_block("graphic_eq", |p, sr, _alloc| {
         let factory = BiquadFactory;
         let mut eq = GraphicEq::new_third_octave(factory, sr);
         eq.set_output_gain(p[0] as f32);
@@ -135,7 +135,7 @@ pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         })
     });
 
-    reg.register_multichannel_block("mono_to_stereo", |_signal_ins, params, _sr| {
+    reg.register_multichannel_block("mono_to_stereo", |_signal_ins, params, _sr, _alloc| {
         Box::new(MonoToStereoBuiltin::<T> {
             inner: MonoToStereo::new(PanLaw::ConstantPower, params[0] as f32, params[1] as f32),
         })
@@ -143,7 +143,7 @@ pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
 
     // --- Mixer / eq_parametric / dry_wet (moved from rill-lang, SP-3b Task 7) ---
 
-    reg.register_multichannel_block("mixer", |signal_ins, params, _sr| {
+    reg.register_multichannel_block("mixer", |signal_ins, params, _sr, _alloc| {
         let num_channels = signal_ins.max(1);
         let mut config = MixerConfig::new(num_channels, 0);
         if params.len() > 1 {
@@ -152,12 +152,15 @@ pub fn register_router_builtins<T: Transcendental>(reg: &mut Registry<T>) {
         Box::new(MixerAlgorithmWrapper::<T>::new(config))
     });
 
-    reg.register_block("eq_parametric", |_params: &[f64], sample_rate: f32| {
-        let inner = EqState::new(EqConfig { bands: vec![] }, sample_rate);
-        Box::new(EqBuiltin::new(inner))
-    });
+    reg.register_block(
+        "eq_parametric",
+        |_params: &[f64], sample_rate: f32, _alloc| {
+            let inner = EqState::new(EqConfig { bands: vec![] }, sample_rate);
+            Box::new(EqBuiltin::new(inner))
+        },
+    );
 
-    reg.register_multichannel_block("dry_wet", |_signal_ins, params, _sr| {
+    reg.register_multichannel_block("dry_wet", |_signal_ins, params, _sr, _alloc| {
         let mix = params.first().copied().unwrap_or(0.5);
         Box::new(DryWetBuiltin::<T>::new(mix))
     });
@@ -185,7 +188,7 @@ fn band_type_from_f64(v: f64) -> BandType {
 pub fn register_foreign_router<T: Transcendental + 'static>(
     ffi: &mut rill_lang::ffi::ForeignRegistry<T>,
 ) {
-    ffi.register_block("graphic_eq", |p: &[f64], sr: f32| {
+    ffi.register_block("graphic_eq", |p: &[f64], sr: f32, _alloc| {
         let factory = BiquadFactory;
         let mut eq = GraphicEq::new_third_octave(factory, sr);
         eq.set_output_gain(p[0] as f32);
@@ -198,13 +201,13 @@ pub fn register_foreign_router<T: Transcendental + 'static>(
         })
     });
 
-    ffi.register_multichannel_block("mono_to_stereo", |_signal_ins, params, _sr| {
+    ffi.register_multichannel_block("mono_to_stereo", |_signal_ins, params, _sr, _alloc| {
         Box::new(MonoToStereoBuiltin::<T> {
             inner: MonoToStereo::new(PanLaw::ConstantPower, params[0] as f32, params[1] as f32),
         })
     });
 
-    ffi.register_multichannel_block("mixer", |signal_ins, params, _sr| {
+    ffi.register_multichannel_block("mixer", |signal_ins, params, _sr, _alloc| {
         let num_channels = signal_ins.max(1);
         let mut config = MixerConfig::new(num_channels, 0);
         if params.len() > 1 {
@@ -213,7 +216,7 @@ pub fn register_foreign_router<T: Transcendental + 'static>(
         Box::new(MixerAlgorithmWrapper::<T>::new(config))
     });
 
-    ffi.register_block("eq_parametric", |p: &[f64], sr: f32| {
+    ffi.register_block("eq_parametric", |p: &[f64], sr: f32, _alloc| {
         let mut bands = Vec::new();
         let mut i = 0usize;
         while i + 3 < p.len() {
@@ -229,7 +232,7 @@ pub fn register_foreign_router<T: Transcendental + 'static>(
         Box::new(EqBuiltin::new(inner))
     });
 
-    ffi.register_multichannel_block("dry_wet", |_signal_ins, params, _sr| {
+    ffi.register_multichannel_block("dry_wet", |_signal_ins, params, _sr, _alloc| {
         let mix = params.first().copied().unwrap_or(0.5);
         Box::new(DryWetBuiltin::<T>::new(mix))
     });

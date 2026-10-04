@@ -67,7 +67,7 @@ fn sine_registry() -> (Registry<f32>, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut registry = Registry::<f32>::new();
     let shared = calls.clone();
-    registry.register_block("sine", move |params, sample_rate| {
+    registry.register_block("sine", move |params, sample_rate, _alloc| {
         Box::new(SineOsc::new(params, sample_rate, shared.clone()))
     });
     (registry, calls)

@@ -22,7 +22,7 @@ use crate::tape::write_head::WriteHead;
 pub fn register_tape_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
     reg.register_resource_multichannel_block(
         "write_head",
-        |_signal_ins, p, sr, registry, resource| {
+        |_signal_ins, p, sr, registry, resource, _alloc| {
             let mut wh = WriteHead::<T, 64>::new(sr);
             wh.set_delay_time(p[0] as f32);
             wh.set_feedback(p[1] as f32);
@@ -33,7 +33,7 @@ pub fn register_tape_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
         },
     );
 
-    reg.register_resource_block("read_head", |p, sr, registry, resource| {
+    reg.register_resource_block("read_head", |p, sr, registry, resource, _alloc| {
         let mut rh = ReadHead::<T, 64>::new();
         rh.set_delay(p[0] as f32);
         rh.init(sr);
@@ -52,7 +52,7 @@ pub fn register_tape_ffi<T: Transcendental + 'static>(
 ) {
     ffi.register_resource_multichannel_block(
         "write_head",
-        |_signal_ins, p, sr, writer, _reader| {
+        |_signal_ins, p, sr, writer, _reader, _alloc| {
             let mut wh = WriteHead::<T, 64>::new(sr);
             wh.set_delay_time(p[0] as f32);
             wh.set_feedback(p[1] as f32);
@@ -60,7 +60,7 @@ pub fn register_tape_ffi<T: Transcendental + 'static>(
             Box::new(wh)
         },
     );
-    ffi.register_resource_block("read_head", |p, sr, _writer, reader| {
+    ffi.register_resource_block("read_head", |p, sr, _writer, reader, _alloc| {
         let mut rh = ReadHead::<T, 64>::new();
         rh.set_delay(p[0] as f32);
         rh.init(sr);

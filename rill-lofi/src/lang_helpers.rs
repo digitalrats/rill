@@ -190,7 +190,7 @@ impl BlockBuiltin<f32> for LofiProcessor {
 pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
     use crate::ClassicSystem;
 
-    reg.register_block("lofi", |p, sr| {
+    reg.register_block("lofi", |p, sr, _alloc| {
         let config = crate::LofiConfig {
             system: ClassicSystem::Custom {
                 bit_depth: p[0].round() as u8,
@@ -246,7 +246,7 @@ impl BlockBuiltin<f32> for Ay38910Builtin {
 
 pub fn register_chip_builtins(reg: &mut Registry<f32>) {
     use rill_core::traits::Algorithm;
-    reg.register_block("ay38910", |p, sr| {
+    reg.register_block("ay38910", |p, sr, _alloc| {
         let clock = p[0] as f32;
         let mut chip = crate::Ay38910Chip::new(clock);
         Algorithm::init(&mut chip, sr);
@@ -260,7 +260,7 @@ pub fn register_foreign_lofi_builtins(ffi: &mut rill_lang::ffi::ForeignRegistry<
     use crate::ClassicSystem;
     use rill_core::traits::Algorithm;
 
-    ffi.register_block("lofi", |p: &[f64], sr: f32| {
+    ffi.register_block("lofi", |p: &[f64], sr: f32, _alloc| {
         let config = crate::LofiConfig {
             system: ClassicSystem::Custom {
                 bit_depth: p[0].round() as u8,
@@ -286,7 +286,7 @@ pub fn register_foreign_lofi_builtins(ffi: &mut rill_lang::ffi::ForeignRegistry<
         Box::new(LofiProcessor { ..inner })
     });
 
-    ffi.register_block("ay38910", |p: &[f64], sr: f32| {
+    ffi.register_block("ay38910", |p: &[f64], sr: f32, _alloc| {
         let clock = p[0] as f32;
         let mut chip = crate::Ay38910Chip::new(clock);
         Algorithm::init(&mut chip, sr);

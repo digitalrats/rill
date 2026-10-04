@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use rill_core::buffer::ResourceRegistry;
 use rill_core::math::Transcendental;
+use rill_core::memory::BufferAllocator;
 use rill_core::traits::ParamValue;
 
 /// A whole-buffer built-in with settable params.
@@ -34,13 +35,33 @@ pub enum BuiltinKind {
 }
 
 /// A boxed factory building an instance from folded params + a sample rate.
-type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
-type MultichannelBlockFactory<T> =
-    Box<dyn Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
+/// The optional [`BufferAllocator`] lets the factory carve large internal
+/// buffers out of the program's region slab at build time.
+type BlockFactory<T> = Box<
+    dyn Fn(&[f64], f32, Option<&mut BufferAllocator<T>>) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
+>;
+type MultichannelBlockFactory<T> = Box<
+    dyn Fn(
+            usize,
+            &[f64],
+            f32,
+            Option<&mut BufferAllocator<T>>,
+        ) -> Box<dyn MultichannelBlockBuiltin<T>>
+        + Send
+        + Sync,
+>;
 /// A block factory that also receives the resource registry and the resource
 /// name to resolve named resources (e.g. tape loops) for resource-backed built-ins.
 type ResourceBlockFactory<T> = Box<
-    dyn Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
+    dyn Fn(
+            &[f64],
+            f32,
+            &mut ResourceRegistry<T>,
+            &str,
+            Option<&mut BufferAllocator<T>>,
+        ) -> Box<dyn BlockBuiltin<T>>
+        + Send
+        + Sync,
 >;
 /// A multi-channel block factory that also receives the signal input count, the
 /// resource registry, and the resource name.
@@ -51,6 +72,7 @@ type ResourceMultichannelBlockFactory<T> = Box<
             f32,
             &mut ResourceRegistry<T>,
             &str,
+            Option<&mut BufferAllocator<T>>,
         ) -> Box<dyn MultichannelBlockBuiltin<T>>
         + Send
         + Sync,
@@ -93,9 +115,10 @@ impl<T: Transcendental> Entry<T> {
         &self,
         params: &[f64],
         sample_rate: f32,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match &self.factory {
-            Factory::Block(f) => Some(f(params, sample_rate)),
+            Factory::Block(f) => Some(f(params, sample_rate, allocator)),
             Factory::MultichannelBlock(_)
             | Factory::ResourceBlock(_)
             | Factory::ResourceMultichannelBlock(_) => None,
@@ -107,9 +130,10 @@ impl<T: Transcendental> Entry<T> {
         signal_ins: usize,
         params: &[f64],
         sample_rate: f32,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match &self.factory {
-            Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate)),
+            Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate, allocator)),
             _ => None,
         }
     }
@@ -121,9 +145,12 @@ impl<T: Transcendental> Entry<T> {
         sample_rate: f32,
         registry: &mut ResourceRegistry<T>,
         resource_name: &str,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match &self.factory {
-            Factory::ResourceBlock(f) => Some(f(params, sample_rate, registry, resource_name)),
+            Factory::ResourceBlock(f) => {
+                Some(f(params, sample_rate, registry, resource_name, allocator))
+            }
             _ => None,
         }
     }
@@ -136,11 +163,17 @@ impl<T: Transcendental> Entry<T> {
         sample_rate: f32,
         registry: &mut ResourceRegistry<T>,
         resource_name: &str,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match &self.factory {
-            Factory::ResourceMultichannelBlock(f) => {
-                Some(f(signal_ins, params, sample_rate, registry, resource_name))
-            }
+            Factory::ResourceMultichannelBlock(f) => Some(f(
+                signal_ins,
+                params,
+                sample_rate,
+                registry,
+                resource_name,
+                allocator,
+            )),
             _ => None,
         }
     }
@@ -169,7 +202,10 @@ impl<T: Transcendental> Registry<T> {
     pub fn register_block(
         &mut self,
         name: impl Into<String>,
-        factory: impl Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync + 'static,
+        factory: impl Fn(&[f64], f32, Option<&mut BufferAllocator<T>>) -> Box<dyn BlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
     ) {
         self.entries.insert(
             name.into(),
@@ -183,7 +219,12 @@ impl<T: Transcendental> Registry<T> {
     pub fn register_multichannel_block(
         &mut self,
         name: impl Into<String>,
-        factory: impl Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>>
+        factory: impl Fn(
+                usize,
+                &[f64],
+                f32,
+                Option<&mut BufferAllocator<T>>,
+            ) -> Box<dyn MultichannelBlockBuiltin<T>>
             + Send
             + Sync
             + 'static,
@@ -202,7 +243,13 @@ impl<T: Transcendental> Registry<T> {
     pub fn register_resource_block(
         &mut self,
         name: impl Into<String>,
-        factory: impl Fn(&[f64], f32, &mut ResourceRegistry<T>, &str) -> Box<dyn BlockBuiltin<T>>
+        factory: impl Fn(
+                &[f64],
+                f32,
+                &mut ResourceRegistry<T>,
+                &str,
+                Option<&mut BufferAllocator<T>>,
+            ) -> Box<dyn BlockBuiltin<T>>
             + Send
             + Sync
             + 'static,
@@ -226,6 +273,7 @@ impl<T: Transcendental> Registry<T> {
                 f32,
                 &mut ResourceRegistry<T>,
                 &str,
+                Option<&mut BufferAllocator<T>>,
             ) -> Box<dyn MultichannelBlockBuiltin<T>>
             + Send
             + Sync

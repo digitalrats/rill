@@ -147,6 +147,7 @@ fn build_builtin<T: Transcendental>(
     resources: &mut Option<&mut rill_core::buffer::ResourceRegistry<T>>,
     tapes: &[SharedCell<T>],
     sample_rate: f32,
+    allocator: Option<&mut BufferAllocator<T>>,
 ) -> Result<BuiltinInst<T>, CompileError> {
     let legacy_kind = registry.kind(&bi.name);
     let ffi_kind = foreign.and_then(|f| f.kind(&bi.name));
@@ -230,6 +231,7 @@ fn build_builtin<T: Transcendental>(
                             sample_rate,
                             reg,
                             res,
+                            allocator,
                         )
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
@@ -239,7 +241,7 @@ fn build_builtin<T: Transcendental>(
                         })?
                 } else {
                     entry
-                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate)
+                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate, allocator)
                         .expect("registry build_multichannel_block failed")
                 }
             } else if let Some(ffi) = foreign {
@@ -252,6 +254,7 @@ fn build_builtin<T: Transcendental>(
                         sample_rate,
                         w,
                         r,
+                        allocator,
                     )
                     .ok_or_else(|| {
                         CompileError::Unsupported(format!(
@@ -260,13 +263,19 @@ fn build_builtin<T: Transcendental>(
                         ))
                     })?
                 } else {
-                    ffi.build_multichannel_block(&bi.name, bi.signal_ins, &bi.params, sample_rate)
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "foreign built-in '{}' is not registered",
-                                bi.name
-                            ))
-                        })?
+                    ffi.build_multichannel_block(
+                        &bi.name,
+                        bi.signal_ins,
+                        &bi.params,
+                        sample_rate,
+                        allocator,
+                    )
+                    .ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "foreign built-in '{}' is not registered",
+                            bi.name
+                        ))
+                    })?
                 }
             } else {
                 return Err(CompileError::Unsupported(format!(
@@ -293,7 +302,7 @@ fn build_builtin<T: Transcendental>(
                         ))
                     })?;
                     entry
-                        .build_resource_block(&bi.params, sample_rate, reg, res)
+                        .build_resource_block(&bi.params, sample_rate, reg, res, allocator)
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
                                 "resource built-in '{}' is not registered as resource-backed",
@@ -302,13 +311,13 @@ fn build_builtin<T: Transcendental>(
                         })?
                 } else {
                     entry
-                        .build_block(&bi.params, sample_rate)
+                        .build_block(&bi.params, sample_rate, allocator)
                         .expect("registry build_block failed for block builtin")
                 }
             } else if let Some(ffi) = foreign {
                 if ffi_is_resource {
                     let (w, r) = resolve_tape(bi)?;
-                    ffi.build_resource_block(&bi.name, &bi.params, sample_rate, w, r)
+                    ffi.build_resource_block(&bi.name, &bi.params, sample_rate, w, r, allocator)
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
                                 "foreign resource built-in '{}' is not registered",
@@ -316,7 +325,7 @@ fn build_builtin<T: Transcendental>(
                             ))
                         })?
                 } else {
-                    ffi.build_block(&bi.name, &bi.params, sample_rate)
+                    ffi.build_block(&bi.name, &bi.params, sample_rate, allocator)
                         .ok_or_else(|| {
                             CompileError::Unsupported(format!(
                                 "foreign built-in '{}' is not registered",
@@ -449,15 +458,25 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
                 Ok(SharedCell::new(Box::new(tape)))
             })
             .collect::<Result<_, CompileError>>()?;
+        // Carve the delay sites first so the allocator is available to
+        // built-in factories below.
+        let (delays, mut allocator) = Self::alloc_delays(&ir);
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
-            let b = build_builtin(bi, registry, foreign, &mut resources, &tapes, sample_rate)?;
+            let b = build_builtin(
+                bi,
+                registry,
+                foreign,
+                &mut resources,
+                &tapes,
+                sample_rate,
+                Some(&mut allocator),
+            )?;
             builtins.push(b);
         }
 
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let (delays, _allocator) = Self::alloc_delays(&ir);
         let block_regs = vec![FixedBuffer::new(); ir.num_regs];
         let schedule = build_schedule(&ir);
         let params_meta = ir.params.clone();

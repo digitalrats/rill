@@ -18,15 +18,34 @@ use std::collections::HashMap;
 use crate::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::buffer::{SharedReader, SharedWriter};
 use rill_core::math::Transcendental;
+use rill_core::memory::BufferAllocator;
 
-type BlockFactory<T> = Box<dyn Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync>;
-type MultichannelBlockFactory<T> =
-    Box<dyn Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>> + Send + Sync>;
+type BlockFactory<T> = Box<
+    dyn Fn(&[f64], f32, Option<&mut BufferAllocator<T>>) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
+>;
+type MultichannelBlockFactory<T> = Box<
+    dyn Fn(
+            usize,
+            &[f64],
+            f32,
+            Option<&mut BufferAllocator<T>>,
+        ) -> Box<dyn MultichannelBlockBuiltin<T>>
+        + Send
+        + Sync,
+>;
 /// A resource-backed factory: resolves its shared tape cell by INDEX (the
 /// `tape_loop` path) instead of a name against an external registry. Receives
 /// both the write and read handles of the cell; a head uses the one it needs.
 type ResourceBlockFactory<T> = Box<
-    dyn Fn(&[f64], f32, SharedWriter<T>, SharedReader<T>) -> Box<dyn BlockBuiltin<T>> + Send + Sync,
+    dyn Fn(
+            &[f64],
+            f32,
+            SharedWriter<T>,
+            SharedReader<T>,
+            Option<&mut BufferAllocator<T>>,
+        ) -> Box<dyn BlockBuiltin<T>>
+        + Send
+        + Sync,
 >;
 type ResourceMultichannelBlockFactory<T> = Box<
     dyn Fn(
@@ -35,6 +54,7 @@ type ResourceMultichannelBlockFactory<T> = Box<
             f32,
             SharedWriter<T>,
             SharedReader<T>,
+            Option<&mut BufferAllocator<T>>,
         ) -> Box<dyn MultichannelBlockBuiltin<T>>
         + Send
         + Sync,
@@ -70,7 +90,10 @@ impl<T: Transcendental> ForeignRegistry<T> {
     pub fn register_block(
         &mut self,
         name: impl Into<String>,
-        factory: impl Fn(&[f64], f32) -> Box<dyn BlockBuiltin<T>> + Send + Sync + 'static,
+        factory: impl Fn(&[f64], f32, Option<&mut BufferAllocator<T>>) -> Box<dyn BlockBuiltin<T>>
+            + Send
+            + Sync
+            + 'static,
     ) {
         self.entries
             .insert(name.into(), Factory::Block(Box::new(factory)));
@@ -80,7 +103,12 @@ impl<T: Transcendental> ForeignRegistry<T> {
     pub fn register_multichannel_block(
         &mut self,
         name: impl Into<String>,
-        factory: impl Fn(usize, &[f64], f32) -> Box<dyn MultichannelBlockBuiltin<T>>
+        factory: impl Fn(
+                usize,
+                &[f64],
+                f32,
+                Option<&mut BufferAllocator<T>>,
+            ) -> Box<dyn MultichannelBlockBuiltin<T>>
             + Send
             + Sync
             + 'static,
@@ -95,7 +123,13 @@ impl<T: Transcendental> ForeignRegistry<T> {
     pub fn register_resource_block(
         &mut self,
         name: impl Into<String>,
-        factory: impl Fn(&[f64], f32, SharedWriter<T>, SharedReader<T>) -> Box<dyn BlockBuiltin<T>>
+        factory: impl Fn(
+                &[f64],
+                f32,
+                SharedWriter<T>,
+                SharedReader<T>,
+                Option<&mut BufferAllocator<T>>,
+            ) -> Box<dyn BlockBuiltin<T>>
             + Send
             + Sync
             + 'static,
@@ -115,6 +149,7 @@ impl<T: Transcendental> ForeignRegistry<T> {
                 f32,
                 SharedWriter<T>,
                 SharedReader<T>,
+                Option<&mut BufferAllocator<T>>,
             ) -> Box<dyn MultichannelBlockBuiltin<T>>
             + Send
             + Sync
@@ -132,9 +167,10 @@ impl<T: Transcendental> ForeignRegistry<T> {
         name: &str,
         params: &[f64],
         sample_rate: f32,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match self.entries.get(name)? {
-            Factory::Block(f) => Some(f(params, sample_rate)),
+            Factory::Block(f) => Some(f(params, sample_rate, allocator)),
             Factory::MultichannelBlock(_)
             | Factory::ResourceBlock(_)
             | Factory::ResourceMultichannelBlock(_) => None,
@@ -148,9 +184,10 @@ impl<T: Transcendental> ForeignRegistry<T> {
         signal_ins: usize,
         params: &[f64],
         sample_rate: f32,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match self.entries.get(name)? {
-            Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate)),
+            Factory::MultichannelBlock(f) => Some(f(signal_ins, params, sample_rate, allocator)),
             Factory::Block(_)
             | Factory::ResourceBlock(_)
             | Factory::ResourceMultichannelBlock(_) => None,
@@ -166,15 +203,17 @@ impl<T: Transcendental> ForeignRegistry<T> {
         sample_rate: f32,
         writer: SharedWriter<T>,
         reader: SharedReader<T>,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn BlockBuiltin<T>>> {
         match self.entries.get(name)? {
-            Factory::ResourceBlock(f) => Some(f(params, sample_rate, writer, reader)),
+            Factory::ResourceBlock(f) => Some(f(params, sample_rate, writer, reader, allocator)),
             _ => None,
         }
     }
 
     /// Build a resource-backed multi-channel instance for `name` against a
     /// shared tape cell's writer/reader handles.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn build_resource_multichannel_block(
         &self,
         name: &str,
@@ -183,11 +222,17 @@ impl<T: Transcendental> ForeignRegistry<T> {
         sample_rate: f32,
         writer: SharedWriter<T>,
         reader: SharedReader<T>,
+        allocator: Option<&mut BufferAllocator<T>>,
     ) -> Option<Box<dyn MultichannelBlockBuiltin<T>>> {
         match self.entries.get(name)? {
-            Factory::ResourceMultichannelBlock(f) => {
-                Some(f(signal_ins, params, sample_rate, writer, reader))
-            }
+            Factory::ResourceMultichannelBlock(f) => Some(f(
+                signal_ins,
+                params,
+                sample_rate,
+                writer,
+                reader,
+                allocator,
+            )),
             _ => None,
         }
     }

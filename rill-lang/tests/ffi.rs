@@ -372,7 +372,7 @@ fn foreign_fn_runs_end_to_end() {
     impl<T: rill_core::math::Transcendental> BlockBuiltin<T> for Gain {}
 
     let mut ffi = ForeignRegistry::<f32>::new();
-    ffi.register_block("gain", |params: &[f64], _sr: f32| {
+    ffi.register_block("gain", |params: &[f64], _sr: f32, _alloc| {
         Box::new(Gain(params.first().copied().unwrap_or(1.0)))
     });
 
@@ -416,7 +416,9 @@ fn foreign_fn_multichannel_runs_end_to_end() {
     impl<T: rill_core::math::Transcendental> MultichannelBlockBuiltin<T> for Add {}
 
     let mut ffi = ForeignRegistry::<f32>::new();
-    ffi.register_multichannel_block("add", |_ins: usize, _p: &[f64], _sr: f32| Box::new(Add));
+    ffi.register_multichannel_block("add", |_ins: usize, _p: &[f64], _sr: f32, _alloc| {
+        Box::new(Add)
+    });
 
     let src = r#"
         foreign fn add : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
@@ -463,7 +465,7 @@ fn complex_ops_build_with_block_factory() {
     impl<T: rill_core::math::Transcendental> BlockBuiltin<T> for Conj {}
 
     let mut ffi = ForeignRegistry::<f32>::new();
-    ffi.register_block("conj", |_p: &[f64], _sr: f32| Box::new(Conj));
+    ffi.register_block("conj", |_p: &[f64], _sr: f32, _alloc| Box::new(Conj));
 
     let src = r#"
         foreign fn conj : FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);

@@ -54,7 +54,7 @@ impl<T: Transcendental> BlockBuiltin<T> for SamplerBuiltin<T> {
 }
 
 pub fn register_sampler_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    reg.register_block("sampler", |p, _sr| {
+    reg.register_block("sampler", |p, _sr, _alloc| {
         let mut player = SamplePlayer::new(Vec::new());
         player.set_gate(p[0] > 0.0);
         player.set_playback_rate(p[1].clamp(0.0, 4.0));
@@ -70,7 +70,7 @@ pub fn register_sampler_builtins<T: Transcendental>(reg: &mut Registry<T>) {
 pub fn register_foreign_sampler_builtins<T: Transcendental + 'static>(
     ffi: &mut rill_lang::ffi::ForeignRegistry<T>,
 ) {
-    ffi.register_block("sampler", |p: &[f64], _sr: f32| {
+    ffi.register_block("sampler", |p: &[f64], _sr: f32, _alloc| {
         let mut player = SamplePlayer::new(Vec::new());
         player.set_gate(p[0] > 0.0);
         player.set_playback_rate(p[1].clamp(0.0, 4.0));

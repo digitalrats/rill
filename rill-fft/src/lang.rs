@@ -106,19 +106,19 @@ impl<T: Transcendental> BlockBuiltin<T> for ConvolverBuiltin<T> {
 
 /// Register FFT processing builtins in the rill-lang registry.
 pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    reg.register_block("spectralgate", |p, _sr| {
+    reg.register_block("spectralgate", |p, _sr, _alloc| {
         let mut gate = crate::effects::spectral_gate::SpectralGate::<T, 64>::new();
         gate.set_threshold(T::from_f64(p[0]));
         gate.set_ratio(p[1] as f32);
         Box::new(SpectralGateBuiltin { inner: gate })
     });
-    reg.register_block("spectraldelay", |p, _sr| {
+    reg.register_block("spectraldelay", |p, _sr, _alloc| {
         let mut delay = crate::effects::spectral_delay::SpectralDelay::<T, 64, 16>::new();
         delay.set_mix(p[0] as f32);
         delay.set_feedback(p[1] as f32);
         Box::new(SpectralDelayBuiltin { inner: delay })
     });
-    reg.register_block("convolver", |p, _sr| {
+    reg.register_block("convolver", |p, _sr, _alloc| {
         let ir_gain = p[0] as f32;
         let mix = p[1] as f32;
         let conv = crate::partitioned_conv::PartitionedConvolver::<T, 64>::new(4096);
@@ -135,19 +135,19 @@ pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
 pub fn register_foreign_fft<T: Transcendental + 'static>(
     ffi: &mut rill_lang::ffi::ForeignRegistry<T>,
 ) {
-    ffi.register_block("spectralgate", |p: &[f64], _sr: f32| {
+    ffi.register_block("spectralgate", |p: &[f64], _sr: f32, _alloc| {
         let mut gate = crate::effects::spectral_gate::SpectralGate::<T, 64>::new();
         gate.set_threshold(T::from_f64(p[0]));
         gate.set_ratio(p[1] as f32);
         Box::new(SpectralGateBuiltin { inner: gate })
     });
-    ffi.register_block("spectraldelay", |p: &[f64], _sr: f32| {
+    ffi.register_block("spectraldelay", |p: &[f64], _sr: f32, _alloc| {
         let mut delay = crate::effects::spectral_delay::SpectralDelay::<T, 64, 16>::new();
         delay.set_mix(p[0] as f32);
         delay.set_feedback(p[1] as f32);
         Box::new(SpectralDelayBuiltin { inner: delay })
     });
-    ffi.register_block("convolver", |p: &[f64], _sr: f32| {
+    ffi.register_block("convolver", |p: &[f64], _sr: f32, _alloc| {
         let ir_gain = p[0] as f32;
         let mix = p[1] as f32;
         let conv = crate::partitioned_conv::PartitionedConvolver::<T, 64>::new(4096);

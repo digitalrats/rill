@@ -176,18 +176,18 @@ pub fn register_core_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>
 
 /// Register complex number built-ins (dsl: complex, conj, re, im, norm, arg, cmul, cadd).
 fn register_complex<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    reg.register_block("complex", |p, _sr| {
+    reg.register_block("complex", |p, _sr, _alloc| {
         let re = T::from_f64(p[0]);
         let im = T::from_f64(p[1]);
         Box::new(ComplexGenBuiltin { re, im })
     });
-    reg.register_block("conj", |_p, _sr| Box::new(ComplexConjBuiltin));
-    reg.register_block("re", |_p, _sr| Box::new(ComplexReBuiltin));
-    reg.register_block("im", |_p, _sr| Box::new(ComplexImBuiltin));
-    reg.register_block("norm", |_p, _sr| Box::new(ComplexNormBuiltin));
-    reg.register_block("arg", |_p, _sr| Box::new(ComplexArgBuiltin));
-    reg.register_block("cmul", |_p, _sr| Box::new(ComplexMulBuiltin));
-    reg.register_block("cadd", |_p, _sr| Box::new(ComplexAddBuiltin));
+    reg.register_block("conj", |_p, _sr, _alloc| Box::new(ComplexConjBuiltin));
+    reg.register_block("re", |_p, _sr, _alloc| Box::new(ComplexReBuiltin));
+    reg.register_block("im", |_p, _sr, _alloc| Box::new(ComplexImBuiltin));
+    reg.register_block("norm", |_p, _sr, _alloc| Box::new(ComplexNormBuiltin));
+    reg.register_block("arg", |_p, _sr, _alloc| Box::new(ComplexArgBuiltin));
+    reg.register_block("cmul", |_p, _sr, _alloc| Box::new(ComplexMulBuiltin));
+    reg.register_block("cadd", |_p, _sr, _alloc| Box::new(ComplexAddBuiltin));
 }
 
 // ============================================================================
@@ -291,18 +291,18 @@ pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
         }
     }
 
-    ffi.register_block("delay", |p: &[f64], sr: f32| {
+    ffi.register_block("delay", |p: &[f64], sr: f32, _alloc| {
         let mut d = Delay::<T, 64>::with_params(sr, p[0] as f32, p[1] as f32, p[2] as f32);
         Algorithm::init(&mut d, sr);
         Box::new(DelayBuiltin(d))
     });
-    ffi.register_block("distortion", |p: &[f64], sr: f32| {
+    ffi.register_block("distortion", |p: &[f64], sr: f32, _alloc| {
         let mut d = Distortion::<T, 64>::with_params(DistortionType::SoftClip, p[0] as f32, 1.0);
         d.set_output_gain(p[1] as f32);
         Algorithm::init(&mut d, sr);
         Box::new(DistortionBuiltin(d))
     });
-    ffi.register_block("limiter", |p: &[f64], sr: f32| {
+    ffi.register_block("limiter", |p: &[f64], sr: f32, _alloc| {
         let mut l = Limiter::<T, 64>::new(sr, p[0] as f32, 1.0, p[1] as f32, 0.0);
         Algorithm::init(&mut l, sr);
         Box::new(LimiterBuiltin(l))
@@ -330,7 +330,7 @@ pub fn register_foreign_generators<T: Transcendental + 'static>(
         BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform,
     };
 
-    ffi.register_block("sine", |p: &[f64], sr: f32| {
+    ffi.register_block("sine", |p: &[f64], sr: f32, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, amp);
@@ -338,7 +338,7 @@ pub fn register_foreign_generators<T: Transcendental + 'static>(
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    ffi.register_block("saw", |p: &[f64], sr: f32| {
+    ffi.register_block("saw", |p: &[f64], sr: f32, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, amp);
@@ -346,7 +346,7 @@ pub fn register_foreign_generators<T: Transcendental + 'static>(
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    ffi.register_block("square", |p: &[f64], sr: f32| {
+    ffi.register_block("square", |p: &[f64], sr: f32, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, amp);
@@ -354,7 +354,7 @@ pub fn register_foreign_generators<T: Transcendental + 'static>(
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    ffi.register_block("triangle", |p: &[f64], sr: f32| {
+    ffi.register_block("triangle", |p: &[f64], sr: f32, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, amp);
@@ -362,7 +362,7 @@ pub fn register_foreign_generators<T: Transcendental + 'static>(
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    ffi.register_block("noise", |p: &[f64], _sr: f32| {
+    ffi.register_block("noise", |p: &[f64], _sr: f32, _alloc| {
         let amp = T::from_f64(p[1]);
         let gen = NoiseGenerator::<T>::new(
             match p[0].round() as i32 {
@@ -374,10 +374,10 @@ pub fn register_foreign_generators<T: Transcendental + 'static>(
         );
         Box::new(NoiseGenBuiltin { gen })
     });
-    ffi.register_block("integrator", |_p: &[f64], _sr: f32| {
+    ffi.register_block("integrator", |_p: &[f64], _sr: f32, _alloc| {
         Box::new(IntegratorBuiltin::<T>::new())
     });
-    ffi.register_block("leaky_integrator", |p: &[f64], _sr: f32| {
+    ffi.register_block("leaky_integrator", |p: &[f64], _sr: f32, _alloc| {
         Box::new(LeakyIntegratorBuiltin::<T>::new(T::from_f64(p[0])))
     });
 }
@@ -395,7 +395,7 @@ pub fn register_foreign_filters<T: Transcendental + 'static>(
     };
     use rill_core_dsp::filters::{Biquad, FilterParams, FilterType, MoogLadder, OnePole};
 
-    ffi.register_block("onepole", |p: &[f64], sr: f32| {
+    ffi.register_block("onepole", |p: &[f64], sr: f32, _alloc| {
         let mut inner = OnePole::<T>::new(FilterParams {
             filter_type: FilterType::LowPass,
             cutoff: p[0] as f32,
@@ -405,12 +405,12 @@ pub fn register_foreign_filters<T: Transcendental + 'static>(
         Algorithm::init(&mut inner, sr);
         Box::new(OnePoleBuiltin { inner })
     });
-    ffi.register_block("moog", |p: &[f64], sr: f32| {
+    ffi.register_block("moog", |p: &[f64], sr: f32, _alloc| {
         let mut inner = MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
         Algorithm::init(&mut inner, sr);
         Box::new(MoogBuiltin { inner })
     });
-    ffi.register_block("lowpass", |p: &[f64], sr: f32| {
+    ffi.register_block("lowpass", |p: &[f64], sr: f32, _alloc| {
         let mut b = Biquad::<T>::new(FilterParams {
             filter_type: FilterType::LowPass,
             cutoff: p[0] as f32,
@@ -420,7 +420,7 @@ pub fn register_foreign_filters<T: Transcendental + 'static>(
         Algorithm::init(&mut b, sr);
         Box::new(BiquadBuiltin { inner: b })
     });
-    ffi.register_block("highpass", |p: &[f64], sr: f32| {
+    ffi.register_block("highpass", |p: &[f64], sr: f32, _alloc| {
         let mut b = Biquad::<T>::new(FilterParams {
             filter_type: FilterType::HighPass,
             cutoff: p[0] as f32,
@@ -430,7 +430,7 @@ pub fn register_foreign_filters<T: Transcendental + 'static>(
         Algorithm::init(&mut b, sr);
         Box::new(BiquadBuiltin { inner: b })
     });
-    ffi.register_block("biquad", |p: &[f64], sr: f32| {
+    ffi.register_block("biquad", |p: &[f64], sr: f32, _alloc| {
         let ft = match p[0] as u8 {
             0 => FilterType::LowPass,
             1 => FilterType::HighPass,
@@ -472,7 +472,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform,
     };
 
-    reg.register_block("onepole", |p, sr| {
+    reg.register_block("onepole", |p, sr, _alloc| {
         let mut inner = OnePole::<T>::new(FilterParams {
             filter_type: FilterType::LowPass,
             cutoff: p[0] as f32,
@@ -482,12 +482,12 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Algorithm::init(&mut inner, sr);
         Box::new(OnePoleBuiltin { inner })
     });
-    reg.register_block("moog", |p, sr| {
+    reg.register_block("moog", |p, sr, _alloc| {
         let mut inner = MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
         Algorithm::init(&mut inner, sr);
         Box::new(MoogBuiltin { inner })
     });
-    reg.register_block("lowpass", |p, sr| {
+    reg.register_block("lowpass", |p, sr, _alloc| {
         let mut b = Biquad::<T>::new(FilterParams {
             filter_type: FilterType::LowPass,
             cutoff: p[0] as f32,
@@ -497,7 +497,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Algorithm::init(&mut b, sr);
         Box::new(BiquadBuiltin { inner: b })
     });
-    reg.register_block("highpass", |p, sr| {
+    reg.register_block("highpass", |p, sr, _alloc| {
         let mut b = Biquad::<T>::new(FilterParams {
             filter_type: FilterType::HighPass,
             cutoff: p[0] as f32,
@@ -507,7 +507,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Algorithm::init(&mut b, sr);
         Box::new(BiquadBuiltin { inner: b })
     });
-    reg.register_block("biquad", |p, sr| {
+    reg.register_block("biquad", |p, sr, _alloc| {
         let ft = match p[0] as u8 {
             0 => FilterType::LowPass,
             1 => FilterType::HighPass,
@@ -528,7 +528,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Box::new(GeneralBiquadBuiltin { inner: b })
     });
 
-    reg.register_block("sine", |p, sr| {
+    reg.register_block("sine", |p, sr, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, amp);
@@ -536,7 +536,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    reg.register_block("saw", |p, sr| {
+    reg.register_block("saw", |p, sr, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, amp);
@@ -544,7 +544,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    reg.register_block("square", |p, sr| {
+    reg.register_block("square", |p, sr, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, amp);
@@ -552,7 +552,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    reg.register_block("triangle", |p, sr| {
+    reg.register_block("triangle", |p, sr, _alloc| {
         let freq = p[0] as f32;
         let amp = T::from_f64(p[1]);
         let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, amp);
@@ -560,7 +560,7 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Algorithm::init(&mut osc, sr);
         Box::new(OscBuiltin { osc })
     });
-    reg.register_block("noise", |p, _sr| {
+    reg.register_block("noise", |p, _sr, _alloc| {
         let amp = T::from_f64(p[1]);
         let gen = NoiseGenerator::<T>::new(
             match p[0].round() as i32 {
@@ -573,10 +573,10 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
         Box::new(NoiseGenBuiltin { gen })
     });
 
-    reg.register_block("integrator", |_p, _sr| {
+    reg.register_block("integrator", |_p, _sr, _alloc| {
         Box::new(IntegratorBuiltin::<T>::new())
     });
-    reg.register_block("leaky_integrator", |p, _sr| {
+    reg.register_block("leaky_integrator", |p, _sr, _alloc| {
         Box::new(LeakyIntegratorBuiltin::<T>::new(T::from_f64(p[0])))
     });
 }
@@ -598,7 +598,7 @@ pub fn register_foreign_model<T: Transcendental + 'static>(
     use crate::builtins::model::AnalogMoogBuiltin;
     use rill_core_model::wdf::RcPole;
 
-    ffi.register_block("analog_moog", |p: &[f64], sr: f32| {
+    ffi.register_block("analog_moog", |p: &[f64], sr: f32, _alloc| {
         let pole = RcPole::new(T::ZERO);
         let mut inner = rill_core_model::wdf::MoogLadder::<T>::new(
             pole,

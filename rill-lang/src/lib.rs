@@ -311,7 +311,7 @@ mod ir_tests {
 
     fn sine_registry() -> Registry<f32> {
         let mut registry = Registry::<f32>::new();
-        registry.register_block("sine", |_, _| Box::new(TestOsc));
+        registry.register_block("sine", |_, _, _alloc| Box::new(TestOsc));
         registry
     }
 
@@ -340,9 +340,9 @@ mod ir_tests {
     #[test]
     fn lang_chiptune_ir_structure() {
         let mut registry = Registry::<f32>::new();
-        registry.register_block("ay38910", |_, _| panic!("not instantiated"));
+        registry.register_block("ay38910", |_, _, _alloc| panic!("not instantiated"));
         // lofi: 1 signal in (from pipeline :), 1 out, 7 params
-        registry.register_block("lofi", |_, _| panic!("not instantiated"));
+        registry.register_block("lofi", |_, _, _alloc| panic!("not instantiated"));
 
         let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
         let tokens = lexer::tokenize(src).unwrap();
