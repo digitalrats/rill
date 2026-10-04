@@ -67,7 +67,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let reg = rill_adrift::lang_builtins::full_registry::<f32>();
     let src = "main = _";
-    let engine = rill_lang::compile_graph::<f32, BUF>(src, &reg, RATE)?;
 
     let mut bf = BackendFactory::new();
     registration::register_backends(&mut bf);
@@ -115,6 +114,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let driver_ctl = driver.clone();
 
     let signal_thread = std::thread::spawn(move || {
+        // Compile inside the signal thread so the engine never needs `Send`.
+        let engine = match rill_lang::compile_graph::<f32, BUF>(src, &reg, RATE) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("compile: {e}");
+                return;
+            }
+        };
         let runner = ProgramRunner::new(engine, None);
         Runtime::launch::<BUF>(driver, Some(capture), Some(mem), runner, t_run).ok();
     });

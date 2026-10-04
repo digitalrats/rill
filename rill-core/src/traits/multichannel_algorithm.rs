@@ -5,7 +5,7 @@ use crate::traits::ProcessResult;
 ///
 /// Unlike `Algorithm<T>` which is strictly single-input/single-output (SISO),
 /// this trait supports N-to-M channel processing in a single call.
-pub trait MultichannelAlgorithm<T: Transcendental>: Send {
+pub trait MultichannelAlgorithm<T: Transcendental> {
     /// Number of signal input channels.
     fn num_inputs(&self) -> usize;
 

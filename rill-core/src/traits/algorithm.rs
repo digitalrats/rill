@@ -107,7 +107,7 @@ impl AlgorithmMetadata {
 /// - `apply_command()` — receive a real-time parameter value from the control
 ///   path (called between samples by the graph driver).
 /// - `metadata()` — return descriptive info (defaults to empty).
-pub trait Algorithm<T: Transcendental>: Send + Sync {
+pub trait Algorithm<T: Transcendental> {
     /// Process one block of signal.
     ///
     /// # Arguments

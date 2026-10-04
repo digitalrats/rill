@@ -37,12 +37,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stc_data = std::fs::read(stc_file)?;
     let no_wait = args.iter().any(|a| a == "--no-wait");
 
-    // ── Compile rill-lang DSL ──────────────────────────────────────────────
+    // ── Compile rill-lang DSL (moved into the signal thread so the engine
+    //    never needs `Send`; the handle is returned over a channel) ─────────
     let src = r#"
 main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
 "#;
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0)?;
 
     // ── Backend ────────────────────────────────────────────────────────────
     let backend_name = args
@@ -81,9 +81,44 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
     let stc_ref = stc_mailbox.actor_ref();
     let stc_player = RefCell::new(StcPlayer::new(stc_data.clone()));
 
+    // ── ProgramRunner — signal thread ──────────────────────────────────────
+    // Compile the DSL here so the engine never needs `Send`; the control
+    // thread receives the engine handle over a channel.
+    let running = Arc::new(AtomicBool::new(true));
+    let runner_running = running.clone();
+
+    let driver = output.driver.clone();
+    let playback = output.playback.clone();
+    let (handle_tx, handle_rx) = std::sync::mpsc::channel();
+    let stc_ref_signal = stc_ref.clone();
+    let signal_thread = std::thread::spawn(move || {
+        let engine = match rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0) {
+            Ok(e) => e,
+            Err(e) => {
+                log::error!("compile: {e}");
+                return;
+            }
+        };
+        let _ = handle_tx.send(engine.handle());
+        let runner = ProgramRunner::new(engine, Some(stc_ref_signal));
+        Runtime::launch::<256>(
+            driver,
+            // The program's main λ-param (`regs`) surfaces as one unused input
+            // channel; a null 1-channel capture satisfies the strict arity
+            // policy and zero-fills it (register data flows via SetParameter).
+            Some(Arc::new(NullBackend::new(1)) as Arc<dyn IoCapture>),
+            Some(playback),
+            runner,
+            runner_running,
+        )
+        .ok();
+    });
+    let stc_handle = handle_rx
+        .recv()
+        .expect("signal thread must produce the engine handle");
+
     let stc_playing = playing.clone();
     let stc_finished = finished.clone();
-    let stc_handle = engine.handle();
     let stc_thread = std::thread::spawn(move || loop {
         if let Some(CommandEnum::ClockTick(tick)) = stc_mailbox.pop() {
             if !stc_playing.load(Ordering::Acquire) {
@@ -108,27 +143,6 @@ main regs = ay38910 1750000.0 regs: lofi 8 44100 0.75 1.0 1 0 1
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
-    });
-
-    // ── ProgramRunner — signal thread ──────────────────────────────────────
-    let running = Arc::new(AtomicBool::new(true));
-    let runner_running = running.clone();
-
-    let driver = output.driver.clone();
-    let playback = output.playback.clone();
-    let signal_thread = std::thread::spawn(move || {
-        let runner = ProgramRunner::new(engine, Some(stc_ref));
-        Runtime::launch::<256>(
-            driver,
-            // The program's main λ-param (`regs`) surfaces as one unused input
-            // channel; a null 1-channel capture satisfies the strict arity
-            // policy and zero-fills it (register data flows via SetParameter).
-            Some(Arc::new(NullBackend::new(1)) as Arc<dyn IoCapture>),
-            Some(playback),
-            runner,
-            runner_running,
-        )
-        .ok();
     });
 
     println!("AY-3-8910 Chiptune (rill-lang DSL) [{backend_display}]");

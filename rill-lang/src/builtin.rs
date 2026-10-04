@@ -20,7 +20,7 @@ pub trait BlockBuiltin<T: Transcendental>: rill_core::traits::Algorithm<T> {
 
 /// A whole-buffer multi-channel built-in with settable params.
 pub trait MultichannelBlockBuiltin<T: Transcendental>:
-    rill_core::traits::MultichannelAlgorithm<T> + Send + Sync
+    rill_core::traits::MultichannelAlgorithm<T>
 {
     /// Set a parameter by index.
     fn set_param(&mut self, _index: usize, _value: &ParamValue) {}

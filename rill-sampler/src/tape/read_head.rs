@@ -26,12 +26,10 @@ fn delay_smoothing_coeff(sample_rate: f64) -> f64 {
 }
 
 /// SAFETY: the tape buffer is single-threaded; the duplex stream never moves a
-/// head across threads while another thread touches the shared tape. `Send +
-/// Sync` is only required by the builtin registry's static bounds.
-#[allow(unsafe_code)]
-unsafe impl<T: Transcendental, const B: usize> Send for ReadHead<T, B> {}
-#[allow(unsafe_code)]
-unsafe impl<T: Transcendental, const B: usize> Sync for ReadHead<T, B> {}
+/// head across threads while another thread touches the shared tape. The
+/// former `unsafe impl Send/Sync` (required only by the builtin registry's
+/// static bounds) was dropped together with the `Send + Sync` supertraits on
+/// `Algorithm` — see rill-core SP-4 §2.2.
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for ReadHead<T, BUF_SIZE> {
     fn default() -> Self {
