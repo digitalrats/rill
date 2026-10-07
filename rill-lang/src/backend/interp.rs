@@ -791,13 +791,32 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             }
         }
         ValueInstr::ValueWriteCell { cell, src } => {
+            // Write src's value INTO the existing cell slot, PRESERVING the
+            // cell's identity: any other reference to the cell (an env-record
+            // field capturing a self-cell for a recursive closure) must see
+            // the new value. The old implementation allocated a fresh slot and
+            // updated only the register — captured references went stale and
+            // read the freed slot as Void.
             if let (Some(cr), Some(sr)) = (prog.value_regs[*cell], prog.value_regs[*src]) {
-                // The cell holds a copy of the src value: allocate a fresh slot
-                // with a pooled copy, then release the previous cell (a cell is
-                // re-assignable). The src register keeps its own ref.
-                let new_cell = alloc_copy_slot(prog, sr);
-                prog.arena.drop_ref(cr);
-                prog.value_regs[*cell] = new_cell;
+                // A safe copy: recount (RC++) the children so the cell owns
+                // them independently of src.
+                let new_value: Option<Value> = match prog.arena.get(sr).cloned() {
+                    Some(v) => {
+                        recount_children(prog, &v);
+                        Some(v.clone())
+                    }
+                    None => None,
+                };
+                if let Some(nv) = new_value {
+                    // Release the old cell value's children, then write the
+                    // new value into the same slot.
+                    if let Some(old) = prog.arena.get(cr).cloned() {
+                        drop_value_children(prog, &old);
+                    }
+                    let _ = prog.arena.mutate_slot(cr, |slot| {
+                        *slot = nv;
+                    });
+                }
             }
         }
         ValueInstr::ValueConstInt { dst, value } => {

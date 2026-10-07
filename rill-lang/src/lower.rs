@@ -1819,6 +1819,37 @@ impl<'a> Lowerer<'a> {
     /// Resolve a collection-operation name to its IR op by arity. `insert`
     /// dispatches on argument count: 3 → map, 2 → set. Returns `None` for a
     /// non-collection name (the collection op names are reserved).
+    /// Whether `name` is a builtin that resolves at lowering (a collection op,
+    /// an FFI foreign function, or a math/logic primitive) and therefore must
+    /// never be captured as a free variable.
+    fn is_builtin_op(&self, name: &str) -> bool {
+        let s = |lit: &str| lit.to_string();
+        let collection = [
+            "cons",
+            "head",
+            "tail",
+            "length",
+            "map",
+            "fold",
+            "filter",
+            "list",
+            "insert",
+            "lookup",
+            "member",
+            "empty_map",
+            "empty_set",
+            "concat_map",
+            "append_list",
+            "concat_string",
+            "not",
+            "and",
+            "or",
+        ]
+        .iter()
+        .any(|n| name == s(n));
+        collection || self.env.foreign_sigs.contains_key(name)
+    }
+
     fn value_builtin(&self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
         use ValueBuiltinOp::*;
         Some(match (name, nargs) {
@@ -1887,6 +1918,11 @@ impl<'a> Lowerer<'a> {
             }
         };
         match name {
+            "cons" if self.mode == Mode::Complete => {
+                // LazyCons: the tail may be any value (a thunk), so the strict
+                // List shape-check does not apply; the result is a List.
+                Ok(ValueTy::App("List".into(), vec![ValueTy::Float]))
+            }
             "cons" | "filter" => match args.get(1).and_then(list_type_args) {
                 Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
                 _ => Err(CompileError::Type {
@@ -2435,10 +2471,18 @@ impl<'a> Lowerer<'a> {
                     // each use site (`lower_value_ref_inner`).
                     let is_class_method = self.env.class_of_method(name).is_some();
                     let is_top_level_def = self.defs.contains_key(name);
-                    if !is_ctor
-                        && !is_class_method
-                        && (self.mode == Mode::Complete || !is_top_level_def)
-                    {
+                    if is_top_level_def {
+                        // Recursion: capture top-level defs only in complete
+                        // mode (the shared self-cell closure). Strict inlines
+                        // them at each use site.
+                        if self.mode == Mode::Complete {
+                            out.push(name.clone());
+                        }
+                    } else if !is_ctor && !is_class_method && !self.is_builtin_op(name) {
+                        // A genuine free variable (an enclosing lambda's
+                        // closure) or a non-def name; builtins (collection
+                        // ops, math, FFI) resolve at lowering and are never
+                        // captured.
                         out.push(name.clone());
                     }
                 }

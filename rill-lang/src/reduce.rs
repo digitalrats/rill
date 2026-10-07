@@ -295,17 +295,24 @@ fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<Str
     }
 }
 
-fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Def {
+fn reduce_def(
+    def: &Def,
+    ctx: &HashMap<String, Def>,
+    cafs: &HashSet<String>,
+    reducing: &mut HashSet<String>,
+) -> Def {
     if def.is_decl() {
         return def.clone();
     }
-    let reduced_body = reduce_expr(def.body(), ctx, cafs);
+    let name = def.name().to_string();
+    let in_reducing = !reducing.insert(name.clone());
+    let reduced_body = reduce_expr(def.body(), ctx, cafs, reducing);
     let reduced_where: Vec<Def> = def
         .where_defs()
         .iter()
-        .map(|d| reduce_def(d, ctx, cafs))
+        .map(|d| reduce_def(d, ctx, cafs, reducing))
         .collect();
-    match def {
+    let result = match def {
         Def::Anchor {
             name, params, span, ..
         } => Def::Anchor {
@@ -322,10 +329,19 @@ fn reduce_def(def: &Def, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             span: *span,
         },
         _ => def.clone(),
+    };
+    if !in_reducing {
+        reducing.remove(&name);
     }
+    result
 }
 
-fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> Expr {
+fn reduce_expr(
+    e: &Expr,
+    ctx: &HashMap<String, Def>,
+    cafs: &HashSet<String>,
+    reducing: &mut HashSet<String>,
+) -> Expr {
     match e {
         Expr::Ref(name, _) => {
             if cafs.contains(name) {
@@ -335,7 +351,7 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             } else if let Some(def) = ctx.get(name) {
                 if def.params().is_empty() && !def.is_decl() {
                     // Local binding with no params — inline the body
-                    reduce_expr(def.body(), ctx, cafs)
+                    reduce_expr(def.body(), ctx, cafs, reducing)
                 } else {
                     // Has unapplied λ-params — can't inline, leave as ref
                     e.clone()
@@ -345,7 +361,10 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             }
         }
         Expr::Apply { name, args, span } => {
-            let reduced_args: Vec<Expr> = args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect();
+            let reduced_args: Vec<Expr> = args
+                .iter()
+                .map(|a| reduce_expr(a, ctx, cafs, reducing))
+                .collect();
             // Closure-valued applications (`add2 = adder 2.0`) are runtime
             // dispatches on closure values: leave the Apply in place so
             // lowering emits a `ValueCallFunc`. β-reducing a closure body would
@@ -372,6 +391,15 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                     // keep the Apply so lowering emits a curry closure.
                     // β-reducing it would substitute the applied args and leave
                     // the remaining parameters dangling in the body.
+                    Expr::Apply {
+                        name: name.clone(),
+                        args: reduced_args,
+                        span: *span,
+                    }
+                } else if reducing.contains(name) {
+                    // Recursion (complete mode): a call to a def currently on
+                    // the β-reduction path. Leave the Apply for lowering to
+                    // suspend as a lazy thunk — inlining would recurse forever.
                     Expr::Apply {
                         name: name.clone(),
                         args: reduced_args,
@@ -415,8 +443,15 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                     } else {
                         inlined
                     };
-                    // Recursively reduce the inlined body (may contain more calls)
-                    reduce_expr(&wrapped, ctx, cafs)
+                    // Recursively reduce the inlined body (may contain more
+                    // calls). Guard `name` so a recursive reference inside the
+                    // inlined body is left for lowering instead of re-inlined.
+                    let in_reducing_here = !reducing.insert(name.clone());
+                    let reduced_inlined = reduce_expr(&wrapped, ctx, cafs, reducing);
+                    if !in_reducing_here {
+                        reducing.remove(name);
+                    }
+                    reduced_inlined
                 }
             } else {
                 // Builtin, math, or unknown — leave as-is
@@ -428,8 +463,11 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             }
         }
         Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {
-            callee: Box::new(reduce_expr(callee, ctx, cafs)),
-            args: args.iter().map(|a| reduce_expr(a, ctx, cafs)).collect(),
+            callee: Box::new(reduce_expr(callee, ctx, cafs, reducing)),
+            args: args
+                .iter()
+                .map(|a| reduce_expr(a, ctx, cafs, reducing))
+                .collect(),
             span: *span,
         },
         Expr::Let {
@@ -438,9 +476,12 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             span: _,
         } => {
             // Reduce let defs, build context, reduce body
-            let reduced_defs: Vec<Def> = defs.iter().map(|d| reduce_def(d, ctx, cafs)).collect();
+            let reduced_defs: Vec<Def> = defs
+                .iter()
+                .map(|d| reduce_def(d, ctx, cafs, reducing))
+                .collect();
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
-            reduce_expr(body, &let_ctx, cafs)
+            reduce_expr(body, &let_ctx, cafs, reducing)
         }
         Expr::Loop(lhs, rhs, span) => {
             // Desugar the Faust-style integrator short forms to block built-ins:
@@ -450,43 +491,45 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                 return desugared;
             }
             Expr::Loop(
-                Box::new(reduce_expr(lhs, ctx, cafs)),
-                Box::new(reduce_expr(rhs, ctx, cafs)),
+                Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+                Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
                 *span,
             )
         }
         Expr::Seq(lhs, rhs, span) => Expr::Seq(
-            Box::new(reduce_expr(lhs, ctx, cafs)),
-            Box::new(reduce_expr(rhs, ctx, cafs)),
+            Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             *span,
         ),
         Expr::Par(lhs, rhs, span) => Expr::Par(
-            Box::new(reduce_expr(lhs, ctx, cafs)),
-            Box::new(reduce_expr(rhs, ctx, cafs)),
+            Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             *span,
         ),
         Expr::Split(lhs, rhs, span) => Expr::Split(
-            Box::new(reduce_expr(lhs, ctx, cafs)),
-            Box::new(reduce_expr(rhs, ctx, cafs)),
+            Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             *span,
         ),
         Expr::Merge(lhs, rhs, span) => Expr::Merge(
-            Box::new(reduce_expr(lhs, ctx, cafs)),
-            Box::new(reduce_expr(rhs, ctx, cafs)),
+            Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             *span,
         ),
         Expr::Delay(lhs, rhs, span) => Expr::Delay(
-            Box::new(reduce_expr(lhs, ctx, cafs)),
-            Box::new(reduce_expr(rhs, ctx, cafs)),
+            Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             *span,
         ),
         Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
-            lhs: Box::new(reduce_expr(lhs, ctx, cafs)),
-            rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
+            lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            rhs: Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             span: *span,
         },
-        Expr::Neg(inner, span) => Expr::Neg(Box::new(reduce_expr(inner, ctx, cafs)), *span),
+        Expr::Neg(inner, span) => {
+            Expr::Neg(Box::new(reduce_expr(inner, ctx, cafs, reducing)), *span)
+        }
         Expr::Lambda { params, body, span } => {
             // A lambda rebinds its parameters inside the body: drop them from
             // the reduction context so an outer definition of the same spelling
@@ -498,31 +541,34 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
             }
             Expr::Lambda {
                 params: params.clone(),
-                body: Box::new(reduce_expr(body, &inner_ctx, cafs)),
+                body: Box::new(reduce_expr(body, &inner_ctx, cafs, reducing)),
                 span: *span,
             }
         }
         Expr::ListLit(elems, span) => Expr::ListLit(
-            elems.iter().map(|el| reduce_expr(el, ctx, cafs)).collect(),
+            elems
+                .iter()
+                .map(|el| reduce_expr(el, ctx, cafs, reducing))
+                .collect(),
             *span,
         ),
         Expr::MapLit(entries, span) => Expr::MapLit(
             entries
                 .iter()
-                .map(|(k, v)| (k.clone(), reduce_expr(v, ctx, cafs)))
+                .map(|(k, v)| (k.clone(), reduce_expr(v, ctx, cafs, reducing)))
                 .collect(),
             *span,
         ),
         Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
             op: *op,
-            lhs: Box::new(reduce_expr(lhs, ctx, cafs)),
-            rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
+            lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            rhs: Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             span: *span,
         },
         Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
             op: *op,
-            lhs: Box::new(reduce_expr(lhs, ctx, cafs)),
-            rhs: Box::new(reduce_expr(rhs, ctx, cafs)),
+            lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing)),
+            rhs: Box::new(reduce_expr(rhs, ctx, cafs, reducing)),
             span: *span,
         },
         Expr::Match {
@@ -543,7 +589,7 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                     c
                 });
             Expr::Match {
-                scrutinee: Box::new(reduce_expr(scrutinee, ctx, cafs)),
+                scrutinee: Box::new(reduce_expr(scrutinee, ctx, cafs, reducing)),
                 arms: arms
                     .iter()
                     .map(|arm| MatchArm {
@@ -553,8 +599,8 @@ fn reduce_expr(e: &Expr, ctx: &HashMap<String, Def>, cafs: &HashSet<String>) -> 
                             .iter()
                             .map(|(g, b)| {
                                 (
-                                    reduce_expr(g, &inner_ctx, cafs),
-                                    reduce_expr(b, &inner_ctx, cafs),
+                                    reduce_expr(g, &inner_ctx, cafs, reducing),
+                                    reduce_expr(b, &inner_ctx, cafs, reducing),
                                 )
                             })
                             .collect(),
@@ -625,6 +671,7 @@ pub fn reduce_with_cafs(program: &Program, cafs: &HashSet<String>) -> Program {
 /// preserved on the returned program; a later task uses it for mode-aware
 /// reduction (recursion-aware CAF extraction in `complete` mode).
 pub fn reduce_with_cafs_mode(program: &Program, cafs: &HashSet<String>, _mode: Mode) -> Program {
+    let mut reducing: HashSet<String> = HashSet::new();
     let top_ctx: HashMap<String, Def> = program
         .defs
         .iter()
@@ -638,7 +685,7 @@ pub fn reduce_with_cafs_mode(program: &Program, cafs: &HashSet<String>, _mode: M
         for wd in def.where_defs() {
             ctx.insert(wd.name().to_string(), wd.clone());
         }
-        let d = reduce_def(def, &ctx, cafs);
+        let d = reduce_def(def, &ctx, cafs, &mut reducing);
         reduced_defs.push(d);
     }
     // Re-reduce with the reduced defs to handle references between top-level defs
@@ -656,7 +703,7 @@ pub fn reduce_with_cafs_mode(program: &Program, cafs: &HashSet<String>, _mode: M
         for wd in def.where_defs() {
             ctx.insert(wd.name().to_string(), wd.clone());
         }
-        result.defs.push(reduce_def(def, &ctx, cafs));
+        result.defs.push(reduce_def(def, &ctx, cafs, &mut reducing));
     }
     result
 }

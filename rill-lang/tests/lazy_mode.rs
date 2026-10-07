@@ -53,3 +53,142 @@ fn lambda_arith_plus_works() {
         Err(e) => panic!("lambda plus must compile, got: {e}"),
     }
 }
+
+#[test]
+fn complete_recursive_countup_runtime() {
+    // End-to-end recursion: countup 0 -> 3 (terminates, returns 3.0).
+    let src = "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0)\nmain = countup 0.0";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 3.0, "countup 0 should yield 3.0"),
+        other => panic!("expected Float(3.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_from_infinite_cons() {
+    // `from` produces an infinite lazy cons list; `head`/`tail` force elements.
+    // take 3 (from 10) -> [10, 11, 12]; head of the 3rd tail is 12.
+    let src = r#"{-# MODE complete #-}
+from n = cons n (from (n + 1.0));
+headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
+main = headv (tail (tail (tail (from 10.0))));"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => {
+            assert_eq!(*x, 13.0, "from 10, third tail head -> 13.0")
+        }
+        other => panic!("expected Float(12.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn match_maybe_syntax_works() {
+    let src = "{-# MODE complete #-}\nmain = match head (cons 1.0 (list)) of { Nothing => 0.0; Just x => x }";
+    match rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete) {
+        Ok(_) => {}
+        Err(e) => panic!("match syntax must compile, got: {e}"),
+    }
+}
+
+#[test]
+fn simple_headv_def_parses() {
+    let src = "headv xs = head xs\nmain = headv (cons 1.0 (list))";
+    match rill_lang::compile::<f32>(src) {
+        Ok(_) => {}
+        Err(e) => panic!("simple headv def must parse, got: {e}"),
+    }
+}
+
+#[test]
+fn headv_match_def_parses() {
+    let src = "headv xs = match (head xs) of { Nothing => 0.0; Just x => x }\nmain = headv (cons 1.0 (list))";
+    match rill_lang::compile::<f32>(src) {
+        Ok(_) => {}
+        Err(e) => panic!("headv match def must parse, got: {e}"),
+    }
+}
+
+#[test]
+fn complete_from_produce_cons() {
+    let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nmain = from 10.0;";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Cons(h, _) => {
+            assert_eq!(
+                prog.arena().get(*h).unwrap(),
+                &rill_lang::arena::Value::Float(10.0)
+            );
+        }
+        other => panic!("expected Cons, got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_lazy_cons_finite() {
+    let src = "{-# MODE complete #-}\nmain = cons 10.0 (list);";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Cons(h, _) => {
+            assert_eq!(
+                prog.arena().get(*h).unwrap(),
+                &rill_lang::arena::Value::Float(10.0)
+            );
+        }
+        other => panic!("expected Cons, got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_from_head() {
+    let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nmain = head (from 10.0);";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Sum(0, payload) => {
+            assert_eq!(
+                prog.arena().get(payload[0]).unwrap(),
+                &rill_lang::arena::Value::Float(10.0)
+            );
+        }
+        other => panic!("expected Just(10.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_def_cons_no_recursion() {
+    let src = "{-# MODE complete #-}\ngen n = cons n (list);\nmain = gen 10.0;";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Cons(h, _) => {
+            assert_eq!(
+                prog.arena().get(*h).unwrap(),
+                &rill_lang::arena::Value::Float(10.0)
+            );
+        }
+        other => panic!("expected Cons, got {other:?}"),
+    }
+}
