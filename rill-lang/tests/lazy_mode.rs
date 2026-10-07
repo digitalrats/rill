@@ -192,3 +192,20 @@ fn complete_def_cons_no_recursion() {
         other => panic!("expected Cons, got {other:?}"),
     }
 }
+
+#[test]
+fn value_track_minus_and_negative_literal() {
+    // `n - 1.0` is infix subtraction; `-2.0` is a negative literal.
+    // `cons` forces `sub` value-rate; `-2.0` is a negative literal, `n - 1.0`
+    // infix subtraction in the value track.
+    let src = "{-# MODE complete #-}\nsub n = cons (n - 1.0) (list);\nmain = match (head (sub -2.0)) of { Nothing => 0.0; Just x => x };";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, -3.0, "-2.0 - 1.0 = -3.0"),
+        other => panic!("expected Float(-3.0), got {other:?}"),
+    }
+}

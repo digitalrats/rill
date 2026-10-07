@@ -1649,6 +1649,33 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Float))
             }
+            Expr::Neg(inner, span) => {
+                // Negative literal / unary minus in value position. A numeric
+                // literal folds to a negative constant; anything else lowers as
+                // `0.0 - inner`.
+                match const_f64(inner) {
+                    Some(v) => {
+                        let dst = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueConstFloat { dst, value: -v });
+                        Ok((dst, ValueTy::Float))
+                    }
+                    None => {
+                        let (ir, _) = self.lower_value(inner)?;
+                        let zero = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueConstFloat {
+                            dst: zero,
+                            value: 0.0,
+                        });
+                        let dst = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueSub {
+                            dst,
+                            a: zero,
+                            b: ir,
+                        });
+                        Ok((dst, ValueTy::Float))
+                    }
+                }
+            }
             Expr::Lambda { params, body, span } => {
                 // A lambda literal lowers to a FragmentIr (compiled once, shared
                 // across every closure it creates) plus a by-value snapshot of

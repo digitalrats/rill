@@ -137,6 +137,29 @@ fn is_atom_start(tok: &Tok) -> bool {
     )
 }
 
+/// Whether the token at `pos + 1` is a number directly attached to the
+/// current `-` (a negative literal: `-1.0`, no whitespace).
+fn peek_is_negative_literal(toks: &[Token], pos: usize) -> bool {
+    if !matches!(toks[pos].tok, Tok::Minus) {
+        return false;
+    }
+    let Some(next) = toks.get(pos + 1) else {
+        return false;
+    };
+    matches!(next.tok, Tok::Int(_) | Tok::Float(_)) && next.span.start == toks[pos].span.end
+}
+
+/// Whether a juxtaposed application argument may start here. `-` is included
+/// ONLY when it begins a negative literal (`-1.0`); a standalone `-` is infix
+/// subtraction and must reach the operator loop instead of being consumed as a
+/// juxtaposed argument.
+fn is_juxtaposition_arg_start(toks: &[Token], pos: usize) -> bool {
+    if matches!(toks[pos].tok, Tok::Minus) {
+        return peek_is_negative_literal(toks, pos);
+    }
+    is_atom_start(&toks[pos].tok)
+}
+
 /// Check if a token can begin a (sub)pattern.
 fn is_pattern_start(tok: &Tok) -> bool {
     matches!(
@@ -958,12 +981,12 @@ impl<'a> Parser<'a> {
                 self.bump();
                 if self.peek().tok == Tok::Dot {
                     let proj = self.parse_field(Expr::Ref(name, t.span), start)?;
-                    if is_atom_start(&self.peek().tok) {
+                    if is_juxtaposition_arg_start(self.toks, self.pos) {
                         // `k.unKleisli p.first` — apply a field projection as
                         // the callee (field access binds tighter than
                         // application).
                         let mut args = Vec::new();
-                        while is_atom_start(&self.peek().tok) {
+                        while is_juxtaposition_arg_start(self.toks, self.pos) {
                             args.push(self.parse_atom(true)?);
                         }
                         let span = self.span_from(start);
@@ -975,9 +998,9 @@ impl<'a> Parser<'a> {
                     } else {
                         Ok(proj)
                     }
-                } else if is_atom_start(&self.peek().tok) {
+                } else if is_juxtaposition_arg_start(self.toks, self.pos) {
                     let mut args = Vec::new();
-                    while is_atom_start(&self.peek().tok) {
+                    while is_juxtaposition_arg_start(self.toks, self.pos) {
                         args.push(self.parse_atom(true)?);
                     }
                     let span = t.span.merge(args.last().unwrap().span());
@@ -1192,7 +1215,29 @@ impl<'a> Parser<'a> {
                 })
             }
             Tok::Plus => Ok(Expr::Ref("+".into(), t.span)),
-            Tok::Minus => Ok(Expr::Ref("-".into(), t.span)),
+            Tok::Minus => {
+                // A `-` directly attached to a number is a negative literal
+                // (applying unary minus to the literal); a separated `-` is the
+                // unary minus function reference (infix subtraction is handled
+                // by the operator loop).
+                // `t` is the `-` we just bumped; `self.pos` now points at the
+                // next token. A number directly attached (no whitespace) is a
+                // negative literal.
+                let Some(next) = self.toks.get(self.pos) else {
+                    return Ok(Expr::Ref("-".into(), t.span));
+                };
+                if matches!(next.tok, Tok::Int(_) | Tok::Float(_)) && next.span.start == t.span.end
+                {
+                    self.bump(); // the number
+                    match next.tok {
+                        Tok::Float(v) => Ok(Expr::Neg(Box::new(Expr::Float(v, next.span)), t.span)),
+                        Tok::Int(v) => Ok(Expr::Neg(Box::new(Expr::Int(v, next.span)), t.span)),
+                        _ => Ok(Expr::Ref("-".into(), t.span)),
+                    }
+                } else {
+                    Ok(Expr::Ref("-".into(), t.span))
+                }
+            }
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
             Tok::Slash => Ok(Expr::Ref("/".into(), t.span)),
             Tok::Percent => Ok(Expr::Ref("%".into(), t.span)),
@@ -1210,10 +1255,10 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::RParen)?;
                 if self.peek().tok == Tok::Dot {
                     self.parse_field(inner, start)
-                } else if !arg_list && is_atom_start(&self.peek().tok) {
+                } else if !arg_list && is_juxtaposition_arg_start(self.toks, self.pos) {
                     // `(expr) arg1 arg2` — apply a parenthesized expression.
                     let mut args = Vec::new();
-                    while is_atom_start(&self.peek().tok) {
+                    while is_juxtaposition_arg_start(self.toks, self.pos) {
                         args.push(self.parse_atom(true)?);
                     }
                     let span = self.span_from(start);
