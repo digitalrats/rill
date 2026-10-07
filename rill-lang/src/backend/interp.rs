@@ -2062,6 +2062,10 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
     mut r: ArenaRef,
     drops: &mut Vec<ArenaRef>,
 ) -> ArenaRef {
+    // Cells memoized into a `Forced` result during this chase. Re-entering one
+    // is a self/mutual-recursion cycle (`a = a`, `a = b; b = a`), which is
+    // bottom, not a hang.
+    let mut seen_cells: Vec<ArenaRef> = Vec::new();
     loop {
         let v = match prog.arena.get(r) {
             Some(v) => v,
@@ -2079,32 +2083,51 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
         let state: Option<Value> = prog.arena.get(cell).cloned();
         match state {
             Some(Value::ThunkCell(ThunkState::Forced(res))) => {
+                // Cycle guard: a memoized result that re-enters a cell already
+                // forced in this chase is a self-referential loop.
+                if let Some(Value::Thunk { cell: c2, .. }) = prog.arena.get(res) {
+                    if seen_cells.contains(c2) {
+                        return memoize_bottom(prog, cell);
+                    }
+                }
                 r = res;
                 continue;
             }
             Some(Value::ThunkCell(ThunkState::Bottom)) => {
                 // A previously-divergent cell: memoize a bottom slot and
                 // return it (borrowed, cell-owned).
-                let Some(b) = try_alloc_bottom(prog) else {
-                    return r;
-                };
-                *prog.arena.get_mut(cell).expect("cell rc 1") =
-                    Value::ThunkCell(ThunkState::Forced(b));
-                return b;
+                return memoize_bottom(prog, cell);
             }
             Some(Value::ThunkCell(ThunkState::Unforced)) => {
                 // Mark the cell Forcing (black hole) before dispatching.
-                *prog.arena.get_mut(cell).expect("cell rc 1") =
-                    Value::ThunkCell(ThunkState::Forcing);
+                let _ = prog.arena.mutate_slot(cell, |v| {
+                    if let Value::ThunkCell(st) = v {
+                        *st = ThunkState::Forcing;
+                    }
+                });
                 let result = run_thunk_body(prog, fragment, env, drops);
                 // Re-entrancy guard: a body that forced ITSELF left a black-
                 // hole bottom behind while its cell was Forcing. Such a thunk
                 // is divergent — keep the bottom, discard the body result.
                 match prog.arena.get(cell).cloned() {
                     Some(Value::ThunkCell(ThunkState::Forcing)) => {
-                        // Normal completion: memoize the body's result.
-                        *prog.arena.get_mut(cell).expect("cell rc 1") =
-                            Value::ThunkCell(ThunkState::Forced(result));
+                        // Normal completion — unless the body produced a thunk
+                        // that re-enters THIS cell (a self-cycle).
+                        let cyclic = matches!(
+                            prog.arena.get(result),
+                            Some(Value::Thunk { cell: c2, .. })
+                                if *c2 == cell || seen_cells.contains(c2)
+                        );
+                        if cyclic {
+                            prog.arena.drop_ref(result);
+                            return memoize_bottom(prog, cell);
+                        }
+                        seen_cells.push(cell);
+                        let _ = prog.arena.mutate_slot(cell, |v| {
+                            if let Value::ThunkCell(st) = v {
+                                *st = ThunkState::Forced(result);
+                            }
+                        });
                         r = result;
                         continue;
                     }
@@ -2115,12 +2138,7 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
                     }
                     Some(Value::ThunkCell(ThunkState::Bottom)) => {
                         prog.arena.drop_ref(result);
-                        let Some(b) = try_alloc_bottom(prog) else {
-                            return r;
-                        };
-                        *prog.arena.get_mut(cell).expect("cell rc 1") =
-                            Value::ThunkCell(ThunkState::Forced(b));
-                        return b;
+                        return memoize_bottom(prog, cell);
                     }
                     _ => {
                         prog.arena.drop_ref(result);
@@ -2130,15 +2148,30 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
             }
             Some(Value::ThunkCell(ThunkState::Forcing)) => {
                 // Black hole re-entry: divergent. Memoize a bottom slot.
-                let Some(b) = try_alloc_bottom(prog) else {
-                    return r;
-                };
-                *prog.arena.get_mut(cell).expect("cell rc 1") =
-                    Value::ThunkCell(ThunkState::Forced(b));
-                return b;
+                return memoize_bottom(prog, cell);
             }
             _ => return r,
         }
+    }
+}
+
+/// Allocate a bottom slot, memoize it into `cell` as `Forced(bottom)`, and
+/// return the bottom ref. The cell owns the bottom (kept alive via
+/// `visit_refs`); the returned ref is borrowed by the caller.
+fn memoize_bottom<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    cell: ArenaRef,
+) -> ArenaRef {
+    match try_alloc_bottom(prog) {
+        Some(b) => {
+            let _ = prog.arena.mutate_slot(cell, |v| {
+                if let Value::ThunkCell(st) = v {
+                    *st = ThunkState::Forced(b);
+                }
+            });
+            b
+        }
+        None => cell, // arena exhausted (build-time budget bug); caller treats as bottom-ish
     }
 }
 
@@ -3587,5 +3620,119 @@ mod lazy_track_tests {
             "the output copy forces the lazy output to WHNF"
         );
         assert_eq!(prog.arena.live(), 1, "only the output survives the tick");
+    }
+
+    /// The shared self-referential body: reads capture cell 0 (the thunk's own
+    /// env field, which is the thunk itself) and returns a COW copy of it.
+    /// This is the `a = a` shape — the body produces a fresh slot sharing the
+    /// same memo cell.
+    fn self_ref_fragment() -> Arc<FragmentIr> {
+        Arc::new(FragmentIr {
+            value_blocks: vec![ValueBlock {
+                instrs: vec![ValueInstr::ValueReadCell { dst: 0, cell: 0 }],
+                term: ValueTerm::Halt,
+            }],
+            entry: 0,
+            steps: Vec::new(),
+            num_value_regs: 1,
+            num_block_regs: 0,
+            output_value_regs: vec![0],
+            output_block_regs: Vec::new(),
+            num_capture_cells: 1,
+            sig: FuncSig {
+                value_ins: 0,
+                value_outs: 1,
+                signal_ins: 0,
+            },
+        })
+    }
+
+    #[test]
+    fn force_self_cycle_returns_bottom_not_hang() {
+        // A thunk whose body returns a COW copy of ITSELF (`a = a`): forcing
+        // must yield bottom, not hang. The COW copy shares the memo cell (cell
+        // rc > 1), so this also exercises the shared-cell mutation path that
+        // used to debug-assert on rc == 1.
+        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![self_ref_fragment()]);
+        let env = prog.arena.alloc(Value::Record(vec![])).unwrap();
+        let cell = prog
+            .arena
+            .alloc(Value::ThunkCell(ThunkState::Unforced))
+            .unwrap();
+        let t = prog
+            .arena
+            .alloc(Value::Thunk {
+                fragment: 0,
+                env,
+                cell,
+            })
+            .unwrap();
+        // The env record holds the thunk itself (its field 0 is `t`), so the
+        // body's capture read of field 0 produces a self-referential copy.
+        if let Value::Record(fields) = prog.arena.get_mut(env).unwrap() {
+            fields.push(t);
+        }
+        let mut drops = Vec::new();
+        let b = force(&mut prog, t, &mut drops);
+        assert_eq!(
+            prog.arena.get(b).unwrap(),
+            &Value::Bottom,
+            "a self-cycle is bottom, not a hang"
+        );
+        assert_eq!(
+            prog.arena.get(cell).unwrap(),
+            &Value::ThunkCell(ThunkState::Forced(b)),
+            "the self-cycle is memoized as a bottom result"
+        );
+        // The COW copy created during forcing was dropped; the cell is back to
+        // a single reference (the thunk `t`).
+        assert_eq!(prog.arena.rc(cell), 1, "shared-cell mutation did not leak");
+    }
+
+    #[test]
+    fn force_shared_cell_thunk_memoizes_without_panic() {
+        // Two thunk VALUES sharing one memo cell (the STG update-frame shape):
+        // forcing either must not assert on the cell's rc and both see the
+        // memoized result.
+        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let env = prog.arena.alloc(Value::Record(vec![])).unwrap();
+        let cell = prog
+            .arena
+            .alloc(Value::ThunkCell(ThunkState::Unforced))
+            .unwrap();
+        let _t1 = prog
+            .arena
+            .alloc(Value::Thunk {
+                fragment: 0,
+                env,
+                cell,
+            })
+            .unwrap();
+        // Second thunk value sharing env + cell; count its references.
+        prog.arena.copy(env).unwrap();
+        prog.arena.copy(cell).unwrap();
+        let t2 = prog
+            .arena
+            .alloc(Value::Thunk {
+                fragment: 0,
+                env,
+                cell,
+            })
+            .unwrap();
+        let mut drops = Vec::new();
+        let r = force(&mut prog, t2, &mut drops);
+        assert_eq!(
+            prog.arena.get(r).unwrap(),
+            &Value::Int(7),
+            "forcing the shared-cell thunk memoizes Int(7)"
+        );
+        assert_eq!(
+            prog.arena.get(cell).unwrap(),
+            &Value::ThunkCell(ThunkState::Forced(r))
+        );
+        // A second force through the OTHER thunk returns the same memo.
+        let mut drops2 = Vec::new();
+        let r2 = force(&mut prog, t2, &mut drops2);
+        assert_eq!(r2, r, "the memo is shared across thunk values");
     }
 }
