@@ -226,6 +226,23 @@ fn complete_countdown_with_minus() {
 }
 
 #[test]
+fn complete_mutual_recursion_runtime() {
+    // Mutual recursion (even/odd) resolves through shared cells: even's
+    // fragment captures odd's CELL (not a recompiled closure), so the graph
+    // compiles exactly once and both closures are filled before any call.
+    let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 4.0;";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "even 4 -> 1.0"),
+        other => panic!("expected Float(1.0), got {other:?}"),
+    }
+}
+
+#[test]
 fn complete_let_binding_is_lazy_thunk() {
     // A `let` binding in complete mode suspends as a thunk: xs = from 10 is
     // forced by headv/tail on demand.

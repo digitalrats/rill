@@ -269,6 +269,26 @@ struct Lowerer<'a> {
     /// is a NAMED lambda-literal definition. Consumed by the `Expr::Lambda`
     /// arm; anonymous lambdas leave it unset and default to `Float`.
     pending_param_tys: Option<Vec<ValueTy>>,
+    /// Complete-mode shared cells for top-level Anchor defs (name → cell reg).
+    /// A named λ-param def referenced as a value compiles its closure ONCE and
+    /// stores it in this cell; every other reference — including a mutually
+    /// recursive partner (`even`/`odd`) — captures the CELL, not a recompiled
+    /// closure. This is the STG model: a top-level binding is a thunk in a
+    /// cell that holds either a pure value or a closure, and recompiling the
+    /// binding on reference is what made mutual recursion overflow the
+    /// compile-time stack.
+    anchor_cells: HashMap<String, usize>,
+    /// Memoized closures of top-level Anchor defs (name → closure value reg),
+    /// so a def's fragment is compiled exactly once per program.
+    anchor_closures: HashMap<String, usize>,
+    /// Static `Func` type of each memoized Anchor-def closure, parallel to
+    /// [`Self::anchor_closures`].
+    anchor_types: HashMap<String, ValueTy>,
+    /// Top-level Anchor defs whose closures are currently being compiled (the
+    /// mutual-recursion guard): when `even`'s compile reaches `odd` and `odd`'s
+    /// compile reaches `even` again, the cell (not a fresh compile) is the
+    /// forward reference.
+    anchor_compiling: HashSet<String>,
     /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
     /// the AST. A resource param's `Ref(name)` resolves to the capacity here to
     /// assign a tape index; a `Ref` NOT present stays a name-based resource
@@ -2419,7 +2439,6 @@ impl<'a> Lowerer<'a> {
                 span: dspan,
                 ..
             } => {
-                // DEBUG
                 // A bare reference to a user definition with λ-parameters in
                 // value position is a first-class function value: compile its
                 // body into a real FragmentIr and capture free variables by
@@ -2428,6 +2447,22 @@ impl<'a> Lowerer<'a> {
                 // the fragment's leading registers, so named definitions
                 // participate in currying (`add5 = add2 5.0`) and dispatch
                 // just like lambdas.
+                //
+                // Complete mode uses the STG model for mutual recursion
+                // (`even`/`odd`): each top-level Anchor def's closure is
+                // compiled EXACTLY ONCE (memoized in `anchor_closures`) and
+                // stored in a SHARED cell; references capture the cell, not a
+                // recompiled closure, so the recursion never re-enters this
+                // arm at compile time.
+                if self.mode == Mode::Complete {
+                    let reg = self.compile_anchor_closure(name, span)?;
+                    let ty = self
+                        .anchor_types
+                        .get(name)
+                        .cloned()
+                        .unwrap_or(ValueTy::Float);
+                    return Ok((reg, ty));
+                }
                 let param_names: HashSet<String> =
                     def_params.iter().map(|p| p.name.clone()).collect();
                 let free = self.free_vars(&body, &param_names);
@@ -2448,9 +2483,10 @@ impl<'a> Lowerer<'a> {
                     env: env_reg,
                     fragment: fragment_id,
                 });
-                // Complete-mode recursion: fill the self-reference cell with the
-                // just-created closure, so a recursive reference in the body
-                // reads the closure through the cell.
+                // Strict mode: recursion is rejected, so self_cell is only
+                // ever produced here for the complete-mode path above (which
+                // writes into the shared cell instead). Keep the write for
+                // safety if a self-cell is ever threaded through.
                 if let Some(sc) = self_cell {
                     if self.mode == Mode::Complete {
                         self.emit_value(ValueInstr::ValueWriteCell { cell: sc, src: dst });
@@ -2763,7 +2799,12 @@ impl<'a> Lowerer<'a> {
     /// compile time), the field is a reference to a fresh cell that the caller
     /// fills with the closure AFTER it is created. Reading the field through
     /// the cell yields the closure — this is the live self-reference that makes
-    /// recursion productive. Returns `(env_reg, Option<self_cell_reg>)`.
+    /// recursion productive. In complete mode a top-level Anchor def uses its
+    /// SHARED cell (the STG model: a binding is a thunk in a cell holding a
+    /// closure or a pure value) so a mutually-recursive partner (`even`/`odd`)
+    /// captures the CELL, not a recompiled closure — recompiling the partner
+    /// is exactly what overflowed the compile-time stack. Returns
+    /// `(env_reg, Option<self_cell_reg>)`.
     fn emit_env_snapshot(
         &mut self,
         free: &[String],
@@ -2774,11 +2815,31 @@ impl<'a> Lowerer<'a> {
         let mut self_cell: Option<usize> = None;
         for name in free {
             if self_name == Some(name.as_str()) {
-                // Self-reference: a cell that the caller writes the closure into.
-                let cell_reg = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBindCell { dst: cell_reg });
+                if self.mode == Mode::Complete && self.is_top_level_anchor_def(name) {
+                    // Self-recursive top-level def: reference its SHARED cell
+                    // (created by the Anchor arm before the fragment compiled),
+                    // which the caller fills with the closure.
+                    let cell_reg = self.anchor_cell(name);
+                    field_regs.push(cell_reg);
+                    self_cell = Some(cell_reg);
+                } else {
+                    // Self-reference: a cell that the caller writes the closure
+                    // into.
+                    let cell_reg = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBindCell { dst: cell_reg });
+                    field_regs.push(cell_reg);
+                    self_cell = Some(cell_reg);
+                }
+            } else if self.mode == Mode::Complete && self.is_top_level_anchor_def(name) {
+                // Mutual recursion (`even`/`odd`): capture the partner's SHARED
+                // cell (created on first sight) and compile its closure into
+                // it right now (eagerly) unless it is already compiled or
+                // currently being compiled (the `anchor_compiling` guard). The
+                // cell — not a recompiled closure — is the forward reference
+                // that makes the compile-time recursion terminate.
+                self.compile_anchor_closure(name, span)?;
+                let cell_reg = self.anchor_cell(name);
                 field_regs.push(cell_reg);
-                self_cell = Some(cell_reg);
             } else {
                 let (r, _) = self.lower_value_ref(name, span)?;
                 field_regs.push(r);
@@ -2790,6 +2851,101 @@ impl<'a> Lowerer<'a> {
             fields: field_regs,
         });
         Ok((dst, self_cell))
+    }
+
+    /// Whether `name` is a top-level Anchor def (a named λ-parameter
+    /// definition): such defs get a SHARED cell in complete mode, and every
+    /// reference — self or mutual — goes through the cell.
+    fn is_top_level_anchor_def(&self, name: &str) -> bool {
+        matches!(self.defs.get(name), Some(Def::Anchor { params, .. }) if !params.is_empty())
+    }
+
+    /// Get-or-create the SHARED cell for a top-level Anchor def (complete
+    /// mode). The cell is a forward reference: its closure is compiled exactly
+    /// once (eagerly, on first sight — see [`Self::compile_anchor_closure`])
+    /// and written into the cell, so any number of references (including
+    /// mutual recursion) capture the cell without recompiling. Returns the
+    /// cell register.
+    fn anchor_cell(&mut self, name: &str) -> usize {
+        if let Some(&c) = self.anchor_cells.get(name) {
+            return c;
+        }
+        let c = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBindCell { dst: c });
+        self.anchor_cells.insert(name.to_string(), c);
+        c
+    }
+
+    /// Compile the closure of a top-level Anchor def (complete mode) into its
+    /// SHARED cell, unless it is already compiled or currently being compiled
+    /// (the mutual-recursion guard: `even`'s compile reaching `odd` reaching
+    /// `even` again uses `even`'s cell as the forward reference). The closure
+    /// is memoized in [`Self::anchor_closures`], so each def's fragment is
+    /// compiled exactly once. Returns the closure's value register.
+    fn compile_anchor_closure(&mut self, name: &str, span: Span) -> Result<usize, CompileError> {
+        if let Some(&reg) = self.anchor_closures.get(name) {
+            return Ok(reg);
+        }
+        if self.anchor_compiling.contains(name) {
+            // Mutual-recursion re-entry: the caller already captured our cell
+            // (created by [`Self::anchor_cell`]); our closure is written into
+            // it by the in-flight compile. Nothing to do here.
+            return Ok(self.anchor_cells.get(name).cloned().unwrap());
+        }
+        let def = self
+            .defs
+            .get(name)
+            .cloned()
+            .ok_or_else(|| CompileError::Type {
+                msg: format!("unknown `{name}` in value lowering"),
+                span,
+            })?;
+        let Def::Anchor {
+            params: def_params,
+            body,
+            span: dspan,
+            ..
+        } = def
+        else {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` is not a value function in v1"),
+                span,
+            });
+        };
+        self.anchor_compiling.insert(name.to_string());
+        // The shared cell must exist BEFORE the fragment compiles, so a
+        // mutually-recursive partner's env snapshot captures the cell (not a
+        // recompiled closure).
+        let cell = self.anchor_cell(name);
+        let param_names: HashSet<String> = def_params.iter().map(|p| p.name.clone()).collect();
+        let free = self.free_vars(&body, &param_names);
+        let param_tys = vec![ValueTy::Float; def_params.len()];
+        let (fragment_id, ret_ty) = self.lower_fragment(
+            &def_params,
+            &body,
+            &free,
+            &self.capture_tys(&free),
+            &param_tys,
+            None,
+            dspan,
+        )?;
+        let (env_reg, _) = self.emit_env_snapshot(&free, dspan, Some(name))?;
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueMakeClosure {
+            dst,
+            env: env_reg,
+            fragment: fragment_id,
+        });
+        // Complete-mode recursion: fill the shared cell with the just-created
+        // closure, so a recursive reference in the body reads the closure
+        // through the cell.
+        self.emit_value(ValueInstr::ValueWriteCell { cell, src: dst });
+        let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
+        self.anchor_closures.insert(name.to_string(), dst);
+        self.anchor_types
+            .insert(name.to_string(), ValueTy::Func(arg_tys, vec![ret_ty]));
+        self.anchor_compiling.remove(name);
+        Ok(dst)
     }
 
     /// Compile a partial-application (curry) fragment for a call that applies
@@ -5095,6 +5251,10 @@ pub fn lower_with_cafs_mode(
         fragment_captures: Vec::new(),
         fn_param_tys: tp.fn_param_tys.clone(),
         pending_param_tys: None,
+        anchor_cells: HashMap::new(),
+        anchor_closures: HashMap::new(),
+        anchor_types: HashMap::new(),
+        anchor_compiling: HashSet::new(),
         tape_decls: tp.tape_decls.iter().cloned().collect(),
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
@@ -5353,6 +5513,10 @@ mod tests {
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),
             pending_param_tys: None,
+            anchor_cells: HashMap::new(),
+            anchor_closures: HashMap::new(),
+            anchor_types: HashMap::new(),
+            anchor_compiling: HashSet::new(),
             tape_decls: HashMap::new(),
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
