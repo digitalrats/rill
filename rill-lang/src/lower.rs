@@ -1827,7 +1827,6 @@ impl<'a> Lowerer<'a> {
             ("map", _) => Map,
             ("fold", _) => Fold,
             ("filter", _) => Filter,
-            ("list", _) => ListEmpty,
             ("insert", 3) => InsertMap,
             ("insert", 2) => InsertSet,
             ("lookup", _) => Lookup,

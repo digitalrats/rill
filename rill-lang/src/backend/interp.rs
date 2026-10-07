@@ -1544,10 +1544,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // mid-tick. An empty array list is its own tail; Nil's tail is Nil.
             match prog.value_regs[args[0]].and_then(|r| prog.arena.get(r)) {
                 Some(Value::Cons(_, t)) => {
-                    prog.value_regs[dst] = match copy_owned(prog, *t) {
-                        Some(c) => Some(c),
-                        None => None,
-                    };
+                    prog.value_regs[dst] = copy_owned(prog, *t);
                 }
                 Some(Value::Nil) => {
                     prog.value_regs[dst] = alloc_owned(prog, Value::Nil);
