@@ -300,6 +300,26 @@ impl<'a> Lowerer<'a> {
         r
     }
 
+    /// Emit a function application: eager `ValueCallFunc` in strict mode,
+    /// lazy `ValueCallLazy` (a thunk) in complete mode. The lazy form is what
+    /// makes recursion and infinite structures productive — the call suspends
+    /// instead of running.
+    fn emit_call(&mut self, dst: usize, callee_reg: usize, args: Vec<usize>) {
+        if self.mode == Mode::Complete {
+            self.emit_value(ValueInstr::ValueCallLazy {
+                dst,
+                closure_slot: callee_reg,
+                args,
+            });
+        } else {
+            self.emit_value(ValueInstr::ValueCallFunc {
+                dst,
+                closure_slot: callee_reg,
+                args,
+            });
+        }
+    }
+
     fn emit_value(&mut self, i: ValueInstr) {
         self.value_blocks[self.cur_value_block].instrs.push(i);
     }
@@ -1521,11 +1541,7 @@ impl<'a> Lowerer<'a> {
                             return Ok((dst, ValueTy::Func(remaining_arg_tys, vec![ret_ty])));
                         }
                         let dst = self.fresh_value_reg();
-                        self.emit_value(ValueInstr::ValueCallFunc {
-                            dst,
-                            closure_slot: callee_reg,
-                            args: arg_regs,
-                        });
+                        self.emit_call(dst, callee_reg, arg_regs);
                         Ok((dst, ret_ty))
                     }
                     _ => {
@@ -1541,11 +1557,7 @@ impl<'a> Lowerer<'a> {
                             arg_regs.push(ar);
                         }
                         let dst = self.fresh_value_reg();
-                        self.emit_value(ValueInstr::ValueCallFunc {
-                            dst,
-                            closure_slot: callee_reg,
-                            args: arg_regs,
-                        });
+                        self.emit_call(dst, callee_reg, arg_regs);
                         Ok((dst, ValueTy::Float))
                     }
                 }
@@ -1597,11 +1609,7 @@ impl<'a> Lowerer<'a> {
                 }
                 let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueCallFunc {
-                    dst,
-                    closure_slot: cr,
-                    args: arg_regs,
-                });
+                self.emit_call(dst, cr, arg_regs);
                 Ok((dst, ret_ty))
             }
             Expr::Arith { op, lhs, rhs, span } => {
@@ -1682,7 +1690,7 @@ impl<'a> Lowerer<'a> {
                     body_expected.as_ref(),
                     *span,
                 )?;
-                let env_reg = self.emit_env_snapshot(&free, *span)?;
+                let (env_reg, _self_cell) = self.emit_env_snapshot(&free, *span, None)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
                     dst,
@@ -2300,6 +2308,7 @@ impl<'a> Lowerer<'a> {
                 span: dspan,
                 ..
             } => {
+                // DEBUG
                 // A bare reference to a user definition with λ-parameters in
                 // value position is a first-class function value: compile its
                 // body into a real FragmentIr and capture free variables by
@@ -2321,13 +2330,21 @@ impl<'a> Lowerer<'a> {
                     None,
                     dspan,
                 )?;
-                let env_reg = self.emit_env_snapshot(&free, dspan)?;
+                let (env_reg, self_cell) = self.emit_env_snapshot(&free, dspan, Some(name))?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
                     dst,
                     env: env_reg,
                     fragment: fragment_id,
                 });
+                // Complete-mode recursion: fill the self-reference cell with the
+                // just-created closure, so a recursive reference in the body
+                // reads the closure through the cell.
+                if let Some(sc) = self_cell {
+                    if self.mode == Mode::Complete {
+                        self.emit_value(ValueInstr::ValueWriteCell { cell: sc, src: dst });
+                    }
+                }
                 let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
                 Ok((dst, ValueTy::Func(arg_tys, vec![ret_ty])))
             }
@@ -2385,7 +2402,7 @@ impl<'a> Lowerer<'a> {
                 // Top-level value defs are inlined at each use site (see
                 // `lower_value_ref_inner`), so they are never captured.
                 if !bound.contains(name)
-                    && !self.defs.contains_key(name)
+                    && (self.mode == Mode::Complete || !self.defs.contains_key(name))
                     && seen.insert(name.clone())
                 {
                     out.push(name.clone());
@@ -2418,7 +2435,10 @@ impl<'a> Lowerer<'a> {
                     // each use site (`lower_value_ref_inner`).
                     let is_class_method = self.env.class_of_method(name).is_some();
                     let is_top_level_def = self.defs.contains_key(name);
-                    if !is_ctor && !is_class_method && !is_top_level_def {
+                    if !is_ctor
+                        && !is_class_method
+                        && (self.mode == Mode::Complete || !is_top_level_def)
+                    {
                         out.push(name.clone());
                     }
                 }
@@ -2618,18 +2638,39 @@ impl<'a> Lowerer<'a> {
     /// the record's value register. Each free name is resolved through
     /// `lower_value_ref`, so a top-level definition inlines its value while a
     /// name captured by an enclosing lambda reads its env-frame cell.
-    fn emit_env_snapshot(&mut self, free: &[String], span: Span) -> Result<usize, CompileError> {
+    /// Build the env Record for a closure/lambda capture. A free variable that
+    /// names the CURRENT def (`self_name == name`) is a recursive self-
+    /// reference: instead of re-lowering the def (which would recurse at
+    /// compile time), the field is a reference to a fresh cell that the caller
+    /// fills with the closure AFTER it is created. Reading the field through
+    /// the cell yields the closure — this is the live self-reference that makes
+    /// recursion productive. Returns `(env_reg, Option<self_cell_reg>)`.
+    fn emit_env_snapshot(
+        &mut self,
+        free: &[String],
+        span: Span,
+        self_name: Option<&str>,
+    ) -> Result<(usize, Option<usize>), CompileError> {
         let mut field_regs = Vec::with_capacity(free.len());
+        let mut self_cell: Option<usize> = None;
         for name in free {
-            let (r, _) = self.lower_value_ref(name, span)?;
-            field_regs.push(r);
+            if self_name == Some(name.as_str()) {
+                // Self-reference: a cell that the caller writes the closure into.
+                let cell_reg = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBindCell { dst: cell_reg });
+                field_regs.push(cell_reg);
+                self_cell = Some(cell_reg);
+            } else {
+                let (r, _) = self.lower_value_ref(name, span)?;
+                field_regs.push(r);
+            }
         }
         let dst = self.fresh_value_reg();
         self.emit_value(ValueInstr::ValueConstructRecord {
             dst,
             fields: field_regs,
         });
-        Ok(dst)
+        Ok((dst, self_cell))
     }
 
     /// Compile a partial-application (curry) fragment for a call that applies
@@ -2675,11 +2716,7 @@ impl<'a> Lowerer<'a> {
         }
         let mut call_args: Vec<usize> = (arg0_reg..arg0_reg + applied).collect();
         call_args.extend(0..remaining_arity);
-        self.emit_value(ValueInstr::ValueCallFunc {
-            dst: call_dst,
-            closure_slot: func_reg,
-            args: call_args,
-        });
+        self.emit_call(call_dst, func_reg, call_args);
 
         let frag = FragmentIr {
             value_blocks: std::mem::take(&mut self.value_blocks),

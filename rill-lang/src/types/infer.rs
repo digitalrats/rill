@@ -70,6 +70,10 @@ struct Ctx {
     /// instance body's own record construction unifies against the same
     /// concrete type via the expected-type threading.
     type_var_bindings: HashMap<String, ValueTy>,
+    /// The evaluation mode (strict/complete). Complete mode's value-track
+    /// retry re-registers a recursive def's scheme with value-rate channels
+    /// (§: recursion is the lazy value track).
+    mode: Mode,
 }
 
 impl Ctx {
@@ -1072,6 +1076,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         env,
         method_lifting: HashSet::new(),
         type_var_bindings: HashMap::new(),
+        mode,
     };
 
     infer_def_group(&mut ctx, &program.defs)?;
@@ -1197,6 +1202,33 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 ctx.next += 1;
                 ctx.locals
                     .insert(p.name.clone(), ArrowTy::value_channel(ValueTy::Var(v)));
+            }
+            // Complete-mode recursion: the value-track retry re-registers the
+            // CURRENT def's placeholder scheme with VALUE-rate channels, so a
+            // self-recursive reference (`countdown (n - 1)` inside `countdown`)
+            // resolves to the value track. Recursion in the lazy model IS the
+            // value track; the placeholder's signal default would otherwise
+            // leak into the recursive call and fail any value-demanding site.
+            if ctx.mode == Mode::Complete {
+                let mut ins = Vec::with_capacity(def.params().len());
+                for _ in def.params() {
+                    let v = ctx.next;
+                    ctx.next += 1;
+                    ins.push(Channel::value(ValueTy::Var(v)));
+                }
+                let out = ctx.next;
+                ctx.next += 1;
+                ctx.defs.insert(
+                    def.name().to_string(),
+                    Scheme {
+                        lam_count: def.params().len(),
+                        vars: vec![],
+                        ty: ArrowTy {
+                            ins,
+                            outs: vec![Channel::value(ValueTy::Var(out))],
+                        },
+                    },
+                );
             }
             infer_expr(ctx, def.body())
         }
