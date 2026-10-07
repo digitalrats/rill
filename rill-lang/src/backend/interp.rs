@@ -962,6 +962,79 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 _ => prog.value_regs[*dst] = None,
             }
         }
+        ValueInstr::ValueCallLazy {
+            dst,
+            closure_slot,
+            args,
+        } => {
+            // Lazily apply a closure: build a thunk over the closure's fragment
+            // and an env record that concatenates the closure's captured env
+            // fields with the (unforced) argument refs. The application does
+            // not run — `run_thunk_body` splits the env into captures + args by
+            // the fragment's `value_ins` when the thunk is forced.
+            let Some(cr) = prog.value_regs.get(*closure_slot).copied().flatten() else {
+                prog.value_regs[*dst] = None;
+                return;
+            };
+            let (env_ref, fid) = match prog.arena.get(cr) {
+                Some(Value::Closure(env, fid)) => (*env, *fid),
+                _ => {
+                    prog.value_regs[*dst] = None;
+                    return;
+                }
+            };
+            let cell = match prog.arena.alloc(Value::ThunkCell(ThunkState::Unforced)) {
+                Ok(c) => c,
+                Err(_) => {
+                    prog.value_regs[*dst] = None;
+                    return;
+                }
+            };
+            // Combined env: the closure's captured fields (recounted so both
+            // the closure's env and this record own them) followed by the arg
+            // refs (copied from the caller's registers).
+            let mut fields: Vec<ArenaRef> = match prog.arena.get(env_ref) {
+                Some(Value::Record(fs)) => {
+                    let fs = fs.clone();
+                    for f in &fs {
+                        let _ = prog.arena.copy(*f);
+                    }
+                    fs
+                }
+                _ => Vec::new(),
+            };
+            for &a in args {
+                if let Some(r) = prog.value_regs.get(a).copied().flatten() {
+                    match prog.arena.copy(r) {
+                        Ok(c) => fields.push(c),
+                        Err(_) => {
+                            for f in &fields {
+                                prog.arena.drop_ref(*f);
+                            }
+                            prog.arena.drop_ref(cell);
+                            prog.value_regs[*dst] = None;
+                            return;
+                        }
+                    }
+                }
+            }
+            let env_owned = match alloc_owned(prog, Value::Record(fields)) {
+                Some(e) => e,
+                None => {
+                    prog.arena.drop_ref(cell);
+                    prog.value_regs[*dst] = None;
+                    return;
+                }
+            };
+            prog.value_regs[*dst] = alloc_owned(
+                prog,
+                Value::Thunk {
+                    fragment: fid,
+                    env: env_owned,
+                    cell,
+                },
+            );
+        }
         ValueInstr::ValueMakeClosure { dst, env, fragment } => {
             // A closure is a leaf holding the env record ref and the fragment
             // id. The env register is read by value; the closure COUNTS the env
@@ -2248,19 +2321,34 @@ fn run_thunk_body<T: Transcendental, const BUF: usize>(
         debug_assert!(false, "thunk body fragment {fragment_id} does not exist");
         return try_alloc_bottom(prog).unwrap_or(env_ref);
     };
-    // 1. Bind each env Record field as a capture cell: an INDEPENDENT copy of
-    //    the field's value appended to the shared capture-cell store (pre-sized
-    //    at construction — no allocation). The env record is untouched.
+    // 1. Bind the env Record fields as the fragment's frame. The FIRST
+    //    `fields.len() - value_ins` fields are the lambda's free variables
+    //    (capture cells, resolved by `ValueReadCell`); the LAST `value_ins`
+    //    fields are the function's arguments (bound to the fragment's leading
+    //    registers below, like `run_fragment`). A thunk built by `ValueLazy`
+    //    has `value_ins == 0` (env = captures only); a thunk built by
+    //    `ValueCallLazy` has `value_ins > 0` (env = captures ++ args).
+    let value_ins = frag.sig.value_ins;
+    let mut arg_refs: Vec<ArenaRef> = Vec::new();
     let cell_base = prog.frag_cells.len();
     if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
+        // Clone the field refs so the arena can be borrowed mutably while the
+        // capture cells are allocated below.
         let fields = fields.clone();
-        for f in &fields {
-            let cell = match prog.arena.get(*f).cloned() {
-                Some(v) => alloc_copy(prog, &v),
-                None => prog.arena.alloc(Value::Void).ok(),
-            };
-            if let Some(c) = cell {
-                prog.frag_cells.push(c);
+        let n_capture = fields.len().saturating_sub(value_ins);
+        for (i, f) in fields.iter().enumerate() {
+            if i < n_capture {
+                // Clone the field value so the arena borrow ends before the
+                // mutable alloc_copy below.
+                let cell = match prog.arena.get(*f).cloned() {
+                    Some(v) => alloc_copy(prog, &v),
+                    None => prog.arena.alloc(Value::Void).ok(),
+                };
+                if let Some(c) = cell {
+                    prog.frag_cells.push(c);
+                }
+            } else {
+                arg_refs.push(*f);
             }
         }
     }
@@ -2276,6 +2364,13 @@ fn run_thunk_body<T: Transcendental, const BUF: usize>(
         "call scratch exceeds pre-allocated max_call_regs (lowering bound broken)"
     );
     prog.value_regs_top = top;
+    // 3. Bind the function's arguments into the fragment's leading registers
+    //    (copied, RC++, so the thunk's env keeps its own claims).
+    for (i, a) in arg_refs.iter().take(value_ins).enumerate() {
+        if let Some(c) = copy_owned(prog, *a) {
+            prog.value_regs[base + i] = Some(c);
+        }
+    }
     // 3. Run the fragment's value blocks with the register offset. Drops queue
     //    on the threaded scratch above this call's mark and are drained below.
     let drops_mark = drops.len();
@@ -2437,6 +2532,15 @@ fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
             closure_slot,
             args,
         } => ValueInstr::ValueCallFunc {
+            dst: dst + base,
+            closure_slot: closure_slot + base,
+            args: args.iter().map(|a| a + base).collect(),
+        },
+        ValueInstr::ValueCallLazy {
+            dst,
+            closure_slot,
+            args,
+        } => ValueInstr::ValueCallLazy {
             dst: dst + base,
             closure_slot: closure_slot + base,
             args: args.iter().map(|a| a + base).collect(),

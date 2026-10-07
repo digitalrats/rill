@@ -457,6 +457,18 @@ pub enum ValueInstr {
         /// Argument value registers (passed by value into the fragment).
         args: Vec<usize>,
     },
+    /// Lazily apply a first-class function value (complete mode): builds a
+    /// [`Value::Thunk`] over the closure's fragment and an env record that
+    /// concatenates the closure's captured env with the argument refs. The
+    /// application does NOT run — it suspends as a thunk and runs on demand.
+    ValueCallLazy {
+        /// Destination value register (the thunk).
+        dst: usize,
+        /// Value register holding the [`Value::Closure`] to apply.
+        closure_slot: usize,
+        /// Argument value registers (captured into the thunk's env, unforced).
+        args: Vec<usize>,
+    },
     /// Construct a first-class function value: allocates a [`Value::Closure`]
     /// referencing an [`Ir::fragments`] body and the env record in `env`.
     /// Emitted when a function definition reference or lambda literal appears
