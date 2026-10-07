@@ -1649,7 +1649,7 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Float))
             }
-            Expr::Neg(inner, span) => {
+            Expr::Neg(inner, _span) => {
                 // Negative literal / unary minus in value position. A numeric
                 // literal folds to a negative constant; anything else lowers as
                 // `0.0 - inner`.
