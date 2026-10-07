@@ -127,6 +127,9 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueLogic { .. }
             | ValueInstr::ValueNot { .. }
             | ValueInstr::ValueCallBuiltin { .. }
+            | ValueInstr::ValueLazy { .. }
+            | ValueInstr::ValueForce { .. }
+            | ValueInstr::ValueCallLazy { .. }
     )
 }
 
@@ -5163,6 +5166,17 @@ pub fn lower_with_cafs_mode(
     // (their subtree is already in `value_capacity`) and runtime match/ctor
     // payloads without separate tracking.
     let buffer_budget = value_capacity * Lowerer::ELEM_EST;
+    // Complete mode (Stage A): the lazy value track keeps each thunk's memo
+    // cell AND its forced result live for the thunk's lifetime (a strict
+    // program would release the result at tick end), and a forced thunk may
+    // suspend further thunks that outlive the forcing frame. Apply a
+    // conservative multiplier so a complete-mode program cannot exhaust the
+    // pre-allocated arena; exhaustion remains a latched `ProcessError`.
+    let (slot_capacity, buffer_budget) = if mode == Mode::Complete {
+        (slot_capacity * 2, buffer_budget * 2)
+    } else {
+        (slot_capacity, buffer_budget)
+    };
     // Pre-allocated function-call scratch: the runtime call stack never holds
     // more than one frame per fragment (recursion is rejected at inference, so
     // no fragment can recur on a dispatch chain), so the total fragment count
@@ -5175,7 +5189,14 @@ pub fn lower_with_cafs_mode(
         .map(|f| f.num_value_regs)
         .max()
         .unwrap_or(0);
-    let max_call_regs = max_call_depth * max_fragment_regs;
+    // Recursion (complete mode) can nest the same fragment multiple times, so
+    // the acyclic per-fragment bound is doubled as a conservative allowance.
+    let call_depth_allowance = if mode == Mode::Complete {
+        max_call_depth * 2
+    } else {
+        max_call_depth
+    };
+    let max_call_regs = call_depth_allowance * max_fragment_regs;
     // Terminate the program's value track: the entry block's fallthrough chain
     // ends here. Every existing program is a single block ending in `Halt`.
     lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
