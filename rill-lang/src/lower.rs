@@ -1812,18 +1812,63 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Bool))
             }
-            Expr::Let { defs, body, .. } => {
-                // Expression-level `let x = e in body` in value position: the
-                // defs are plain inlined bindings (v1 value defs are per-tick
-                // re-evaluated expressions), so lower each into the def table
-                // and lower the body. Mirrors `infer_expr_expected`'s Let arm.
-                let saved = self.defs.clone();
-                for d in defs {
-                    self.defs.insert(d.name().to_string(), d.clone());
+            Expr::Let { defs, body, span } => {
+                if self.mode == Mode::Strict {
+                    // Expression-level `let x = e in body` in value position:
+                    // the defs are plain inlined bindings (v1 value defs are
+                    // per-tick re-evaluated expressions), so lower each into
+                    // the def table and lower the body.
+                    let saved = self.defs.clone();
+                    for d in defs {
+                        self.defs.insert(d.name().to_string(), d.clone());
+                    }
+                    let res = self.lower_value_expected(body, expected);
+                    self.defs = saved;
+                    res
+                } else {
+                    // Complete mode: a `let` binding is call-by-need — the
+                    // def is suspended as a thunk (a fragment computing `e`
+                    // capturing its outer free variables) and the body reads
+                    // the thunk, forcing it on demand and memoizing the
+                    // result. The binding is shared: two uses of `x` force
+                    // `e` once. A def that references the OTHER let names is
+                    // not supported in v1 (an unknown-name error surfaces).
+                    let mut bound = HashSet::new();
+                    for scope in self.value_locals.iter() {
+                        for k in scope.keys() {
+                            bound.insert(k.clone());
+                        }
+                    }
+                    for d in defs {
+                        bound.insert(d.name().to_string());
+                    }
+                    let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    for d in defs {
+                        let e = d.body();
+                        let free = self.free_vars(e, &bound);
+                        let (fragment_id, _ret_ty) = self.lower_fragment(
+                            &[],
+                            e,
+                            &free,
+                            &self.capture_tys(&free),
+                            &[],
+                            None,
+                            *span,
+                        )?;
+                        let (env_reg, _self_cell) = self.emit_env_snapshot(&free, *span, None)?;
+                        let x_reg = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueLazy {
+                            dst: x_reg,
+                            env: env_reg,
+                            fragment: fragment_id,
+                        });
+                        scope.insert(d.name().to_string(), (x_reg, _ret_ty));
+                    }
+                    self.value_locals.push(scope);
+                    let res = self.lower_value_expected(body, expected);
+                    self.value_locals.pop();
+                    res
                 }
-                let res = self.lower_value_expected(body, expected);
-                self.defs = saved;
-                res
             }
             Expr::Par(lhs, rhs, _) => {
                 // Channel tuple in value position: `value , value` is

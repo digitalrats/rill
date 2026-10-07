@@ -224,3 +224,21 @@ fn complete_countdown_with_minus() {
         other => panic!("expected Float(0.0), got {other:?}"),
     }
 }
+
+#[test]
+fn complete_let_binding_is_lazy_thunk() {
+    // A `let` binding in complete mode suspends as a thunk: xs = from 10 is
+    // forced by headv/tail on demand.
+    let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nheadv xs = match (head xs) of { Nothing => 0.0; Just x => x };\nmain = let xs = from 10.0 in headv (tail (tail xs));";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => {
+            assert_eq!(*x, 12.0, "let xs = from 10; headv (tail tail xs) -> 12.0")
+        }
+        other => panic!("expected Float(12.0), got {other:?}"),
+    }
+}

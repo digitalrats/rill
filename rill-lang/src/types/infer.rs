@@ -1210,31 +1210,91 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             // value track; the placeholder's signal default would otherwise
             // leak into the recursive call and fail any value-demanding site.
             if ctx.mode == Mode::Complete {
-                let mut ins = Vec::with_capacity(def.params().len());
-                for _ in def.params() {
-                    let v = ctx.next;
-                    ctx.next += 1;
-                    ins.push(Channel::value(ValueTy::Var(v)));
+                // Re-register the CURRENT def as value-rate (self-recursion).
+                rerate_value(ctx, def.name(), def.params().len());
+                // Also re-register the top-level defs this body REFERENCES —
+                // mutual recursion (`even` calls `odd`) would otherwise leave
+                // the partner on a signal placeholder and fail value-demanding
+                // sites inside this body.
+                let mut refs = HashSet::new();
+                collect_ref_names(def.body(), &mut refs);
+                for n in refs {
+                    if let Some(s) = ctx.defs.get(n.as_str()) {
+                        if s.ty.ins.is_empty() && s.ty.outs.is_empty() {
+                            // placeholder only (not yet inferred)
+                            rerate_value(ctx, n.as_str(), 0);
+                        } else {
+                            rerate_value(ctx, n.as_str(), s.lam_count);
+                        }
+                    }
                 }
-                let out = ctx.next;
-                ctx.next += 1;
-                ctx.defs.insert(
-                    def.name().to_string(),
-                    Scheme {
-                        lam_count: def.params().len(),
-                        vars: vec![],
-                        ty: ArrowTy {
-                            ins,
-                            outs: vec![Channel::value(ValueTy::Var(out))],
-                        },
-                    },
-                );
             }
             infer_expr(ctx, def.body())
         }
     };
     ctx.locals = saved_locals;
     result
+}
+
+/// Re-register a def's placeholder scheme with VALUE-rate channels (complete
+/// mode): recursion in the lazy model IS the value track, and a signal-default
+/// placeholder would leak into a recursive call and fail any value-demanding
+/// site. `lam_count` is the number of λ-parameters.
+fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize) {
+    let mut ins = Vec::with_capacity(lam_count);
+    for _ in 0..lam_count {
+        let v = ctx.next;
+        ctx.next += 1;
+        ins.push(Channel::value(ValueTy::Var(v)));
+    }
+    let out = ctx.next;
+    ctx.next += 1;
+    ctx.defs.insert(
+        name.to_string(),
+        Scheme {
+            lam_count,
+            vars: vec![],
+            ty: ArrowTy {
+                ins,
+                outs: vec![Channel::value(ValueTy::Var(out))],
+            },
+        },
+    );
+}
+
+/// Collect every user-definition name referenced by `e` (a `Ref` or an applied
+/// callee) into `out`.
+fn collect_ref_names(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Ref(name, _) => {
+            out.insert(name.to_string());
+        }
+        Expr::Apply { name, args, .. } => {
+            out.insert(name.to_string());
+            for a in args {
+                collect_ref_names(a, out);
+            }
+        }
+        Expr::ApplyExpr { callee, args, .. } => {
+            collect_ref_names(callee, out);
+            for a in args {
+                collect_ref_names(a, out);
+            }
+        }
+        Expr::Neg(inner, _) => collect_ref_names(inner, out),
+        Expr::Arith { lhs, rhs, .. } => {
+            collect_ref_names(lhs, out);
+            collect_ref_names(rhs, out);
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            collect_ref_names(cond, out);
+            collect_ref_names(then, out);
+            collect_ref_names(els, out);
+        }
+        _ => {}
+    }
 }
 
 /// Infer a group of mutually-recursive definitions (top-level, where, or let).
