@@ -209,3 +209,18 @@ fn value_track_minus_and_negative_literal() {
         other => panic!("expected Float(-3.0), got {other:?}"),
     }
 }
+
+#[test]
+fn complete_countdown_with_minus() {
+    // Canonical recursion now that value-track `-` works: countdown 3 -> 0.
+    let src = "{-# MODE complete #-}\ncountdown n = if n == 0.0 then 0.0 else countdown (n - 1.0);\nmain = countdown 3.0;";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "countdown 3 -> 0.0"),
+        other => panic!("expected Float(0.0), got {other:?}"),
+    }
+}

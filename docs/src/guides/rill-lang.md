@@ -419,13 +419,10 @@ outputs.
 Recursion in `complete` mode is **not** checked for termination (Turing
 completeness): a non-productive recursion surfaces as bottom, never as a hang.
 
-### Known limitation
-
-Value-track infix `-` (e.g. `n - 1.0` inside a value function) is not yet
-supported: the space-separated juxtaposition grammar treats `-` as a prefix
-atom, so `n - 1.0` parses as an application. Use `+` or parenthesize around a
-helper. This is a pre-existing parser ambiguity tracked for a future grammar
-rework.
+`-` works both as infix subtraction (`n - 1.0`) and as a negative literal
+(`-2.0`, a unary minus applied to the literal): the parser distinguishes them
+by adjacency — a `-` directly attached to a number is a negative literal, a
+separated `-` is the infix operator.
 
 ## Built-in functions
 
