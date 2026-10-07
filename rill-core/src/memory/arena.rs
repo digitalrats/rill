@@ -179,6 +179,26 @@ impl<V: ArenaValue> Arena<V> {
         }
     }
 
+    /// Mutate a slot's value in place, skipping the exclusive-ownership debug
+    /// assertion.
+    ///
+    /// Only sound for values explicitly designed to be mutated while shared
+    /// (e.g. a thunk memo cell in `rill-lang`), under the caller's
+    /// single-writer contract. The arena is single-threaded (`&mut self`
+    /// grants exclusive access), so this is memory-safe; the caller must keep
+    /// the value's child-ref accounting consistent.
+    pub fn mutate_slot(&mut self, r: ArenaRef, f: impl FnOnce(&mut V)) -> Result<(), ArenaError> {
+        match Self::slot_mut_in(&mut self.slots, r) {
+            Some(Slot::Occupied { val, .. }) => {
+                if let Some(v) = val {
+                    f(v);
+                }
+                Ok(())
+            }
+            _ => Err(ArenaError::DanglingRef),
+        }
+    }
+
     /// Share a value: `rc++` and return the same ref.
     pub fn copy(&mut self, r: ArenaRef) -> Result<ArenaRef, ArenaError> {
         match Self::slot_mut_in(&mut self.slots, r) {
