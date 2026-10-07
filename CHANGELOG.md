@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### rill-lang
+
+- **SP-4 Stage A: lazy evaluation core (STG-style).** A `{-# MODE strict|complete
+  #-}` pragma (or `compile_with_mode`) selects the evaluation contract:
+  `strict` (default) keeps today's eager value track and recursion ban;
+  `complete` enables a **call-by-need** value track with Haskell-style
+  recursion, infinite lazy structures, and `⊥` (bottom) for non-productive
+  recursion. The machinery: `Value::Thunk`/`ThunkCell`/`Bottom` in the arena,
+  `ValueLazy`/`ValueForce`/`ValueCallLazy` instructions, `force()` with
+  black-hole detection and cycle guards, `Arena::mutate_slot` for shared
+  memo cells, self-cell closure capture for recursive definitions, a
+  β-reduction recursion guard, and lazy `cons` (`Value::Cons`/`Nil`).
+  `from n = cons n (from (n + 1.0))` produces an infinite list; `head`/`tail`
+  force elements on demand. `head`/`tail` now constrain their argument to a
+  `List` type so generic list parameters unify. Known limitation: value-track
+  infix `-` remains unsupported (pre-existing juxtaposition grammar ambiguity).
+
 ### rill-core
 
 - **SP-4 P3: factory contract carries an optional `BufferAllocator`.**

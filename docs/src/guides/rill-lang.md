@@ -365,6 +365,68 @@ use rill_lang::compile;
 assert!(compile::<f32>("main = _ , _;").is_ok());
 ```
 
+## Evaluation modes: `strict` / `complete`
+
+A program selects its evaluation contract with a module pragma or an API key.
+
+```rill
+{-# MODE complete #-}
+from n = cons n (from (n + 1.0));
+```
+
+- **`strict`** (default) — the current behavior: eager value track, recursion is
+  rejected at compile time, and only finite data exists. Existing programs are
+  unaffected.
+- **`complete`** — the lazy value track: call-by-need evaluation, Haskell-style
+  recursion (all top-level definitions are recursive; mutual recursion and
+  `let`/`where` bindings included), and infinite structures.
+
+The mode is selected by a `{-# MODE strict|complete #-}` pragma at the top of
+the source (the file's pragma wins over the API key), or via the compile API:
+
+```rust,no_run
+use rill_lang::compile_with_mode;
+use rill_lang::mode::Mode;
+// complete mode: recursion and laziness allowed
+let prog = compile_with_mode::<f32>(
+    "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0);\nmain = countup 0.0;",
+    Mode::Complete,
+);
+```
+
+### Laziness and bottom
+
+In `complete` mode the value track is **call-by-need**: function application is
+suspended as a lazy thunk, and strict points (arithmetic, comparison, pattern
+matching, output) force operands to WHNF. This makes infinite sequences
+productive:
+
+```rill
+{-# MODE complete #-}
+from n = cons n (from (n + 1.0));
+headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
+main = headv (tail (tail (tail (from 10.0))));
+```
+
+`from n` is an infinite lazy list; `head`/`tail` force elements on demand.
+(`main` evaluates to `13.0`.)
+
+A computation that is not productive — a self-referential thunk such as
+`a = a` — evaluates to the value **bottom** (`⊥`) rather than hanging. Bottom
+propagates through strict operations and is observable through the value
+outputs.
+
+Recursion in `complete` mode is **not** checked for termination (Turing
+completeness): a non-productive recursion surfaces as bottom, never as a hang.
+
+### Known limitation
+
+Value-track infix `-` (e.g. `n - 1.0` inside a value function) is not yet
+supported: the space-separated juxtaposition grammar treats `-` as a prefix
+atom, so `n - 1.0` parses as an application. Use `+` or parenthesize around a
+helper. This is a pre-existing parser ambiguity tracked for a future grammar
+rework.
+
 ## Built-in functions
 
 rill-lang programs can call stateful DSP/model built-ins from workspace crates
