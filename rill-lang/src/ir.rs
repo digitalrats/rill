@@ -189,6 +189,12 @@ pub enum Instr {
 pub enum ValueBuiltinOp {
     /// Prepend an element to a list.
     Cons,
+    /// Build a lazy cons cell (`Value::Cons`): the tail is NOT forced — this
+    /// is the constructor behind `:` in complete mode and enables infinite
+    /// sequences.
+    LazyCons,
+    /// The empty lazy list (`Value::Nil`).
+    Nil,
     /// Read the first element of a list (a `Maybe`).
     Head,
     /// Drop the first element of a list.
@@ -798,6 +804,8 @@ mod value_builtin_tests {
     fn value_builtin_ops_exist() {
         let ops = [
             ValueBuiltinOp::Cons,
+            ValueBuiltinOp::LazyCons,
+            ValueBuiltinOp::Nil,
             ValueBuiltinOp::Head,
             ValueBuiltinOp::Tail,
             ValueBuiltinOp::Length,
@@ -815,6 +823,6 @@ mod value_builtin_tests {
             ValueBuiltinOp::AppendList,
             ValueBuiltinOp::ConcatString,
         ];
-        assert_eq!(ops.len(), 17);
+        assert_eq!(ops.len(), 19);
     }
 }

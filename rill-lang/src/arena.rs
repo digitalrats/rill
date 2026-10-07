@@ -53,6 +53,10 @@ pub enum ValueKind {
     Thunk,
     /// Divergent computation (bottom); propagates through strict ops.
     Bottom,
+    /// A lazy cons cell (head + lazy tail).
+    Cons,
+    /// The empty lazy list.
+    Nil,
 }
 
 /// A heap value stored in an [`Arena`] slot.
@@ -104,6 +108,12 @@ pub enum Value {
     ThunkCell(ThunkState),
     /// Divergent computation (bottom); propagates through strict ops.
     Bottom,
+    /// A lazy cons cell: `head` and `tail` (a thunk, another cons, or Nil).
+    /// The tail is deliberately NOT forced — this is what makes infinite
+    /// sequences representable.
+    Cons(ArenaRef, ArenaRef),
+    /// The empty lazy list.
+    Nil,
 }
 
 impl Value {
@@ -125,6 +135,8 @@ impl Value {
             Value::Thunk { .. } => ValueKind::Thunk,
             Value::ThunkCell(_) => ValueKind::Thunk,
             Value::Bottom => ValueKind::Bottom,
+            Value::Cons(_, _) => ValueKind::Cons,
+            Value::Nil => ValueKind::Nil,
         }
     }
 }
@@ -160,7 +172,11 @@ impl ArenaValue for Value {
                 f(*cell);
             }
             Value::ThunkCell(ThunkState::Forced(r)) => f(*r),
-            Value::ThunkCell(_) | Value::Bottom => {}
+            Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
+            Value::Cons(h, t) => {
+                f(*h);
+                f(*t);
+            }
             _ => {}
         }
     }

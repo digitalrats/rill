@@ -1705,6 +1705,16 @@ impl<'a> Lowerer<'a> {
                 Ok((dst, ValueTy::String))
             }
             Expr::ListLit(elems, _) => {
+                // In complete mode the empty literal `[]` is the lazy Nil.
+                if elems.is_empty() && self.mode == Mode::Complete {
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueCallBuiltin {
+                        dst,
+                        op: ValueBuiltinOp::Nil,
+                        args: Vec::new(),
+                    });
+                    return Ok((dst, ValueTy::App("List".into(), vec![ValueTy::Float])));
+                }
                 let mut regs = Vec::with_capacity(elems.len());
                 let mut elem_ty = ValueTy::Float;
                 for e in elems {
@@ -1804,7 +1814,13 @@ impl<'a> Lowerer<'a> {
     fn value_builtin(&self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
         use ValueBuiltinOp::*;
         Some(match (name, nargs) {
+            // In complete mode `cons` is the LAZY constructor (the tail is not
+            // forced), which is what makes infinite sequences productive.
+            ("cons", _) if self.mode == Mode::Complete => LazyCons,
             ("cons", _) => Cons,
+            // In complete mode `list`/`[]` is the empty lazy list (Nil).
+            ("list", _) if self.mode == Mode::Complete => Nil,
+            ("list", _) => ListEmpty,
             ("head", _) => Head,
             ("tail", _) => Tail,
             ("length", _) => Length,

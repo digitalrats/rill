@@ -306,8 +306,13 @@ fn recount_children<T: Transcendental, const BUF: usize>(
         Value::ThunkCell(ThunkState::Forced(r)) => {
             _ = prog.arena.copy(*r);
         }
+        // A cons cell owns its head and (lazy) tail.
+        Value::Cons(h, t) => {
+            _ = prog.arena.copy(*h);
+            _ = prog.arena.copy(*t);
+        }
         // An unforced/forcing/bottom cell and bottom itself own nothing.
-        Value::ThunkCell(_) | Value::Bottom => {}
+        Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
         // Leaf values own no children.
         _ => {}
     }
@@ -489,8 +494,13 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
             prog.arena.drop_ref(*cell);
         }
         Value::ThunkCell(ThunkState::Forced(r)) => prog.arena.drop_ref(*r),
+        // A cons cell releases its head and (lazy) tail.
+        Value::Cons(h, t) => {
+            prog.arena.drop_ref(*h);
+            prog.arena.drop_ref(*t);
+        }
         // An unforced/forcing/bottom cell and bottom itself own nothing.
-        Value::ThunkCell(_) | Value::Bottom => {}
+        Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
         // Leaf values own no children.
         _ => {}
     }
@@ -590,6 +600,8 @@ fn kind_rank(v: &Value) -> i8 {
         Thunk { .. } => 12,
         ThunkCell(_) => 13,
         Bottom => 14,
+        Cons(..) => 15,
+        Nil => 16,
     }
 }
 
@@ -1321,6 +1333,29 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     drops: &mut Vec<ArenaRef>,
 ) {
     use ValueBuiltinOp::*;
+    // LazyCons is the lazy list constructor (`:` in complete mode): it must
+    // NOT force its tail (that is the laziness), so it bypasses the blanket
+    // demand loop below. Nil has no arguments to demand.
+    match op {
+        LazyCons => {
+            let Some(xr) = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok()) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(tr) = prog.value_regs[args[1]].and_then(|r| prog.arena.copy(r).ok()) else {
+                prog.arena.drop_ref(xr);
+                prog.value_regs[dst] = None;
+                return;
+            };
+            prog.value_regs[dst] = alloc_owned(prog, Value::Cons(xr, tr));
+            return;
+        }
+        Nil => {
+            prog.value_regs[dst] = alloc_owned(prog, Value::Nil);
+            return;
+        }
+        _ => {}
+    }
     // Demand: force every collection argument to WHNF before dispatch, and
     // propagate bottom. Each register is normalized to a fresh claim on its
     // WHNF head (the memo cell keeps its own claim on a forced result), so the
@@ -1379,6 +1414,9 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             prog.arena.put_buf(src);
             prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
         }
+        // Handled before the demand loop (they must not force their tail / have
+        // no arguments); unreachable here.
+        LazyCons | Nil => unreachable!("LazyCons/Nil handled before the demand loop"),
         Length => {
             // The IR doc says Length covers list/set/map: each container
             // reports its entry count.
@@ -1401,6 +1439,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 };
                 match prog.arena.get(r) {
                     Some(Value::List { elems }) => elems.first().copied(),
+                    Some(Value::Cons(h, _)) => Some(*h),
                     _ => None,
                 }
             };
@@ -1495,26 +1534,42 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
         }
         Tail => {
-            // tail xs: the source without its head. The result claims elems[1..]:
-            // recount (RC++) every element the source owns, allocate the tail
-            // list over the kept slice, then release the extra count on the
-            // removed head — the source keeps its single claim, and the head is
-            // never freed mid-tick. An empty list is its own tail.
-            let Some(mut kept) = pooled_elems_of(prog, args[0]) else {
-                prog.value_regs[dst] = None;
-                return;
-            };
-            if kept.is_empty() {
-                prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
-                return;
+            // tail xs: the source without its head. For a lazy Cons the tail is
+            // returned UNFORCED (a thunk, another cons, or Nil) — this is the
+            // laziness that makes infinite sequences productive. For the
+            // array-backed List the result claims elems[1..]: recount (RC++)
+            // every element the source owns, allocate the tail list over the
+            // kept slice, then release the extra count on the removed head —
+            // the source keeps its single claim, and the head is never freed
+            // mid-tick. An empty array list is its own tail; Nil's tail is Nil.
+            match prog.value_regs[args[0]].and_then(|r| prog.arena.get(r)) {
+                Some(Value::Cons(_, t)) => {
+                    prog.value_regs[dst] = match copy_owned(prog, *t) {
+                        Some(c) => Some(c),
+                        None => None,
+                    };
+                }
+                Some(Value::Nil) => {
+                    prog.value_regs[dst] = alloc_owned(prog, Value::Nil);
+                }
+                _ => {
+                    let Some(mut kept) = pooled_elems_of(prog, args[0]) else {
+                        prog.value_regs[dst] = None;
+                        return;
+                    };
+                    if kept.is_empty() {
+                        prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
+                        return;
+                    }
+                    for e in &kept {
+                        _ = prog.arena.copy(*e);
+                    }
+                    let head = kept[0];
+                    kept.remove(0);
+                    prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
+                    prog.arena.drop_ref(head);
+                }
             }
-            for e in &kept {
-                _ = prog.arena.copy(*e);
-            }
-            let head = kept[0];
-            kept.remove(0);
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
-            prog.arena.drop_ref(head);
         }
         Filter => {
             // filter p xs: keep the elements for which the unary predicate
