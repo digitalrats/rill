@@ -3799,15 +3799,31 @@ fn infer_collection_call(
             if args.len() != 1 {
                 return Err(arity_err("1", args.len()));
             }
+            // Constrain the argument to a List so a generic function parameter
+            // (`nth k xs = … head xs …`) unifies to List (a bare Var would
+            // otherwise stay unconstrained and fail lowering's List check).
             let lt = arg_vty(ctx, 0)?;
-            let elem = list_elem(&lt);
-            Ok(ValueTy::App("Maybe".into(), vec![elem]))
+            let fresh = ctx.fresh_vty();
+            unify_value(
+                &lt,
+                &ValueTy::App("List".into(), vec![fresh]),
+                &mut ctx.subst,
+                args[0].span(),
+            )?;
+            Ok(ValueTy::App("Maybe".into(), vec![list_elem(&lt)]))
         }
         "tail" => {
             if args.len() != 1 {
                 return Err(arity_err("1", args.len()));
             }
             let lt = arg_vty(ctx, 0)?;
+            let fresh = ctx.fresh_vty();
+            unify_value(
+                &lt,
+                &ValueTy::App("List".into(), vec![fresh]),
+                &mut ctx.subst,
+                args[0].span(),
+            )?;
             Ok(list_of(&lt))
         }
         "map" => {
