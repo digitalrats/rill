@@ -36,6 +36,13 @@ pub struct TypedProgram {
     /// parameter is its `Data` type, and field projection / function dispatch
     /// resolve at compile time.
     pub fn_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Resolved λ-parameter value types of every top-level Anchor def (a named
+    /// value function with λ-parameters, `nth xs k = ...`), keyed by definition
+    /// name. Collected from the value-channel retry in `infer_def_body`, where
+    /// the body's value demands actually resolve the parameter types (`xs :
+    /// List`), because the final scheme stores λ-params as signal scalars.
+    /// Lowering types the def's fragment-local parameter registers with these.
+    pub anchor_param_tys: HashMap<String, Vec<ValueTy>>,
     /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
     /// the AST before inference (see [`crate::lib::extract_resources`]). Lowering
     /// resolves a resource param's `Ref(name)` against these to assign the
@@ -70,6 +77,15 @@ struct Ctx {
     /// instance body's own record construction unifies against the same
     /// concrete type via the expected-type threading.
     type_var_bindings: HashMap<String, ValueTy>,
+    /// Resolved λ-parameter VALUE types of every Anchor def (a named value
+    /// function with λ-parameters, `nth xs k = ...`), collected from the
+    /// value-channel retry of [`infer_def_body`]. The final scheme stores the
+    /// λ-params as signal scalars (the v1 λ-parameter default), so the retry's
+    /// resolution — where the body actually constrained the params (`xs :
+    /// List`, `k : Float`) — is the only record of their true types. Lowering
+    /// types fragment-local parameter registers with these so a List param
+    /// (`nth xs k`) can feed `head`/`tail` without a type error.
+    anchor_param_tys: HashMap<String, Vec<ValueTy>>,
     /// The evaluation mode (strict/complete). Complete mode's value-track
     /// retry re-registers a recursive def's scheme with value-rate channels
     /// (§: recursion is the lazy value track).
@@ -1076,6 +1092,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         env,
         method_lifting: HashSet::new(),
         type_var_bindings: HashMap::new(),
+        anchor_param_tys: HashMap::new(),
         mode,
     };
 
@@ -1154,6 +1171,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         cafs,
         type_env: ctx.env.clone(),
         fn_param_tys,
+        anchor_param_tys: ctx.anchor_param_tys.clone(),
         tape_decls: Vec::new(),
         mode,
     })
@@ -1229,7 +1247,40 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                     }
                 }
             }
-            infer_expr(ctx, def.body())
+            let retry = infer_expr(ctx, def.body());
+            // Record the VALUE-track retry's resolved λ-parameter types: the
+            // body's value demands (`tail xs` → xs : List, `k - 1.0` → k :
+            // Float) resolve the fresh param vars here, and the final scheme
+            // discards them (λ-params are stored as signal scalars). Lowering
+            // types the def's fragment-local parameter registers with these.
+            if retry.is_ok() {
+                let mut param_tys = Vec::with_capacity(def.params().len());
+                for p in def.params() {
+                    let lt = ctx.locals.get(p.name.as_str()).cloned();
+                    let vty = match lt {
+                        Some(ArrowTy { outs, .. }) if !outs.is_empty() => match &outs[0] {
+                            Block {
+                                vty,
+                                rate: Rate::Value,
+                                ..
+                            } => vty.clone(),
+                            _ => ValueTy::Float,
+                        },
+                        _ => ValueTy::Float,
+                    };
+                    let resolved = ctx.subst.resolve_value(&vty);
+                    // An unresolvable parameter (a Var never constrained by the
+                    // body — a recursive call's arguments are not re-inferred)
+                    // is a v1 scalar λ-parameter: Float.
+                    param_tys.push(match resolved {
+                        ValueTy::Var(_) => ValueTy::Float,
+                        other => other,
+                    });
+                }
+                ctx.anchor_param_tys
+                    .insert(def.name().to_string(), param_tys);
+            }
+            retry
         }
     };
     ctx.locals = saved_locals;

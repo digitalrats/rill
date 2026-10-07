@@ -2351,10 +2351,12 @@ fn run_thunk_body<T: Transcendental, const BUF: usize>(
     let mut arg_refs: Vec<ArenaRef> = Vec::new();
     let cell_base = prog.frag_cells.len();
     if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
-        // Clone the field refs so the arena can be borrowed mutably while the
-        // capture cells are allocated below.
+        let nfields = fields.len();
         let fields = fields.clone();
         let n_capture = fields.len().saturating_sub(value_ins);
+        if n_capture == 0 && value_ins > 0 {
+            eprintln!("THUNK_BODY no captures fid={fragment_id} vi={value_ins} nfields={nfields}");
+        }
         for (i, f) in fields.iter().enumerate() {
             if i < n_capture {
                 // Clone the field value so the arena borrow ends before the

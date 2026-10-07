@@ -265,6 +265,13 @@ struct Lowerer<'a> {
     /// callee dispatches), a record parameter its `Data` type (so field
     /// projection resolves indices).
     fn_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Resolved λ-parameter value types of every top-level Anchor def (a named
+    /// value function with λ-parameters), from inference. Lowering types the
+    /// def's fragment-local parameter registers with these so a `List` param
+    /// (`nth xs k`) feeds `head`/`tail` without a type error, a record param
+    /// keeps its `Data` type (field projection resolves), and a higher-order
+    /// param is a `Func`.
+    anchor_param_tys: HashMap<String, Vec<ValueTy>>,
     /// Parameter types for the lambda literal currently being lowered, when it
     /// is a NAMED lambda-literal definition. Consumed by the `Expr::Lambda`
     /// arm; anonymous lambdas leave it unset and default to `Float`.
@@ -2919,7 +2926,15 @@ impl<'a> Lowerer<'a> {
         let cell = self.anchor_cell(name);
         let param_names: HashSet<String> = def_params.iter().map(|p| p.name.clone()).collect();
         let free = self.free_vars(&body, &param_names);
-        let param_tys = vec![ValueTy::Float; def_params.len()];
+        // The def's λ-parameter value types come from inference (the
+        // value-channel retry of `infer_def_body`, where the body's demands
+        // resolved them: `tail xs` → xs : List). Falling back to Float keeps
+        // unconstrained scalar params working.
+        let param_tys: Vec<ValueTy> = self
+            .anchor_param_tys
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()]);
         let (fragment_id, ret_ty) = self.lower_fragment(
             &def_params,
             &body,
@@ -5250,6 +5265,7 @@ pub fn lower_with_cafs_mode(
         fragments: Vec::new(),
         fragment_captures: Vec::new(),
         fn_param_tys: tp.fn_param_tys.clone(),
+        anchor_param_tys: tp.anchor_param_tys.clone(),
         pending_param_tys: None,
         anchor_cells: HashMap::new(),
         anchor_closures: HashMap::new(),
@@ -5468,6 +5484,7 @@ mod tests {
             cafs,
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            anchor_param_tys: typed.anchor_param_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5512,6 +5529,7 @@ mod tests {
             fragments: Vec::new(),
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),
+            anchor_param_tys: HashMap::new(),
             pending_param_tys: None,
             anchor_cells: HashMap::new(),
             anchor_closures: HashMap::new(),
@@ -5721,6 +5739,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            anchor_param_tys: typed.anchor_param_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5746,6 +5765,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            anchor_param_tys: typed.anchor_param_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5772,6 +5792,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            anchor_param_tys: typed.anchor_param_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5803,6 +5824,7 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
+            anchor_param_tys: typed.anchor_param_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };

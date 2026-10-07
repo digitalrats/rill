@@ -243,6 +243,52 @@ fn complete_mutual_recursion_runtime() {
 }
 
 #[test]
+fn complete_nth_with_list_param_recursive() {
+    // Self-recursive function with a List parameter: every call is a lazy
+    // thunk (complete mode never β-reduces calls — including calls from main),
+    // so `nth (from 10.0) 2.0` suspends and recurses through the shared cell.
+    let src = r#"{-# MODE complete #-}
+from n = cons n (from (n + 1.0));
+nth xs k = if k == 0.0 then match (head xs) of { Nothing => 0.0; Just x => x } else nth (tail xs) (k - 1.0);
+main = nth (from 10.0) 2.0;"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => {
+            assert_eq!(*x, 12.0, "nth 2 (from 10) -> 12.0")
+        }
+        other => panic!("expected Float(12.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_take_self_recursive_list() {
+    // `take` recurses on a List param and produces a list result; the
+    // recursive call suspends as a thunk.
+    let src = r#"{-# MODE complete #-}
+from n = cons n (from (n + 1.0));
+take n xs = if n == 0.0 then list else cons (match (head xs) of { Nothing => 0.0; Just x => x }) (take (n - 1.0) (tail xs));
+main = take 2.0 (from 10.0);"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Cons(h, _) => {
+            assert_eq!(
+                prog.arena().get(*h).unwrap(),
+                &rill_lang::arena::Value::Float(10.0)
+            );
+        }
+        other => panic!("expected Cons head 10.0, got {other:?}"),
+    }
+}
+
+#[test]
 fn complete_let_binding_is_lazy_thunk() {
     // A `let` binding in complete mode suspends as a thunk: xs = from 10 is
     // forced by headv/tail on demand.
