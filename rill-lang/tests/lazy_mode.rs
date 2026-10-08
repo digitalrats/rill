@@ -349,3 +349,76 @@ main = match (head (tail (tail (tail (tail fibs))))) of { Nothing => 0.0; Just x
         other => panic!("expected Float(3.0), got {other:?}"),
     }
 }
+
+#[test]
+fn complete_repeat_take() {
+    let src = r#"{-# MODE complete #-}
+repeat x = cons x (repeat x);
+take n xs = if n == 0.0 then list else cons (match (head xs) of { Nothing => 0.0; Just x => x }) (take (n - 1.0) (tail xs));
+main = take 3.0 (repeat 42.0);"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Cons(h, _) => {
+            assert_eq!(
+                prog.arena().get(*h).unwrap(),
+                &rill_lang::arena::Value::Float(42.0)
+            );
+        }
+        other => panic!("expected Cons head 42.0, got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_iterate_take() {
+    let src = r#"{-# MODE complete #-}
+iterate f x = cons x (iterate f (f x));
+take n xs = if n == 0.0 then list else cons (match (head xs) of { Nothing => 0.0; Just x => x }) (take (n - 1.0) (tail xs));
+main = take 4.0 (iterate (fn x -> x + 1.0) 0.0);"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Cons(h, _) => {
+            assert_eq!(
+                prog.arena().get(*h).unwrap(),
+                &rill_lang::arena::Value::Float(0.0)
+            );
+        }
+        other => panic!("expected Cons head 0.0, got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_bottom_propagates_not_hang() {
+    // 1 + a where a = a → Bottom (divergence detected, not a hang).
+    let src = "{-# MODE complete #-}\na = a;\nmain = match (head (cons (1.0 + a) (list))) of { Nothing => 0.0; Just x => x };";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Bottom => {}
+        other => panic!("expected Bottom, got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_mutual_recursion_evens_odd() {
+    let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 5.0;";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "even 5 -> 0.0"),
+        other => panic!("expected Float(0.0), got {other:?}"),
+    }
+}

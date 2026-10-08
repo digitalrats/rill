@@ -14,10 +14,17 @@
   black-hole detection and cycle guards, `Arena::mutate_slot` for shared
   memo cells, self-cell closure capture for recursive definitions, a
   β-reduction recursion guard, and lazy `cons` (`Value::Cons`/`Nil`).
-  `from n = cons n (from (n + 1.0))` produces an infinite list; `head`/`tail`
-  force elements on demand. `head`/`tail` now constrain their argument to a
-  `List` type so generic list parameters unify. Known limitation: value-track
-  infix `-` remains unsupported (pre-existing juxtaposition grammar ambiguity).
+  In `complete` mode calls are **uniformly lazy** — including calls from
+  `main`, which are never β-reduced (β-reduction is computation, and lazy
+  mode defers it) — and mutual recursion (`even`/`odd`) plus self-referential
+  local thunks (`fibs = 0 : 1 : zipWith (+) fibs (tail fibs)`) resolve through
+  SHARED cells, with application arguments suspended as thunks (a bare
+  reference or lambda is not re-wrapped). `from n = cons n (from (n + 1.0))`
+  produces an infinite list; `head`/`tail` force elements on demand.
+  `head`/`tail` constrain their argument to a `List` type so generic list
+  parameters unify; value-track infix `-` and negative literals are supported
+  (adjacency-disambiguated). Verified: `nth 2 (from 10) == 12`, `take 2
+  (from 10) == [10, 11]`, `fibs[4] == 3.0`, `even 5 == 0`, bottom for `a = a`.
 
 ### rill-core
 

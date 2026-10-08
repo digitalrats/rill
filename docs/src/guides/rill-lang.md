@@ -419,6 +419,24 @@ outputs.
 Recursion in `complete` mode is **not** checked for termination (Turing
 completeness): a non-productive recursion surfaces as bottom, never as a hang.
 
+### Self-referential structures (`fibs`)
+
+A self-referential local definition (no λ-parameters) is a **thunk in a shared
+cell** in `complete` mode — recursion resolves through the cell, not inline, so
+a value can reference itself lazily:
+
+```rill
+{-# MODE complete #-}
+zipWith f xs ys = cons (f (headv xs) (headv ys)) (zipWith f (tail xs) (tail ys));
+headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
+fibs = cons 0.0 (cons 1.0 (zipWith (fn a b -> a + b) fibs (tail fibs)));
+main = headv (tail (tail (tail (tail fibs))));
+```
+
+`fibs` is the infinite Fibonacci sequence: `tail fibs` suspends as a lazy
+thunk (application arguments are lazy, not eager), so the self-reference is
+productive. (`main` evaluates to `3.0`, the fifth Fibonacci number.)
+
 `-` works both as infix subtraction (`n - 1.0`) and as a negative literal
 (`-2.0`, a unary minus applied to the literal): the parser distinguishes them
 by adjacency — a `-` directly attached to a number is a negative literal, a
