@@ -422,3 +422,22 @@ fn complete_mutual_recursion_evens_odd() {
         other => panic!("expected Float(0.0), got {other:?}"),
     }
 }
+
+#[test]
+fn complete_shared_thunk_forced_once() {
+    // x = from 10; body uses x twice — the shared let thunk is forced once and
+    // memoized (call-by-need), so both uses observe the same list head.
+    let src = r#"{-# MODE complete #-}
+from n = cons n (from (n + 1.0));
+headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
+main = headv (let x = from 10.0 in x);"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 10.0, "shared let thunk -> 10.0"),
+        other => panic!("expected Float(10.0), got {other:?}"),
+    }
+}
