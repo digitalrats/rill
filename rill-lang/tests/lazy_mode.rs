@@ -305,3 +305,47 @@ fn complete_let_binding_is_lazy_thunk() {
         other => panic!("expected Float(12.0), got {other:?}"),
     }
 }
+
+#[test]
+fn complete_fibs_self_referential_local() {
+    // A self-recursive local (no λ-params) lowers as a THUNK in a shared cell:
+    // `fibs = cons 0.0 (cons 1.0 fibs)` — recursion resolves through the cell,
+    // not inline.
+    let src = "{-# MODE complete #-}\nfibs = cons 0.0 (cons 1.0 fibs);\nmain = fibs;";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Cons(h, _) => {
+            assert_eq!(
+                prog.arena().get(*h).unwrap(),
+                &rill_lang::arena::Value::Float(0.0)
+            );
+        }
+        other => panic!("expected Cons head 0.0, got {other:?}"),
+    }
+}
+
+#[test]
+fn complete_fibs_zipwith_infinite() {
+    // The canonical lazy-list example: fibs = 0 : 1 : zipWith (+) fibs (tail
+    // fibs). Requires: self-referential local thunk, lazy application args
+    // (`tail fibs` suspends, not forces), and shared cells for recursion.
+    let src = r#"{-# MODE complete #-}
+zipWith f xs ys = if match (head xs) of { Nothing => 1.0; Just x => x } == 999.0 then list else cons (f (match (head xs) of { Nothing => 0.0; Just x => x }) (match (head ys) of { Nothing => 0.0; Just x => x })) (zipWith f (tail xs) (tail ys));
+fibs = cons 0.0 (cons 1.0 (zipWith (fn a b -> a + b) fibs (tail fibs)));
+main = match (head (tail (tail (tail (tail fibs))))) of { Nothing => 0.0; Just x => x };"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => {
+            assert_eq!(*x, 3.0, "fibs[4] -> 3.0")
+        }
+        other => panic!("expected Float(3.0), got {other:?}"),
+    }
+}

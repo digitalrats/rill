@@ -43,6 +43,12 @@ pub struct TypedProgram {
     /// List`), because the final scheme stores λ-params as signal scalars.
     /// Lowering types the def's fragment-local parameter registers with these.
     pub anchor_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Static RESULT value type of every shared-cell def (a named λ-parameter
+    /// function or a self-recursive local), from the final substitution.
+    /// Lowering types the def's shared cell with this so a recursive reference
+    /// inside the body (`tail fibs`) resolves its static type (List) instead of
+    /// the Float fallback.
+    pub shared_cell_result_tys: HashMap<String, ValueTy>,
     /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
     /// the AST before inference (see [`crate::lib::extract_resources`]). Lowering
     /// resolves a resource param's `Ref(name)` against these to assign the
@@ -1164,6 +1170,63 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             }
         }
     }
+    // Resolve the static RESULT value type of every shared-cell def (a named
+    // λ-parameter function or a self-recursive local). Lowering types the def's
+    // shared cell with this, so a recursive reference inside the body (`tail
+    // fibs` — `fibs` still being compiled) resolves its static type (List)
+    // instead of the Float fallback.
+    let mut shared_cell_result_tys: HashMap<String, ValueTy> = HashMap::new();
+    for def in &program.defs {
+        // Shared-cell defs: named λ-parameter functions (Anchor) and local
+        // definitions whose body is not a lambda literal (a self-recursive CAF
+        // like `fibs = cons … fibs …`). Collecting every such def is harmless —
+        // lowering only consults the map for shared-cell references.
+        let is_shared = match def {
+            Def::Anchor { params, .. } => !params.is_empty(),
+            Def::Local { body, .. } => !matches!(body, Expr::Lambda { .. }),
+            _ => false,
+        };
+        if is_shared {
+            if let Some(s) = ctx.defs.get(def.name()).cloned() {
+                if let Some(out) = s.ty.outs.first() {
+                    let resolved = ctx.subst.resolve_value(&out.vty);
+                    // A named λ-parameter function's capture type must be its
+                    // `Func` signature (so an application via the captured value
+                    // dispatches), not just the result type. A recursive local
+                    // (`fibs` : List) keeps its result type.
+                    let capture_ty = match def {
+                        Def::Anchor { params, .. } => {
+                            let mut arg_tys = Vec::with_capacity(params.len());
+                            for p in params {
+                                let lt = ctx.locals.get(p.name.as_str()).cloned();
+                                let vty = match lt {
+                                    Some(ArrowTy { outs, .. }) if !outs.is_empty() => {
+                                        match &outs[0] {
+                                            Block {
+                                                vty,
+                                                rate: Rate::Value,
+                                                ..
+                                            } => vty.clone(),
+                                            _ => ValueTy::Float,
+                                        }
+                                    }
+                                    _ => ValueTy::Float,
+                                };
+                                let resolved_p = ctx.subst.resolve_value(&vty);
+                                arg_tys.push(match resolved_p {
+                                    ValueTy::Var(_) => ValueTy::Float,
+                                    other => other,
+                                });
+                            }
+                            ValueTy::Func(arg_tys, vec![resolved])
+                        }
+                        _ => resolved,
+                    };
+                    shared_cell_result_tys.insert(def.name().to_string(), capture_ty);
+                }
+            }
+        }
+    }
 
     Ok(TypedProgram {
         program: program.clone(),
@@ -1172,6 +1235,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         type_env: ctx.env.clone(),
         fn_param_tys,
         anchor_param_tys: ctx.anchor_param_tys.clone(),
+        shared_cell_result_tys,
         tape_decls: Vec::new(),
         mode,
     })
@@ -1190,6 +1254,27 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     let saved_locals = ctx.locals.clone();
     if def.params().is_empty() {
         let r = infer_expr(ctx, def.body());
+        if r.is_err() && ctx.mode == Mode::Complete {
+            // Complete mode, self-recursive local (`fibs = cons … fibs …`):
+            // the placeholder scheme defaults to a signal scalar, so the
+            // self-reference fails value-demanding sites (`cons 1.0 fibs`).
+            // Re-register the def as a value-rate channel (the lazy value
+            // track is where recursion lives) and re-infer.
+            let saved_subst = ctx.subst.clone();
+            let saved_next = ctx.next;
+            let saved_defs = ctx.defs.clone();
+            let saved_bodies = ctx.def_bodies.clone();
+            rerate_value(ctx, def.name(), 0);
+            let retry = infer_expr(ctx, def.body());
+            if retry.is_err() {
+                ctx.subst = saved_subst;
+                ctx.next = saved_next;
+                ctx.defs = saved_defs;
+                ctx.def_bodies = saved_bodies;
+            }
+            ctx.locals = saved_locals;
+            return retry;
+        }
         ctx.locals = saved_locals;
         return r;
     }

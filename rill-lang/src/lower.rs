@@ -272,6 +272,11 @@ struct Lowerer<'a> {
     /// keeps its `Data` type (field projection resolves), and a higher-order
     /// param is a `Func`.
     anchor_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Static RESULT value type of every shared-cell def (named λ-parameter
+    /// function or self-recursive local), from inference. Types the def's
+    /// shared cell so a recursive reference inside the body (`tail fibs`)
+    /// resolves its static type (List) instead of the Float fallback.
+    shared_cell_result_tys: HashMap<String, ValueTy>,
     /// Parameter types for the lambda literal currently being lowered, when it
     /// is a NAMED lambda-literal definition. Consumed by the `Expr::Lambda`
     /// arm; anonymous lambdas leave it unset and default to `Float`.
@@ -352,6 +357,55 @@ impl<'a> Lowerer<'a> {
 
     fn emit_value(&mut self, i: ValueInstr) {
         self.value_blocks[self.cur_value_block].instrs.push(i);
+    }
+
+    /// Lower `e` as a LAZY argument: in complete mode, wrap it in a
+    /// [`ValueInstr::ValueLazy`] thunk (a fragment computing `e` capturing its
+    /// free variables), so the value is NOT forced at the call site — it is
+    /// forced on demand by the callee's strict ops. This is the plan's
+    /// "application arguments are wrapped in thunks" rule; without it,
+    /// `zipWith … (tail fibs)` would force `tail fibs` eagerly while `fibs` is
+    /// still Forcing, yielding bottom. In strict mode there are no thunks, so
+    /// `e` lowers eagerly as usual.
+    fn lower_lazy_arg(&mut self, e: &Expr) -> Result<usize, CompileError> {
+        if self.mode == Mode::Strict {
+            let (r, _) = self.lower_value(e)?;
+            return Ok(r);
+        }
+        // A lazy argument that is ALREADY a value (a lambda literal → a
+        // closure, a constant, or a reference to a shared-cell def → its thunk
+        // in the cell) needs no wrapping: wrapping it would spawn a fragment
+        // whose lowered body re-enters the shared-cell def's compile, recursing
+        // forever. Only a COMPOUND expression (`tail fibs`) becomes a thunk.
+        match e {
+            // A bare reference is already lazy: to a shared-cell def it is its
+            // thunk/closure in the cell; to anything else it is a capture or an
+            // inlined constant — never a computation that must be suspended.
+            Expr::Ref(..) => {
+                let (r, _) = self.lower_value(e)?;
+                return Ok(r);
+            }
+            Expr::Lambda { .. }
+            | Expr::Float(_, _)
+            | Expr::Int(_, _)
+            | Expr::Bool(_, _)
+            | Expr::Str(_, _) => {
+                let (r, _) = self.lower_value(e)?;
+                return Ok(r);
+            }
+            _ => {}
+        }
+        let free = self.free_vars(e, &HashSet::new());
+        let (fragment_id, _) =
+            self.lower_fragment(&[], e, &free, &self.capture_tys(&free), &[], None, e.span())?;
+        let (env_reg, _) = self.emit_env_snapshot(&free, e.span(), None)?;
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueLazy {
+            dst,
+            env: env_reg,
+            fragment: fragment_id,
+        });
+        Ok(dst)
     }
 
     /// Resolve an INLINE `tape_loop <capacity>` call to a tape index, always
@@ -1540,7 +1594,7 @@ impl<'a> Lowerer<'a> {
                         }
                         let mut arg_regs = Vec::with_capacity(call_args.len());
                         for a in call_args {
-                            let (ar, _) = self.lower_value(a)?;
+                            let ar = self.lower_lazy_arg(a)?;
                             arg_regs.push(ar);
                         }
                         let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
@@ -2407,6 +2461,20 @@ impl<'a> Lowerer<'a> {
             })?;
         match def {
             Def::Local { body, .. } => {
+                // Complete mode: a RECURSIVE local definition (`fibs = cons …
+                // fibs …`) is a self-referential THUNK in a shared cell (the
+                // STG model) — the same shared-cell mechanism as Anchor
+                // closures. Detected by the body referencing the def's own
+                // name; the recursion resolves through the cell, not inline.
+                if self.mode == Mode::Complete && self.body_refs_name(&body, name) {
+                    let reg = self.compile_anchor_closure(name, span)?;
+                    let ty = self
+                        .anchor_types
+                        .get(name)
+                        .cloned()
+                        .unwrap_or(ValueTy::Float);
+                    return Ok((reg, ty));
+                }
                 // v1 value bindings are per-tick re-evaluated expressions (no
                 // shared state), so inlining the body at each use site is
                 // semantically identical to lifting it once.
@@ -2520,6 +2588,65 @@ impl<'a> Lowerer<'a> {
         free
     }
 
+    /// Whether `e` references `name` anywhere (a `Ref` or an applied callee).
+    /// Used to detect self-recursive local definitions (`fibs = cons … fibs …`)
+    /// in complete mode, which lower as self-referential thunks.
+    fn body_refs_name(&self, e: &Expr, name: &str) -> bool {
+        match e {
+            Expr::Ref(n, _) => n == name,
+            Expr::Apply { name: n, args, .. } => {
+                n == name || args.iter().any(|a| self.body_refs_name(a, name))
+            }
+            Expr::ApplyExpr { callee, args, .. } => {
+                self.body_refs_name(callee, name)
+                    || args.iter().any(|a| self.body_refs_name(a, name))
+            }
+            Expr::Neg(inner, _) => self.body_refs_name(inner, name),
+            Expr::Arith { lhs, rhs, .. } => {
+                self.body_refs_name(lhs, name) || self.body_refs_name(rhs, name)
+            }
+            Expr::Seq(lhs, rhs, _)
+            | Expr::Par(lhs, rhs, _)
+            | Expr::Split(lhs, rhs, _)
+            | Expr::Merge(lhs, rhs, _)
+            | Expr::Loop(lhs, rhs, _)
+            | Expr::Delay(lhs, rhs, _) => {
+                self.body_refs_name(lhs, name) || self.body_refs_name(rhs, name)
+            }
+            Expr::If {
+                cond, then, els, ..
+            } => {
+                self.body_refs_name(cond, name)
+                    || self.body_refs_name(then, name)
+                    || self.body_refs_name(els, name)
+            }
+            Expr::Let { defs, body, .. } => {
+                defs.iter().any(|d| self.body_refs_name(d.body(), name))
+                    || self.body_refs_name(body, name)
+            }
+            Expr::Lambda { params, body, .. } => {
+                params.iter().all(|p| p.name != name) && self.body_refs_name(body, name)
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.body_refs_name(scrutinee, name)
+                    || arms.iter().any(|arm| {
+                        arm.guards.iter().any(|(g, b)| {
+                            self.body_refs_name(g, name) || self.body_refs_name(b, name)
+                        })
+                    })
+            }
+            Expr::Record(fields, _) => fields.iter().any(|(_, e)| self.body_refs_name(e, name)),
+            Expr::ListLit(elems, _) => elems.iter().any(|e| self.body_refs_name(e, name)),
+            Expr::MapLit(entries, _) => entries.iter().any(|(_, e)| self.body_refs_name(e, name)),
+            Expr::ActorParam { default, .. } => default
+                .as_ref()
+                .is_some_and(|d| self.body_refs_name(d, name)),
+            _ => false,
+        }
+    }
+
     /// The static types of a lambda's free variables, in the same order as
     /// [`Self::free_vars`]: resolved from the enclosing value scopes (a captured
     /// record parameter keeps its `Data` type, so a field projection / method
@@ -2537,6 +2664,12 @@ impl<'a> Lowerer<'a> {
                 // lambda) keeps its capture type (`k2` of the outer compose
                 // lambda, itself a `Kleisli`).
                 if let Some((_, ty)) = self.fragment_captures.iter().find(|(f, _)| f == n) {
+                    return ty.clone();
+                }
+                // A shared-cell def (named function or self-recursive local)
+                // captured by value: its static RESULT type from inference
+                // (`fibs` : List, so `tail fibs` inside fibs' own body resolves).
+                if let Some(ty) = self.shared_cell_result_tys.get(n) {
                     return ty.clone();
                 }
                 ValueTy::Float
@@ -2821,11 +2954,20 @@ impl<'a> Lowerer<'a> {
         let mut field_regs = Vec::with_capacity(free.len());
         let mut self_cell: Option<usize> = None;
         for name in free {
+            // Inside a fragment, a shared-cell def is a CAPTURE (a
+            // `ValueReadCell` into the frame), not a global cell register:
+            // fragment registers are local, so `anchor_cell`'s main-block reg
+            // would alias a fragment-local register. Only at the top level
+            // (no fragment) is the shared cell the right reference.
+            let in_fragment = !self.fragment_captures.is_empty()
+                || self.fragment_captures.iter().any(|(f, _)| f == name);
+            let is_shared_here =
+                self.mode == Mode::Complete && self.is_shared_cell_def(name) && !in_fragment;
             if self_name == Some(name.as_str()) {
-                if self.mode == Mode::Complete && self.is_top_level_anchor_def(name) {
+                if is_shared_here {
                     // Self-recursive top-level def: reference its SHARED cell
                     // (created by the Anchor arm before the fragment compiled),
-                    // which the caller fills with the closure.
+                    // which the caller fills with the closure/thunk.
                     let cell_reg = self.anchor_cell(name);
                     field_regs.push(cell_reg);
                     self_cell = Some(cell_reg);
@@ -2837,10 +2979,10 @@ impl<'a> Lowerer<'a> {
                     field_regs.push(cell_reg);
                     self_cell = Some(cell_reg);
                 }
-            } else if self.mode == Mode::Complete && self.is_top_level_anchor_def(name) {
+            } else if is_shared_here {
                 // Mutual recursion (`even`/`odd`): capture the partner's SHARED
-                // cell (created on first sight) and compile its closure into
-                // it right now (eagerly) unless it is already compiled or
+                // cell (created on first sight) and compile its closure/thunk
+                // into it right now (eagerly) unless it is already compiled or
                 // currently being compiled (the `anchor_compiling` guard). The
                 // cell — not a recompiled closure — is the forward reference
                 // that makes the compile-time recursion terminate.
@@ -2860,11 +3002,16 @@ impl<'a> Lowerer<'a> {
         Ok((dst, self_cell))
     }
 
-    /// Whether `name` is a top-level Anchor def (a named λ-parameter
-    /// definition): such defs get a SHARED cell in complete mode, and every
-    /// reference — self or mutual — goes through the cell.
-    fn is_top_level_anchor_def(&self, name: &str) -> bool {
-        matches!(self.defs.get(name), Some(Def::Anchor { params, .. }) if !params.is_empty())
+    /// Whether `name` is a top-level def that gets a SHARED cell in complete
+    /// mode: a named λ-parameter definition (Anchor) OR a self-recursive local
+    /// definition (`fibs = cons … fibs …`). Every reference — self or mutual —
+    /// goes through the cell.
+    fn is_shared_cell_def(&self, name: &str) -> bool {
+        match self.defs.get(name) {
+            Some(Def::Anchor { params, .. }) if !params.is_empty() => true,
+            Some(Def::Local { body, .. }) => self.body_refs_name(body, name),
+            _ => false,
+        }
     }
 
     /// Get-or-create the SHARED cell for a top-level Anchor def (complete
@@ -2907,34 +3054,50 @@ impl<'a> Lowerer<'a> {
                 msg: format!("unknown `{name}` in value lowering"),
                 span,
             })?;
-        let Def::Anchor {
-            params: def_params,
-            body,
-            span: dspan,
-            ..
-        } = def
-        else {
-            return Err(CompileError::Type {
-                msg: format!("`{name}` is not a value function in v1"),
-                span,
-            });
-        };
         self.anchor_compiling.insert(name.to_string());
         // The shared cell must exist BEFORE the fragment compiles, so a
         // mutually-recursive partner's env snapshot captures the cell (not a
         // recompiled closure).
         let cell = self.anchor_cell(name);
+        // Seed the static result type BEFORE the fragment compiles, so a
+        // recursive reference inside the body (`tail fibs`) resolves the def's
+        // type (List) instead of the Float fallback. Computed later from the
+        // lowered body if inference did not pin it (the seeded value is the
+        // forward-declared type; the fragment ret type refines it).
+        let seeded_ty = self.shared_cell_result_tys.get(name).cloned();
+        let (def_params, body, dspan, is_anchor) = match &def {
+            Def::Anchor {
+                params, body, span, ..
+            } => (params.clone(), body.clone(), *span, true),
+            Def::Local { body, span, .. } => (Vec::new(), body.clone(), *span, false),
+            _ => {
+                self.anchor_compiling.remove(name);
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` is not a value expression in v1"),
+                    span,
+                });
+            }
+        };
         let param_names: HashSet<String> = def_params.iter().map(|p| p.name.clone()).collect();
         let free = self.free_vars(&body, &param_names);
         // The def's λ-parameter value types come from inference (the
         // value-channel retry of `infer_def_body`, where the body's demands
         // resolved them: `tail xs` → xs : List). Falling back to Float keeps
         // unconstrained scalar params working.
-        let param_tys: Vec<ValueTy> = self
-            .anchor_param_tys
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()]);
+        let param_tys: Vec<ValueTy> = if is_anchor {
+            self.anchor_param_tys
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()])
+        } else {
+            Vec::new()
+        };
+        // Seed `anchor_types` with the inferred result type before the body
+        // lowers, so a recursive reference inside (`tail fibs`) resolves the
+        // def's static type via the Anchor arm.
+        if let Some(seed) = seeded_ty.clone() {
+            self.anchor_types.insert(name.to_string(), seed);
+        }
         let (fragment_id, ret_ty) = self.lower_fragment(
             &def_params,
             &body,
@@ -2946,19 +3109,35 @@ impl<'a> Lowerer<'a> {
         )?;
         let (env_reg, _) = self.emit_env_snapshot(&free, dspan, Some(name))?;
         let dst = self.fresh_value_reg();
-        self.emit_value(ValueInstr::ValueMakeClosure {
-            dst,
-            env: env_reg,
-            fragment: fragment_id,
-        });
+        if is_anchor {
+            self.emit_value(ValueInstr::ValueMakeClosure {
+                dst,
+                env: env_reg,
+                fragment: fragment_id,
+            });
+        } else {
+            // A recursive CAF (`fibs = cons 0.0 (cons 1.0 (... fibs ...))`) is
+            // a THUNK over its body fragment, not a closure: the shared cell
+            // holds the lazy computation, and the body's self-reference reads
+            // the cell (forcing on demand, memoizing the result).
+            self.emit_value(ValueInstr::ValueLazy {
+                dst,
+                env: env_reg,
+                fragment: fragment_id,
+            });
+        }
         // Complete-mode recursion: fill the shared cell with the just-created
-        // closure, so a recursive reference in the body reads the closure
-        // through the cell.
+        // closure/thunk, so a recursive reference in the body reads it through
+        // the cell.
         self.emit_value(ValueInstr::ValueWriteCell { cell, src: dst });
-        let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
+        let ty = if is_anchor {
+            let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
+            ValueTy::Func(arg_tys, vec![ret_ty])
+        } else {
+            ret_ty
+        };
         self.anchor_closures.insert(name.to_string(), dst);
-        self.anchor_types
-            .insert(name.to_string(), ValueTy::Func(arg_tys, vec![ret_ty]));
+        self.anchor_types.insert(name.to_string(), ty);
         self.anchor_compiling.remove(name);
         Ok(dst)
     }
@@ -5266,6 +5445,7 @@ pub fn lower_with_cafs_mode(
         fragment_captures: Vec::new(),
         fn_param_tys: tp.fn_param_tys.clone(),
         anchor_param_tys: tp.anchor_param_tys.clone(),
+        shared_cell_result_tys: tp.shared_cell_result_tys.clone(),
         pending_param_tys: None,
         anchor_cells: HashMap::new(),
         anchor_closures: HashMap::new(),
@@ -5485,6 +5665,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             anchor_param_tys: typed.anchor_param_tys.clone(),
+            shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5530,6 +5711,7 @@ mod tests {
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),
             anchor_param_tys: HashMap::new(),
+            shared_cell_result_tys: HashMap::new(),
             pending_param_tys: None,
             anchor_cells: HashMap::new(),
             anchor_closures: HashMap::new(),
@@ -5740,6 +5922,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             anchor_param_tys: typed.anchor_param_tys.clone(),
+            shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5766,6 +5949,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             anchor_param_tys: typed.anchor_param_tys.clone(),
+            shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5793,6 +5977,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             anchor_param_tys: typed.anchor_param_tys.clone(),
+            shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
@@ -5825,6 +6010,7 @@ mod tests {
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
             anchor_param_tys: typed.anchor_param_tys.clone(),
+            shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             mode: typed.mode,
         };
