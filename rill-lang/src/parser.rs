@@ -976,6 +976,22 @@ impl<'a> Parser<'a> {
                 })
             }
             Tok::KwDo => self.parse_do_block(),
+            Tok::KwRunST => {
+                // `runST (fn s -> body)` — a special form whose parenthesized
+                // operand is a lambda; `s` is a phantom type token.
+                self.bump();
+                self.eat(&Tok::LParen)?;
+                if self.peek().tok != Tok::KwFn {
+                    return Err(self.error("runST expects a parenthesized lambda `fn s -> body`"));
+                }
+                let body = self.parse_prefix(false)?;
+                self.eat(&Tok::RParen)?;
+                let span = t.span.merge(body.span());
+                Ok(Expr::RunST {
+                    body: Box::new(body),
+                    span,
+                })
+            }
             Tok::Ident(name) => {
                 let start = t.span.start;
                 self.bump();

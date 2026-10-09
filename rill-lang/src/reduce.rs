@@ -179,6 +179,20 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 span: *span,
             }
         }
+        Expr::RunST { body, span } => {
+            // The runST lambda's phantom parameter `s` shadows an outer binding
+            // of the same spelling inside the body.
+            let mut inner = subst.clone();
+            if let Expr::Lambda { params, .. } = body.as_ref() {
+                for p in params {
+                    inner.remove(&p.name);
+                }
+            }
+            Expr::RunST {
+                body: Box::new(substitute(body, &inner)),
+                span: *span,
+            }
+        }
         Expr::Record(fields, span) => Expr::Record(
             fields
                 .iter()
@@ -560,6 +574,20 @@ fn reduce_expr(
             }
             Expr::Lambda {
                 params: params.clone(),
+                body: Box::new(reduce_expr(body, &inner_ctx, cafs, reducing, mode)),
+                span: *span,
+            }
+        }
+        Expr::RunST { body, span } => {
+            // The runST lambda's phantom parameter `s` shadows an outer
+            // definition of the same spelling inside the body.
+            let mut inner_ctx = ctx.clone();
+            if let Expr::Lambda { params, .. } = body.as_ref() {
+                for p in params {
+                    inner_ctx.remove(&p.name);
+                }
+            }
+            Expr::RunST {
                 body: Box::new(reduce_expr(body, &inner_ctx, cafs, reducing, mode)),
                 span: *span,
             }

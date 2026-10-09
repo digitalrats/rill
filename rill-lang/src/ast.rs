@@ -255,6 +255,16 @@ pub enum Expr {
         /// Span.
         span: Span,
     },
+    /// `runST (fn s -> body)` — an ST region. The lambda's single parameter
+    /// `s` is a PHANTOM TYPE token, not a value channel: inference binds it as
+    /// a fresh type-constructor variable and check-escapes it at the region
+    /// boundary (the result type must not mention `s`).
+    RunST {
+        /// The parenthesized lambda `fn s -> body`.
+        body: Box<Expr>,
+        /// Span.
+        span: Span,
+    },
     /// Boolean literal `true` / `false`.
     Bool(bool, Span),
     /// List literal `[e1, e2]`.
@@ -314,6 +324,7 @@ impl Expr {
             | Expr::Match { span, .. }
             | Expr::If { span, .. }
             | Expr::Lambda { span, .. }
+            | Expr::RunST { span, .. }
             | Expr::Bool(_, span)
             | Expr::ListLit(_, span)
             | Expr::MapLit(_, span)

@@ -302,6 +302,7 @@ instance Monad List where {
 }
 
 data Kleisli m a b = { unKleisli: a -> m b };
+data ST s a = { unST: a };
 
 typeclass Arrow a where {
     arr: (b -> c) -> a b c;

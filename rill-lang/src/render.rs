@@ -350,6 +350,12 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             render_expr(body, buf, 0)?;
             Ok(())
         }
+        Expr::RunST { body, .. } => {
+            write!(buf, "runST (").ok();
+            render_expr(body, buf, 0)?;
+            write!(buf, ")").ok();
+            Ok(())
+        }
         Expr::Bool(v, _) => {
             write!(buf, "{}", if *v { "true" } else { "false" }).ok();
             Ok(())
