@@ -220,6 +220,38 @@ These become `Buffer`/`Arrow` methods; the desugar pass rewrites `Expr::Seq`/`Pa
 `Split`/`Merge`/`Loop`/`Delay` in signal position into the corresponding method
 calls (or keeps the AST and dispatches at lower).
 
+### 2.5b FFI integration
+
+Foreign algorithms (`rill-core-dsp`, `rill-core-model`, `rill-lofi`, etc.) are
+**`Buffer` arrows already**: the language owns the signature (`foreign fn`),
+Rust owns the implementation (`Algorithm<T>` / `MultichannelAlgorithm<T>`), and
+the call is "apply `Algorithm` to a buffer". Stage B makes this explicit in the
+type system without touching the FFI machinery:
+
+| Layer | File | Role | Changes? |
+|---|---|---|---|
+| Signature | `types/ty.rs` `foreign fn` | Language owns the signature | no |
+| Factory | `rill-core-dsp`/`rill-core-model`/etc `register_block` | Rust implementation | no |
+| `BlockBuiltin` | `builtin.rs:17` | `Algorithm<T>` + `set_param` | no |
+| `BuiltinInst` | `program.rs:32` | Runtime instance | no |
+| `exec_foreign_block` | `backend/interp.rs:2773` | `Algorithm::process(&mut dst_buf, &[in])` | yes — buffer values |
+
+What changes:
+
+1. **Typing of the call.** A foreign call currently lowers to
+   `Instr::CallBlock` (block track). In the new model it is a `Buffer` arrow:
+   inputs and outputs are `Buffer` values; `foreign_sigs` stays the signature
+   source.
+2. **Buffer-valued I/O.** Inputs/outputs are `Buffer` values (`RegionHandle` or a
+   `FixedBuffer` instance). `Algorithm::process` mutates the output buffer, as it
+   does today (`block_regs[dst]`) — this is exactly the ST effect model,
+   localized in the tick's `runST` region.
+3. **Faust operators over FFI.** `ay38910 1750000.0 regs : lofi ...` is
+   seq/`compose` of arrows; each stage is an `Algorithm` that mutates its own
+   buffer.
+4. **`param_bindings`** (control params, e.g. `1750000.0`, `regs` Bytes) keep
+   flowing through `SetParameter` → `main_cells` → `set_param`, unchanged.
+
 ### 2.6 Scope boundary with IO
 
 Stage B does **not** introduce the `(arg..) -> IO` program form. The existing
@@ -271,6 +303,8 @@ However:
 6. **RegionHandle as a `Buffer` value** (`arena.rs`, `memory/region.rs`): make
    `RegionHandle` a `Value` (or a value-carrying handle) so buffers are
    first-class.
+7. **FFI arrows** (`lower.rs`, `program.rs`, `ffi.rs`): foreign calls typed as
+   `Buffer` arrows; `BuiltinInst`/`Algorithm::process` unchanged.
 
 ### 3.2 Data flow
 
@@ -307,7 +341,9 @@ arrow. `CallBlock` (opaque DSP) and math both operate on `Buffer` values.
 - **New**: `Buffer` math (in-place, correct values, no aliasing issues),
   `ST`/`runST` check-escaping, `:` overload (cons vs seq by operand type),
   Faust-operator-as-Arrow (seq/par/split/merge/loop/delay), `Buffer` as a
-  first-class value (stored in `List`, passed to functions).
+  first-class value (stored in `List`, passed to functions), FFI arrows
+  (`sine`/`biquad`/`ay38910`/`lofi` typed as `Buffer` arrows, `Algorithm::process`
+  applied to `Buffer` values).
 - **Regression**: all existing `rill-lang` signal and value tests, the category
   tests (`Arrow (Kleisli m)`), and `lang_chiptune`/`record_mic` compile + run.
 
@@ -318,7 +354,8 @@ arrow. `CallBlock` (opaque DSP) and math both operate on `Buffer` values.
 - `cargo test --workspace`, `cargo clippy --all-features --workspace`,
   `cargo fmt` — all green, 0 warnings.
 - Signal test suite (ffi, graph, categories, arrow) passes unchanged.
-- `lang_chiptune` and `record_mic` examples compile and run.
+- `lang_chiptune` and `record_mic` examples compile and run (FFI arrows:
+  `ay38910`/`lofi`/wire still work end-to-end).
 
 ---
 
@@ -332,6 +369,7 @@ arrow. `CallBlock` (opaque DSP) and math both operate on `Buffer` values.
 | Faust ops → methods | `desugar.rs`, `types/infer.rs`, `lower.rs` |
 | Buffer math exec | `backend/interp.rs`, new `Buffer` instances, `memory/region.rs` |
 | RegionHandle as value | `arena.rs`, `memory/region.rs` |
+| FFI arrows | `lower.rs`, `program.rs`, `ffi.rs` |
 | Tests | `tests/buffer_st.rs`, `tests/*` regression |
 
 ---
