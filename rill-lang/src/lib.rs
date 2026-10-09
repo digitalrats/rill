@@ -11,6 +11,8 @@ pub mod arena;
 pub mod arrow;
 pub mod ast;
 pub mod backend;
+/// Element-wise in-place buffer math as scalar loops (LLVM auto-vectorizes).
+pub mod buffer_math;
 pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
