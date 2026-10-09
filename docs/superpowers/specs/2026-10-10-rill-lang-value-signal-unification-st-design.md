@@ -33,15 +33,19 @@ buffer a first-class, mutable value** and modelling signal processing as an
   region with a fresh `s` and a check-escaping guarantee (one-point rank-2, not
   full rank-2 HM).
 
-The block track is **not deleted** — it is the existing runtime underneath. We
-re-frame its semantics (math = `Buffer` methods, state = ST effect, opaque DSP =
-`Buffer` arrows) while keeping SIMD and the `Algorithm` factories intact.
+The block track is **not a separate semantic world** — it is the existing
+runtime underneath, and it already runs alongside the value track in one tick
+(`process()` calls `run_block_mimo` + `run_value_track`). Stage B unifies the
+TYPE SYSTEM: `Rate::Signal` as a distinct rate disappears, signals become
+`Rate::Value` with type `Buffer`, and the linear IR / buffer registers become
+"how we execute `Buffer` operations" rather than "the signal path". SIMD and
+the `Algorithm` factories stay intact.
 
 ---
 
 ## 1. Context and current state (audited)
 
-### 1.1 The signal/block track is the only runtime
+### 1.1 The linear IR is the sole runtime (audit)
 
 An audit of the codebase (this branch) found that the graph-engine system
 described in `docs/src/architecture/graph.md` (`GraphIr`, `GraphBuilder::build_ir`,
@@ -50,9 +54,10 @@ described in `docs/src/architecture/graph.md` (`GraphIr`, `GraphBuilder::build_i
 the source**. Only the frontend survives:
 
 - `rill-graph::GraphBuilder` → `to_graph_spec()` → `GraphSpec` → `reconstruct()`
-  → rill-lang AST → `compile_program` → the same block track.
+  → rill-lang AST → `compile_program` → the same linear IR.
 
-The block track is the **sole execution engine**:
+The linear IR (`Instr`/`block_regs`) is the **sole execution engine** — and it
+already runs together with the value track in one tick:
 
 | File | Role |
 |---|---|
@@ -255,8 +260,10 @@ What changes:
 ### 2.6 Scope boundary with IO
 
 Stage B does **not** introduce the `(arg..) -> IO` program form. The existing
-`main : inputs -> outputs` binding and the block track remain the entry/exit.
-However:
+`main : inputs -> outputs` binding remains the entry/exit, but it is now typed
+over `Buffer` arrows (not a separate signal track). The runtime's linear IR and
+buffer registers survive as the execution layer for `Buffer` operations;
+`Rate::Signal` as a distinct type-system rate is removed. However:
 
 - `Buffer` as a value is the substrate for stream I/O later.
 - The ST effect model is the foundation for IO.
@@ -281,8 +288,9 @@ However:
 │  infer: Buffer/Arrow/ST typing, runST check-escaping       │
 │  lower: arrows/methods → ops over Buffer (SIMD via rill-core)│
 ├────────────────────────────────────────────────────────────┤
-│ Runtime                                                    │
-│  Arena<Value> + RegionHandle (big objects)                 │
+│ Runtime (one tick = one execution)                          │
+│  Arena<Value> + RegionHandle (big objects)                  │
+│  linear IR / buffer registers = Buffer-op execution layer   │
 │  one tick = runST region                                   │
 │  Buffer math = scalar loops (LLVM auto-vectorized)         │
 │  Algorithm (CallBlock) unchanged                           │
@@ -310,7 +318,9 @@ However:
 
 A signal expression now composes `Buffer` arrows inside a `runST` region. The
 boundary stays `main : inputs -> outputs`; internally each stage is a `Buffer`
-arrow. `CallBlock` (opaque DSP) and math both operate on `Buffer` values.
+arrow. `CallBlock` (opaque DSP) and math both operate on `Buffer` values. The
+linear IR lowers these arrows; there is no separate signal track in the type
+system (one `Rate`, one `Value` model).
 
 ---
 
@@ -327,8 +337,9 @@ arrow. `CallBlock` (opaque DSP) and math both operate on `Buffer` values.
 
 - **Behavior**: existing signal programs (`lang_chiptune`, `record_mic`, the
   signal test suite) keep working. `main : inputs -> outputs` stays.
-- **RT safety**: the block track and `Algorithm` factories are unchanged. Buffer
-  math adds no allocation beyond the existing arena/region budget.
+- **RT safety**: the linear IR (buffer registers) and `Algorithm` factories are
+  unchanged; they are the execution layer for `Buffer` operations. Buffer math
+  adds no allocation beyond the existing arena/region budget.
 - **SIMD**: preserved — math uses scalar loops that LLVM auto-vectorizes, or the
   existing `rill_core::math::vector` helpers; manual SIMD is avoided.
 - **Regalloc**: `regalloc.rs` stays dead (out of scope); fresh-buffer-per-result
