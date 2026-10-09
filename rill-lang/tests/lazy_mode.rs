@@ -441,3 +441,81 @@ main = headv (let x = from 10.0 in x);"#;
         other => panic!("expected Float(10.0), got {other:?}"),
     }
 }
+
+#[test]
+fn mutual_recursion_in_branch_arm_false() {
+    // C1 regression: a shared-cell def first referenced from a branch arm must
+    // still have its cell bound/filled on every execution path (the cell init
+    // is hoisted into the value-track entry block, which always runs first).
+    let src = r#"{-# MODE complete #-}
+even n = if n == 0.0 then 1.0 else odd (n - 1.0);
+odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
+main = if 1.0 == 2.0 then even 4.0 else even 3.0;"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "false arm: even 3 -> 0.0"),
+        other => panic!("expected Float(0.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn mutual_recursion_in_branch_arm_true() {
+    let src = r#"{-# MODE complete #-}
+even n = if n == 0.0 then 1.0 else odd (n - 1.0);
+odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
+main = if 1.0 == 1.0 then even 4.0 else even 3.0;"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "true arm: even 4 -> 1.0"),
+        other => panic!("expected Float(1.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn mutual_local_recursion_is_bottom() {
+    // I2 regression: mutual LOCAL recursion (`a = b; b = a`) in the value track
+    // must force to Bottom (divergence is a value), not a wrong Float.
+    let src = r#"{-# MODE complete #-}
+a = b;
+b = a;
+main = match (head (cons (1.0 + a) (list))) of { Nothing => 0.0; Just x => x }"#;
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Bottom => {}
+        other => panic!("expected Bottom, got {other:?}"),
+    }
+}
+
+#[test]
+fn deep_recursion_is_latched_error_not_panic() {
+    // I1 regression: a deep-but-finite recursion exceeds the pre-allocated
+    // call-scratch/arena, which must surface as a latched ProcessError (plan
+    // §10), not a debug panic or a silent `None`/`Bottom`.
+    let src = "{-# MODE complete #-}\ncountdown n = if n == 0.0 then 0.0 else countdown (n - 1.0)\nmain = countdown 2000.0";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let r = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    match r {
+        Ok(()) => panic!("deep recursion must exhaust the pre-allocated budget and latch an error"),
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("exhausted"),
+                "exhaustion error expected, got: {msg}"
+            );
+        }
+    }
+}

@@ -121,13 +121,25 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
     prog.drops_scratch = drops;
 
+    // A resource exhaustion can be latched DURING output forcing (a lazy
+    // output register recurses past `max_call_regs` / the arena pool while its
+    // head is materialized here, after `run_value_track` already returned).
+    // Surface it as the tick's error instead of a silent `Bottom`.
+    let latched: Option<Result<(), ProcessError>> = match &value_res {
+        Ok(()) => prog.value_error.take().map(Err),
+        Err(_) => None,
+    };
+
     // Release this tick's per-tick value registers now that the value outputs
     // have been read (value outputs are copied after the block outputs above).
     // The value-state is NOT cleared: it is the 1-tick delay
     // store, and `ValueStateWrite` already drops the previous ref when
     // overwriting a slot.
     prog.clear_value_regs();
-    value_res
+    match latched {
+        Some(Err(err)) => Err(err),
+        _ => value_res,
+    }
 }
 
 /// Execute the per-tick value track: walk the program's value-track blocks from
@@ -202,6 +214,21 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
     Ok(())
 }
 
+/// Latch a value-track resource exhaustion as a user-facing `ProcessError`
+/// (the plan's contract: exhaustion is a latched error, RT-safe — one `Option`
+/// write, no panic, no silent `None`). The first latch wins; later exhaustions
+/// are no-ops. `run_value_track` returns the latched error at tick end.
+fn latch_exhaustion<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    what: &'static str,
+) {
+    if prog.value_error.is_none() {
+        prog.value_error = Some(ProcessError::processing(format!(
+            "value-track resource exhausted: {what}"
+        )));
+    }
+}
+
 /// Whether a value register holds `Bool(true)`. Non-Bool/`None` is `false`
 /// (defensive; static typing guarantees a Bool here).
 fn value_reg_is_true<T: Transcendental, const BUF: usize>(
@@ -256,7 +283,7 @@ fn alloc_owned<T: Transcendental, const BUF: usize>(
         Ok(r) => Some(r),
         Err((_, v)) => {
             drop_value_children(prog, &v);
-            debug_assert!(false, "value arena capacity exhausted at build time");
+            latch_exhaustion(prog, "value arena capacity");
             None
         }
     }
@@ -353,7 +380,7 @@ fn alloc_copy<T: Transcendental, const BUF: usize>(
             // No slot was created; undo the recounts above so the original
             // value keeps exclusive ownership of its children. Never `Some(0)`.
             drop_value_children(prog, &cloned);
-            debug_assert!(false, "value arena capacity exhausted at build time");
+            latch_exhaustion(prog, "value arena capacity");
             None
         }
     }
@@ -367,7 +394,7 @@ fn copy_owned<T: Transcendental, const BUF: usize>(
     match prog.arena.copy(r) {
         Ok(c) => Some(c),
         Err(_) => {
-            debug_assert!(false, "copy on a freed or overflowing arena ref");
+            latch_exhaustion(prog, "arena ref copy");
             None
         }
     }
@@ -430,7 +457,7 @@ fn read_field_refs<T: Transcendental, const BUF: usize>(
     let mut refs: Vec<ArenaRef> = match prog.arena.take_buf(regs.len()) {
         Ok(b) => b,
         Err(_) => {
-            debug_assert!(false, "value buffer pool exhausted at build time");
+            latch_exhaustion(prog, "value buffer pool");
             return None;
         }
     };
@@ -674,7 +701,7 @@ fn try_alloc_bottom<T: Transcendental, const BUF: usize>(
     match prog.arena.alloc(Value::Bottom) {
         Ok(b) => Some(b),
         Err(_) => {
-            debug_assert!(false, "value arena capacity exhausted at build time");
+            latch_exhaustion(prog, "value arena capacity");
             None
         }
     }
@@ -1369,7 +1396,7 @@ fn pooled_elems_of<T: Transcendental, const BUF: usize>(
     let mut out = match prog.arena.take_buf(len) {
         Ok(b) => b,
         Err(_) => {
-            debug_assert!(false, "value buffer pool exhausted at build time");
+            latch_exhaustion(prog, "value buffer pool");
             return None;
         }
     };
@@ -1397,7 +1424,7 @@ fn pooled_elems_of_ref<T: Transcendental, const BUF: usize>(
     let mut out = match prog.arena.take_buf(len) {
         Ok(b) => b,
         Err(_) => {
-            debug_assert!(false, "value buffer pool exhausted at build time");
+            latch_exhaustion(prog, "value buffer pool");
             return None;
         }
     };
@@ -1495,7 +1522,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let mut out = match prog.arena.take_buf(src.len() + 1) {
                 Ok(b) => b,
                 Err(_) => {
-                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    latch_exhaustion(prog, "value buffer pool");
                     prog.value_regs[dst] = None;
                     return;
                 }
@@ -1543,7 +1570,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         let mut payload = match prog.arena.take_buf(1) {
                             Ok(b) => b,
                             Err(_) => {
-                                debug_assert!(false, "value buffer pool exhausted");
+                                latch_exhaustion(prog, "value buffer pool");
                                 return;
                             }
                         };
@@ -1564,7 +1591,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let mut out = match prog.arena.take_buf(src.len()) {
                 Ok(b) => b,
                 Err(_) => {
-                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    latch_exhaustion(prog, "value buffer pool");
                     prog.value_regs[dst] = None;
                     return;
                 }
@@ -1672,7 +1699,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let mut kept = match prog.arena.take_buf(src.len()) {
                 Ok(b) => b,
                 Err(_) => {
-                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    latch_exhaustion(prog, "value buffer pool");
                     prog.value_regs[dst] = None;
                     return;
                 }
@@ -1790,7 +1817,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         let mut payload = match prog.arena.take_buf(1) {
                             Ok(b) => b,
                             Err(_) => {
-                                debug_assert!(false, "value buffer pool exhausted");
+                                latch_exhaustion(prog, "value buffer pool");
                                 return;
                             }
                         };
@@ -1847,7 +1874,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let mut out = match prog.arena.take_buf(len + usize::from(!dup)) {
                 Ok(b) => b,
                 Err(_) => {
-                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    latch_exhaustion(prog, "value buffer pool");
                     prog.value_regs[dst] = None;
                     return;
                 }
@@ -1890,7 +1917,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let mut out = match prog.arena.take_buf(src.len()) {
                 Ok(b) => b,
                 Err(_) => {
-                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    latch_exhaustion(prog, "value buffer pool");
                     prog.value_regs[dst] = None;
                     return;
                 }
@@ -1931,7 +1958,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let mut out = match prog.arena.take_buf(left.len() + right.len()) {
                 Ok(b) => b,
                 Err(_) => {
-                    debug_assert!(false, "value buffer pool exhausted at build time");
+                    latch_exhaustion(prog, "value buffer pool");
                     prog.value_regs[dst] = None;
                     return;
                 }
@@ -2068,6 +2095,16 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     dst: &usize,
     drops: &mut Vec<crate::arena::ArenaRef>,
 ) {
+    // 0. Reserve the call-scratch slice BEFORE binding capture cells, so a
+    //    recursion depth beyond `max_call_regs` latches a ProcessError instead
+    //    of a release-mode Vec OOB (deep-but-finite recursion can legitimately
+    //    exceed the acyclic bound). The watermark grows into the reserved tail.
+    let base = prog.value_regs_top;
+    let top = base + frag.num_value_regs;
+    if top > prog.value_regs.len() {
+        latch_exhaustion(prog, "call scratch (max_call_regs)");
+        return;
+    }
     // 1. Bind each env Record field as a capture cell: an INDEPENDENT copy of
     //    the field's value appended to the shared capture-cell store (pre-sized
     //    at construction — no allocation). The env record is untouched.
@@ -2090,15 +2127,7 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     }
     let saved_cells_base = prog.frag_cells_base;
     prog.frag_cells_base = cell_base;
-    // 2. Borrow the pre-allocated call-scratch slice for the fragment's local
-    //    registers. The watermark grows into the reserved tail; the pre-sized
-    //    store guarantees `max_call_regs` slots are available for any nesting.
-    let base = prog.value_regs_top;
-    let top = base + frag.num_value_regs;
-    debug_assert!(
-        top <= prog.value_regs.len(),
-        "call scratch exceeds pre-allocated max_call_regs (lowering bound broken)"
-    );
+    // 2. The pre-sized store guarantees the reserved slice is available here.
     prog.value_regs_top = top;
     // 3. Value args: copy the caller's arg values into the fragment's leading
     //    registers (the first `sig.value_ins` slice slots). Each copy is a
@@ -2340,6 +2369,16 @@ fn run_thunk_body<T: Transcendental, const BUF: usize>(
         debug_assert!(false, "thunk body fragment {fragment_id} does not exist");
         return try_alloc_bottom(prog).unwrap_or(env_ref);
     };
+    // 0. Reserve the call-scratch slice BEFORE binding capture cells, so a
+    //    recursion depth beyond `max_call_regs` latches a ProcessError instead
+    //    of a release-mode Vec OOB. The store is pre-sized to
+    //    `num_value_regs + max_call_regs`, so the watermark can grow here.
+    let base = prog.value_regs_top;
+    let top = base + frag.num_value_regs;
+    if top > prog.value_regs.len() {
+        latch_exhaustion(prog, "call scratch (max_call_regs)");
+        return try_alloc_bottom(prog).unwrap_or(env_ref);
+    }
     // 1. Bind the env Record fields as the fragment's frame. The FIRST
     //    `fields.len() - value_ins` fields are the lambda's free variables
     //    (capture cells, resolved by `ValueReadCell`); the LAST `value_ins`
@@ -2371,15 +2410,7 @@ fn run_thunk_body<T: Transcendental, const BUF: usize>(
     }
     let saved_cells_base = prog.frag_cells_base;
     prog.frag_cells_base = cell_base;
-    // 2. Borrow the pre-allocated call-scratch slice for the fragment's local
-    //    registers (the store is pre-sized to `num_value_regs + max_call_regs`,
-    //    so the watermark can grow here — no reallocation on the RT path).
-    let base = prog.value_regs_top;
-    let top = base + frag.num_value_regs;
-    debug_assert!(
-        top <= prog.value_regs.len(),
-        "call scratch exceeds pre-allocated max_call_regs (lowering bound broken)"
-    );
+    // 2. The reserved slice is guaranteed available (checked above).
     prog.value_regs_top = top;
     // 3. Bind the function's arguments into the fragment's leading registers
     //    (copied, RC++, so the thunk's env keeps its own claims).
@@ -2455,7 +2486,11 @@ fn run_thunk_body<T: Transcendental, const BUF: usize>(
     match result {
         Some(r) => r,
         None => {
-            debug_assert!(false, "thunk body fragment produced no result");
+            // The body produced no result because a deeper recursion already
+            // exhausted the arena/pool (latched above) or the body legitimately
+            // yielded nothing — either way this thunk cannot compute, so it is
+            // bottom (a latched ProcessError surfaces at tick end).
+            latch_exhaustion(prog, "thunk body produced no result");
             try_alloc_bottom(prog).unwrap_or(env_ref)
         }
     }

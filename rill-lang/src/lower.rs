@@ -301,6 +301,11 @@ struct Lowerer<'a> {
     /// compile reaches `even` again, the cell (not a fresh compile) is the
     /// forward reference.
     anchor_compiling: HashSet<String>,
+    /// Complete mode: LOCAL defs that participate in a reference cycle (self-
+    /// OR mutual-recursion: `a = a`, `a = b; b = a`). Like Anchor closures,
+    /// they get a SHARED cell so the recursion resolves through the cell and
+    /// forcing a divergent cycle yields `Bottom` (not an unbound register).
+    recursive_locals: HashSet<String>,
     /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
     /// the AST. A resource param's `Ref(name)` resolves to the capacity here to
     /// assign a tape index; a `Ref` NOT present stays a name-based resource
@@ -2464,9 +2469,10 @@ impl<'a> Lowerer<'a> {
                 // Complete mode: a RECURSIVE local definition (`fibs = cons …
                 // fibs …`) is a self-referential THUNK in a shared cell (the
                 // STG model) — the same shared-cell mechanism as Anchor
-                // closures. Detected by the body referencing the def's own
-                // name; the recursion resolves through the cell, not inline.
-                if self.mode == Mode::Complete && self.body_refs_name(&body, name) {
+                // closures. Detected by the def participating in a reference
+                // cycle (self- OR mutual-recursion: `a = a`, `a = b; b = a`);
+                // the recursion resolves through the cell, not inline.
+                if self.mode == Mode::Complete && self.recursive_locals.contains(name) {
                     let reg = self.compile_anchor_closure(name, span)?;
                     let ty = self
                         .anchor_types
@@ -2586,65 +2592,6 @@ impl<'a> Lowerer<'a> {
         let mut seen = HashSet::new();
         self.free_vars_impl(e, bound, &mut free, &mut seen);
         free
-    }
-
-    /// Whether `e` references `name` anywhere (a `Ref` or an applied callee).
-    /// Used to detect self-recursive local definitions (`fibs = cons … fibs …`)
-    /// in complete mode, which lower as self-referential thunks.
-    fn body_refs_name(&self, e: &Expr, name: &str) -> bool {
-        match e {
-            Expr::Ref(n, _) => n == name,
-            Expr::Apply { name: n, args, .. } => {
-                n == name || args.iter().any(|a| self.body_refs_name(a, name))
-            }
-            Expr::ApplyExpr { callee, args, .. } => {
-                self.body_refs_name(callee, name)
-                    || args.iter().any(|a| self.body_refs_name(a, name))
-            }
-            Expr::Neg(inner, _) => self.body_refs_name(inner, name),
-            Expr::Arith { lhs, rhs, .. } => {
-                self.body_refs_name(lhs, name) || self.body_refs_name(rhs, name)
-            }
-            Expr::Seq(lhs, rhs, _)
-            | Expr::Par(lhs, rhs, _)
-            | Expr::Split(lhs, rhs, _)
-            | Expr::Merge(lhs, rhs, _)
-            | Expr::Loop(lhs, rhs, _)
-            | Expr::Delay(lhs, rhs, _) => {
-                self.body_refs_name(lhs, name) || self.body_refs_name(rhs, name)
-            }
-            Expr::If {
-                cond, then, els, ..
-            } => {
-                self.body_refs_name(cond, name)
-                    || self.body_refs_name(then, name)
-                    || self.body_refs_name(els, name)
-            }
-            Expr::Let { defs, body, .. } => {
-                defs.iter().any(|d| self.body_refs_name(d.body(), name))
-                    || self.body_refs_name(body, name)
-            }
-            Expr::Lambda { params, body, .. } => {
-                params.iter().all(|p| p.name != name) && self.body_refs_name(body, name)
-            }
-            Expr::Match {
-                scrutinee, arms, ..
-            } => {
-                self.body_refs_name(scrutinee, name)
-                    || arms.iter().any(|arm| {
-                        arm.guards.iter().any(|(g, b)| {
-                            self.body_refs_name(g, name) || self.body_refs_name(b, name)
-                        })
-                    })
-            }
-            Expr::Record(fields, _) => fields.iter().any(|(_, e)| self.body_refs_name(e, name)),
-            Expr::ListLit(elems, _) => elems.iter().any(|e| self.body_refs_name(e, name)),
-            Expr::MapLit(entries, _) => entries.iter().any(|(_, e)| self.body_refs_name(e, name)),
-            Expr::ActorParam { default, .. } => default
-                .as_ref()
-                .is_some_and(|d| self.body_refs_name(d, name)),
-            _ => false,
-        }
     }
 
     /// The static types of a lambda's free variables, in the same order as
@@ -3009,9 +2956,52 @@ impl<'a> Lowerer<'a> {
     fn is_shared_cell_def(&self, name: &str) -> bool {
         match self.defs.get(name) {
             Some(Def::Anchor { params, .. }) if !params.is_empty() => true,
-            Some(Def::Local { body, .. }) => self.body_refs_name(body, name),
+            Some(Def::Local { .. }) => self.recursive_locals.contains(name),
             _ => false,
         }
+    }
+
+    /// Compute the set of LOCAL defs that participate in a reference cycle
+    /// (self- OR mutual-recursion): a def whose body transitively references
+    /// its own name. `a = a` is a self-loop; `a = b; b = a` is a two-node
+    /// cycle. Both must be shared-cell defs so the recursion resolves through
+    /// the cell and forcing a divergent cycle yields `Bottom` (not an unbound
+    /// register). Computed once at lowering start from the def-reference graph.
+    fn compute_recursive_locals(defs: &HashMap<String, Def>) -> HashSet<String> {
+        let mut refs_of: HashMap<String, HashSet<String>> = HashMap::new();
+        for (name, def) in defs {
+            let mut refs = HashSet::new();
+            if !def.is_decl() {
+                collect_def_ref_names(def.body(), &mut refs);
+            }
+            refs_of.insert(name.clone(), refs);
+        }
+        let mut recursive = HashSet::new();
+        let names: Vec<String> = defs.keys().cloned().collect();
+        for start in &names {
+            // DFS from `start`'s body references; if we ever return to `start`,
+            // it is part of a cycle.
+            let mut visited = HashSet::new();
+            let mut stack: Vec<String> = refs_of
+                .get(start)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            while let Some(cur) = stack.pop() {
+                if cur == *start {
+                    recursive.insert(start.clone());
+                    break;
+                }
+                if !visited.insert(cur.clone()) {
+                    continue;
+                }
+                if let Some(next) = refs_of.get(&cur) {
+                    stack.extend(next.iter().cloned());
+                }
+            }
+        }
+        recursive
     }
 
     /// Get-or-create the SHARED cell for a top-level Anchor def (complete
@@ -3020,12 +3010,20 @@ impl<'a> Lowerer<'a> {
     /// and written into the cell, so any number of references (including
     /// mutual recursion) capture the cell without recompiling. Returns the
     /// cell register.
+    ///
+    /// The `ValueBindCell` is emitted into the value-track ENTRY block (which
+    /// always runs before any branch): a reference can first appear inside a
+    /// branch arm, and the cell register must be bound on every execution path
+    /// (the program-level cell is global, not per-block).
     fn anchor_cell(&mut self, name: &str) -> usize {
         if let Some(&c) = self.anchor_cells.get(name) {
             return c;
         }
+        let saved_block = self.cur_value_block;
+        self.cur_value_block = self.value_entry;
         let c = self.fresh_value_reg();
         self.emit_value(ValueInstr::ValueBindCell { dst: c });
+        self.cur_value_block = saved_block;
         self.anchor_cells.insert(name.to_string(), c);
         c
     }
@@ -3058,6 +3056,15 @@ impl<'a> Lowerer<'a> {
         // The shared cell must exist BEFORE the fragment compiles, so a
         // mutually-recursive partner's env snapshot captures the cell (not a
         // recompiled closure).
+        //
+        // The whole init sequence (bind cell + compile closure/thunk + write
+        // cell) is hoisted into the value-track ENTRY block: the first
+        // reference to a shared-cell def can appear inside a branch arm, and
+        // the cell register must be bound and filled on every execution path
+        // (block 0 always runs before any branch). Nested fragment compiles
+        // save/restore their own blocks, so this wrap is re-entrant.
+        let saved_block = self.cur_value_block;
+        self.cur_value_block = self.value_entry;
         let cell = self.anchor_cell(name);
         // Seed the static result type BEFORE the fragment compiles, so a
         // recursive reference inside the body (`tail fibs`) resolves the def's
@@ -3072,6 +3079,7 @@ impl<'a> Lowerer<'a> {
             Def::Local { body, span, .. } => (Vec::new(), body.clone(), *span, false),
             _ => {
                 self.anchor_compiling.remove(name);
+                self.cur_value_block = saved_block;
                 return Err(CompileError::Type {
                     msg: format!("`{name}` is not a value expression in v1"),
                     span,
@@ -3139,6 +3147,7 @@ impl<'a> Lowerer<'a> {
         self.anchor_closures.insert(name.to_string(), dst);
         self.anchor_types.insert(name.to_string(), ty);
         self.anchor_compiling.remove(name);
+        self.cur_value_block = saved_block;
         Ok(dst)
     }
 
@@ -5325,6 +5334,89 @@ impl<'a> Lowerer<'a> {
     }
 }
 
+/// Collect every user-definition name referenced by `e` (a `Ref` or an applied
+/// callee) into `out`. Used by the recursion-cycle detection for shared-cell
+/// locals.
+fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Ref(n, _) => {
+            out.insert(n.clone());
+        }
+        Expr::Apply { name: n, args, .. } => {
+            out.insert(n.clone());
+            for a in args {
+                collect_def_ref_names(a, out);
+            }
+        }
+        Expr::ApplyExpr { callee, args, .. } => {
+            collect_def_ref_names(callee, out);
+            for a in args {
+                collect_def_ref_names(a, out);
+            }
+        }
+        Expr::Neg(inner, _) => collect_def_ref_names(inner, out),
+        Expr::Arith { lhs, rhs, .. } => {
+            collect_def_ref_names(lhs, out);
+            collect_def_ref_names(rhs, out);
+        }
+        Expr::Seq(lhs, rhs, _)
+        | Expr::Par(lhs, rhs, _)
+        | Expr::Split(lhs, rhs, _)
+        | Expr::Merge(lhs, rhs, _)
+        | Expr::Loop(lhs, rhs, _)
+        | Expr::Delay(lhs, rhs, _) => {
+            collect_def_ref_names(lhs, out);
+            collect_def_ref_names(rhs, out);
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            collect_def_ref_names(cond, out);
+            collect_def_ref_names(then, out);
+            collect_def_ref_names(els, out);
+        }
+        Expr::Let { defs, body, .. } => {
+            for d in defs {
+                if !d.is_decl() {
+                    collect_def_ref_names(d.body(), out);
+                }
+            }
+            collect_def_ref_names(body, out);
+        }
+        Expr::Lambda { body, .. } => collect_def_ref_names(body, out),
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            collect_def_ref_names(scrutinee, out);
+            for arm in arms {
+                for (g, b) in &arm.guards {
+                    collect_def_ref_names(g, out);
+                    collect_def_ref_names(b, out);
+                }
+            }
+        }
+        Expr::Record(fields, _) => {
+            for (_, f) in fields {
+                collect_def_ref_names(f, out);
+            }
+        }
+        Expr::ListLit(elems, _) => {
+            for e in elems {
+                collect_def_ref_names(e, out);
+            }
+        }
+        Expr::MapLit(entries, _) => {
+            for (_, v) in entries {
+                collect_def_ref_names(v, out);
+            }
+        }
+        Expr::ActorParam {
+            default: Some(d), ..
+        } => collect_def_ref_names(d, out),
+        _ => {}
+    }
+}
+
 fn const_f64(e: &Expr) -> Option<f64> {
     match e {
         Expr::Float(v, _) => Some(*v),
@@ -5410,6 +5502,7 @@ pub fn lower_with_cafs_mode(
     }
 
     let num_inputs = tp.process_ty.arity_in();
+    let recursive_locals = Lowerer::compute_recursive_locals(&defs);
     let mut lw = Lowerer {
         defs,
         cafs,
@@ -5451,6 +5544,7 @@ pub fn lower_with_cafs_mode(
         anchor_closures: HashMap::new(),
         anchor_types: HashMap::new(),
         anchor_compiling: HashSet::new(),
+        recursive_locals,
         tape_decls: tp.tape_decls.iter().cloned().collect(),
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
@@ -5717,6 +5811,7 @@ mod tests {
             anchor_closures: HashMap::new(),
             anchor_types: HashMap::new(),
             anchor_compiling: HashSet::new(),
+            recursive_locals: HashSet::new(),
             tape_decls: HashMap::new(),
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
