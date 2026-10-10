@@ -14,13 +14,17 @@
 rill-lang has two parallel execution paths: the **block track** (`Instr` +
 `block_regs` + `run_block_mimo` + `build_schedule` + `exec_block_op` +
 `exec_foreign_block`) and the **value track** (`ValueInstr` + arena +
-`run_value_track`). B3 unifies them: `Rate::Signal` is removed from the type
-system (signals become `Rate::Value` with type `Buffer`), AND the block track is
-deleted. Everything executes on the value track, where a signal buffer is a
-first-class `Value::Buffer` and every computation is a closure:
+`run_value_track`). B3 unifies them into a **single linear lambda model**:
+there are only lambda functions (applicability determined by the type system),
+all data is equal, and there is exactly ONE computation model. `Rate`, `Channel`,
+and `Scalar` are removed from the type system entirely; `ArrowTy` becomes
+`{ ins: Vec<ValueTy>, outs: Vec<ValueTy> }`. Signals are just `ValueTy::Buffer`
+(an ordinary value type like `List`/`Map`), executed as `Value::Buffer` on the
+value track. The block track is deleted. Every computation is a closure:
 
-| Concept | Before (block track) | After (unified value track) |
+| Concept | Before (block track) | After (linear lambda model) |
 |---|---|---|
+| Type system | `Rate`/`Channel`/`Scalar` split | `ArrowTy = Vec<ValueTy>`; all data equal |
 | Program | `Instr` list, `build_schedule` topological order | root `FragmentIr` (base=0) |
 | Function | `Value::Closure` + `run_fragment` | `Value::Callable` + `run_call` |
 | FFI algorithm | `Instr::CallBlock` + `exec_foreign_block` over `block_regs` | fragment with one `ValueCallForeign`, `Algorithm::process` over `Value::Buffer` |
@@ -28,10 +32,11 @@ first-class `Value::Buffer` and every computation is a closure:
 | State | `block_state`/`delays` (double-buffer) | `value_state` (the ST effect) |
 | Inputs | `Instr::LoadInput` → `block_regs` | value-track buffer reads |
 
-After B3: `Instr` block variants, `block_regs`, `run_block_mimo`,
-`build_schedule`, `exec_block_op`, `exec_foreign_block`, and `schedule.rs` are
-**deleted**. `run_value_track` and `run_call` merge into a single `run` (a program is a root
-fragment). SIMD and the `Algorithm` factories stay intact.
+After B3: `Rate`/`Channel`/`Scalar`, the `Instr` block variants, `block_regs`,
+`run_block_mimo`, `build_schedule`, `exec_block_op`, `exec_foreign_block`, and
+`schedule.rs` are **deleted**. `run_value_track` and `run_call` merge into a
+single `run` (a program is a root fragment). SIMD and the `Algorithm` factories
+stay intact.
 
 ---
 
@@ -79,7 +84,13 @@ are both named params (`set_param`) and signal inputs.
 
 ## 2. Design
 
-### 2.1 Everything is a closure
+### 2.1 Linear lambda model — everything is a closure
+
+rill-lang is a **linear lambda model**: there are only lambda functions, whose
+applicability is determined by the type system, and all data is equal. The type
+system has no `Rate`/`Channel`/`Scalar` — `ArrowTy = { ins: Vec<ValueTy>, outs:
+Vec<ValueTy> }`. A signal is an ordinary `ValueTy::Buffer` value; combinators
+operate on `ValueTy` vectors.
 
 After B3 there is ONE value track. A program is a root fragment; every callable
 is a `Value::Callable`; every dispatch goes through `run_call` →
@@ -201,7 +212,8 @@ value-track lowering. This is the biggest chunk of B3.
 
 ## 4. Testing
 
-- `tests/rate_unification.rs`: signal channels are `Rate::Value` with `vty=Buffer`.
+- `tests/rate_unification.rs`: signal programs type with `ArrowTy = Vec<ValueTy>`
+  (no `Rate`/`Channel`); a signal output is `ValueTy::Buffer`.
 - The full existing suite (signal + value) passes unchanged after each sub-task.
 - `lang_chiptune`/`record_mic` compile (and run on hardware).
 - New: a signal program (e.g. `main = _ : onepole 200.0 0.7`) produces the same
@@ -213,7 +225,7 @@ value-track lowering. This is the biggest chunk of B3.
 
 | Area | Files |
 |---|---|
-| Types | `types/ty.rs` (`Rate`, `ValueTy::Buffer`, `Channel`), `types/infer.rs` |
+| Types | `types/ty.rs` (remove `Rate`/`Channel`/`Scalar`; `ArrowTy = Vec<ValueTy>`; `ValueTy::Buffer`), `types/infer.rs`, `types/unify.rs`, `types/arrow.rs`, `types/ffi.rs` |
 | IR | `ir.rs` (`ValueCallForeign`, remove `Instr` block variants) |
 | Arena | `arena.rs` (`Value::Buffer`) |
 | Lowering | `lower.rs` (value-track-only; signal→Buffer) |
@@ -223,17 +235,35 @@ value-track lowering. This is the biggest chunk of B3.
 
 ---
 
-## 6. Suggested sub-task split (B3 is large)
+## 6. Implementation order (safe, incremental)
 
-- **B3a — type + lower unification:** `Rate::Signal` removed, signals are
-  `ValueTy::Buffer`; `lower` routes signal expressions through the value track
-  (buffer values); the block track still executes the buffer ops underneath
-  (no runtime change yet). All signal tests green.
-- **B3b — runtime unification:** add `ValueCallForeign` + `Value::Buffer`;
-  delete block track (`Instr` block variants, `block_regs`, `run_block_mimo`,
-  `build_schedule`, `exec_block_op`, `exec_foreign_block`, `schedule.rs`);
-  merge `run_value_track` into `run_call`. Full suite green.
-- Each sub-task lands and tests green independently.
+The track unification proceeds in four steps. The two-track model stays working
+until the last step; nothing is deleted early. **The new types are tested with
+their own tests, not by keeping the old signal tests green** — the old signal
+tests target the `Rate`/`Channel`/`Scalar` type system that is being removed, so
+they are rewritten (or replaced) for the linear lambda model rather than
+dragged through the refactor.
+
+- **B3-1 — Buffer value type + operations, parallel to the signal track.**
+  Add `ValueTy::Buffer` and the `Buffer` typeclass operations (from
+  `SIGNAL_PRELUDE`, backed by rill-core buffers). At the same time, transition
+  the TYPE SYSTEM to the linear lambda model: remove `Rate`/`Channel`/`Scalar`,
+  `ArrowTy = { ins: Vec<ValueTy>, outs: Vec<ValueTy> }`. The signal track still
+  executes underneath (the block `Instr`/`block_regs` remain). New tests cover
+  `Buffer` typing/operations; the old signal tests are updated to the new model.
+- **B3-2 — Switch program entry/exit to `Value::Buffer` (value track).**
+  `main`'s inputs/outputs become `Value::Buffer` values; signal programs run
+  through the value track. The block track is now dead code (still present,
+  not referenced).
+- **B3-3 — Verify.** Full suite + `lang_chiptune`/`record_mic` still produce the
+  same output (compile + run).
+- **B3-4 — Delete the dead signal track.** Remove the block `Instr` variants,
+  `block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`,
+  `exec_foreign_block`, `schedule.rs`; merge `run_value_track` + `run_call` into
+  a single `run`. Full suite green.
+
+Each step lands independently; the new-model tests are the source of truth for
+B3-1/B3-2, and B3-3/B3-4 confirm the end-to-end output is unchanged.
 
 ---
 
