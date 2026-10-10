@@ -1066,6 +1066,10 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
     // Wire before any body is typed. `foreign_sigs` is complete here (the
     // builtin catalog + the user `foreign fn` declarations registered above).
     crate::desugar::desugar_foreign_combinators(&mut program, &env);
+    // IO-model: auto-desugar old `main = <buffer-expr>` into the IO form. This
+    // is decided AFTER inference by the main's RESULT TYPE (a Buffer-typed
+    // `main` is a signal program; a value/`IO`-typed `main` is left alone) —
+    // see `infer_program_with`'s type-driven post-pass below.
 
     // Reject recursive function definitions (v1's acyclic call contract): a
     // runtime dispatch chain must terminate, so the call stack is statically
@@ -1208,6 +1212,24 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         }
     }
 
+    // IO-model auto-desugar (type-driven): a `main` that types as a pure
+    // `Buffer` signal program (`main = _ * 0.5`, `main = osc , osc`) is
+    // rewritten into the IO form (`do { writeOutput …; return () }`) and
+    // re-inferred. Value-typed `main`s (`main = double`, `main = 0.5` as a
+    // Float) and already-IO `main`s are left alone — the type decides, not an
+    // AST heuristic. Re-inference terminates: after desugar the `main` types as
+    // `IO ()` (not all-`Buffer`), so this branch does not re-fire.
+    if !main_scheme.ty.outs.is_empty()
+        && main_scheme
+            .ty
+            .outs
+            .iter()
+            .all(|c| matches!(c, ValueTy::Buffer))
+        && crate::desugar::desugar_main_io(&mut program)
+    {
+        return infer_program_with(&program, mode);
+    }
+
     Ok(TypedProgram {
         program: program.clone(),
         process_ty: main_scheme.ty,
@@ -1220,9 +1242,6 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         mode,
     })
 }
-
-/// Infer a definition body.
-///
 /// λ-parameters are bound as signal channels first. When that fails and the
 /// definition has λ-parameters, retry with the parameters bound as VALUE
 /// channels (fresh unresolved value types): a value function's λ-parameter
@@ -2618,6 +2637,14 @@ fn infer_ref_expected(
             }
         }
     }
+    // A reference to a compile-time NUMERIC constant (`c = 440.0`) in a
+    // Buffer-expected position is a SIGNAL constant: `writeOutput 0 c` types
+    // `c : Buffer`. Otherwise the constant stays a Float value.
+    if matches!(expected, Some(ValueTy::Buffer))
+        && is_const_value_ref(ctx, &Expr::Ref(name.into(), span))
+    {
+        return Ok(ArrowTy::uniform(0, 1, ValueTy::Buffer));
+    }
     infer_ref_inner(ctx, name, span)
 }
 
@@ -3050,12 +3077,20 @@ fn infer_apply_impl(
         }
         for (p, a) in params.iter().zip(args.iter()) {
             let pt = type_expr_to_vty(ctx, p)?;
-            let at = if matches!(a, Expr::Int(_, _) | Expr::Float(_, _)) && pt == ValueTy::Buffer {
-                // A numeric literal in a Buffer param position is a signal
-                // constant (`writeOutput 0 1.0`).
+            let at0 = infer_expr(ctx, a)?;
+            // A Buffer param (`writeOutput`'s second arg) accepts a signal
+            // computation (a `Buffer -> … -> Buffer` arrow applied to the
+            // program's inputs), a Buffer value, OR a numeric signal constant
+            // (a literal or a reference to a compile-time constant — `c = 440.0`
+            // used as `writeOutput 0 c`). Re-infer a numeric constant with
+            // `Buffer` expected so it unifies as a buffer channel.
+            let numeric_const = at0.arity_out() == 1
+                && matches!(at0.outs[0], ValueTy::Float | ValueTy::Int)
+                && (matches!(a, Expr::Int(_, _) | Expr::Float(_, _)) || is_const_value_ref(ctx, a));
+            let at = if pt == ValueTy::Buffer && numeric_const {
                 infer_expr_expected(ctx, a, Some(ValueTy::Buffer))?
             } else {
-                infer_expr(ctx, a)?
+                at0
             };
             // A Buffer param (`writeOutput`'s second arg) accepts a signal
             // computation (a `Buffer -> … -> Buffer` arrow applied to the
@@ -5069,8 +5104,13 @@ mod tests {
     #[test]
     fn var_unifies_with_float() {
         let t = ty_of("main = _ * 0.5").unwrap();
-        // B3: a signal buffer output — `_` and the constant unify as Buffer.
-        assert_eq!(t.process_ty.outs[0], ValueTy::Buffer);
+        // IO model: a signal `main` auto-desugars to `do { writeOutput … }`, so
+        // the result is `IO ()`; the buffer unification (`_` and the constant)
+        // happens inside the writeOutput argument.
+        assert_eq!(
+            t.process_ty.outs[0],
+            ValueTy::Data("IO".into(), vec![ValueTy::Void])
+        );
     }
 
     #[test]

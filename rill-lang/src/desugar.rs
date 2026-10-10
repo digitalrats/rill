@@ -4,7 +4,7 @@
 //! desugars to `onepole _ 200.0 0.7` — the FFI model binds signals
 //! positionally, and this pass keeps existing programs working.
 
-use crate::ast::{Def, Expr, Program};
+use crate::ast::{Def, Expr, Param, Program};
 use crate::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 use crate::types::ty::TypeEnv;
 
@@ -171,4 +171,336 @@ fn bind_signal_args(e: &Expr, env: &TypeEnv) -> Expr {
         },
         _ => unreachable!("checked Apply/Ref above"),
     }
+}
+
+/// IO-model auto-desugar: rewrite an old `main = <buffer-expr>` program into
+/// the IO form `main i1 i2 = do { writeOutput 0 <out0>; …; writeOutput N-1
+/// <outN-1>; return () }`. `_` wires become `main`'s λ-parameters (typed
+/// `Buffer` inputs by inference); the buffer outputs of `<buffer-expr>` become
+/// `writeOutput` calls. A `main` that is already an IO action (contains
+/// `writeOutput`/`readInput`, or a `bind`/`do`) is left untouched.
+pub(crate) fn desugar_main_io(program: &mut Program) -> bool {
+    // Signal-lambda MACROS: user functions with λ-parameters (their wires live
+    // in the body, invisible at the call site). Only these block auto-desugar.
+    // Includes `where`-block definitions (which are not top-level).
+    let mut signal_macros: std::collections::HashSet<String> = std::collections::HashSet::new();
+    fn collect_signal_macros<'a>(
+        defs: impl Iterator<Item = &'a Def>,
+        out: &mut std::collections::HashSet<String>,
+    ) {
+        for d in defs {
+            if !d.is_decl() && !d.params().is_empty() {
+                out.insert(d.name().to_string());
+            }
+            for wd in d.where_defs() {
+                collect_signal_macros(std::iter::once(wd), out);
+            }
+        }
+    }
+    collect_signal_macros(program.defs.iter(), &mut signal_macros);
+    for def in &mut program.defs {
+        if def.name() == "main" {
+            let body = def.body().clone();
+            // A bare `Ref` or `let`-bound result (`main = gain where { gain =
+            // _ * 0.5 }`) hides the signal wires inside the referenced def —
+            // auto-desugar cannot collect them as `main`'s inputs.
+            if is_io_action(&body)
+                || is_value_expression(&body)
+                || has_internal_wire_feed(&body)
+                || calls_user_def(&body, &signal_macros)
+                || matches!(body, Expr::Ref(..) | Expr::Let { .. })
+            {
+                return false;
+            }
+            // Collect the wires in order of first appearance, replace each
+            // with a fresh `i_k` reference, and gather the buffer outputs.
+            let mut wire_names: Vec<String> = Vec::new();
+            // Split top-level Par into separate outputs, rewrite wires in each.
+            let branches = split_par(&body);
+            // Multi-output programs (`main = osc , osc`) would lower to several
+            // `writeOutput` calls nested through `bind`; nested IO actions in
+            // fragments are not yet supported — keep these on the legacy signal
+            // path (already functional).
+            if branches.len() != 1 {
+                return false;
+            }
+            let mut outs: Vec<Expr> = Vec::new();
+            for b in branches {
+                outs.push(collect_and_rewrite(&b, &mut wire_names));
+            }
+            // Multi-input or multi-output programs (`conj _ _`, `_ , _`) would
+            // need nested `bind`/multiple `writeOutput` actions; nested IO
+            // actions and multi-channel writeOutput are not yet supported —
+            // keep them on the legacy signal path.
+            if wire_names.len() > 1 || outs.len() != 1 {
+                return false;
+            }
+            if outs.is_empty() {
+                outs.push(collect_and_rewrite(&body, &mut wire_names));
+            }
+            let params: Vec<Param> = wire_names
+                .iter()
+                .enumerate()
+                .map(|(k, n)| Param {
+                    name: n.clone(),
+                    span: crate::error::Span::new(k, k + 1),
+                })
+                .collect();
+            // Build: do { writeOutput 0 <out0>; …; return () }.
+            let span = body.span();
+            let mut stmts: Vec<Expr> = Vec::with_capacity(outs.len());
+            for (k, o) in outs.iter().enumerate() {
+                stmts.push(Expr::Apply {
+                    name: "writeOutput".to_string(),
+                    args: vec![Expr::Int(k as i64, span), o.clone()],
+                    span,
+                });
+            }
+            let ret = Expr::Apply {
+                name: "return".to_string(),
+                args: vec![Expr::Void(span)],
+                span,
+            };
+            let io_body = wrap_do(stmts, ret, span);
+            // Rebuild the Def: a `Local` (`main = expr`) becomes an `Anchor`
+            // with the wire λ-parameters; an existing `Anchor` gains them.
+            match def {
+                Def::Local {
+                    name,
+                    where_defs,
+                    span: dspan,
+                    ..
+                } => {
+                    *def = Def::Anchor {
+                        name: name.clone(),
+                        params,
+                        body: io_body,
+                        where_defs: where_defs.clone(),
+                        span: *dspan,
+                    };
+                }
+                Def::Anchor {
+                    body: b, params: p, ..
+                } => {
+                    *b = io_body;
+                    p.extend(params);
+                }
+                _ => {}
+            }
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `e` is already an IO action (has a `writeOutput`/`readInput` call,
+/// or a `bind`/`do` desugar).
+fn is_io_action(e: &Expr) -> bool {
+    match e {
+        Expr::Apply { name, args, .. } => {
+            matches!(
+                name.as_str(),
+                "writeOutput" | "readInput" | "bind" | "return"
+            ) || args.iter().any(is_io_action)
+        }
+        Expr::Let { defs, body, .. } => {
+            defs.iter().any(|d| is_io_action(d.body())) || is_io_action(body)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `e` is a VALUE expression (types as a value channel, not a `Buffer`
+/// signal). Auto-desugar is restricted to SIGNAL programs: a `main` whose body
+/// builds a record/sum/list/map, matches, branches, or projects a field types
+/// as a value and must NOT be wrapped in `writeOutput`. A pure signal
+/// expression (wires, combinators, DSP applications, arithmetic over buffers)
+/// contains none of these value constructs.
+fn is_value_expression(e: &Expr) -> bool {
+    match e {
+        Expr::Match { .. }
+        | Expr::Record(..)
+        | Expr::If { .. }
+        | Expr::Lambda { .. }
+        | Expr::ListLit(..)
+        | Expr::MapLit(..)
+        | Expr::FieldProject { .. }
+        | Expr::FieldUpdate { .. }
+        | Expr::Cmp { .. }
+        | Expr::Logic { .. } => true,
+        Expr::Apply { args, .. } => args.iter().any(is_value_expression),
+        Expr::ApplyExpr { callee, args, .. } => {
+            is_value_expression(callee) || args.iter().any(is_value_expression)
+        }
+        Expr::Neg(inner, _) => is_value_expression(inner),
+        Expr::Arith { lhs, rhs, .. } => is_value_expression(lhs) || is_value_expression(rhs),
+        Expr::Seq(l, r, _)
+        | Expr::Par(l, r, _)
+        | Expr::Split(l, r, _)
+        | Expr::Merge(l, r, _)
+        | Expr::Loop(l, r, _)
+        | Expr::Delay(l, r, _) => is_value_expression(l) || is_value_expression(r),
+        Expr::Let { defs, body, .. } => {
+            defs.iter().any(|d| is_value_expression(d.body())) || is_value_expression(body)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `e` is a SIGNAL combinator with internal wire feeding (`A : B`,
+/// `A <: B`, `A :> B`, `A ~ B`, `A @ n`). Such an expression carries wires
+/// that are NOT program inputs (they are fed by the left operand), so
+/// auto-desugar cannot collect them as `main`'s λ-parameters without double
+/// counting. These programs keep the legacy signal path (already functional).
+fn has_internal_wire_feed(e: &Expr) -> bool {
+    match e {
+        Expr::Seq(_, _, _)
+        | Expr::Split(_, _, _)
+        | Expr::Merge(_, _, _)
+        | Expr::Loop(_, _, _)
+        | Expr::Delay(_, _, _) => true,
+        Expr::Apply { args, .. } => args.iter().any(has_internal_wire_feed),
+        Expr::ApplyExpr { callee, args, .. } => {
+            has_internal_wire_feed(callee) || args.iter().any(has_internal_wire_feed)
+        }
+        Expr::Neg(inner, _) => has_internal_wire_feed(inner),
+        Expr::Arith { lhs, rhs, .. } => has_internal_wire_feed(lhs) || has_internal_wire_feed(rhs),
+        Expr::Par(l, r, _) => has_internal_wire_feed(l) || has_internal_wire_feed(r),
+        Expr::Let { defs, body, .. } => {
+            defs.iter().any(|d| has_internal_wire_feed(d.body())) || has_internal_wire_feed(body)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `e` applies or references a USER-DEFINED function (a signal-lambda
+/// macro whose wire lives inside its body, invisible at the call site). Such a
+/// `main` keeps the legacy signal path — auto-desugar cannot see the open
+/// wires.
+fn calls_user_def(e: &Expr, user_defs: &std::collections::HashSet<String>) -> bool {
+    match e {
+        Expr::Ref(name, _) => user_defs.contains(name),
+        Expr::Apply { name, args, .. } => {
+            user_defs.contains(name) || args.iter().any(|a| calls_user_def(a, user_defs))
+        }
+        Expr::ApplyExpr { callee, args, .. } => {
+            calls_user_def(callee, user_defs) || args.iter().any(|a| calls_user_def(a, user_defs))
+        }
+        Expr::Neg(inner, _) => calls_user_def(inner, user_defs),
+        Expr::Arith { lhs, rhs, .. } => {
+            calls_user_def(lhs, user_defs) || calls_user_def(rhs, user_defs)
+        }
+        Expr::Seq(l, r, _)
+        | Expr::Par(l, r, _)
+        | Expr::Split(l, r, _)
+        | Expr::Merge(l, r, _)
+        | Expr::Loop(l, r, _)
+        | Expr::Delay(l, r, _) => calls_user_def(l, user_defs) || calls_user_def(r, user_defs),
+        Expr::Let { defs, body, .. } => {
+            defs.iter().any(|d| calls_user_def(d.body(), user_defs))
+                || calls_user_def(body, user_defs)
+        }
+        _ => false,
+    }
+}
+
+/// Split a top-level `A , B` expression into its constituent buffer outputs
+/// (recursively), preserving order. A non-Par expression is a single output.
+fn split_par(e: &Expr) -> Vec<Expr> {
+    match e {
+        Expr::Par(l, r, _) => {
+            let mut v = split_par(l);
+            v.extend(split_par(r));
+            v
+        }
+        _ => vec![e.clone()],
+    }
+}
+
+/// Replace every `_` (Wire) in `e` in order of first appearance with
+/// `Ref("i_k")`.
+fn collect_and_rewrite(e: &Expr, wire_names: &mut Vec<String>) -> Expr {
+    match e {
+        Expr::Wire(span) => {
+            let idx = wire_names.len();
+            let name = format!("i{}", idx + 1);
+            wire_names.push(name.clone());
+            Expr::Ref(name, *span)
+        }
+        Expr::Seq(l, r, sp) => Expr::Seq(
+            Box::new(collect_and_rewrite(l, wire_names)),
+            Box::new(collect_and_rewrite(r, wire_names)),
+            *sp,
+        ),
+        Expr::Split(l, r, sp) => Expr::Split(
+            Box::new(collect_and_rewrite(l, wire_names)),
+            Box::new(collect_and_rewrite(r, wire_names)),
+            *sp,
+        ),
+        Expr::Merge(l, r, sp) => Expr::Merge(
+            Box::new(collect_and_rewrite(l, wire_names)),
+            Box::new(collect_and_rewrite(r, wire_names)),
+            *sp,
+        ),
+        Expr::Loop(l, r, sp) => Expr::Loop(
+            Box::new(collect_and_rewrite(l, wire_names)),
+            Box::new(collect_and_rewrite(r, wire_names)),
+            *sp,
+        ),
+        Expr::Delay(l, r, sp) => Expr::Delay(
+            Box::new(collect_and_rewrite(l, wire_names)),
+            Box::new(collect_and_rewrite(r, wire_names)),
+            *sp,
+        ),
+        Expr::Par(l, r, sp) => Expr::Par(
+            Box::new(collect_and_rewrite(l, wire_names)),
+            Box::new(collect_and_rewrite(r, wire_names)),
+            *sp,
+        ),
+        Expr::Apply { name, args, span } => Expr::Apply {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|a| collect_and_rewrite(a, wire_names))
+                .collect(),
+            span: *span,
+        },
+        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
+            op: *op,
+            lhs: Box::new(collect_and_rewrite(lhs, wire_names)),
+            rhs: Box::new(collect_and_rewrite(rhs, wire_names)),
+            span: *span,
+        },
+        Expr::Neg(inner, span) => {
+            Expr::Neg(Box::new(collect_and_rewrite(inner, wire_names)), *span)
+        }
+        Expr::Let { defs, body, span } => Expr::Let {
+            defs: defs.clone(),
+            body: Box::new(collect_and_rewrite(body, wire_names)),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+/// Build `do { <stmts>; <ret> }` as nested `bind` calls (the parser's do-block
+/// desugar).
+fn wrap_do(stmts: Vec<Expr>, ret: Expr, span: crate::error::Span) -> Expr {
+    let mut rest = ret;
+    for s in stmts.into_iter().rev() {
+        let lam = Expr::Lambda {
+            params: vec![Param {
+                name: "_".to_string(),
+                span,
+            }],
+            body: Box::new(rest),
+            span,
+        };
+        rest = Expr::Apply {
+            name: "bind".to_string(),
+            args: vec![s, lam],
+            span,
+        };
+    }
+    rest
 }
