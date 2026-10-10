@@ -299,7 +299,7 @@ buffer registers survive as the execution layer for `Buffer` operations;
 ├────────────────────────────────────────────────────────────┤
 │ Compiler                                                   │
 │  desugar: Faust ops → method calls; ':' → dispatch         │
-│  infer: Buffer/Arrow/ST typing, runST check-escaping       │
+│  infer: Buffer/Arrow/ST typing, rank-N application (runST forall)   │
 │  lower: arrows/methods → ops over Buffer (SIMD via rill-core)│
 ├────────────────────────────────────────────────────────────┤
 │ Runtime (one tick = one execution)                          │

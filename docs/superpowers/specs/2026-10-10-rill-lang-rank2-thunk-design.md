@@ -93,18 +93,31 @@ before reduce).
    `Var(v)`/`TyConVar(v)`/`TyConApp(v, args)` with fresh vars. New helper
    `value_instantiate(t, remap)`.
 
-### 2.3 `runST` (rank-2 application)
+### 2.3 `runST` — syntax sugar over a forall-typed function (rank-2 application)
 
-`runST : (forall s. ST s a) -> a`. `Expr::RunST { body: Lambda }` (syntax already
-in the tree from the superseded B2) infers as:
+`runST : (forall s. ST s a) -> a`. **`runST` is NOT a special form.** The parser
+desugars `runST (fn s -> body)` into an ordinary call `Apply runST [fn s -> body]`
+(the same pattern as `do {}` → `bind`). `runST` is a built-in function whose
+signature lives in the `TypeEnv` (not a `foreign fn` — FFI is for DSP algorithms
+and its signature conversion hits the `other` arm for `forall`).
 
-1. Fresh `TypeVarId` for `s`.
-2. Bind `s` in scope (in `ctx.locals` like the `Expr::Lambda` arm, save/restore)
-   as a `ValueTy::TyConVar`, shadowing outer value binders.
-3. Infer the body.
-4. Generalize `s` into the argument lambda's `Scheme.vars`.
-5. `runST` applies the polymorphic lambda: the result `a` cannot mention `s`
-   because `s` is quantified — escaping is rejected automatically.
+Rank-N application lives in `infer_apply_impl`:
+1. `runST`'s signature is `(forall s. ST s a) -> a`: the ARGUMENT is polymorphic
+   in `s`.
+2. Infer the argument lambda with `s` as a fresh quantified var — bind `s` in
+   `ctx.locals` (save/restore like the `Expr::Lambda` arm) as a value channel
+   whose `vty` is `ValueTy::TyConVar(s_id)`, so it shadows outer value binders
+   AND `Ref("s")` resolves to it.
+3. Infer the lambda body with `s` visible.
+4. The result `a` must NOT mention `s` — because `s` is quantified (fresh, not a
+   free var of the enclosing scope), a result that unified with `s` fails the
+   scheme generalization and the application is rejected automatically.
+5. Return `ArrowTy::value_channel(a)` (the phantom erased).
+
+**JIT rationale:** `forall s.` is purely type-level and erased at lowering, so a
+future JIT (`FragmentIr` → native call) sees only an ordinary function call — no
+special IR instruction, no special JIT case. The `do {}` → `bind` pattern is the
+established idiom.
 
 ### 2.4 Integration with typeclass/Arrow/Kleisli
 

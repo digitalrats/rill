@@ -163,12 +163,24 @@ git commit -m 'feat(rill-lang): generalize value-type variables in Scheme.vars/i
 
 ---
 
-## Task R3: `runST` as a rank-2 application
+## Task R3: `runST` as syntax sugar over a forall-typed function
 
 **Files:**
-- Modify: `rill-lang/src/types/infer.rs` (`Expr::RunST` inference; remove the one-point scan)
-- Modify: `rill-lang/src/lower.rs` (keep the no-op lowering from `5b2c84d`)
+- Modify: `rill-lang/src/parser.rs` (desugar `runST (fn s -> body)` → `Expr::Apply { name: "runST", args: [lambda] }`, like `do {}` → `bind`)
+- Modify: `rill-lang/src/types/ty.rs` (TypeEnv: `runST` built-in signature `(forall s. ST s a) -> a`)
+- Modify: `rill-lang/src/types/infer.rs` (rank-N application in `infer_apply_impl`; remove `Expr::RunST` special form + one-point scan)
+- Modify: `rill-lang/src/lower.rs` (remove `Expr::RunST` special lowering; `runST` lowers as an ordinary function)
 - Test: `rill-lang/tests/st_monad.rs`, `rill-lang/tests/rank2_poly.rs`
+
+> **Design decision (JIT-friendly):** `runST` is NOT a special form. The parser
+> desugars `runST (fn s -> body)` into an ordinary call `Apply runST [fn s -> body]`
+> (the same pattern as `do {}` → `bind`). `runST` is a built-in function whose
+> signature `(forall s. ST s a) -> a` lives in the `TypeEnv`. Rank-N application
+> lives in `infer_apply_impl`: the argument lambda is inferred with `s` as a fresh
+> quantified var; the result cannot mention `s`, so escaping is rejected
+> automatically. `forall s.` is purely type-level and erased at lowering, so a
+> future JIT (FragmentIr → native call) sees only an ordinary function call — no
+> special IR instruction, no special JIT case.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -226,33 +238,61 @@ fn phantom_shadows_outer_value_binder() {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p rill-lang --test st_monad --test rank2_poly`
-Expected: FAIL (escape not rejected by the current one-point approach, or `runST`
-still works but with the fragile scan).
+Expected: FAIL (the one-point `Expr::RunST` special form still in the tree, or `runST`
+unknown as a built-in).
 
-- [ ] **Step 3: Type `runST` via rank-2**
+- [ ] **Step 3: Desugar `runST` in the parser**
 
-In `infer.rs`, rework `Expr::RunST`:
-1. Fresh `TypeVarId` `s`.
-2. Bind `s` in `ctx.locals` (save/restore like the `Expr::Lambda` arm) as a
-   value channel with `vty = ValueTy::TyConVar(s_id)`, shadowing outer binders.
-3. Infer the body.
-4. Generalize `s` into the argument lambda's `Scheme.vars` (quantified).
-5. `runST : (forall s. ST s a) -> a` — the result type is the body's result with
-   `s` NOT free. Because `s` is quantified, a free `s` in the result fails to
-   generalize → the application is rejected automatically.
+In `parser.rs`, replace the `Tok::KwRunST` special-form arm (currently ~line 998
+building `Expr::RunST`) with sugar: parse `runST` + parenthesized lambda, and emit
+`Expr::Apply { name: "runST".into(), args: vec![lambda], span }`. This is exactly
+how `do {}` builds `bind` (see the `parse_do_block` pattern). Verify the parse
+produces `Apply runST [fn s -> body]`.
 
-- [ ] **Step 4: Remove the one-point scan**
+- [ ] **Step 4: Add `runST`'s forall signature to the TypeEnv**
 
-Delete the `type_var_bindings` fallback in `infer_ref_inner` and the
-`vty_mentions_tyvar`-based escape check from `5b2c84d`. Keep `vty_mentions_tyvar`
-only if still used (or remove it). Keep the `runST` syntax/prelude/lowering.
+In `types/ty.rs`, register `runST` as a built-in function whose signature is the
+`TypeExpr` `(forall s. ST s a) -> a`. It is NOT a foreign fn (FFI is for DSP
+algorithms and its `ffi_sig_from_typeexpr` hits the `other` arm for forall). Model
+it on how `pure`/`return`/`mempty` (result-directed typeclass methods) carry their
+signatures in `TypeclassInfo.methods` — `runST` gets a TypeEnv entry that
+`infer_apply_impl` consults when the callee is `runST`.
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 5: Rank-N application in `infer_apply_impl`**
+
+In `infer.rs` `infer_apply_impl` (the user-defined/built-in application path,
+~line 3975), add handling for `runST` (and, generally, a callee whose signature
+contains a `forall`-bound argument):
+1. `runST`'s signature is `(forall s. ST s a) -> a`: the ARGUMENT is polymorphic
+   in `s`.
+2. Infer the argument lambda with `s` as a fresh quantified var — bind `s` in
+   `ctx.locals` (save/restore like the `Expr::Lambda` arm) as a value channel
+   whose `vty` is `ValueTy::TyConVar(s_id)`, so it shadows outer binders AND
+   `Ref("s")` resolves to it.
+3. Infer the lambda body with `s` visible.
+4. The result `a` must NOT mention `s` — because `s` is quantified (fresh, not a
+   free var of the enclosing scope), a result that unified with `s` fails the
+   scheme generalization and the application is rejected automatically.
+5. Return `ArrowTy::value_channel(a)` (the phantom erased).
+
+If a generic rank-N mechanism (callee sig with a `forall`-bound arg) is too much,
+implement it specifically for `runST` first and document the generalization point.
+
+- [ ] **Step 6: Remove the one-point special form**
+
+Delete `Expr::RunST` from the AST if no longer referenced (check ast.rs, parser.rs,
+reduce.rs, render.rs, lower.rs, infer.rs). Remove the `type_var_bindings` fallback
+in `infer_ref_inner` and the `vty_mentions_tyvar`-based escape check from
+`5b2c84d` (keep `vty_mentions_tyvar` only if still used, or remove it). Remove the
+`Expr::RunST` arms from lower.rs (no-op lowering) — `runST` now lowers as an
+ordinary `Apply` (a normal fragment call).
+
+- [ ] **Step 7: Run the tests**
 
 Run: `cargo test -p rill-lang --test st_monad --test rank2_poly`
 Expected: PASS — both runST tests AND both bypass regressions rejected.
 
-- [ ] **Step 6: Full suite + commit**
+- [ ] **Step 8: Full suite + commit**
 
 Run: `cargo test -p rill-lang`, then `cargo test --workspace`,
 `cargo clippy -p rill-lang`, `cargo fmt`.
@@ -260,8 +300,11 @@ Commit:
 
 ```bash
 cargo fmt
-git add rill-lang/src/types/infer.rs rill-lang/tests/st_monad.rs rill-lang/tests/rank2_poly.rs
-git commit -m 'feat(rill-lang): runST as rank-2 application — escaping rejected by generalization'
+git add rill-lang/src/parser.rs rill-lang/src/ast.rs rill-lang/src/types/ty.rs rill-lang/src/types/infer.rs rill-lang/src/lower.rs rill-lang/src/reduce.rs rill-lang/src/render.rs rill-lang/tests/st_monad.rs rill-lang/tests/rank2_poly.rs
+git commit -m 'feat(rill-lang): runST as sugar over a forall-typed function — rank-N application
+Parser desugars runST (fn s -> body) into an ordinary Apply; runST has signature
+(forall s. ST s a) -> a in the TypeEnv; rank-N application in infer_apply_impl
+rejects escaping automatically. JIT-friendly: no special IR instruction.'
 ```
 
 ---
