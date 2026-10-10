@@ -1152,11 +1152,9 @@ impl<'a> Lowerer<'a> {
                         let sig = sig.as_ref().unwrap();
                         // Argument count: a `TFunc` signature carries its
                         // argument list; a bare class-var signature (`show: a`)
-                        // takes exactly one selector argument.
-                        let n_sig_args = match sig {
-                            crate::ast::TypeExpr::TFunc(args, _) => args.len(),
-                            _ => 1,
-                        };
+                        // takes exactly one selector argument. A `TForall`
+                        // binder delegates to the inner type.
+                        let n_sig_args = sig.sig_arg_count();
                         // Result-directed methods (`pure a`, `return x`): a
                         // function signature whose arguments never mention the
                         // class variable — the container comes only from the
@@ -2315,10 +2313,7 @@ impl<'a> Lowerer<'a> {
                     .find(|(m, _)| m == name)
                     .map(|(_, s)| s.clone());
                 let result_directed = match &sig {
-                    Some(crate::ast::TypeExpr::TFunc(args, _)) => args
-                        .iter()
-                        .all(|a| !crate::types::infer::type_expr_mentions(a, &class_var)),
-                    Some(_) => true,
+                    Some(s) => crate::types::infer::sig_result_directed(s, &class_var),
                     None => false,
                 };
                 if result_directed {

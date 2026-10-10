@@ -2526,10 +2526,7 @@ fn infer_ref_expected(
             // call errors with "expected type unknown" (Task 4 Step 5). The
             // arity-0 selector path (`show 1.0`) is handled in `infer_apply`.
             let result_directed = match &sig {
-                Some(crate::ast::TypeExpr::TFunc(args, _)) => {
-                    args.iter().all(|a| !type_expr_mentions(a, &class_var))
-                }
-                Some(_) => true,
+                Some(s) => sig_result_directed(s, &class_var),
                 None => false,
             };
             if result_directed {
@@ -2781,6 +2778,24 @@ pub(crate) fn type_expr_mentions(te: &crate::ast::TypeExpr, var: &str) -> bool {
             args.iter().any(|a| type_expr_mentions(a, var)) || type_expr_mentions(ret, var)
         }
         crate::ast::TypeExpr::TForall(_, inner) => type_expr_mentions(inner, var),
+    }
+}
+
+/// Whether a method signature is result-directed: a `TFunc` whose arguments
+/// never mention the class variable (`pure a`, `return x`) resolves by the
+/// expected result type; a bare (non-function) signature (`mempty: m`) is also
+/// result-directed. A `TForall` binder is stripped and the same test re-runs
+/// on the inner type. NOTE: the binder-shadowing corner (`forall a. a -> b` in
+/// `typeclass C a`) is deferred to R2 (free-vars) — the binder is stripped
+/// without alpha-renaming, so a quantified variable that shadows the class var
+/// is mis-read as the class var.
+pub(crate) fn sig_result_directed(sig: &crate::ast::TypeExpr, class_var: &str) -> bool {
+    match sig {
+        crate::ast::TypeExpr::TForall(_, inner) => sig_result_directed(inner, class_var),
+        crate::ast::TypeExpr::TFunc(args, _) => {
+            args.iter().all(|a| !type_expr_mentions(a, class_var))
+        }
+        _ => true,
     }
 }
 
@@ -3232,11 +3247,9 @@ fn infer_apply_impl(
             let sig = sig.as_ref().unwrap();
             // Argument count: a `TFunc` signature carries its argument list; a
             // bare class-var signature (`show: a`) takes exactly one selector
-            // argument (the arity-0 instance binds it).
-            let n_sig_args = match sig {
-                crate::ast::TypeExpr::TFunc(args, _) => args.len(),
-                _ => 1,
-            };
+            // argument (the arity-0 instance binds it). A `TForall` binder
+            // delegates to the inner type.
+            let n_sig_args = sig.sig_arg_count();
             // Result-directed methods (`pure a`, `return x`): a function
             // signature whose arguments never mention the class variable — the
             // container comes only from the expected RESULT type. A bare

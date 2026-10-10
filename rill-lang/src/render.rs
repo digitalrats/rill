@@ -167,7 +167,7 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             write!(buf, "{head}").ok();
             for a in args {
                 write!(buf, " ").ok();
-                render_type_expr(a, buf);
+                render_type_arg(a, buf);
             }
         }
         TypeExpr::TFunc(args, ret) => {
@@ -176,7 +176,7 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
                 if i > 0 {
                     write!(buf, " -> ").ok();
                 }
-                render_type_expr(a, buf);
+                render_type_arg(a, buf);
             }
             write!(buf, " -> ").ok();
             render_type_expr(ret, buf);
@@ -190,6 +190,19 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             write!(buf, ". ").ok();
             render_type_expr(inner, buf);
         }
+    }
+}
+
+/// Render a type expression in argument position: a `forall` binder must be
+/// parenthesized so it does not absorb a following arrow chain on re-parse
+/// (`(forall b. a) -> a` must not re-read as `forall b. (a -> a)`).
+fn render_type_arg(t: &TypeExpr, buf: &mut String) {
+    if matches!(t, TypeExpr::TForall(..)) {
+        write!(buf, "(").ok();
+        render_type_expr(t, buf);
+        write!(buf, ")").ok();
+    } else {
+        render_type_expr(t, buf);
     }
 }
 

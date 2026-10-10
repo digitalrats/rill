@@ -42,6 +42,16 @@ impl TypeExpr {
             _ => &[],
         }
     }
+    /// The number of arguments a method signature accepts: the arity of a
+    /// `TFunc`, `1` for a bare (class-var selector) signature, delegating
+    /// through a `TForall` binder.
+    pub fn sig_arg_count(&self) -> usize {
+        match self {
+            TypeExpr::TFunc(args, _) => args.len(),
+            TypeExpr::TForall(_, inner) => inner.sig_arg_count(),
+            _ => 1,
+        }
+    }
 }
 
 /// Arithmetic operators (elementwise, 2→1).
