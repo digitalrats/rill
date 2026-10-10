@@ -33,13 +33,14 @@ buffer a first-class, mutable value** and modelling signal processing as an
   region with a fresh `s` and a check-escaping guarantee (one-point rank-2, not
   full rank-2 HM).
 
-The block track is **not a separate semantic world** — it is the existing
-runtime underneath, and it already runs alongside the value track in one tick
-(`process()` calls `run_block_mimo` + `run_value_track`). Stage B unifies the
-TYPE SYSTEM: `Rate::Signal` as a distinct rate disappears, signals become
-`Rate::Value` with type `Buffer`, and the linear IR / buffer registers become
-"how we execute `Buffer` operations" rather than "the signal path". SIMD and
-the `Algorithm` factories stay intact.
+The block track is **eliminated entirely** — it is not a separate semantic
+world to preserve, but the old signal path. Stage B unifies the TYPE SYSTEM
+(`Rate::Signal` disappears, signals become `Rate::Value` with type `Buffer`)
+AND the COMPUTATION PATH (everything is a closure): the block `Instr` variants,
+`block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`,
+`exec_foreign_block`, and `schedule.rs` are deleted. Signals execute as `Buffer`
+values on the value track; FFI algorithms are fragments with a single
+`ValueCallForeign` instruction. SIMD and the `Algorithm` factories stay intact.
 
 ---
 
@@ -271,13 +272,24 @@ What changes:
 4. **`param_bindings`** (control params, e.g. `1750000.0`, `regs` Bytes) keep
    flowing through `SetParameter` → `main_cells` → `set_param`, unchanged.
 
-### 2.6 Scope boundary with IO
+### 2.6 Scope boundary with IO — and full path unification
 
 Stage B does **not** introduce the `(arg..) -> IO` program form. The existing
 `main : inputs -> outputs` binding remains the entry/exit, but it is now typed
-over `Buffer` arrows (not a separate signal track). The runtime's linear IR and
-buffer registers survive as the execution layer for `Buffer` operations;
-`Rate::Signal` as a distinct type-system rate is removed. However:
+over `Buffer` arrows (not a separate signal track). **The block track is
+eliminated entirely** — not just `Rate::Signal` in the type system, but the whole
+computation path. Everything is a closure (Haskell-style):
+
+- **Program** = root fragment (base=0); `run_value_track` merges into `run_call`.
+- **Function** = `Value::Callable { fragment, env, cell }` → `run_call`.
+- **FFI algorithm** = a fragment whose single instruction is `ValueCallForeign { builtin }`
+  → `Algorithm::process` over `Value::Buffer`. One call path.
+- **Buffer math** = `Buffer` methods (scalar loops, LLVM auto-vectorizes).
+- **State** = `value_state` (the ST effect).
+
+`Rate::Signal` as a distinct type-system rate is removed; `Instr` block variants,
+`block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`,
+`exec_foreign_block`, and `schedule.rs` are deleted. However:
 
 - `Buffer` as a value is the substrate for stream I/O later.
 - The ST effect model is the foundation for IO.
@@ -302,12 +314,12 @@ buffer registers survive as the execution layer for `Buffer` operations;
 │  infer: Buffer/Arrow/ST typing, rank-N application (runST forall)   │
 │  lower: arrows/methods → ops over Buffer (SIMD via rill-core)│
 ├────────────────────────────────────────────────────────────┤
-│ Runtime (one tick = one execution)                          │
+│ Runtime (one tick = one execution — everything is a closure) │
 │  Arena<Value> + RegionHandle (big objects)                  │
-│  linear IR / buffer registers = Buffer-op execution layer   │
+│  value track only: program = root fragment, calls = run_call │
 │  one tick = runST region                                   │
 │  Buffer math = scalar loops (LLVM auto-vectorized)         │
-│  Algorithm (CallBlock) unchanged                           │
+│  FFI = fragment with ValueCallForeign → Algorithm(Buffer)  │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -332,9 +344,9 @@ buffer registers survive as the execution layer for `Buffer` operations;
 
 A signal expression now composes `Buffer` arrows inside a `runST` region. The
 boundary stays `main : inputs -> outputs`; internally each stage is a `Buffer`
-arrow. `CallBlock` (opaque DSP) and math both operate on `Buffer` values. The
-linear IR lowers these arrows; there is no separate signal track in the type
-system (one `Rate`, one `Value` model).
+arrow. FFI algorithms are fragments with a single `ValueCallForeign` instruction;
+math operates on `Buffer` values. There is no block track and no separate signal
+track in the type system (one `Rate`, one `Value` model, one computation path).
 
 ---
 
@@ -351,9 +363,9 @@ system (one `Rate`, one `Value` model).
 
 - **Behavior**: existing signal programs (`lang_chiptune`, `record_mic`, the
   signal test suite) keep working. `main : inputs -> outputs` stays.
-- **RT safety**: the linear IR (buffer registers) and `Algorithm` factories are
-  unchanged; they are the execution layer for `Buffer` operations. Buffer math
-  adds no allocation beyond the existing arena/region budget.
+- **RT safety**: the value track (arena + `Value::Buffer`) and `Algorithm`
+  factories are the execution layer for `Buffer` operations; there is no block
+  track. Buffer math adds no allocation beyond the existing arena/region budget.
 - **SIMD**: preserved — math uses scalar loops that LLVM auto-vectorizes, or the
   existing `rill_core::math::vector` helpers; manual SIMD is avoided.
 - **Regalloc**: `regalloc.rs` stays dead (out of scope); fresh-buffer-per-result

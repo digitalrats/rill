@@ -256,30 +256,39 @@ git commit -m 'feat(rill-lang): Buffer math scalar-loop implementations (in-plac
 > track unification lands).
 
 ---
-## Task B3: Remove `Rate::Signal` as a distinct type-system rate
+## Task B3: Full track unification — block track eliminated, everything is a closure
 
 **Files:**
-- Modify: `rill-lang/src/types/ty.rs` (`Rate` enum; `Channel::signal`; `Block` alias; `Scalar`)
-- Modify: `rill-lang/src/types/infer.rs` (6 `Rate::Signal` arms)
-- Modify: `rill-lang/src/lower.rs` (`has_value_out`, arity, `Block::new`)
-- Modify: `rill-lang/src/ir.rs` (`Instr` keeps buffer ops; no type-level change)
+- Modify: `rill-lang/src/types/ty.rs` (`Rate` enum collapsed; `ValueTy::Buffer`; `Channel`; `Scalar`/`elem` fate)
+- Modify: `rill-lang/src/types/infer.rs` (`Rate::Signal` arms → `Rate::Value` + `Buffer`; FFI typing)
+- Modify: `rill-lang/src/ir.rs` (new `ValueCallForeign` instruction; remove `Instr` block variants)
+- Modify: `rill-lang/src/lower.rs` (signal expressions lower to the value track with `Buffer` values; FFI calls → `ValueCallForeign` fragment)
+- Modify: `rill-lang/src/backend/interp.rs` (remove `run_block_mimo`/`exec_block_op`/`exec_foreign_block`; add `ValueCallForeign` arm to `exec_value_instr`; merge `run_value_track` into `run_call`)
+- Modify: `rill-lang/src/program.rs` (remove `block_regs`), `rill-lang/src/schedule.rs` (remove), `rill-lang/src/arena.rs` (`Value::Buffer`)
 - Test: `rill-lang/tests/rate_unification.rs`
 
-**Goal:** Signals are typed as `Rate::Value` with `ValueTy` = `Buffer`; `Rate::Signal` is gone from the type system. The runtime (`Instr`/`block_regs`) is unchanged — it is the execution layer for `Buffer` values.
+**Goal:** Signals are typed as `Rate::Value` with `ValueTy::Buffer`, AND the block track is eliminated entirely. Everything is a closure: program = root fragment (base=0), function = `Value::Callable` → `run_call`, FFI algorithm = a fragment whose single instruction is `ValueCallForeign { builtin }` → `Algorithm::process` over `Value::Buffer`, math = `Buffer` methods, state = `value_state`. `Instr` block variants, `block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`, `exec_foreign_block`, and `schedule.rs` are DELETED.
 
-**Audit note:** only ~12 `Rate::Signal` uses exist in `infer.rs` (`:128,300,627,1552,3593,4223`). This task is mechanical: replace each `Rate::Signal` arm with a `Rate::Value` + `Buffer` typing, and collapse the `Channel` rate field.
+> **Design:** in classical Haskell everything is a closure. `run_value_track` and
+> `run_call` already share `exec_value_instr` (base param, post-T2); the only
+> difference is base (0 vs fragment offset) and env-binding/args-source. B3
+> merges them and represents FFI as a fragment with `ValueCallForeign`, keeping
+> ONE call path.
 
-- [ ] **Step 1: Audit the exact `Rate::Signal` sites**
+- [ ] **Step 1: Audit the exact `Rate::Signal` sites and block-track surface**
 
-Run: `grep -n "Rate::Signal" rill-lang/src/types/infer.rs rill-lang/src/types/ty.rs rill-lang/src/lower.rs`
-Document each site's role in a comment in the plan/issue; expect `infer.rs:128,300,627,1552,3593,4223` and `ty.rs` (enum + `Channel::signal`).
+Run:
+```bash
+grep -n "Rate::Signal" rill-lang/src/types/infer.rs rill-lang/src/types/ty.rs
+grep -n "block_regs\|run_block_mimo\|build_schedule\|exec_block_op\|exec_foreign_block" rill-lang/src/backend/interp.rs rill-lang/src/program.rs rill-lang/src/schedule.rs rill-lang/src/ir.rs
+```
+Document each site's role. Expected: 8 `Rate::Signal` in infer, 4 in ty; block-track in interp/program/schedule/ir.
 
 - [ ] **Step 2: Write the failing test**
 
 Create `rill-lang/tests/rate_unification.rs`:
 
 ```rust
-// A signal program now types its channels as Rate::Value with Buffer vty.
 #[test]
 fn signal_channel_is_buffer_value() {
     let src = "main = _ : onepole 200.0 0.7";
@@ -293,30 +302,64 @@ fn signal_channel_is_buffer_value() {
 }
 ```
 
-- [ ] **Step 3: Collapse `Rate`**
+- [ ] **Step 3: Collapse `Rate` + add `ValueTy::Buffer`**
 
-In `ty.rs`, either (a) keep `Rate` enum but make all channels `Value`, or (b) remove `rate` and keep only `vty`. Prefer (b) if the churn is contained; otherwise (a). Update `Channel::signal` → `Channel::value(Buffer)`; delete the `Scalar`/`elem` machinery if it becomes dead.
+In `ty.rs`: add `ValueTy::Buffer` (or `App("Buffer", vec![])`); collapse `Rate` so no channel is `Signal` (either remove the enum or make all `Value`); `Channel::signal` → a `Channel::value(Buffer)` path; decide the `Scalar`/`elem` fate (keep if tied to Buffer's param, delete if dead).
 
-- [ ] **Step 4: Rewrite the 6 `infer.rs` arms**
+- [ ] **Step 4: Rewrite the `infer.rs` arms + FFI typing**
 
-Each `Rate::Signal` arm becomes a `Rate::Value` arm with `ValueTy::App("Buffer", [scalar])` (or a dedicated `ValueTy::Buffer` if cleaner). Update `check_all_numeric`/arity logic to treat a buffer channel as a value channel whose `vty` is `Buffer`.
+Each `Rate::Signal` arm → `Rate::Value` with `vty = Buffer`. FFI typing (`FixedBuffer a` in foreign sigs) maps to `Rate::Value` with `vty = Buffer`. `check_all_numeric`/arity treat a buffer channel as a value channel.
 
-- [ ] **Step 5: Update `lower.rs` arity/`has_value_out`**
+- [ ] **Step 5: Add `ValueCallForeign` instruction + `Value::Buffer`**
 
-`has_value_out` (lower.rs:5581) and `main_args` must treat `Buffer`-typed value channels as signal channels for the linear IR (inputs → `LoadInput` → `block_regs`). This is the seam where "value in types, buffer in execution" meets.
+In `ir.rs`: add `ValueInstr::ValueCallForeign { dst, srcs, instance }` (or reuse the args shape). In `arena.rs`: add `Value::Buffer(usize)` (a slot index into a program-level buffer table) or `Value::Buffer(RegionHandle)` — a first-class buffer value.
 
-- [ ] **Step 6: Run the tests**
+- [ ] **Step 6: Lower signal expressions to the value track**
 
-Run: `cargo test -p rill-lang`
-Expected: PASS (all existing signal tests + the new one).
+In `lower.rs`: signal expressions (`main = _ : onepole 200.0 0.7`) lower through the value track with `Buffer` values. FFI calls lower to a `ValueCallForeign` instruction (a fragment whose single instruction dispatches `Algorithm::process` over `Buffer` values). `has_value_out`/`main_args` route `Buffer` channels through the value path (inputs → value-track input reads → `Buffer`).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Merge the runners; delete the block track**
+
+In `interp.rs`:
+- `exec_value_instr` gains a `ValueCallForeign` arm (dispatches `Algorithm::process` over `Value::Buffer`).
+- `run_value_track` merges into `run_call` (program = root fragment, base=0, empty env). 
+- Delete `run_block_mimo`, `exec_block_op`, `exec_foreign_block`.
+In `program.rs`: remove `block_regs`. Delete `schedule.rs`. Remove `Instr` block variants from `ir.rs` (and `regalloc.rs` if it only handled block IR).
+
+- [ ] **Step 8: Run the tests**
+
+Run: `cargo test -p rill-lang`, then `cargo test --workspace`
+Expected: PASS (all existing signal + value tests; the new rate_unification test). Fix regressions — the seam is where "value in types, buffer in execution" meets.
+
+- [ ] **Step 9: Verify examples compile**
+
+Run:
+```bash
+cargo build -p rill-adrift --features "io,lofi,lang" --example lang_chiptune
+cargo build -p rill-adrift --features "io,lang,sampler" --example record_mic
+```
+Expected: both compile (running requires audio hardware).
+
+- [ ] **Step 10: Clippy + fmt + commit**
+
+Run: `cargo clippy --all-features -p rill-lang`, `cargo fmt`.
+Commit:
 
 ```bash
 cargo fmt
-git add rill-lang/src/types/ty.rs rill-lang/src/types/infer.rs rill-lang/src/lower.rs rill-lang/tests/rate_unification.rs
-git commit -m 'refactor(rill-lang): unify Rate — signals are Buffer-typed value channels'
+git add rill-lang/src/types/ty.rs rill-lang/src/types/infer.rs rill-lang/src/ir.rs rill-lang/src/arena.rs rill-lang/src/lower.rs rill-lang/src/backend/interp.rs rill-lang/src/program.rs rill-lang/tests/rate_unification.rs
+git commit -m 'refactor(rill-lang): full track unification — block track eliminated, everything is a closure
+Rate::Signal removed; signals are Buffer-typed value channels. Block Instr/
+block_regs/run_block_mimo/build_schedule deleted. FFI = fragment with a single
+ValueCallForeign instruction over Value::Buffer. run_value_track merges into
+run_call (program = root fragment).'
 ```
+
+> **Note:** this is a large task. If it proves too big for one pass, split it:
+> B3a (type unification: Rate collapse + Buffer vty, lower to value track,
+> block track still runs the Buffer ops), B3b (runtime unification: delete
+> block track, ValueCallForeign fragment, merge runners). Each lands and tests
+> green before the next.
 
 ---
 
