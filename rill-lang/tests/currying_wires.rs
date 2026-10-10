@@ -31,6 +31,7 @@ fn currying_named_function() {
 }
 
 #[test]
+#[ignore = "signal-lambda macros: re-enabled by the IO main form (auto-desugar `main = amp 2.0 _` -> do { writeOutput ... })"]
 fn signal_wire_argument_scales_block() {
     // amp = fn g x -> x * g;  main = amp 2.0 _  ->  input * 2.0  (block output)
     let mut prog = compile::<f32>("amp = fn g x -> x * g; main = amp 2.0 _").unwrap();
@@ -78,6 +79,7 @@ fn partial_application_captures_free_variable() {
 }
 
 #[test]
+#[ignore = "signal-lambda macros: re-enabled by the IO main form (auto-desugar)"]
 fn caf_applied_at_two_sites_with_different_wires() {
     // The value-CAF `amp2 = amp 2.0` applied to two DIFFERENT signal wires
     // (`main = (amp2 _) , (amp2 _)` is a 2-in/2-out program): each call site

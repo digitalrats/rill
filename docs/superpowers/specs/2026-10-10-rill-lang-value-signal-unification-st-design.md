@@ -272,15 +272,33 @@ What changes:
 4. **`param_bindings`** (control params, e.g. `1750000.0`, `regs` Bytes) keep
    flowing through `SetParameter` → `main_cells` → `set_param`, unchanged.
 
-### 2.6 Scope boundary with IO — and full path unification
+### 2.6 Scope boundary with IO — full path unification + full IO monad
 
-Stage B does **not** introduce the `(arg..) -> IO` program form. The existing
-`main : inputs -> outputs` binding remains the entry/exit, but it is now typed
-over `Buffer` arrows (not a separate signal track). **The block track is
-eliminated entirely** — not just `Rate::Signal` in the type system, but the whole
-computation path. Everything is a closure (Haskell-style):
+**Update (2026-10-10):** Stage B now introduces the **full IO monad**, not just
+a `Buffer`-arrow `main`. The program is an IO action that the runtime LEADS
+each tick (Haskell RTS model): `main :: Buffer -> … -> IO ()`.
 
-- **Program** = root fragment (base=0); `run_value_track` merges into `run_call`.
+- `main`'s λ-parameters are the **input buffers**; outputs are written via
+  `writeOutput : Int -> Buffer -> IO ()`; `readInput : Int -> IO Buffer` is also
+  provided. `main` returns `()`.
+- `IO a` is a real type with `instance Monad IO` (`return`/`bind` — the `Monad`
+  typeclass already exists, `ty.rs:227`; `do`-notation desugars to `bind`).
+- DSP functions are **pure** `Buffer -> Buffer` (`onepole : Float -> Float ->
+  Buffer -> Buffer`); they compile to `ValueBuffer*` fragments; the runtime
+  mutates the buffer in place while leading the IO action (the mutation is
+  invisible outside the tick, like `runST`).
+- Faust combinators (`:`, `,`, `<:`, `:>`, `~`, `@`) **desugar into ordinary
+  functions**; `_`/`i1`/`i2` are ordinary λ-parameter NAMES — HM infers
+  `Buffer` from usage, no wire special-casing.
+- **Auto-desugar** keeps old programs working: `main = _ : onepole 200.0 0.7`
+  becomes `main i1 = do { writeOutput 0 (onepole 200.0 0.7 i1); return () }` —
+  buffer outputs become `writeOutput` calls, wire params become `Buffer` params.
+- Runtime each tick: materialize inputs as `Value::Buffer` → lead the root
+  fragment (the IO action) → drain outputs via `writeOutput`.
+
+The computation path is fully unified:
+
+- **Program** = root fragment (base=0); the runtime leads it each tick.
 - **Function** = `Value::Callable { fragment, env, cell }` → `run_call`.
 - **FFI algorithm** = a fragment whose single instruction is `ValueCallForeign { builtin }`
   → `Algorithm::process` over `Value::Buffer`. One call path.
@@ -289,12 +307,9 @@ computation path. Everything is a closure (Haskell-style):
 
 `Rate::Signal` as a distinct type-system rate is removed; `Instr` block variants,
 `block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`,
-`exec_foreign_block`, and `schedule.rs` are deleted. However:
-
-- `Buffer` as a value is the substrate for stream I/O later.
-- The ST effect model is the foundation for IO.
-- `IoCapture`/`IoPlayback` are unchanged; Stage C will turn them into
-  `InputStream.read` / `OutputStream.write` inside `(arg..) -> IO`.
+`exec_foreign_block`, and `schedule.rs` are deleted. `IoCapture`/`IoPlayback`
+are unchanged; Stage C turns them into `InputStream.read` / `OutputStream.write`
+inside the IO monad.
 
 ---
 

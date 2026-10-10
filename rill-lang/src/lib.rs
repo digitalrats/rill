@@ -33,11 +33,9 @@ pub mod program;
 pub mod program_engine;
 pub mod program_runner;
 pub mod reduce;
-pub mod regalloc;
 pub mod register;
 pub mod render;
 pub mod runtime;
-pub mod schedule;
 pub mod serde_def;
 pub mod types;
 
@@ -46,7 +44,7 @@ pub mod debug;
 
 pub use arena::{Arena, ArenaError, ArenaRef, ThunkState, Value, ValueKind};
 pub use error::{CompileError, Span};
-pub use ir::{Instr, Ir, ValueFunc, ValueInstr, ValueLayout};
+pub use ir::{Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;
 pub use serde_def::{compile_def, RillLangDef};
 

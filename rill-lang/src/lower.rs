@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::error::{CompileError, Span};
 use crate::ir::{
-    BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Instr, Ir, LogicOp, ParamDef,
-    StateLayout, UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueLayout, ValueTerm,
+    BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Ir, LogicOp, ParamDef, StateLayout,
+    UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueLayout, ValueTerm,
 };
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
@@ -127,9 +127,19 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueLogic { .. }
             | ValueInstr::ValueNot { .. }
             | ValueInstr::ValueCallBuiltin { .. }
-            | ValueInstr::ValueLazy { .. }
+| ValueInstr::ValueLazy { .. }
             | ValueInstr::ValueForce { .. }
-            | ValueInstr::ValueCallLazy { .. }
+            // Whole-buffer value ops allocate the `Value::Buffer` marker slot.
+            | ValueInstr::ValueBufferConst { .. }
+            | ValueInstr::ValueBufferLoadInput { .. }
+            | ValueInstr::ValueBufferStateRead { .. }
+            | ValueInstr::ValueBufferDelayRead { .. }
+            | ValueInstr::ValueBufferUn { .. }
+            | ValueInstr::ValueBufferBin { .. }
+            | ValueInstr::ValueBufferMove { .. }
+            | ValueInstr::ValueCallForeign { .. }
+            | ValueInstr::ValueBufferParamRead { .. }
+            | ValueInstr::ValueBufferMainCellRead { .. }
     )
 }
 
@@ -178,8 +188,6 @@ struct Lowerer<'a> {
     /// separate (still correct) copies.
     caf_cache: HashMap<(String, Vec<usize>), Vec<usize>>,
     caf_lifting: HashSet<String>,
-    instrs: Vec<Instr>,
-    next_reg: usize,
     block_state_slots: usize,
     delay_lens: Vec<usize>,
     locals: Vec<HashMap<String, Vec<usize>>>,
@@ -190,7 +198,7 @@ struct Lowerer<'a> {
     /// per-tick value bindings — the cells are allocated once at program
     /// construction ([`Ir::num_main_cells`]), so `SetParameter` writes persist
     /// across ticks. Block-track reads materialise the cell's float via
-    /// [`Instr::ReadMainCell`]; value-track reads via `ValueReadMainCell`.
+    /// [`ValueInstr::ValueBufferMainCellRead`]; value-track reads via `ValueReadMainCell`.
     main_cell_locals: HashMap<String, usize>,
     sample_rate: f32,
     /// Value-track blocks, executed once per tick (see `run_value_track`).
@@ -311,6 +319,10 @@ struct Lowerer<'a> {
     /// assign a tape index; a `Ref` NOT present stays a name-based resource
     /// binding (the graph duplex path's externally-shared registry).
     tape_decls: HashMap<String, usize>,
+    /// Program input → value-register mapping: input `k` materializes into
+    /// `buffers[input_buffers[k]]` (the value register holding the input's
+    /// `Value::Buffer`). Filled by the `LoadInput` emission at program entry.
+    input_buffers: Vec<usize>,
     /// Tape cell capacities, one entry per tape; the index IS the tape index
     /// referenced by [`BuiltinInstance::tape_index`]. A NAMED declaration
     /// (`name = tape_loop <capacity>`) gets one cell per name — repeated
@@ -324,16 +336,6 @@ struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
-    fn fresh_reg(&mut self) -> usize {
-        let r = self.next_reg;
-        self.next_reg += 1;
-        r
-    }
-
-    fn emit(&mut self, i: Instr) {
-        self.instrs.push(i);
-    }
-
     fn fresh_value_reg(&mut self) -> usize {
         let r = self.next_value_reg;
         self.next_value_reg += 1;
@@ -2868,11 +2870,8 @@ impl<'a> Lowerer<'a> {
         let frag = FragmentIr {
             value_blocks: std::mem::take(&mut self.value_blocks),
             entry: 0,
-            steps: Vec::new(),
             num_value_regs: self.next_value_reg,
-            num_block_regs: 0,
             output_value_regs: vec![result_reg],
-            output_block_regs: Vec::new(),
             num_capture_cells: free.len(),
             sig: FuncSig {
                 value_ins: params.len(),
@@ -3216,11 +3215,8 @@ impl<'a> Lowerer<'a> {
         let frag = FragmentIr {
             value_blocks: std::mem::take(&mut self.value_blocks),
             entry: 0,
-            steps: Vec::new(),
             num_value_regs,
-            num_block_regs: 0,
             output_value_regs: vec![call_dst],
-            output_block_regs: Vec::new(),
             num_capture_cells: 1 + applied,
             sig: FuncSig {
                 value_ins: remaining_arity,
@@ -4103,16 +4099,16 @@ impl<'a> Lowerer<'a> {
     fn lower(&mut self, e: &Expr, args: &[usize]) -> Result<Vec<usize>, CompileError> {
         match e {
             Expr::Int(v, _) => {
-                let dst = self.fresh_reg();
-                self.emit(Instr::Const {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBufferConst {
                     dst,
                     value: *v as f64,
                 });
                 Ok(vec![dst])
             }
             Expr::Float(v, _) => {
-                let dst = self.fresh_reg();
-                self.emit(Instr::Const { dst, value: *v });
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBufferConst { dst, value: *v });
                 Ok(vec![dst])
             }
             Expr::Imag(v, _) => {
@@ -4136,11 +4132,11 @@ impl<'a> Lowerer<'a> {
                             signal_outs: sig.signal_outs,
                             param_bindings: Vec::new(),
                         });
-                        let fst = self.fresh_reg();
+                        let fst = self.fresh_value_reg();
                         for _ in 1..sig.signal_outs {
-                            self.fresh_reg();
+                            self.fresh_value_reg();
                         }
-                        self.emit(Instr::CallBlock {
+                        self.emit_value(ValueInstr::ValueCallForeign {
                             dst: fst,
                             srcs: vec![],
                             instance,
@@ -4148,8 +4144,8 @@ impl<'a> Lowerer<'a> {
                         return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
                     }
                 }
-                let dst = self.fresh_reg();
-                self.emit(Instr::Const { dst, value: 0.0 });
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBufferConst { dst, value: 0.0 });
                 Ok(vec![dst])
             }
             Expr::Wire(_) => Ok(vec![args[0]]),
@@ -4160,8 +4156,8 @@ impl<'a> Lowerer<'a> {
                 Ok(outs
                     .into_iter()
                     .map(|src| {
-                        let dst = self.fresh_reg();
-                        self.emit(Instr::Un {
+                        let dst = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueBufferUn {
                             dst,
                             op: UnOp::Neg,
                             src,
@@ -4188,35 +4184,35 @@ impl<'a> Lowerer<'a> {
                     };
                     let slot = self.block_state_slots;
                     self.block_state_slots += 1;
-                    let prev = self.fresh_reg();
-                    self.emit(Instr::ReadBlockState { dst: prev, slot });
-                    let diff = self.fresh_reg();
-                    self.emit(Instr::Bin {
+                    let prev = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
+                    let diff = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin {
                         dst: diff,
                         op: BinArith::Sub,
                         a: x,
                         b: prev,
                     });
-                    let acoef = self.fresh_reg();
-                    self.emit(Instr::Const {
+                    let acoef = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferConst {
                         dst: acoef,
                         value: a,
                     });
-                    let scaled = self.fresh_reg();
-                    self.emit(Instr::Bin {
+                    let scaled = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin {
                         dst: scaled,
                         op: BinArith::Mul,
                         a: acoef,
                         b: diff,
                     });
-                    let y = self.fresh_reg();
-                    self.emit(Instr::Bin {
+                    let y = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin {
                         dst: y,
                         op: BinArith::Add,
                         a: prev,
                         b: scaled,
                     });
-                    self.emit(Instr::WriteBlockState { slot, src: y });
+                    self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
                     return Ok(vec![y]);
                 }
                 // A data constructor in a signal position is a type error: value
@@ -4583,11 +4579,11 @@ impl<'a> Lowerer<'a> {
                             signal_outs: sig.signal_outs,
                             param_bindings,
                         });
-                        let fst = self.fresh_reg();
+                        let fst = self.fresh_value_reg();
                         for _ in 1..sig.signal_outs {
-                            self.fresh_reg();
+                            self.fresh_value_reg();
                         }
-                        self.emit(Instr::CallBlock {
+                        self.emit_value(ValueInstr::ValueCallForeign {
                             dst: fst,
                             srcs: signal_srcs,
                             instance,
@@ -4653,10 +4649,10 @@ impl<'a> Lowerer<'a> {
                     f64::INFINITY,
                     *span,
                 )?;
-                let dst = self.fresh_reg();
-                self.emit(Instr::ReadActorParam {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBufferParamRead {
                     dst,
-                    param_idx: idx,
+                    idx,
                 });
                 Ok(vec![dst])
             }
@@ -4793,12 +4789,12 @@ impl<'a> Lowerer<'a> {
                         signal_outs: sig.signal_outs,
                         param_bindings: Vec::new(),
                     });
-                    let fst = self.fresh_reg();
+                    let fst = self.fresh_value_reg();
                     for _ in 1..sig.signal_outs {
-                        self.fresh_reg();
+                        self.fresh_value_reg();
                     }
                     let srcs = args.to_vec();
-                    self.emit(Instr::CallBlock {
+                    self.emit_value(ValueInstr::ValueCallForeign {
                         dst: fst,
                         srcs,
                         instance,
@@ -4818,8 +4814,8 @@ impl<'a> Lowerer<'a> {
             _ => None,
         };
         if let Some(op) = bin {
-            let dst = self.fresh_reg();
-            self.emit(Instr::Bin {
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueBufferBin {
                 dst,
                 op,
                 a: args[0],
@@ -4839,8 +4835,8 @@ impl<'a> Lowerer<'a> {
             _ => None,
         };
         if let Some(op) = un {
-            let dst = self.fresh_reg();
-            self.emit(Instr::Un {
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueBufferUn {
                 dst,
                 op,
                 src: args[0],
@@ -4849,16 +4845,16 @@ impl<'a> Lowerer<'a> {
         }
         if let Some(&cell) = self.main_cell_locals.get(name) {
             // A main λ-parameter: materialise the persistent cell's float
-            // value into a block register. The cell is read directly — it is
+            // value into a buffer. The cell is read directly — it is
             // persistent, so the value set by `SetParameter` on the control
             // thread is visible here on the next block.
-            let dst = self.fresh_reg();
-            self.emit(Instr::ReadMainCell { dst, cell });
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueBufferMainCellRead { dst, cell });
             return Ok(vec![dst]);
         }
         if let Some(&idx) = self.param_names.get(name) {
-            let dst = self.fresh_reg();
-            self.emit(Instr::ReadParam { dst, idx });
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueBufferParamRead { dst, idx });
             return Ok(vec![dst]);
         }
         for scope in self.locals.iter().rev() {
@@ -4952,8 +4948,8 @@ impl<'a> Lowerer<'a> {
                         // track). Break the cycle with a fresh placeholder
                         // register — thunk-emitting lowering arrives in a
                         // later task; until then the recursive reference
-                        // reads as silence (`FixedBuffer::new`).
-                        let dst = self.fresh_reg();
+                        // reads as silence (an unbound buffer register).
+                        let dst = self.fresh_value_reg();
                         return Ok(vec![dst]);
                     }
                     // Lift the closed body once: no signal inputs, so lower it
@@ -5044,8 +5040,8 @@ impl<'a> Lowerer<'a> {
         for k in 0..bi {
             let mut acc = a_out[k];
             for g in 1..groups {
-                let dst = self.fresh_reg();
-                self.emit(Instr::Bin {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBufferBin {
                     dst,
                     op: BinArith::Add,
                     a: acc,
@@ -5095,11 +5091,11 @@ impl<'a> Lowerer<'a> {
                             signal_outs: sig.signal_outs,
                             param_bindings: Vec::new(),
                         });
-                        let fst = self.fresh_reg();
+                        let fst = self.fresh_value_reg();
                         for _ in 1..sig.signal_outs {
-                            self.fresh_reg();
+                            self.fresh_value_reg();
                         }
-                        self.emit(Instr::CallBlock {
+                        self.emit_value(ValueInstr::ValueCallForeign {
                             dst: fst,
                             srcs: vec![],
                             instance,
@@ -5118,8 +5114,8 @@ impl<'a> Lowerer<'a> {
             ArithOp::Div => BinArith::Div,
             ArithOp::Rem => BinArith::Rem,
         };
-        let dst = self.fresh_reg();
-        self.emit(Instr::Bin {
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
             dst,
             op: arith,
             a: a[0],
@@ -5145,8 +5141,8 @@ impl<'a> Lowerer<'a> {
             let slot = self.block_state_slots;
             self.block_state_slots += 1;
             slots.push(slot);
-            let dst = self.fresh_reg();
-            self.emit(Instr::ReadBlockState { dst, slot });
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueBufferStateRead { dst, slot });
             fb_regs.push(dst);
         }
         let mut a_in = args.to_vec();
@@ -5154,7 +5150,7 @@ impl<'a> Lowerer<'a> {
         let a_out = self.lower(lhs, &a_in)?;
         let b_out = self.lower(rhs, args)?;
         for (k, slot) in slots.iter().enumerate() {
-            self.emit(Instr::WriteBlockState {
+            self.emit_value(ValueInstr::ValueBufferStateWrite {
                 slot: *slot,
                 src: b_out[k],
             });
@@ -5217,9 +5213,9 @@ impl<'a> Lowerer<'a> {
         }
         let line = self.delay_lens.len();
         self.delay_lens.push(len as usize);
-        let dst = self.fresh_reg();
-        self.emit(Instr::ReadDelay { dst, line });
-        self.emit(Instr::WriteDelay { line, src });
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferDelayRead { dst, line });
+        self.emit_value(ValueInstr::ValueBufferDelayWrite { line, src });
         Ok(vec![dst])
     }
 
@@ -5526,8 +5522,6 @@ pub fn lower_with_cafs_mode(
         cafs,
         caf_cache: HashMap::new(),
         caf_lifting: HashSet::new(),
-        instrs: Vec::new(),
-        next_reg: 0,
         block_state_slots: 0,
         delay_lens: Vec::new(),
         locals: Vec::new(),
@@ -5566,6 +5560,7 @@ pub fn lower_with_cafs_mode(
         tape_decls: tp.tape_decls.iter().cloned().collect(),
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
+        input_buffers: Vec::new(),
     };
 
     for (cell_idx, p) in main.params().iter().enumerate() {
@@ -5588,8 +5583,9 @@ pub fn lower_with_cafs_mode(
 
     let mut main_args = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
-        let dst = lw.fresh_reg();
-        lw.emit(Instr::LoadInput { dst, index });
+        let dst = lw.fresh_value_reg();
+        lw.emit_value(ValueInstr::ValueBufferLoadInput { dst, index });
+        lw.input_buffers.push(dst);
         main_args.push(dst);
     }
     // Value-output programs lower through the value track; signal-output
@@ -5607,7 +5603,13 @@ pub fn lower_with_cafs_mode(
         lw.value_out_tys.push(vty);
         Vec::new()
     } else {
-        lw.lower(main.body(), &main_args)?
+        let outs = lw.lower(main.body(), &main_args)?;
+        // Signal programs now lower to the VALUE track: the body's output
+        // registers are `Value::Buffer` values (one per output channel), so
+        // they feed the same `value_regs_out` path as value outputs.
+        lw.value_regs_out = outs.clone();
+        lw.value_out_tys = vec![ValueTy::Buffer; outs.len()];
+        outs
     };
     if outs.is_empty() && lw.value_regs_out.is_empty() {
         return Err(CompileError::Unsupported(
@@ -5616,7 +5618,6 @@ pub fn lower_with_cafs_mode(
     }
     let num_outputs = outs.len();
     let num_main_cells = lw.main_cell_locals.len();
-    // v1 capacity heuristic: the arena never needs more slots than the number
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
     // is a strict upper bound on simultaneously-live per-tick slots. On top of
@@ -5718,9 +5719,6 @@ pub fn lower_with_cafs_mode(
     // ends here. Every existing program is a single block ending in `Halt`.
     lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
     Ok(Ir {
-        instrs: lw.instrs,
-        num_regs: lw.next_reg,
-        output_regs: outs,
         num_inputs,
         num_outputs,
         state: StateLayout {
@@ -5743,6 +5741,8 @@ pub fn lower_with_cafs_mode(
             buffer_budget,
             value_state_slots: 0,
         },
+        num_buffers: lw.next_value_reg,
+        input_buffers: lw.input_buffers,
         tapes: lw.tapes,
     })
 }
@@ -5797,8 +5797,6 @@ mod tests {
             cafs,
             caf_cache: HashMap::new(),
             caf_lifting: HashSet::new(),
-            instrs: Vec::new(),
-            next_reg: 0,
             block_state_slots: 0,
             delay_lens: Vec::new(),
             locals: Vec::new(),
@@ -5837,6 +5835,7 @@ mod tests {
             tape_decls: HashMap::new(),
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
+            input_buffers: Vec::new(),
         }
     }
 
@@ -5878,31 +5877,31 @@ mod tests {
     fn gain_lowers_to_const_and_mul() {
         let ir = ir_of("main = _ * 0.5");
         assert_eq!(ir.num_inputs, 1);
-        assert!(ir.instrs.iter().any(|i| matches!(
+        assert!(ir.value_blocks[0].instrs.iter().any(|i| matches!(
             i,
-            Instr::Bin {
+            ValueInstr::ValueBufferBin {
                 op: BinArith::Mul,
                 ..
             }
         )));
         assert!(ir
-            .instrs
+            .value_blocks[0].instrs
             .iter()
-            .any(|i| matches!(i, Instr::Const { value, .. } if (*value - 0.5).abs() < 1e-9)));
+            .any(|i| matches!(i, ValueInstr::ValueBufferConst { value, .. } if (*value - 0.5).abs() < 1e-9)));
     }
 
     #[test]
     fn integrator_allocates_one_state_slot() {
         let ir = ir_of("main = + ~ _");
         assert_eq!(ir.state.block_state_slots, 1);
-        assert!(ir
+        assert!(ir.value_blocks[0]
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::ReadBlockState { .. })));
-        assert!(ir
+            .any(|i| matches!(i, ValueInstr::ValueBufferStateRead { .. })));
+        assert!(ir.value_blocks[0]
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::WriteBlockState { .. })));
+            .any(|i| matches!(i, ValueInstr::ValueBufferStateWrite { .. })));
     }
 
     #[test]
@@ -5927,20 +5926,22 @@ mod tests {
     #[test]
     fn main_param_lowers_to_cell_binding() {
         // main's λ-param `gain` becomes a persistent runtime-stack cell: the
-        // signal context reads it via `Instr::ReadMainCell`, not a named
+        // signal context reads it via `ValueInstr::ValueBufferMainCellRead`, not a named
         // `ReadParam` (which would route through the params vec instead).
         let ir = ir_of("main gain = _ * gain");
         assert_eq!(ir.num_main_cells, 1);
         assert!(
-            ir.instrs
+            ir.value_blocks[0]
+                .instrs
                 .iter()
-                .any(|i| matches!(i, Instr::ReadMainCell { cell: 0, .. })),
+                .any(|i| matches!(i, ValueInstr::ValueBufferMainCellRead { cell: 0, .. })),
             "expected a ReadMainCell instruction for `gain`"
         );
         assert!(
-            !ir.instrs
+            !ir.value_blocks[0]
+                .instrs
                 .iter()
-                .any(|i| matches!(i, Instr::ReadParam { .. })),
+                .any(|i| matches!(i, ValueInstr::ValueBufferParamRead { .. })),
             "main λ-params must not lower to ReadParam"
         );
     }
@@ -5949,9 +5950,10 @@ mod tests {
     fn onepole_lowers_to_callblock() {
         let ir = ir_with("main = _ : onepole 200.0 0.5");
         assert!(
-            ir.instrs
+            ir.value_blocks[0]
+                .instrs
                 .iter()
-                .any(|i| matches!(i, Instr::CallBlock { .. })),
+                .any(|i| matches!(i, ValueInstr::ValueCallForeign { .. })),
             "expected a CallBlock instruction"
         );
         assert_eq!(ir.builtins.len(), 1);
@@ -5964,9 +5966,10 @@ mod tests {
     fn block_builtin_lowers_to_callblock() {
         let ir = ir_with("main = _ : lowpass 1000.0 0.7");
         assert!(
-            ir.instrs
+            ir.value_blocks[0]
+                .instrs
                 .iter()
-                .any(|i| matches!(i, Instr::CallBlock { .. })),
+                .any(|i| matches!(i, ValueInstr::ValueCallForeign { .. })),
             "expected a CallBlock instruction"
         );
         assert_eq!(ir.builtins.len(), 1);
@@ -5979,14 +5982,14 @@ mod tests {
     fn smooth_allocates_state() {
         let ir = ir_of("main = smooth _ 10.0");
         assert_eq!(ir.state.block_state_slots, 1);
-        assert!(ir
+        assert!(ir.value_blocks[0]
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::ReadBlockState { .. })));
-        assert!(ir
+            .any(|i| matches!(i, ValueInstr::ValueBufferStateRead { .. })));
+        assert!(ir.value_blocks[0]
             .instrs
             .iter()
-            .any(|i| matches!(i, Instr::WriteBlockState { .. })));
+            .any(|i| matches!(i, ValueInstr::ValueBufferStateWrite { .. })));
     }
 
     #[test]

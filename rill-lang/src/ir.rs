@@ -65,125 +65,6 @@ pub enum BinArith {
     Max,
 }
 
-/// One IR instruction. `dst` is the scratch register it writes.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Instr {
-    /// Load a constant.
-    Const {
-        /// Destination register.
-        dst: Reg,
-        /// Constant value to load.
-        value: f64,
-    },
-    /// Load the k-th program input for the current sample.
-    LoadInput {
-        /// Destination register.
-        dst: Reg,
-        /// Program input index.
-        index: usize,
-    },
-    /// Read a persistent block-state slot (its whole block from the previous tick).
-    ReadBlockState {
-        /// Destination register.
-        dst: Reg,
-        /// State slot to read.
-        slot: StateSlot,
-    },
-    /// Read from a delay line: value `len` samples ago.
-    ReadDelay {
-        /// Destination register.
-        dst: Reg,
-        /// Delay line index.
-        line: usize,
-    },
-    /// Unary op.
-    Un {
-        /// Destination register.
-        dst: Reg,
-        /// Unary operation.
-        op: UnOp,
-        /// Source register.
-        src: Reg,
-    },
-    /// Binary op.
-    Bin {
-        /// Destination register.
-        dst: Reg,
-        /// Binary operation.
-        op: BinArith,
-        /// First operand register.
-        a: Reg,
-        /// Second operand register.
-        b: Reg,
-    },
-    /// Copy one register to another (wire).
-    Move {
-        /// Destination register.
-        dst: Reg,
-        /// Source register.
-        src: Reg,
-    },
-    /// Schedule a write of `src` into a block-state slot (applied at tick end).
-    WriteBlockState {
-        /// State slot to write.
-        slot: StateSlot,
-        /// Source register.
-        src: Reg,
-    },
-    /// Schedule a push of `src` into a delay line (whole block).
-    WriteDelay {
-        /// Delay line index.
-        line: usize,
-        /// Source register.
-        src: Reg,
-    },
-    /// Call a whole-buffer built-in: `srcs` inputs → `dst`, instance index.
-    CallBlock {
-        /// Destination register (first output).
-        dst: Reg,
-        /// Source registers.
-        srcs: Vec<Reg>,
-        /// Index into [`Ir::builtins`].
-        instance: usize,
-    },
-    /// Read a named parameter slot. Value is constant within a block.
-    ReadParam {
-        /// Destination register.
-        dst: Reg,
-        /// Index into [`Ir::params`].
-        idx: usize,
-    },
-    /// Read an actor parameter slot (?name syntax). Semantically same as ReadParam
-    /// but carries distinct semantics for higher layers (actor param naming).
-    ReadActorParam {
-        /// Destination register.
-        dst: Reg,
-        /// Index into [`Ir::params`].
-        param_idx: usize,
-    },
-    /// Read a main λ-parameter cell, materialising its float value into a
-    /// block register. The cell is persistent (allocated once at program
-    /// construction), so a `SetParameter` write survives across ticks and the
-    /// block track reads the current value directly each block.
-    ReadMainCell {
-        /// Destination register.
-        dst: Reg,
-        /// Index into the persistent main-cell store ([`Ir::num_main_cells`]).
-        cell: usize,
-    },
-    /// A debug probe point that passes a signal through unchanged.
-    /// The runtime debug engine can latch this value for inspection.
-    #[cfg(feature = "debug")]
-    ProbePoint {
-        /// Unique probe identifier.
-        id: ProbeId,
-        /// Source register to copy from.
-        src: Reg,
-        /// Destination register to write to.
-        dst: Reg,
-    },
-}
-
 /// A value-track collection operation dispatched by the interpreter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueBuiltinOp {
@@ -614,6 +495,109 @@ pub enum ValueInstr {
         /// Source value register.
         src: usize,
     },
+    // ---- Whole-buffer value ops (B3-2: signal programs on the value track) ----
+    // Each op operates on a `Value::Buffer(usize)` value register — the buffer
+    // index IS the value register index (block-register 1:1 translation). The
+    // physical memory is the program's `Vec<RegionHandle<T>>` table (SP-4
+    // big-object memory); mutation is in-place via `with_data_mut`.
+    /// Fill the destination buffer with a constant.
+    ValueBufferConst {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Constant value to fill the whole buffer with.
+        value: f64,
+    },
+    /// Materialize the k-th program input into the destination buffer. The
+    /// input slice is copied into the buffer by `process()` before the value
+    /// track runs; this instruction allocates the `Value::Buffer` marker.
+    ValueBufferLoadInput {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Program input index.
+        index: usize,
+    },
+    /// Read the previous tick's block-state slot into the destination buffer.
+    ValueBufferStateRead {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// State slot to read.
+        slot: usize,
+    },
+    /// Read from a delay line into the destination buffer (delay 0).
+    ValueBufferDelayRead {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Delay line index.
+        line: usize,
+    },
+    /// Unary op in place on the destination buffer.
+    ValueBufferUn {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Unary operation.
+        op: UnOp,
+        /// Source value register (holds `Value::Buffer(src)`).
+        src: usize,
+    },
+    /// Binary op combining two source buffers into the destination buffer.
+    ValueBufferBin {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Binary operation.
+        op: BinArith,
+        /// First operand value register (holds `Value::Buffer(a)`).
+        a: usize,
+        /// Second operand value register (holds `Value::Buffer(b)`).
+        b: usize,
+    },
+    /// Copy one buffer to another (wire).
+    ValueBufferMove {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Source value register (holds `Value::Buffer(src)`).
+        src: usize,
+    },
+    /// Schedule a write of `src` buffer into a block-state slot (applied at
+    /// tick end via the double-buffer swap).
+    ValueBufferStateWrite {
+        /// State slot to write.
+        slot: usize,
+        /// Source value register (holds `Value::Buffer(src)`).
+        src: usize,
+    },
+    /// Push `src` buffer into a delay line.
+    ValueBufferDelayWrite {
+        /// Delay line index.
+        line: usize,
+        /// Source value register (holds `Value::Buffer(src)`).
+        src: usize,
+    },
+    /// Call a whole-buffer built-in: `srcs` input buffers → `dst` output
+    /// buffer(s) (consecutive registers for multi-output). Dispatches
+    /// `Algorithm::process`/`MultichannelAlgorithm::process` over the buffers'
+    /// `RegionHandle` slices (no copy at the FFI boundary).
+    ValueCallForeign {
+        /// Destination value register (first output; holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Source value registers (each holds `Value::Buffer`).
+        srcs: Vec<usize>,
+        /// Index into [`Ir::builtins`].
+        instance: usize,
+    },
+    /// Fill the destination buffer with a named parameter value.
+    ValueBufferParamRead {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Index into [`Ir::params`].
+        idx: usize,
+    },
+    /// Fill the destination buffer with a main λ-parameter cell's value.
+    ValueBufferMainCellRead {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Index into the persistent main-cell store.
+        cell: usize,
+    },
 }
 
 /// Layout for value-track persistent storage.
@@ -652,16 +636,10 @@ pub struct FragmentIr {
     pub value_blocks: Vec<ValueBlock>,
     /// Entry block of the fragment's value track.
     pub entry: usize,
-    /// Block-track steps (for signal-wire args); empty for pure-value bodies.
-    pub steps: Vec<crate::schedule::Step>,
     /// Number of value registers (args + temps).
     pub num_value_regs: usize,
-    /// Number of block registers (signal args + temps).
-    pub num_block_regs: usize,
     /// Value register(s) holding the result.
     pub output_value_regs: Vec<usize>,
-    /// Block register(s) holding signal results.
-    pub output_block_regs: Vec<usize>,
     /// Number of env capture cells the call's temporary frame must hold
     /// (the lambda's free variables, one per env Record field). Drives the
     /// build-time arena capacity bound.
@@ -730,12 +708,6 @@ pub struct ParamDef {
 /// A complete lowered program.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ir {
-    /// Instructions in evaluation order.
-    pub instrs: Vec<Instr>,
-    /// Number of scratch registers required.
-    pub num_regs: usize,
-    /// The registers holding the program outputs at sample end, in output order.
-    pub output_regs: Vec<Reg>,
     /// Number of program inputs (0 or 1 for MVP).
     pub num_inputs: usize,
     /// Number of program outputs.
@@ -780,6 +752,15 @@ pub struct Ir {
     pub max_call_regs: usize,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
+    /// Number of program-level signal buffers (see
+    /// [`RillProgram::buffers`](crate::program::RillProgram)). Each
+    /// `Value::Buffer` index points into this table; the memory is carved from
+    /// a [`BufferAllocator`](rill_core::memory::BufferAllocator) at build.
+    pub num_buffers: usize,
+    /// Program input → buffer-table index: input `k` is materialized by
+    /// `process()` into `buffers[input_buffers[k]]` before the value track runs
+    /// (parallel to [`Ir::num_inputs`]).
+    pub input_buffers: Vec<usize>,
     /// Shared tape cells: one capacity per tape, indexed by
     /// [`BuiltinInstance::tape_index`]. Populated by lowering as it resolves
     /// inline `tape_loop <capacity>` constructor calls (a FRESH cell per call)

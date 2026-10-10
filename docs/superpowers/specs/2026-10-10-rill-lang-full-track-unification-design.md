@@ -106,30 +106,46 @@ math      = Buffer methods (scalar loops)
 state     = value_state (ST effect)
 ```
 
-### 2.2 `Value::Buffer`
+### 2.2 `Value::Buffer` — Tier-1 big-object memory, in-place, via runST
 
-A signal buffer becomes a first-class arena value:
+A signal buffer is a first-class arena value backed by the **separate
+big-object memory subsystem** (SP-4, `docs/superpowers/specs/2026-10-04-rill-core-memory-memoryregion-design.md`
+§3.5/§7): `MemoryRegion<T>` + `RegionHandle<T>` (RC, `Rc<UnsafeCell<…>>`) +
+`BufferAllocator<T>`. Buffers are **long-lived, program-lifetime static
+allocations** with reference counting — NOT arena slots, NOT inline
+`FixedBuffer`s.
 
 ```rust
-/// A first-class signal buffer. `FixedBuffer` (inline) and `RegionHandle`
-/// (large slab, SP-4) are the two concrete backing kinds.
-Value::Buffer(BufferKind)
+/// A first-class signal buffer: an index into the program-level buffer table
+/// (a `Vec<RegionHandle<T>>` carved from the program's `BufferAllocator` at
+/// build). The `Value` enum is not `T`-generic, so the handle is represented
+/// as an opaque region id resolved against the program's allocator (SP-4 §7).
+Value::Buffer(usize)
 ```
 
-Two options for the backing:
-- **Inline:** `Value::Buffer(FixedBuffer<T, BUF>)` — small buffers, stack/arena
-  inline (Tier 2 memory, SP-4). Simple; the buffer is an ordinary owned arena
-  value.
-- **Slab handle:** `Value::Buffer(usize)` — an index into a program-level
-  `RegionHandle` table (Tier 1, big objects). For large buffers.
+- `RillProgram` owns a `BufferAllocator<T>` + a buffer table
+  `Vec<RegionHandle<T>>`, sized at build from the IR (`Ir::num_buffers`).
+  Each handle's length is the block length `BUF` (or the site's delay/tape
+  length). Carving happens once at construction — `process()` never allocates.
+- `Value::Buffer(usize)` is a **leaf**: `visit_refs` visits nothing (buffer
+  data holds no `ArenaRef`s), `detach_payload` returns `None`, dropping the
+  value just drops the handle's Rc. The `RegionHandle`'s internal RC is the
+  buffer lifetime and sharing.
+- **Mutation is in-place** via `RegionHandle::with_data_mut`, and buffer work
+  runs inside an **ST region** (`runST (fn s -> …)`): the phantom `s` scopes
+  the mutation so a mutated buffer cannot leak out of its region. `runST` is
+  already lowering sugar over a `forall`-typed function (R3); buffer-producing
+  signal expressions lower on the value track through the same path.
 
-Stage B uses **inline `Value::Buffer(FixedBuffer<T, BUF>)`** first (matches the
-current `block_regs` capacity model, no new memory subsystem); the
-`RegionHandle` path (Task B6) layers on later. The `Buffer` typeclass (Task B4)
-abstracts over the backing.
-
-`visit_refs`/`clone_pooled`/`drop_ref` handle `Value::Buffer` as a leaf (owns no
-arena children) or a table-index (no children).
+The `Buffer` typeclass (Task B4) abstracts over the backing. **At the language
+level `Buffer` is a typeclass**, with instances = the concrete buffer kinds:
+`FixedBuffer`, `TapeLoop`, `RingBuffer`, `RegionHandle` (big-object), plus
+**role sub-typeclasses** (`Tape`, `Ring`, …) that specify a buffer's ROLE — a
+`TapeLoop` is a `Tape`, a `RingBuffer` is a `Ring`, a plain working buffer is a
+`Buffer`. The math methods (B4) dispatch on the `Buffer` instance; ring/tape
+semantics dispatch on the role classes. `Value::Buffer(usize)` is the concrete
+big-object runtime representation; the type system dispatches through the class
+instances.
 
 ### 2.3 `ValueCallForeign` instruction
 
@@ -141,10 +157,22 @@ In `ir.rs`, add a value-track instruction:
 ValueInstr::ValueCallForeign { dst: usize, srcs: Vec<usize>, instance: usize },
 ```
 
+**Seamless buffer hand-off (low-level rill types):** every built-in consumes
+`&[T]` / `&mut [T]` slices — `Algorithm::process(input: Option<&[T]>, output:
+&mut [T])`, `MultichannelAlgorithm::process(&[&[T]], &mut [&mut [T]])`. The
+`Value::Buffer` handle's physical memory is a `RegionHandle` (SP-4), so the
+call reads/writes those slices directly via `RegionHandle::with_data` /
+`with_data_mut` — **no copy at the FFI boundary**. This is why buffers must be
+backed by the low-level rill types (`RegionHandle`/`FixedBuffer`), not by the
+value arena: a built-in gets its native slice, and the `Buffer` typeclass
+(instance = concrete rill-core type) guarantees the handle's layout at the
+call site.
+
 In `exec_value_instr`, the arm:
 1. Read `srcs` registers — each must be a `Value::Buffer` (input channels).
 2. Call `Algorithm::process`/`MultichannelAlgorithm::process` with the input
-   buffers and write the output buffer(s) into `dst` (+ consecutive regs).
+   buffers' slices (`with_data`) and write the output buffer(s) into `dst`
+   (+ consecutive regs) via `with_data_mut`.
 3. In-place: the output buffer is a fresh `Value::Buffer` (or the first input
    reused per the `dst != srcs[0]` aliasing rule — carry over the current
    scratch-snapshot for multichannel).
@@ -201,12 +229,13 @@ value-track lowering. This is the biggest chunk of B3.
 - **Behavior:** existing signal programs (`lang_chiptune`, `record_mic`, signal
   test suite) keep working. `main : inputs -> outputs` stays.
 - **RT safety:** one value track; `Value::Buffer` math adds no allocation beyond
-  the existing arena/region budget. The `ValueCallForeign` path reuses the
-  current `Algorithm::process` (no new allocation).
+  the existing region budget (buffer memory is carved once at build). The
+  `ValueCallForeign` path reuses the current `Algorithm::process` (no new
+  allocation).
 - **SIMD:** preserved — math uses scalar loops (LLVM auto-vectorizes) or
   `rill_core::math::vector`; manual SIMD avoided.
-- **Budget:** the arena capacity heuristic must now cover buffers (each
-  `Value::Buffer` is one slot). The 2× complete-mode multiplier already exists.
+- **Budget:** the region allocator is sized at build to `num_buffers × BUF`
+  plus the delay/tape budget; `BufferAllocator::grow` is build-time only.
 
 ---
 
@@ -226,10 +255,11 @@ value-track lowering. This is the biggest chunk of B3.
 | Area | Files |
 |---|---|
 | Types | `types/ty.rs` (remove `Rate`/`Channel`/`Scalar`; `ArrowTy = Vec<ValueTy>`; `ValueTy::Buffer`), `types/infer.rs`, `types/unify.rs`, `types/arrow.rs`, `types/ffi.rs` |
-| IR | `ir.rs` (`ValueCallForeign`, remove `Instr` block variants) |
-| Arena | `arena.rs` (`Value::Buffer`) |
-| Lowering | `lower.rs` (value-track-only; signal→Buffer) |
-| Interp | `backend/interp.rs` (merge runners, `ValueCallForeign`, delete block track) |
+| IR | `ir.rs` (`ValueCallForeign`, `Ir::num_buffers`, remove `Instr` block variants) |
+| Arena | `arena.rs` (`Value::Buffer(usize)`) |
+| Memory | `program.rs` (buffer table `Vec<RegionHandle<T>>` + `BufferAllocator`, remove `block_regs`), `region.rs` (reuse SP-4) |
+| Lowering | `lower.rs` (value-track-only; signal→Buffer via runST) |
+| Interp | `backend/interp.rs` (merge runners, `ValueCallForeign` + buffer ops, delete block track) |
 | Program | `program.rs` (remove `block_regs`), `schedule.rs` (delete), `regalloc.rs` (delete) |
 | Tests | `tests/rate_unification.rs`, existing suite |
 

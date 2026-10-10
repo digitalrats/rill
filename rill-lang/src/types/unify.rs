@@ -149,6 +149,7 @@ pub fn unify_value(
         (ValueTy::Int, ValueTy::Int) | (ValueTy::Float, ValueTy::Float) => Ok(()),
         (ValueTy::Bool, ValueTy::Bool) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
+        (ValueTy::Buffer, ValueTy::Buffer) => Ok(()),
         (ValueTy::Data(x, ax), ValueTy::Data(y, ay))
         | (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay))
             if x == y && ax.len() == ay.len() =>

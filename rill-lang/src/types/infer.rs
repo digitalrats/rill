@@ -1912,19 +1912,28 @@ fn infer_expr_expected(
     match e {
         Expr::Int(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![ValueTy::Int],
+            outs: vec![match expected {
+                // A numeric literal in a Buffer-expected position is a signal
+                // constant (`_ * 0.5` → `0.5 : Buffer`).
+                Some(ValueTy::Buffer) => ValueTy::Buffer,
+                _ => ValueTy::Int,
+            }],
         }),
         Expr::Float(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![ValueTy::Float],
+            outs: vec![match expected {
+                Some(ValueTy::Buffer) => ValueTy::Buffer,
+                _ => ValueTy::Float,
+            }],
         }),
         Expr::Imag(_, _) => Ok(ArrowTy {
             ins: vec![],
             outs: vec![ValueTy::Float, ValueTy::Float],
         }),
         Expr::Wire(_) => {
-            let s = ctx.fresh_vty();
-            Ok(ArrowTy::uniform(1, 1, s))
+            // A signal wire is a `Buffer` channel (B3: buffer is an ordinary
+            // value type; the wire is the program's Buffer-valued input).
+            Ok(ArrowTy::uniform(1, 1, ValueTy::Buffer))
         }
         Expr::Cut(_) => {
             let s = ctx.fresh_vty();
@@ -1974,7 +1983,11 @@ fn infer_expr_expected(
                     });
                 }
             }
-            Ok(ArrowTy::uniform(0, 1, ValueTy::Float))
+            // An actor param is a control value: in a signal position it is a
+            // signal constant (`Buffer`), elsewhere a numeric scalar. Leave it
+            // unresolved so the surrounding arithmetic/combinator pins it.
+            let s = ctx.fresh_vty();
+            Ok(ArrowTy::uniform(0, 1, s))
         }
         Expr::FieldProject {
             record,
@@ -2237,10 +2250,18 @@ fn infer_expr_expected(
                 Expr::Float(_, _) => ArrowTy::value_channel(ValueTy::Float),
                 _ => infer_expr(ctx, scrutinee)?,
             };
-            // The scrutinee must be a single value channel.
+            // The scrutinee must be a single value channel (not a signal buffer).
             if st.arity_out() != 1 {
                 return Err(CompileError::Type {
                     msg: "match scrutinee must be a value".into(),
+                    span: *span,
+                });
+            }
+            if matches!(st.outs[0], ValueTy::Buffer) {
+                return Err(CompileError::Type {
+                    msg:
+                        "match scrutinee cannot be a signal buffer; match requires a value channel"
+                            .into(),
                     span: *span,
                 });
             }
@@ -2666,7 +2687,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         name,
         "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
     ) {
-        return Ok(ArrowTy::uniform(1, 1, ValueTy::Float));
+        return Ok(ArrowTy::uniform(1, 1, ValueTy::Buffer));
     }
     if matches!(name, "min" | "max") {
         let s = ctx.fresh_vty();
@@ -2685,7 +2706,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 return Ok(ArrowTy::uniform(
                     sig.params.len(),
                     sig.signal_outs,
-                    ValueTy::Float,
+                    ValueTy::Buffer,
                 ));
             }
         }
@@ -2983,7 +3004,7 @@ fn infer_apply_impl(
         return Ok(ArrowTy::uniform(
             sig_ty.arity_in(),
             sig_ty.arity_out(),
-            ValueTy::Float,
+            ValueTy::Buffer,
         ));
     }
     if name == "param" {
@@ -3778,10 +3799,21 @@ fn infer_apply_impl(
                         // A foreign signal slot holds a signal-channel expression
                         // (a wire or a 0-in generator like `sine 440.0`) — a
                         // VALUE-rate channel (a string, a record, a lambda) is a
-                        // type error. A bare Float literal IS Signal-rate (a
-                        // constant signal), so it legitimately passes.
+                        // type error. A bare Float/Int literal IS a signal
+                        // constant (`Buffer`), so it legitimately passes.
                         let at = infer_expr(ctx, &args[pos])?;
-                        if at.outs.len() != 1 || !matches!(at.outs[0], ValueTy::Buffer) {
+                        let is_sig_const =
+                            matches!(&args[pos], Expr::Int(_, _) | Expr::Float(_, _))
+                                && at.arity_in() == 0
+                                && at.arity_out() == 1;
+                        if is_sig_const {
+                            unify_value(
+                                &at.outs[0],
+                                &ValueTy::Buffer,
+                                &mut ctx.subst,
+                                args[pos].span(),
+                            )?;
+                        } else if at.outs.len() != 1 || !matches!(at.outs[0], ValueTy::Buffer) {
                             return Err(CompileError::Type {
                                 msg: format!(
                                     "signal argument {pos} of `{name}` must be a signal \
@@ -3885,7 +3917,7 @@ fn infer_apply_impl(
             return Ok(ArrowTy::uniform(
                 signal_ins,
                 sig.signal_outs,
-                ValueTy::Float,
+                ValueTy::Buffer,
             ));
         }
     }
@@ -4087,15 +4119,25 @@ fn infer_apply_impl(
         });
     }
     // Fallback: builtin reference (abs, sin, +, etc.) applied to signal args
+    let callee = infer_ref(ctx, name, span)?;
     let mut combined: Option<ArrowTy> = None;
     for arg in args {
-        let at = infer_expr(ctx, arg)?;
+        // A numeric literal argument to a Buffer-consuming signal function
+        // (`sin 440.0`) is a SIGNAL constant: infer it with `Buffer` expected
+        // so the literal unifies as a buffer channel, not a value Float.
+        let at = if matches!(arg, Expr::Int(_, _) | Expr::Float(_, _))
+            && callee.arity_in() >= 1
+            && matches!(callee.ins[0], ValueTy::Buffer)
+        {
+            infer_expr_expected(ctx, arg, Some(ValueTy::Buffer))?
+        } else {
+            infer_expr(ctx, arg)?
+        };
         combined = Some(match combined {
             None => at,
             Some(acc) => par(&acc, &at),
         });
     }
-    let callee = infer_ref(ctx, name, span)?;
     match combined {
         Some(args_ty) => seq(ctx, &args_ty, &callee, span),
         None => Ok(callee),
@@ -4493,6 +4535,28 @@ fn infer_delay(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
 fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
+    // Signal arithmetic: at least one operand is a `Buffer` (a wire, a
+    // combinator output, a foreign call). A numeric literal / constant on the
+    // OTHER side is then a SIGNAL constant — unify it with `Buffer` so
+    // `_ * 0.5` types `0.5 : Buffer`, not a value `Float`.
+    let a_buffer = a.outs.iter().all(|c| matches!(c, ValueTy::Buffer));
+    let b_buffer = b.outs.iter().all(|c| matches!(c, ValueTy::Buffer));
+    if a_buffer || b_buffer {
+        // A numeric literal / constant on the non-buffer side is a SIGNAL
+        // constant: `_ * 0.5` types `0.5 : Buffer`. Re-infer it with `Buffer`
+        // as the expected channel type so the literal unifies as a buffer.
+        let a = if !a_buffer && is_signal_const(ctx, &a, lhs) {
+            infer_expr_expected(ctx, lhs, Some(ValueTy::Buffer))?
+        } else {
+            a
+        };
+        let b = if !b_buffer && is_signal_const(ctx, &b, rhs) {
+            infer_expr_expected(ctx, rhs, Some(ValueTy::Buffer))?
+        } else {
+            b
+        };
+        return arith(ctx, &a, &b, span);
+    }
     // Value-track arithmetic: a value operand (a lambda parameter, a value
     // function, a field projection, ...) combined with another value operand
     // or a bare Float/Int literal lowers on the value track and yields a Float
@@ -4538,6 +4602,17 @@ fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
     arith(ctx, &a, &b, span)
 }
 
+/// Whether `e` types as a SIGNAL constant: a 0→1 arrow whose single output is
+/// a numeric scalar (Float/Int or an unresolved Var) and whose expression is a
+/// numeric literal or a reference to a compile-time constant (`k = 2.0`). In
+/// signal arithmetic such an operand unifies with `Buffer` (`_ * 0.5`).
+fn is_signal_const(ctx: &Ctx, t: &ArrowTy, e: &Expr) -> bool {
+    t.arity_in() == 0
+        && t.arity_out() == 1
+        && matches!(t.outs[0], ValueTy::Float | ValueTy::Int | ValueTy::Var(_))
+        && (matches!(e, Expr::Int(_, _) | Expr::Float(_, _)) || is_const_value_ref(ctx, e))
+}
+
 pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
     let mut ins = a.ins.clone();
     ins.extend(b.ins.clone());
@@ -4547,7 +4622,18 @@ pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
 }
 
 fn seq(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
-    reject_value_channels(a, span)?;
+    // A signal-constant lhs (`sin 440.0`): a 0→1 numeric literal feeding a
+    // Buffer-consuming callee (`sin : Buffer`) is a SIGNAL constant, not a
+    // value Float — accept it before the value-channel rejection below and
+    // treat its channel as the callee's Buffer input.
+    let signal_const_lhs = a.arity_in() == 0
+        && a.arity_out() == 1
+        && matches!(a.outs[0], ValueTy::Float | ValueTy::Int)
+        && b.arity_in() == 1
+        && matches!(b.ins[0], ValueTy::Buffer);
+    if !signal_const_lhs {
+        reject_value_channels(a, span)?;
+    }
     if a.arity_out() != b.arity_in() {
         return Err(CompileError::Type {
             msg: format!(
@@ -4708,8 +4794,13 @@ fn check_all_numeric(_ctx: &mut Ctx, _t: &ArrowTy, _span: Span) -> Result<(), Co
 /// no block representation — a bare func value (`f = double` used as a signal)
 /// would otherwise typecheck as an Int block and panic in lowering. Value
 /// programs are single expressions, so this never rejects a valid program.
+/// Unresolved `Var`s pass (they unify with `Buffer` when the combinator
+/// connects to a buffer channel).
 fn reject_value_channels(t: &ArrowTy, span: Span) -> Result<(), CompileError> {
-    if t.outs.iter().any(|c| !matches!(c, ValueTy::Buffer)) {
+    if t.outs
+        .iter()
+        .any(|c| !matches!(c, ValueTy::Buffer | ValueTy::Var(_)))
+    {
         return Err(CompileError::Type {
             msg: "a value channel cannot be used in a signal combinator".into(),
             span,
@@ -4855,7 +4946,8 @@ mod tests {
     #[test]
     fn var_unifies_with_float() {
         let t = ty_of("main = _ * 0.5").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        // B3: a signal buffer output — `_` and the constant unify as Buffer.
+        assert_eq!(t.process_ty.outs[0], ValueTy::Buffer);
     }
 
     #[test]

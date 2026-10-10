@@ -263,19 +263,20 @@ fn foreign_fn_multi_signal_wires_distinct_inputs() {
         .expect("cross builtin");
     let bi = &ir.builtins[cross_idx];
     assert_eq!(bi.signal_ins, 2);
-    // The CallBlock for cross must reference two distinct src registers.
+    // The ValueCallForeign for cross must reference two distinct src registers.
     let calls: Vec<_> = ir
+        .value_blocks[0]
         .instrs
         .iter()
         .filter(|i| {
             matches!(
                 i,
-                rill_lang::ir::Instr::CallBlock { instance, .. } if *instance == cross_idx
+                rill_lang::ir::ValueInstr::ValueCallForeign { instance, .. } if *instance == cross_idx
             )
         })
         .collect();
     assert_eq!(calls.len(), 1);
-    let rill_lang::ir::Instr::CallBlock { srcs, .. } = calls[0] else {
+    let rill_lang::ir::ValueInstr::ValueCallForeign { srcs, .. } = calls[0] else {
         unreachable!()
     };
     assert_eq!(srcs.len(), 2);

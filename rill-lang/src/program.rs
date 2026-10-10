@@ -14,7 +14,6 @@ use crate::arena::{Arena, BufferPool, Value};
 use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
 use crate::ir::{BuiltinInstance, Ir, ParamDef, ValueBlock};
-use crate::schedule::{build_schedule, Schedule};
 
 /// Upper bound on a single `@ n` delay line, in samples.
 ///
@@ -39,15 +38,20 @@ pub(crate) enum BuiltinInst<T: Transcendental> {
 /// A compiled program ready to run inside the rill graph.
 pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) ir: Ir,
-    pub(crate) schedule: Schedule,
     /// Block-level feedback state (previous tick's whole block per slot).
     pub(crate) block_state: Vec<FixedBuffer<T, BUF>>,
     /// Current-tick feedback writes, swapped with `block_state` at tick end.
     pub(crate) block_state_next: Vec<FixedBuffer<T, BUF>>,
     /// Delay lines: region-backed ring buffers, one per `@` site.
     pub(crate) delays: Vec<RegionDelay<T>>,
-    /// Whole-buffer register store (fixed length `BUF` per register).
-    pub(crate) block_regs: Vec<FixedBuffer<T, BUF>>,
+    /// Program-level signal buffer table (SP-4 big-object memory): one
+    /// `RegionHandle<T>` per `Value::Buffer` index, each carved at length
+    /// `BUF` from a [`BufferAllocator`] at build. `Value::Buffer(i)` resolves
+    /// against `buffers[i]`; mutation is in-place via `with_data_mut`.
+    pub(crate) buffers: Vec<RegionHandle<T>>,
+    /// Current tick's processing length (the external output slice length),
+    /// stored so whole-buffer value ops operate on exactly `n` samples.
+    pub(crate) block_len: usize,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
     pub(crate) builtins: Vec<BuiltinInst<T>>,
     /// Current parameter values, indexed by [`Ir::params`].
@@ -353,8 +357,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let (delays, _allocator) = Self::alloc_delays(&ir);
-        let block_regs = vec![FixedBuffer::new(); ir.num_regs];
-        let schedule = build_schedule(&ir);
+        let buffers = Self::alloc_buffers(&ir);
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
@@ -379,11 +382,11 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let value_outputs = vec![None; ir.value_output_regs.len()];
         Self {
             ir,
-            schedule,
             block_state,
             block_state_next,
             delays,
-            block_regs,
+            buffers,
+            block_len: 0,
             builtins: Vec::new(),
             params,
             params_dirty,
@@ -477,8 +480,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
 
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let block_regs = vec![FixedBuffer::new(); ir.num_regs];
-        let schedule = build_schedule(&ir);
+        let buffers = Self::alloc_buffers(&ir);
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
@@ -503,11 +505,11 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let value_outputs = vec![None; ir.value_output_regs.len()];
         Ok(Self {
             ir,
-            schedule,
             block_state,
             block_state_next,
             delays,
-            block_regs,
+            buffers,
+            block_len: 0,
             builtins,
             params,
             params_dirty,
@@ -550,6 +552,28 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
                         .alloc(crate::arena::Value::Void)
                         .expect("main-cell allocation exceeds build-time capacity bound"),
                 )
+            })
+            .collect()
+    }
+
+    /// Carve the program-level signal buffer table out of a fresh region
+    /// allocator: one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers`
+    /// (each `Value::Buffer` index). Chunk capacity is `BUF` rounded up to a
+    /// power of two, so every handle fits within a single chunk (non-spanning).
+    /// Memory is static with program lifetime (SP-4 Tier-1); `process()` never
+    /// touches the allocator.
+    fn alloc_buffers(ir: &Ir) -> Vec<RegionHandle<T>> {
+        let n = ir.num_buffers;
+        if n == 0 {
+            return Vec::new();
+        }
+        let chunk_cap = BUF.max(1).next_power_of_two();
+        let mut allocator = BufferAllocator::new(n * BUF, chunk_cap, T::ZERO);
+        (0..n)
+            .map(|_| {
+                allocator
+                    .allocate(BUF)
+                    .expect("buffer table carve exceeds build-time budget")
             })
             .collect()
     }
@@ -818,9 +842,6 @@ mod program_value_tests {
     #[test]
     fn new_program_has_empty_value_state() {
         let ir = Ir {
-            instrs: Vec::new(),
-            num_regs: 0,
-            output_regs: Vec::new(),
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -839,6 +860,10 @@ mod program_value_tests {
                 buffer_budget: 0,
                 value_state_slots: 2,
             },
+            num_buffers: 0,
+
+            input_buffers: Vec::new(),
+
             tapes: Vec::new(),
         };
         let prog = RillProgram::<f32, 256>::new(ir);
@@ -849,9 +874,6 @@ mod program_value_tests {
     #[test]
     fn reset_drops_value_track_refs() {
         let ir = Ir {
-            instrs: Vec::new(),
-            num_regs: 0,
-            output_regs: Vec::new(),
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -870,6 +892,10 @@ mod program_value_tests {
                 buffer_budget: 0,
                 value_state_slots: 1,
             },
+            num_buffers: 0,
+
+            input_buffers: Vec::new(),
+
             tapes: Vec::new(),
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);

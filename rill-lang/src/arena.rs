@@ -50,6 +50,8 @@ pub enum ValueKind {
     Set,
     /// The unit value.
     Void,
+    /// A first-class signal buffer (see [`Value::Buffer`]).
+    Buffer,
     /// Divergent computation (bottom); propagates through strict ops.
     Bottom,
     /// A lazy cons cell (head + lazy tail).
@@ -103,6 +105,14 @@ pub enum Value {
     },
     /// The unit value.
     Void,
+    /// A first-class signal buffer: an index into the program-level buffer
+    /// table (a `Vec<RegionHandle<T>>` carved from the program's
+    /// [`BufferAllocator`](rill_core::memory::BufferAllocator) at build). The
+    /// `Value` enum is not `T`-generic, so the handle is represented as an
+    /// opaque region id resolved against the program's allocator (SP-4 §7).
+    /// Leaf value: owns no arena children; the `RegionHandle`'s RC is the
+    /// buffer lifetime.
+    Buffer(usize),
     /// The force-state cell behind a thunk (rc 1; mutated by forcing).
     ThunkCell(ThunkState),
     /// Divergent computation (bottom); propagates through strict ops.
@@ -131,6 +141,7 @@ impl Value {
             Value::Map { .. } => ValueKind::Map,
             Value::Set { .. } => ValueKind::Set,
             Value::Void => ValueKind::Void,
+            Value::Buffer(_) => ValueKind::Buffer,
             Value::ThunkCell(_) => ValueKind::Callable,
             Value::Bottom => ValueKind::Bottom,
             Value::Cons(_, _) => ValueKind::Cons,

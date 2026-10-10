@@ -8,10 +8,9 @@ use rill_core::traits::ProcessError;
 
 use crate::arena::{Arena, ArenaRef, ThunkState, Value};
 use crate::ir::{
-    BinArith, CmpOp, FragmentIr, Instr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr, ValueTerm,
+    BinArith, CmpOp, FragmentIr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr, ValueTerm,
 };
 use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
-use crate::schedule::Step;
 
 pub(crate) fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     match pv {
@@ -42,15 +41,20 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Run one block via the schedule. Every step is a whole-buffer operation.
-/// Supports N inputs → M outputs. Returns a `ProcessError` when the value track
-/// latched one (a collection capacity overflow — a user error, not a build bug).
+/// Run one tick: materialize the program inputs into the buffer table, execute
+/// the per-tick value track (whole-buffer `Value::Buffer` ops + value ops), and
+/// drain the outputs. Returns a `ProcessError` when the value track latched one
+/// (a collection capacity overflow — a user error, not a build bug).
 pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     inputs: &[&[T]],
     outputs: &mut [&mut [T]],
 ) -> Result<(), ProcessError> {
     push_builtin_params(prog);
+    let n = outputs.first().map(|o| o.len()).unwrap_or(0);
+    debug_assert!(n <= BUF, "block length {n} exceeds BUF {BUF}");
+    prog.block_len = n;
+
     // Release the previous tick's value outputs BEFORE this tick allocates.
     // A value output pins its whole subtree across ticks (the output keeps the
     // root at rc >= 1), and a closure output additionally pins its captured env
@@ -62,20 +66,19 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
             prog.arena.drop_ref(r);
         }
     }
-    let n = outputs.first().map(|o| o.len()).unwrap_or(0);
-    debug_assert!(n <= BUF, "block length {n} exceeds BUF {BUF}");
 
-    // Move the step list out of `prog` so we can borrow `prog`'s registers
-    // mutably while iterating. `mem::take` leaves an empty `Vec` behind — no
-    // allocation on the RT path — and we move the list back at the end.
-    let steps = std::mem::take(&mut prog.schedule.steps);
-    for step in &steps {
-        match step {
-            Step::Block(idx) => exec_block_op(prog, *idx, inputs, n),
-            Step::ForeignBlock(idx) => exec_foreign_block(prog, *idx, n),
-        }
+    // Materialize the program inputs into the buffer table: input `k` lands in
+    // `buffers[ir.input_buffers[k]]` (the value register `ValueBufferLoadInput`
+    // allocates its marker for). Zero-pads to the tick length.
+    for (k, &buf) in prog.ir.input_buffers.iter().enumerate() {
+        prog.buffers[buf].with_data_mut(|b| {
+            b[..n].fill(T::ZERO);
+            if let Some(inp) = inputs.get(k) {
+                let m = inp.len().min(n);
+                b[..m].copy_from_slice(&inp[..m]);
+            }
+        });
     }
-    prog.schedule.steps = steps;
 
     // Value-track phase (per-tick): allocate/free the program's values. A
     // latched value error (a collection capacity overflow) is propagated only
@@ -87,12 +90,28 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
 
-    for (i, out) in outputs.iter_mut().enumerate() {
-        if let Some(&reg) = prog.ir.output_regs.get(i) {
-            let m = out.len().min(n);
-            out[..m].copy_from_slice(&prog.block_regs[reg][..m]);
+    // Drain the whole-buffer signal outputs from the value-output registers:
+    // each holds a `Value::Buffer` whose handle's slice is copied into the
+    // external output slice.
+    let output_regs = std::mem::take(&mut prog.ir.value_output_regs);
+    for (i, &r) in output_regs.iter().enumerate() {
+        let buffer = match prog.value_regs.get(r).copied().flatten() {
+            Some(rr) => match prog.arena.get(rr) {
+                Some(Value::Buffer(idx)) => Some(*idx),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(idx) = buffer {
+            if let Some(out) = outputs.get_mut(i) {
+                let m = out.len().min(n);
+                prog.buffers[idx].with_data(|b| {
+                    out[..m].copy_from_slice(&b[..m]);
+                });
+            }
         }
     }
+    prog.ir.value_output_regs = output_regs;
 
     // Copy the value outputs (one per value output channel) into the program's
     // stable `value_outputs` store. Each output is forced to WHNF first (a
@@ -629,6 +648,7 @@ fn kind_rank(v: &Value) -> i8 {
         Bottom => 13,
         Cons(..) => 14,
         Nil => 15,
+        Buffer(_) => 16,
     }
 }
 
@@ -1409,6 +1429,95 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
                 None => prog.value_regs[*dst + base] = None,
             }
+        }
+        // ---- Whole-buffer value ops (B3-2) ----
+        // Each op reads its operand value registers' `Value::Buffer` indices,
+        // operates on the program's `RegionHandle` buffer table IN-PLACE (via
+        // `with_data`/`with_data_mut`), and stores a fresh `Value::Buffer(dst)`
+        // marker into the destination value register. The buffer index equals
+        // the value register index (1:1 signal lowering).
+        ValueInstr::ValueBufferConst { dst, value } => {
+            let n = prog.block_len;
+            prog.buffers[*dst]
+                .with_data_mut(|b| crate::buffer_math::fill_into(&mut b[..n], T::from_f64(*value)));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferLoadInput { dst, .. } => {
+            // The input slice was already materialized by `process()` into
+            // `buffers[*dst]`; this instruction only allocates the marker.
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferStateRead { dst, slot } => {
+            let n = prog.block_len;
+            prog.buffers[*dst]
+                .with_data_mut(|b| b[..n].copy_from_slice(&prog.block_state[*slot][..n]));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferDelayRead { dst, line } => {
+            let n = prog.block_len;
+            prog.buffers[*dst].with_data_mut(|b| prog.delays[*line].read_block(&mut b[..n]));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferUn { dst, op, src } => {
+            let n = prog.block_len;
+            let mut scratch = [T::ZERO; BUF];
+            prog.buffers[*src].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.buffers[*dst].with_data_mut(|b| {
+                apply_un_slice(*op, &scratch[..n], &mut b[..n]);
+            });
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferBin { dst, op, a, b } => {
+            let n = prog.block_len;
+            let mut sa = [T::ZERO; BUF];
+            let mut sb = [T::ZERO; BUF];
+            prog.buffers[*a].with_data(|s| sa[..n].copy_from_slice(&s[..n]));
+            prog.buffers[*b].with_data(|s| sb[..n].copy_from_slice(&s[..n]));
+            prog.buffers[*dst].with_data_mut(|out| {
+                apply_bin_slice(*op, &sa[..n], &sb[..n], &mut out[..n]);
+            });
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferMove { dst, src } => {
+            let n = prog.block_len;
+            let mut scratch = [T::ZERO; BUF];
+            prog.buffers[*src].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.buffers[*dst].with_data_mut(|b| b[..n].copy_from_slice(&scratch[..n]));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferStateWrite { slot, src } => {
+            let n = prog.block_len;
+            prog.buffers[*src]
+                .with_data(|s| prog.block_state_next[*slot][..n].copy_from_slice(&s[..n]));
+        }
+        ValueInstr::ValueBufferDelayWrite { line, src } => {
+            let n = prog.block_len;
+            prog.buffers[*src].with_data(|s| prog.delays[*line].write_block(&s[..n]));
+        }
+        ValueInstr::ValueCallForeign {
+            dst,
+            srcs,
+            instance,
+        } => {
+            exec_value_foreign(prog, *dst, srcs, *instance, base);
+        }
+        ValueInstr::ValueBufferParamRead { dst, idx } => {
+            let n = prog.block_len;
+            let v = T::from_f64(param_to_f64(&prog.params[*idx]));
+            prog.buffers[*dst].with_data_mut(|b| b[..n].fill(v));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueBufferMainCellRead { dst, cell } => {
+            let n = prog.block_len;
+            let v = match prog.main_cells[*cell] {
+                Some(r) => match prog.arena.get(r) {
+                    Some(crate::arena::Value::Float(f)) => *f,
+                    _ => 0.0,
+                },
+                _ => 0.0,
+            };
+            prog.buffers[*dst].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
         }
     }
 }
@@ -2503,195 +2612,112 @@ fn memoize_bottom<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Execute a single whole-buffer instruction.
-fn exec_block_op<T: Transcendental, const BUF: usize>(
+/// Execute a whole-buffer foreign built-in over `Value::Buffer` operands.
+///
+/// B3-2: the value-track `ValueCallForeign` arm. Reads each `srcs` value
+/// register's `Value::Buffer` handle, calls `Algorithm::process`/
+/// `MultichannelAlgorithm::process` over the handles' `RegionHandle` slices
+/// (no copy at the FFI boundary), and writes the output buffer(s) into
+/// `dst..dst+n_out` (+ the `Value::Buffer` markers).
+fn exec_value_foreign<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
-    idx: usize,
-    inputs: &[&[T]],
-    n: usize,
+    first_dst: usize,
+    srcs: &[usize],
+    instance: usize,
+    base: usize,
 ) {
-    match &prog.ir.instrs[idx] {
-        Instr::Const { dst, value } => {
-            let v = T::from_f64(*value);
-            prog.block_regs[*dst][..n].fill(v);
-        }
-        Instr::LoadInput { dst, index } => {
-            let reg = &mut prog.block_regs[*dst];
-            match inputs.get(*index) {
-                Some(buf) => {
-                    let m = buf.len().min(n);
-                    reg[..m].copy_from_slice(&buf[..m]);
-                    for v in &mut reg[m..n] {
-                        *v = T::ZERO;
-                    }
-                }
-                None => {
-                    for v in &mut reg[..n] {
-                        *v = T::ZERO;
-                    }
-                }
+    let bi = &prog.ir.builtins[instance];
+    let n_in = bi.signal_ins;
+    let n_out = bi.signal_outs;
+    assert!(
+        n_in <= MAX_BUILTIN_CHANNELS && n_out <= MAX_BUILTIN_CHANNELS,
+        "built-in '{0}' has {n_in}→{n_out} channels, exceeding MAX_BUILTIN_CHANNELS ({MAX_BUILTIN_CHANNELS})",
+        bi.name
+    );
+    let n = prog.block_len;
+
+    if n_in <= 1 && n_out == 1 {
+        assert!(
+            n_in == 0 || first_dst != srcs[0],
+            "ForeignBlock register aliasing: input reg {} == output reg {}.",
+            srcs[0],
+            first_dst,
+        );
+        let mut scratch = [T::ZERO; BUF];
+        let maybe_in = if n_in == 0 {
+            None
+        } else {
+            prog.buffers[srcs[0]].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            Some(&scratch[..n])
+        };
+        match &mut prog.builtins[instance] {
+            crate::program::BuiltinInst::Block(b) => {
+                prog.buffers[first_dst].with_data_mut(|out| {
+                    let _ = b.process(maybe_in, &mut out[..n]);
+                });
+            }
+            crate::program::BuiltinInst::MultichannelBlock(_) => {
+                unreachable!("ForeignBlock fast path with multichannel builtin")
             }
         }
-        Instr::ReadBlockState { dst, slot } => {
-            prog.block_regs[*dst][..n].copy_from_slice(&prog.block_state[*slot][..n]);
-        }
-        Instr::ReadDelay { dst, line } => {
-            prog.delays[*line].read_block(&mut prog.block_regs[*dst][..n]);
-        }
-        Instr::Move { dst, src } => {
-            let mut scratch = [T::ZERO; BUF];
-            scratch[..n].copy_from_slice(&prog.block_regs[*src][..n]);
-            prog.block_regs[*dst][..n].copy_from_slice(&scratch[..n]);
-        }
-        Instr::Un { dst, op, src } => {
-            let mut scratch = [T::ZERO; BUF];
-            scratch[..n].copy_from_slice(&prog.block_regs[*src][..n]);
-            apply_un_slice(*op, &scratch[..n], &mut prog.block_regs[*dst][..n]);
-        }
-        Instr::Bin { dst, op, a, b } => {
-            let mut sa = [T::ZERO; BUF];
-            let mut sb = [T::ZERO; BUF];
-            sa[..n].copy_from_slice(&prog.block_regs[*a][..n]);
-            sb[..n].copy_from_slice(&prog.block_regs[*b][..n]);
-            apply_bin_slice(*op, &sa[..n], &sb[..n], &mut prog.block_regs[*dst][..n]);
-        }
-        Instr::WriteBlockState { slot, src } => {
-            prog.block_state_next[*slot][..n].copy_from_slice(&prog.block_regs[*src][..n]);
-        }
-        Instr::WriteDelay { line, src } => {
-            prog.delays[*line].write_block(&prog.block_regs[*src][..n]);
-        }
-        Instr::ReadParam { dst, idx } => {
-            let v = T::from_f64(param_to_f64(&prog.params[*idx]));
-            prog.block_regs[*dst][..n].fill(v);
-        }
-        Instr::ReadActorParam { dst, param_idx } => {
-            let v = T::from_f64(param_to_f64(&prog.params[*param_idx]));
-            prog.block_regs[*dst][..n].fill(v);
-        }
-        Instr::ReadMainCell { dst, cell } => {
-            // Materialise the persistent main λ-parameter cell's float value.
-            // The cell was allocated at construction and survives across ticks,
-            // so a value written by `SetParameter` on the control thread is
-            // read here on every subsequent block. A `Void` (unset) cell is 0.0.
-            let v = match prog.main_cells[*cell] {
-                Some(r) => match prog.arena.get(r) {
-                    Some(crate::arena::Value::Float(f)) => *f,
-                    _ => 0.0,
-                },
-                _ => 0.0,
-            };
-            prog.block_regs[*dst][..n].fill(T::from_f64(v));
-        }
-        Instr::CallBlock { .. } => {
-            unreachable!("block built-in scheduled as a block op (should be ForeignBlock)")
-        }
-        #[cfg(feature = "debug")]
-        Instr::ProbePoint { dst, src, .. } => {
-            let mut scratch = [T::ZERO; BUF];
-            scratch[..n].copy_from_slice(&prog.block_regs[*src][..n]);
-            prog.block_regs[*dst][..n].copy_from_slice(&scratch[..n]);
+    } else {
+        match &mut prog.builtins[instance] {
+            crate::program::BuiltinInst::MultichannelBlock(mb) => {
+                let mut in_bufs: [FixedBuffer<T, BUF>; MAX_BUILTIN_CHANNELS] =
+                    std::array::from_fn(|_| FixedBuffer::new());
+                for ch in 0..n_in {
+                    prog.buffers[srcs[ch]].with_data(|s| {
+                        in_bufs[ch][..n].copy_from_slice(&s[..n]);
+                    });
+                }
+                let input_refs: [&[T]; MAX_BUILTIN_CHANNELS] =
+                    std::array::from_fn(|i| &in_bufs[i][..n]);
+                let mut out_bufs: [FixedBuffer<T, BUF>; MAX_BUILTIN_CHANNELS] =
+                    std::array::from_fn(|_| FixedBuffer::new());
+                let mut empties: [[T; 0]; MAX_BUILTIN_CHANNELS] = std::array::from_fn(|_| []);
+                let mut it = out_bufs
+                    .iter_mut()
+                    .map(|b| &mut b[..n])
+                    .chain(empties.iter_mut().map(|d| &mut d[..]));
+                let mut out_refs: [&mut [T]; MAX_BUILTIN_CHANNELS] =
+                    std::array::from_fn(|_| it.next().unwrap());
+                let _ = MultichannelAlgorithm::process(
+                    mb.as_mut(),
+                    &input_refs[..n_in],
+                    &mut out_refs[..n_out],
+                );
+                for (ch, ob) in out_bufs.iter().take(n_out).enumerate() {
+                    prog.buffers[first_dst + ch].with_data_mut(|out| {
+                        out[..n].copy_from_slice(&ob[..n]);
+                    });
+                }
+            }
+            crate::program::BuiltinInst::Block(b) => {
+                let mut inp: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
+                    std::array::from_fn(|_| [T::ZERO; BUF]);
+                for (ch, &reg) in srcs.iter().enumerate() {
+                    prog.buffers[reg].with_data(|s| {
+                        inp[ch][..n].copy_from_slice(&s[..n]);
+                    });
+                }
+                let mut out_buf: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
+                    std::array::from_fn(|_| [T::ZERO; BUF]);
+                let _ = b.process(
+                    Some(&inp.as_flattened()[..n_in * n]),
+                    &mut out_buf.as_flattened_mut()[..n_out * n],
+                );
+                for ch in 0..n_out {
+                    prog.buffers[first_dst + ch].with_data_mut(|out| {
+                        let start = ch * n;
+                        out[..n].copy_from_slice(&out_buf.as_flattened()[start..start + n]);
+                    });
+                }
+            }
         }
     }
-}
-
-/// Execute a whole-buffer foreign built-in (opaque `Algorithm`).
-fn exec_foreign_block<T: Transcendental, const BUF: usize>(
-    prog: &mut RillProgram<T, BUF>,
-    idx: usize,
-    n: usize,
-) {
-    if let Instr::CallBlock {
-        dst: first_dst,
-        srcs,
-        instance,
-    } = &prog.ir.instrs[idx]
-    {
-        let bi = &prog.ir.builtins[*instance];
-        let n_in = bi.signal_ins;
-        let n_out = bi.signal_outs;
-        assert!(
-            n_in <= MAX_BUILTIN_CHANNELS && n_out <= MAX_BUILTIN_CHANNELS,
-            "built-in '{0}' has {n_in}→{n_out} channels, exceeding MAX_BUILTIN_CHANNELS ({MAX_BUILTIN_CHANNELS})",
-            bi.name
-        );
-
-        if n_in <= 1 && n_out == 1 {
-            assert!(
-                n_in == 0 || *first_dst != srcs[0],
-                "ForeignBlock register aliasing: input reg {} == output reg {}.",
-                srcs[0],
-                *first_dst,
-            );
-            let mut scratch = [T::ZERO; BUF];
-            let maybe_in = if n_in == 0 {
-                None
-            } else {
-                scratch[..n].copy_from_slice(&prog.block_regs[srcs[0]][..n]);
-                Some(&scratch[..n])
-            };
-            match &mut prog.builtins[*instance] {
-                crate::program::BuiltinInst::Block(b) => {
-                    let _ = b.process(maybe_in, &mut prog.block_regs[*first_dst][..n]);
-                }
-                crate::program::BuiltinInst::MultichannelBlock(_) => {
-                    unreachable!("ForeignBlock fast path with multichannel builtin")
-                }
-            }
-        } else {
-            match &mut prog.builtins[*instance] {
-                crate::program::BuiltinInst::MultichannelBlock(mb) => {
-                    // Two-phase: snapshot all input channels into stack scratch
-                    // (they may alias the destination registers), then write the
-                    // outputs directly into the destination register store.
-                    let mut in_bufs: [FixedBuffer<T, BUF>; MAX_BUILTIN_CHANNELS] =
-                        std::array::from_fn(|_| FixedBuffer::new());
-                    for ch in 0..n_in {
-                        in_bufs[ch][..n].copy_from_slice(&prog.block_regs[srcs[ch]][..n]);
-                    }
-                    let input_refs: [&[T]; MAX_BUILTIN_CHANNELS] =
-                        std::array::from_fn(|i| &in_bufs[i][..n]);
-                    let dst_bufs = &mut prog.block_regs[*first_dst..*first_dst + n_out];
-                    // Real output channels followed by zero-length dummies so the
-                    // stack array always yields exactly MAX_BUILTIN_CHANNELS slots.
-                    let mut empties: [[T; 0]; MAX_BUILTIN_CHANNELS] = std::array::from_fn(|_| []);
-                    let mut it = dst_bufs
-                        .iter_mut()
-                        .map(|b| &mut b[..n])
-                        .chain(empties.iter_mut().map(|d| &mut d[..]));
-                    let mut out_refs: [&mut [T]; MAX_BUILTIN_CHANNELS] =
-                        std::array::from_fn(|_| it.next().unwrap());
-                    let _ = MultichannelAlgorithm::process(
-                        mb.as_mut(),
-                        &input_refs[..n_in],
-                        &mut out_refs[..n_out],
-                    );
-                }
-                crate::program::BuiltinInst::Block(b) => {
-                    // Interleaved path: a contiguous input/output pair, both on
-                    // the stack (bounded by MAX_BUILTIN_CHANNELS). Nested arrays
-                    // `[[T; BUF]; N]` are laid out contiguously, so the flattened
-                    // view is a single `[T; BUF * N]` block.
-                    let mut inp: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
-                        std::array::from_fn(|_| [T::ZERO; BUF]);
-                    for (ch, &reg_idx) in srcs.iter().enumerate() {
-                        inp[ch][..n].copy_from_slice(&prog.block_regs[reg_idx][..n]);
-                    }
-                    let mut out_buf: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
-                        std::array::from_fn(|_| [T::ZERO; BUF]);
-                    let _ = b.process(
-                        Some(&inp.as_flattened()[..n_in * n]),
-                        &mut out_buf.as_flattened_mut()[..n_out * n],
-                    );
-                    for ch in 0..n_out {
-                        let reg_idx = *first_dst + ch;
-                        let start = ch * n;
-                        prog.block_regs[reg_idx][..n]
-                            .copy_from_slice(&out_buf.as_flattened()[start..start + n]);
-                    }
-                }
-            }
-        }
+    for i in 0..n_out {
+        let reg = first_dst + i;
+        prog.value_regs[reg + base] = alloc_owned(prog, Value::Buffer(reg));
     }
 }
 
@@ -2748,9 +2774,6 @@ mod closure_dispatch_tests {
         // fragment computes const int 7; CallFunc copies the result to the
         // output register.
         let ir = Ir {
-            instrs: Vec::new(),
-            num_regs: 0,
-            output_regs: Vec::new(),
             num_inputs: 0,
             num_outputs: 0,
             state: Default::default(),
@@ -2783,6 +2806,10 @@ mod closure_dispatch_tests {
                 buffer_budget: 0,
                 value_state_slots: 0,
             },
+            num_buffers: 0,
+
+            input_buffers: Vec::new(),
+
             tapes: Vec::new(),
             fragments: vec![std::sync::Arc::new(FragmentIr {
                 value_blocks: vec![ValueBlock {
@@ -2790,11 +2817,8 @@ mod closure_dispatch_tests {
                     term: ValueTerm::Halt,
                 }],
                 entry: 0,
-                steps: Vec::new(),
                 num_value_regs: 1,
-                num_block_regs: 0,
                 output_value_regs: vec![0],
-                output_block_regs: Vec::new(),
                 num_capture_cells: 0,
                 sig: FuncSig {
                     value_ins: 0,
@@ -2824,9 +2848,6 @@ mod value_track_tests {
         value_state_slots: usize,
     ) -> RillProgram<f32, 256> {
         let ir = Ir {
-            instrs: Vec::new(),
-            num_regs: 0,
-            output_regs: Vec::new(),
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -2845,6 +2866,10 @@ mod value_track_tests {
                 buffer_budget: 64,
                 value_state_slots,
             },
+            num_buffers: 0,
+
+            input_buffers: Vec::new(),
+
             tapes: Vec::new(),
         };
         RillProgram::<f32, 256>::new(ir)
@@ -3369,11 +3394,8 @@ mod lazy_track_tests {
                 term: ValueTerm::Halt,
             }],
             entry: 0,
-            steps: Vec::new(),
             num_value_regs: 1,
-            num_block_regs: 0,
             output_value_regs: vec![0],
-            output_block_regs: Vec::new(),
             num_capture_cells: 0,
             sig: FuncSig {
                 value_ins: 0,
@@ -3390,9 +3412,6 @@ mod lazy_track_tests {
         fragments: Vec<Arc<FragmentIr>>,
     ) -> RillProgram<f32, 256> {
         let ir = Ir {
-            instrs: Vec::new(),
-            num_regs: 0,
-            output_regs: Vec::new(),
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -3411,6 +3430,10 @@ mod lazy_track_tests {
                 buffer_budget: 64,
                 value_state_slots: 0,
             },
+            num_buffers: 0,
+
+            input_buffers: Vec::new(),
+
             tapes: Vec::new(),
         };
         RillProgram::<f32, 256>::new(ir)
@@ -3599,11 +3622,8 @@ mod lazy_track_tests {
                 term: ValueTerm::Halt,
             }],
             entry: 0,
-            steps: Vec::new(),
             num_value_regs: 3,
-            num_block_regs: 0,
             output_value_regs: vec![2],
-            output_block_regs: Vec::new(),
             num_capture_cells: 0,
             sig: FuncSig {
                 value_ins: 0,
@@ -3667,11 +3687,8 @@ mod lazy_track_tests {
                 term: ValueTerm::Halt,
             }],
             entry: 0,
-            steps: Vec::new(),
             num_value_regs: 1,
-            num_block_regs: 0,
             output_value_regs: vec![0],
-            output_block_regs: Vec::new(),
             num_capture_cells: 1,
             sig: FuncSig {
                 value_ins: 0,

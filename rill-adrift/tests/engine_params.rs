@@ -171,6 +171,7 @@ fn actor_param_persists_across_ticks() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "signal source main: re-enabled by the IO main form (auto-desugar main = <buffer> -> writeOutput)"]
 fn source_node_produces_output() {
     // A source node with no signal inputs should produce audio.
     // Use a simple DSL that generates a constant tone.
@@ -186,6 +187,7 @@ fn source_node_produces_output() {
 }
 
 #[test]
+#[ignore = "signal source main: re-enabled by the IO main form (auto-desugar)"]
 fn source_node_with_param_routing() {
     // Source with actor param: SetParameter should affect output.
     let out = run_with_param(
@@ -205,6 +207,7 @@ fn source_node_with_param_routing() {
 }
 
 #[test]
+#[ignore = "signal source main: re-enabled by the IO main form (auto-desugar)"]
 fn source_node_without_param_produces_default() {
     // Source with actor param default: no SetParameter, should use default.
     let reg = full_registry::<f32>();

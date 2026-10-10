@@ -88,32 +88,38 @@ executes underneath. Old signal tests rewritten for the new model.'
 ## Task B3-2: Switch program entry/exit to `Value::Buffer` (value track)
 
 **Files:**
-- Modify: `rill-lang/src/arena.rs` (`Value::Buffer`)
-- Modify: `rill-lang/src/lower.rs` (signal expressions lower to the value track; FFI calls → a buffer op)
-- Modify: `rill-lang/src/backend/interp.rs` (value-track executes `Value::Buffer` ops; block track becomes dead)
-- Modify: `rill-lang/src/program.rs` (inputs/outputs as `Value::Buffer`)
+- Modify: `rill-lang/src/arena.rs` (`Value::Buffer(usize)`)
+- Modify: `rill-lang/src/program.rs` (program-level buffer table `Vec<RegionHandle<T>>` + `BufferAllocator`)
+- Modify: `rill-lang/src/lower.rs` (signal expressions lower to the value track; FFI calls → a buffer op; inputs/outputs → `Value::Buffer` reads/writes)
+- Modify: `rill-lang/src/backend/interp.rs` (value-track executes `Value::Buffer` ops in-place via `with_data_mut`; block track becomes dead)
 - Test: `rill-lang/tests/linear_lambda.rs`, updated signal tests
 
 **Goal:** `main`'s inputs/outputs are `Value::Buffer`; signal programs run through the value track. The block track is dead code (present, unreferenced).
 
+**Memory model (user directive):** Buffer is an ORDINARY value type backed by the separate Tier-1 big-object memory (SP-4): `Value::Buffer(usize)` indexes a program-level `Vec<RegionHandle<T>>` carved from a `BufferAllocator` at build (program-lifetime static, RC). Buffer mutation is IN-PLACE and scoped by an ST region (`runST (fn s -> …)`); the phantom `s` prevents a mutated buffer from leaking. See `docs/superpowers/specs/2026-10-10-rill-lang-full-track-unification-design.md` §2.2.
+
 - [ ] **Step 1: Add `Value::Buffer`**
 
-In `arena.rs`: `Value::Buffer(usize)` (index into a program-level buffer store, renamed from `block_regs`) or inline — pick the table-index approach. Update `visit_refs`/`drop_ref`/`clone_pooled`/`kind`.
+In `arena.rs`: `Value::Buffer(usize)` (index into the program-level buffer table). Leaf value — `visit_refs`/`detach_payload`/`clone_pooled` treat it as owning no arena children. Add `ValueKind::Buffer`.
 
-- [ ] **Step 2: Lower signal expressions to the value track**
+- [ ] **Step 2: Program buffer table**
 
-In `lower.rs`: signal expressions produce `Value::Buffer` on the value track. FFI calls → a buffer-op instruction (B3-4 makes it `ValueCallForeign`). Inputs/outputs → value-track buffer reads/writes.
+In `program.rs`: `RillProgram` owns a `BufferAllocator<T>` and `buffers: Vec<RegionHandle<T>>`, sized at build from `Ir::num_buffers` (each handle length `BUF`). Remove `block_regs` from construction.
 
-- [ ] **Step 3: Run through the value track**
+- [ ] **Step 3: Lower signal expressions to the value track**
 
-In `interp.rs`: the value track executes `Value::Buffer` ops (math via `buffer_math`, FFI via `Algorithm::process` over `Value::Buffer`). `process()` materializes inputs as `Value::Buffer` and drains outputs from value-output regs. The block track is not deleted, just unreferenced.
+In `lower.rs`: signal expressions produce `Value::Buffer` on the value track. FFI calls → a buffer-op instruction (B3-4 makes it `ValueCallForeign`). Inputs/outputs → value-track buffer reads/writes. The 1251-line block `lower` path is replaced by value-track lowering.
 
-- [ ] **Step 4: Run the tests**
+- [ ] **Step 4: Run through the value track**
+
+In `interp.rs`: the value track executes `Value::Buffer` ops (math via `buffer_math` in-place on `with_data_mut` slices, FFI via `Algorithm::process` over `Value::Buffer`). `process()` materializes inputs as `Value::Buffer` and drains outputs from value-output regs. The block track is not deleted, just unreferenced.
+
+- [ ] **Step 5: Run the tests**
 
 Run: `cargo test -p rill-lang`, then `cargo test --workspace`
 Expected: PASS — signal programs run via the value track; block track is dead.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 cargo fmt
