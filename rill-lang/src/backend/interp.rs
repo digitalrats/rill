@@ -174,7 +174,7 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
         );
         let Some(b) = blocks.get(cur) else { break };
         for i in &b.instrs {
-            exec_value_instr(prog, i, &mut drops);
+            exec_value_instr(prog, i, 0, &mut drops);
         }
         cur = match b.term {
             ValueTerm::Fallthrough(n) => n,
@@ -452,6 +452,7 @@ fn pool_clone_value<T: Transcendental, const BUF: usize>(
 fn read_field_refs<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     regs: &[usize],
+    base: usize,
 ) -> Option<Vec<ArenaRef>> {
     let mut refs: Vec<ArenaRef> = match prog.arena.take_buf(regs.len()) {
         Ok(b) => b,
@@ -461,7 +462,7 @@ fn read_field_refs<T: Transcendental, const BUF: usize>(
         }
     };
     for r in regs {
-        match prog.value_regs[*r] {
+        match prog.value_regs[*r + base] {
             Some(src) => match prog.arena.copy(src) {
                 Ok(c) => refs.push(c),
                 Err(_) => {
@@ -756,6 +757,7 @@ fn numeric_operand<T: Transcendental, const BUF: usize>(
 fn exec_value_instr<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     instr: &ValueInstr,
+    base: usize,
     drops: &mut Vec<ArenaRef>,
 ) {
     match instr {
@@ -774,14 +776,15 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueBindCell { dst } => {
             // A cell is a fresh slot holding the cell's value directly; the
             // register owns the cell ref.
-            prog.value_regs[*dst] = alloc_owned(prog, Value::Void);
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
         }
         ValueInstr::ValueReadCell { dst, cell } => {
             // Inside a fragment (`frag_cells_base < frag_cells.len()`), `cell`
             // is a CAPTURE index into the current call's env frame — the
             // lambda's free variables, resolved at `frag_cells_base + cell`.
             // Otherwise `cell` is a value register holding a cell ref
-            // (main-track reads).
+            // (main-track reads). `cell` is never a fragment-local register, so
+            // it is NOT offset by `base`.
             let capture = if prog.frag_cells_base < prog.frag_cells.len() {
                 Some(prog.frag_cells[prog.frag_cells_base + *cell])
             } else {
@@ -793,27 +796,31 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     // read result is a new owner, it does not share. An
                     // uninitialised (Void) cell reads as 0.0. Payloads are
                     // pooled (no per-tick heap allocation).
-                    prog.value_regs[*dst] = if matches!(prog.arena.get(cr), Some(&Value::Void)) {
-                        alloc_owned(prog, Value::Float(0.0))
-                    } else {
-                        alloc_copy_slot(prog, cr)
-                    };
+                    prog.value_regs[*dst + base] =
+                        if matches!(prog.arena.get(cr), Some(&Value::Void)) {
+                            alloc_owned(prog, Value::Float(0.0))
+                        } else {
+                            alloc_copy_slot(prog, cr)
+                        };
                 }
-                None => prog.value_regs[*dst] = None,
+                None => prog.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueReadMainCell { dst, cell } => {
             // Read a persistent main λ-parameter cell (see `ReadMainCell` in the
             // block track). The result is a new owner; a `Void` cell reads 0.0.
+            // `cell` is an index into the main-cell store, NOT a fragment-local
+            // register — leave it unoffset.
             match prog.main_cells[*cell] {
                 Some(cr) => {
-                    prog.value_regs[*dst] = if matches!(prog.arena.get(cr), Some(&Value::Void)) {
-                        alloc_owned(prog, Value::Float(0.0))
-                    } else {
-                        alloc_copy_slot(prog, cr)
-                    };
+                    prog.value_regs[*dst + base] =
+                        if matches!(prog.arena.get(cr), Some(&Value::Void)) {
+                            alloc_owned(prog, Value::Float(0.0))
+                        } else {
+                            alloc_copy_slot(prog, cr)
+                        };
                 }
-                _ => prog.value_regs[*dst] = None,
+                _ => prog.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueWriteCell { cell, src } => {
@@ -822,8 +829,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // field capturing a self-cell for a recursive closure) must see
             // the new value. The old implementation allocated a fresh slot and
             // updated only the register — captured references went stale and
-            // read the freed slot as Void.
-            if let (Some(cr), Some(sr)) = (prog.value_regs[*cell], prog.value_regs[*src]) {
+            // read the freed slot as Void. Both `cell` and `src` are
+            // fragment-local registers — offset both.
+            if let (Some(cr), Some(sr)) =
+                (prog.value_regs[*cell + base], prog.value_regs[*src + base])
+            {
                 // A safe copy: recount (RC++) the children so the cell owns
                 // them independently of src.
                 let new_value: Option<Value> = match prog.arena.get(sr).cloned() {
@@ -846,44 +856,65 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             }
         }
         ValueInstr::ValueConstInt { dst, value } => {
-            prog.value_regs[*dst] = alloc_owned(prog, Value::Int(*value));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Int(*value));
         }
         ValueInstr::ValueConstFloat { dst, value } => {
-            prog.value_regs[*dst] = alloc_owned(prog, Value::Float(*value));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Float(*value));
         }
-        ValueInstr::ValueAdd { dst, a, b } => {
-            exec_value_arith(prog, ValueArith::Add, *dst, *a, *b, drops)
-        }
-        ValueInstr::ValueSub { dst, a, b } => {
-            exec_value_arith(prog, ValueArith::Sub, *dst, *a, *b, drops)
-        }
-        ValueInstr::ValueMul { dst, a, b } => {
-            exec_value_arith(prog, ValueArith::Mul, *dst, *a, *b, drops)
-        }
-        ValueInstr::ValueDiv { dst, a, b } => {
-            exec_value_arith(prog, ValueArith::Div, *dst, *a, *b, drops)
-        }
+        ValueInstr::ValueAdd { dst, a, b } => exec_value_arith(
+            prog,
+            ValueArith::Add,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
+        ValueInstr::ValueSub { dst, a, b } => exec_value_arith(
+            prog,
+            ValueArith::Sub,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
+        ValueInstr::ValueMul { dst, a, b } => exec_value_arith(
+            prog,
+            ValueArith::Mul,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
+        ValueInstr::ValueDiv { dst, a, b } => exec_value_arith(
+            prog,
+            ValueArith::Div,
+            *dst + base,
+            *a + base,
+            *b + base,
+            drops,
+        ),
         ValueInstr::ValueConstructRecord { dst, fields } => {
-            prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, fields) {
+            prog.value_regs[*dst + base] = if let Some(refs) = read_field_refs(prog, fields, base) {
                 alloc_owned(prog, Value::Record(refs))
             } else {
                 None
             };
         }
         ValueInstr::ValueConstructSum { dst, ctor, payload } => {
-            prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, payload) {
+            prog.value_regs[*dst + base] = if let Some(refs) = read_field_refs(prog, payload, base)
+            {
                 alloc_owned(prog, Value::Sum(*ctor, refs))
             } else {
                 None
             };
         }
         ValueInstr::ValueProject { dst, slot, field } => {
-            match forced_operand(prog, *slot, drops) {
+            match forced_operand(prog, *slot + base, drops) {
                 Some(rec) => {
                     let fref: Option<ArenaRef> = match prog.arena.get(rec) {
                         Some(Value::Bottom) => {
                             // Projecting bottom is bottom.
-                            write_bottom(prog, *dst, drops);
+                            write_bottom(prog, *dst + base, drops);
                             return;
                         }
                         Some(Value::Record(fields)) => fields.get(*field).cloned(),
@@ -891,22 +922,22 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     };
                     // A project result is a new owner: share the field ref.
                     match fref {
-                        Some(fr) => prog.value_regs[*dst] = copy_owned(prog, fr),
-                        None => prog.value_regs[*dst] = None,
+                        Some(fr) => prog.value_regs[*dst + base] = copy_owned(prog, fr),
+                        None => prog.value_regs[*dst + base] = None,
                     }
                 }
-                None => prog.value_regs[*dst] = None,
+                None => prog.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueUpdateField { slot, field, src } => {
-            match (prog.value_regs[*slot], prog.value_regs[*src]) {
+            match (prog.value_regs[*slot + base], prog.value_regs[*src + base]) {
                 (Some(rec), Some(sr)) => {
                     // COW: if the record is shared, mutate gives us a private
                     // copy; the slot register takes the (possibly new) ref.
                     let new_rec = match prog.arena.mutate(rec) {
                         Ok(r) => r,
                         Err(_) => {
-                            prog.value_regs[*slot] = None;
+                            prog.value_regs[*slot + base] = None;
                             return;
                         }
                     };
@@ -940,35 +971,37 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                         if let Some(of) = old_field {
                             prog.arena.drop_ref(of);
                         }
-                        prog.value_regs[*slot] = Some(new_rec);
+                        prog.value_regs[*slot + base] = Some(new_rec);
                     } else {
-                        prog.value_regs[*slot] = None;
+                        prog.value_regs[*slot + base] = None;
                     }
                 }
-                _ => prog.value_regs[*slot] = None,
+                _ => prog.value_regs[*slot + base] = None,
             }
         }
         ValueInstr::ValueNewtype { dst, src } => {
-            match prog.value_regs[*src] {
+            match prog.value_regs[*src + base] {
                 // The newtype owns its inner value; the src register keeps its
                 // own ref — copy first so both hold a counted ref.
                 Some(sr) => {
                     let copied = copy_owned(prog, sr);
                     match copied {
-                        Some(c) => prog.value_regs[*dst] = alloc_owned(prog, Value::Newtype(c)),
-                        None => prog.value_regs[*dst] = None,
+                        Some(c) => {
+                            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Newtype(c))
+                        }
+                        None => prog.value_regs[*dst + base] = None,
                     }
                 }
-                None => prog.value_regs[*dst] = None,
+                None => prog.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueUnwrap { dst, src } => {
-            match forced_operand(prog, *src, drops) {
+            match forced_operand(prog, *src + base, drops) {
                 Some(sr) => {
                     let inner: Option<ArenaRef> = match prog.arena.get(sr) {
                         Some(Value::Bottom) => {
                             // Unwrapping bottom is bottom.
-                            write_bottom(prog, *dst, drops);
+                            write_bottom(prog, *dst + base, drops);
                             return;
                         }
                         Some(Value::Newtype(inner)) => Some(*inner),
@@ -976,11 +1009,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     };
                     // The unwrapped result is a new owner: share the inner ref.
                     match inner {
-                        Some(i) => prog.value_regs[*dst] = copy_owned(prog, i),
-                        None => prog.value_regs[*dst] = None,
+                        Some(i) => prog.value_regs[*dst + base] = copy_owned(prog, i),
+                        None => prog.value_regs[*dst + base] = None,
                     }
                 }
-                None => prog.value_regs[*dst] = None,
+                None => prog.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueCallFunc {
@@ -992,7 +1025,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // referenced fragment with a temporary register frame, and copy the
             // result into `dst`. An unbound slot or a non-eager callable value
             // (a lazy thunk) yields a detectable `None`.
-            let slot = prog.value_regs.get(*closure_slot).copied().flatten();
+            let slot = prog.value_regs.get(*closure_slot + base).copied().flatten();
             match slot.and_then(|s| prog.arena.get(s)) {
                 Some(Value::Callable {
                     fragment: fragment_id,
@@ -1009,15 +1042,15 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                                 prog,
                                 &frag,
                                 *env_ref,
-                                ArgsSource::Registers(args),
-                                Some(*dst),
+                                ArgsSource::Registers { regs: args, base },
+                                Some(*dst + base),
                                 drops,
                             );
                         }
-                        None => prog.value_regs[*dst] = None,
+                        None => prog.value_regs[*dst + base] = None,
                     }
                 }
-                _ => prog.value_regs[*dst] = None,
+                _ => prog.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueCallLazy {
@@ -1030,8 +1063,8 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // with the (unforced) argument refs. The application does not run —
             // `run_call` splits the env into captures + args by the fragment's
             // `value_ins` when the thunk is forced.
-            let Some(cr) = prog.value_regs.get(*closure_slot).copied().flatten() else {
-                prog.value_regs[*dst] = None;
+            let Some(cr) = prog.value_regs.get(*closure_slot + base).copied().flatten() else {
+                prog.value_regs[*dst + base] = None;
                 return;
             };
             let (env_ref, fid) = match prog.arena.get(cr) {
@@ -1041,14 +1074,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     cell: None,
                 }) => (*env, *fragment),
                 _ => {
-                    prog.value_regs[*dst] = None;
+                    prog.value_regs[*dst + base] = None;
                     return;
                 }
             };
             let cell = match prog.arena.alloc(Value::ThunkCell(ThunkState::Unforced)) {
                 Ok(c) => c,
                 Err(_) => {
-                    prog.value_regs[*dst] = None;
+                    prog.value_regs[*dst + base] = None;
                     return;
                 }
             };
@@ -1066,7 +1099,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 _ => Vec::new(),
             };
             for &a in args {
-                if let Some(r) = prog.value_regs.get(a).copied().flatten() {
+                if let Some(r) = prog.value_regs.get(a + base).copied().flatten() {
                     match prog.arena.copy(r) {
                         Ok(c) => fields.push(c),
                         Err(_) => {
@@ -1074,7 +1107,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                                 prog.arena.drop_ref(*f);
                             }
                             prog.arena.drop_ref(cell);
-                            prog.value_regs[*dst] = None;
+                            prog.value_regs[*dst + base] = None;
                             return;
                         }
                     }
@@ -1084,11 +1117,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 Some(e) => e,
                 None => {
                     prog.arena.drop_ref(cell);
-                    prog.value_regs[*dst] = None;
+                    prog.value_regs[*dst + base] = None;
                     return;
                 }
             };
-            prog.value_regs[*dst] = alloc_owned(
+            prog.value_regs[*dst + base] = alloc_owned(
                 prog,
                 Value::Callable {
                     fragment: fid,
@@ -1105,24 +1138,24 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // `drop_ref` releases the env when the callable is freed. An
             // unbound env (v1 named references) falls back to a fresh Void slot
             // the callable owns outright.
-            let env_ref = match prog.value_regs.get(*env).copied().flatten() {
+            let env_ref = match prog.value_regs.get(*env + base).copied().flatten() {
                 Some(r) => match prog.arena.copy(r) {
                     Ok(c) => c,
                     Err(_) => {
-                        prog.value_regs[*dst] = None;
+                        prog.value_regs[*dst + base] = None;
                         return;
                     }
                 },
                 None => match prog.arena.alloc(Value::Void) {
                     Ok(v) => v,
                     Err((err, _)) => {
-                        prog.value_regs[*dst] = None;
+                        prog.value_regs[*dst + base] = None;
                         let _ = err;
                         return;
                     }
                 },
             };
-            prog.value_regs[*dst] = alloc_owned(
+            prog.value_regs[*dst + base] = alloc_owned(
                 prog,
                 Value::Callable {
                     fragment: *fragment as u32,
@@ -1131,26 +1164,26 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
             );
         }
-        ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src] {
+        ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src + base] {
             Some(sr) => {
                 let copied = copy_owned(prog, sr);
-                prog.value_regs[*dst] = copied;
+                prog.value_regs[*dst + base] = copied;
             }
-            None => prog.value_regs[*dst] = None,
+            None => prog.value_regs[*dst + base] = None,
         },
         ValueInstr::ValueMove { dst, src } => {
             // A move overwrites `dst`, so release any previous occupant (dst
             // regs are SSA in lowering, but re-assignment must not leak) — and
             // a self-move (`dst == src`) is a no-op, never a clear.
             if *dst != *src {
-                if let Some(old) = prog.value_regs[*dst].take() {
+                if let Some(old) = prog.value_regs[*dst + base].take() {
                     drops.push(old);
                 }
-                prog.value_regs[*dst] = prog.value_regs[*src].take();
+                prog.value_regs[*dst + base] = prog.value_regs[*src + base].take();
             }
         }
         ValueInstr::ValueDrop { src } => {
-            if let Some(r) = prog.value_regs[*src].take() {
+            if let Some(r) = prog.value_regs[*src + base].take() {
                 drops.push(r);
             }
         }
@@ -1159,14 +1192,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 // The read result is a new owner of the stored value.
                 Some(Some(stored)) => {
                     let sr = *stored;
-                    prog.value_regs[*dst] = copy_owned(prog, sr);
+                    prog.value_regs[*dst + base] = copy_owned(prog, sr);
                 }
                 // An empty state slot reads as 0.0.
-                _ => prog.value_regs[*dst] = alloc_owned(prog, Value::Float(0.0)),
+                _ => prog.value_regs[*dst + base] = alloc_owned(prog, Value::Float(0.0)),
             }
         }
         ValueInstr::ValueStateWrite { slot, src } => {
-            if let Some(sr) = prog.value_regs[*src] {
+            if let Some(sr) = prog.value_regs[*src + base] {
                 // The state slot owns its value: copy the src ref, then
                 // release the previous tick's value and store the fresh one.
                 let stored = copy_owned(prog, sr);
@@ -1185,11 +1218,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // writes None into every dst reg — a detectable no-op. Each dst
             // reg owns its payload ref via a copy (rc++); the scrutinee keeps
             // its own ownership of the sum.
-            let scrutinee = forced_operand(prog, *slot, drops);
+            let scrutinee = forced_operand(prog, *slot + base, drops);
             if let Some(sr) = scrutinee {
                 if matches!(prog.arena.get(sr), Some(Value::Bottom)) {
                     for d in dst {
-                        write_bottom(prog, *d, drops);
+                        write_bottom(prog, *d + base, drops);
                     }
                     return;
                 }
@@ -1208,7 +1241,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                             .get(i)
                             .copied()
                             .and_then(|fr| prog.arena.copy(fr).ok());
-                        if let Some(reg) = prog.value_regs.get_mut(*d) {
+                        if let Some(reg) = prog.value_regs.get_mut(*d + base) {
                             // Release any previous occupant (dst regs are SSA in
                             // lowering, but re-assignment must not leak).
                             if let Some(old) = reg.take() {
@@ -1220,7 +1253,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
                 None => {
                     for d in dst {
-                        if let Some(reg) = prog.value_regs.get_mut(*d) {
+                        if let Some(reg) = prog.value_regs.get_mut(*d + base) {
                             if let Some(old) = reg.take() {
                                 drops.push(old);
                             }
@@ -1231,22 +1264,23 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             }
         }
         ValueInstr::ValueBool { dst, value } => {
-            prog.value_regs[*dst] = alloc_owned(prog, Value::Bool(*value));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Bool(*value));
         }
         ValueInstr::ValueConstString { dst, value } => {
-            prog.value_regs[*dst] = alloc_owned(prog, Value::String(value.clone()));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::String(value.clone()));
         }
         ValueInstr::ValueListLit { dst, elems } => {
-            prog.value_regs[*dst] = if let Some(refs) = read_field_refs(prog, elems) {
+            prog.value_regs[*dst + base] = if let Some(refs) = read_field_refs(prog, elems, base) {
                 alloc_owned(prog, Value::List { elems: refs })
             } else {
                 None
             };
         }
         ValueInstr::ValueMapLit { dst, keys, vals } => {
-            prog.value_regs[*dst] = if let (Some(ks), Some(vs)) =
-                (read_field_refs(prog, keys), read_field_refs(prog, vals))
-            {
+            prog.value_regs[*dst + base] = if let (Some(ks), Some(vs)) = (
+                read_field_refs(prog, keys, base),
+                read_field_refs(prog, vals, base),
+            ) {
                 // Map entries are kept SORTED by the derived key order (the
                 // insert/lookup/member binary search relies on it), so a map
                 // literal written out of order is normalised here.
@@ -1259,8 +1293,8 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueCompare { dst, op, a, b } => {
             let (ar, br) = (
-                forced_operand(prog, *a, drops),
-                forced_operand(prog, *b, drops),
+                forced_operand(prog, *a + base, drops),
+                forced_operand(prog, *b + base, drops),
             );
             let res = match (ar, br) {
                 (Some(x), Some(y)) => match (prog.arena.get(x), prog.arena.get(y)) {
@@ -1280,12 +1314,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
                 _ => None,
             };
-            prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
+            prog.value_regs[*dst + base] = res.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueLogic { dst, op, a, b } => {
             let (ar, br) = (
-                forced_operand(prog, *a, drops),
-                forced_operand(prog, *b, drops),
+                forced_operand(prog, *a + base, drops),
+                forced_operand(prog, *b + base, drops),
             );
             let res = match (ar, br) {
                 (Some(x), Some(y)) => match (prog.arena.get(x), prog.arena.get(y)) {
@@ -1298,10 +1332,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
                 _ => None,
             };
-            prog.value_regs[*dst] = res.and_then(|v| alloc_owned(prog, v));
+            prog.value_regs[*dst + base] = res.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueNot { dst, src } => {
-            let b = match forced_operand(prog, *src, drops) {
+            let b = match forced_operand(prog, *src + base, drops) {
                 Some(r) => match prog.arena.get(r) {
                     Some(Value::Bottom) => Some(Value::Bottom),
                     Some(Value::Bool(p)) => Some(Value::Bool(!*p)),
@@ -1309,7 +1343,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
                 _ => None,
             };
-            prog.value_regs[*dst] = b.and_then(|v| alloc_owned(prog, v));
+            prog.value_regs[*dst + base] = b.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueSetError => {
             prog.value_error = Some(ProcessError::processing(
@@ -1317,7 +1351,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             ));
         }
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
-            exec_value_call_builtin(prog, *op, args, *dst, drops);
+            exec_value_call_builtin(prog, *op, args, *dst + base, base, drops);
         }
         ValueInstr::ValueLazy { dst, env, fragment } => {
             // Create a lazy binding: a fresh memo cell plus a callable value
@@ -1332,16 +1366,16 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             let cell = match prog.arena.alloc(Value::ThunkCell(ThunkState::Unforced)) {
                 Ok(c) => c,
                 Err(_) => {
-                    prog.value_regs[*dst] = None;
+                    prog.value_regs[*dst + base] = None;
                     return;
                 }
             };
-            let env_ref = match prog.value_regs.get(*env).copied().flatten() {
+            let env_ref = match prog.value_regs.get(*env + base).copied().flatten() {
                 Some(r) => match prog.arena.copy(r) {
                     Ok(c) => c,
                     Err(_) => {
                         prog.arena.drop_ref(cell);
-                        prog.value_regs[*dst] = None;
+                        prog.value_regs[*dst + base] = None;
                         return;
                     }
                 },
@@ -1349,13 +1383,13 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     Ok(v) => v,
                     Err((err, _)) => {
                         prog.arena.drop_ref(cell);
-                        prog.value_regs[*dst] = None;
+                        prog.value_regs[*dst + base] = None;
                         let _ = err;
                         return;
                     }
                 },
             };
-            prog.value_regs[*dst] = alloc_owned(
+            prog.value_regs[*dst + base] = alloc_owned(
                 prog,
                 Value::Callable {
                     fragment: *fragment as u32,
@@ -1368,12 +1402,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // Force the source to WHNF and share the head ref with `dst`. The
             // head is borrowed from the source's memo cell (or is the source
             // itself when already WHNF), so `dst` claims its own copy.
-            match prog.value_regs.get(*src).copied().flatten() {
+            match prog.value_regs.get(*src + base).copied().flatten() {
                 Some(sr) => {
                     let head = force(prog, sr, drops);
-                    prog.value_regs[*dst] = copy_owned(prog, head);
+                    prog.value_regs[*dst + base] = copy_owned(prog, head);
                 }
-                None => prog.value_regs[*dst] = None,
+                None => prog.value_regs[*dst + base] = None,
             }
         }
     }
@@ -1473,6 +1507,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     op: ValueBuiltinOp,
     args: &[usize],
     dst: usize,
+    base: usize,
     drops: &mut Vec<ArenaRef>,
 ) {
     use ValueBuiltinOp::*;
@@ -1481,11 +1516,13 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     // demand loop below. Nil has no arguments to demand.
     match op {
         LazyCons => {
-            let Some(xr) = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok()) else {
+            let Some(xr) = prog.value_regs[base + args[0]].and_then(|r| prog.arena.copy(r).ok())
+            else {
                 prog.value_regs[dst] = None;
                 return;
             };
-            let Some(tr) = prog.value_regs[args[1]].and_then(|r| prog.arena.copy(r).ok()) else {
+            let Some(tr) = prog.value_regs[base + args[1]].and_then(|r| prog.arena.copy(r).ok())
+            else {
                 prog.arena.drop_ref(xr);
                 prog.value_regs[dst] = None;
                 return;
@@ -1506,7 +1543,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     // original claim (the bottom slot survives via its cell) and writes bottom
     // to the dst. In strict mode no thunks exist, so this is a no-op modulo RC.
     for &a in args {
-        let Some(r) = prog.value_regs.get_mut(a).and_then(|r| r.take()) else {
+        let Some(r) = prog.value_regs.get_mut(base + a).and_then(|r| r.take()) else {
             continue;
         };
         let head = force(prog, r, drops);
@@ -1515,7 +1552,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             write_bottom(prog, dst, drops);
             return;
         }
-        prog.value_regs[a] = match prog.arena.copy(head) {
+        prog.value_regs[base + a] = match prog.arena.copy(head) {
             Ok(c) => Some(c),
             Err(_) => {
                 prog.arena.drop_ref(r);
@@ -1532,11 +1569,12 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // elems and the new element so both the source container and the
             // result own them (the source register is dropped at tick end).
             // Payloads are pooled — no per-tick heap allocation.
-            let Some(mut src) = pooled_elems_of(prog, args[1]) else {
+            let Some(mut src) = pooled_elems_of(prog, base + args[1]) else {
                 prog.value_regs[dst] = None;
                 return;
             };
-            let Some(xr) = prog.value_regs[args[0]].and_then(|r| prog.arena.copy(r).ok()) else {
+            let Some(xr) = prog.value_regs[base + args[0]].and_then(|r| prog.arena.copy(r).ok())
+            else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1563,7 +1601,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         Length => {
             // The IR doc says Length covers list/set/map: each container
             // reports its entry count.
-            let n = prog.value_regs[args[0]]
+            let n = prog.value_regs[base + args[0]]
                 .and_then(|r| prog.arena.get(r))
                 .map(|v| match v {
                     Value::List { elems } => elems.len() as i64,
@@ -1576,7 +1614,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         }
         Head => {
             let first = {
-                let Some(r) = prog.value_regs[args[0]] else {
+                let Some(r) = prog.value_regs[base + args[0]] else {
                     prog.value_regs[dst] = None;
                     return;
                 };
@@ -1608,7 +1646,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         }
         Map => {
             // map f xs: dispatch f per element via a one-arg closure call.
-            let Some(src) = pooled_elems_of(prog, args[1]) else {
+            let Some(src) = pooled_elems_of(prog, base + args[1]) else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1621,7 +1659,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 }
             };
             for e in &src {
-                if let Some(o) = call_closure_single(prog, args[0], *e, dst, drops) {
+                if let Some(o) = call_closure_single(prog, base + args[0], *e, dst, drops) {
                     out.push(o);
                 }
             }
@@ -1631,11 +1669,11 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         Fold => {
             // fold f z xs: seed the accumulator with a copy of z, then for each
             // element call f with (acc, elem); the result becomes the new acc.
-            let Some(src) = pooled_elems_of(prog, args[2]) else {
+            let Some(src) = pooled_elems_of(prog, base + args[2]) else {
                 prog.value_regs[dst] = None;
                 return;
             };
-            let Some(accr) = prog.value_regs[args[1]] else {
+            let Some(accr) = prog.value_regs[base + args[1]] else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1649,7 +1687,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             let mut failed = false;
             for e in &src {
                 let pair = [cur, *e];
-                let next = call_closure_args(prog, args[0], &pair, dst, drops);
+                let next = call_closure_args(prog, base + args[0], &pair, dst, drops);
                 match next {
                     Some(n) => {
                         // Replace the previous accumulator copy with the
@@ -1685,7 +1723,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // kept slice, then release the extra count on the removed head —
             // the source keeps its single claim, and the head is never freed
             // mid-tick. An empty array list is its own tail; Nil's tail is Nil.
-            match prog.value_regs[args[0]].and_then(|r| prog.arena.get(r)) {
+            match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
                 Some(Value::Cons(_, t)) => {
                     prog.value_regs[dst] = copy_owned(prog, *t);
                 }
@@ -1693,7 +1731,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     prog.value_regs[dst] = alloc_owned(prog, Value::Nil);
                 }
                 _ => {
-                    let Some(mut kept) = pooled_elems_of(prog, args[0]) else {
+                    let Some(mut kept) = pooled_elems_of(prog, base + args[0]) else {
                         prog.value_regs[dst] = None;
                         return;
                     };
@@ -1716,7 +1754,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // returns Bool(true). A kept element is recounted (RC++) into the
             // result list so both the source and the result own it; the
             // predicate's Bool result is released after each call.
-            let Some(src) = pooled_elems_of(prog, args[1]) else {
+            let Some(src) = pooled_elems_of(prog, base + args[1]) else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1729,7 +1767,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 }
             };
             for e in &src {
-                let pred = call_closure_single(prog, args[0], *e, dst, drops);
+                let pred = call_closure_single(prog, base + args[0], *e, dst, drops);
                 let is_keep = match pred {
                     Some(pr) => match prog.arena.get(pr) {
                         Some(Value::Bool(b)) => *b,
@@ -1756,9 +1794,9 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // heap-backed in v1 (deferred pooling); the source is read via
             // short borrows, not a full value clone.
             let (Some(kr), Some(vr), Some(sr)) = (
-                prog.value_regs[args[0]],
-                prog.value_regs[args[1]],
-                prog.value_regs[args[2]],
+                prog.value_regs[base + args[0]],
+                prog.value_regs[base + args[1]],
+                prog.value_regs[base + args[2]],
             ) else {
                 prog.value_regs[dst] = None;
                 return;
@@ -1818,7 +1856,10 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // when found, `Nothing` otherwise (the same Sum encoding as
             // `head`). The found value ref is counted (RC++) so the Sum owns
             // it independently of the map.
-            let (Some(kr), Some(sr)) = (prog.value_regs[args[0]], prog.value_regs[args[1]]) else {
+            let (Some(kr), Some(sr)) = (
+                prog.value_regs[base + args[0]],
+                prog.value_regs[base + args[1]],
+            ) else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1857,7 +1898,10 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // member k c: a shared op — the container's variant tells map
             // membership (among the sorted keys) from set membership (among
             // the sorted elements). A non-container reads as `false`.
-            let (Some(kr), Some(sr)) = (prog.value_regs[args[0]], prog.value_regs[args[1]]) else {
+            let (Some(kr), Some(sr)) = (
+                prog.value_regs[base + args[0]],
+                prog.value_regs[base + args[1]],
+            ) else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1879,7 +1923,10 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // insert k s: COW-insert the element into the sorted set; a
             // duplicate leaves the set unchanged (a fresh COW copy). Open
             // collections have no capacity bound.
-            let (Some(kr), Some(sr)) = (prog.value_regs[args[0]], prog.value_regs[args[1]]) else {
+            let (Some(kr), Some(sr)) = (
+                prog.value_regs[base + args[0]],
+                prog.value_regs[base + args[1]],
+            ) else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1934,7 +1981,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // bind xs f: for each element, call f -> a List, splicing all the
             // resulting lists into one (`concat_map`). Element and result
             // payloads are pooled.
-            let Some(src) = pooled_elems_of(prog, args[1]) else {
+            let Some(src) = pooled_elems_of(prog, base + args[1]) else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1947,7 +1994,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 }
             };
             for e in &src {
-                if let Some(lr) = call_closure_single(prog, args[0], *e, dst, drops) {
+                if let Some(lr) = call_closure_single(prog, base + args[0], *e, dst, drops) {
                     if let Some(sub) = pooled_elems_of_ref(prog, lr) {
                         for s in &sub {
                             if let Ok(c) = prog.arena.copy(*s) {
@@ -1965,11 +2012,11 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         AppendList => {
             // append_list xs ys: the concatenation of two lists (Monoid
             // mappend). Every element is recounted for the result.
-            let Some(mut left) = pooled_elems_of(prog, args[0]) else {
+            let Some(mut left) = pooled_elems_of(prog, base + args[0]) else {
                 prog.value_regs[dst] = None;
                 return;
             };
-            let Some(mut right) = pooled_elems_of(prog, args[1]) else {
+            let Some(mut right) = pooled_elems_of(prog, base + args[1]) else {
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -1996,7 +2043,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         ConcatString => {
             let a = prog
                 .value_regs
-                .get(args[0])
+                .get(base + args[0])
                 .copied()
                 .flatten()
                 .and_then(|r| prog.arena.get(r))
@@ -2006,7 +2053,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 });
             let b = prog
                 .value_regs
-                .get(args[1])
+                .get(base + args[1])
                 .copied()
                 .flatten()
                 .and_then(|r| prog.arena.get(r))
@@ -2093,7 +2140,10 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
         prog,
         &frag,
         env_ref,
-        ArgsSource::Registers(&arg_regs),
+        ArgsSource::Registers {
+            regs: &arg_regs,
+            base: 0,
+        },
         Some(result_reg),
         drops,
     );
@@ -2109,8 +2159,11 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
 /// ([`ArgsSource::EnvTail`]).
 #[derive(Clone, Copy)]
 enum ArgsSource<'a> {
-    /// Value args come from the caller's value registers (eager call).
-    Registers(&'a [usize]),
+    /// Value args come from the caller's value registers (eager call). `base`
+    /// is the caller fragment's register base, so each arg index resolves to
+    /// `base + regs[i]` — the raw instruction args are fragment-local and must
+    /// not be read as absolute registers.
+    Registers { regs: &'a [usize], base: usize },
     /// Value args come from the env-record tail split by the fragment's
     /// `value_ins` (lazy thunk).
     EnvTail,
@@ -2123,11 +2176,11 @@ enum ArgsSource<'a> {
 /// Register-offset scheme: a fragment's instructions are reused across calls
 /// and reference fragment-local registers `0..num_value_regs`. The interpreter
 /// records `base = value_regs_top`, runs each instruction with every register
-/// field offset by `base` ([`remap_value_instr`]), and unwinds the watermark —
-/// the store is pre-sized to `num_value_regs + max_call_regs` at construction,
-/// so no growth or reallocation happens on the RT path. Value args are copied
-/// (RC++) into the fragment's leading registers; the caller keeps its own
-/// ownership.
+/// field offset by `base` (threaded into [`exec_value_instr`]), and unwinds
+/// the watermark — the store is pre-sized to `num_value_regs + max_call_regs`
+/// at construction, so no growth or reallocation happens on the RT path. Value
+/// args are copied (RC++) into the fragment's leading registers; the caller
+/// keeps its own ownership.
 ///
 /// Capture scheme: the env Record's fields (the lambda's free variables, in
 /// declaration order) become cells in the shared `frag_cells` store at the
@@ -2173,7 +2226,7 @@ fn run_call<T: Transcendental, const BUF: usize>(
         // capture cells are allocated below.
         let fields = fields.clone();
         let n_capture = match args {
-            ArgsSource::Registers(_) => fields.len(),
+            ArgsSource::Registers { .. } => fields.len(),
             ArgsSource::EnvTail => fields.len().saturating_sub(value_ins),
         };
         for (i, f) in fields.iter().enumerate() {
@@ -2200,9 +2253,12 @@ fn run_call<T: Transcendental, const BUF: usize>(
     //    fresh owner (RC++) so the caller (or the thunk's env) keeps its own
     //    ref.
     match args {
-        ArgsSource::Registers(regs) => {
+        ArgsSource::Registers {
+            regs,
+            base: caller_base,
+        } => {
             for (i, a) in regs.iter().take(value_ins.min(regs.len())).enumerate() {
-                if let Some(sr) = prog.value_regs.get(*a).copied().flatten() {
+                if let Some(sr) = prog.value_regs.get(caller_base + *a).copied().flatten() {
                     prog.value_regs[base + i] = copy_owned(prog, sr);
                 }
             }
@@ -2229,8 +2285,7 @@ fn run_call<T: Transcendental, const BUF: usize>(
             break;
         };
         for i in &b.instrs {
-            let remapped = remap_value_instr(i, base);
-            exec_value_instr(prog, &remapped, drops);
+            exec_value_instr(prog, i, base, drops);
         }
         cur = match b.term {
             ValueTerm::Fallthrough(n) => n,
@@ -2445,187 +2500,6 @@ fn memoize_bottom<T: Transcendental, const BUF: usize>(
             b
         }
         None => cell, // arena exhausted (build-time budget bug); caller treats as bottom-ish
-    }
-}
-
-/// Clone `instr`, adding `base` to every fragment-local register field so the
-/// instruction runs against the scratch slice appended by [`run_call`].
-///
-/// Only true value-register fields are offset. Store indices that are global to
-/// the program — `ValueReadMainCell::cell` (main-cell store), `ValueStateRead`/
-/// `ValueStateWrite` `slot` (value-state store) — and non-register constants
-/// (`value`, `ctor`, `field`, `fragment`) are left untouched.
-fn remap_value_instr(instr: &ValueInstr, base: usize) -> ValueInstr {
-    match instr {
-        ValueInstr::ValuePushScope => ValueInstr::ValuePushScope,
-        ValueInstr::ValuePopScope => ValueInstr::ValuePopScope,
-        ValueInstr::ValueBindCell { dst } => ValueInstr::ValueBindCell { dst: dst + base },
-        ValueInstr::ValueReadCell { dst, cell } => ValueInstr::ValueReadCell {
-            // `cell` is a capture index into the call's env frame, NOT a
-            // fragment-local register — leave it unoffset (a main-track read
-            // of a cell register never reaches remap; only fragment instrs are
-            // remapped, and a fragment's ReadCell cells are always captures).
-            dst: dst + base,
-            cell: *cell,
-        },
-        ValueInstr::ValueReadMainCell { dst, cell } => ValueInstr::ValueReadMainCell {
-            dst: dst + base,
-            cell: *cell,
-        },
-        ValueInstr::ValueWriteCell { cell, src } => ValueInstr::ValueWriteCell {
-            cell: cell + base,
-            src: src + base,
-        },
-        ValueInstr::ValueConstInt { dst, value } => ValueInstr::ValueConstInt {
-            dst: dst + base,
-            value: *value,
-        },
-        ValueInstr::ValueConstFloat { dst, value } => ValueInstr::ValueConstFloat {
-            dst: dst + base,
-            value: *value,
-        },
-        ValueInstr::ValueAdd { dst, a, b } => ValueInstr::ValueAdd {
-            dst: dst + base,
-            a: a + base,
-            b: b + base,
-        },
-        ValueInstr::ValueSub { dst, a, b } => ValueInstr::ValueSub {
-            dst: dst + base,
-            a: a + base,
-            b: b + base,
-        },
-        ValueInstr::ValueMul { dst, a, b } => ValueInstr::ValueMul {
-            dst: dst + base,
-            a: a + base,
-            b: b + base,
-        },
-        ValueInstr::ValueDiv { dst, a, b } => ValueInstr::ValueDiv {
-            dst: dst + base,
-            a: a + base,
-            b: b + base,
-        },
-        ValueInstr::ValueConstructRecord { dst, fields } => ValueInstr::ValueConstructRecord {
-            dst: dst + base,
-            fields: fields.iter().map(|f| f + base).collect(),
-        },
-        ValueInstr::ValueConstructSum { dst, ctor, payload } => ValueInstr::ValueConstructSum {
-            dst: dst + base,
-            ctor: *ctor,
-            payload: payload.iter().map(|p| p + base).collect(),
-        },
-        ValueInstr::ValueProject { dst, slot, field } => ValueInstr::ValueProject {
-            dst: dst + base,
-            slot: slot + base,
-            field: *field,
-        },
-        ValueInstr::ValueUpdateField { slot, field, src } => ValueInstr::ValueUpdateField {
-            slot: slot + base,
-            field: *field,
-            src: src + base,
-        },
-        ValueInstr::ValueNewtype { dst, src } => ValueInstr::ValueNewtype {
-            dst: dst + base,
-            src: src + base,
-        },
-        ValueInstr::ValueUnwrap { dst, src } => ValueInstr::ValueUnwrap {
-            dst: dst + base,
-            src: src + base,
-        },
-        ValueInstr::ValueCallFunc {
-            dst,
-            closure_slot,
-            args,
-        } => ValueInstr::ValueCallFunc {
-            dst: dst + base,
-            closure_slot: closure_slot + base,
-            args: args.iter().map(|a| a + base).collect(),
-        },
-        ValueInstr::ValueCallLazy {
-            dst,
-            closure_slot,
-            args,
-        } => ValueInstr::ValueCallLazy {
-            dst: dst + base,
-            closure_slot: closure_slot + base,
-            args: args.iter().map(|a| a + base).collect(),
-        },
-        ValueInstr::ValueMakeClosure { dst, env, fragment } => ValueInstr::ValueMakeClosure {
-            dst: dst + base,
-            env: env + base,
-            fragment: *fragment,
-        },
-        ValueInstr::ValueCopy { dst, src } => ValueInstr::ValueCopy {
-            dst: dst + base,
-            src: src + base,
-        },
-        ValueInstr::ValueMove { dst, src } => ValueInstr::ValueMove {
-            dst: dst + base,
-            src: src + base,
-        },
-        ValueInstr::ValueDrop { src } => ValueInstr::ValueDrop { src: src + base },
-        ValueInstr::ValueStateRead { dst, slot } => ValueInstr::ValueStateRead {
-            dst: dst + base,
-            slot: *slot,
-        },
-        ValueInstr::ValueStateWrite { slot, src } => ValueInstr::ValueStateWrite {
-            slot: *slot,
-            src: src + base,
-        },
-        ValueInstr::ValueMatch { dst, slot, ctor } => ValueInstr::ValueMatch {
-            dst: dst.iter().map(|d| d + base).collect(),
-            slot: slot + base,
-            ctor: *ctor,
-        },
-        ValueInstr::ValueBool { dst, value } => ValueInstr::ValueBool {
-            dst: dst + base,
-            value: *value,
-        },
-        ValueInstr::ValueConstString { dst, value } => ValueInstr::ValueConstString {
-            dst: dst + base,
-            value: value.clone(),
-        },
-        ValueInstr::ValueListLit { dst, elems } => ValueInstr::ValueListLit {
-            dst: dst + base,
-            elems: elems.iter().map(|e| e + base).collect(),
-        },
-        ValueInstr::ValueMapLit { dst, keys, vals } => ValueInstr::ValueMapLit {
-            dst: dst + base,
-            keys: keys.iter().map(|k| k + base).collect(),
-            vals: vals.iter().map(|v| v + base).collect(),
-        },
-        ValueInstr::ValueCompare { dst, op, a, b } => ValueInstr::ValueCompare {
-            dst: dst + base,
-            op: *op,
-            a: a + base,
-            b: b + base,
-        },
-        ValueInstr::ValueLogic { dst, op, a, b } => ValueInstr::ValueLogic {
-            dst: dst + base,
-            op: *op,
-            a: a + base,
-            b: b + base,
-        },
-        ValueInstr::ValueNot { dst, src } => ValueInstr::ValueNot {
-            dst: dst + base,
-            src: src + base,
-        },
-        ValueInstr::ValueSetError => ValueInstr::ValueSetError,
-        ValueInstr::ValueCallBuiltin { dst, op, args } => ValueInstr::ValueCallBuiltin {
-            dst: dst + base,
-            op: *op,
-            args: args.iter().map(|a| a + base).collect(),
-        },
-        ValueInstr::ValueLazy { dst, env, fragment } => ValueInstr::ValueLazy {
-            // `fragment` is a global index into `Ir::fragments` — leave it
-            // unoffset (mirrors `ValueMakeClosure`).
-            dst: dst + base,
-            env: env + base,
-            fragment: *fragment,
-        },
-        ValueInstr::ValueForce { dst, src } => ValueInstr::ValueForce {
-            dst: dst + base,
-            src: src + base,
-        },
     }
 }
 
