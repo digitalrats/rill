@@ -182,6 +182,14 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             render_type_expr(ret, buf);
             write!(buf, ")").ok();
         }
+        TypeExpr::TForall(vars, inner) => {
+            write!(buf, "forall").ok();
+            for v in vars {
+                write!(buf, " {v}").ok();
+            }
+            write!(buf, ". ").ok();
+            render_type_expr(inner, buf);
+        }
     }
 }
 

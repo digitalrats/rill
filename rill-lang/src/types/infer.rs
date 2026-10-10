@@ -212,6 +212,7 @@ pub(crate) fn data_field_vty(
                 .collect(),
             vec![data_field_vty(env, tyvars, ret)],
         ),
+        crate::ast::TypeExpr::TForall(_, inner) => data_field_vty(env, tyvars, inner),
     }
 }
 
@@ -809,6 +810,9 @@ pub(crate) fn signature_param_tys_conv(
                     .collect(),
                 vec![conv(env, class_var, ctor, vars, fresh, ret)],
             ),
+            crate::ast::TypeExpr::TForall(_, inner) => {
+                conv(env, class_var, ctor, vars, fresh, inner)
+            }
         }
     }
     match sig {
@@ -2776,6 +2780,7 @@ pub(crate) fn type_expr_mentions(te: &crate::ast::TypeExpr, var: &str) -> bool {
         crate::ast::TypeExpr::TFunc(args, ret) => {
             args.iter().any(|a| type_expr_mentions(a, var)) || type_expr_mentions(ret, var)
         }
+        crate::ast::TypeExpr::TForall(_, inner) => type_expr_mentions(inner, var),
     }
 }
 

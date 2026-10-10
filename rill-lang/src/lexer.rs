@@ -67,6 +67,8 @@ pub enum Tok {
     KwInstance,
     /// `foreign` keyword — foreign fn declaration.
     KwForeign,
+    /// `forall` keyword — explicit universal quantification in a type.
+    KwForall,
     /// `match` keyword — pattern matching over a sum value.
     KwMatch,
     /// `of` keyword — separator in `match x of { .. }`.
@@ -391,6 +393,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 // the `followed_by_paren` call-guard must not apply here.
                 "instance" => Tok::KwInstance,
                 "foreign" if !followed_by_paren => Tok::KwForeign,
+                "forall" if !followed_by_paren => Tok::KwForall,
                 "match" => Tok::KwMatch,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "if" if !followed_by_paren => Tok::KwIf,

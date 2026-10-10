@@ -531,6 +531,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.parse_paren_type()
             }
+            Tok::KwForall => self.parse_forall_type(),
             Tok::Ident(name) => {
                 self.bump();
                 Ok(TypeExpr::TName(name))
@@ -549,6 +550,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.parse_paren_type()
             }
+            Tok::KwForall => self.parse_forall_type(),
             Tok::Ident(name) => {
                 self.bump();
                 let mut args = Vec::new();
@@ -563,6 +565,23 @@ impl<'a> Parser<'a> {
             }
             other => Err(self.error(&format!("expected type expression, found {other:?}"))),
         }
+    }
+
+    /// `forall a b. T` — explicit universal quantification. Reads one or more
+    /// type-variable names, then a `.`, then the inner type expression.
+    fn parse_forall_type(&mut self) -> Result<TypeExpr, CompileError> {
+        self.bump(); // consume `forall`
+        let mut names = Vec::new();
+        while let Tok::Ident(name) = self.peek().tok.clone() {
+            self.bump();
+            names.push(name);
+        }
+        if names.is_empty() {
+            return Err(self.error("expected at least one type variable after `forall`"));
+        }
+        self.eat(&Tok::Dot)?;
+        let inner = self.parse_type_expr()?;
+        Ok(TypeExpr::TForall(names, Box::new(inner)))
     }
 
     /// Parse a type expression: a chain of juxta-applied type names and type

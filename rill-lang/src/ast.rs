@@ -21,6 +21,8 @@ pub enum TypeExpr {
     TApp(String, Vec<TypeExpr>),
     /// A curried function type: `a -> b`.
     TFunc(Vec<TypeExpr>, Box<TypeExpr>),
+    /// Explicit universal quantification: `forall a b. T`.
+    TForall(Vec<String>, Box<TypeExpr>),
 }
 
 impl TypeExpr {
@@ -28,6 +30,7 @@ impl TypeExpr {
     pub fn arg_count(&self) -> usize {
         match self {
             TypeExpr::TFunc(args, _) => args.len(),
+            TypeExpr::TForall(_, inner) => inner.arg_count(),
             _ => 0,
         }
     }
@@ -35,6 +38,7 @@ impl TypeExpr {
     pub fn arg_types(&self) -> &[TypeExpr] {
         match self {
             TypeExpr::TFunc(args, _) => args,
+            TypeExpr::TForall(_, inner) => inner.arg_types(),
             _ => &[],
         }
     }
