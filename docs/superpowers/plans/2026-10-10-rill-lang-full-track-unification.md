@@ -4,7 +4,7 @@
 
 **Goal:** Eliminate the block track entirely — `Rate::Signal` removed from the type system, signals become `Buffer`-typed value channels, and the whole computation path unifies onto the value track where everything is a closure. FFI algorithms become fragments with a single `ValueCallForeign` instruction over `Value::Buffer`.
 
-**Architecture:** Two sub-tasks. B3a unifies the TYPE SYSTEM and LOWERING (signals = `ValueTy::Buffer`, `lower` routes signal expressions through the value track) while the block track still executes the buffer ops underneath. B3b unifies the RUNTIME (add `ValueCallForeign` + `Value::Buffer`; delete `Instr` block variants, `block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`, `exec_foreign_block`, `schedule.rs`; merge `run_value_track` into `run_call`). See `docs/superpowers/specs/2026-10-10-rill-lang-full-track-unification-design.md`.
+**Architecture:** Two sub-tasks. B3a unifies the TYPE SYSTEM and LOWERING (signals = `ValueTy::Buffer`, `lower` routes signal expressions through the value track) while the block track still executes the buffer ops underneath. B3b unifies the RUNTIME (add `ValueCallForeign` + `Value::Buffer`; delete `Instr` block variants, `block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`, `exec_foreign_block`, `schedule.rs`; merge `run_value_track` + `run_call` into a single `run`). See `docs/superpowers/specs/2026-10-10-rill-lang-full-track-unification-design.md`.
 
 **Tech Stack:** Rust, crate `rill-lang`, branch `feature/rill-lang-arrays`. No new external dependencies.
 
@@ -126,14 +126,14 @@ main lowers through the value track; block track still executes buffer ops.'
 **Files:**
 - Modify: `rill-lang/src/arena.rs` (`Value::Buffer`)
 - Modify: `rill-lang/src/ir.rs` (`ValueInstr::ValueCallForeign`; remove `Instr` block variants)
-- Modify: `rill-lang/src/backend/interp.rs` (merge `run_value_track` into `run_call`; `ValueCallForeign` arm; delete `run_block_mimo`/`exec_block_op`/`exec_foreign_block`)
+- Modify: `rill-lang/src/backend/interp.rs` (merge `run_value_track` + `run_call` into a single `run`; `ValueCallForeign` arm; delete `run_block_mimo`/`exec_block_op`/`exec_foreign_block`)
 - Modify: `rill-lang/src/program.rs` (remove `block_regs`; `process()` through value track)
 - Modify: `rill-lang/src/lower.rs` (buffer ops → `ValueCallForeign`/`Value::Buffer`)
 - Delete: `rill-lang/src/schedule.rs`, `rill-lang/src/regalloc.rs` (if only block IR)
 - Test: `rill-lang/tests/rate_unification.rs`, existing suite
 
 **Goal:** The block track is GONE. FFI algorithms are fragments with a single
-`ValueCallForeign` instruction over `Value::Buffer`. One `run_call` runner.
+`ValueCallForeign` instruction over `Value::Buffer`. One `run` runner.
 
 - [ ] **Step 1: Add `Value::Buffer`**
 
@@ -173,9 +173,27 @@ In `exec_value_instr`:
 4. Carry over the current aliasing rules (scratch snapshot for multichannel;
    `dst != srcs[0]` for single-channel).
 
-- [ ] **Step 4: Merge `run_value_track` into `run_call`**
+- [ ] **Step 4: Merge `run_value_track` + `run_call` into a single `run`**
 
-`run_value_track` becomes `run_call(prog, root_fragment, /* empty env */, ArgsSource::Registers(&[]), None, drops)` with `base=0`. The program's `Ir` gains a `root_fragment` (the main body compiled as a `FragmentIr`), OR `run_call` gets a mode where it runs `ir.value_blocks` at base=0 without env-binding. Update `process()` to call this single runner. `swap_block_state`/`block_state` migrate to `value_state` (feedback via `value_state` reads/writes).
+Both already share the block-loop + branch-terms + `exec_value_instr(prog, instr, base, drops)` + drops-drain shape; the only differences are which block list to run (`ir.value_blocks`/`value_entry` vs `frag.value_blocks`/`frag.entry`), the base (0 vs fragment offset), and env-binding/args-source. Merge them into ONE runner:
+
+```rust
+/// Run one fragment's value blocks. The program is a root fragment (base=0,
+/// empty env); a function/FFI call is a nested fragment (base=offset, env +
+/// args). Everything is a closure.
+fn run<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    blocks: &[ValueBlock],        // the fragment's blocks (or ir.value_blocks for the root)
+    entry: usize,                  // the fragment's entry (or ir.value_entry)
+    base: usize,                   // register offset (0 for the root)
+    env_ref: ArenaRef,             // env record (Void for the root)
+    args: ArgsSource<'_>,          // Registers(&[]) for the root
+    dst: Option<usize>,            // result register (None: force/memo path)
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef>
+```
+
+`run_value_track` becomes `run(prog, &prog.ir.value_blocks, prog.ir.value_entry, 0, void_env, ArgsSource::Registers(&[]), None, drops)`. The program's `Ir` can keep `value_blocks`/`value_entry` (the root fragment) or gain a `root_fragment` — pick whichever avoids re-plumbing. Update `process()` and `force()` to call `run`. Rename `run_call` → `run` everywhere. `swap_block_state`/`block_state` migrate to `value_state` (feedback via `value_state` reads/writes). The name `run` (or `run_thunk`) signals that every computation is a thunk/fragment execution.
 
 - [ ] **Step 5: Delete the block track**
 
@@ -227,7 +245,8 @@ cargo fmt
 git add rill-lang/src/arena.rs rill-lang/src/ir.rs rill-lang/src/backend/interp.rs rill-lang/src/program.rs rill-lang/src/lower.rs rill-lang/tests/rate_unification.rs
 git rm rill-lang/src/schedule.rs rill-lang/src/regalloc.rs
 git commit -m 'refactor(rill-lang): B3b — block track eliminated, everything is a closure
-Value::Buffer + ValueCallForeign. run_value_track merged into run_call. Deleted
+Value::Buffer + ValueCallForeign. run_value_track + run_call merged into one
+run (everything is a closure). Deleted
 Instr block variants, block_regs as a track, run_block_mimo, build_schedule,
 exec_block_op, exec_foreign_block, schedule.rs. FFI = fragment with one
 ValueCallForeign over Value::Buffer.'

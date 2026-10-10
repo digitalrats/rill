@@ -30,7 +30,7 @@ first-class `Value::Buffer` and every computation is a closure:
 
 After B3: `Instr` block variants, `block_regs`, `run_block_mimo`,
 `build_schedule`, `exec_block_op`, `exec_foreign_block`, and `schedule.rs` are
-**deleted**. `run_value_track` merges into `run_call` (a program is a root
+**deleted**. `run_value_track` and `run_call` merge into a single `run` (a program is a root
 fragment). SIMD and the `Algorithm` factories stay intact.
 
 ---
@@ -169,8 +169,8 @@ value-track lowering. This is the biggest chunk of B3.
   value-output registers.
 
 `backend/interp.rs`:
-- Merge `run_value_track` into `run_call` (program = root fragment, base=0,
-  empty env). One runner.
+- Merge `run_value_track` + `run_call` into a single **`run`** (program = root
+  fragment, base=0, empty env). One runner; everything is a closure.
 - Add the `ValueCallForeign` arm to `exec_value_instr`.
 - Delete `run_block_mimo`, `exec_block_op`, `exec_foreign_block`.
 
