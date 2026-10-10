@@ -406,6 +406,11 @@ pub enum ValueInstr {
         /// The value.
         value: bool,
     },
+    /// The unit value `()` (`Value::Void`).
+    ValueConstVoid {
+        /// Destination value register.
+        dst: usize,
+    },
     /// String literal.
     ValueConstString {
         /// Destination value register.

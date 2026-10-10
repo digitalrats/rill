@@ -441,6 +441,7 @@ fn collect_static_calls(
             }
         }
         Expr::Bool(_, _) => {}
+        Expr::Void(_) => {}
         Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
             collect_static_calls(lhs, src, bound, nodes, out);
             collect_static_calls(rhs, src, bound, nodes, out);
@@ -1930,6 +1931,7 @@ fn infer_expr_expected(
             ins: vec![],
             outs: vec![ValueTy::Float, ValueTy::Float],
         }),
+        Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
         Expr::Wire(_) => {
             // A signal wire is a `Buffer` channel (B3: buffer is an ordinary
             // value type; the wire is the program's Buffer-valued input).
@@ -2061,8 +2063,13 @@ fn infer_expr_expected(
                         span: *span,
                     }),
                 },
-                ValueTy::App(name, args) if ctx.env.ctor_arity(name.as_str()).is_some() => {
-                    // Builtin record (`Pair a b`): field types are the
+                ValueTy::App(name, args)
+                    if ctx.env.ctor_arity(name.as_str()).is_some()
+                        || matches!(
+                            ctx.env.data_types.get(name.as_str()),
+                            Some(DataInfo::Record(_))
+                        ) =>
+                {
                     // placeholder `Var(1)`/`Var(2)` positions, resolved against
                     // the concrete type args.
                     match ctx.env.data_types.get(name.as_str()) {
@@ -2763,6 +2770,41 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
     cur
 }
 
+/// Convert a builtin-signature type expression to a concrete `ValueTy`.
+/// `TName` resolves through the env; `TApp` builds `App(head, args)`; a `TFunc`
+/// becomes `ValueTy::Func`. Used by `readInput`/`writeOutput` builtin-sig
+/// application (their types are ordinary, unlike `runST`'s forall).
+fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, CompileError> {
+    match te {
+        crate::ast::TypeExpr::TName(n) => Ok(ctx.env.vty_of_name(n)),
+        crate::ast::TypeExpr::TApp(head, args) => {
+            let mut targs = Vec::with_capacity(args.len());
+            for a in args {
+                targs.push(type_expr_to_vty(ctx, a)?);
+            }
+            // A user data type (`IO a`, `Kleisli m a b`) is a `Data` application
+            // (mirroring how record construction types it), so `IO` unifies
+            // consistently between builtin signatures and do-blocks.
+            if ctx.env.data_arities.contains_key(head.as_str()) {
+                Ok(ValueTy::Data(head.clone(), targs))
+            } else {
+                Ok(ValueTy::App(head.clone(), targs))
+            }
+        }
+        crate::ast::TypeExpr::TFunc(args, ret) => {
+            let mut targs = Vec::with_capacity(args.len());
+            for a in args {
+                targs.push(type_expr_to_vty(ctx, a)?);
+            }
+            Ok(ValueTy::Func(targs, vec![type_expr_to_vty(ctx, ret)?]))
+        }
+        crate::ast::TypeExpr::TForall(_, _) => Err(CompileError::Type {
+            msg: "a forall-typed signature cannot be applied as a plain builtin".into(),
+            span: Span::new(0, 0),
+        }),
+    }
+}
+
 /// Whether a type expression mentions a variable name anywhere.
 pub(crate) fn type_expr_mentions(te: &crate::ast::TypeExpr, var: &str) -> bool {
     match te {
@@ -2963,6 +3005,51 @@ fn infer_apply_impl(
         // constant signal; a value body a value channel — both runST-idiomatic
         // in rill, where literals are value-compatible constant signals).
         return Ok(bt);
+    }
+    // Builtin functions with an ordinary (non-forall) signature registered in
+    // `TypeEnv::builtin_sigs`: `readInput : Int -> IO Buffer`,
+    // `writeOutput : Int -> Buffer -> IO ()`. Type each argument against the
+    // signature's parameter type and return the signature's result type. This
+    // runs AFTER the `runST` special case (its forall signature is handled
+    // above) and BEFORE user definitions/typeclass methods.
+    if let Some(sig) = ctx.env.builtin_sigs.get(name).cloned() {
+        if let crate::ast::TypeExpr::TFunc(params, ret) = sig {
+            if params.len() != args.len() {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "`{name}` expects {} argument(s), got {}",
+                        params.len(),
+                        args.len()
+                    ),
+                    span,
+                });
+            }
+            for (p, a) in params.iter().zip(args.iter()) {
+                let pt = type_expr_to_vty(ctx, p)?;
+                let at =
+                    if matches!(a, Expr::Int(_, _) | Expr::Float(_, _)) && pt == ValueTy::Buffer {
+                        // A numeric literal in a Buffer param position is a signal
+                        // constant (`writeOutput 0 1.0`).
+                        infer_expr_expected(ctx, a, Some(ValueTy::Buffer))?
+                    } else {
+                        infer_expr(ctx, a)?
+                    };
+                if at.arity_in() != 0 || at.arity_out() != 1 {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "argument of `{name}` must be a value expression, got arity {}→{}",
+                            at.arity_in(),
+                            at.arity_out()
+                        ),
+                        span: a.span(),
+                    });
+                }
+                unify_value(&at.outs[0], &pt, &mut ctx.subst, a.span())?;
+            }
+            // A builtin-sig result is a VALUE channel (`IO Buffer` is a
+            // record value; `IO ()` a Void value).
+            return Ok(ArrowTy::value_channel(type_expr_to_vty(ctx, &ret)?));
+        }
     }
     if name == "not" {
         if args.len() != 1 {

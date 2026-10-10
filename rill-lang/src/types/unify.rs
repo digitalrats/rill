@@ -150,6 +150,7 @@ pub fn unify_value(
         (ValueTy::Bool, ValueTy::Bool) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
         (ValueTy::Buffer, ValueTy::Buffer) => Ok(()),
+        (ValueTy::Void, ValueTy::Void) => Ok(()),
         (ValueTy::Data(x, ax), ValueTy::Data(y, ay))
         | (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay))
             if x == y && ax.len() == ay.len() =>

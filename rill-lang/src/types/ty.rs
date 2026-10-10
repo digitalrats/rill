@@ -43,6 +43,9 @@ pub enum ValueTy {
     /// A signal buffer (a block of samples). An ordinary value type, like
     /// `List`/`Map`; executed as `Value::Buffer` on the value track.
     Buffer,
+    /// The unit type `()`. The only inhabitant is `Value::Void` (allocated by
+    /// the value track's `ValueConstVoid`); used for `IO ()` actions.
+    Void,
     /// A named data record, parameterized by its type arguments.
     Data(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
@@ -247,6 +250,12 @@ instance Monad List where {
 
 data Kleisli m a b = { unKleisli: a -> m b };
 data ST s a = { unST: a };
+data IO a = { unIO: a };
+
+instance Monad IO where {
+    return x = IO { unIO: x };
+    bind m f = IO { unIO: (f m.unIO).unIO };
+};
 
 typeclass Arrow a where {
     arr: (b -> c) -> a b c;
@@ -554,6 +563,33 @@ impl TypeEnv {
                 Box::new(crate::ast::TypeExpr::TName("a".into())),
             ),
         );
+        // IO primitives: `readInput : Int -> IO Buffer` and
+        // `writeOutput : Int -> Buffer -> IO ()`. `IO` is the monad declared in
+        // `CATEGORY_PRELUDE`; `()` is `ValueTy::Void` (`TName "()"` resolves to
+        // it in `type_expr_to_vty`).
+        env.builtin_sigs.insert(
+            "readInput".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TName("Int".into())],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "IO".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "writeOutput".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![
+                    crate::ast::TypeExpr::TName("Int".into()),
+                    crate::ast::TypeExpr::TName("Buffer".into()),
+                ],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "IO".to_string(),
+                    vec![crate::ast::TypeExpr::TName("()".into())],
+                )),
+            ),
+        );
         env
     }
 
@@ -800,6 +836,8 @@ impl TypeEnv {
         match cur.as_str() {
             "Float" => ValueTy::Float,
             "Int" => ValueTy::Int,
+            "Buffer" => ValueTy::Buffer,
+            "()" => ValueTy::Void,
             n => {
                 if self.newtypes.contains_key(n) {
                     ValueTy::Newtype(n.to_string(), vec![])

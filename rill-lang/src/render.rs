@@ -212,6 +212,10 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, "{v}").ok();
             Ok(())
         }
+        Expr::Void(_) => {
+            write!(buf, "()").ok();
+            Ok(())
+        }
         Expr::Float(v, _) => {
             if *v == *v as i64 as f64 && v.is_finite() {
                 write!(buf, "{:.1}", v).ok();

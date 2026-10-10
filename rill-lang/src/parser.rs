@@ -1269,6 +1269,12 @@ impl<'a> Parser<'a> {
                 }
             }
             Tok::LParen => {
+                // `()` — the unit literal. `t` is the already-consumed LParen;
+                // the RParen is the next token.
+                if self.peek().tok == Tok::RParen {
+                    self.bump();
+                    return Ok(Expr::Void(t.span));
+                }
                 let start = t.span.start;
                 let inner = self.parse_expr(0, false)?;
                 self.eat(&Tok::RParen)?;

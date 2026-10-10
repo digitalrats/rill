@@ -1286,6 +1286,9 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueBool { dst, value } => {
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Bool(*value));
         }
+        ValueInstr::ValueConstVoid { dst } => {
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
+        }
         ValueInstr::ValueConstString { dst, value } => {
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::String(value.clone()));
         }

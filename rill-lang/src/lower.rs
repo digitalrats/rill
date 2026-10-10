@@ -120,6 +120,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueMakeClosure { .. }
             | ValueInstr::ValueCallFunc { .. }
             | ValueInstr::ValueBool { .. }
+            | ValueInstr::ValueConstVoid { .. }
             | ValueInstr::ValueConstString { .. }
             | ValueInstr::ValueListLit { .. }
             | ValueInstr::ValueMapLit { .. }
@@ -1842,6 +1843,11 @@ impl<'a> Lowerer<'a> {
                 self.emit_value(ValueInstr::ValueBool { dst, value: *b });
                 Ok((dst, ValueTy::Bool))
             }
+            Expr::Void(_) => {
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueConstVoid { dst });
+                Ok((dst, ValueTy::Void))
+            }
             Expr::Str(s, _) => {
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueConstString {
@@ -2664,6 +2670,7 @@ impl<'a> Lowerer<'a> {
             Expr::Int(_, _)
             | Expr::Float(_, _)
             | Expr::Imag(_, _)
+            | Expr::Void(_)
             | Expr::Str(_, _)
             | Expr::Wire(_)
             | Expr::Cut(_) => {}
@@ -4002,6 +4009,7 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Bool
             | ValueTy::String
             | ValueTy::Buffer
+            | ValueTy::Void
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
             | ValueTy::TyConVar(_) => 1,
@@ -4111,6 +4119,10 @@ impl<'a> Lowerer<'a> {
                 self.emit_value(ValueInstr::ValueBufferConst { dst, value: *v });
                 Ok(vec![dst])
             }
+            Expr::Void(span) => Err(CompileError::Type {
+                msg: "the unit value `()` is a value expression; it cannot be used in a signal position".into(),
+                span: *span,
+            }),
             Expr::Imag(v, _) => {
                 let name = "complex".to_string();
                 if let Some(fsig) = self.env.foreign_sigs.get(&name).cloned() {
@@ -5257,6 +5269,7 @@ impl<'a> Lowerer<'a> {
         let _unsupported = |m: &str| CompileError::Unsupported(m.to_string());
         Ok(match e {
             Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
+            Expr::Void(_) => (0, 1),
             Expr::Imag(_, _) => (0, 2),
             Expr::Str(_, _) => (0, 1),
             Expr::Wire(_) => (1, 1),
