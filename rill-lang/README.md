@@ -635,8 +635,9 @@ Reserved method/builtin names from the prelude: `fmap`, `pure`, `ap`,
 ## First-class functions and closures
 
 Functions are first-class values: a **lambda literal** `fn p -> body` compiles
-to a `Value::Closure` (a by-value environment snapshot plus a compiled body
-fragment), and `ValueCallFunc` performs real runtime dispatch:
+to a `Value::Callable` (a by-value environment snapshot plus a compiled body
+fragment; eager, with no memo cell), and `ValueCallFunc` performs real runtime
+dispatch:
 
 ```faust
 adder = fn n -> fn x -> x + n;   // a function returning a closure

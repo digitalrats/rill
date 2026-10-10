@@ -67,7 +67,7 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Per-tick value registers. The store is pre-sized to
     /// `ir.num_value_regs + ir.max_call_regs`: the leading `num_value_regs`
     /// slots are the program's own registers, the tail is the pre-allocated
-    /// function-call scratch that [`run_fragment`](crate::backend::interp::run_fragment)
+    /// function-call scratch that [`run_call`](crate::backend::interp::run_call)
     /// borrows per dispatch (see [`Self::value_regs_top`]). No reallocation on
     /// the RT path.
     pub(crate) value_regs: Vec<Option<crate::arena::ArenaRef>>,
@@ -81,7 +81,7 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Current runtime cell-stack frames (bindings).
     pub(crate) cell_stack: Vec<Vec<(u32, crate::arena::ArenaRef)>>,
     /// Shared capture-cell store for function fragments (see
-    /// [`run_fragment`](crate::backend::interp::run_fragment)). Each dispatch
+    /// [`run_call`](crate::backend::interp::run_call)). Each dispatch
     /// appends its env-field capture cells at the current top; the fragment's
     /// `ValueReadCell { cell: i }` capture reads resolve to
     /// `frag_cells[frag_cells_base + i]` while a frame is active. Pre-sized at
@@ -613,7 +613,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// exhausts the fixed arena). Called at the very end of a tick, after the
     /// value outputs have been read. Only the program's own registers
     /// (`0..ir.num_value_regs`) are cleared — the pre-allocated call scratch
-    /// is drained by `run_fragment` on every dispatch return, so its slots are
+    /// is drained by `run_call` on every dispatch return, so its slots are
     /// already `None`.
     pub(crate) fn clear_value_regs(&mut self) {
         debug_assert!(

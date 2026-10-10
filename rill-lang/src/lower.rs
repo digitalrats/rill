@@ -220,8 +220,8 @@ struct Lowerer<'a> {
     /// types carry the exact capacities the runtime allocates.
     container_tys: Vec<ValueTy>,
     /// First-class function values referenced by [`ValueInstr::ValueMakeClosure`].
-    /// A bare reference to a user definition in value position allocates a
-    /// [`Value::Closure`] referencing the entry's index.
+    /// A bare reference to a user definition in value position allocates an
+    /// eager [`Value::Callable`] referencing the entry's index.
     value_funcs: Vec<crate::ir::ValueFunc>,
     /// Scope stack of value locals: name → (value reg, value type). Match-arm
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
@@ -2431,7 +2431,7 @@ impl<'a> Lowerer<'a> {
         if let Some(idx) = self.fragment_captures.iter().position(|(f, _)| f == name) {
             // A free variable of the enclosing lambda: read it from the call's
             // env frame. `idx` is the name's position in the fragment's capture
-            // list, which `run_fragment` binds as frame cell `idx` (the env
+            // list, which `run_call` binds as frame cell `idx` (the env
             // Record field order == capture order). The static type is the
             // capture's type at the closure's definition site (a captured
             // record parameter stays its `Data` type, so a field projection /
@@ -2809,11 +2809,11 @@ impl<'a> Lowerer<'a> {
     /// the body compile and restored afterwards.
     ///
     /// Within the fragment: parameters bind to fragment-local registers
-    /// `0..params.len()` (value args are copied in by `run_fragment`), typed
+    /// `0..params.len()` (value args are copied in by `run_call`), typed
     /// with the λ-parameter types threaded from inference; a `Ref` to a free
     /// name emits `ValueReadCell { cell: capture_index }` where
     /// `capture_index` is the name's position in `free` (the env Record field
-    /// order, bound by `run_fragment` as temp-frame cells).
+    /// order, bound by `run_call` as temp-frame cells).
     #[allow(clippy::too_many_arguments)]
     fn lower_fragment(
         &mut self,

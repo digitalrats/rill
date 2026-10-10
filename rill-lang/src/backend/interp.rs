@@ -159,7 +159,7 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
     // registers mutably while iterating (`mem::take` leaves an empty `Vec`
     // behind — no allocation on the RT path). Drops queue on the shared,
     // pre-sized `drops_scratch`, moved out ONCE here and threaded through the
-    // whole dispatch tree (`exec_value_instr` → `run_fragment` → ...) as a
+    // whole dispatch tree (`exec_value_instr` → `run_call` → ...) as a
     // separate parameter, so every fragment at every nesting depth reuses the
     // same reserved buffer — no allocation in the RT path. The mark/drain
     // discipline keeps each frame's pending drops below its own mark.
@@ -304,8 +304,11 @@ fn recount_children<T: Transcendental, const BUF: usize>(
         Value::Newtype(inner) => {
             _ = prog.arena.copy(*inner);
         }
-        Value::Closure(env, _) => {
+        Value::Callable { env, cell, .. } => {
             _ = prog.arena.copy(*env);
+            if let Some(c) = cell {
+                _ = prog.arena.copy(*c);
+            }
         }
         Value::List { elems } => {
             for e in elems {
@@ -323,13 +326,9 @@ fn recount_children<T: Transcendental, const BUF: usize>(
                 _ = prog.arena.copy(*e);
             }
         }
-        // A thunk owns its env record and memo cell; a forced cell owns its
-        // result. Mirroring `visit_refs` keeps the recount accounting balanced
-        // when a thunk/cell value is copied into a fresh slot.
-        Value::Thunk { env, cell, .. } => {
-            _ = prog.arena.copy(*env);
-            _ = prog.arena.copy(*cell);
-        }
+        // A lazy callable owns its memo cell; a forced cell owns its result.
+        // Mirroring `visit_refs` keeps the recount accounting balanced when a
+        // callable/cell value is copied into a fresh slot.
         Value::ThunkCell(ThunkState::Forced(r)) => {
             _ = prog.arena.copy(*r);
         }
@@ -496,7 +495,12 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
             }
         }
         Value::Newtype(inner) => prog.arena.drop_ref(*inner),
-        Value::Closure(env, _) => prog.arena.drop_ref(*env),
+        Value::Callable { env, cell, .. } => {
+            prog.arena.drop_ref(*env);
+            if let Some(c) = cell {
+                prog.arena.drop_ref(*c);
+            }
+        }
         Value::List { elems, .. } => {
             for e in elems {
                 prog.arena.drop_ref(*e);
@@ -513,13 +517,9 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
                 prog.arena.drop_ref(*e);
             }
         }
-        // A thunk releases its env record and memo cell; a forced cell
-        // releases its result. Mirroring `visit_refs` keeps the raw-value drop
-        // (an alloc failure) balanced with the arena's own recursive drop.
-        Value::Thunk { env, cell, .. } => {
-            prog.arena.drop_ref(*env);
-            prog.arena.drop_ref(*cell);
-        }
+        // A lazy callable releases its memo cell; a forced cell releases its
+        // result. Mirroring `visit_refs` keeps the raw-value drop (an alloc
+        // failure) balanced with the arena's own recursive drop.
         Value::ThunkCell(ThunkState::Forced(r)) => prog.arena.drop_ref(*r),
         // A cons cell releases its head and (lazy) tail.
         Value::Cons(h, t) => {
@@ -591,7 +591,7 @@ fn value_cmp_ref(arena: &Arena<Value>, a: &Value, b: &Value) -> i8 {
             }
             px.len().cmp(&py.len()) as i8
         }
-        (Closure(..), Closure(..)) => 0, // unreachable for Ord-typed keys
+        (Callable { .. }, Callable { .. }) => 0, // unreachable for Ord-typed keys
         _ => kind_rank(a).cmp(&kind_rank(b)) as i8,
     }
 }
@@ -622,13 +622,12 @@ fn kind_rank(v: &Value) -> i8 {
         List { .. } => 7,
         Map { .. } => 8,
         Set { .. } => 9,
-        Closure(..) => 10,
+        Callable { .. } => 10,
         Void => 11,
-        Thunk { .. } => 12,
-        ThunkCell(_) => 13,
-        Bottom => 14,
-        Cons(..) => 15,
-        Nil => 16,
+        ThunkCell(_) => 12,
+        Bottom => 13,
+        Cons(..) => 14,
+        Nil => 15,
     }
 }
 
@@ -989,19 +988,32 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             closure_slot,
             args,
         } => {
-            // Runtime dispatch: read the closure from `closure_slot`, run the
+            // Runtime dispatch: read the callable from `closure_slot`, run the
             // referenced fragment with a temporary register frame, and copy the
-            // result into `dst`. An unbound slot or a non-closure value yields a
-            // detectable `None`.
+            // result into `dst`. An unbound slot or a non-eager callable value
+            // (a lazy thunk) yields a detectable `None`.
             let slot = prog.value_regs.get(*closure_slot).copied().flatten();
             match slot.and_then(|s| prog.arena.get(s)) {
-                Some(Value::Closure(env_ref, fragment_id)) => {
+                Some(Value::Callable {
+                    fragment: fragment_id,
+                    env: env_ref,
+                    cell: None,
+                }) => {
                     // Share the fragment via `Arc` so `prog` can be borrowed
-                    // mutably inside `run_fragment` without cloning the body
+                    // mutably inside `run_call` without cloning the body
                     // (an atomic refcount bump, no heap allocation on the RT
                     // path). The `Arc::clone` ends the immutable IR borrow.
                     match prog.ir.fragments.get(*fragment_id as usize).cloned() {
-                        Some(frag) => run_fragment(prog, &frag, *env_ref, args, dst, drops),
+                        Some(frag) => {
+                            run_call(
+                                prog,
+                                &frag,
+                                *env_ref,
+                                ArgsSource::Registers(args),
+                                Some(*dst),
+                                drops,
+                            );
+                        }
                         None => prog.value_regs[*dst] = None,
                     }
                 }
@@ -1013,17 +1025,21 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             closure_slot,
             args,
         } => {
-            // Lazily apply a closure: build a thunk over the closure's fragment
-            // and an env record that concatenates the closure's captured env
-            // fields with the (unforced) argument refs. The application does
-            // not run — `run_thunk_body` splits the env into captures + args by
-            // the fragment's `value_ins` when the thunk is forced.
+            // Lazily apply a callable: build a thunk over its fragment and an
+            // env record that concatenates the callable's captured env fields
+            // with the (unforced) argument refs. The application does not run —
+            // `run_call` splits the env into captures + args by the fragment's
+            // `value_ins` when the thunk is forced.
             let Some(cr) = prog.value_regs.get(*closure_slot).copied().flatten() else {
                 prog.value_regs[*dst] = None;
                 return;
             };
             let (env_ref, fid) = match prog.arena.get(cr) {
-                Some(Value::Closure(env, fid)) => (*env, *fid),
+                Some(Value::Callable {
+                    fragment,
+                    env,
+                    cell: None,
+                }) => (*env, *fragment),
                 _ => {
                     prog.value_regs[*dst] = None;
                     return;
@@ -1074,20 +1090,21 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
             prog.value_regs[*dst] = alloc_owned(
                 prog,
-                Value::Thunk {
+                Value::Callable {
                     fragment: fid,
                     env: env_owned,
-                    cell,
+                    cell: Some(cell),
                 },
             );
         }
         ValueInstr::ValueMakeClosure { dst, env, fragment } => {
-            // A closure is a leaf holding the env record ref and the fragment
-            // id. The env register is read by value; the closure COUNTS the env
-            // as a child (like a Record counts its fields), so the creating
-            // register keeps its own ownership and `drop_ref` releases the env
-            // when the closure is freed. An unbound env (v1 named references)
-            // falls back to a fresh Void slot the closure owns outright.
+            // A callable is a leaf holding the env record ref, the fragment id,
+            // and no memo cell (eager). The env register is read by value; the
+            // callable COUNTS the env as a child (like a Record counts its
+            // fields), so the creating register keeps its own ownership and
+            // `drop_ref` releases the env when the callable is freed. An
+            // unbound env (v1 named references) falls back to a fresh Void slot
+            // the callable owns outright.
             let env_ref = match prog.value_regs.get(*env).copied().flatten() {
                 Some(r) => match prog.arena.copy(r) {
                     Ok(c) => c,
@@ -1105,7 +1122,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     }
                 },
             };
-            prog.value_regs[*dst] = alloc_owned(prog, Value::Closure(env_ref, *fragment as u32));
+            prog.value_regs[*dst] = alloc_owned(
+                prog,
+                Value::Callable {
+                    fragment: *fragment as u32,
+                    env: env_ref,
+                    cell: None,
+                },
+            );
         }
         ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src] {
             Some(sr) => {
@@ -1296,14 +1320,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             exec_value_call_builtin(prog, *op, args, *dst, drops);
         }
         ValueInstr::ValueLazy { dst, env, fragment } => {
-            // Create a lazy binding: a fresh memo cell plus a thunk value
-            // referencing it and the captured env. The env register is read by
-            // value; the thunk COUNTS the env as a child (like a Closure), so
-            // the creating register keeps its own ownership. An unbound env
-            // (v1 named references) falls back to a fresh Void slot the thunk
-            // owns outright. The cell is created with rc 1 and is referenced
-            // only by this thunk value — copies of the thunk SHARE the slot
-            // (`ValueCopy`/`copy_owned`), never duplicating the cell, so
+            // Create a lazy binding: a fresh memo cell plus a callable value
+            // referencing it and the captured env (a thunk). The env register
+            // is read by value; the callable COUNTS the env as a child (like a
+            // Record), so the creating register keeps its own ownership. An
+            // unbound env (v1 named references) falls back to a fresh Void slot
+            // the callable owns outright. The cell is created with rc 1 and is
+            // referenced only by this callable value — copies of it SHARE the
+            // slot (`ValueCopy`/`copy_owned`), never duplicating the cell, so
             // forcing can mutate it in place.
             let cell = match prog.arena.alloc(Value::ThunkCell(ThunkState::Unforced)) {
                 Ok(c) => c,
@@ -1333,10 +1357,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
             prog.value_regs[*dst] = alloc_owned(
                 prog,
-                Value::Thunk {
+                Value::Callable {
                     fragment: *fragment as u32,
                     env: env_ref,
-                    cell,
+                    cell: Some(cell),
                 },
             );
         }
@@ -1998,8 +2022,8 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Bind `elem` as the fragment's single argument register, run the closure, and
-/// return the copied result ref (or `None` when the slot holds no closure).
+/// Bind `elem` as the fragment's single argument register, run the callable, and
+/// return the copied result ref (or `None` when the slot holds no callable).
 ///
 /// Thin wrapper over [`call_closure_args`].
 fn call_closure_single<T: Transcendental, const BUF: usize>(
@@ -2018,16 +2042,16 @@ fn call_closure_single<T: Transcendental, const BUF: usize>(
     )
 }
 
-/// Bind `args` as a closure call's argument registers and run the fragment,
+/// Bind `args` as a callable call's argument registers and run the fragment,
 /// returning the copied result ref (or `None` on any unbound/errored step).
 ///
 /// The arg refs are placed in the pre-allocated call-scratch slots as raw
-/// borrows — `run_fragment` copies each (RC++) into the same slots before
-/// running and drains them on return, so the source containers keep their own
-/// ownership and the borrow never leaks. `result_reg` is a program-level
-/// register (below the scratch watermark), so the drained range cannot reclaim
-/// it; its previous occupant is dropped first, because `run_fragment`
-/// overwrites `dst` without releasing the old ref.
+/// borrows — `run_call` copies each (RC++) into the same slots before running
+/// and drains them on return, so the source containers keep their own ownership
+/// and the borrow never leaks. `result_reg` is a program-level register (below
+/// the scratch watermark), so the drained range cannot reclaim it; its previous
+/// occupant is dropped first, because `run_call` overwrites `dst` without
+/// releasing the old ref.
 fn call_closure_args<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     closure_reg: usize,
@@ -2037,7 +2061,11 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
 ) -> Option<ArenaRef> {
     let (env_ref, fragment_id) = match prog.value_regs.get(closure_reg).copied().flatten() {
         Some(r) => match prog.arena.get(r) {
-            Some(Value::Closure(env, fid)) => (*env, *fid),
+            Some(Value::Callable {
+                fragment,
+                env,
+                cell: None,
+            }) => (*env, *fragment),
             _ => return None,
         },
         None => return None,
@@ -2045,11 +2073,11 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
     let frag = prog.ir.fragments.get(fragment_id as usize).cloned()?;
     let base = prog.value_regs_top;
     // Bounds-guard: the pre-sized call scratch reserves `max_call_regs` slots,
-    // so a wrong-arity closure (e.g. `fold (fn a -> a) ...`) could pass more
+    // so a wrong-arity callable (e.g. `fold (fn a -> a) ...`) could pass more
     // args than the fragment declares and write the raw borrows past the store.
     // Clamp to `frag.sig.value_ins` and the store's tail; the type checker
-    // rejects wrong-arity closures at compile time, this is belt-and-suspenders
-    // so a bad closure cannot crash the RT path.
+    // rejects wrong-arity callables at compile time, this is belt-and-suspenders
+    // so a bad callable cannot crash the RT path.
     let n = args
         .len()
         .min(frag.sig.value_ins)
@@ -2061,14 +2089,36 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
         drops.push(old);
     }
     let arg_regs: Vec<usize> = (0..n).map(|i| base + i).collect();
-    run_fragment(prog, &frag, env_ref, &arg_regs, &result_reg, drops);
+    run_call(
+        prog,
+        &frag,
+        env_ref,
+        ArgsSource::Registers(&arg_regs),
+        Some(result_reg),
+        drops,
+    );
     prog.value_regs.get_mut(result_reg).and_then(|r| r.take())
 }
 
-/// Execute a function fragment: binds the captured env fields as cells in a
-/// temporary frame, runs the fragment's value instructions against a scratch
-/// register slice in the pre-allocated tail of `value_regs`, copies the result
-/// into `dst`, and pops the frame.
+/// Where a fragment call's value arguments come from.
+///
+/// An eager call passes the caller's value-register indices
+/// ([`ArgsSource::Registers`]); a lazy thunk carries no stored argument
+/// registers — its env record IS the captured frame, and the LAST
+/// `frag.sig.value_ins` fields of that record are the function's arguments
+/// ([`ArgsSource::EnvTail`]).
+#[derive(Clone, Copy)]
+enum ArgsSource<'a> {
+    /// Value args come from the caller's value registers (eager call).
+    Registers(&'a [usize]),
+    /// Value args come from the env-record tail split by the fragment's
+    /// `value_ins` (lazy thunk).
+    EnvTail,
+}
+
+/// Execute a fragment body for a callable value: binds the captured env fields
+/// as cells in a temporary frame, runs the fragment's value instructions
+/// against a scratch register slice, and returns the copied result ref.
 ///
 /// Register-offset scheme: a fragment's instructions are reused across calls
 /// and reference fragment-local registers `0..num_value_regs`. The interpreter
@@ -2087,14 +2137,20 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
 /// owns it and the env record is untouched. Deferred drops queue on the
 /// pre-sized `drops` scratch threaded from the value track — every nesting
 /// depth reuses the same reserved buffer.
-fn run_fragment<T: Transcendental, const BUF: usize>(
+///
+/// `args` selects the arg source: caller registers (an eager closure call) or
+/// the env-record tail (a lazy thunk). `dst`, when `Some`, receives the copied
+/// result ref (`None` when the fragment declares no output register); `None`
+/// when the caller wants the result purely via the return (the lazy forcing
+/// path memoizes the returned ref).
+fn run_call<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     frag: &std::sync::Arc<FragmentIr>,
     env_ref: crate::arena::ArenaRef,
-    args: &[usize],
-    dst: &usize,
+    args: ArgsSource<'_>,
+    dst: Option<usize>,
     drops: &mut Vec<crate::arena::ArenaRef>,
-) {
+) -> Option<crate::arena::ArenaRef> {
     // 0. Reserve the call-scratch slice BEFORE binding capture cells, so a
     //    recursion depth beyond `max_call_regs` latches a ProcessError instead
     //    of a release-mode Vec OOB (deep-but-finite recursion can legitimately
@@ -2103,25 +2159,36 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     let top = base + frag.num_value_regs;
     if top > prog.value_regs.len() {
         latch_exhaustion(prog, "call scratch (max_call_regs)");
-        return;
+        return None;
     }
-    // 1. Bind each env Record field as a capture cell: an INDEPENDENT copy of
-    //    the field's value appended to the shared capture-cell store (pre-sized
-    //    at construction — no allocation). The env record is untouched.
+    let value_ins = frag.sig.value_ins;
+    // 1. Bind the env Record fields as capture cells. For an eager call every
+    //    field is a capture (the args come from the caller's registers); for a
+    //    lazy call the FIRST `fields.len() - value_ins` fields are the lambda's
+    //    free variables and the LAST `value_ins` are the function's arguments.
+    let mut arg_refs: Vec<ArenaRef> = Vec::new();
     let cell_base = prog.frag_cells.len();
     if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
         // Clone the field refs so the arena can be borrowed mutably while the
         // capture cells are allocated below.
         let fields = fields.clone();
-        for f in &fields {
-            // Clone the field value so the arena borrow ends before the mutable
-            // alloc_copy below (mirrors the outer `fields.clone()`).
-            let cell = match prog.arena.get(*f).cloned() {
-                Some(v) => alloc_copy(prog, &v),
-                None => prog.arena.alloc(Value::Void).ok(),
-            };
-            if let Some(c) = cell {
-                prog.frag_cells.push(c);
+        let n_capture = match args {
+            ArgsSource::Registers(_) => fields.len(),
+            ArgsSource::EnvTail => fields.len().saturating_sub(value_ins),
+        };
+        for (i, f) in fields.iter().enumerate() {
+            if i < n_capture {
+                // Clone the field value so the arena borrow ends before the
+                // mutable alloc_copy below (mirrors the outer `fields.clone()`).
+                let cell = match prog.arena.get(*f).cloned() {
+                    Some(v) => alloc_copy(prog, &v),
+                    None => prog.arena.alloc(Value::Void).ok(),
+                };
+                if let Some(c) = cell {
+                    prog.frag_cells.push(c);
+                }
+            } else {
+                arg_refs.push(*f);
             }
         }
     }
@@ -2129,16 +2196,23 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     prog.frag_cells_base = cell_base;
     // 2. The pre-sized store guarantees the reserved slice is available here.
     prog.value_regs_top = top;
-    // 3. Value args: copy the caller's arg values into the fragment's leading
-    //    registers (the first `sig.value_ins` slice slots). Each copy is a
-    //    fresh owner (RC++) so the caller keeps its own ref.
-    for (i, a) in args
-        .iter()
-        .take(frag.sig.value_ins.min(args.len()))
-        .enumerate()
-    {
-        if let Some(sr) = prog.value_regs.get(*a).copied().flatten() {
-            prog.value_regs[base + i] = copy_owned(prog, sr);
+    // 3. Value args: bind the fragment's leading registers. Each copy is a
+    //    fresh owner (RC++) so the caller (or the thunk's env) keeps its own
+    //    ref.
+    match args {
+        ArgsSource::Registers(regs) => {
+            for (i, a) in regs.iter().take(value_ins.min(regs.len())).enumerate() {
+                if let Some(sr) = prog.value_regs.get(*a).copied().flatten() {
+                    prog.value_regs[base + i] = copy_owned(prog, sr);
+                }
+            }
+        }
+        ArgsSource::EnvTail => {
+            for (i, a) in arg_refs.iter().take(value_ins).enumerate() {
+                if let Some(c) = copy_owned(prog, *a) {
+                    prog.value_regs[base + i] = Some(c);
+                }
+            }
         }
     }
     // 4. Run the fragment's value blocks with the register offset. Drops queue
@@ -2185,12 +2259,17 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     for r in drops.drain(drops_mark..) {
         prog.arena.drop_ref(r);
     }
-    // 5. Copy the fragment's result into `dst` (a fresh owner via `copy`).
-    if let Some(or) = frag.output_value_regs.first() {
-        prog.value_regs[*dst] = match prog.value_regs.get(base + *or).copied().flatten() {
+    // 5. Copy the fragment's result out (a fresh owner via `copy`) and write it
+    //    into `dst` when one is given and the fragment declares an output.
+    let result: Option<ArenaRef> = match frag.output_value_regs.first() {
+        Some(or) => match prog.value_regs.get(base + *or).copied().flatten() {
             Some(sr) => copy_owned(prog, sr),
             None => None,
-        };
+        },
+        None => None,
+    };
+    if let (Some(d), true) = (dst, !frag.output_value_regs.is_empty()) {
+        prog.value_regs[d] = result;
     }
     // 6. Drain the scratch slice (dropping every fragment-local register's
     //    counted ref — value args and body temps own arena slots, so removing
@@ -2207,6 +2286,7 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
     for c in prog.frag_cells.drain(cell_base..) {
         prog.arena.drop_ref(c);
     }
+    result
 }
 
 /// Force `r` to WHNF and return the head ref. Idempotent via the memo cell.
@@ -2214,16 +2294,17 @@ fn run_fragment<T: Transcendental, const BUF: usize>(
 /// The returned ref is a BORROWED view — the memo cell (or the caller's own
 /// operand) owns it. A caller that stores it must `copy` it first; a caller
 /// that only reads it must not drop it. `drops` is the shared deferred-drop
-/// scratch threaded from the value track: forcing runs the thunk body, whose
+/// scratch threaded from the value track: forcing runs the body, whose
 /// instructions may queue drops.
 ///
-/// Loop semantics (call-by-need): a value that is not a thunk is already WHNF.
-/// A thunk inspects its memo cell:
+/// Loop semantics (call-by-need): a value that is not a lazy callable is
+/// already WHNF. A lazy callable (`Value::Callable { cell: Some(c), .. }`)
+/// inspects its memo cell:
 /// - `Forced(res)`: memo hit — chase `res` (a result may itself be a thunk).
 /// - `Unforced`: mark the cell `Forcing` (the black-hole marker), run the body
 ///   fragment with the captured env, memoize the result as `Forced(result)`.
 ///   A body that RE-ENTERS this cell while it is `Forcing` has hit a black
-///   hole: the cell now memoizes a bottom slot and the thunk is divergent.
+///   hole: the cell now memoizes a bottom slot and the callable is divergent.
 /// - `Forcing`: re-entry — the black hole; the cell memoizes a bottom slot.
 /// - `Bottom`: a previously-divergent cell; memoize a bottom slot.
 ///
@@ -2244,13 +2325,13 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
             Some(v) => v,
             None => return r, // dangling: caller's bug; treat as-is
         };
-        let Value::Thunk {
+        let Value::Callable {
             fragment,
             env,
-            cell,
+            cell: Some(cell),
         } = v
         else {
-            return r; // already WHNF
+            return r; // already WHNF (eager callable, or a non-callable value)
         };
         let (fragment, env, cell) = (*fragment, *env, *cell);
         let state: Option<Value> = prog.arena.get(cell).cloned();
@@ -2258,7 +2339,7 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
             Some(Value::ThunkCell(ThunkState::Forced(res))) => {
                 // Cycle guard: a memoized result that re-enters a cell already
                 // forced in this chase is a self-referential loop.
-                if let Some(Value::Thunk { cell: c2, .. }) = prog.arena.get(res) {
+                if let Some(Value::Callable { cell: Some(c2), .. }) = prog.arena.get(res) {
                     if seen_cells.contains(c2) {
                         return memoize_bottom(prog, cell);
                     }
@@ -2278,7 +2359,26 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
                         *st = ThunkState::Forcing;
                     }
                 });
-                let result = run_thunk_body(prog, fragment, env, drops);
+                let result: Option<ArenaRef> =
+                    match prog.ir.fragments.get(fragment as usize).cloned() {
+                        Some(frag) => run_call(prog, &frag, env, ArgsSource::EnvTail, None, drops),
+                        None => {
+                            debug_assert!(false, "thunk body fragment {fragment} does not exist");
+                            None
+                        }
+                    };
+                let result = match result {
+                    Some(r) => r,
+                    None => {
+                        // The body produced no result because a deeper recursion
+                        // already exhausted the arena/pool (latched above) or the
+                        // body legitimately yielded nothing — either way this
+                        // thunk cannot compute, so it is bottom (a latched
+                        // ProcessError surfaces at tick end).
+                        latch_exhaustion(prog, "thunk body produced no result");
+                        try_alloc_bottom(prog).unwrap_or(env)
+                    }
+                };
                 // Re-entrancy guard: a body that forced ITSELF left a black-
                 // hole bottom behind while its cell was Forcing. Such a thunk
                 // is divergent — keep the bottom, discard the body result.
@@ -2288,7 +2388,7 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
                         // that re-enters THIS cell (a self-cycle).
                         let cyclic = matches!(
                             prog.arena.get(result),
-                            Some(Value::Thunk { cell: c2, .. })
+                            Some(Value::Callable { cell: Some(c2), .. })
                                 if *c2 == cell || seen_cells.contains(c2)
                         );
                         if cyclic {
@@ -2348,156 +2448,8 @@ fn memoize_bottom<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Run a thunk's body fragment with the captured env record as its cells and
-/// return the produced result ref (a fresh owner, transferred to the caller's
-/// memo cell).
-///
-/// Mirrors [`run_fragment`]'s dispatch for a closure call with no argument
-/// registers: a thunk carries no stored arg registers — the env record IS the
-/// captured frame. Its fields become the capture cells, the body runs against
-/// a scratch register slice, and the fragment's output register is copied out
-/// before the slice is drained. A missing fragment id, or a body that produced
-/// no output, is a build bug and yields a fresh bottom (the thunk cannot
-/// compute).
-fn run_thunk_body<T: Transcendental, const BUF: usize>(
-    prog: &mut RillProgram<T, BUF>,
-    fragment_id: u32,
-    env_ref: ArenaRef,
-    drops: &mut Vec<ArenaRef>,
-) -> ArenaRef {
-    let Some(frag) = prog.ir.fragments.get(fragment_id as usize).cloned() else {
-        debug_assert!(false, "thunk body fragment {fragment_id} does not exist");
-        return try_alloc_bottom(prog).unwrap_or(env_ref);
-    };
-    // 0. Reserve the call-scratch slice BEFORE binding capture cells, so a
-    //    recursion depth beyond `max_call_regs` latches a ProcessError instead
-    //    of a release-mode Vec OOB. The store is pre-sized to
-    //    `num_value_regs + max_call_regs`, so the watermark can grow here.
-    let base = prog.value_regs_top;
-    let top = base + frag.num_value_regs;
-    if top > prog.value_regs.len() {
-        latch_exhaustion(prog, "call scratch (max_call_regs)");
-        return try_alloc_bottom(prog).unwrap_or(env_ref);
-    }
-    // 1. Bind the env Record fields as the fragment's frame. The FIRST
-    //    `fields.len() - value_ins` fields are the lambda's free variables
-    //    (capture cells, resolved by `ValueReadCell`); the LAST `value_ins`
-    //    fields are the function's arguments (bound to the fragment's leading
-    //    registers below, like `run_fragment`). A thunk built by `ValueLazy`
-    //    has `value_ins == 0` (env = captures only); a thunk built by
-    //    `ValueCallLazy` has `value_ins > 0` (env = captures ++ args).
-    let value_ins = frag.sig.value_ins;
-    let mut arg_refs: Vec<ArenaRef> = Vec::new();
-    let cell_base = prog.frag_cells.len();
-    if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
-        let fields = fields.clone();
-        let n_capture = fields.len().saturating_sub(value_ins);
-        for (i, f) in fields.iter().enumerate() {
-            if i < n_capture {
-                // Clone the field value so the arena borrow ends before the
-                // mutable alloc_copy below.
-                let cell = match prog.arena.get(*f).cloned() {
-                    Some(v) => alloc_copy(prog, &v),
-                    None => prog.arena.alloc(Value::Void).ok(),
-                };
-                if let Some(c) = cell {
-                    prog.frag_cells.push(c);
-                }
-            } else {
-                arg_refs.push(*f);
-            }
-        }
-    }
-    let saved_cells_base = prog.frag_cells_base;
-    prog.frag_cells_base = cell_base;
-    // 2. The reserved slice is guaranteed available (checked above).
-    prog.value_regs_top = top;
-    // 3. Bind the function's arguments into the fragment's leading registers
-    //    (copied, RC++, so the thunk's env keeps its own claims).
-    for (i, a) in arg_refs.iter().take(value_ins).enumerate() {
-        if let Some(c) = copy_owned(prog, *a) {
-            prog.value_regs[base + i] = Some(c);
-        }
-    }
-    // 3. Run the fragment's value blocks with the register offset. Drops queue
-    //    on the threaded scratch above this call's mark and are drained below.
-    let drops_mark = drops.len();
-    let mut cur = frag.entry;
-    loop {
-        debug_assert!(
-            cur < frag.value_blocks.len(),
-            "fragment value-track fall-off-the-end: block {cur} does not exist"
-        );
-        let Some(b) = frag.value_blocks.get(cur) else {
-            break;
-        };
-        for i in &b.instrs {
-            let remapped = remap_value_instr(i, base);
-            exec_value_instr(prog, &remapped, drops);
-        }
-        cur = match b.term {
-            ValueTerm::Fallthrough(n) => n,
-            ValueTerm::Branch { cond, then, els } => {
-                if value_reg_is_true(prog, cond + base) {
-                    then
-                } else {
-                    els
-                }
-            }
-            ValueTerm::BranchCtor {
-                slot,
-                ctor,
-                then,
-                els,
-            } => {
-                if value_reg_ctor(prog, slot + base) == Some(ctor) {
-                    then
-                } else {
-                    els
-                }
-            }
-            ValueTerm::Halt => break,
-        };
-    }
-    for r in drops.drain(drops_mark..) {
-        prog.arena.drop_ref(r);
-    }
-    // 4. Copy the fragment's result OUT before the scratch is drained (the
-    //    output register's own ref is released below, leaving this copy).
-    let result: Option<ArenaRef> = match frag.output_value_regs.first() {
-        Some(or) => match prog.value_regs.get(base + *or).copied().flatten() {
-            Some(sr) => copy_owned(prog, sr),
-            None => None,
-        },
-        None => None,
-    };
-    // 5. Drain the scratch slice, unwind the watermark, release the capture
-    //    cells, and restore the caller's frame.
-    for i in base..prog.value_regs_top {
-        if let Some(r) = prog.value_regs[i].take() {
-            prog.arena.drop_ref(r);
-        }
-    }
-    prog.value_regs_top = base;
-    prog.frag_cells_base = saved_cells_base;
-    for c in prog.frag_cells.drain(cell_base..) {
-        prog.arena.drop_ref(c);
-    }
-    match result {
-        Some(r) => r,
-        None => {
-            // The body produced no result because a deeper recursion already
-            // exhausted the arena/pool (latched above) or the body legitimately
-            // yielded nothing — either way this thunk cannot compute, so it is
-            // bottom (a latched ProcessError surfaces at tick end).
-            latch_exhaustion(prog, "thunk body produced no result");
-            try_alloc_bottom(prog).unwrap_or(env_ref)
-        }
-    }
-}
-
 /// Clone `instr`, adding `base` to every fragment-local register field so the
-/// instruction runs against the scratch slice appended by [`run_fragment`].
+/// instruction runs against the scratch slice appended by [`run_call`].
 ///
 /// Only true value-register fields are offset. Store indices that are global to
 /// the program — `ValueReadMainCell::cell` (main-cell store), `ValueStateRead`/
@@ -3599,10 +3551,10 @@ mod lazy_track_tests {
         let cell = prog.arena.alloc(Value::ThunkCell(state)).unwrap();
         let t = prog
             .arena
-            .alloc(Value::Thunk {
+            .alloc(Value::Callable {
                 fragment: 0,
                 env,
-                cell,
+                cell: Some(cell),
             })
             .unwrap();
         (t, cell)
@@ -3869,10 +3821,10 @@ mod lazy_track_tests {
             .unwrap();
         let t = prog
             .arena
-            .alloc(Value::Thunk {
+            .alloc(Value::Callable {
                 fragment: 0,
                 env,
-                cell,
+                cell: Some(cell),
             })
             .unwrap();
         // The env record holds the thunk itself (its field 0 is `t`), so the
@@ -3910,10 +3862,10 @@ mod lazy_track_tests {
             .unwrap();
         let _t1 = prog
             .arena
-            .alloc(Value::Thunk {
+            .alloc(Value::Callable {
                 fragment: 0,
                 env,
-                cell,
+                cell: Some(cell),
             })
             .unwrap();
         // Second thunk value sharing env + cell; count its references.
@@ -3921,10 +3873,10 @@ mod lazy_track_tests {
         prog.arena.copy(cell).unwrap();
         let t2 = prog
             .arena
-            .alloc(Value::Thunk {
+            .alloc(Value::Callable {
                 fragment: 0,
                 env,
-                cell,
+                cell: Some(cell),
             })
             .unwrap();
         let mut drops = Vec::new();

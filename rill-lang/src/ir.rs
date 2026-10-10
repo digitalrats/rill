@@ -322,7 +322,7 @@ pub enum ValueInstr {
     ///
     /// Inside a function fragment, `cell` is a CAPTURE index: a free variable
     /// of the lambda, read from the call's temporary env frame (see
-    /// [`run_fragment`](crate::backend::interp::run_fragment)) when
+    /// [`run_call`](crate::backend::interp::run_call)) when
     /// `cell < active_fragment_cells.len()`. Outside a fragment, `cell` is a
     /// value register holding a cell ref.
     ValueReadCell {
@@ -447,32 +447,33 @@ pub enum ValueInstr {
         src: usize,
     },
     /// Call a first-class function value at runtime: dispatches to the
-    /// [`FragmentIr`] referenced by the closure's `fragment` id, binding the
+    /// [`FragmentIr`] referenced by the callable's `fragment` id, binding the
     /// caller's argument registers and copying the fragment's result into `dst`.
     ValueCallFunc {
         /// Destination value register.
         dst: usize,
-        /// Value register holding the [`Value::Closure`] to call.
+        /// Value register holding the [`Value::Callable`] to call.
         closure_slot: usize,
         /// Argument value registers (passed by value into the fragment).
         args: Vec<usize>,
     },
-    /// Lazily apply a first-class function value (complete mode): builds a
-    /// [`Value::Thunk`] over the closure's fragment and an env record that
-    /// concatenates the closure's captured env with the argument refs. The
-    /// application does NOT run — it suspends as a thunk and runs on demand.
+    /// Lazily apply a first-class function value (complete mode): builds a lazy
+    /// [`Value::Callable`] (a thunk) over the callable's fragment and an env
+    /// record that concatenates the callable's captured env with the argument
+    /// refs. The application does NOT run — it suspends as a thunk and runs on
+    /// demand.
     ValueCallLazy {
         /// Destination value register (the thunk).
         dst: usize,
-        /// Value register holding the [`Value::Closure`] to apply.
+        /// Value register holding the [`Value::Callable`] to apply.
         closure_slot: usize,
         /// Argument value registers (captured into the thunk's env, unforced).
         args: Vec<usize>,
     },
-    /// Construct a first-class function value: allocates a [`Value::Closure`]
-    /// referencing an [`Ir::fragments`] body and the env record in `env`.
-    /// Emitted when a function definition reference or lambda literal appears
-    /// in value position.
+    /// Construct a first-class function value: allocates an eager
+    /// [`Value::Callable`] (no memo cell) referencing an [`Ir::fragments`] body
+    /// and the env record in `env`. Emitted when a function definition
+    /// reference or lambda literal appears in value position.
     ValueMakeClosure {
         /// Destination value register.
         dst: usize,
@@ -596,7 +597,8 @@ pub enum ValueInstr {
         /// Argument value registers.
         args: Vec<usize>,
     },
-    /// Create a lazy binding: allocate a `Value::Thunk` + `Value::ThunkCell(Unforced)`.
+    /// Create a lazy binding: allocate a lazy [`Value::Callable`] (a thunk with
+    /// a memo cell) + `Value::ThunkCell(Unforced)`.
     ValueLazy {
         /// Destination value register.
         dst: usize,
@@ -773,7 +775,7 @@ pub struct Ir {
     /// contract forbids any fragment from recursing) and `max_fragment_regs`
     /// is the largest `FragmentIr::num_value_regs`. [`RillProgram`](crate::program::RillProgram)
     /// sizes its per-tick value-register store to `num_value_regs + max_call_regs`
-    /// so [`run_fragment`](crate::backend::interp::run_fragment) never grows it
+    /// so [`run_call`](crate::backend::interp::run_call) never grows it
     /// on the RT path.
     pub max_call_regs: usize,
     /// Value-track persistent layout.

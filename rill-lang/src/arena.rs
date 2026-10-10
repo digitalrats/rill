@@ -39,8 +39,9 @@ pub enum ValueKind {
     Sum,
     /// `newtype`-wrapped inner value.
     Newtype,
-    /// First-class function: captured environment record + body fragment id.
-    Closure,
+    /// A callable value (unified closure/thunk): captured environment record,
+    /// body fragment id, and an optional memo cell.
+    Callable,
     /// First-class list of element arena refs.
     List,
     /// First-class map of sorted (key, value) arena ref pairs.
@@ -49,8 +50,6 @@ pub enum ValueKind {
     Set,
     /// The unit value.
     Void,
-    /// Suspended computation: body fragment + captured env + memo cell.
-    Thunk,
     /// Divergent computation (bottom); propagates through strict ops.
     Bottom,
     /// A lazy cons cell (head + lazy tail).
@@ -76,8 +75,17 @@ pub enum Value {
     Sum(u32, Vec<ArenaRef>),
     /// A single inner value wrapped by a `newtype`.
     Newtype(ArenaRef),
-    /// A first-class function: captured environment record + body fragment id.
-    Closure(ArenaRef, u32),
+    /// A callable value: captured env + body fragment + optional memo cell.
+    /// `cell: None` = eager closure (no memo); `cell: Some(c)` = lazy thunk
+    /// (memoized, call-by-need). Unifies the former `Closure` and `Thunk`.
+    Callable {
+        /// Body fragment to run on call (or on forcing for a lazy cell).
+        fragment: u32,
+        /// Captured environment record.
+        env: ArenaRef,
+        /// Memo/black-hole cell (ref to `Value::ThunkCell`), if lazy.
+        cell: Option<ArenaRef>,
+    },
     /// A first-class list: element refs; the current length is `elems.len()`.
     List {
         /// Element arena refs; the current length is `elems.len()`.
@@ -95,15 +103,6 @@ pub enum Value {
     },
     /// The unit value.
     Void,
-    /// Suspended computation: body fragment + captured env + memo cell.
-    Thunk {
-        /// Body fragment to run on forcing.
-        fragment: u32,
-        /// Captured environment record.
-        env: ArenaRef,
-        /// Memo/black-hole cell (ref to `Value::ThunkCell`).
-        cell: ArenaRef,
-    },
     /// The force-state cell behind a thunk (rc 1; mutated by forcing).
     ThunkCell(ThunkState),
     /// Divergent computation (bottom); propagates through strict ops.
@@ -127,13 +126,12 @@ impl Value {
             Value::Record(_) => ValueKind::Record,
             Value::Sum(_, _) => ValueKind::Sum,
             Value::Newtype(_) => ValueKind::Newtype,
-            Value::Closure(_, _) => ValueKind::Closure,
+            Value::Callable { .. } => ValueKind::Callable,
             Value::List { .. } => ValueKind::List,
             Value::Map { .. } => ValueKind::Map,
             Value::Set { .. } => ValueKind::Set,
             Value::Void => ValueKind::Void,
-            Value::Thunk { .. } => ValueKind::Thunk,
-            Value::ThunkCell(_) => ValueKind::Thunk,
+            Value::ThunkCell(_) => ValueKind::Callable,
             Value::Bottom => ValueKind::Bottom,
             Value::Cons(_, _) => ValueKind::Cons,
             Value::Nil => ValueKind::Nil,
@@ -150,7 +148,12 @@ impl ArenaValue for Value {
                 }
             }
             Value::Newtype(inner) => f(*inner),
-            Value::Closure(env, _) => f(*env),
+            Value::Callable { env, cell, .. } => {
+                f(*env);
+                if let Some(c) = cell {
+                    f(*c);
+                }
+            }
             Value::List { elems } => {
                 for &e in elems {
                     f(e);
@@ -166,10 +169,6 @@ impl ArenaValue for Value {
                 for &e in elems {
                     f(e);
                 }
-            }
-            Value::Thunk { env, cell, .. } => {
-                f(*env);
-                f(*cell);
             }
             Value::ThunkCell(ThunkState::Forced(r)) => f(*r),
             Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
@@ -238,10 +237,10 @@ mod tests {
         let env = a.alloc(Value::Record(vec![])).unwrap();
         let cell = a.alloc(Value::ThunkCell(ThunkState::Unforced)).unwrap();
         let t = a
-            .alloc(Value::Thunk {
+            .alloc(Value::Callable {
                 fragment: 0,
                 env,
-                cell,
+                cell: Some(cell),
             })
             .unwrap();
         a.copy(cell).unwrap(); // extra ref on the cell

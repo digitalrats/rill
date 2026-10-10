@@ -44,8 +44,8 @@ fn closure_output_survives_ticks() {
     for _ in 0..3 {
         MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
         match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
-            &rill_lang::arena::Value::Closure(_, _) => {}
-            other => panic!("expected Closure value, got {other:?}"),
+            &rill_lang::arena::Value::Callable { cell: None, .. } => {}
+            other => panic!("expected eager Callable value, got {other:?}"),
         }
     }
 }
@@ -63,7 +63,7 @@ fn nested_capture_produces_constant_output() {
 fn closure_call_does_not_leak_across_ticks() {
     // Repeated dispatch must not exhaust the fixed arena: every `ValueCallFunc`
     // allocates fragment-local scratch registers (value args + body temps) that
-    // hold counted arena refs. If `run_fragment` removes those slots without
+    // hold counted arena refs. If `run_call` removes those slots without
     // dropping the refs, each tick leaks a few slots and a long-running
     // program panics with "value arena capacity exhausted". Run 20+ ticks.
     let mut prog =
