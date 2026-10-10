@@ -99,32 +99,43 @@ struct Ctx {
 }
 
 impl Ctx {
-    fn fresh(&mut self) -> Scalar {
+    /// Allocate a fresh, unbound type-variable id (shared by the scalar and
+    /// value sides — both live in the same id space).
+    fn fresh_id(&mut self) -> TypeVarId {
         let v = self.next;
         self.next += 1;
-        Scalar::Var(v)
+        v
+    }
+
+    fn fresh(&mut self) -> Scalar {
+        Scalar::Var(self.fresh_id())
     }
 
     fn fresh_vty(&mut self) -> ValueTy {
-        let v = self.next;
-        self.next += 1;
-        ValueTy::Var(v)
+        ValueTy::Var(self.fresh_id())
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> ArrowTy {
         let mut remap: HashMap<TypeVarId, Scalar> = HashMap::new();
+        let mut vremap: HashMap<TypeVarId, TypeVarId> = HashMap::new();
         for v in &scheme.vars {
             let f = self.fresh();
             remap.insert(*v, f);
+            // A fresh id for the value side, independent of the scalar `f`:
+            // a generalized value-type variable becomes a new unbound var at
+            // every instantiation site (rank-N value polymorphism).
+            let vf = self.fresh_id();
+            vremap.insert(*v, vf);
         }
         let rw = |s: &Scalar| match s {
             Scalar::Var(v) => remap.get(v).cloned().unwrap_or_else(|| s.clone()),
             _ => s.clone(),
         };
-        // Preserve rate: value channels carry concrete value types (v1 keeps
-        // value-typed schemes monomorphic, `vars` is empty for them).
+        // Value channels substitute quantified value-type variables with the
+        // fresh value-side ids; unquantified vars are preserved as-is (the
+        // monomorphic v1 path stays byte-identical).
         let block = |b: &Block| match b.rate {
-            Rate::Value => Channel::value(b.vty.clone()),
+            Rate::Value => Channel::value(value_instantiate(&b.vty, &vremap)),
             Rate::Signal => Block::new(rw(&b.elem)),
         };
         ArrowTy {
@@ -139,6 +150,18 @@ impl Ctx {
             if let Scalar::Var(v) = self.subst.resolve_scalar(s) {
                 if !acc.contains(&v) {
                     acc.push(v);
+                }
+            }
+        }
+        // Value-rate channels generalize their free value-type variables too,
+        // so a polymorphic value function (`id2 = fn x -> x`) is instantiated
+        // fresh at every call site.
+        for b in t.ins.iter().chain(t.outs.iter()) {
+            if b.rate == Rate::Value {
+                for v in value_free_vars(&b.vty, &self.subst) {
+                    if !acc.contains(&v) {
+                        acc.push(v);
+                    }
                 }
             }
         }
@@ -1594,6 +1617,94 @@ fn vty_mentions_tyvar(t: &ValueTy, id: TypeVarId) -> bool {
             a.iter().any(|x| vty_mentions_tyvar(x, id))
         }
         _ => false,
+    }
+}
+
+/// Collect every free value-type variable id in `t` — a free `Var(v)` /
+/// `TyConVar(v)` occurrence or a `TyConApp(v, ..)` head, plus `Func`
+/// arguments/results and `Data`·`Newtype`·`App` arguments — resolved through
+/// `subst.value_map` and deduplicated. Mirrors [`vty_mentions_tyvar`]'s
+/// structure so the two can be cross-checked: a var is free exactly when it is
+/// "mentioned" in the unresolved representative.
+fn value_free_vars(t: &ValueTy, subst: &Subst) -> Vec<TypeVarId> {
+    let mut acc = Vec::new();
+    value_free_vars_into(t, subst, &mut acc);
+    acc
+}
+
+fn value_free_vars_into(t: &ValueTy, subst: &Subst, acc: &mut Vec<TypeVarId>) {
+    match t {
+        ValueTy::Var(_) | ValueTy::TyConVar(_) => {
+            // Follow the substitution chain; a var bound to a concrete type
+            // contributes nothing (its free vars were resolved away).
+            match subst.resolve_value(t) {
+                ValueTy::Var(v) | ValueTy::TyConVar(v) => {
+                    if !acc.contains(&v) {
+                        acc.push(v);
+                    }
+                }
+                other => value_free_vars_into(&other, subst, acc),
+            }
+        }
+        ValueTy::TyConApp(f, args) => {
+            if let ValueTy::TyConVar(rf) = subst.resolve_value(&ValueTy::TyConVar(*f)) {
+                if !acc.contains(&rf) {
+                    acc.push(rf);
+                }
+            }
+            for a in args {
+                value_free_vars_into(a, subst, acc);
+            }
+        }
+        ValueTy::Func(args, rets) => {
+            for a in args {
+                value_free_vars_into(a, subst, acc);
+            }
+            for r in rets {
+                value_free_vars_into(r, subst, acc);
+            }
+        }
+        ValueTy::Data(_, a) | ValueTy::Newtype(_, a) | ValueTy::App(_, a) => {
+            for x in a {
+                value_free_vars_into(x, subst, acc);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Substitute quantified value-type variables with fresh ids, recursively over
+/// `Func`/`Data`/`Newtype`/`App` arguments and `TyConApp` heads. Every
+/// `Var(v)`/`TyConVar(v)`/`TyConApp(v, ..)` whose id is in `fresh` is replaced
+/// by its fresh counterpart; unquantified vars pass through unchanged.
+fn value_instantiate(t: &ValueTy, fresh: &HashMap<TypeVarId, TypeVarId>) -> ValueTy {
+    match t {
+        ValueTy::Var(v) => fresh
+            .get(v)
+            .map(|f| ValueTy::Var(*f))
+            .unwrap_or_else(|| t.clone()),
+        ValueTy::TyConVar(v) => fresh
+            .get(v)
+            .map(|f| ValueTy::TyConVar(*f))
+            .unwrap_or_else(|| t.clone()),
+        ValueTy::TyConApp(f, args) => {
+            let args = args.iter().map(|a| value_instantiate(a, fresh)).collect();
+            let f = fresh.get(f).copied().unwrap_or(*f);
+            ValueTy::TyConApp(f, args)
+        }
+        ValueTy::Func(args, rets) => ValueTy::Func(
+            args.iter().map(|a| value_instantiate(a, fresh)).collect(),
+            rets.iter().map(|r| value_instantiate(r, fresh)).collect(),
+        ),
+        ValueTy::Data(name, a) | ValueTy::Newtype(name, a) | ValueTy::App(name, a) => {
+            let a = a.iter().map(|x| value_instantiate(x, fresh)).collect();
+            match t {
+                ValueTy::Data(..) => ValueTy::Data(name.clone(), a),
+                ValueTy::Newtype(..) => ValueTy::Newtype(name.clone(), a),
+                _ => ValueTy::App(name.clone(), a),
+            }
+        }
+        _ => t.clone(),
     }
 }
 
@@ -3868,7 +3979,7 @@ fn infer_apply_impl(
         // the body for lowering). The referenced definition's arity must match
         // the applied arguments.
         if scheme.ty.outs.len() == 1 && scheme.ty.outs[0].rate == Rate::Value {
-            if let ValueTy::Func(arg_tys, ret_tys) = &scheme.ty.outs[0].vty {
+            if let ValueTy::Func(_, _) = &scheme.ty.outs[0].vty {
                 let ref_name = func_target(ctx, name);
                 let target = ctx.defs.get(ref_name.as_str()).cloned();
                 // A closure-valued definition (a lambda literal, or an
@@ -3884,6 +3995,24 @@ fn infer_apply_impl(
                         )
                 });
                 if apply_by_signature {
+                    // Instantiate the quantified Func signature so every call
+                    // site gets FRESH value-type variables (rank-N value
+                    // polymorphism). Without instantiation, a closure-valued
+                    // def with a free value var in its signature
+                    // (`id2 = fn x -> x` → `Func([Var(v)],[Var(v)])`) shares
+                    // that var across applications: the first call binds it,
+                    // and a second call at another type re-unifies against the
+                    // bound var and fails.
+                    let inst = ctx.instantiate(&scheme);
+                    let (arg_tys, ret_tys) = match &inst.outs[0].vty {
+                        ValueTy::Func(a, r) => (a.clone(), r.clone()),
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: format!("`{name}` must be a function value"),
+                                span,
+                            })
+                        }
+                    };
                     // Signal-wire application: a trailing `_` wire argument binds
                     // to the callee's LAST parameter as a signal input (positional
                     // wire-capture at the call site, zero-copy block register).
