@@ -109,7 +109,7 @@ fn match_over_sum_param_switches_with_setparameter() {
     // The scrutinee is a runtime `if` (driven by SetParameter), and the outer
     // match dispatches on the runtime constructor each tick.
     let mut prog = compile::<f32>(
-        "main g = match (if g > 0.5 then Just 1.0 else Nothing) of { Just x => x; Nothing => 0.0; };",
+        "main = match (if ?g > 0.5 then Just 1.0 else Nothing) of { Just x => x; Nothing => 0.0; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

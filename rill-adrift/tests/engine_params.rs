@@ -49,7 +49,7 @@ fn main_arg_param_affects_output() {
     // After SetParameter("g", 2.0): output = input * 2.0
     let signal = [1.0f32; 256];
     let out = run_with_param(
-        "main g = _ * g",
+        "main i1 = do { writeOutput 0 (i1 * ?g); return () }",
         "g",
         ParamValue::Float(2.0),
         &[&signal[..]],
@@ -318,7 +318,7 @@ fn graph_builder_param_routing_works() {
 #[test]
 fn lang_chiptune_ir_produces_output() {
     let reg = rill_adrift::lang_builtins::full_registry_f32();
-    let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
+    let src = r"main = do { writeOutput 0 (ay38910 1750000.0 ?regs : lofi 8 44100 0.75 1.0 1 0 1); return () }";
 
     let mut engine = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap();
     let pm = engine.param_map();

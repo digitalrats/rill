@@ -424,14 +424,20 @@ mod ir_tests {
         // lofi: 1 signal in (from pipeline :), 1 out, 7 params
         registry.register_block("lofi", |_, _, _alloc| panic!("not instantiated"));
 
-        let src = r"main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1";
+        let src = r"main = do { writeOutput 0 (ay38910 1750000.0 ?regs : lofi 8 44100 0.75 1.0 1 0 1); return () }";
         let tokens = lexer::tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
         let mut typed = types::infer::infer_program_with(&program, program.mode).unwrap();
         typed.program = reduce::reduce(&typed.program);
         let ir = lower::lower_with(&typed, 44100.0).unwrap();
-        assert!(ir.num_inputs > 0);
-        assert!(ir.num_outputs > 0);
+        assert!(
+            ir.num_outputs > 0,
+            "IO program must write at least one output"
+        );
+        assert!(ir.value_blocks[0]
+            .instrs
+            .iter()
+            .any(|i| matches!(i, ir::ValueInstr::ValueWriteOutput { .. })));
     }
 
     #[test]

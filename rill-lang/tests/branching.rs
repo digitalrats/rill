@@ -32,7 +32,7 @@ fn if_binds_result_and_nests() {
 #[test]
 fn if_switches_on_setparameter_between_ticks() {
     // SetParameter → main cell → per-tick re-evaluation → branch switches.
-    let mut prog = compile::<f32>("main g = if g > 0.5 then 1.0 else 2.0;").unwrap();
+    let mut prog = compile::<f32>("main = if ?g > 0.5 then 1.0 else 2.0").unwrap();
     let mut out = [0.0f32; 4];
     // default g = 0 → else branch
     assert_eq!(float_output(&mut prog, &mut out), 2.0);
@@ -54,7 +54,7 @@ fn if_and_runtime_match_combined() {
     // A SetParameter-driven Bool selects a sum at runtime; the outer match
     // dispatches on the runtime constructor.
     let mut prog = compile::<f32>(
-        "main g = match (if g > 0.5 then Just 1.0 else Nothing) of { Just x => x; Nothing => 0.0; };",
+        "main = match (if ?g > 0.5 then Just 1.0 else Nothing) of { Just x => x; Nothing => 0.0; }",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -69,7 +69,7 @@ fn if_nested_in_expression_at_runtime() {
     // expression must continue in the if's join block. This guards the
     // `cur_value_block = join` wiring (a regression there would silently run
     // the continuation on only one path).
-    let mut prog = compile::<f32>("main g = 0.5 * (if g > 0.5 then 2.0 else 4.0);").unwrap();
+    let mut prog = compile::<f32>("main = 0.5 * (if ?g > 0.5 then 2.0 else 4.0)").unwrap();
     let mut out = [0.0f32; 4];
     // default g = 0 → else → 0.5 * 4.0 = 2.0
     assert_eq!(float_output(&mut prog, &mut out), 2.0);

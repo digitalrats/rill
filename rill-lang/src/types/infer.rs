@@ -1269,8 +1269,16 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     let saved_bodies = ctx.def_bodies.clone();
     ctx.locals.clear();
     for p in def.params() {
-        ctx.locals
-            .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Float));
+        // IO-model `main`: λ-parameters are the program's BUFFER inputs
+        // (`main i1 i2 = do { … }` → `i1, i2 : Buffer`). Other definitions'
+        // λ-parameters keep their scalar/control default.
+        if def.name() == "main" {
+            ctx.locals
+                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Buffer));
+        } else {
+            ctx.locals
+                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Float));
+        }
     }
     let result = match infer_expr(ctx, def.body()) {
         Ok(t) => Ok(t),
@@ -1281,10 +1289,16 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             ctx.def_bodies = saved_bodies;
             ctx.locals.clear();
             for p in def.params() {
-                let v = ctx.next;
-                ctx.next += 1;
-                ctx.locals
-                    .insert(p.name.clone(), ArrowTy::value_channel(ValueTy::Var(v)));
+                if def.name() == "main" {
+                    // IO-model `main`: λ-parameters are BUFFER inputs.
+                    ctx.locals
+                        .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Buffer));
+                } else {
+                    let v = ctx.next;
+                    ctx.next += 1;
+                    ctx.locals
+                        .insert(p.name.clone(), ArrowTy::value_channel(ValueTy::Var(v)));
+                }
             }
             // Complete-mode recursion: the value-track retry re-registers the
             // CURRENT def's placeholder scheme with VALUE-rate channels, so a
@@ -1460,7 +1474,12 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
-            full_ins.push(ValueTy::Float);
+            // IO-model `main`: λ-parameters are the program's BUFFER inputs.
+            full_ins.push(if def.name() == "main" {
+                ValueTy::Buffer
+            } else {
+                ValueTy::Float
+            });
         }
         full_ins.extend(body_ty.ins);
         let resolved = ctx.subst.apply(&ArrowTy {
@@ -1488,7 +1507,12 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
-            full_ins.push(ValueTy::Float);
+            // IO-model `main`: λ-parameters are the program's BUFFER inputs.
+            full_ins.push(if def.name() == "main" {
+                ValueTy::Buffer
+            } else {
+                ValueTy::Float
+            });
         }
         full_ins.extend(body_ty.ins);
         let resolved = ctx.subst.apply(&ArrowTy {
@@ -3033,11 +3057,25 @@ fn infer_apply_impl(
             } else {
                 infer_expr(ctx, a)?
             };
-            if at.arity_in() != 0 || at.arity_out() != 1 {
+            // A Buffer param (`writeOutput`'s second arg) accepts a signal
+            // computation (a `Buffer -> … -> Buffer` arrow applied to the
+            // program's inputs) OR a plain Buffer value — either way its first
+            // output is a Buffer. Non-Buffer params must be 0→1 values.
+            let buffer_param = pt == ValueTy::Buffer;
+            if !buffer_param && (at.arity_in() != 0 || at.arity_out() != 1) {
                 return Err(CompileError::Type {
                     msg: format!(
                         "argument of `{name}` must be a value expression, got arity {}→{}",
                         at.arity_in(),
+                        at.arity_out()
+                    ),
+                    span: a.span(),
+                });
+            }
+            if at.arity_out() != 1 {
+                return Err(CompileError::Type {
+                    msg: format!(
+                        "argument of `{name}` must produce exactly one channel, got {}",
                         at.arity_out()
                     ),
                     span: a.span(),

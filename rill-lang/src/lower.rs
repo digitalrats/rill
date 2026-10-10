@@ -121,6 +121,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueCallFunc { .. }
             | ValueInstr::ValueBool { .. }
             | ValueInstr::ValueConstVoid { .. }
+            | ValueInstr::ValueReadParam { .. }
             | ValueInstr::ValueConstString { .. }
             | ValueInstr::ValueListLit { .. }
             | ValueInstr::ValueMapLit { .. }
@@ -324,6 +325,18 @@ struct Lowerer<'a> {
     /// `buffers[input_buffers[k]]` (the value register holding the input's
     /// `Value::Buffer`). Filled by the `LoadInput` emission at program entry.
     input_buffers: Vec<usize>,
+    /// The value registers holding the program's main-signal inputs (one per
+    /// program input, in order) — the `ValueBufferLoadInput` destinations.
+    /// Used by `lower_signal_buffer` to resolve a main λ-parameter reference
+    /// (`writeOutput 0 (… i1 …)`) to its input buffer register.
+    main_signal_args: Vec<usize>,
+    /// Names of main's λ-parameters that are BUFFER inputs (the `_`/`i1`/`i2`
+    /// signal params), mapped to their input index. Control params (used as
+    /// scalars) stay in `main_cell_locals`.
+    main_input_names: std::collections::HashMap<String, usize>,
+    /// Output indices written by `writeOutput` sites (IO-model programs). The
+    /// runtime drains `pending_outputs` into these external slices.
+    write_output_indices: Vec<usize>,
     /// Tape cell capacities, one entry per tape; the index IS the tape index
     /// referenced by [`BuiltinInstance::tape_index`]. A NAMED declaration
     /// (`name = tape_loop <capacity>`) gets one cell per name — repeated
@@ -962,6 +975,60 @@ impl<'a> Lowerer<'a> {
                         });
                     };
                     return self.lower_value_expected(lam, expected);
+                }
+                // IO primitives. `writeOutput k buf` emits the buffer-drain
+                // instruction; `readInput k` materializes the k-th input as a
+                // `Value::Buffer`. The buffer ARGUMENT of `writeOutput` is a
+                // signal expression (a `Buffer -> … -> Buffer` computation or a
+                // bare wire), lowered through the signal path into the same
+                // value track.
+                if name == "writeOutput" {
+                    if call_args.len() != 2 {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "writeOutput expects 2 arguments, got {}",
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    let index = match const_int(&call_args[0]) {
+                        Some(i) if i >= 0 => i as usize,
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: "writeOutput index must be a non-negative integer constant"
+                                    .into(),
+                                span: call_args[0].span(),
+                            })
+                        }
+                    };
+                    let src = self.lower_signal_buffer(&call_args[1])?;
+                    self.emit_value(ValueInstr::ValueWriteOutput { index, src });
+                    self.write_output_indices.push(index);
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueConstVoid { dst });
+                    return Ok((dst, ValueTy::Data("IO".into(), vec![ValueTy::Void])));
+                }
+                if name == "readInput" {
+                    if call_args.len() != 1 {
+                        return Err(CompileError::Type {
+                            msg: format!("readInput expects 1 argument, got {}", call_args.len()),
+                            span: *span,
+                        });
+                    }
+                    let index = match const_int(&call_args[0]) {
+                        Some(i) if i >= 0 => i as usize,
+                        _ => {
+                            return Err(CompileError::Type {
+                                msg: "readInput index must be a non-negative integer constant"
+                                    .into(),
+                                span: call_args[0].span(),
+                            })
+                        }
+                    };
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueReadInput { dst, index });
+                    return Ok((dst, ValueTy::Data("IO".into(), vec![ValueTy::Buffer])));
                 }
                 // Boolean negation: `not b` — a prefix value-track builtin
                 // (the `!` token stays the signal wire-cut combinator).
@@ -1998,6 +2065,29 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::App("Pair".into(), vec![lt, rt])))
             }
+            Expr::ActorParam {
+                name,
+                default,
+                span,
+            } => {
+                // An actor param in value position reads its named parameter
+                // slot as a Float value.
+                let default_val = if let Some(d) = default {
+                    const_f64(d).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                let idx = self.intern_param(
+                    name.clone(),
+                    default_val,
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    *span,
+                )?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueReadParam { dst, idx });
+                Ok((dst, ValueTy::Float))
+            }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
                 span: e.span(),
@@ -2448,6 +2538,16 @@ impl<'a> Lowerer<'a> {
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueReadCell { dst, cell: idx });
             return Ok((dst, ty));
+        }
+        if let Some(&input_idx) = self.main_input_names.get(name) {
+            // A main BUFFER input in value position (`writeOutput 0 i1`):
+            // materialize the input as a `Value::Buffer` value.
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueReadInput {
+                dst,
+                index: input_idx,
+            });
+            return Ok((dst, ValueTy::Buffer));
         }
         if let Some(&cell) = self.main_cell_locals.get(name) {
             // A main λ-parameter in value position: copy the persistent cell's
@@ -4855,6 +4955,13 @@ impl<'a> Lowerer<'a> {
             });
             return Ok(vec![dst]);
         }
+        if let Some(&input_idx) = self.main_input_names.get(name) {
+            // A main BUFFER input in signal position (`writeOutput 0 i1`):
+            // the input's buffer register.
+            if let Some(&reg) = self.main_signal_args.get(input_idx) {
+                return Ok(vec![reg]);
+            }
+        }
         if let Some(&cell) = self.main_cell_locals.get(name) {
             // A main λ-parameter: materialise the persistent cell's float
             // value into a buffer. The cell is read directly — it is
@@ -5231,6 +5338,30 @@ impl<'a> Lowerer<'a> {
         Ok(vec![dst])
     }
 
+    /// Lower a signal expression as a `Value::Buffer` value-track register, for an
+    /// IO primitive (`writeOutput`/`readInput`). A bare reference to a main BUFFER
+    /// input (`writeOutput 0 i1`) resolves to the input's buffer register; any
+    /// other signal computation (`onepole 200.0 0.7 i1`) lowers through the signal
+    /// path (`self.lower`), whose `ValueBuffer*` ops share the value track.
+    fn lower_signal_buffer(&mut self, e: &Expr) -> Result<usize, CompileError> {
+        if let Expr::Ref(name, span) = e {
+            if let Some(&idx) = self.main_input_names.get(name) {
+                if let Some(&reg) = self.main_signal_args.get(idx) {
+                    return Ok(reg);
+                }
+                return Err(CompileError::Type {
+                    msg: format!("main input `{name}` has no lowered register"),
+                    span: *span,
+                });
+            }
+        }
+        let outs = self.lower(e, &self.main_signal_args.clone())?;
+        outs.first().copied().ok_or_else(|| CompileError::Type {
+            msg: "signal argument has no outputs".into(),
+            span: e.span(),
+        })
+    }
+
     fn arity_in(&self, e: &Expr) -> Result<usize, CompileError> {
         Ok(self.arity(e)?.0)
     }
@@ -5528,8 +5659,16 @@ pub fn lower_with_cafs_mode(
         }
     }
 
-    let num_inputs = tp.process_ty.arity_in();
     let recursive_locals = Lowerer::compute_recursive_locals(&defs);
+    // IO-model `main`: each λ-parameter is either a BUFFER input (typed
+    // `ValueTy::Buffer` in `process_ty.ins`) or a scalar control parameter.
+    // Buffer params materialize as program inputs (`main_signal_args`);
+    // control params get a persistent main cell (the `set_param` path).
+    let main_ins = tp.process_ty.ins.clone();
+    let num_inputs = main_ins
+        .iter()
+        .filter(|t| matches!(t, ValueTy::Buffer))
+        .count();
     let mut lw = Lowerer {
         defs,
         cafs,
@@ -5574,13 +5713,24 @@ pub fn lower_with_cafs_mode(
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
         input_buffers: Vec::new(),
+        main_signal_args: Vec::new(),
+        main_input_names: HashMap::new(),
+        write_output_indices: Vec::new(),
     };
 
+    let mut input_index = 0usize;
     for (cell_idx, p) in main.params().iter().enumerate() {
-        // A main λ-param is both a named parameter (metadata + `param_index`/
-        // `set_param` dispatch) and a persistent runtime cell (the actual
-        // storage the signal/value tracks read). The cell index matches the
-        // params index because main params are interned first.
+        let is_buffer_input = main_ins
+            .get(cell_idx)
+            .is_some_and(|t| matches!(t, ValueTy::Buffer));
+        if is_buffer_input {
+            // A buffer input: register the name → input index so `writeOutput
+            // 0 i1` (and signal lowering) resolves it to the input register.
+            lw.main_input_names.insert(p.name.clone(), input_index);
+            input_index += 1;
+            continue;
+        }
+        // A control param: named parameter metadata + persistent cell.
         lw.intern_param(
             p.name.clone(),
             0.0,
@@ -5592,7 +5742,7 @@ pub fn lower_with_cafs_mode(
     }
     // Every main λ-parameter has exactly one persistent cell (cells are
     // indexed by param position, so the maps must line up).
-    debug_assert_eq!(lw.main_cell_locals.len(), main.params().len());
+    debug_assert_eq!(lw.main_cell_locals.len() + input_index, main.params().len());
 
     let mut main_args = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
@@ -5601,20 +5751,34 @@ pub fn lower_with_cafs_mode(
         lw.input_buffers.push(dst);
         main_args.push(dst);
     }
+    lw.main_signal_args = main_args.clone();
     // Value-output programs lower through the value track; signal-output
     // programs through the block track. The two tracks never mix — inference
     // guarantees a value-typed body has arity_in() == 0, so `main_args` is
     // empty on the value path.
+    let is_io_program = tp
+        .process_ty
+        .outs
+        .iter()
+        .any(|c| matches!(c, ValueTy::Data(n, _) | ValueTy::App(n, _) if n == "IO"));
     let has_value_out = !tp
         .process_ty
         .outs
         .iter()
         .all(|c| matches!(c, ValueTy::Buffer));
     let outs = if has_value_out {
-        let (vr, vty) = lw.lower_value(main.body())?;
-        lw.value_regs_out.push(vr);
-        lw.value_out_tys.push(vty);
-        Vec::new()
+        if is_io_program {
+            // IO-model `main`: the body is an IO action; signal outputs are
+            // written via `writeOutput` (pending_outputs at runtime), NOT
+            // returned as value channels. Lower the body for its side effects.
+            lw.lower_value(main.body())?;
+            Vec::new()
+        } else {
+            let (vr, vty) = lw.lower_value(main.body())?;
+            lw.value_regs_out.push(vr);
+            lw.value_out_tys.push(vty);
+            Vec::new()
+        }
     } else {
         let outs = lw.lower(main.body(), &main_args)?;
         // Signal programs now lower to the VALUE track: the body's output
@@ -5624,12 +5788,21 @@ pub fn lower_with_cafs_mode(
         lw.value_out_tys = vec![ValueTy::Buffer; outs.len()];
         outs
     };
-    if outs.is_empty() && lw.value_regs_out.is_empty() {
+    if outs.is_empty() && lw.value_regs_out.is_empty() && !is_io_program {
         return Err(CompileError::Unsupported(
             "body lowered to 0 outputs, expected at least 1".into(),
         ));
     }
-    let num_outputs = outs.len();
+    let num_outputs = if is_io_program {
+        // IO-model outputs = the writeOutput sites: max index + 1.
+        lw.write_output_indices
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |m| m + 1)
+    } else {
+        outs.len()
+    };
     let num_main_cells = lw.main_cell_locals.len();
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
@@ -5849,6 +6022,9 @@ mod tests {
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
             input_buffers: Vec::new(),
+            main_signal_args: Vec::new(),
+            main_input_names: HashMap::new(),
+            write_output_indices: Vec::new(),
         }
     }
 
@@ -5938,24 +6114,24 @@ mod tests {
 
     #[test]
     fn main_param_lowers_to_cell_binding() {
-        // main's λ-param `gain` becomes a persistent runtime-stack cell: the
-        // signal context reads it via `ValueInstr::ValueBufferMainCellRead`, not a named
-        // `ReadParam` (which would route through the params vec instead).
-        let ir = ir_of("main gain = _ * gain");
-        assert_eq!(ir.num_main_cells, 1);
+        // An actor param (`?gain`) is a named control parameter read via
+        // `ValueInstr::ValueBufferParamRead`. main's OWN λ-params are Buffer
+        // inputs in the IO model, so control params use `?name`.
+        let ir = ir_of("main i1 = do { writeOutput 0 (i1 * ?gain); return () }");
+        assert_eq!(ir.num_main_cells, 0);
         assert!(
             ir.value_blocks[0]
                 .instrs
                 .iter()
-                .any(|i| matches!(i, ValueInstr::ValueBufferMainCellRead { cell: 0, .. })),
-            "expected a ReadMainCell instruction for `gain`"
+                .any(|i| matches!(i, ValueInstr::ValueBufferParamRead { .. })),
+            "expected a ParamRead instruction for `?gain`"
         );
         assert!(
             !ir.value_blocks[0]
                 .instrs
                 .iter()
-                .any(|i| matches!(i, ValueInstr::ValueBufferParamRead { .. })),
-            "main λ-params must not lower to ReadParam"
+                .any(|i| matches!(i, ValueInstr::ValueBufferMainCellRead { .. })),
+            "actor params must not lower to MainCellRead"
         );
     }
 

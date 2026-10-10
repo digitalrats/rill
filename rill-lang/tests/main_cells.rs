@@ -9,7 +9,8 @@ use rill_lang::compile;
 #[test]
 fn main_lambda_params_become_cells() {
     // main's λ-param `gain` is a runtime-stack cell, not intern_param.
-    let mut prog = compile::<f32>("main gain = _ * gain").unwrap();
+    let mut prog =
+        compile::<f32>("main i1 = do { writeOutput 0 (i1 * ?gain); return () }").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(
         &mut prog,
@@ -24,7 +25,8 @@ fn main_lambda_params_become_cells() {
 #[test]
 fn set_param_writes_into_the_cell() {
     // SetParameter must reach the SAME persistent cell and keep applying.
-    let mut prog = compile::<f32>("main gain = _ * gain").unwrap();
+    let mut prog =
+        compile::<f32>("main i1 = do { writeOutput 0 (i1 * ?gain); return () }").unwrap();
     let idx = prog.param_index("gain").unwrap();
     prog.set_param(idx, ParamValue::Float(2.0));
     let mut out = [0.0f32; 4];
@@ -54,7 +56,7 @@ fn main_param_reads_as_value_in_value_context() {
     // value output would pin its whole subtree — a separate, pre-existing
     // capacity limitation unrelated to main cells).
     let mut prog =
-        compile::<f32>("data Shape = Circle Float; main g = match Circle g of { Circle r => r; }")
+        compile::<f32>("data Shape = Circle Float; main = match Circle ?g of { Circle r => r; }")
             .unwrap();
     prog.set_param(prog.param_index("g").unwrap(), ParamValue::Float(2.5));
     let mut out = [0.0f32; 4];

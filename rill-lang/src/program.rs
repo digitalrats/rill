@@ -106,6 +106,9 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Runtime value-track error (capacity overflow), set by a collection op
     /// and consumed at the end of the value phase. Cleared each tick.
     pub(crate) value_error: Option<ProcessError>,
+    /// Outputs written by `ValueWriteOutput` this tick: (output index, buffer
+    /// handle index). Drained into the external `outputs[]` slices at tick end.
+    pub(crate) pending_outputs: Vec<(usize, usize)>,
 }
 
 /// A region-backed `@` delay site: a [`TapeRing`] over a [`RegionHandle`].
@@ -402,6 +405,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             drops_scratch,
             value_outputs,
             value_error: None,
+            pending_outputs: Vec::new(),
         }
     }
 
@@ -525,6 +529,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             drops_scratch,
             value_outputs,
             value_error: None,
+            pending_outputs: Vec::new(),
         })
     }
 

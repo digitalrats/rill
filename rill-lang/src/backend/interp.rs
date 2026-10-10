@@ -113,6 +113,20 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
     prog.ir.value_output_regs = output_regs;
 
+    // Drain the outputs written by `ValueWriteOutput` this tick: each pending
+    // (output index → buffer handle) copies its buffer's slice into the
+    // external `outputs[index]` slice. This is the IO-monad output path
+    // (`writeOutput k buf`).
+    let pending = std::mem::take(&mut prog.pending_outputs);
+    for (idx, buf) in pending {
+        if let Some(out) = outputs.get_mut(idx) {
+            let m = out.len().min(n);
+            prog.buffers[buf].with_data(|b| {
+                out[..m].copy_from_slice(&b[..m]);
+            });
+        }
+    }
+
     // Copy the value outputs (one per value output channel) into the program's
     // stable `value_outputs` store. Each output is forced to WHNF first (a
     // lazy output register holding a thunk materializes its head) and then
@@ -1289,6 +1303,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueConstVoid { dst } => {
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
         }
+        ValueInstr::ValueReadParam { dst, idx } => {
+            let v = param_to_f64(&prog.params[*idx]);
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Float(v));
+        }
         ValueInstr::ValueConstString { dst, value } => {
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::String(value.clone()));
         }
@@ -1521,6 +1539,22 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
             prog.buffers[*dst].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueReadInput { dst, index: _ } => {
+            // The input slice was already materialized by `process()` into
+            // `buffers[input_buffers[index]]`; this instruction only allocates
+            // the `Value::Buffer` marker at `dst`.
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        }
+        ValueInstr::ValueWriteOutput { index, src } => {
+            // Record the (output index → buffer handle) pair for the tick-end
+            // drain. The source register holds a `Value::Buffer` whose handle's
+            // slice is copied into the external `outputs[index]` slice.
+            if let Some(r) = prog.value_regs.get(*src + base).copied().flatten() {
+                if let Some(Value::Buffer(idx)) = prog.arena.get(r) {
+                    prog.pending_outputs.push((*index, *idx));
+                }
+            }
         }
     }
 }

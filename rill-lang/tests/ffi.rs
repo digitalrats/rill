@@ -1340,7 +1340,7 @@ fn digital_effects_delay_live_param_reaches_algorithm() {
     register_foreign_digital_effects(&mut ffi);
 
     let src = r#"
-        main t = _ : delay t 0.0 1.0;
+        main i1 = do { writeOutput 0 (delay i1 ?t 0.0 1.0); return () };
     "#;
     let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
 

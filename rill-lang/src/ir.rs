@@ -406,6 +406,13 @@ pub enum ValueInstr {
         /// The value.
         value: bool,
     },
+    /// Read a named parameter slot as a Float value.
+    ValueReadParam {
+        /// Destination value register.
+        dst: usize,
+        /// Index into [`Ir::params`].
+        idx: usize,
+    },
     /// The unit value `()` (`Value::Void`).
     ValueConstVoid {
         /// Destination value register.
@@ -602,6 +609,23 @@ pub enum ValueInstr {
         dst: usize,
         /// Index into the persistent main-cell store.
         cell: usize,
+    },
+    /// Materialize the k-th program input buffer as a `Value::Buffer` value
+    /// (the input slice is copied into the buffer table by `process()` before
+    /// the value track runs).
+    ValueReadInput {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Program input index.
+        index: usize,
+    },
+    /// Write a `Value::Buffer` into the k-th program output (the runtime
+    /// drains it into the external `outputs[k]` slice at tick end).
+    ValueWriteOutput {
+        /// Program output index.
+        index: usize,
+        /// Source value register (holds `Value::Buffer`).
+        src: usize,
     },
 }
 

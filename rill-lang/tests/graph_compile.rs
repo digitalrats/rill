@@ -31,9 +31,14 @@ fn engine_executes_and_produces_output() {
 
 #[test]
 fn engine_with_param_compiles_and_processes() {
-    let mut engine =
-        compile_graph::<f32, 256>("main level = _ * level", &Registry::<f32>::new(), 44100.0)
-            .unwrap();
+    // IO model: `?level` is a control param (default 0.0); the main input is a
+    // Buffer.
+    let mut engine = compile_graph::<f32, 256>(
+        "main i1 = do { writeOutput 0 (i1 * ?level); return () }",
+        &Registry::<f32>::new(),
+        44100.0,
+    )
+    .unwrap();
 
     let mut output = [0.0f32; 8];
     let input = [2.0f32; 8];
