@@ -135,21 +135,22 @@ monomorphic — report as a deviation with the regression evidence.
 
 ---
 
-## 3. Part B — Thunk unification
+## 3. Part B — Callable unification
 
-### 3.1 Rust `Thunk` trait
+### 3.1 Unify `Closure`/`Thunk` into one `Value::Callable`
 
-In `backend/interp.rs` (or a new `backend/exec.rs`):
+`Value::Closure(env, fid)` and `Value::Thunk { fragment, env, cell }` differ
+only in the memo cell (`ValueCallLazy` already builds a `Thunk` from a
+`Closure` by concatenating env+args and adding a cell). Unify into one variant:
 
 ```rust
-trait Thunk {
-    fn fragment(&self) -> u32;
-    fn env(&self) -> ArenaRef;
-    fn memo(&self) -> Option<ArenaRef>;   // None for Closure (eager)
-}
-impl Thunk for Value::Closure { ... }
-impl Thunk for Value::Thunk { ... }
+/// A callable value: captured env + body fragment + optional memo cell.
+/// `cell: None` = eager closure (no memo); `cell: Some(c)` = lazy thunk
+/// (memoized, call-by-need).
+Value::Callable { fragment: u32, env: ArenaRef, cell: Option<ArenaRef> }
 ```
+
+No trait is needed — one value variant, one dispatch path.
 
 ### 3.2 Single runner
 
@@ -157,11 +158,19 @@ Merge `run_fragment` + `run_thunk_body` into one `run_call` with a parameter
 for where the value-args come from (caller registers vs env-record tail). Steps
 0-6 are shared; only the args-source step differs.
 
-### 3.3 `force()` stays Thunk-specific
+### 3.3 `force()` over `Callable`
 
-`force()` continues to drive memo/black-hole/cycle for `Value::Thunk`. Closure
-calls (`ValueCallFunc`) remain eager. The trait gives a common `fragment`/`env`
-view without changing memo semantics.
+`force()` drives memo/black-hole/cycle for `Callable { cell: Some(c) }` (lazy).
+`Callable { cell: None }` is already WHNF and returns as-is (eager). `ValueCallFunc`
+applies `cell: None` eagerly; `ValueCallLazy` builds `cell: Some(c)`.
+
+### 3.4 T2 — fragment-call hot path (no `remap_value_instr` clone)
+
+`remap_value_instr` clones every `ValueInstr` on every fragment call, and
+`ValueInstr` carries `Vec` payloads (Record/Sum/List/CallBuiltin/CallLazy args),
+so the clone allocates on the RT path. Thread the register `base` offset into
+`exec_value_instr` instead (as `run_value_track` already does), deleting the
+clone. This is codebase preparation for JIT and the track-unification tasks.
 
 ---
 

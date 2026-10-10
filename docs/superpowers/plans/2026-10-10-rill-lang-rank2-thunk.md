@@ -309,18 +309,34 @@ rejects escaping automatically. JIT-friendly: no special IR instruction.'
 
 ---
 
-## Task T1: Thunk trait — unify fragment runners
+## Task T1: Unify `Closure`/`Thunk` into one `Value::Callable` + single runner
 
 **Files:**
-- Modify: `rill-lang/src/backend/interp.rs` (`Thunk` trait, `run_call`, merge `run_fragment`/`run_thunk_body`)
-- Test: existing suite (no new behavior)
+- Modify: `rill-lang/src/arena.rs` (`Value::Callable { fragment, env, cell: Option }`; `ValueKind`; `visit_refs`; `clone_pooled`; `detach_payload`; tests)
+- Modify: `rill-lang/src/backend/interp.rs` (single `run_call`; `force()` over `Callable`; `ValueMakeClosure`/`ValueLazy`/`ValueCallLazy` build `Callable`; `ValueCallFunc`; `drop_value_children`; `recount_children`)
+- Test: `rill-lang/tests/thunk_unify.rs`, existing suite
+
+> **Design decision (no trait):** `Value::Closure(env, fid)` and
+> `Value::Thunk { fragment, env, cell }` differ only in the memo cell. Unify
+> into one variant:
+> ```rust
+> /// A callable value: captured env + body fragment + optional memo cell.
+> /// `cell: None` = eager closure (no memo); `cell: Some(c)` = lazy thunk
+> /// (memoized, call-by-need).
+> Callable { fragment: u32, env: ArenaRef, cell: Option<ArenaRef> }
+> ```
+> The single runner `run_call` takes the args-source as a parameter (caller
+> registers for eager, env-record tail split by `value_ins` for lazy). This is
+> codebase preparation for the track-unification tasks (B4+): one callable
+> value, one dispatch path.
 
 - [ ] **Step 1: Write a guard test**
 
-Add to `rill-lang/tests/lazy_mode.rs` (or a new `tests/thunk_unify.rs`) a test that
-exercises both eager and lazy paths so the merge is verified end-to-end:
+Create `rill-lang/tests/thunk_unify.rs`:
 
 ```rust
+use rill_core::traits::MultichannelAlgorithm;
+
 #[test]
 fn eager_and_lazy_calls_still_work() {
     // eager: a named function applied to args; lazy: a thunk over a closure.
@@ -330,7 +346,26 @@ fn eager_and_lazy_calls_still_work() {
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
-    let _ = rill_core::traits::MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0),
+        other => panic!("expected Float(1.0), got {other:?}"),
+    }
+}
+
+#[test]
+fn closure_and_thunk_are_one_variant() {
+    // Both construction paths (MakeClosure, ValueLazy, ValueCallLazy) now
+    // produce Value::Callable; the arena has no Closure/Thunk variants.
+    // (Compile a program using a lambda + a lazy let to exercise both.)
+    let src = "{-# MODE complete #-}\n\
+        id2 = fn x -> x;\n\
+        main = match (head (let y = id2 [1.0, 2.0] in y)) of { Nothing => 0.0; Just x => x };";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0),
@@ -339,40 +374,47 @@ fn eager_and_lazy_calls_still_work() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it passes before the merge**
+- [ ] **Step 2: Run to verify they pass before the change**
 
-Run: `cargo test -p rill-lang --test lazy_mode eager_and_lazy_calls_still_work`
-Expected: PASS (baseline).
+Run: `cargo test -p rill-lang --test thunk_unify`
+Expected: PASS (baseline — both paths work under the current `Closure`/`Thunk`).
 
-- [ ] **Step 3: Add the `Thunk` trait**
+- [ ] **Step 3: Replace the `Value` variants**
 
-In `interp.rs`:
+In `arena.rs`, replace `Value::Closure(ArenaRef, u32)` and
+`Value::Thunk { fragment, env, cell }` with:
 
 ```rust
-/// Common view of a callable value: the fragment to run and its captured env.
-/// `Value::Closure` (eager) and `Value::Thunk` (lazy, memoized) both implement
-/// it; the runner no longer branches on the value kind for fragment/env access.
-trait Thunk {
-    fn fragment(&self) -> u32;
-    fn env(&self) -> ArenaRef;
-}
+/// A callable value: captured env + body fragment + optional memo cell.
+/// `cell: None` = eager closure (no memo); `cell: Some(c)` = lazy thunk
+/// (memoized, call-by-need). Unifies the former `Closure` and `Thunk`.
+Callable { fragment: u32, env: ArenaRef, cell: Option<ArenaRef> },
 ```
 
-Implement for `Value::Closure(env, fid)` and `Value::Thunk { fragment, env, .. }`.
+Update `ValueKind` (merge `Closure`/`Thunk` into one kind or keep both names
+pointing at the same kind), `visit_refs`, `clone_pooled`, `detach_payload`, and
+any arena tests that construct `Closure`/`Thunk`.
 
-- [ ] **Step 4: Merge `run_fragment` + `run_thunk_body` into `run_call`**
+- [ ] **Step 4: Update the interpreter**
 
-Create `run_call` with a parameter distinguishing the args source (caller
-registers vs env-record tail split by `value_ins`). Keep steps 0-6 shared. The
-function reads `fragment`/`env` through the `Thunk` trait where it currently
-matches `Value::Closure`/`Value::Thunk`. Preserve the `max_call_regs` guard and
-the memo semantics in `force()` (which stays Thunk-specific).
+In `interp.rs`:
+- `recount_children` / `drop_value_children`: `Callable { env, cell, .. }` — recount/drop `env`; recount/drop `cell` if `Some`.
+- `ValueMakeClosure` (interp.rs:1084): build `Callable { fragment, env, cell: None }`.
+- `ValueLazy` (interp.rs:1308): build `Callable { fragment, env, cell: Some(cell) }`.
+- `ValueCallLazy` (interp.rs:1025): build `Callable { fragment, env: combined, cell: Some(cell) }`.
+- `ValueCallFunc` (interp.rs:987): read `Callable { fragment, env, cell: None }`, call `run_call` with args from registers.
+- `force()` (interp.rs:2233): match `Callable { fragment, env, cell: Some(cell) }` — the lazy path (memo/black-hole/cycle) is unchanged; `Callable { cell: None }` returns as WHNF (the current non-Thunk `return r`).
 
-- [ ] **Step 5: Update call sites**
+- [ ] **Step 5: Merge the two runners into `run_call`**
 
-`ValueCallFunc` (interp.rs:987), `ValueCallLazy` (interp.rs:1011), `force`
-(interp.rs:2233), `call_closure_single`/`call_closure_args` (interp.rs:2005/2031)
-call `run_call` instead of the two merged functions. Remove the merged functions.
+Create a single `run_call(prog, frag, env_ref, args: ArgsSource, dst, drops)` where
+`ArgsSource` distinguishes caller registers (`&[usize]`) from the env-record tail
+(split by `frag.sig.value_ins`). Share steps 0-6 (scratch reserve → env→cells →
+watermark → args copy → run blocks → result → drain). Preserve the `max_call_regs`
+guard. `run_thunk_body`'s env-tail logic becomes the lazy `ArgsSource`; the old
+`run_fragment`'s register logic the eager one. Update `force()` to call `run_call`
+for the lazy path, and `call_closure_single`/`call_closure_args` (interp.rs:2005/2031)
+for the eager path. Remove `run_fragment` and `run_thunk_body`.
 
 - [ ] **Step 6: Run the tests**
 
@@ -386,8 +428,87 @@ Commit:
 
 ```bash
 cargo fmt
+git add rill-lang/src/arena.rs rill-lang/src/backend/interp.rs rill-lang/tests/thunk_unify.rs
+git commit -m 'refactor(rill-lang): unify Closure/Thunk into Value::Callable + single run_call'
+```
+
+---
+
+## Task T2: `remap_value_instr` without cloning (fragment-call hot path)
+
+**Files:**
+- Modify: `rill-lang/src/backend/interp.rs` (`remap_value_instr`; `exec_value_instr` to take a register offset; `run_call` and `run_value_track` call sites)
+- Test: existing suite + `tests/thunk_unify.rs`
+
+> **Design decision:** `remap_value_instr` (interp.rs:2506, ~174 lines) clones
+> every `ValueInstr` on EVERY fragment call (`run_fragment`/`run_thunk_body` →
+> `run_call`), and `ValueInstr` carries `Vec` payloads (`ValueConstructRecord`
+> fields, `ValueConstructSum` payload, `ValueCallFunc`/`ValueCallLazy` args,
+> `ValueListLit` elems, `ValueCallBuiltin` args) — so the clone allocates on the
+> RT path. `run_value_track` (the program-level path) already avoids this by
+> calling `exec_value_instr` with absolute registers. T2 gives fragments the
+> same treatment: pass the `base` offset into `exec_value_instr` instead of
+> cloning.
+
+- [ ] **Step 1: Write a failing performance-guard test (optional) or a correctness test**
+
+The behavior is unchanged; the guard is that a fragment call with a `Vec`-carrying
+instruction still produces the right value. Add to `tests/thunk_unify.rs`:
+
+```rust
+#[test]
+fn fragment_call_with_record_construction_still_works() {
+    // Exercises a ValueConstructRecord (Vec payload) inside a fragment call —
+    // the instruction must not be mis-remapped when base is threaded.
+    let src = "{-# MODE complete #-}\n\
+        mk = fn x -> Pair { first: x, second: x };\n\
+        main = match (head (mk [1.0, 2.0])) of { Nothing => 0.0; Just x => x };";
+    let mut prog =
+        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = rill_core::traits::MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0),
+        other => panic!("expected Float(1.0), got {other:?}"),
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify it passes before the change**
+
+Run: `cargo test -p rill-lang --test thunk_unify`
+Expected: PASS (baseline).
+
+- [ ] **Step 3: Thread `base` into `exec_value_instr`**
+
+Change `exec_value_instr(prog, instr, drops)` to
+`exec_value_instr(prog, instr, base, drops)`, and inside, read every register
+field as `reg + base` (dst/a/b/src/cell/closure_slot/args/fields/payload/elems)
+instead of relying on a pre-remapped clone. Register that are NOT fragment-local
+(main-track cells, `cell` capture indices, main-cell indices) stay unoffset —
+mirror the current `remap_value_instr` comments.
+
+- [ ] **Step 4: Update the call sites**
+
+- `run_value_track` (program path, interp.rs:177): `base = 0`.
+- `run_call` (the merged fragment runner): `base = <fragment's register base>` (the current `base` watermark), call `exec_value_instr(prog, instr, base, drops)` directly on the ORIGINAL `ValueInstr` — no clone.
+- Delete `remap_value_instr` if nothing else uses it (check for other callers).
+
+- [ ] **Step 5: Run the tests**
+
+Run: `cargo test -p rill-lang`, then `cargo test --workspace`
+Expected: PASS — behavior unchanged, no clone on the fragment-call path.
+
+- [ ] **Step 6: Clippy + fmt + commit**
+
+Run: `cargo clippy --all-features -p rill-lang`, `cargo fmt`.
+Commit:
+
+```bash
+cargo fmt
 git add rill-lang/src/backend/interp.rs rill-lang/tests/thunk_unify.rs
-git commit -m 'refactor(rill-lang): Thunk trait — unify run_fragment/run_thunk_body'
+git commit -m 'perf(rill-lang): thread register base into exec_value_instr — drop remap cloning'
 ```
 
 ---
@@ -397,7 +518,8 @@ git commit -m 'refactor(rill-lang): Thunk trait — unify run_fragment/run_thunk
 - [ ] §2.1 `forall` syntax (`TypeExpr::TForall`) → Task R1.
 - [ ] §2.2 value-tyvar generalization (`free_vars`/`instantiate`) → Task R2.
 - [ ] §2.3 `runST` rank-2 application, automatic escape rejection → Task R3.
-- [ ] §3 Thunk trait + single runner → Task T1.
+- [ ] §3 Thunk/Closure unified into `Value::Callable` + single runner → Task T1.
 - [ ] §4 ordering (A then B) — tasks are sequential; no overlap.
 - [ ] §5 testing — each task has a test file; the two bypass regressions covered.
 - [ ] Superseded one-point scan (`5b2c84d`) removed in Task R3.
+- [ ] T2 (`remap_value_instr` without cloning) → fragment-call hot path, codebase prep for JIT and track unification.
