@@ -1,0 +1,245 @@
+# rill-lang: Full Track Unification (Stage B B3) — Design
+
+> **Stage:** B, task B3 of the main plan.
+> **Parent spec:** `2026-10-10-rill-lang-value-signal-unification-st-design.md` (§2.6).
+> **Scope:** eliminate the block track ENTIRELY — not just `Rate::Signal` in the
+> type system, but the whole computation path. Everything is a closure
+> (Haskell-style). FFI algorithms become fragments with a single
+> `ValueCallForeign` instruction.
+
+---
+
+## 0. Executive summary
+
+rill-lang has two parallel execution paths: the **block track** (`Instr` +
+`block_regs` + `run_block_mimo` + `build_schedule` + `exec_block_op` +
+`exec_foreign_block`) and the **value track** (`ValueInstr` + arena +
+`run_value_track`). B3 unifies them: `Rate::Signal` is removed from the type
+system (signals become `Rate::Value` with type `Buffer`), AND the block track is
+deleted. Everything executes on the value track, where a signal buffer is a
+first-class `Value::Buffer` and every computation is a closure:
+
+| Concept | Before (block track) | After (unified value track) |
+|---|---|---|
+| Program | `Instr` list, `build_schedule` topological order | root `FragmentIr` (base=0) |
+| Function | `Value::Closure` + `run_fragment` | `Value::Callable` + `run_call` |
+| FFI algorithm | `Instr::CallBlock` + `exec_foreign_block` over `block_regs` | fragment with one `ValueCallForeign`, `Algorithm::process` over `Value::Buffer` |
+| Math | `Instr::Un`/`Bin`/`Const` over `block_regs` | `Buffer` methods (scalar loops) |
+| State | `block_state`/`delays` (double-buffer) | `value_state` (the ST effect) |
+| Inputs | `Instr::LoadInput` → `block_regs` | value-track buffer reads |
+
+After B3: `Instr` block variants, `block_regs`, `run_block_mimo`,
+`build_schedule`, `exec_block_op`, `exec_foreign_block`, and `schedule.rs` are
+**deleted**. `run_value_track` merges into `run_call` (a program is a root
+fragment). SIMD and the `Algorithm` factories stay intact.
+
+---
+
+## 1. Current state (audited)
+
+### 1.1 The two tracks
+
+**Block track** (`ir.rs` `Instr`, `program.rs` `block_regs: Vec<FixedBuffer<T,BUF>>`,
+`backend/interp.rs`):
+- ~14 block `Instr` variants: `Const`, `LoadInput`, `ReadBlockState`,
+  `ReadDelay`, `Un`, `Bin`, `Move`, `WriteBlockState`, `WriteDelay`,
+  `CallBlock`, `ReadParam`, `ReadActorParam`, `ReadMainCell`, `ProbePoint`.
+- `build_schedule` (schedule.rs, 227 lines) builds a topological order (Tarjan
+  SCC); `CallBlock` → `Step::ForeignBlock`, rest → `Step::Block`.
+- `run_block_mimo` (96 lines): per-tick, executes `exec_block_op` (90 lines,
+  math/state/sources) and `exec_foreign_block` (98 lines, `Algorithm::process`
+  over `block_regs`).
+- `process()` (program.rs:724, 799) calls `run_block_mimo`.
+
+**Value track** (`ir.rs` `ValueInstr`, `arena.rs`, `backend/interp.rs`):
+- `Value::Callable { fragment, env, cell: Option }` (unified Closure/Thunk, T1).
+- `run_value_track` (program path, base=0) + `run_call` (fragment, base=offset)
+  share `exec_value_instr(prog, instr, base, drops)` (T2).
+- `exec_value_instr` is a ~659-line match over `ValueInstr`.
+
+### 1.2 FFI
+
+`foreign fn name : FixedBuffer a -> ... -> FixedBuffer a` declares the
+signature (language owns it); Rust `Algorithm`/`MultichannelAlgorithm`
+implementations register factories (`register_block`). Lowering emits
+`Instr::CallBlock { dst, srcs, instance }`; `exec_foreign_block` reads
+`block_regs[srcs]`, calls `Algorithm::process`, writes `block_regs[dst]`.
+`BuiltinInst::Block` = `BlockBuiltin<T>` (= `Algorithm<T>` + `set_param`);
+`BuiltinInst::MultichannelBlock` = `MultichannelAlgorithm<T>`.
+
+### 1.3 Inputs/outputs
+
+`process(inputs: &[&[T]], outputs: &mut [&mut [T]])` (MultichannelAlgorithm)
+and `process(input, output)` (Algorithm) call `run_block_mimo`. `main`'s signal
+arity = input count; `LoadInput` copies each input slice into `block_regs[dst]`;
+outputs copy from `block_regs[reg]` back to the external slices. `main` λ-params
+are both named params (`set_param`) and signal inputs.
+
+---
+
+## 2. Design
+
+### 2.1 Everything is a closure
+
+After B3 there is ONE value track. A program is a root fragment; every callable
+is a `Value::Callable`; every dispatch goes through `run_call` →
+`exec_value_instr`. `run_value_track` and `run_call` merge because a program is
+just a fragment with `base=0` and an empty env:
+
+```
+program   = FragmentIr (entry block, base=0)
+function  = Value::Callable { fragment, env, cell }  →  run_call
+FFI       = FragmentIr whose single instruction is ValueCallForeign { builtin }
+          →  run_call → exec_value_instr(ValueCallForeign) → Algorithm::process(Buffer)
+math      = Buffer methods (scalar loops)
+state     = value_state (ST effect)
+```
+
+### 2.2 `Value::Buffer`
+
+A signal buffer becomes a first-class arena value:
+
+```rust
+/// A first-class signal buffer. `FixedBuffer` (inline) and `RegionHandle`
+/// (large slab, SP-4) are the two concrete backing kinds.
+Value::Buffer(BufferKind)
+```
+
+Two options for the backing:
+- **Inline:** `Value::Buffer(FixedBuffer<T, BUF>)` — small buffers, stack/arena
+  inline (Tier 2 memory, SP-4). Simple; the buffer is an ordinary owned arena
+  value.
+- **Slab handle:** `Value::Buffer(usize)` — an index into a program-level
+  `RegionHandle` table (Tier 1, big objects). For large buffers.
+
+Stage B uses **inline `Value::Buffer(FixedBuffer<T, BUF>)`** first (matches the
+current `block_regs` capacity model, no new memory subsystem); the
+`RegionHandle` path (Task B6) layers on later. The `Buffer` typeclass (Task B4)
+abstracts over the backing.
+
+`visit_refs`/`clone_pooled`/`drop_ref` handle `Value::Buffer` as a leaf (owns no
+arena children) or a table-index (no children).
+
+### 2.3 `ValueCallForeign` instruction
+
+In `ir.rs`, add a value-track instruction:
+
+```rust
+/// Call a foreign DSP algorithm (`Algorithm::process`) over `Value::Buffer`
+/// operands. `instance` indexes `Ir::builtins` (the `BuiltinInstance`).
+ValueInstr::ValueCallForeign { dst: usize, srcs: Vec<usize>, instance: usize },
+```
+
+In `exec_value_instr`, the arm:
+1. Read `srcs` registers — each must be a `Value::Buffer` (input channels).
+2. Call `Algorithm::process`/`MultichannelAlgorithm::process` with the input
+   buffers and write the output buffer(s) into `dst` (+ consecutive regs).
+3. In-place: the output buffer is a fresh `Value::Buffer` (or the first input
+   reused per the `dst != srcs[0]` aliasing rule — carry over the current
+   scratch-snapshot for multichannel).
+
+The foreign call is wrapped in its own tiny `FragmentIr` (one instruction), so
+it dispatches through the SAME `run_call` path as any function.
+
+### 2.4 Lowering signals to the value track
+
+`lower.rs` `lower_with_cafs_mode`: the `has_value_out` branch becomes the ONLY
+branch. `main.body()` always lowers through `lower_value` (value track). Signal
+constructs map as follows:
+
+| Signal construct (old `Instr`) | New lowering |
+|---|---|
+| `LoadInput` | a value-track input read → `Value::Buffer` (one per main input) |
+| `Un`/`Bin`/`Const` math | `Buffer` method calls (Task B4; for B3, lower to a `ValueCallForeign`-like buffer op or a placeholder that the math instance fills) |
+| `CallBlock` (FFI) | a one-instruction fragment with `ValueCallForeign` |
+| `ReadBlockState`/`WriteBlockState` | `value_state` reads/writes (already exist) |
+| `ReadDelay`/`WriteDelay` | delay in `value_state` (or a `Buffer` ring) |
+| `ReadParam`/`ReadActorParam`/`ReadMainCell` | value-track param reads (already exist) |
+| outputs | value-track output registers → copy to external slices |
+
+The 1251-line `lower` (block path) and its 132 `Instr::` emits are replaced by
+value-track lowering. This is the biggest chunk of B3.
+
+### 2.5 Runtime unification
+
+`program.rs`:
+- Remove `block_regs`.
+- `process()` calls the value-track entry (merged `run_value_track`/`run_call`)
+  with `inputs` materialized as `Value::Buffer` and `outputs` drained from the
+  value-output registers.
+
+`backend/interp.rs`:
+- Merge `run_value_track` into `run_call` (program = root fragment, base=0,
+  empty env). One runner.
+- Add the `ValueCallForeign` arm to `exec_value_instr`.
+- Delete `run_block_mimo`, `exec_block_op`, `exec_foreign_block`.
+
+`schedule.rs`: delete. `ir.rs`: remove `Instr` block variants, keep `ValueInstr`
++ `ValueCallForeign`. `regalloc.rs`: only handled block IR — delete or neuter.
+
+### 2.6 State
+
+`block_state`/`block_state_next` (double-buffer) and `delays` move to
+`value_state` (the value-track 1-tick delay store). Feedback (`~`) and delay
+(`@`) become `value_state` reads/writes — the ST effect.
+
+---
+
+## 3. Backward compatibility, RT safety
+
+- **Behavior:** existing signal programs (`lang_chiptune`, `record_mic`, signal
+  test suite) keep working. `main : inputs -> outputs` stays.
+- **RT safety:** one value track; `Value::Buffer` math adds no allocation beyond
+  the existing arena/region budget. The `ValueCallForeign` path reuses the
+  current `Algorithm::process` (no new allocation).
+- **SIMD:** preserved — math uses scalar loops (LLVM auto-vectorizes) or
+  `rill_core::math::vector`; manual SIMD avoided.
+- **Budget:** the arena capacity heuristic must now cover buffers (each
+  `Value::Buffer` is one slot). The 2× complete-mode multiplier already exists.
+
+---
+
+## 4. Testing
+
+- `tests/rate_unification.rs`: signal channels are `Rate::Value` with `vty=Buffer`.
+- The full existing suite (signal + value) passes unchanged after each sub-task.
+- `lang_chiptune`/`record_mic` compile (and run on hardware).
+- New: a signal program (e.g. `main = _ : onepole 200.0 0.7`) produces the same
+  output as before via the value track.
+
+---
+
+## 5. File map
+
+| Area | Files |
+|---|---|
+| Types | `types/ty.rs` (`Rate`, `ValueTy::Buffer`, `Channel`), `types/infer.rs` |
+| IR | `ir.rs` (`ValueCallForeign`, remove `Instr` block variants) |
+| Arena | `arena.rs` (`Value::Buffer`) |
+| Lowering | `lower.rs` (value-track-only; signal→Buffer) |
+| Interp | `backend/interp.rs` (merge runners, `ValueCallForeign`, delete block track) |
+| Program | `program.rs` (remove `block_regs`), `schedule.rs` (delete), `regalloc.rs` (delete) |
+| Tests | `tests/rate_unification.rs`, existing suite |
+
+---
+
+## 6. Suggested sub-task split (B3 is large)
+
+- **B3a — type + lower unification:** `Rate::Signal` removed, signals are
+  `ValueTy::Buffer`; `lower` routes signal expressions through the value track
+  (buffer values); the block track still executes the buffer ops underneath
+  (no runtime change yet). All signal tests green.
+- **B3b — runtime unification:** add `ValueCallForeign` + `Value::Buffer`;
+  delete block track (`Instr` block variants, `block_regs`, `run_block_mimo`,
+  `build_schedule`, `exec_block_op`, `exec_foreign_block`, `schedule.rs`);
+  merge `run_value_track` into `run_call`. Full suite green.
+- Each sub-task lands and tests green independently.
+
+---
+
+## 7. Non-goals (deferred)
+
+- `(arg..) -> IO` form (Stage C).
+- `RegionHandle` big-buffer values (Task B6).
+- `Buffer` typeclass math methods (Task B4).
+- Stream I/O, zero-copy at the boundary (Stage C).
