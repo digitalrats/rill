@@ -4,7 +4,7 @@
 
 **Goal:** Eliminate the block track entirely — `Rate::Signal` removed from the type system, signals become `Buffer`-typed value channels, and the whole computation path unifies onto the value track where everything is a closure. FFI algorithms become fragments with a single `ValueCallForeign` instruction over `Value::Buffer`.
 
-**Architecture:** Two sub-tasks. B3a unifies the TYPE SYSTEM and LOWERING (signals = `ValueTy::Buffer`, `lower` routes signal expressions through the value track) while the block track still executes the buffer ops underneath. B3b unifies the RUNTIME (add `ValueCallForeign` + `Value::Buffer`; delete `Instr` block variants, `block_regs`, `run_block_mimo`, `build_schedule`, `exec_block_op`, `exec_foreign_block`, `schedule.rs`; merge `run_value_track` + `run_call` into a single `run`). See `docs/superpowers/specs/2026-10-10-rill-lang-full-track-unification-design.md`.
+**Architecture:** Four sub-tasks. B3a1 collapses `Rate` and makes signal channels `Buffer` value channels. B3a2 removes `Scalar`/`elem` and retargets the signal combinators to `Buffer` types. B3a3 routes `lower` through the value track. B3b unifies the RUNTIME (add `ValueCallForeign` + `Value::Buffer`; delete the block track; merge `run_value_track` + `run_call` into a single `run`). B3a keeps the block track executing buffer ops underneath. See `docs/superpowers/specs/2026-10-10-rill-lang-full-track-unification-design.md`.
 
 **Tech Stack:** Rust, crate `rill-lang`, branch `feature/rill-lang-arrays`. No new external dependencies.
 
@@ -20,29 +20,27 @@
 
 ---
 
-## Task B3a: Type + lowering unification (signals = `Buffer` values)
+## Task B3a1: Rate collapse + `ValueTy::Buffer` (types only)
 
 **Files:**
-- Modify: `rill-lang/src/types/ty.rs` (`Rate` collapsed; `ValueTy::Buffer`; `Channel`; `Scalar`/`elem` fate)
-- Modify: `rill-lang/src/types/infer.rs` (8 `Rate::Signal` arms → `Rate::Value` + `Buffer`; FFI typing)
-- Modify: `rill-lang/src/lower.rs` (`has_value_out` becomes the only branch; signal expressions lower through `lower_value` with `Buffer` values; FFI calls → a buffer op that still runs via the block track for now)
+- Modify: `rill-lang/src/types/ty.rs` (`Rate` collapsed; `ValueTy::Buffer`; `Channel`)
+- Modify: `rill-lang/src/types/infer.rs` (`Rate::Signal` arms → `Rate::Value` + `Buffer`; FFI typing)
 - Test: `rill-lang/tests/rate_unification.rs`
 
-**Goal:** The type system has ONE rate (`Value`) and signal channels carry `vty = Buffer`. `lower` routes `main`'s body through the value track. The block track still executes the buffer ops underneath (runtime unchanged in B3a), so all signal tests stay green.
+**Goal:** The type system has ONE rate (`Value`); signal channels carry `vty = Buffer`.
+`Scalar`/`elem` stays (removed in B3a2). All existing tests stay green.
 
-- [ ] **Step 1: Audit the exact sites**
+- [ ] **Step 1: Audit the sites**
 
 Run:
 ```bash
 grep -n "Rate::Signal" rill-lang/src/types/infer.rs rill-lang/src/types/ty.rs
-grep -n "has_value_out\|fn lower_value\|fn lower\b" rill-lang/src/lower.rs | head
 ```
-Document each `Rate::Signal` site's role. Expected: infer.rs:139, 324, 651, 1579, 3842, 4490, 5283 + ty.rs (enum, signal(), scalar(), resolve). In lower.rs: the `has_value_out` branch (the value/block split at ~5593).
+Expected: infer.rs:139, 324, 651, 1579, 3842, 4490, 5283; ty.rs (enum, signal(), scalar(), resolve).
 
 - [ ] **Step 2: Write the failing test**
 
 Create `rill-lang/tests/rate_unification.rs`:
-
 ```rust
 #[test]
 fn signal_channel_is_buffer_value() {
@@ -53,7 +51,6 @@ fn signal_channel_is_buffer_value() {
     for c in &tp.process_ty.outs {
         assert_eq!(c.rate, rill_lang::types::ty::Rate::Value,
             "signal output must be a Buffer value channel");
-        // vty is Buffer (or App("Buffer", []))
     }
 }
 ```
@@ -61,62 +58,154 @@ fn signal_channel_is_buffer_value() {
 - [ ] **Step 3: Run to verify it fails**
 
 Run: `cargo test -p rill-lang --test rate_unification`
-Expected: FAIL — the output channel is `Rate::Signal`.
+Expected: FAIL — output channel is `Rate::Signal`.
 
 - [ ] **Step 4: Add `ValueTy::Buffer` + collapse `Rate`**
 
-In `ty.rs`: add `ValueTy::Buffer` (a dedicated variant is cleaner than
-`App("Buffer", vec![])` for the runtime seam). Collapse `Rate` — either remove
-the enum and keep only `vty`, or keep `Rate` with a single `Value` value (pick
-the less invasive; prefer removing the `Signal` variant and making every channel
-`Value`). Update `Channel::signal` → a `Channel::value(Buffer)` path. Decide the
-`Scalar`/`elem` fate: if `FixedBuffer f32` needs the scalar, keep `elem` tied to
-`Buffer`'s parameter; if it becomes dead, delete it (but beware `check_all_numeric`
-and `unify_scalar` — keep them if the signal element typing depends on them).
+In `ty.rs`: add `ValueTy::Buffer` (dedicated variant). Collapse `Rate` — remove the
+`Signal` variant, make every channel `Value`. Update `Channel::signal` → a
+`Channel::value(Buffer)` path; keep `elem`/`Scalar` (B3a2 removes them). Update
+the 7 `infer.rs` arms (139, 324, 651, 1579, 3842, 4490, 5283) and the `ty.rs`
+resolve (1153) so every channel is `Value` with `vty = Buffer` for signal channels.
+FFI typing (`FixedBuffer a`) → `Rate::Value` + `vty=Buffer`. The signal combinators
+still use `elem`/`Scalar` for now (that's fine — they're unchanged until B3a2).
 
-- [ ] **Step 5: Rewrite the `infer.rs` arms**
+- [ ] **Step 5: Run the tests**
 
-Each `Rate::Signal` arm → `Rate::Value` with `vty = Buffer`. The `instantiate`
-block closure (infer.rs:139) and `resolve` (ty.rs:1153) must preserve `Buffer`
-channels. FFI typing (`FixedBuffer a` in foreign sigs) → `Rate::Value` + `vty=Buffer`.
-`check_all_numeric`/arity: a `Buffer` channel is a value channel whose `vty` is
-`Buffer`.
+Run: `cargo test -p rill-lang`, then `cargo test --workspace`
+Expected: PASS — but note: the `rate_unification.rs` assertion on `vty=Buffer`
+may need the FFI typing to actually produce `Buffer`; verify the signal test suite
+still passes (combinators unchanged).
 
-- [ ] **Step 6: Route `lower` through the value track**
+- [ ] **Step 6: Clippy + fmt + commit**
 
-In `lower.rs`: `has_value_out` becomes trivially true (every output is `Value`).
-`main.body()` ALWAYS lowers through `lower_value`. Signal constructs in
-`lower_value`:
+Run: `cargo clippy --all-features -p rill-lang`, `cargo fmt`.
+Commit:
+```bash
+cargo fmt
+git add rill-lang/src/types/ty.rs rill-lang/src/types/infer.rs rill-lang/tests/rate_unification.rs
+git commit -m 'refactor(rill-lang): B3a1 — one Rate, signal channels are Buffer value channels'
+```
+
+---
+
+## Task B3a2: Remove `Scalar`/`elem`; signal combinators on `Buffer`
+
+**Files:**
+- Modify: `rill-lang/src/types/ty.rs` (`Scalar` enum removed; `Channel` = `{ vty }`; `Block` alias)
+- Modify: `rill-lang/src/types/infer.rs` (signal combinators seq/par/split/merge/loop/delay on `Buffer`; `unify_scalar`/`check_all_numeric` removed; `free_vars`/`instantiate` scalar path removed)
+- Test: existing suite
+
+**Goal:** `Scalar`/`elem` are gone — they were the signal element type with no
+structures left after `Rate::Signal` removal. The signal combinators unify
+`Buffer` types through `vty`.
+
+- [ ] **Step 1: Audit `Scalar`/`elem` uses**
+
+Run:
+```bash
+grep -rn "Scalar\b\|\.elem\b" rill-lang/src/ | grep -v "//"
+```
+Expected ~74 `Scalar` uses + ~16 `.elem` uses, concentrated in the combinators
+(seq/par/split/merge/loop/delay), `free_vars`, `instantiate`, `check_all_numeric`,
+`unify_scalar`.
+
+- [ ] **Step 2: Rewrite the combinators on `Buffer`**
+
+In `infer.rs`, the combinator functions (`seq`, `split`, `merge`, `feedback`,
+`delay` — around 4622-4761) currently do `unify_scalar(&a.outs[k].elem, &b.ins[r].elem)`.
+Replace with `Buffer`-type unification:
+- `seq` (`:`): both sides are `Buffer` channels; the result is `Buffer`. Unify the
+  channel `vty` (both `Buffer`) and drop `unify_scalar`/arity mismatch on `elem`.
+- `split`/`merge`/`feedback`/`delay`: same — unify `vty` as `Buffer`; remove the
+  `elem`/`Scalar` bookkeeping.
+- `check_all_numeric` (infer.rs:4770, already a stub): delete or make it a no-op on
+  `Buffer`.
+
+- [ ] **Step 3: Remove `Scalar` and the `elem` field**
+
+In `ty.rs`: delete the `Scalar` enum; `Channel` becomes `{ vty: ValueTy }` (drop
+`rate` too if B3a1 left it, or keep a single `Value`); `Block` alias removed or
+repointed. Update every `Scalar`/`elem` consumer: `free_vars` (only collects
+`Scalar::Var` — now value-tyvars only), `instantiate` (the scalar `rw` closure
+goes), `Subst.map` (scalar substitution map removed, keep `value_map`),
+`unify_scalar` deleted, `Channel::scalar()`/`new()`/`signal()` deleted.
+
+- [ ] **Step 4: Run the tests**
+
+Run: `cargo test -p rill-lang`, then `cargo test --workspace`
+Expected: PASS. This is the risky step — the combinators are re-targeted to
+`Buffer`; verify `:` on signals (`main = _ : onepole 200.0 0.7`) still types.
+
+- [ ] **Step 5: Clippy + fmt + commit**
+
+Run: `cargo clippy --all-features -p rill-lang`, `cargo fmt`.
+Commit:
+```bash
+cargo fmt
+git add rill-lang/src/types/ty.rs rill-lang/src/types/infer.rs
+git commit -m 'refactor(rill-lang): B3a2 — remove Scalar/elem; signal combinators unify Buffer types'
+```
+
+---
+
+## Task B3a3: Route `lower` through the value track
+
+**Files:**
+- Modify: `rill-lang/src/lower.rs` (`has_value_out` becomes the only branch; signal expressions lower through `lower_value` with `Buffer` values; FFI calls → a buffer op that still runs via the block track)
+- Test: existing suite + `rate_unification.rs`
+
+**Goal:** `main.body()` ALWAYS lowers through `lower_value`. The block track still
+executes the buffer ops underneath (runtime unchanged until B3b), so all signal
+tests stay green.
+
+- [ ] **Step 1: Audit `lower`'s value/block split**
+
+Run:
+```bash
+grep -n "has_value_out\|fn lower_value\|fn lower\b" rill-lang/src/lower.rs | head
+```
+Expected: the `has_value_out` branch at ~5593.
+
+- [ ] **Step 2: Make `lower_value` the only path**
+
+`has_value_out` becomes trivially true (every output is `Value`). `main.body()`
+ALWAYS lowers through `lower_value`. Signal constructs in `lower_value`:
 - A main input → a value-track buffer read (a `Value::Buffer` producer; for B3a
-  this can be a placeholder that the block track still feeds, or a direct
-  `Value::Buffer` const — decide what keeps tests green).
-- FFI calls (`onepole`, `sine`, etc.) → lower as a buffer-op instruction that
-  B3b will turn into `ValueCallForeign`. For B3a, keep it running via the block
-  track: emit a bridge so `exec_foreign_block` still works (e.g. the value-track
-  output register maps to a `block_regs` slot the foreign path reads).
-- Math (`Un`/`Bin`/`Const`) → keep lowering to the block track for B3a (Task B4
-  makes them `Buffer` methods).
+  this can be a placeholder the block track still feeds, or a direct `Value::Buffer`
+  const — decide what keeps tests green).
+- FFI calls (`onepole`, `sine`) → lower as a buffer-op instruction B3b will turn
+  into `ValueCallForeign`; for B3a emit a bridge so `exec_foreign_block` still
+  works (value-track output register maps to a `block_regs` slot the foreign path
+  reads).
+- Math (`Un`/`Bin`/`Const`) → keep on the block track (Task B4 makes them `Buffer`
+  methods).
 
 The seam: `value in types, buffer in execution`. The value track produces
 `Value::Buffer` values whose storage is still `block_regs` for now.
 
-- [ ] **Step 7: Run the tests**
+- [ ] **Step 3: Run the tests**
 
 Run: `cargo test -p rill-lang`, then `cargo test --workspace`
-Expected: PASS (all existing signal + value tests + the new one). If signal tests
-break, adjust the lower bridge so buffer ops still execute via the block track.
+Expected: PASS (all existing signal + value tests + rate_unification).
 
-- [ ] **Step 8: Clippy + fmt + commit**
+- [ ] **Step 4: Verify examples compile**
+
+Run:
+```bash
+cargo build -p rill-adrift --features "io,lofi,lang" --example lang_chiptune
+cargo build -p rill-adrift --features "io,lang,sampler" --example record_mic
+```
+Expected: both compile.
+
+- [ ] **Step 5: Clippy + fmt + commit**
 
 Run: `cargo clippy --all-features -p rill-lang`, `cargo fmt`.
 Commit:
-
 ```bash
 cargo fmt
-git add rill-lang/src/types/ty.rs rill-lang/src/types/infer.rs rill-lang/src/lower.rs rill-lang/tests/rate_unification.rs
-git commit -m 'refactor(rill-lang): B3a — signals are Buffer value channels, lower through value track
-Rate::Signal removed from the type system; signal channels carry vty=Buffer.
-main lowers through the value track; block track still executes buffer ops.'
+git add rill-lang/src/lower.rs
+git commit -m 'refactor(rill-lang): B3a3 — lower signal expressions through the value track'
 ```
 
 ---
