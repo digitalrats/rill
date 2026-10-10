@@ -517,20 +517,6 @@ fn collect_static_calls(
             }
             collect_static_calls(body, src, &inner, nodes, out);
         }
-        Expr::RunST { body, .. } => {
-            if let Expr::Lambda {
-                params,
-                body: lam_body,
-                ..
-            } = body.as_ref()
-            {
-                let mut inner = bound.clone();
-                for p in params {
-                    inner.insert(p.name.clone());
-                }
-                collect_static_calls(lam_body, src, &inner, nodes, out);
-            }
-        }
         Expr::ActorParam { default, .. } => {
             if let Some(d) = default {
                 collect_static_calls(d, src, bound, nodes, out);
@@ -1603,8 +1589,9 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
 
 /// Whether a value type mentions a given type-variable id anywhere — a free
 /// `Var(v)` / `TyConVar(v)` occurrence or a `TyConApp(v, ..)` head where
-/// `v == id`. Used by `runST`'s check-escaping: the phantom region type must
-/// not leak into the result type.
+/// `v == id`. Used by `runST`'s rank-2 application (a body whose result type
+/// mentions the fresh quantified phantom `s` escapes the region and is
+/// rejected).
 fn vty_mentions_tyvar(t: &ValueTy, id: TypeVarId) -> bool {
     match t {
         ValueTy::Var(v) | ValueTy::TyConVar(v) => *v == id,
@@ -2479,69 +2466,6 @@ fn infer_expr_expected(
             let ret_ty = bt.outs[0].vty.clone();
             Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
         }
-        Expr::RunST { body, span } => {
-            // `runST (fn s -> body)`: `s` is a PHANTOM type token, not a value
-            // channel. Allocate a fresh type-constructor variable for `s`, bind
-            // it in the TYPE scope (`type_var_bindings`, the same map instance
-            // head args use), infer the body with it visible, then CHECK-ESCAPE
-            // it: the result type must not mention `s`. The phantom has no
-            // runtime representation, so the whole expression is a no-op wrapper
-            // over the body.
-            let Expr::Lambda {
-                params,
-                body: lam_body,
-                ..
-            } = body.as_ref()
-            else {
-                return Err(CompileError::Type {
-                    msg: "runST expects a parenthesized lambda `fn s -> body`".into(),
-                    span: *span,
-                });
-            };
-            if params.len() != 1 {
-                return Err(CompileError::Type {
-                    msg: "runST lambda must bind exactly one phantom type parameter".into(),
-                    span: *span,
-                });
-            }
-            // 1. Fresh type-constructor variable id for `s`.
-            let s_id = ctx.next;
-            ctx.next += 1;
-            // 2. Bind `s` as a TyConVar in the type scope (NOT a value channel).
-            let prev_s = ctx
-                .type_var_bindings
-                .insert(params[0].name.clone(), ValueTy::TyConVar(s_id));
-            // A lambda body is a DEFERRED computation: clear the method-inlining
-            // recursion guard so nested calls of the same method resolve here.
-            let saved_lifting = ctx.method_lifting.clone();
-            ctx.method_lifting.clear();
-            // 3. Infer the body with `s` visible.
-            let bt = infer_expr_expected(ctx, lam_body, expected);
-            ctx.method_lifting = saved_lifting;
-            if let Some(prev) = prev_s {
-                ctx.type_var_bindings.insert(params[0].name.clone(), prev);
-            } else {
-                ctx.type_var_bindings.remove(&params[0].name);
-            }
-            let bt = bt?;
-            if bt.arity_out() != 1 {
-                return Err(CompileError::Type {
-                    msg: "runST body must produce one value".into(),
-                    span: *span,
-                });
-            }
-            let ret_vty = bt.outs[0].vty.clone();
-            // 4. Check-escaping: resolve the result type and reject any free `s`.
-            let resolved = ctx.subst.resolve_value(&ret_vty);
-            if vty_mentions_tyvar(&resolved, s_id) {
-                return Err(CompileError::Type {
-                    msg: "ST region result escapes the phantom type s".into(),
-                    span: *span,
-                });
-            }
-            // 5. The phantom binding is already dropped; return the body's type.
-            Ok(bt)
-        }
         Expr::Bool(_, _) => Ok(ArrowTy::value_channel(ValueTy::Bool)),
         Expr::ListLit(elems, _) => {
             // Homogeneous list literal: every element is a value constant of the
@@ -2838,10 +2762,8 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         }
         return Ok(ctx.instantiate(&scheme));
     }
-    // A type-scope binding: a `runST (fn s -> body)` phantom token `s` (a
-    // TyConVar) or a constraint-instance head arg (`instance (Monad m) => …
-    // → m := Maybe`). Referencing it as a VALUE resolves to the type, which
-    // lets check-escaping reject a phantom leaking into the region result.
+    // A type-scope binding: a constraint-instance head arg (`instance (Monad m)
+    // => … → m := Maybe`). Referencing it as a VALUE resolves to the type.
     if let Some(vty) = ctx.type_var_bindings.get(name) {
         return Ok(ArrowTy::value_channel(vty.clone()));
     }
@@ -2984,6 +2906,101 @@ fn infer_apply_impl(
     span: Span,
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
+    // `runST` — a built-in function whose signature `(forall s. ST s a) -> a`
+    // is registered in [`TypeEnv::builtin_sigs`]. Its single argument is a
+    // lambda `fn s -> body` where `s` is a PHANTOM type token: a fresh
+    // quantified type-constructor variable. This is rank-N application —
+    // implemented specifically for `runST`; a generic mechanism for any callee
+    // signature with a `forall`-bound argument would iterate the registered
+    // `TypeExpr`'s `TForall`-headed parameters.
+    //
+    // The phantom is bound in `ctx.locals` as a VALUE channel whose vty is
+    // `TyConVar(s_id)` (save/restore like the `Expr::Lambda` arm), so
+    // `Ref("s")` resolves to the phantom AND the phantom shadows any outer
+    // value binder named `s` (locals take precedence over defs in
+    // `infer_ref_inner`). The lambda BODY is inferred with `s` visible. The
+    // result `a` must not mention `s`: because `s` is quantified (a fresh var,
+    // not free in the enclosing scope), a result that unified with the phantom
+    // is rejected — both when `s_id` survives in the RESOLVED result type and
+    // when cross-kind unification bound the phantom away into an outer
+    // variable (an `s_id` entry in `subst.value_map`). The phantom is erased,
+    // so the region types as `ArrowTy::value_channel(a)`.
+    let is_runst = name == "runST"
+        && ctx.env.builtin_sigs.get("runST").is_some_and(|sig| {
+            matches!(
+                sig,
+                crate::ast::TypeExpr::TFunc(args, _)
+                    if args
+                        .first()
+                        .is_some_and(|a| matches!(a, crate::ast::TypeExpr::TForall(_, _)))
+            )
+        });
+    if is_runst {
+        if args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!("`runST` expects 1 argument, got {}", args.len()),
+                span,
+            });
+        }
+        let Expr::Lambda {
+            params,
+            body,
+            span: lspan,
+        } = &args[0]
+        else {
+            return Err(CompileError::Type {
+                msg: "runST expects a parenthesized lambda `fn s -> body`".into(),
+                span,
+            });
+        };
+        if params.len() != 1 {
+            return Err(CompileError::Type {
+                msg: "runST lambda must bind exactly one phantom type parameter".into(),
+                span: *lspan,
+            });
+        }
+        // A fresh quantified phantom id for `s`.
+        let s_id = ctx.fresh_id();
+        // A lambda body is a DEFERRED computation: clear the method-inlining
+        // recursion guard so nested calls of the same method resolve here.
+        let saved = ctx.locals.clone();
+        let saved_lifting = ctx.method_lifting.clone();
+        ctx.method_lifting.clear();
+        ctx.locals.insert(
+            params[0].name.clone(),
+            ArrowTy::value_channel(ValueTy::TyConVar(s_id)),
+        );
+        let bt = infer_expr_expected(ctx, body, expected);
+        ctx.locals = saved;
+        ctx.method_lifting = saved_lifting;
+        let bt = bt?;
+        if bt.arity_in() != 0 || bt.arity_out() != 1 {
+            return Err(CompileError::Type {
+                msg: "runST body must produce one value".into(),
+                span,
+            });
+        }
+        // Check-escaping: the region result must not mention the phantom. A
+        // signal-rate channel carries no value type variables (its `vty` is a
+        // placeholder), so only value-rate results can escape — `resolve_value`
+        // follows any chain that unified an outer var with the phantom, and
+        // `value_map.contains_key(s_id)` catches the case where a cross-kind
+        // unification bound the phantom itself away into an outer variable
+        // (the phantom leaked even though `s_id` no longer appears).
+        let ret_vty = bt.outs[0].vty.clone();
+        let resolved = ctx.subst.resolve_value(&ret_vty);
+        if vty_mentions_tyvar(&resolved, s_id) || ctx.subst.value_map.contains_key(&s_id) {
+            return Err(CompileError::Type {
+                msg: "ST region result escapes the phantom type s".into(),
+                span,
+            });
+        }
+        // The phantom is erased and the region's computation is the lambda
+        // body's: return the body's arrow type (a bare literal body is a
+        // constant signal; a value body a value channel — both runST-idiomatic
+        // in rill, where literals are value-compatible constant signals).
+        return Ok(bt);
+    }
     if name == "not" {
         if args.len() != 1 {
             return Err(CompileError::Type {

@@ -938,6 +938,28 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // `runST (fn s -> body)`: `runST` is a built-in function whose
+                // signature `(forall s. ST s a) -> a` carries a type-level-only
+                // phantom — inference (the rank-2 application in `infer_apply`)
+                // rejected any body whose result mentions `s`, so the lambda is
+                // a pure computation with the phantom erased. Lower the lambda
+                // BODY directly (the phantom has no runtime representation); a
+                // future JIT sees the body's computation with no special IR.
+                if name == "runST" {
+                    if call_args.len() != 1 {
+                        return Err(CompileError::Type {
+                            msg: "runST expects 1 argument".into(),
+                            span: *span,
+                        });
+                    }
+                    let Expr::Lambda { body: lam, .. } = &call_args[0] else {
+                        return Err(CompileError::Type {
+                            msg: "runST expects a parenthesized lambda `fn s -> body`".into(),
+                            span: *span,
+                        });
+                    };
+                    return self.lower_value_expected(lam, expected);
+                }
                 // Boolean negation: `not b` — a prefix value-track builtin
                 // (the `!` token stays the signal wire-cut combinator).
                 if name == "not" {
@@ -1813,17 +1835,6 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Func(param_tys, vec![ret_ty])))
             }
-            Expr::RunST { body, span } => {
-                // The phantom `s` has no runtime representation: `runST` is a
-                // no-op wrapper over the lambda body. Lower the body directly.
-                let Expr::Lambda { body: lam, .. } = body.as_ref() else {
-                    return Err(CompileError::Type {
-                        msg: "runST expects a parenthesized lambda `fn s -> body`".into(),
-                        span: *span,
-                    });
-                };
-                self.lower_value_expected(lam, expected)
-            }
             Expr::Bool(b, _) => {
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueBool { dst, value: *b });
@@ -2017,7 +2028,7 @@ impl<'a> Lowerer<'a> {
         ]
         .iter()
         .any(|n| name == s(n));
-        collection || self.env.foreign_sigs.contains_key(name)
+        collection || self.env.foreign_sigs.contains_key(name) || name == "runST"
     }
 
     fn value_builtin(&self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
@@ -2763,18 +2774,6 @@ impl<'a> Lowerer<'a> {
                     inner.insert(p.name.clone());
                 }
                 self.free_vars_impl(body, &inner, out, seen);
-            }
-            Expr::RunST { body, .. } => {
-                if let Expr::Lambda {
-                    params, body: lam, ..
-                } = body.as_ref()
-                {
-                    let mut inner = bound.clone();
-                    for p in params {
-                        inner.insert(p.name.clone());
-                    }
-                    self.free_vars_impl(lam, &inner, out, seen);
-                }
             }
             Expr::ActorParam { default, .. } => {
                 if let Some(d) = default {
@@ -4634,17 +4633,6 @@ impl<'a> Lowerer<'a> {
                 self.defs = saved;
                 result
             }
-            Expr::RunST { body, span } => {
-                // The phantom `s` has no runtime representation: `runST` is a
-                // no-op wrapper over the lambda body. Lower the body directly.
-                let Expr::Lambda { body: lam, .. } = body.as_ref() else {
-                    return Err(CompileError::Type {
-                        msg: "runST expects a parenthesized lambda `fn s -> body`".into(),
-                        span: *span,
-                    });
-                };
-                self.lower(lam, args)
-            }
             Expr::Record(..) => unreachable!("Record should be desugared before lowering"),
             Expr::ActorParam {
                 name,
@@ -5359,10 +5347,6 @@ impl<'a> Lowerer<'a> {
             | Expr::Logic { .. }
             | Expr::ApplyExpr { .. } => (0, 1),
             Expr::Lambda { .. } => (0, 1),
-            Expr::RunST { body, .. } => match body.as_ref() {
-                Expr::Lambda { body: lam, .. } => self.arity_with(lam, visited)?,
-                _ => (0, 1),
-            },
         })
     }
 }
@@ -5417,11 +5401,6 @@ fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
             collect_def_ref_names(body, out);
         }
         Expr::Lambda { body, .. } => collect_def_ref_names(body, out),
-        Expr::RunST { body, .. } => {
-            if let Expr::Lambda { body: lam, .. } = body.as_ref() {
-                collect_def_ref_names(lam, out);
-            }
-        }
         Expr::Match {
             scrutinee, arms, ..
         } => {

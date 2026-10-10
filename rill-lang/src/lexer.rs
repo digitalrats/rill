@@ -121,8 +121,6 @@ pub enum Tok {
     KwFalse,
     /// `do` keyword — monadic sequencing block.
     KwDo,
-    /// `runST` keyword — ST region with a fresh phantom type token.
-    KwRunST,
     /// `<-` — do-block monadic binding.
     LArrow,
     /// End of input.
@@ -401,9 +399,6 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "else" if !followed_by_paren => Tok::KwElse,
                 "fn" if !followed_by_paren => Tok::KwFn,
                 "do" if !followed_by_paren => Tok::KwDo,
-                // `runST` is exclusively a keyword (like `match`): its operand is
-                // a parenthesized lambda, never a call-style identifier.
-                "runST" => Tok::KwRunST,
                 "true" if !followed_by_paren => Tok::KwTrue,
                 "false" if !followed_by_paren => Tok::KwFalse,
                 _ => Tok::Ident(text.to_string()),

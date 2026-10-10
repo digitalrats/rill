@@ -271,6 +271,12 @@ pub struct TypeEnv {
     /// Foreign function declarations: name → declared `TypeExpr` signature.
     /// The language-side contract for Rust-implemented builtins (SP-3a FFI layer).
     pub foreign_sigs: HashMap<String, crate::ast::TypeExpr>,
+    /// Built-in polymorphic function signatures carried by the environment
+    /// (`runST : (forall s. ST s a) -> a`). Distinct from [`Self::foreign_sigs`]
+    /// (the FFI signature conversion rejects `forall`) and from typeclass
+    /// methods (these are ordinary functions, not instance-dispatched): a
+    /// `forall`-bound argument makes the callee's application rank-N.
+    pub builtin_sigs: HashMap<String, crate::ast::TypeExpr>,
 }
 
 /// Built-in category-theory typeclasses, declared in rill-lang itself and
@@ -589,6 +595,27 @@ impl TypeEnv {
         // plus the record types their params need. Parsed the same way as the
         // preludes — a parse failure here is a compiler bug.
         register_prelude(&mut env, BUILTIN_FOREIGN_DECLS);
+        // Builtin polymorphic functions: `runST : (forall s. ST s a) -> a` is a
+        // forall-typed ordinary function (NOT a foreign fn — FFI conversion
+        // hits its `other` arm on `forall`, and it is not instance-dispatched).
+        // The `ST s a` type is declared in `CATEGORY_PRELUDE`; rank-N
+        // application of the signature lives in `infer_apply_impl`.
+        env.builtin_sigs.insert(
+            "runST".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TForall(
+                    vec!["s".to_string()],
+                    Box::new(crate::ast::TypeExpr::TApp(
+                        "ST".to_string(),
+                        vec![
+                            crate::ast::TypeExpr::TName("s".into()),
+                            crate::ast::TypeExpr::TName("a".into()),
+                        ],
+                    )),
+                )],
+                Box::new(crate::ast::TypeExpr::TName("a".into())),
+            ),
+        );
         env
     }
 
