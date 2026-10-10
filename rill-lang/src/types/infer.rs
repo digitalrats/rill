@@ -6,10 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{
-    ArrowTy, Block, Channel, DataInfo, Rate, Scalar, Scheme, Subst, TypeEnv, TypeVarId, ValueTy,
-};
-use super::unify::{unify_scalar, unify_value};
+use super::ty::{ArrowTy, Block, DataInfo, Scheme, Subst, TypeEnv, TypeVarId, ValueTy};
+use super::unify::unify_value;
 use crate::ast::{Def, Expr, MatchArm, Pattern, Program};
 use crate::error::{CompileError, Span};
 use crate::mode::Mode;
@@ -107,37 +105,20 @@ impl Ctx {
         v
     }
 
-    fn fresh(&mut self) -> Scalar {
-        Scalar::Var(self.fresh_id())
-    }
-
     fn fresh_vty(&mut self) -> ValueTy {
         ValueTy::Var(self.fresh_id())
     }
 
     fn instantiate(&mut self, scheme: &Scheme) -> ArrowTy {
-        let mut remap: HashMap<TypeVarId, Scalar> = HashMap::new();
         let mut vremap: HashMap<TypeVarId, TypeVarId> = HashMap::new();
         for v in &scheme.vars {
-            let f = self.fresh();
-            remap.insert(*v, f);
-            // A fresh id for the value side, independent of the scalar `f`:
-            // a generalized value-type variable becomes a new unbound var at
-            // every instantiation site (rank-N value polymorphism).
+            // A fresh id for the value side: a generalized value-type variable
+            // becomes a new unbound var at every instantiation site (rank-N
+            // value polymorphism).
             let vf = self.fresh_id();
             vremap.insert(*v, vf);
         }
-        let rw = |s: &Scalar| match s {
-            Scalar::Var(v) => remap.get(v).cloned().unwrap_or_else(|| s.clone()),
-            _ => s.clone(),
-        };
-        // Value channels substitute quantified value-type variables with the
-        // fresh value-side ids; unquantified vars are preserved as-is (the
-        // monomorphic v1 path stays byte-identical).
-        let block = |b: &Block| match b.rate {
-            Rate::Value => Channel::value(value_instantiate(&b.vty, &vremap)),
-            Rate::Signal => Block::new(rw(&b.elem)),
-        };
+        let block = |b: &Block| value_instantiate(b, &vremap);
         ArrowTy {
             ins: scheme.ty.ins.iter().map(&block).collect(),
             outs: scheme.ty.outs.iter().map(&block).collect(),
@@ -146,22 +127,13 @@ impl Ctx {
 
     fn free_vars(&self, t: &ArrowTy) -> Vec<TypeVarId> {
         let mut acc = Vec::new();
-        for s in t.ins.iter().chain(t.outs.iter()).map(|b| &b.elem) {
-            if let Scalar::Var(v) = self.subst.resolve_scalar(s) {
+        // Value channels generalize their free value-type variables, so a
+        // polymorphic value function (`id2 = fn x -> x`) is instantiated fresh
+        // at every call site.
+        for b in t.ins.iter().chain(t.outs.iter()) {
+            for v in value_free_vars(b, &self.subst) {
                 if !acc.contains(&v) {
                     acc.push(v);
-                }
-            }
-        }
-        // Value-rate channels generalize their free value-type variables too,
-        // so a polymorphic value function (`id2 = fn x -> x`) is instantiated
-        // fresh at every call site.
-        for b in t.ins.iter().chain(t.outs.iter()) {
-            if b.rate == Rate::Value {
-                for v in value_free_vars(&b.vty, &self.subst) {
-                    if !acc.contains(&v) {
-                        acc.push(v);
-                    }
                 }
             }
         }
@@ -319,17 +291,7 @@ fn infer_const_value(ctx: &mut Ctx, e: &Expr) -> Result<ValueTy, CompileError> {
         });
     }
     let ch = &t.outs[0];
-    match ch.rate {
-        Rate::Value => Ok(ch.vty.clone()),
-        Rate::Signal => match ch.elem {
-            Scalar::Int => Ok(ValueTy::Int),
-            Scalar::Float => Ok(ValueTy::Float),
-            Scalar::Var(_) => Err(CompileError::Type {
-                msg: "cannot determine the value type of a variable signal".into(),
-                span,
-            }),
-        },
-    }
+    Ok(ch.clone())
 }
 
 /// Whether `e` is a reference (possibly chained) to a definition whose body is
@@ -646,9 +608,8 @@ fn infer_method_value_vty_expected(
             span,
         });
     }
-    match t.outs[0].rate {
-        Rate::Value => Ok(t.outs[0].vty.clone()),
-        Rate::Signal => match e {
+    match &t.outs[0] {
+        ValueTy::Buffer => match e {
             Expr::Int(_, _) => Ok(ValueTy::Int),
             Expr::Float(_, _) => Ok(ValueTy::Float),
             _ => Err(CompileError::Type {
@@ -658,6 +619,7 @@ fn infer_method_value_vty_expected(
                 span,
             }),
         },
+        vty => Ok(vty.clone()),
     }
 }
 
@@ -1186,12 +1148,9 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             if matches!(body, Expr::Lambda { .. }) {
                 let scheme = ctx.defs.get(name).cloned();
                 if let Some(s) = scheme {
-                    if let Some(out) = s.ty.outs.first() {
-                        if let ValueTy::Func(arg_tys, _) = &out.vty {
-                            let resolved =
-                                arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
-                            fn_param_tys.insert(name.to_string(), resolved);
-                        }
+                    if let Some(ValueTy::Func(arg_tys, _)) = s.ty.outs.first() {
+                        let resolved = arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
+                        fn_param_tys.insert(name.to_string(), resolved);
                     }
                 }
             }
@@ -1216,7 +1175,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         if is_shared {
             if let Some(s) = ctx.defs.get(def.name()).cloned() {
                 if let Some(out) = s.ty.outs.first() {
-                    let resolved = ctx.subst.resolve_value(&out.vty);
+                    let resolved = ctx.subst.resolve_value(out);
                     // A named λ-parameter function's capture type must be its
                     // `Func` signature (so an application via the captured value
                     // dispatches), not just the result type. A recursive local
@@ -1228,14 +1187,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
                                 let lt = ctx.locals.get(p.name.as_str()).cloned();
                                 let vty = match lt {
                                     Some(ArrowTy { outs, .. }) if !outs.is_empty() => {
-                                        match &outs[0] {
-                                            Block {
-                                                vty,
-                                                rate: Rate::Value,
-                                                ..
-                                            } => vty.clone(),
-                                            _ => ValueTy::Float,
-                                        }
+                                        outs[0].clone()
                                     }
                                     _ => ValueTy::Float,
                                 };
@@ -1317,7 +1269,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     ctx.locals.clear();
     for p in def.params() {
         ctx.locals
-            .insert(p.name.clone(), ArrowTy::uniform(0, 1, Scalar::Float));
+            .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Float));
     }
     let result = match infer_expr(ctx, def.body()) {
         Ok(t) => Ok(t),
@@ -1370,14 +1322,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 for p in def.params() {
                     let lt = ctx.locals.get(p.name.as_str()).cloned();
                     let vty = match lt {
-                        Some(ArrowTy { outs, .. }) if !outs.is_empty() => match &outs[0] {
-                            Block {
-                                vty,
-                                rate: Rate::Value,
-                                ..
-                            } => vty.clone(),
-                            _ => ValueTy::Float,
-                        },
+                        Some(ArrowTy { outs, .. }) if !outs.is_empty() => outs[0].clone(),
                         _ => ValueTy::Float,
                     };
                     let resolved = ctx.subst.resolve_value(&vty);
@@ -1408,7 +1353,7 @@ fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize) {
     for _ in 0..lam_count {
         let v = ctx.next;
         ctx.next += 1;
-        ins.push(Channel::value(ValueTy::Var(v)));
+        ins.push(ValueTy::Var(v));
     }
     let out = ctx.next;
     ctx.next += 1;
@@ -1419,7 +1364,7 @@ fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize) {
             vars: vec![],
             ty: ArrowTy {
                 ins,
-                outs: vec![Channel::value(ValueTy::Var(out))],
+                outs: vec![ValueTy::Var(out)],
             },
         },
     );
@@ -1486,17 +1431,17 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         let lam_count = def.params().len();
         let mut ins = Vec::with_capacity(lam_count);
         for _ in 0..lam_count {
-            ins.push(ctx.fresh());
+            ins.push(ctx.fresh_vty());
         }
-        let out = ctx.fresh();
+        let out = ctx.fresh_vty();
         ctx.defs.insert(
             def.name().to_string(),
             Scheme {
                 lam_count,
                 vars: vec![],
                 ty: ArrowTy {
-                    ins: ins.into_iter().map(Block::new).collect(),
-                    outs: vec![Block::new(out)],
+                    ins,
+                    outs: vec![out],
                 },
             },
         );
@@ -1514,7 +1459,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
-            full_ins.push(Block::new(Scalar::Float));
+            full_ins.push(ValueTy::Float);
         }
         full_ins.extend(body_ty.ins);
         let resolved = ctx.subst.apply(&ArrowTy {
@@ -1542,7 +1487,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         let lam_count = def.params().len();
         let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
         for _ in 0..lam_count {
-            full_ins.push(Block::new(Scalar::Float));
+            full_ins.push(ValueTy::Float);
         }
         full_ins.extend(body_ty.ins);
         let resolved = ctx.subst.apply(&ArrowTy {
@@ -1574,9 +1519,8 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
             span,
         });
     }
-    match bt.outs[0].rate {
-        Rate::Value => Ok(bt.outs[0].vty.clone()),
-        Rate::Signal => match body {
+    match &bt.outs[0] {
+        ValueTy::Buffer => match body {
             Expr::Int(_, _) => Ok(ValueTy::Int),
             Expr::Float(_, _) => Ok(ValueTy::Float),
             _ => Err(CompileError::Type {
@@ -1584,6 +1528,7 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
                 span,
             }),
         },
+        vty => Ok(vty.clone()),
     }
 }
 
@@ -1706,9 +1651,7 @@ fn infer_guarded_arm_body(
     for (g, body) in &arm.guards {
         if !matches!(g, Expr::Bool(true, _)) {
             let gt = infer_expr(ctx, g)?;
-            if gt.arity_out() != 1
-                || gt.outs[0].rate != Rate::Value
-                || !matches!(ctx.subst.resolve_value(&gt.outs[0].vty), ValueTy::Bool)
+            if gt.arity_out() != 1 || !matches!(ctx.subst.resolve_value(&gt.outs[0]), ValueTy::Bool)
             {
                 return Err(CompileError::Type {
                     msg: "match guard must be a Bool value".into(),
@@ -1969,24 +1912,24 @@ fn infer_expr_expected(
     match e {
         Expr::Int(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![Block::new(Scalar::Int)],
+            outs: vec![ValueTy::Int],
         }),
         Expr::Float(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![Block::new(Scalar::Float)],
+            outs: vec![ValueTy::Float],
         }),
         Expr::Imag(_, _) => Ok(ArrowTy {
             ins: vec![],
-            outs: vec![Block::new(Scalar::Float), Block::new(Scalar::Float)],
+            outs: vec![ValueTy::Float, ValueTy::Float],
         }),
         Expr::Wire(_) => {
-            let s = ctx.fresh();
+            let s = ctx.fresh_vty();
             Ok(ArrowTy::uniform(1, 1, s))
         }
         Expr::Cut(_) => {
-            let s = ctx.fresh();
+            let s = ctx.fresh_vty();
             Ok(ArrowTy {
-                ins: vec![Block::new(s)],
+                ins: vec![s],
                 outs: vec![],
             })
         }
@@ -2017,7 +1960,7 @@ fn infer_expr_expected(
             ctx.defs = saved_defs;
             Ok(ty)
         }
-        Expr::Record(_, _) => Ok(ArrowTy::uniform(0, 1, Scalar::Float)),
+        Expr::Record(_, _) => Ok(ArrowTy::uniform(0, 1, ValueTy::Float)),
         Expr::ActorParam { default, span, .. } => {
             if let Some(d) = default {
                 let ty = infer_expr(ctx, d)?;
@@ -2031,7 +1974,7 @@ fn infer_expr_expected(
                     });
                 }
             }
-            Ok(ArrowTy::uniform(0, 1, Scalar::Float))
+            Ok(ArrowTy::uniform(0, 1, ValueTy::Float))
         }
         Expr::FieldProject {
             record,
@@ -2072,13 +2015,13 @@ fn infer_expr_expected(
                 None => infer_expr(ctx, record)?,
             };
             // record must be a single Value channel of a known Data type
-            if t.arity_out() != 1 || t.outs[0].rate != Rate::Value {
+            if t.arity_out() != 1 {
                 return Err(CompileError::Type {
                     msg: "field projection requires a data value".into(),
                     span: *span,
                 });
             }
-            match &t.outs[0].vty {
+            match &t.outs[0] {
                 ValueTy::Data(name, args) => match ctx.env.data_types.get(name.as_str()) {
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
@@ -2173,7 +2116,7 @@ fn infer_expr_expected(
                 _ => Err(CompileError::Type {
                     msg: format!(
                         "field projection requires a record value (got {:?})",
-                        t.outs[0].vty
+                        t.outs[0]
                     ),
                     span: *span,
                 }),
@@ -2186,13 +2129,13 @@ fn infer_expr_expected(
             span,
         } => {
             let rt = infer_expr(ctx, record)?;
-            if rt.arity_out() != 1 || rt.outs[0].rate != Rate::Value {
+            if rt.arity_out() != 1 {
                 return Err(CompileError::Type {
                     msg: "field update requires a data record".into(),
                     span: *span,
                 });
             }
-            match &rt.outs[0].vty {
+            match &rt.outs[0] {
                 ValueTy::Data(name, _) => {
                     let fty = ctx
                         .env
@@ -2295,13 +2238,13 @@ fn infer_expr_expected(
                 _ => infer_expr(ctx, scrutinee)?,
             };
             // The scrutinee must be a single value channel.
-            if st.arity_out() != 1 || st.outs[0].rate != Rate::Value {
+            if st.arity_out() != 1 {
                 return Err(CompileError::Type {
                     msg: "match scrutinee must be a value".into(),
                     span: *span,
                 });
             }
-            let scrutinee_vty = st.outs[0].vty.clone();
+            let scrutinee_vty = st.outs[0].clone();
             // Sum or scalar? Resolve the scrutinee type enough to decide.
             // Builtin sums are parameterized (`Maybe a`, `Either a b`):
             // `Nothing` infers as `App("Maybe", [..])` and `head`/`lookup` as
@@ -2404,13 +2347,13 @@ fn infer_expr_expected(
             span,
         } => {
             let ct = infer_expr(ctx, cond)?;
-            if ct.arity_out() != 1 || ct.outs[0].rate != Rate::Value {
+            if ct.arity_out() != 1 {
                 return Err(CompileError::Type {
                     msg: "if condition must be a Bool value".into(),
                     span: cond.span(),
                 });
             }
-            if !matches!(ctx.subst.resolve_value(&ct.outs[0].vty), ValueTy::Bool) {
+            if !matches!(ctx.subst.resolve_value(&ct.outs[0]), ValueTy::Bool) {
                 return Err(CompileError::Type {
                     msg: "if condition must be a Bool value".into(),
                     span: cond.span(),
@@ -2463,7 +2406,7 @@ fn infer_expr_expected(
                     span: *span,
                 });
             }
-            let ret_ty = bt.outs[0].vty.clone();
+            let ret_ty = bt.outs[0].clone();
             Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
         }
         Expr::Bool(_, _) => Ok(ArrowTy::value_channel(ValueTy::Bool)),
@@ -2716,17 +2659,17 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         }
     }
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
-        let s = ctx.fresh();
+        let s = ctx.fresh_vty();
         return Ok(ArrowTy::uniform(2, 1, s));
     }
     if matches!(
         name,
         "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
     ) {
-        return Ok(ArrowTy::uniform(1, 1, Scalar::Float));
+        return Ok(ArrowTy::uniform(1, 1, ValueTy::Float));
     }
     if matches!(name, "min" | "max") {
-        let s = ctx.fresh();
+        let s = ctx.fresh_vty();
         return Ok(ArrowTy::uniform(2, 1, s));
     }
     // Foreign (FFI) declaration: type through the language-side signature. A bare
@@ -2742,7 +2685,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 return Ok(ArrowTy::uniform(
                     sig.params.len(),
                     sig.signal_outs,
-                    Scalar::Float,
+                    ValueTy::Float,
                 ));
             }
         }
@@ -2784,11 +2727,10 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
 fn func_target(ctx: &Ctx, name: &str) -> String {
     let mut cur = name.to_string();
     for _ in 0..=ctx.defs.len() {
-        let is_func_value = ctx.defs.get(cur.as_str()).is_some_and(|s| {
-            s.ty.outs.len() == 1
-                && s.ty.outs[0].rate == Rate::Value
-                && matches!(s.ty.outs[0].vty, ValueTy::Func(_, _))
-        });
+        let is_func_value = ctx
+            .defs
+            .get(cur.as_str())
+            .is_some_and(|s| s.ty.outs.len() == 1 && matches!(s.ty.outs[0], ValueTy::Func(_, _)));
         match ctx.def_bodies.get(cur.as_str()) {
             Some(Expr::Ref(next, _)) if is_func_value => {
                 cur = next.clone();
@@ -2853,13 +2795,13 @@ fn infer_apply_expr(
     span: Span,
 ) -> Result<ArrowTy, CompileError> {
     let ct = infer_expr(ctx, callee)?;
-    if ct.arity_out() != 1 || ct.outs[0].rate != Rate::Value {
+    if ct.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: "applied expression must be a value (function)".into(),
             span,
         });
     }
-    let cty = ct.outs[0].vty.clone();
+    let cty = ct.outs[0].clone();
     let (arg_tys, ret_tys) = match ctx.subst.resolve_value(&cty) {
         ValueTy::Func(a, r) => (a, r),
         ValueTy::Var(_) => {
@@ -2987,7 +2929,7 @@ fn infer_apply_impl(
         // `value_map.contains_key(s_id)` catches the case where a cross-kind
         // unification bound the phantom itself away into an outer variable
         // (the phantom leaked even though `s_id` no longer appears).
-        let ret_vty = bt.outs[0].vty.clone();
+        let ret_vty = bt.outs[0].clone();
         let resolved = ctx.subst.resolve_value(&ret_vty);
         if vty_mentions_tyvar(&resolved, s_id) || ctx.subst.value_map.contains_key(&s_id) {
             return Err(CompileError::Type {
@@ -3041,7 +2983,7 @@ fn infer_apply_impl(
         return Ok(ArrowTy::uniform(
             sig_ty.arity_in(),
             sig_ty.arity_out(),
-            Scalar::Float,
+            ValueTy::Float,
         ));
     }
     if name == "param" {
@@ -3454,7 +3396,7 @@ fn infer_apply_impl(
                         .locals
                         .get(p)
                         .cloned()
-                        .map(|t| t.outs[0].vty.clone())
+                        .map(|t| t.outs[0].clone())
                         .unwrap_or(ValueTy::Float);
                     unify_value(&av, &pt, &mut ctx.subst, a.span())?;
                 }
@@ -3839,7 +3781,7 @@ fn infer_apply_impl(
                         // type error. A bare Float literal IS Signal-rate (a
                         // constant signal), so it legitimately passes.
                         let at = infer_expr(ctx, &args[pos])?;
-                        if at.outs.len() != 1 || at.outs[0].rate != Rate::Signal {
+                        if at.outs.len() != 1 || !matches!(at.outs[0], ValueTy::Buffer) {
                             return Err(CompileError::Type {
                                 msg: format!(
                                     "signal argument {pos} of `{name}` must be a signal \
@@ -3940,7 +3882,11 @@ fn infer_apply_impl(
                     }
                 }
             }
-            return Ok(ArrowTy::uniform(signal_ins, sig.signal_outs, Scalar::Float));
+            return Ok(ArrowTy::uniform(
+                signal_ins,
+                sig.signal_outs,
+                ValueTy::Float,
+            ));
         }
     }
     // A first-class function value bound to a LOCAL (a lambda parameter, a
@@ -3953,8 +3899,8 @@ fn infer_apply_impl(
     // `Func` (a HOF parameter applied twice) applies against that signature, so
     // an arity inconsistency is rejected.
     if let Some(local) = ctx.locals.get(name).cloned() {
-        if local.arity_out() == 1 && local.outs[0].rate == Rate::Value {
-            let lty = &local.outs[0].vty;
+        if local.arity_out() == 1 {
+            let lty = &local.outs[0];
             let resolved = ctx.subst.resolve_value(lty);
             let arg_tys: Vec<ValueTy>;
             let ret_tys: Vec<ValueTy>;
@@ -3995,8 +3941,8 @@ fn infer_apply_impl(
         // its scheme (v1 resolves calls at compile time — `reduce` β-reduces
         // the body for lowering). The referenced definition's arity must match
         // the applied arguments.
-        if scheme.ty.outs.len() == 1 && scheme.ty.outs[0].rate == Rate::Value {
-            if let ValueTy::Func(_, _) = &scheme.ty.outs[0].vty {
+        if scheme.ty.outs.len() == 1 {
+            if let ValueTy::Func(_, _) = &scheme.ty.outs[0] {
                 let ref_name = func_target(ctx, name);
                 let target = ctx.defs.get(ref_name.as_str()).cloned();
                 // A closure-valued definition (a lambda literal, or an
@@ -4005,11 +3951,7 @@ fn infer_apply_impl(
                 // type comes from the Func signature, and the args are value
                 // expressions unified against the parameter types.
                 let apply_by_signature = target.as_ref().is_some_and(|ts| {
-                    ts.lam_count == 0
-                        && matches!(
-                            ts.ty.outs.first().map(|o| &o.vty),
-                            Some(ValueTy::Func(_, _))
-                        )
+                    ts.lam_count == 0 && matches!(ts.ty.outs.first(), Some(ValueTy::Func(_, _)))
                 });
                 if apply_by_signature {
                     // Instantiate the quantified Func signature so every call
@@ -4021,7 +3963,7 @@ fn infer_apply_impl(
                     // and a second call at another type re-unifies against the
                     // bound var and fails.
                     let inst = ctx.instantiate(&scheme);
-                    let (arg_tys, ret_tys) = match &inst.outs[0].vty {
+                    let (arg_tys, ret_tys) = match &inst.outs[0] {
                         ValueTy::Func(a, r) => (a.clone(), r.clone()),
                         _ => {
                             return Err(CompileError::Type {
@@ -4057,8 +3999,8 @@ fn infer_apply_impl(
                             unify_value(&vt, pty, &mut ctx.subst, a.span())?;
                         }
                         let result_scalar = match ret_tys.first() {
-                            Some(ValueTy::Int) => Scalar::Int,
-                            _ => Scalar::Float,
+                            Some(ValueTy::Int) => ValueTy::Int,
+                            _ => ValueTy::Float,
                         };
                         return Ok(ArrowTy::uniform(1, 1, result_scalar));
                     }
@@ -4445,7 +4387,7 @@ fn infer_param(args: &[Expr], span: Span) -> Result<ArrowTy, CompileError> {
             span: args[0].span(),
         });
     }
-    Ok(ArrowTy::uniform(0, 1, Scalar::Float))
+    Ok(ArrowTy::uniform(0, 1, ValueTy::Float))
 }
 
 fn expr_has_variadic_signal(ctx: &Ctx, e: &Expr) -> bool {
@@ -4485,13 +4427,13 @@ fn tuple_operand_vty(t: &ArrowTy, e: &Expr) -> Option<ValueTy> {
     if t.arity_in() != 0 || t.arity_out() != 1 {
         return None;
     }
-    match t.outs[0].rate {
-        Rate::Value => Some(t.outs[0].vty.clone()),
-        Rate::Signal => match e {
+    match &t.outs[0] {
+        ValueTy::Buffer => match e {
             Expr::Int(_, _) => Some(ValueTy::Int),
             Expr::Float(_, _) => Some(ValueTy::Float),
             _ => None,
         },
+        vty => Some(vty.clone()),
     }
 }
 
@@ -4557,8 +4499,8 @@ fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
     // value channel — this is what makes lambda bodies like `fn x -> x * 2.0`
     // meaningful. A value channel mixed with a genuine signal computation
     // (`sin _`, a wire, a combinator) is still rejected.
-    let a_value = a.outs.iter().any(|c| c.rate == Rate::Value);
-    let b_value = b.outs.iter().any(|c| c.rate == Rate::Value);
+    let a_value = a.outs.iter().any(|c| !matches!(c, ValueTy::Buffer));
+    let b_value = b.outs.iter().any(|c| !matches!(c, ValueTy::Buffer));
     if a_value || b_value {
         // A value operand must be a numeric scalar (Float/Int, or an as-yet
         // unresolved Var such as a lambda parameter). Func values, records and
@@ -4569,17 +4511,15 @@ fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
         let scalar_vty = |v: &ValueTy| matches!(v, ValueTy::Float | ValueTy::Int | ValueTy::Var(_));
         let mut unify_operand = |t: &ArrowTy, e: &Expr| -> Result<(), CompileError> {
             if t.arity_in() == 0 && t.arity_out() == 1 {
-                if t.outs[0].rate == Rate::Value {
-                    if scalar_vty(&t.outs[0].vty) {
-                        // A structural parameter variable in arithmetic is a
-                        // numeric scalar: bind it to Float so the lambda's
-                        // Func signature resolves concretely (`fn x -> x * 2`
-                        // types `x` as Float, not an unconstrained Var).
-                        if matches!(&t.outs[0].vty, ValueTy::Var(_)) {
-                            unify_value(&t.outs[0].vty, &ValueTy::Float, &mut ctx.subst, e.span())?;
-                        }
-                        return Ok(());
+                if scalar_vty(&t.outs[0]) {
+                    // A structural parameter variable in arithmetic is a
+                    // numeric scalar: bind it to Float so the lambda's
+                    // Func signature resolves concretely (`fn x -> x * 2`
+                    // types `x` as Float, not an unconstrained Var).
+                    if matches!(&t.outs[0], ValueTy::Var(_)) {
+                        unify_value(&t.outs[0], &ValueTy::Float, &mut ctx.subst, e.span())?;
                     }
+                    return Ok(());
                 } else if matches!(e, Expr::Int(_, _) | Expr::Float(_, _))
                     || is_const_value_ref(ctx, e)
                 {
@@ -4619,7 +4559,7 @@ fn seq(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, C
         });
     }
     for (x, y) in a.outs.iter().zip(b.ins.iter()) {
-        unify_scalar(&x.elem, &y.elem, &mut ctx.subst, span)?;
+        unify_value(x, y, &mut ctx.subst, span)?;
     }
     Ok(ArrowTy {
         ins: a.ins.clone(),
@@ -4649,12 +4589,7 @@ fn split(
     if !rhs_variadic {
         for r in 0..reps {
             for k in 0..ao {
-                unify_scalar(
-                    &a.outs[k].elem,
-                    &b.ins[r * ao + k].elem,
-                    &mut ctx.subst,
-                    span,
-                )?;
+                unify_value(&a.outs[k], &b.ins[r * ao + k], &mut ctx.subst, span)?;
             }
         }
     }
@@ -4686,12 +4621,7 @@ fn merge(
     if !rhs_variadic {
         for g in 0..groups {
             for k in 0..bi {
-                unify_scalar(
-                    &a.outs[g * bi + k].elem,
-                    &b.ins[k].elem,
-                    &mut ctx.subst,
-                    span,
-                )?;
+                unify_value(&a.outs[g * bi + k], &b.ins[k], &mut ctx.subst, span)?;
             }
         }
     }
@@ -4714,10 +4644,10 @@ fn feedback(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<Arrow
         });
     }
     for k in 0..bi {
-        unify_scalar(&b.ins[k].elem, &a.outs[k].elem, &mut ctx.subst, span)?;
+        unify_value(&b.ins[k], &a.outs[k], &mut ctx.subst, span)?;
     }
     for k in 0..bo {
-        unify_scalar(&b.outs[k].elem, &a.ins[k].elem, &mut ctx.subst, span)?;
+        unify_value(&b.outs[k], &a.ins[k], &mut ctx.subst, span)?;
     }
     Ok(ArrowTy {
         ins: a.ins[bo..].to_vec(),
@@ -4742,7 +4672,7 @@ fn delay(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy,
             span,
         });
     }
-    unify_scalar(&b.outs[0].elem, &Scalar::Int, &mut ctx.subst, span)?;
+    unify_value(&b.outs[0], &ValueTy::Int, &mut ctx.subst, span)?;
     Ok(ArrowTy {
         ins: a.ins.clone(),
         outs: a.outs.clone(),
@@ -4758,7 +4688,7 @@ fn arith(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy,
             span,
         });
     }
-    unify_scalar(&a.outs[0].elem, &b.outs[0].elem, &mut ctx.subst, span)?;
+    unify_value(&a.outs[0], &b.outs[0], &mut ctx.subst, span)?;
     let mut ins = a.ins.clone();
     ins.extend(b.ins.clone());
     Ok(ArrowTy {
@@ -4779,7 +4709,7 @@ fn check_all_numeric(_ctx: &mut Ctx, _t: &ArrowTy, _span: Span) -> Result<(), Co
 /// would otherwise typecheck as an Int block and panic in lowering. Value
 /// programs are single expressions, so this never rejects a valid program.
 fn reject_value_channels(t: &ArrowTy, span: Span) -> Result<(), CompileError> {
-    if t.outs.iter().any(|c| c.rate == Rate::Value) {
+    if t.outs.iter().any(|c| !matches!(c, ValueTy::Buffer)) {
         return Err(CompileError::Type {
             msg: "a value channel cannot be used in a signal combinator".into(),
             span,
@@ -4925,7 +4855,7 @@ mod tests {
     #[test]
     fn var_unifies_with_float() {
         let t = ty_of("main = _ * 0.5").unwrap();
-        assert!(matches!(t.process_ty.outs[0].elem, Scalar::Float));
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -4980,11 +4910,7 @@ mod tests {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
         assert_eq!(t.process_ty.outs.len(), 1);
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(
-            t.process_ty.outs[0].vty,
-            ValueTy::Data("Point".into(), vec![])
-        );
+        assert_eq!(t.process_ty.outs[0], ValueTy::Data("Point".into(), vec![]));
     }
 
     #[test]
@@ -4992,8 +4918,7 @@ mod tests {
         let t =
             ty_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x")
                 .unwrap();
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -5002,8 +4927,7 @@ mod tests {
             "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
         )
         .unwrap();
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -5012,11 +4936,7 @@ mod tests {
             "data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x := 3.0",
         )
         .unwrap();
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(
-            t.process_ty.outs[0].vty,
-            ValueTy::Data("Point".into(), vec![])
-        );
+        assert_eq!(t.process_ty.outs[0], ValueTy::Data("Point".into(), vec![]));
     }
 
     #[test]
@@ -5105,20 +5025,20 @@ mod tests {
     #[test]
     fn if_infers_bool_condition_and_branch_types() {
         let t = ty_of("main = if 1.0 < 2.0 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
         assert!(ty_of("main = if 1.0 then 1.0 else 2.0").is_err());
         assert!(ty_of("main = if 1.0 < 2.0 then 1 else 2").is_ok());
         let t2 = ty_of("main = if 1.0 < 2.0 then 1 else 2").unwrap();
-        assert_eq!(t2.process_ty.outs[0].vty, ValueTy::Int);
+        assert_eq!(t2.process_ty.outs[0], ValueTy::Int);
     }
 
     #[test]
     fn scalar_match_infers_literal_patterns_and_totality() {
         let t = ty_of("main = match _ of { 0 => 1.0; _ => 2.0; }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
         assert!(ty_of("main = match _ of { 0 => 1.0 }").is_err());
         let t2 = ty_of("main = match true of { true => 1.0; false => 2.0 }").unwrap();
-        assert_eq!(t2.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t2.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -5126,9 +5046,9 @@ mod tests {
         // `match 0 of {...}`: a bare Int literal is a signal-rate channel in v1
         // but value-compatible in value positions (mirroring arm_result_vty).
         let t = ty_of("main = match 0 of { 0 => 1.0; _ => 2.0; }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
         let t2 = ty_of("main = match 0.0 of { 0.0 => 1; _ => 2; }").unwrap();
-        assert_eq!(t2.process_ty.outs[0].vty, ValueTy::Int);
+        assert_eq!(t2.process_ty.outs[0], ValueTy::Int);
     }
 
     #[test]
@@ -5137,7 +5057,7 @@ mod tests {
         // NOT `Maybe`. The sum context must be re-derived from the payload type
         // at each pattern level.
         let t = ty_of("main = match Just (Left 2.0) of { Just (Left x) => x; _ => 0.0; }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -5149,7 +5069,7 @@ mod tests {
              main = match Wrap (Foo 2.0) of { Wrap (Foo x) => x; _ => 0.0; }",
         )
         .unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -5157,8 +5077,7 @@ mod tests {
         // Regression: the synonym is declared AFTER the data type that uses it.
         // Registration must be order-independent (two-phase: aliases first).
         let t = ty_of("data P = { x: Angles }; type Angles = Float; main = P { x: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
+        assert_eq!(t.process_ty.outs[0], ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -5167,7 +5086,7 @@ mod tests {
         // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
         // it requires the explicit `Hz 440.0` wrapper.
         let t = ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: Hz 440.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
+        assert_eq!(t.process_ty.outs[0], ValueTy::Data("P".into(), vec![]));
         // Newtypes are distinct wrappers: a bare Float does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
         // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
@@ -5178,7 +5097,7 @@ mod tests {
     fn chained_alias_resolves() {
         let t =
             ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Data("P".into(), vec![]));
+        assert_eq!(t.process_ty.outs[0], ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -5199,10 +5118,7 @@ mod tests {
     fn acyclic_data_type_still_compiles() {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
-        assert_eq!(
-            t.process_ty.outs[0].vty,
-            ValueTy::Data("Point".into(), vec![])
-        );
+        assert_eq!(t.process_ty.outs[0], ValueTy::Data("Point".into(), vec![]));
     }
 
     #[test]
@@ -5211,8 +5127,7 @@ mod tests {
         // channel via the normal def-body inference path.
         let t = ty_of("double = fn x -> x; main = double").unwrap();
         assert_eq!(t.process_ty.outs.len(), 1);
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert!(matches!(t.process_ty.outs[0].vty, ValueTy::Func(_, _)));
+        assert!(matches!(t.process_ty.outs[0], ValueTy::Func(_, _)));
     }
 
     #[test]
@@ -5221,7 +5136,7 @@ mod tests {
         // 0→1 value channel, so the lambda body is well-typed (the tuple no
         // longer parses as two signal channels).
         let t = ty_of("main = fn x -> (x , x)").unwrap();
-        match &t.process_ty.outs[0].vty {
+        match &t.process_ty.outs[0] {
             ValueTy::Func(_, ret) => {
                 assert_eq!(ret.len(), 1);
                 match &ret[0] {
@@ -5242,7 +5157,7 @@ mod tests {
         // double = fn x -> x * 2.0  -> lambda body is value arithmetic over
         // value params, inferred as Func([Float], [Float]).
         let t = ty_of("double = fn x -> x * 2.0; main = double").unwrap();
-        match &t.process_ty.outs[0].vty {
+        match &t.process_ty.outs[0] {
             ValueTy::Func(arg_tys, ret_tys) => {
                 assert_eq!(arg_tys.len(), 1);
                 assert_eq!(ret_tys, &vec![ValueTy::Float]);
@@ -5257,12 +5172,11 @@ mod tests {
         // Func([Float], [Float]); fully applying it yields a Float.
         let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3").unwrap();
         assert_eq!(
-            t.process_ty.outs[0].vty,
+            t.process_ty.outs[0],
             ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float])
         );
         let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -5270,8 +5184,7 @@ mod tests {
         // add5 = add2 5.0 (partial application of a named def) types as
         // Func([Float], [Float]).
         let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
-        assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
+        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
     }
 
     #[test]
@@ -5280,7 +5193,6 @@ mod tests {
         // signal input; the result is a 1->1 signal channel.
         let t = ty_of("amp = fn g x -> x * g; main = amp 2.0 _").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
-        assert_eq!(t.process_ty.outs[0].rate, Rate::Signal);
         // A wire application that does not exactly complete the value arity is
         // rejected (`amp _` is missing the value gain).
         assert!(ty_of("amp = fn g x -> x * g; main = amp _").is_err());

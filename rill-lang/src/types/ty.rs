@@ -28,37 +28,21 @@ pub type TypeVarId = u32;
 /// The occurs-check in `unify_value` rejects cycles at the source.
 pub(crate) const MAX_VALUE_RESOLVE_DEPTH: usize = 64;
 
-/// The scalar (element) type of a sample.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Scalar {
-    /// Integer.
-    Int,
-    /// Floating point (the runtime `T`).
-    Float,
-    /// Unresolved unification variable.
-    Var(TypeVarId),
-}
-
-/// Wire rate: block-rate signal vs per-block value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Rate {
-    /// A block of samples processed per tick (existing SIMD path).
-    Signal,
-    /// One arena value per tick.
-    Value,
-}
-
-/// Type of an arena value (per-block value channel).
+/// Type of an arena value. All data is equal — there is no signal/value split
+/// (linear lambda model); a signal buffer is the ordinary `ValueTy::Buffer`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueTy {
     /// Integer value.
     Int,
     /// Floating point value.
     Float,
-    /// Boolean value type (value track only).
+    /// Boolean value type.
     Bool,
-    /// String value type (value track only).
+    /// String value type.
     String,
+    /// A signal buffer (a block of samples). An ordinary value type, like
+    /// `List`/`Map`; executed as `Value::Buffer` on the value track.
+    Buffer,
     /// A named data record, parameterized by its type arguments.
     Data(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
@@ -81,75 +65,29 @@ pub enum ValueTy {
     TyConApp(TypeVarId, Vec<ValueTy>),
 }
 
-/// A signal or value channel.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Channel {
-    /// Wire rate: signal (block of samples) or value (one per tick).
-    pub rate: Rate,
-    /// Scalar type of the samples (Signal rate only).
-    pub elem: Scalar,
-    /// Arena value type (Value rate only).
-    pub vty: ValueTy,
-}
-
-impl Channel {
-    /// A signal-rate channel whose samples have scalar type `elem`.
-    pub fn signal(elem: Scalar) -> Self {
-        Self {
-            rate: Rate::Signal,
-            elem,
-            vty: ValueTy::Int,
-        }
-    }
-    /// A value-rate channel carrying arena values of type `vty`.
-    pub fn value(vty: ValueTy) -> Self {
-        Self {
-            rate: Rate::Value,
-            elem: Scalar::Int,
-            vty,
-        }
-    }
-    /// The scalar element type (Signal rate) — panics for Value rate.
-    pub fn scalar(&self) -> &Scalar {
-        debug_assert_eq!(self.rate, Rate::Signal);
-        &self.elem
-    }
-    /// Back-compat constructor: a Signal-rate channel with scalar `elem`.
-    pub fn new(elem: Scalar) -> Self {
-        Self::signal(elem)
-    }
-}
-
-/// Back-compat alias for [`Channel`] (a signal-rate channel).
-pub type Block = Channel;
-
-/// A block transform: n input channels → m output channels.
-///
-/// The vector *lengths* are the arities (channel counts). During inference we
-/// usually know the arities as concrete integers; unification touches the
-/// `Block::elem` scalars, and value-type unification (`unify_value`) lands with
-/// value channels (Task 6+).
+/// An arrow: n input values → m output values. Every data is equal; there is no
+/// `Rate`/`Channel`/`Scalar` split (linear lambda model).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrowTy {
-    /// Scalar type of each input channel (len = input arity).
-    pub ins: Vec<Block>,
-    /// Scalar type of each output channel (len = output arity).
-    pub outs: Vec<Block>,
+    /// Value type of each input (len = input arity).
+    pub ins: Vec<ValueTy>,
+    /// Value type of each output (len = output arity).
+    pub outs: Vec<ValueTy>,
 }
 
 impl ArrowTy {
-    /// A (n_in → n_out) transform where every channel has the same scalar `s`.
-    pub fn uniform(n_in: usize, n_out: usize, s: Scalar) -> ArrowTy {
+    /// A (n_in → n_out) transform where every channel has the same type `t`.
+    pub fn uniform(n_in: usize, n_out: usize, t: ValueTy) -> ArrowTy {
         ArrowTy {
-            ins: vec![Block::new(s.clone()); n_in],
-            outs: vec![Block::new(s); n_out],
+            ins: vec![t.clone(); n_in],
+            outs: vec![t; n_out],
         }
     }
     /// A value channel (per-block value): 0 inputs → 1 output.
     pub fn value_channel(vty: ValueTy) -> ArrowTy {
         ArrowTy {
             ins: vec![],
-            outs: vec![Channel::value(vty)],
+            outs: vec![vty],
         }
     }
     /// Input arity (channel count).
@@ -161,6 +99,9 @@ impl ArrowTy {
         self.outs.len()
     }
 }
+
+/// Back-compat alias: every channel is a value type.
+pub type Block = ValueTy;
 
 /// A polymorphic type scheme `∀ vars. ty`.
 ///
@@ -178,18 +119,15 @@ pub struct Scheme {
     pub ty: ArrowTy,
 }
 
-/// A substitution mapping type variables to scalars (signal element types)
-/// and value types (arena value types).
+/// A substitution mapping type variables to value types.
 #[derive(Debug, Clone, Default)]
 pub struct Subst {
-    /// The scalar mapping (signal element types).
-    pub map: HashMap<TypeVarId, Scalar>,
-    /// The value-type mapping (arena value types). Value-type variables
-    /// resolve structurally: unifying `Var(v)` with a concrete `ValueTy`
-    /// (e.g. a `Func` signature for a lambda parameter used as a callee)
-    /// records the binding here, so HOF parameter types stay concrete by the
-    /// time lowering needs them (record projection needs the Data type, a
-    /// function parameter needs its Func signature).
+    /// The value-type mapping. Value-type variables resolve structurally:
+    /// unifying `Var(v)` with a concrete `ValueTy` (e.g. a `Func` signature for
+    /// a lambda parameter used as a callee) records the binding here, so HOF
+    /// parameter types stay concrete by the time lowering needs them (record
+    /// projection needs the Data type, a function parameter needs its Func
+    /// signature).
     pub value_map: HashMap<TypeVarId, ValueTy>,
 }
 
@@ -1071,16 +1009,6 @@ impl TypeEnv {
 }
 
 impl Subst {
-    /// Follow the substitution chain for a single scalar to its representative.
-    pub fn resolve_scalar(&self, s: &Scalar) -> Scalar {
-        match s {
-            Scalar::Var(v) => match self.map.get(v) {
-                Some(inner) => self.resolve_scalar(inner),
-                None => s.clone(),
-            },
-            _ => s.clone(),
-        }
-    }
     /// Follow the substitution chain for a single value type to its
     /// representative, resolving variables inside `Func` signatures too.
     ///
@@ -1144,14 +1072,10 @@ impl Subst {
     }
     /// Apply the substitution across a whole type.
     ///
-    /// Signal-rate channels resolve their scalar element type; value-rate
-    /// channels resolve their value type (lambda-parameter variables become
-    /// the concrete types bound by call-site unification).
+    /// Every channel is a value type (lambda-parameter variables become the
+    /// concrete types bound by call-site unification).
     pub fn apply(&self, t: &ArrowTy) -> ArrowTy {
-        let block = |b: &Channel| match b.rate {
-            Rate::Value => Channel::value(self.resolve_value(&b.vty)),
-            Rate::Signal => Channel::signal(self.resolve_scalar(&b.elem)),
-        };
+        let block = |b: &ValueTy| self.resolve_value(b);
         ArrowTy {
             ins: t.ins.iter().map(&block).collect(),
             outs: t.outs.iter().map(&block).collect(),
@@ -1231,24 +1155,23 @@ mod channel_tests {
     use super::*;
 
     #[test]
-    fn channel_rates_are_distinct() {
-        let sig = Channel::signal(Scalar::Float);
-        let val = Channel::value(ValueTy::Data("Point".into(), vec![]));
-        assert_eq!(sig.rate, Rate::Signal);
-        assert_eq!(val.rate, Rate::Value);
-        assert_eq!(sig.vty, ValueTy::Int);
+    fn buffer_is_an_ordinary_value_type() {
+        // Linear lambda model: no Channel/Rate — a signal is just ValueTy::Buffer.
+        let sig = ValueTy::Buffer;
+        let val = ValueTy::Data("Point".into(), vec![]);
+        assert_eq!(sig, ValueTy::Buffer);
+        assert_ne!(sig, val);
     }
 
     #[test]
-    fn apply_preserves_value_channels() {
+    fn apply_preserves_value_types() {
         let s = Subst::default();
         let t = ArrowTy {
-            ins: vec![Channel::value(ValueTy::Int)],
+            ins: vec![ValueTy::Int],
             outs: vec![],
         };
         let r = s.apply(&t);
-        assert_eq!(r.ins[0].rate, Rate::Value);
-        assert_eq!(r.ins[0].vty, ValueTy::Int);
+        assert_eq!(r.ins[0], ValueTy::Int);
     }
 }
 

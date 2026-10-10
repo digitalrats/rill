@@ -10,7 +10,7 @@ use crate::ir::{
 };
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
-use crate::types::ty::{DataInfo, Rate, TypeEnv, ValueTy};
+use crate::types::ty::{DataInfo, TypeEnv, ValueTy};
 
 /// Match a concrete value type against a structural pattern that may contain
 /// fresh `Var` positions (a record's freshened field type), recording each
@@ -4005,6 +4005,7 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Float
             | ValueTy::Bool
             | ValueTy::String
+            | ValueTy::Buffer
             | ValueTy::Func(_, _)
             | ValueTy::Var(_)
             | ValueTy::TyConVar(_) => 1,
@@ -5595,7 +5596,11 @@ pub fn lower_with_cafs_mode(
     // programs through the block track. The two tracks never mix — inference
     // guarantees a value-typed body has arity_in() == 0, so `main_args` is
     // empty on the value path.
-    let has_value_out = tp.process_ty.outs.iter().any(|c| c.rate == Rate::Value);
+    let has_value_out = !tp
+        .process_ty
+        .outs
+        .iter()
+        .all(|c| matches!(c, ValueTy::Buffer));
     let outs = if has_value_out {
         let (vr, vty) = lw.lower_value(main.body())?;
         lw.value_regs_out.push(vr);
