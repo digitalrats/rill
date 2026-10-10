@@ -3012,44 +3012,42 @@ fn infer_apply_impl(
     // signature's parameter type and return the signature's result type. This
     // runs AFTER the `runST` special case (its forall signature is handled
     // above) and BEFORE user definitions/typeclass methods.
-    if let Some(sig) = ctx.env.builtin_sigs.get(name).cloned() {
-        if let crate::ast::TypeExpr::TFunc(params, ret) = sig {
-            if params.len() != args.len() {
+    if let Some(crate::ast::TypeExpr::TFunc(params, ret)) = ctx.env.builtin_sigs.get(name).cloned()
+    {
+        if params.len() != args.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "`{name}` expects {} argument(s), got {}",
+                    params.len(),
+                    args.len()
+                ),
+                span,
+            });
+        }
+        for (p, a) in params.iter().zip(args.iter()) {
+            let pt = type_expr_to_vty(ctx, p)?;
+            let at = if matches!(a, Expr::Int(_, _) | Expr::Float(_, _)) && pt == ValueTy::Buffer {
+                // A numeric literal in a Buffer param position is a signal
+                // constant (`writeOutput 0 1.0`).
+                infer_expr_expected(ctx, a, Some(ValueTy::Buffer))?
+            } else {
+                infer_expr(ctx, a)?
+            };
+            if at.arity_in() != 0 || at.arity_out() != 1 {
                 return Err(CompileError::Type {
                     msg: format!(
-                        "`{name}` expects {} argument(s), got {}",
-                        params.len(),
-                        args.len()
+                        "argument of `{name}` must be a value expression, got arity {}→{}",
+                        at.arity_in(),
+                        at.arity_out()
                     ),
-                    span,
+                    span: a.span(),
                 });
             }
-            for (p, a) in params.iter().zip(args.iter()) {
-                let pt = type_expr_to_vty(ctx, p)?;
-                let at =
-                    if matches!(a, Expr::Int(_, _) | Expr::Float(_, _)) && pt == ValueTy::Buffer {
-                        // A numeric literal in a Buffer param position is a signal
-                        // constant (`writeOutput 0 1.0`).
-                        infer_expr_expected(ctx, a, Some(ValueTy::Buffer))?
-                    } else {
-                        infer_expr(ctx, a)?
-                    };
-                if at.arity_in() != 0 || at.arity_out() != 1 {
-                    return Err(CompileError::Type {
-                        msg: format!(
-                            "argument of `{name}` must be a value expression, got arity {}→{}",
-                            at.arity_in(),
-                            at.arity_out()
-                        ),
-                        span: a.span(),
-                    });
-                }
-                unify_value(&at.outs[0], &pt, &mut ctx.subst, a.span())?;
-            }
-            // A builtin-sig result is a VALUE channel (`IO Buffer` is a
-            // record value; `IO ()` a Void value).
-            return Ok(ArrowTy::value_channel(type_expr_to_vty(ctx, &ret)?));
+            unify_value(&at.outs[0], &pt, &mut ctx.subst, a.span())?;
         }
+        // A builtin-sig result is a VALUE channel (`IO Buffer` is a
+        // record value; `IO ()` a Void value).
+        return Ok(ArrowTy::value_channel(type_expr_to_vty(ctx, &ret)?));
     }
     if name == "not" {
         if args.len() != 1 {
