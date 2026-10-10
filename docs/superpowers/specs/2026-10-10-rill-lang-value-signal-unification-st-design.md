@@ -183,7 +183,7 @@ Implementation uses **scalar loops** (LLVM auto-vectorizes), not manual SIMD.
 The existing `rill_core::math::vector` helpers remain available; we prefer simple
 `SliceMut`-style loops in the instances.
 
-### 2.4 `ST` with a phantom type `s`
+### 2.4 `ST` with a phantom type `s` (full rank-2)
 
 `ST` is an effect monad modelled on Haskell, with a phantom type parameter `s`:
 
@@ -194,19 +194,33 @@ data ST s a = { unST: a };   -- s is phantom: appears in types, not in data
 `runST` opens an explicit region:
 
 ```rill
+runST : (forall s. ST s a) -> a
 runST (fn s -> body) : a
 ```
 
-- `fn s -> ...` is an ordinary lambda, but `s` is bound as a **type-constructor
-  variable** (`TyConVar`), not a value variable.
+- `fn s -> ...` is an ordinary lambda, but `s` is bound as a **quantified type
+  variable** in the argument's `Scheme.vars`, not a value variable.
 - The body is inferred with `s` as a fresh `TyConVar`.
-- **Check-escaping**: after inference, verify that `s` does not appear free in the
-  result type. This is a **one-point rank-2** (enough for ST isolation), not full
-  rank-2 HM.
+- **Check-escaping is automatic**: because `runST`'s argument is polymorphic
+  (`forall s.`), `s` is quantified and cannot appear free in the result type `a`
+  by construction — no post-hoc scan needed. This is **full rank-2
+  polymorphism**, not a one-point special case.
 
-This reuses the existing data-type-with-type-parameters mechanism (`Kleisli m a b`).
-Full rank-2 polymorphism may be needed later for IO; this design only needs the
-one-point form.
+Full rank-2 reuses and extends the existing machinery: `Scheme { vars }`
+(currently generalized only for signal `Scalar::Var` element types) is extended
+so value-type variables (`ValueTy::Var` in a channel's `vty`) are also
+quantified in `Scheme.vars`; `instantiate` substitutes them (currently value
+channels are monomorphic); and `runST`'s lambda argument is inferred with its
+phantom param generalized into `Scheme.vars`. The existing `Subst.value_map`,
+`ValueTy::Var`/`TyConVar`/`TyConApp`, and `resolve_value` already provide the
+foundation.
+
+**Design note:** an earlier draft used a one-point `runST` check-escaping scan;
+code review found two bypasses (phantom chained to a lower-id var via
+cross-kind unification; phantom not shadowing an outer value binder named `s`).
+The one-point approach is fragile — each fix is another special case. Full
+rank-2 removes the entire bug class, and it is also the prerequisite for the
+future `(arg..) -> IO` form (Stage C).
 
 ### 2.5 Faust operators as `Arrow` methods
 
@@ -389,6 +403,8 @@ system (one `Rate`, one `Value` model).
 
 - `(arg..) -> IO` program form.
 - `InputStream.read` / `OutputStream.write` reactive/passive stream I/O.
-- Full rank-2 HM (only the one-point `runST` form is added).
 - Buffer-reuse / regalloc; buffer zero-copy at the I/O boundary.
 - `Array`/`Vector` collection types built on `RegionHandle` memory.
+
+Full rank-2 polymorphism is **in scope** (Task B2): it is required for the ST
+phantom and is the prerequisite for the future `(arg..) -> IO` form.

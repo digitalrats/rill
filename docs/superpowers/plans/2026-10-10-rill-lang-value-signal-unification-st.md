@@ -244,18 +244,141 @@ git commit -m 'feat(rill-lang): Buffer math scalar-loop implementations (in-plac
 
 ---
 
-## Task B2: `ST s a` + `runST` with phantom type `s`
+## Task B2: `ST s a` + `runST` — full rank-2 polymorphism
 
 **Files:**
-- Modify: `rill-lang/src/ast.rs` (`Expr::RunST` variant or reuse `Expr::Lambda` with a marker)
+- Modify: `rill-lang/src/ast.rs` (`Expr::RunST` variant)
 - Modify: `rill-lang/src/lexer.rs` (keyword `runST`), `rill-lang/src/parser.rs` (`runST (fn s -> body)`)
 - Modify: `rill-lang/src/reduce.rs` (substitute through `RunST`)
-- Modify: `rill-lang/src/types/infer.rs` (bind `s` as fresh `TyConVar`; check-escaping)
-- Modify: `rill-lang/src/lower.rs` (lower `RunST`; erase the phantom `s`)
 - Modify: `rill-lang/src/types/ty.rs` (prelude: `data ST s a = { unST: a }`)
-- Test: `rill-lang/tests/st_monad.rs`
+- Modify: `rill-lang/src/types/infer.rs` (**extend `free_vars`/`instantiate` for value-tyvars; quantify `runST`'s phantom param into `Scheme.vars`**)
+- Modify: `rill-lang/src/lower.rs` (lower `RunST`; erase the phantom `s`)
+- Test: `rill-lang/tests/st_monad.rs`, `rill-lang/tests/rank2_poly.rs`
 
-**Goal:** `ST s a` data type + `runST` regions with a phantom type variable `s`, bound fresh per region and check-escaped at the region boundary.
+**Goal:** Full rank-2 polymorphism so `runST : (forall s. ST s a) -> a`. The phantom `s` is a *quantified* type variable in the argument's `Scheme.vars`; because it is quantified it cannot appear free in the result type `a` — check-escaping is automatic, with no post-hoc scan.
+
+> **Design history:** an earlier one-point `runST` check-escaping scan was implemented (commit `5b2c84d`) and code review found two bypasses (phantom chained to a lower-id var via cross-kind unification; phantom not shadowing an outer value binder named `s`). The one-point approach is fragile. This task reworks it to full rank-2. **Revert `5b2c84d`'s inference approach** (keep the syntax/prelude/lowering; replace the ad-hoc `type_var_bindings` + `vty_mentions_tyvar` escape check with real generalization).
+
+- [ ] **Step 1: Write the failing test**
+
+Create `rill-lang/tests/st_monad.rs`:
+
+```rust
+use rill_core::traits::MultichannelAlgorithm;
+use rill_lang::builtin::Registry;
+
+fn run(src: &str) -> rill_lang::program_engine::ProgramEngine<f32, 256> {
+    let reg = Registry::<f32>::new();
+    rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap()
+}
+
+#[test]
+fn runst_region_erases_phantom() {
+    // `runST (fn s -> e)` executes `e` and erases the phantom type `s`.
+    let mut p = run("{-# MODE complete #-}\nmain = runST (fn s -> 1.0);");
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut p, &[], &mut [&mut out]);
+    assert_eq!(out[0], 1.0);
+}
+
+#[test]
+fn runst_region_rejects_escaping_phantom() {
+    // The phantom s is quantified, so a result mentioning s must NOT escape.
+    let src = "{-# MODE complete #-}\nmain = runST (fn s -> (s));";
+    let p = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
+    let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
+    assert!(r.is_err(), "ST result must not escape the runST region");
+}
+```
+
+Create `rill-lang/tests/rank2_poly.rs`:
+
+```rust
+// Regression: the two one-point-approach bypasses must also be rejected.
+#[test]
+fn phantom_chain_through_higher_id_var_rejected() {
+    // The list unifies t and s; s is quantified so it must not unify with an
+    // outer free variable. Compile must fail.
+    let src = "{-# MODE complete #-}\nmain = (fn t -> runST (fn s -> [t, s])) 1.0;";
+    let p = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
+    let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
+    assert!(r.is_err(), "phantom s must not unify with an outer variable");
+}
+
+#[test]
+fn phantom_shadows_outer_value_binder() {
+    // An outer value named `s` must not disable the escape check.
+    let src = "{-# MODE complete #-}\ns = 2.0;\nmain = runST (fn s -> (s));";
+    let p = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
+    let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
+    assert!(r.is_err(), "phantom s must shadow an outer value named s");
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cargo test -p rill-lang --test st_monad --test rank2_poly`
+Expected: FAIL — `runST` unknown, or the escape tests pass incorrectly (the point: rank-2 semantics must hold).
+
+- [ ] **Step 3: Add `ST` data type to the prelude**
+
+In `rill-lang/src/types/ty.rs` (CATEGORY_PRELUDE), add:
+
+```rill
+data ST s a = { unST: a };
+```
+
+(Register it the same way `Kleisli m a b` is registered — `data_types` + `data_arities` in `ty.rs`.)
+
+- [ ] **Step 4: Parse `runST (fn s -> body)`**
+
+Add keyword `runST` to `lexer.rs`, and in `parser.rs` add a parse arm that reads `runST` followed by a parenthesized lambda, producing a new `Expr::RunST { body: Expr::Lambda, span }` (add the variant to `ast.rs` `Expr` enum). Wire `reduce.rs` (substitute through the body) and `render.rs` (round-trip).
+
+- [ ] **Step 5: Extend generalization to value-type variables**
+
+In `infer.rs`:
+1. **`free_vars`** (currently only collects `Scalar::Var` from channel `elem`): also collect free `ValueTy::Var(v)` / `TyConVar(v)` / `TyConApp(v, ..)` heads from each channel's `vty`. Add a helper `value_free_vars(&ValueTy, &Subst) -> Vec<TypeVarId>` (mirror `vty_mentions_tyvar`'s traversal but collect free vars, resolved through `subst.value_map`).
+2. **`instantiate`**: when substituting `Scheme.vars`, also map value-tyvars: for `Rate::Value` channels, substitute `Var(v)`/`TyConVar(v)`/`TyConApp(v, args)` occurrences of quantified vars with fresh vars (mirror the `rw` closure but over `ValueTy`). Reuse the existing fresh-var allocation.
+
+Verify: a polymorphic value function like `id2 = fn x -> x;` now has its `Var` in `Scheme.vars` and instantiates fresh at each use.
+
+- [ ] **Step 6: Quantify `runST`'s phantom param (rank-2)**
+
+In `infer.rs`, handle `Expr::RunST`:
+1. The argument is a lambda `fn s -> body`. Allocate a fresh `TypeVarId` `s`.
+2. Infer the body with `s` bound **in scope** (as a `ValueTy::TyConVar` visible to `Ref("s")` AND shadowing any outer value binder — bind in `ctx.locals` like the `Expr::Lambda` arm, save/restore the map).
+3. Generalize: `s` goes into the argument's `Scheme.vars` (quantified). The `runST` application then requires the argument to be polymorphic in `s`; the result type `a` is the body's result with `s` NOT free (if `s` appears free in the result, the scheme's generalization cannot capture it and unification fails — the escape is rejected automatically).
+4. `runST` is typed as `(forall s. ST s a) -> a`: the application takes the polymorphic lambda, instantiates the phantom with a fresh var for internal use, and returns the non-phantom result.
+
+- [ ] **Step 7: Remove the one-point escape scan**
+
+Delete the ad-hoc `type_var_bindings` fallback in `infer_ref_inner` and the `vty_mentions_tyvar`-based escape check added in `5b2c84d` — rank-2 generalization replaces them. Keep the `runST` syntax, prelude `ST`, parsing, reduce, render, and the no-op lowering.
+
+- [ ] **Step 8: Lower `runST` (erase phantom)**
+
+In `lower.rs`, handle `Expr::RunST`: lower the lambda body normally; the phantom `s` has no runtime representation, so `runST` is a no-op wrapper (a closure over the body).
+
+- [ ] **Step 9: Run the tests**
+
+Run: `cargo test -p rill-lang --test st_monad --test rank2_poly`
+Expected: PASS — both runST tests AND both bypass regressions are rejected.
+
+- [ ] **Step 10: Full suite + commit**
+
+Run: `cargo test -p rill-lang`, then `cargo test --workspace`, `cargo clippy -p rill-lang`, `cargo fmt`.
+Commit:
+
+```bash
+cargo fmt
+git add rill-lang/src/ast.rs rill-lang/src/lexer.rs rill-lang/src/parser.rs rill-lang/src/reduce.rs rill-lang/src/types/infer.rs rill-lang/src/types/ty.rs rill-lang/src/lower.rs rill-lang/src/render.rs rill-lang/tests/st_monad.rs rill-lang/tests/rank2_poly.rs
+git commit -m 'feat(rill-lang): full rank-2 polymorphism — runST (forall s. ST s a) -> a
+Value-type variables generalize into Scheme.vars; instantiate substitutes them;
+runST quantifies its phantom param so escaping the region is rejected
+automatically (replaces the fragile one-point check-escaping scan).'
+```
 
 - [ ] **Step 1: Write the failing test**
 
