@@ -244,315 +244,19 @@ git commit -m 'feat(rill-lang): Buffer math scalar-loop implementations (in-plac
 
 ---
 
-## Task B2: `ST s a` + `runST` — full rank-2 polymorphism
+## Task B2: `ST s a` + `runST` — full rank-2 polymorphism — DONE
 
-**Files:**
-- Modify: `rill-lang/src/ast.rs` (`Expr::RunST` variant)
-- Modify: `rill-lang/src/lexer.rs` (keyword `runST`), `rill-lang/src/parser.rs` (`runST (fn s -> body)`)
-- Modify: `rill-lang/src/reduce.rs` (substitute through `RunST`)
-- Modify: `rill-lang/src/types/ty.rs` (prelude: `data ST s a = { unST: a }`)
-- Modify: `rill-lang/src/types/infer.rs` (**extend `free_vars`/`instantiate` for value-tyvars; quantify `runST`'s phantom param into `Scheme.vars`**)
-- Modify: `rill-lang/src/lower.rs` (lower `RunST`; erase the phantom `s`)
-- Test: `rill-lang/tests/st_monad.rs`, `rill-lang/tests/rank2_poly.rs`
-
-**Goal:** Full rank-2 polymorphism so `runST : (forall s. ST s a) -> a`. The phantom `s` is a *quantified* type variable in the argument's `Scheme.vars`; because it is quantified it cannot appear free in the result type `a` — check-escaping is automatic, with no post-hoc scan.
-
-> **Design history:** an earlier one-point `runST` check-escaping scan was implemented (commit `5b2c84d`) and code review found two bypasses (phantom chained to a lower-id var via cross-kind unification; phantom not shadowing an outer value binder named `s`). The one-point approach is fragile. This task reworks it to full rank-2. **Revert `5b2c84d`'s inference approach** (keep the syntax/prelude/lowering; replace the ad-hoc `type_var_bindings` + `vty_mentions_tyvar` escape check with real generalization).
-
-- [ ] **Step 1: Write the failing test**
-
-Create `rill-lang/tests/st_monad.rs`:
-
-```rust
-use rill_core::traits::MultichannelAlgorithm;
-use rill_lang::builtin::Registry;
-
-fn run(src: &str) -> rill_lang::program_engine::ProgramEngine<f32, 256> {
-    let reg = Registry::<f32>::new();
-    rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap()
-}
-
-#[test]
-fn runst_region_erases_phantom() {
-    // `runST (fn s -> e)` executes `e` and erases the phantom type `s`.
-    let mut p = run("{-# MODE complete #-}\nmain = runST (fn s -> 1.0);");
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut p, &[], &mut [&mut out]);
-    assert_eq!(out[0], 1.0);
-}
-
-#[test]
-fn runst_region_rejects_escaping_phantom() {
-    // The phantom s is quantified, so a result mentioning s must NOT escape.
-    let src = "{-# MODE complete #-}\nmain = runST (fn s -> (s));";
-    let p = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
-    let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
-    assert!(r.is_err(), "ST result must not escape the runST region");
-}
-```
-
-Create `rill-lang/tests/rank2_poly.rs`:
-
-```rust
-// Regression: the two one-point-approach bypasses must also be rejected.
-#[test]
-fn phantom_chain_through_higher_id_var_rejected() {
-    // The list unifies t and s; s is quantified so it must not unify with an
-    // outer free variable. Compile must fail.
-    let src = "{-# MODE complete #-}\nmain = (fn t -> runST (fn s -> [t, s])) 1.0;";
-    let p = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
-    let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
-    assert!(r.is_err(), "phantom s must not unify with an outer variable");
-}
-
-#[test]
-fn phantom_shadows_outer_value_binder() {
-    // An outer value named `s` must not disable the escape check.
-    let src = "{-# MODE complete #-}\ns = 2.0;\nmain = runST (fn s -> (s));";
-    let p = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
-    let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
-    assert!(r.is_err(), "phantom s must shadow an outer value named s");
-}
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `cargo test -p rill-lang --test st_monad --test rank2_poly`
-Expected: FAIL — `runST` unknown, or the escape tests pass incorrectly (the point: rank-2 semantics must hold).
-
-- [ ] **Step 3: Add `ST` data type to the prelude**
-
-In `rill-lang/src/types/ty.rs` (CATEGORY_PRELUDE), add:
-
-```rill
-data ST s a = { unST: a };
-```
-
-(Register it the same way `Kleisli m a b` is registered — `data_types` + `data_arities` in `ty.rs`.)
-
-- [ ] **Step 4: Parse `runST (fn s -> body)`**
-
-Add keyword `runST` to `lexer.rs`, and in `parser.rs` add a parse arm that reads `runST` followed by a parenthesized lambda, producing a new `Expr::RunST { body: Expr::Lambda, span }` (add the variant to `ast.rs` `Expr` enum). Wire `reduce.rs` (substitute through the body) and `render.rs` (round-trip).
-
-- [ ] **Step 5: Extend generalization to value-type variables**
-
-In `infer.rs`:
-1. **`free_vars`** (currently only collects `Scalar::Var` from channel `elem`): also collect free `ValueTy::Var(v)` / `TyConVar(v)` / `TyConApp(v, ..)` heads from each channel's `vty`. Add a helper `value_free_vars(&ValueTy, &Subst) -> Vec<TypeVarId>` (mirror `vty_mentions_tyvar`'s traversal but collect free vars, resolved through `subst.value_map`).
-2. **`instantiate`**: when substituting `Scheme.vars`, also map value-tyvars: for `Rate::Value` channels, substitute `Var(v)`/`TyConVar(v)`/`TyConApp(v, args)` occurrences of quantified vars with fresh vars (mirror the `rw` closure but over `ValueTy`). Reuse the existing fresh-var allocation.
-
-Verify: a polymorphic value function like `id2 = fn x -> x;` now has its `Var` in `Scheme.vars` and instantiates fresh at each use.
-
-- [ ] **Step 6: Quantify `runST`'s phantom param (rank-2)**
-
-In `infer.rs`, handle `Expr::RunST`:
-1. The argument is a lambda `fn s -> body`. Allocate a fresh `TypeVarId` `s`.
-2. Infer the body with `s` bound **in scope** (as a `ValueTy::TyConVar` visible to `Ref("s")` AND shadowing any outer value binder — bind in `ctx.locals` like the `Expr::Lambda` arm, save/restore the map).
-3. Generalize: `s` goes into the argument's `Scheme.vars` (quantified). The `runST` application then requires the argument to be polymorphic in `s`; the result type `a` is the body's result with `s` NOT free (if `s` appears free in the result, the scheme's generalization cannot capture it and unification fails — the escape is rejected automatically).
-4. `runST` is typed as `(forall s. ST s a) -> a`: the application takes the polymorphic lambda, instantiates the phantom with a fresh var for internal use, and returns the non-phantom result.
-
-- [ ] **Step 7: Remove the one-point escape scan**
-
-Delete the ad-hoc `type_var_bindings` fallback in `infer_ref_inner` and the `vty_mentions_tyvar`-based escape check added in `5b2c84d` — rank-2 generalization replaces them. Keep the `runST` syntax, prelude `ST`, parsing, reduce, render, and the no-op lowering.
-
-- [ ] **Step 8: Lower `runST` (erase phantom)**
-
-In `lower.rs`, handle `Expr::RunST`: lower the lambda body normally; the phantom `s` has no runtime representation, so `runST` is a no-op wrapper (a closure over the body).
-
-- [ ] **Step 9: Run the tests**
-
-Run: `cargo test -p rill-lang --test st_monad --test rank2_poly`
-Expected: PASS — both runST tests AND both bypass regressions are rejected.
-
-- [ ] **Step 10: Full suite + commit**
-
-Run: `cargo test -p rill-lang`, then `cargo test --workspace`, `cargo clippy -p rill-lang`, `cargo fmt`.
-Commit:
-
-```bash
-cargo fmt
-git add rill-lang/src/ast.rs rill-lang/src/lexer.rs rill-lang/src/parser.rs rill-lang/src/reduce.rs rill-lang/src/types/infer.rs rill-lang/src/types/ty.rs rill-lang/src/lower.rs rill-lang/src/render.rs rill-lang/tests/st_monad.rs rill-lang/tests/rank2_poly.rs
-git commit -m 'feat(rill-lang): full rank-2 polymorphism — runST (forall s. ST s a) -> a
-Value-type variables generalize into Scheme.vars; instantiate substitutes them;
-runST quantifies its phantom param so escaping the region is rejected
-automatically (replaces the fragile one-point check-escaping scan).'
-```
-
-- [ ] **Step 1: Write the failing test**
-
-Create `rill-lang/tests/st_monad.rs`:
-
-```rust
-use rill_core::traits::MultichannelAlgorithm;
-
-fn run(src: &str) -> rill_lang::program_engine::ProgramEngine<f32, 256> {
-    let reg = rill_lang::ffi::ForeignRegistry::<f32>::default();
-    rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap()
-}
-
-#[test]
-fn runst_region_erases_phantom() {
-    // `runST (fn s -> e)` executes `e` and erases the phantom type `s`;
-    // the value flowing out is `e`'s result. s is only a type-level token.
-    let mut p = run("{-# MODE complete #-}\nmain = runST (fn s -> 1.0);");
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut p, &[], &mut [&mut out]);
-    assert_eq!(out[0], 1.0);
-}
-
-#[test]
-fn runst_region_rejects_escaping_phantom() {
-    // A result whose type mentions `s` (e.g. an `ST s Float`) must NOT escape
-    // the region: check-escaping rejects it at compile time.
-    let src = "{-# MODE complete #-}\nmain = runST (fn s -> (s));";
-    let p = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
-    let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
-    assert!(r.is_err(), "ST result must not escape the runST region");
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cargo test -p rill-lang --test st_monad`
-Expected: FAIL — `runST` unknown.
-
-- [ ] **Step 3: Add `ST` data type to the prelude**
-
-In `rill-lang/src/types/ty.rs` (CATEGORY_PRELUDE), add:
-
-```rill
-data ST s a = { unST: a };
-```
-
-(Register it the same way `Kleisli m a b` is registered — `data_types` + `data_arities` in `ty.rs`.)
-
-- [ ] **Step 4: Parse `runST (fn s -> body)`**
-
-Add keyword `runST` to `lexer.rs`, and in `parser.rs` add a parse arm that reads `runST` followed by a parenthesized lambda, producing a new `Expr::RunST { body: Expr::Lambda, span }` (add the variant to `ast.rs` `Expr` enum).
-
-- [ ] **Step 5: Infer `runST` with phantom binding + check-escaping**
-
-In `infer.rs`, handle `Expr::RunST`:
-1. Allocate a fresh `TypeVarId` `s`; bind it as a `TyConVar` in a new scope.
-2. Infer the lambda body with `s` visible.
-3. **Check-escaping:** after inference, scan the result type for any free occurrence of `s`. If found → `CompileError::Type { msg: "ST region result escapes the phantom type s", span }`.
-4. Return the body's result type with `s` erased (its `TyConVar` binding dropped).
-
-- [ ] **Step 6: Lower `runST` (erase phantom)**
-
-In `lower.rs`, handle `Expr::RunST`: lower the lambda body normally; the phantom `s` has no runtime representation, so `runST` is a no-op wrapper (a closure over the body). For value-track programs this is a plain closure; for buffer programs (Task B3+) it bounds the ST region.
-
-- [ ] **Step 7: Wire reduce + render**
-
-In `reduce.rs`, substitute through `Expr::RunST { body, .. }` (recurse into `body`). In `render.rs`, round-trip `runST`.
-
-- [ ] **Step 8: Run the tests**
-
-Run: `cargo test -p rill-lang`
-Expected: PASS (new ST test + no regression).
-
-- [ ] **Step 9: Commit**
-
-```bash
-cargo fmt
-git add rill-lang/src/ast.rs rill-lang/src/lexer.rs rill-lang/src/parser.rs rill-lang/src/reduce.rs rill-lang/src/types/infer.rs rill-lang/src/lower.rs rill-lang/src/types/ty.rs rill-lang/tests/st_monad.rs
-git commit -m 'feat(rill-lang): ST s a effect monad + runST regions with phantom check-escaping'
-```
+> **Status: COMPLETE** via the rank-N sub-plan (`docs/superpowers/plans/2026-10-10-rill-lang-rank2-thunk.md`, Tasks R1-R3).
+> `runST` is now syntax sugar over a forall-typed built-in function: the parser
+> desugars `runST (fn s -> body)` → `Apply runST [lam]`; `runST` has signature
+> `(forall s. ST s a) -> a` in `TypeEnv::builtin_sigs`; rank-N application in
+> `infer_apply_impl` rejects escaping automatically. Commits: R1 `049eec7`+`d84239d`,
+> R2 `5530fd9`, R3 `b487cc0`. Tests: `st_monad.rs`, `rank2_poly.rs` (inference-level;
+> the runtime `runST (fn s -> 1.0)` assertion is deferred to Task B3, where the
+> track unification lands).
 
 ---
-
-## Task B3: `:` single overload (cons for `List`, seq for `Buffer`)
-
-**Files:**
-- Modify: `rill-lang/src/parser.rs` (keep `:` → `Expr::Seq`, no change here yet)
-- Modify: `rill-lang/src/desugar.rs` (rewrite `Expr::Seq` in value position to a dispatched call)
-- Modify: `rill-lang/src/types/infer.rs` (`infer_seq` — dispatch by operand types instead of `reject_value_channels`)
-- Modify: `rill-lang/src/types/ty.rs` (prelude: `:` methods — cons instance for `List`, seq instance for `Buffer`)
-- Modify: `rill-lang/src/lower.rs` (lower the dispatched call)
-- Test: `rill-lang/tests/colon_overload.rs`
-
-**Goal:** `x : xs` on a `List` is cons; `a : b` on buffers is seq. One spelling, type-directed dispatch.
-
-- [ ] **Step 1: Write the failing test**
-
-Create `rill-lang/tests/colon_overload.rs`:
-
-```rust
-use rill_core::traits::MultichannelAlgorithm;
-
-fn eval_main(src: &str) -> f32 {
-    let reg = rill_lang::ffi::ForeignRegistry::<f32>::default();
-    let mut p = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut p, &[], &mut [&mut out]);
-    out[0]
-}
-
-#[test]
-fn colon_on_list_is_cons() {
-    // x : [y, z] == [x, y, z]; head of the result is x.
-    // (complete mode: cons is LazyCons; head/tail work on Cons)
-    assert_eq!(eval_main("{-# MODE complete #-}\nmain = match (head (1.0 : [2.0, 3.0])) of { Nothing => 0.0; Just x => x };"), 1.0);
-}
-
-#[test]
-fn colon_on_signal_is_seq() {
-    // a : b on signals is Faust sequencing — regression that it still works.
-    // (uses the wire `_` as input, `onepole` FFI algorithm as the second stage)
-    let _ = rill_lang::compile_graph::<f32, 256>("main = _ : onepole 200.0 0.7", &rill_lang::ffi::ForeignRegistry::<f32>::default(), 44100.0).unwrap();
-}
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `cargo test -p rill-lang --test colon_overload`
-Expected: FAIL — `:` on a value (`1.0 : [2.0, 3.0]`) is rejected by `infer_seq` (`reject_value_channels`).
-
-- [ ] **Step 3: Replace `infer_seq`'s rejection with type-directed dispatch**
-
-In `infer.rs` `infer_seq`:
-1. Infer both operands.
-2. If the RIGHT operand's value type is `List a` (or the pair unifies to a list-cons shape) → treat as cons: `x : xs` types as `List a` with element `x` unified to `a`.
-3. Else (signal/buffer context) → keep the Faust seq behavior (currently `reject_value_channels`; keep for now, re-target to `Buffer` in Task B5).
-4. If neither applies → ambiguous-`:` error.
-
-Dispatch goes through the typeclass machinery: define a class `Colon a` (or reuse `Seq`) with instances for `List` and `Buffer`, and resolve via `class_of_method` → `resolve_method` (see the `Arrow (Kleisli m)` pattern).
-
-- [ ] **Step 4: Add `:` methods to the prelude**
-
-```rill
-typeclass Colon a where {
-    seq: a -> a -> a;    -- one method, two instances
-}
-instance Colon (List a) where {
-    seq x xs = cons x xs;   -- cons (element : list)
-}
--- Buffer instance added in Task B5
-```
-
-- [ ] **Step 5: Lower the dispatched call**
-
-In `lower.rs`, lower the desugared `seq` call through the existing method-dispatch path (like `Arrow (Kleisli m)`).
-
-- [ ] **Step 6: Run the tests**
-
-Run: `cargo test -p rill-lang`
-Expected: PASS.
-
-- [ ] **Step 7: Commit**
-
-```bash
-cargo fmt
-git add rill-lang/src/desugar.rs rill-lang/src/types/infer.rs rill-lang/src/types/ty.rs rill-lang/src/lower.rs rill-lang/tests/colon_overload.rs
-git commit -m 'feat(rill-lang): single ":" overload — cons for List, dispatched via typeclass'
-```
-
----
-
-## Task B4: Remove `Rate::Signal` as a distinct type-system rate
+## Task B3: Remove `Rate::Signal` as a distinct type-system rate
 
 **Files:**
 - Modify: `rill-lang/src/types/ty.rs` (`Rate` enum; `Channel::signal`; `Block` alias; `Scalar`)
@@ -616,7 +320,7 @@ git commit -m 'refactor(rill-lang): unify Rate — signals are Buffer-typed valu
 
 ---
 
-## Task B5: Buffer math → `Buffer` methods; Faust ops → Arrow/Buffer methods
+## Task B4: Buffer math as `Buffer` methods; Faust ops as Arrow methods; `:` overload
 
 **Files:**
 - Modify: `rill-lang/src/types/ty.rs` (prelude: `instance Buffer (FixedBuffer a)` with math bodies)
@@ -674,7 +378,7 @@ In `lower.rs`, when a math op's operand is a `Buffer`-typed value, lower it as a
 - [ ] **Step 5: Map Faust ops to methods in desugar**
 
 In `desugar.rs`, in signal position, rewrite:
-- `Seq` → `seq` method (Buffer instance; the `:` overload from Task B3)
+- `Seq` → `seq` method (Buffer instance; the `:` overload, Part 2 of this task)
 - `Par` → `both`/`par`, `Split` → `fan`/`split`, `Merge` → `merge`, `Loop` → feedback method, `Delay` → delay method
 
 Reuse the `Arrow (Kleisli m)` instance methods (`compose`/`both`/`fan`/`first`/`second`) where they apply; add `Buffer`-specific instances where not.
@@ -697,6 +401,97 @@ git commit -m 'feat(rill-lang): Buffer math as typeclass methods; Faust ops as A
 ```
 
 ---
+
+
+### Part 2: `:` single overload (cons for `List`, seq for `Buffer`) (cons for `List`, seq for `Buffer`)
+
+
+**Files:**
+- Modify: `rill-lang/src/parser.rs` (keep `:` → `Expr::Seq`, no change here yet)
+- Modify: `rill-lang/src/desugar.rs` (rewrite `Expr::Seq` in value position to a dispatched call)
+- Modify: `rill-lang/src/types/infer.rs` (`infer_seq` — dispatch by operand types instead of `reject_value_channels`)
+- Modify: `rill-lang/src/types/ty.rs` (prelude: `:` methods — cons instance for `List`, seq instance for `Buffer`)
+- Modify: `rill-lang/src/lower.rs` (lower the dispatched call)
+- Test: `rill-lang/tests/colon_overload.rs`
+
+**Goal:** `x : xs` on a `List` is cons; `a : b` on buffers is seq. One spelling, type-directed dispatch.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `rill-lang/tests/colon_overload.rs`:
+
+```rust
+use rill_core::traits::MultichannelAlgorithm;
+
+fn eval_main(src: &str) -> f32 {
+    let reg = rill_lang::ffi::ForeignRegistry::<f32>::default();
+    let mut p = rill_lang::compile_graph::<f32, 256>(src, &reg, 44100.0).unwrap();
+    let mut out = [0.0f32; 1];
+    let _ = MultichannelAlgorithm::process(&mut p, &[], &mut [&mut out]);
+    out[0]
+}
+
+#[test]
+fn colon_on_list_is_cons() {
+    // x : [y, z] == [x, y, z]; head of the result is x.
+    // (complete mode: cons is LazyCons; head/tail work on Cons)
+    assert_eq!(eval_main("{-# MODE complete #-}\nmain = match (head (1.0 : [2.0, 3.0])) of { Nothing => 0.0; Just x => x };"), 1.0);
+}
+
+#[test]
+fn colon_on_signal_is_seq() {
+    // a : b on signals is Faust sequencing — regression that it still works.
+    // (uses the wire `_` as input, `onepole` FFI algorithm as the second stage)
+    let _ = rill_lang::compile_graph::<f32, 256>("main = _ : onepole 200.0 0.7", &rill_lang::ffi::ForeignRegistry::<f32>::default(), 44100.0).unwrap();
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cargo test -p rill-lang --test colon_overload`
+Expected: FAIL — `:` on a value (`1.0 : [2.0, 3.0]`) is rejected by `infer_seq` (`reject_value_channels`).
+
+- [ ] **Step 3: Replace `infer_seq`'s rejection with type-directed dispatch**
+
+In `infer.rs` `infer_seq`:
+1. Infer both operands.
+2. If the RIGHT operand's value type is `List a` (or the pair unifies to a list-cons shape) → treat as cons: `x : xs` types as `List a` with element `x` unified to `a`.
+3. Else (signal/buffer context) → keep the Faust seq behavior (currently `reject_value_channels`; keep for now, re-target to `Buffer` in the Buffer-methods part of this task).
+4. If neither applies → ambiguous-`:` error.
+
+Dispatch goes through the typeclass machinery: define a class `Colon a` (or reuse `Seq`) with instances for `List` and `Buffer`, and resolve via `class_of_method` → `resolve_method` (see the `Arrow (Kleisli m)` pattern).
+
+- [ ] **Step 4: Add `:` methods to the prelude**
+
+```rill
+typeclass Colon a where {
+    seq: a -> a -> a;    -- one method, two instances
+}
+instance Colon (List a) where {
+    seq x xs = cons x xs;   -- cons (element : list)
+}
+-- Buffer instance added in the Buffer-methods part of this task
+```
+
+- [ ] **Step 5: Lower the dispatched call**
+
+In `lower.rs`, lower the desugared `seq` call through the existing method-dispatch path (like `Arrow (Kleisli m)`).
+
+- [ ] **Step 6: Run the tests**
+
+Run: `cargo test -p rill-lang`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+cargo fmt
+git add rill-lang/src/desugar.rs rill-lang/src/types/infer.rs rill-lang/src/types/ty.rs rill-lang/src/lower.rs rill-lang/tests/colon_overload.rs
+git commit -m 'feat(rill-lang): single ":" overload — cons for List, dispatched via typeclass'
+```
+
+---
+
 
 ## Task B6: RegionHandle as a `Buffer` value
 
@@ -800,7 +595,7 @@ Expected: FAIL — foreign output still `FixedBuffer`-as-signal, not `Buffer`-ty
 
 - [ ] **Step 3: Type foreign calls as `Buffer` arrows**
 
-In `infer.rs`, the `foreign fn` typing path (see `infer_ref`/the `ffi_sig_from_typeexpr` path) maps `FixedBuffer a` signal channels to `Rate::Value` channels with `vty = Buffer`. The call is an arrow `Buffer -> ... -> Buffer`; combine with the `:` seq from Task B3.
+In `infer.rs`, the `foreign fn` typing path (see `infer_ref`/the `ffi_sig_from_typeexpr` path) maps `FixedBuffer a` signal channels to `Rate::Value` channels with `vty = Buffer`. The call is an arrow `Buffer -> ... -> Buffer`; combine with the `:` seq from Task B4 (Part 2).
 
 - [ ] **Step 4: Lower foreign calls as arrows**
 
@@ -832,13 +627,13 @@ git commit -m 'feat(rill-lang): FFI algorithms as Buffer arrows; end-to-end unif
 
 ## Self-review checklist
 
-- [ ] §2.1 Approach A (`Kleisli ST Buffer Buffer`) → Tasks B2 (ST), B5 (arrows), B7 (FFI arrows).
-- [ ] §2.2 `:` single overload (List→cons, Buffer→seq) → Task B3.
-- [ ] §2.3 math is in-place mutation, scalar loops → Tasks B1, B5.
-- [ ] §2.4 ST with phantom `s`, runST, check-escaping → Task B2.
-- [ ] §2.5 Faust operators as Arrow/Buffer methods → Task B5.
+- [ ] §2.1 Approach A (`Kleisli ST Buffer Buffer`) → Tasks B2 (ST), B4 (arrows), B7 (FFI arrows).
+- [ ] §2.2 `:` single overload (List→cons, Buffer→seq) → Task B4 (Part 2).
+- [ ] §2.3 math is in-place mutation, scalar loops → Tasks B1, B4.
+- [ ] §2.4 ST with phantom `s`, runST, check-escaping → Task B2 (DONE via sub-plan).
+- [ ] §2.5 Faust operators as Arrow/Buffer methods → Task B4.
 - [ ] §2.5b FFI integration (signature/factory/`BlockBuiltin` unchanged) → Task B7.
-- [ ] §2.6 IO deferred; `Rate::Signal` removed; linear IR survives as execution layer → Task B4.
+- [ ] §2.6 IO deferred; `Rate::Signal` removed; linear IR survives as execution layer → Task B3.
 - [ ] §3 RegionHandle as a `Buffer` value → Task B6.
-- [ ] §5 backward compat (existing programs, RT safety, SIMD preserved) → Tasks B4, B5, B7 verification.
+- [ ] §5 backward compat (existing programs, RT safety, SIMD preserved) → Tasks B3, B4, B7 verification.
 - [ ] §6 testing (math, ST, `:`, Faust-as-Arrow, Buffer-as-value, FFI arrows) → each task's test file.
