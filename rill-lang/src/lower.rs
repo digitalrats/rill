@@ -1007,7 +1007,15 @@ impl<'a> Lowerer<'a> {
                     self.write_output_indices.push(index);
                     let dst = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueConstVoid { dst });
-                    return Ok((dst, ValueTy::Data("IO".into(), vec![ValueTy::Void])));
+                    // `writeOutput` returns an `IO ()` record (`IO { unIO: () }`)
+                    // so the `Monad IO` bind/projection (`m.unIO`) sees a real
+                    // record, not a bare Void.
+                    let rec = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueConstructRecord {
+                        dst: rec,
+                        fields: vec![dst],
+                    });
+                    return Ok((rec, ValueTy::Data("IO".into(), vec![ValueTy::Void])));
                 }
                 if name == "readInput" {
                     if call_args.len() != 1 {
@@ -1028,7 +1036,13 @@ impl<'a> Lowerer<'a> {
                     };
                     let dst = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueReadInput { dst, index });
-                    return Ok((dst, ValueTy::Data("IO".into(), vec![ValueTy::Buffer])));
+                    // `readInput` returns an `IO Buffer` record.
+                    let rec = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueConstructRecord {
+                        dst: rec,
+                        fields: vec![dst],
+                    });
+                    return Ok((rec, ValueTy::Data("IO".into(), vec![ValueTy::Buffer])));
                 }
                 // Boolean negation: `not b` — a prefix value-track builtin
                 // (the `!` token stays the signal wire-cut combinator).
@@ -2795,6 +2809,10 @@ impl<'a> Lowerer<'a> {
                     // each use site (`lower_value_ref_inner`).
                     let is_class_method = self.env.class_of_method(name).is_some();
                     let is_top_level_def = self.defs.contains_key(name);
+                    // Builtin-signature functions (`runST`, `readInput`,
+                    // `writeOutput`) are compile-time primitives — not runtime
+                    // values, so a lambda body applying one must not capture it.
+                    let is_builtin_sig = self.env.builtin_sigs.contains_key(name.as_str());
                     if is_top_level_def {
                         // Recursion: capture top-level defs only in complete
                         // mode (the shared self-cell closure). Strict inlines
@@ -2802,7 +2820,11 @@ impl<'a> Lowerer<'a> {
                         if self.mode == Mode::Complete {
                             out.push(name.clone());
                         }
-                    } else if !is_ctor && !is_class_method && !self.is_builtin_op(name) {
+                    } else if !is_ctor
+                        && !is_class_method
+                        && !is_builtin_sig
+                        && !self.is_builtin_op(name)
+                    {
                         // A genuine free variable (an enclosing lambda's
                         // closure) or a non-def name; builtins (collection
                         // ops, math, FFI) resolve at lowering and are never
@@ -4986,7 +5008,7 @@ impl<'a> Lowerer<'a> {
             .get(name)
             .cloned()
             .ok_or_else(|| CompileError::Type {
-                msg: format!("unknown `{name}` in lowering"),
+                msg: format!("unknown `{name}` in value lowering"),
                 span: _span,
             })?;
         match def {

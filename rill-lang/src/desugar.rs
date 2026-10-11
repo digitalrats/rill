@@ -180,16 +180,17 @@ fn bind_signal_args(e: &Expr, env: &TypeEnv) -> Expr {
 /// `writeOutput` calls. A `main` that is already an IO action (contains
 /// `writeOutput`/`readInput`, or a `bind`/`do`) is left untouched.
 pub(crate) fn desugar_main_io(program: &mut Program) -> bool {
-    // Signal-lambda MACROS: user functions with λ-parameters (their wires live
-    // in the body, invisible at the call site). Only these block auto-desugar.
-    // Includes `where`-block definitions (which are not top-level).
+    // Signal-lambda MACROS: user definitions whose body carries a `_` wire
+    // (`integ = + ~ _`, `a x = _ * x`) — their wires live inside the body,
+    // invisible at the call site. Only these block auto-desugar. Includes
+    // `where`-block definitions (which are not top-level).
     let mut signal_macros: std::collections::HashSet<String> = std::collections::HashSet::new();
     fn collect_signal_macros<'a>(
         defs: impl Iterator<Item = &'a Def>,
         out: &mut std::collections::HashSet<String>,
     ) {
         for d in defs {
-            if !d.is_decl() && !d.params().is_empty() {
+            if !d.is_decl() && contains_wire(d.body()) {
                 out.insert(d.name().to_string());
             }
             for wd in d.where_defs() {
@@ -215,12 +216,13 @@ pub(crate) fn desugar_main_io(program: &mut Program) -> bool {
             // Collect the wires in order of first appearance, replace each
             // with a fresh `i_k` reference, and gather the buffer outputs.
             let mut wire_names: Vec<String> = Vec::new();
-            // Split top-level Par into separate outputs, rewrite wires in each.
+            // Split top-level Par into separate outputs (each becomes a
+            // `writeOutput` action), rewrite wires in each.
             let branches = split_par(&body);
-            // Multi-output programs (`main = osc , osc`) would lower to several
-            // `writeOutput` calls nested through `bind`; nested IO actions in
-            // fragments are not yet supported — keep these on the legacy signal
-            // path (already functional).
+            // Multi-output programs (`main = osc , osc`) would split a shared
+            // CAF across `writeOutput` sites in separate fragments, breaking
+            // CAF-sharing (one instance per tick); keep them on the legacy
+            // signal path.
             if branches.len() != 1 {
                 return false;
             }
@@ -228,11 +230,11 @@ pub(crate) fn desugar_main_io(program: &mut Program) -> bool {
             for b in branches {
                 outs.push(collect_and_rewrite(&b, &mut wire_names));
             }
-            // Multi-input or multi-output programs (`conj _ _`, `_ , _`) would
-            // need nested `bind`/multiple `writeOutput` actions; nested IO
-            // actions and multi-channel writeOutput are not yet supported —
-            // keep them on the legacy signal path.
-            if wire_names.len() > 1 || outs.len() != 1 {
+            // Multi-INPUT programs (`conj _ _` — a single expression consuming
+            // two wires) would need a `writeOutput` whose argument has >1
+            // channel; not yet supported — keep those on the legacy signal
+            // path.
+            if wire_names.len() > 1 {
                 return false;
             }
             if outs.is_empty() {
@@ -342,6 +344,30 @@ fn is_value_expression(e: &Expr) -> bool {
         | Expr::Delay(l, r, _) => is_value_expression(l) || is_value_expression(r),
         Expr::Let { defs, body, .. } => {
             defs.iter().any(|d| is_value_expression(d.body())) || is_value_expression(body)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `e` contains a `_` (Wire) anywhere — a signal-lambda body's open
+/// input.
+fn contains_wire(e: &Expr) -> bool {
+    match e {
+        Expr::Wire(_) => true,
+        Expr::Apply { args, .. } => args.iter().any(contains_wire),
+        Expr::ApplyExpr { callee, args, .. } => {
+            contains_wire(callee) || args.iter().any(contains_wire)
+        }
+        Expr::Neg(inner, _) => contains_wire(inner),
+        Expr::Arith { lhs, rhs, .. } => contains_wire(lhs) || contains_wire(rhs),
+        Expr::Seq(l, r, _)
+        | Expr::Par(l, r, _)
+        | Expr::Split(l, r, _)
+        | Expr::Merge(l, r, _)
+        | Expr::Loop(l, r, _)
+        | Expr::Delay(l, r, _) => contains_wire(l) || contains_wire(r),
+        Expr::Let { defs, body, .. } => {
+            defs.iter().any(|d| contains_wire(d.body())) || contains_wire(body)
         }
         _ => false,
     }
