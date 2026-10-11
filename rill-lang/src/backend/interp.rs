@@ -2844,6 +2844,11 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
         BinArith::Min => min_slice::<T, 4, ScalarVector4<T>>(a, b, out),
         BinArith::Max => max_slice::<T, 4, ScalarVector4<T>>(a, b, out),
         BinArith::Rem => SlicePair::new(a, b).rem_into::<4, ScalarVector4<T>>(out),
+        BinArith::Atan2 => {
+            for (o, (&y, &x)) in out.iter_mut().zip(a.iter().zip(b.iter())) {
+                *o = y.atan2(x);
+            }
+        }
     }
 }
 

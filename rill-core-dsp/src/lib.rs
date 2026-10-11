@@ -28,6 +28,7 @@ pub mod complex_mat;
 pub mod context;
 pub mod direct_conv;
 pub mod effect;
+pub mod eq;
 pub mod filters;
 pub mod generators;
 pub mod mapping;
@@ -42,6 +43,7 @@ pub mod macros;
 pub use algorithm::ParameterizedAlgorithm;
 pub use context::DspContext;
 pub use direct_conv::DirectConvolver;
+pub use eq::{log_spaced_frequencies, BandType, EqBand, FilterFactory, GraphicEq, ParametricEq};
 pub use filters::{Filter, FilterParams, FilterType};
 pub use generators::{
     BasicOscillator, EnvelopeGenerator, Generator, InterpolatedReader, LoopMode, NoiseGenerator,

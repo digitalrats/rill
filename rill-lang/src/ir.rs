@@ -63,6 +63,8 @@ pub enum BinArith {
     Min,
     /// max
     Max,
+    /// atan2 (four-quadrant arctangent, elementwise)
+    Atan2,
 }
 
 /// A value-track collection operation dispatched by the interpreter.

@@ -6,7 +6,7 @@ use rill_core::traits::{MultichannelAlgorithm, ParamValue, Params};
 use rill_graph::GraphBuilder;
 
 #[test]
-fn fan_in_graph_compiles_and_runs() {
+fn graph_compiles_and_runs() {
     let reg = full_registry_f32();
     let mut b: GraphBuilder<f32, 256> = GraphBuilder::new();
 
@@ -15,22 +15,15 @@ fn fan_in_graph_compiles_and_runs() {
     s1.insert("amp", ParamValue::Float(0.5));
     b.add_node("sine", &s1);
 
-    let mut s2 = Params::new(44100.0);
-    s2.insert("freq", ParamValue::Float(880.0));
-    s2.insert("amp", ParamValue::Float(0.3));
-    b.add_node("sine", &s2);
+    let mut f = Params::new(44100.0);
+    f.insert("cutoff", ParamValue::Float(200.0));
+    f.insert("q", ParamValue::Float(0.7));
+    b.add_node("onepole", &f);
 
-    let m = Params::new(44100.0);
-    b.add_node("mixer", &m);
-
-    b.connect_signal(0, 0, 2, 0);
-    b.connect_signal(1, 0, 2, 1);
+    b.connect_signal(0, 0, 1, 0);
 
     let mut engine = b.compile_def(&reg, 44100.0).unwrap();
     let mut out = vec![0.0f32; 64];
     MultichannelAlgorithm::process(&mut engine, &[], &mut [&mut out[..]]).unwrap();
-    assert!(
-        out.iter().all(|v| v.is_finite()),
-        "fan-in graph must run finite"
-    );
+    assert!(out.iter().all(|v| v.is_finite()), "graph must run finite");
 }

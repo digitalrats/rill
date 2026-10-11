@@ -4,6 +4,9 @@
 //! the rill-lang catalog's FFI factories. The mixer/eq/dry-wet builtins moved
 //! to `rill-router` (SP-3b Task 7); this module holds the DSP-crate wrappers.
 
+/// Parametric EQ builtin (cascaded biquad bands) — moved from `rill-router`
+/// when the crate was removed (multi-buffer builtins deleted; EQ is mono).
+pub mod eq;
 #[cfg(feature = "dsp")]
 /// Builtin wrappers for the rill-core-dsp filters (biquad/onepole/moog).
 pub mod filters;

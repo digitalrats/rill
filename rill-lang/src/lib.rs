@@ -424,7 +424,7 @@ mod ir_tests {
         // lofi: 1 signal in (from pipeline :), 1 out, 7 params
         registry.register_block("lofi", |_, _, _alloc| panic!("not instantiated"));
 
-        let src = r"main = do { writeOutput 0 (lofi (ay38910 1750000.0 1.0) 8 44100 0.75 1.0 1 0 1); return () }";
+        let src = r"main = do { writeOutput 0 (lofi 8 44100 0.75 1.0 1 0 1 (ay38910 1750000.0 1.0)); return () }";
         let tokens = lexer::tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
         let mut typed = types::infer::infer_program_with(&program, program.mode).unwrap();

@@ -103,9 +103,9 @@ fn rewrite(e: &Expr, env: &TypeEnv) -> Expr {
     }
 }
 
-/// If `e` is an `Apply`/`Ref` to a foreign fn whose leading signal params are
-/// NOT supplied positionally (the args are exactly the trailing scalar params),
-/// prepend the missing `Wire` args. A positional call (`onepole _ 200.0 0.7`)
+/// If `e` is an `Apply`/`Ref` to a foreign fn whose trailing signal params are
+/// NOT supplied positionally (the args are exactly the leading scalar params),
+/// append the missing `Wire` args. A positional call (`onepole 200.0 0.7 _`)
 /// and an incomplete call (`onepole 200.0`) are left untouched — the former
 /// already binds the signal, the latter is a genuine arity error surfaced by
 /// the FFI inference arm.
@@ -121,11 +121,10 @@ fn bind_signal_args(e: &Expr, env: &TypeEnv) -> Expr {
     let Some(sig) = ffi_sig_from_typeexpr(name, te) else {
         return e.clone();
     };
-    // The rule: the supplied args are exactly the trailing scalar params (the
+    // The rule: the supplied args are exactly the leading scalar params (the
     // legacy combinator style never passes the signal positionally), the signal
-    // params lead the signature, and there is no variadic tail (record/variadic
-    // builtins land in Task 4). Prepending the signal wires then yields the
-    // positional FFI call.
+    // params trail the signature, and there is no variadic tail. Appending the
+    // signal wires then yields the positional FFI call.
     let n_sig = sig
         .params
         .iter()
@@ -139,25 +138,25 @@ fn bind_signal_args(e: &Expr, env: &TypeEnv) -> Expr {
     {
         return e.clone();
     }
-    let leading_signals = sig
-        .params
-        .iter()
-        .take(n_sig)
-        .all(|p| matches!(p, FfiParam::Signal));
-    let trailing_scalars = sig
-        .params
-        .iter()
-        .skip(n_sig)
-        .all(|p| !matches!(p, FfiParam::Signal));
     let scalar_count = sig.params.len() - n_sig;
-    if !leading_signals || !trailing_scalars || args_len != scalar_count {
+    let leading_scalars = sig
+        .params
+        .iter()
+        .take(scalar_count)
+        .all(|p| !matches!(p, FfiParam::Signal));
+    let trailing_signals = sig
+        .params
+        .iter()
+        .skip(scalar_count)
+        .all(|p| matches!(p, FfiParam::Signal));
+    if !leading_scalars || !trailing_signals || args_len != scalar_count {
         return e.clone();
     }
     let wires = vec![Expr::Wire(span); n_sig];
     match e {
         Expr::Apply { name, args, .. } => {
-            let mut new_args = wires;
-            new_args.extend(args.iter().cloned());
+            let mut new_args = args.to_vec();
+            new_args.extend(wires);
             Expr::Apply {
                 name: name.clone(),
                 args: new_args,

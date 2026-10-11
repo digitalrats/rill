@@ -656,7 +656,8 @@ fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
             ..
         } if matches!(w.as_ref(), Expr::Wire(_)) => Some(Expr::Apply {
             name: "leaky_integrator".to_string(),
-            args: vec![Expr::Wire(span), (**k).clone()],
+            // Buffer-last FFI model: scalars lead, the signal wire trails.
+            args: vec![(**k).clone(), Expr::Wire(span)],
             span,
         }),
         _ => None,

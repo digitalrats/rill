@@ -117,7 +117,6 @@ pub fn foreign_param_names(name: &str) -> Vec<String> {
         ("distortion", &["drive", "gain"]),
         ("limiter", &["threshold", "ratio"]),
         ("graphic_eq", &["gain"]),
-        ("mono_to_stereo", &["pan", "smoothing"]),
         ("spectralgate", &["threshold", "ratio"]),
         ("spectraldelay", &["mix", "feedback"]),
         ("convolver", &["ir_gain", "mix"]),
@@ -134,7 +133,6 @@ pub fn foreign_param_names(name: &str) -> Vec<String> {
                 "noise",
             ],
         ),
-        ("write_head", &["delay_time", "feedback"]),
         ("read_head", &["delay"]),
     ];
     TABLE

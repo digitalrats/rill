@@ -1134,6 +1134,40 @@ impl<'a> Lowerer<'a> {
                     self.emit_value(ValueInstr::ValueBufferUn { dst, op, src });
                     return Ok((dst, ValueTy::Buffer));
                 }
+                // Binary math over buffers (`min i1 0.5`, `atan2 b a`): a
+                // Buffer-typed operand makes the op element-wise over buffers.
+                if let Some(op) = match name.as_str() {
+                    "min" => Some(BinArith::Min),
+                    "max" => Some(BinArith::Max),
+                    "atan2" => Some(BinArith::Atan2),
+                    _ => None,
+                } {
+                    if call_args.len() != 2 {
+                        return Err(CompileError::Type {
+                            msg: format!("`{name}` expects 2 arguments, got {}", call_args.len()),
+                            span: *span,
+                        });
+                    }
+                    let (a_reg, a_ty) = self.lower_value(&call_args[0])?;
+                    let (b_reg, b_ty) = self.lower_value(&call_args[1])?;
+                    let buffer_op =
+                        matches!(a_ty, ValueTy::Buffer) || matches!(b_ty, ValueTy::Buffer);
+                    if buffer_op {
+                        let a = self.buffer_operand(a_reg, &a_ty)?;
+                        let b = self.buffer_operand(b_reg, &b_ty)?;
+                        let dst = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueBufferBin { dst, op, a, b });
+                        return Ok((dst, ValueTy::Buffer));
+                    }
+                    // Scalar `atan2`/`min`/`max` over value-track scalars: not
+                    // wired in v1 (the interpreter has no scalar atan2).
+                    if name == "atan2" {
+                        return Err(CompileError::Type {
+                            msg: "`atan2` over scalar values is not supported; use buffers".into(),
+                            span: *span,
+                        });
+                    }
+                }
                 // Boolean negation: `not b` — a prefix value-track builtin
                 // (the `!` token stays the signal wire-cut combinator).
                 if name == "not" {
@@ -5262,6 +5296,7 @@ impl<'a> Lowerer<'a> {
             "%" => Some(BinArith::Rem),
             "min" => Some(BinArith::Min),
             "max" => Some(BinArith::Max),
+            "atan2" => Some(BinArith::Atan2),
             _ => None,
         };
         if let Some(op) = bin {
@@ -5739,7 +5774,7 @@ impl<'a> Lowerer<'a> {
             Expr::Cut(_) => (1, 0),
             Expr::Neg(inner, _) => self.arity_with(inner, visited)?,
             Expr::Ref(name, _) => match name.as_str() {
-                "+" | "-" | "*" | "/" | "%" | "min" | "max" => (2, 1),
+                "+" | "-" | "*" | "/" | "%" | "min" | "max" | "atan2" => (2, 1),
                 "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
                 _ => {
                     if let Some((ins, outs)) = self.ffi_arity(name) {

@@ -7,7 +7,6 @@ pub use rill_core_dsp;
 pub use rill_digital_effects;
 pub use rill_graph;
 pub use rill_patchbay;
-pub use rill_router;
 
 #[cfg(feature = "io")]
 pub use rill_io as io;

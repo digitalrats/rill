@@ -24,7 +24,6 @@ rill-core-actor = { workspace = true }
 rill-core-dsp = { workspace = true }
 rill-graph = { workspace = true }
 rill-digital-effects = { workspace = true }
-rill-router = { workspace = true, features = ["lang"] }
 rill-patchbay = { workspace = true }
 dashmap = { version = "6", optional = true }
 

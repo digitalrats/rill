@@ -57,7 +57,7 @@ fn foreign_fn_declaration_parses() {
     // `foreign fn name : TypeExpr;` — a carried signal signature. Parsing alone
     // is the bar here; resolution lands in Task 4.
     let src = r#"
-        foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+        foreign fn biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = 1.0;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -70,19 +70,20 @@ fn foreign_fn_declaration_parses() {
             _ => None,
         })
         .expect("foreign fn biquad not found");
-    // Pin the flat-curried signature shape: `FixedBuffer f32 -> Float -> Float
-    // -> Float -> FixedBuffer f32`.
+    // Pin the flat-curried signature shape: `Float -> Float -> Float -> Float
+    // -> FixedBuffer f32 -> FixedBuffer f32` (buffer-LAST: signal trails).
     assert_eq!(
         foreign,
         &rill_lang::ast::TypeExpr::TFunc(
             vec![
+                rill_lang::ast::TypeExpr::TName("Float".into()),
+                rill_lang::ast::TypeExpr::TName("Float".into()),
+                rill_lang::ast::TypeExpr::TName("Float".into()),
+                rill_lang::ast::TypeExpr::TName("Float".into()),
                 rill_lang::ast::TypeExpr::TApp(
                     "FixedBuffer".into(),
                     vec![rill_lang::ast::TypeExpr::TName("f32".into())]
                 ),
-                rill_lang::ast::TypeExpr::TName("Float".into()),
-                rill_lang::ast::TypeExpr::TName("Float".into()),
-                rill_lang::ast::TypeExpr::TName("Float".into()),
             ],
             Box::new(rill_lang::ast::TypeExpr::TApp(
                 "FixedBuffer".into(),
@@ -97,13 +98,14 @@ fn foreign_sig_describes_signal_and_scalar_params() {
     use rill_lang::ast::TypeExpr;
     use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 
-    // `FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32`
+    // `Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32` — the
+    // signal channel trails the scalar params (buffer-LAST).
     let te = TypeExpr::TFunc(
         vec![
+            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Float".into()),
             TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("Float".into())]),
-            TypeExpr::TName("Float".into()),
-            TypeExpr::TName("Float".into()),
-            TypeExpr::TName("Float".into()),
         ],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
@@ -112,8 +114,10 @@ fn foreign_sig_describes_signal_and_scalar_params() {
     );
     let sig = ffi_sig_from_typeexpr("biquad", &te).expect("FFI sig");
     assert_eq!(sig.params.len(), 4);
-    assert!(matches!(sig.params[0], FfiParam::Signal));
+    assert!(matches!(sig.params[0], FfiParam::Scalar));
     assert!(matches!(sig.params[1], FfiParam::Scalar));
+    assert!(matches!(sig.params[2], FfiParam::Scalar));
+    assert!(matches!(sig.params[3], FfiParam::Signal));
     assert_eq!(sig.signal_outs, 1);
     assert_eq!(sig.param_names, vec!["type", "cutoff", "q"]);
 }
@@ -125,7 +129,7 @@ fn foreign_sig_from_parser_flat_curried_form() {
     // Feed the real parser output into the descriptor to pin that compatibility.
     use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 
-    let src = "foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32; main = 1.0;";
+    let src = "foreign fn biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32; main = 1.0;";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let sig = prog
@@ -137,9 +141,12 @@ fn foreign_sig_from_parser_flat_curried_form() {
         })
         .expect("foreign fn biquad not found");
     let ffi = ffi_sig_from_typeexpr("biquad", sig).expect("FFI sig from parser output");
-    assert_eq!(ffi.params.len(), 4);
-    assert!(matches!(ffi.params[0], FfiParam::Signal));
+    assert_eq!(ffi.params.len(), 5);
+    assert!(matches!(ffi.params[0], FfiParam::Scalar));
     assert!(matches!(ffi.params[1], FfiParam::Scalar));
+    assert!(matches!(ffi.params[2], FfiParam::Scalar));
+    assert!(matches!(ffi.params[3], FfiParam::Scalar));
+    assert!(matches!(ffi.params[4], FfiParam::Signal));
     assert_eq!(ffi.signal_outs, 1);
 }
 
@@ -149,7 +156,7 @@ fn foreign_decl_registers_into_type_env() {
     // via the shared `register_decls` path (the same path inference phase 1 uses).
     // This is the compiler state Task 4 (infer foreign names) will consume.
     let src = r#"
-        foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+        foreign fn biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = 1.0;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -165,11 +172,11 @@ fn foreign_decl_registers_into_type_env() {
 
 #[test]
 fn foreign_fn_types_as_signal_arrow() {
-    // `gain : FixedBuffer f32 -> Float -> FixedBuffer f32` applied to a wire and
-    // a constant — types as a 1→1 signal arrow.
+    // `gain : Float -> FixedBuffer f32 -> FixedBuffer f32` applied to a constant
+    // and a wire — types as a 1→1 signal arrow (buffer-LAST: the signal trails).
     let src = r#"
-        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
-        main = gain _ 0.5;
+        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        main = gain 0.5 _;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -181,10 +188,12 @@ fn foreign_fn_types_as_signal_arrow() {
 
 #[test]
 fn foreign_fn_wrong_arity_is_error() {
-    // `gain` takes 1 signal + 1 scalar = 2 args; a 1-arg call is a type error.
+    // `onepole` takes 2 scalars + 1 signal = 3 args; a 1-arg call is a type
+    // error (omitting a scalar is an arity error — only a TRAILING run of
+    // omitted signals may be combinator-fed).
     let src = r#"
-        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
-        main = gain _;
+        foreign fn onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+        main = onepole 200.0;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -199,14 +208,14 @@ fn foreign_fn_wrong_arity_is_error() {
 
 #[test]
 fn foreign_fn_lowers_to_callblock() {
-    // Lower `gain _ 0.5` and assert the IR contains a CallBlock referencing the
+    // Lower `gain 0.5 _` and assert the IR contains a CallBlock referencing the
     // `gain` builtin with one signal input; the scalar param 0.5 is an ordinary
     // value-track argument (not a folded param).
     use rill_lang::lower::lower_with_cafs;
 
     let src = r#"
-        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
-        main = gain _ 0.5;
+        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        main = gain 0.5 _;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -247,10 +256,10 @@ fn foreign_fn_signal_slot_rejects_value() {
     // A VALUE-channel expression in a Signal slot is a type error (rate check).
     // Note: a bare Float literal is itself a Signal-rate constant signal
     // (0-in generator), so the rejection needs a genuine Value expression —
-    // here a String literal.
+    // here a String literal in the trailing signal slot.
     let src = r#"
-        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
-        main = gain "oops" 0.5;
+        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        main = gain 0.5 "oops";
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -265,14 +274,14 @@ fn foreign_fn_signal_slot_rejects_value() {
 
 #[test]
 fn foreign_fn_multi_signal_wires_distinct_inputs() {
-    // `cross _ _ 0.5` — two distinct signal inputs must wire to two registers,
+    // `cross 0.5 _ _` — two distinct signal inputs must wire to two registers,
     // not both to the first (the k-th Wire in a Signal slot binds the k-th
     // wiring register).
     use rill_lang::lower::lower_with_cafs;
 
     let src = r#"
-        foreign fn cross : FixedBuffer f32 -> FixedBuffer f32 -> Float -> FixedBuffer f32;
-        main = cross _ _ 0.5;
+        foreign fn cross : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+        main = cross 0.5 _ _;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -400,8 +409,8 @@ fn foreign_fn_runs_end_to_end() {
     });
 
     let src = r#"
-        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
-        main = gain _ 0.5;
+        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        main = gain 0.5 _;
     "#;
     let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
@@ -410,110 +419,13 @@ fn foreign_fn_runs_end_to_end() {
 }
 
 #[test]
-fn foreign_fn_multichannel_runs_end_to_end() {
-    use rill_core::traits::MultichannelAlgorithm;
-    use rill_lang::builtin::MultichannelBlockBuiltin;
-    use rill_lang::ffi::ForeignRegistry;
-
-    // A 2→1 foreign builtin: sums two input channels.
-    struct Add;
-    impl<T: rill_core::math::Transcendental> MultichannelAlgorithm<T> for Add {
-        fn num_inputs(&self) -> usize {
-            2
-        }
-        fn num_outputs(&self) -> usize {
-            1
-        }
-        fn process(
-            &mut self,
-            inputs: &[&[T]],
-            outputs: &mut [&mut [T]],
-        ) -> rill_core::ProcessResult<()> {
-            for i in 0..outputs[0].len() {
-                outputs[0][i] = inputs[0][i] + inputs[1][i];
-            }
-            Ok(())
-        }
-        fn reset(&mut self) {}
-    }
-    impl<T: rill_core::math::Transcendental> MultichannelBlockBuiltin<T> for Add {}
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    ffi.register_multichannel_block("add", |_ins: usize, _p: &[f64], _sr: f32, _alloc| {
-        Box::new(Add)
-    });
-
-    let src = r#"
-        foreign fn add : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
-        main = add _ _;
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(
-        &mut prog,
-        &[&[1.0, 2.0, 3.0, 4.0], &[10.0, 20.0, 30.0, 40.0]],
-        &mut [&mut out],
-    )
-    .unwrap();
-    assert_eq!(out, [11.0, 22.0, 33.0, 44.0]);
-}
-
-#[test]
-fn complex_ops_build_with_block_factory() {
-    // `conj` is a 2→2 builtin registered as a Block factory. Variant selection
-    // must follow FACTORY KIND, not signal arity — otherwise
-    // `build_multichannel_block` finds no matching variant, `compile_with_ffi`
-    // returns CompileError::Unsupported("foreign built-in 'conj' is not
-    // registered"), and the `.unwrap()` below panics at build.
-    use rill_core::traits::Algorithm;
-    use rill_lang::builtin::BlockBuiltin;
-    use rill_lang::ffi::ForeignRegistry;
-
-    struct Conj;
-    impl<T: rill_core::math::Transcendental> Algorithm<T> for Conj {
-        fn process(
-            &mut self,
-            input: Option<&[T]>,
-            output: &mut [T],
-        ) -> rill_core::ProcessResult<()> {
-            let x = input.unwrap_or(&[]);
-            output[..x.len()].copy_from_slice(x);
-            for o in output[x.len()..].iter_mut() {
-                *o = T::ZERO;
-            }
-            Ok(())
-        }
-        fn reset(&mut self) {}
-    }
-    impl<T: rill_core::math::Transcendental> BlockBuiltin<T> for Conj {}
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    ffi.register_block("conj", |_p: &[f64], _sr: f32, _alloc| Box::new(Conj));
-
-    let src = r#"
-        foreign fn conj : FixedBuffer f32 -> FixedBuffer f32 -> Pair (FixedBuffer f32) (FixedBuffer f32);
-        main = conj _ _;
-    "#;
-    // Must compile and run, not panic at build.
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(
-        &mut prog,
-        &[&[1.0, 2.0, 3.0, 4.0], &[5.0, 6.0, 7.0, 8.0]],
-        &mut [&mut out],
-    )
-    .unwrap();
-    assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
-}
-
-#[test]
 fn foreign_fn_not_registered_is_compile_error() {
     use rill_lang::ffi::ForeignRegistry;
 
     let ffi = ForeignRegistry::<f32>::new();
     let src = r#"
-        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
-        main = gain _ 0.5;
+        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        main = gain 0.5 _;
     "#;
     let err = match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
         Err(e) => e,
@@ -541,26 +453,12 @@ fn builtin_catalog_is_auto_registered() {
 }
 
 #[test]
-fn builtin_catalog_complex_ops_resolve() {
-    // `complex` and `norm` are catalog entries: the combinator style
-    // `complex 3.0 4.0 : norm` must infer (complex 0→2, norm bare-ref 2→1).
-    let src = r#"
-        main = complex 3.0 4.0 : norm;
-    "#;
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 0);
-    assert_eq!(typed.process_ty.arity_out(), 1);
-}
-
-#[test]
 fn signal_input_builtin_legacy_call_style_sugar() {
     // `_ : onepole 200.0 0.7` — the legacy combinator style must desugar to
-    // `onepole _ 200.0 0.7` (positional signal arg), so the FFI declaration
+    // `onepole 200.0 0.7 _` (signal arg appended), so the FFI declaration
     // types and lowers without rewriting the program.
     let src = r#"
-        foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+        foreign fn onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = _ : onepole 200.0 0.7;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -601,9 +499,9 @@ fn combinator_sugar_binds_loop_operand() {
 #[test]
 fn combinator_sugar_binds_par_operand_with_two_signals() {
     // `_, _ : crossfade 0.5` — a 2-signal-in builtin (user-declared FFI) binds
-    // BOTH leading wires; the trailing scalar stays a call arg.
+    // the two trailing wires; the leading scalar stays a call arg.
     let src = r#"
-        foreign fn crossfade : FixedBuffer f32 -> FixedBuffer f32 -> Float -> FixedBuffer f32;
+        foreign fn crossfade : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
         main = _, _ : crossfade 0.5;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -643,10 +541,11 @@ fn combinator_sugar_binds_merge_operand() {
 
 #[test]
 fn combinator_sugar_does_not_double_bind_positional_call() {
-    // `_ : onepole _ 200.0 0.7` — the signal arg is already supplied
-    // positionally; the sugar must leave the call alone.
+    // `_ : onepole 200.0 0.7 _` — the signal arg is already supplied
+    // positionally (scalars then the trailing wire, buffer-LAST); the sugar
+    // must leave the call alone.
     let src = r#"
-        main = _ : onepole _ 200.0 0.7;
+        main = _ : onepole 200.0 0.7 _;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -657,11 +556,12 @@ fn combinator_sugar_does_not_double_bind_positional_call() {
 
 #[test]
 fn combinator_sugar_binds_gain_scalar_only_call() {
-    // `_ : gain 0.5` — a foreign with ONE leading signal param and ONE scalar.
-    // The supplied arg is exactly the trailing scalar; the sugar prepends the
-    // single wire (`gain _ 0.5`), not zero (the supplied arg is NOT a signal).
+    // `_ : gain 0.5` — a foreign with one leading scalar param and one trailing
+    // signal. The supplied arg is exactly the leading scalar; the sugar appends
+    // the single wire (`gain 0.5 _`), not zero (the supplied arg is NOT a
+    // signal).
     let src = r#"
-        foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = _ : gain 0.5;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -708,7 +608,7 @@ fn combinator_sugar_binds_delay_lhs() {
     // `onepole 200.0 0.7 @ 3` — the Delay (`@`) combinator's lhs is a foreign
     // builtin used as an arrow; the sugar must bind its missing signal wire.
     let src = r#"
-        foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
+        foreign fn onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = _ : onepole 200.0 0.7 @ 3;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -720,11 +620,11 @@ fn combinator_sugar_binds_delay_lhs() {
 
 #[test]
 fn builtin_catalog_registers_record_data_types() {
-    // The record types the catalog's record-param builtins need (mixer/eq/
-    // dry_wet) register as `data` declarations — Task 4's record-param
-    // lowering reads them from `TypeEnv::data_types`.
+    // The record types the catalog's record-param builtin (`eq_parametric`)
+    // needs register as `data` declarations — Task 4's record-param lowering
+    // reads them from `TypeEnv::data_types`.
     let env = TypeEnv::with_builtins();
-    for name in ["MixerConfig", "EqBand", "EqConfig", "DryWetConfig"] {
+    for name in ["EqBand", "EqConfig"] {
         assert!(
             env.data_types.contains_key(name),
             "catalog data type `{name}` must be registered"
@@ -771,11 +671,11 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
         "biquad",
         &TypeExpr::TFunc(
             vec![
+                f("Float"),
+                f("Float"),
+                f("Float"),
+                f("Float"),
                 fb("FixedBuffer"),
-                f("Float"),
-                f("Float"),
-                f("Float"),
-                f("Float"),
             ],
             Box::new(out.clone()),
         ),
@@ -784,15 +684,12 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
     assert_eq!(sig.param_names, vec!["type", "cutoff", "q", "gain_db"]);
 
     let sig = ffi_sig_from_typeexpr(
-        "dry_wet",
-        &TypeExpr::TFunc(
-            vec![fb("FixedBuffer"), fb("FixedBuffer"), f("DryWetConfig")],
-            Box::new(out),
-        ),
+        "eq_parametric",
+        &TypeExpr::TFunc(vec![f("EqConfig"), fb("FixedBuffer")], Box::new(out)),
     )
-    .expect("dry_wet FFI sig");
-    // dry_wet's record config has no scalar display names (legacy param_names
-    // was empty) — the record flattens through its schema at lowering.
+    .expect("eq_parametric FFI sig");
+    // eq_parametric's record config has no scalar display names — the record
+    // flattens through its schema at lowering.
     assert!(sig.param_names.is_empty());
 }
 
@@ -805,9 +702,9 @@ fn ffi_sig_param_names_fallback_to_index_for_unknown() {
 
     let te = TypeExpr::TFunc(
         vec![
+            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Float".into()),
             TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]),
-            TypeExpr::TName("Float".into()),
-            TypeExpr::TName("Float".into()),
         ],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
@@ -849,13 +746,14 @@ fn ffi_record_schema_reads_data_types() {
     use rill_lang::types::ffi::{ffi_record_schema, FfiScalar};
 
     let env = TypeEnv::with_builtins();
-    let schema = ffi_record_schema(&env, "MixerConfig").expect("MixerConfig schema");
+    let schema = ffi_record_schema(&env, "EqConfig").expect("EqConfig schema");
     assert_eq!(
         schema.fields,
-        vec![
-            ("buses".to_string(), FfiScalar::Int, Some(0.0)),
-            ("master_vol".to_string(), FfiScalar::Float, Some(1.0)),
-        ]
+        vec![(
+            "bands".to_string(),
+            FfiScalar::BandList("EqBand".to_string()),
+            None
+        )]
     );
     assert!(ffi_record_schema(&env, "NoSuchType").is_none());
 }
@@ -865,29 +763,41 @@ fn record_param_infer_accepts_record_literal() {
     // The FFI infer arm validates a Record param's arg is a record literal of
     // the named data type (previously an unconditional SP-3b error).
     let src = r#"
-        foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
-        main = dry_wet _ _ { mix: 0.5 };
+        foreign fn eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+        main = eq_parametric { bands: [] } _;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 2);
-    assert_eq!(typed.process_ty.arity_out(), 2);
+    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_out(), 1);
 }
 
 #[test]
 fn record_param_flattens_schema_fields() {
-    // `dry_wet` takes a DryWetConfig record `{ mix: 0.5 }` → one f64 param.
+    // `eq_parametric` takes an EqConfig record whose `bands: List EqBand`
+    // flattens each band's schema fields (4 per band) into the folded param
+    // list — two bands → 8 f64s.
     let src = r#"
-        foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
-        main = dry_wet _ _ { mix: 0.5 };
+        foreign fn eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+        main = eq_parametric { bands: [
+            { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 },
+            { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
+        ] } _;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
-    let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
-    assert_eq!(bi.params, vec![0.5]);
+    let bi = ir
+        .builtins
+        .iter()
+        .find(|b| b.name == "eq_parametric")
+        .unwrap();
+    assert_eq!(
+        bi.params,
+        vec![1000.0, 1.0, 0.0, 0.0, 3000.0, 1.0, -3.0, 4.0]
+    );
 }
 
 #[test]
@@ -910,8 +820,8 @@ fn record_param_missing_fields_use_zero_defaults() {
 #[test]
 fn record_param_rejects_non_record_arg() {
     let src = r#"
-        foreign fn dry_wet : FixedBuffer f32 -> FixedBuffer f32 -> DryWetConfig -> Pair (FixedBuffer f32) (FixedBuffer f32);
-        main = dry_wet _ _ 0.5;
+        foreign fn eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+        main = eq_parametric 0.5 _;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -979,41 +889,6 @@ fn foreign_variadic_signal_merge_accepts_channels() {
 // --- SP-3b Task 7: record defaults + List EqBand band-list (router migration) ---
 
 #[test]
-fn ffi_record_schema_carries_legacy_defaults() {
-    // Follow-up A (Task 4 review): the FFI record schema must carry the legacy
-    // RecordField defaults (dry_wet mix 0.5, mixer buses 0 / master_vol 1.0) —
-    // otherwise a migrated omitted-field default silently becomes 0.0.
-    use rill_lang::types::ffi::ffi_record_schema;
-
-    let env = TypeEnv::with_builtins();
-    let mixer = ffi_record_schema(&env, "MixerConfig").expect("MixerConfig schema");
-    assert_eq!(
-        mixer.fields,
-        vec![
-            (
-                "buses".to_string(),
-                rill_lang::types::ffi::FfiScalar::Int,
-                Some(0.0)
-            ),
-            (
-                "master_vol".to_string(),
-                rill_lang::types::ffi::FfiScalar::Float,
-                Some(1.0)
-            ),
-        ]
-    );
-    let dry_wet = ffi_record_schema(&env, "DryWetConfig").expect("DryWetConfig schema");
-    assert_eq!(
-        dry_wet.fields,
-        vec![(
-            "mix".to_string(),
-            rill_lang::types::ffi::FfiScalar::Float,
-            Some(0.5)
-        )]
-    );
-}
-
-#[test]
 fn ffi_record_schema_bandlist_field() {
     // Follow-up B (Task 4 review): `EqConfig = { bands: List EqBand }` — the
     // list-of-record field must be representable in the schema (a `BandList`
@@ -1045,51 +920,22 @@ fn ffi_record_schema_bandlist_field() {
 }
 
 #[test]
-fn ffi_sig_accepts_mixer_variadic_record() {
-    // Step 2 (option a): `List (FixedBuffer f32) -> MixerConfig -> Pair ...` —
-    // a LEADING VariadicSignal followed only by a record param is valid (the
-    // variadic is the mixer's signal channels, the record the config scalar).
-    use rill_lang::ast::TypeExpr;
-    use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
-
-    let te = TypeExpr::TFunc(
-        vec![
-            TypeExpr::TApp(
-                "List".into(),
-                vec![TypeExpr::TApp(
-                    "FixedBuffer".into(),
-                    vec![TypeExpr::TName("f32".into())],
-                )],
-            ),
-            TypeExpr::TName("MixerConfig".into()),
-        ],
-        Box::new(TypeExpr::TApp(
-            "Pair".into(),
-            vec![
-                TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]),
-                TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]),
-            ],
-        )),
-    );
-    let sig = ffi_sig_from_typeexpr("mixer", &te).expect("mixer FFI sig");
-    assert!(matches!(&sig.params[0], FfiParam::VariadicSignal));
-    assert!(matches!(&sig.params[1], FfiParam::Record(ty) if ty == "MixerConfig"));
-    assert_eq!(sig.signal_outs, 2);
-}
-
-#[test]
 fn record_default_ffi_applies() {
-    // Follow-up A end-to-end: `dry_wet { }` (empty record) must apply the
-    // legacy `mix: 0.5` default — not silently 0.0.
+    // Follow-up A end-to-end: omitted BAND fields in a `bands` list must apply
+    // the legacy `EqBand` defaults (`freq: 1000.0`) — not silently 0.0.
     let src = r#"
-        main = _ , _ : dry_wet { };
+        main = _ : eq_parametric { bands: [ { q: 2.0 } ] };
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
-    let bi = ir.builtins.iter().find(|b| b.name == "dry_wet").unwrap();
-    assert_eq!(bi.params, vec![0.5]);
+    let bi = ir
+        .builtins
+        .iter()
+        .find(|b| b.name == "eq_parametric")
+        .unwrap();
+    assert_eq!(bi.params, vec![1000.0, 2.0, 0.0, 0.0]);
 }
 
 #[test]
@@ -1137,101 +983,9 @@ fn analog_moog_ffi_end_to_end() {
     );
 }
 
-// --- SP-3b Task 7: rill-router FFI E2E (mixer/eq_parametric/dry_wet) ---
+// --- SP-3b Task 7: EQ FFI E2E (graphic_eq / eq_parametric) ---
 
-#[test]
-fn dry_wet_ffi_end_to_end() {
-    // `dry_wet` is in the catalog; `register_foreign_router` registers its
-    // factory, so `_ , _ : dry_wet { mix: 0.5 }` compiles and runs through the
-    // FFI path. mix 0.5 → output = dry·0.5 + wet·0.5 (both L and R).
-    use rill_lang::ffi::ForeignRegistry;
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    rill_router::register::register_foreign_router(&mut ffi);
-
-    let src = r#"
-        main = _ , _ : dry_wet { mix: 0.5 };
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let dry = [2.0f32; 4];
-    let wet = [4.0f32; 4];
-    let mut l = [0.0f32; 4];
-    let mut r = [0.0f32; 4];
-    let inputs: [&[f32]; 2] = [&dry, &wet];
-    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
-    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
-    assert!(
-        (l[0] - 3.0).abs() < 1e-5,
-        "mix=0.5 must blend dry(2) and wet(4) to 3.0, got l[0]={}",
-        l[0]
-    );
-    assert!(
-        (r[0] - 3.0).abs() < 1e-5,
-        "both outputs receive the blend, got r[0]={}",
-        r[0]
-    );
-}
-
-#[test]
-fn mixer_ffi_end_to_end() {
-    // `mixer` (variadic signal + `MixerConfig` record) is in the catalog; the
-    // factory is registered via `register_foreign_router`. The 2-in stereo sum
-    // runs and yields 2 outs (master_vol 1.0, default channel vol 0.8).
-    use rill_lang::ffi::ForeignRegistry;
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    rill_router::register::register_foreign_router(&mut ffi);
-
-    let src = r#"
-        main = (_, _) :> mixer { buses: 0, master_vol: 1.0 };
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let ch0 = [1.0f32; 4];
-    let ch1 = [2.0f32; 4];
-    let mut l = [0.0f32; 4];
-    let mut r = [0.0f32; 4];
-    let inputs: [&[f32]; 2] = [&ch0, &ch1];
-    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
-    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
-    // channel_vols default 0.8 · master_vol 1.0 → (1 + 2)·0.8 = 2.4.
-    assert!(
-        (l[0] - 2.4).abs() < 1e-5,
-        "mixer stereo sum: l[0]={}, expected ~2.4",
-        l[0]
-    );
-    assert!(r.iter().all(|v| v.is_finite()));
-}
-
-#[test]
-fn mixer_ffi_explicit_wires_not_doubled() {
-    // `mixer _ _ { ... }` — the FFI positional style supplies the signal
-    // channels as explicit wire call args. The variadic lowering must consume
-    // each explicit wire once and then stop (a regression: the combinator-fed
-    // while-loop re-pushed already-consumed wires, doubling signal_ins → a
-    // 2-channel mix computed as 4 channels, 4.8 instead of 2.4).
-    use rill_lang::ffi::ForeignRegistry;
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    rill_router::register::register_foreign_router(&mut ffi);
-
-    let src = r#"
-        main = mixer _ _ { buses: 0, master_vol: 1.0 };
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let ch0 = [1.0f32; 4];
-    let ch1 = [2.0f32; 4];
-    let mut l = [0.0f32; 4];
-    let mut r = [0.0f32; 4];
-    let inputs: [&[f32]; 2] = [&ch0, &ch1];
-    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
-    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
-    assert!(
-        (l[0] - 2.4).abs() < 1e-5,
-        "mixer explicit-wire stereo sum must be ~2.4, got l[0]={}",
-        l[0]
-    );
-}
-
+#[cfg(feature = "dsp")]
 #[test]
 fn eq_parametric_ffi_end_to_end() {
     // `eq_parametric` with a `bands` list — the BandList flattening (Follow-up
@@ -1239,9 +993,10 @@ fn eq_parametric_ffi_end_to_end() {
     // the first sample unchanged (b0 = 1); the run proves the band config
     // reached the factory.
     use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_eq;
 
     let mut ffi = ForeignRegistry::<f32>::new();
-    rill_router::register::register_foreign_router(&mut ffi);
+    register_foreign_eq(&mut ffi);
 
     let src = r#"
         main = _ : eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] };
@@ -1366,7 +1121,7 @@ fn digital_effects_delay_live_param_reaches_algorithm() {
     register_foreign_digital_effects(&mut ffi);
 
     let src = r#"
-        main i1 = do { writeOutput 0 (delay i1 ?t 0.0 1.0); return () };
+        main i1 = do { writeOutput 0 (delay ?t 0.0 1.0 i1); return () };
     "#;
     let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
 
@@ -1664,40 +1419,6 @@ fn tape_loop_read_head_compiles_and_runs() {
 
 #[test]
 #[ignore = "resource/tape deferred: architectural issues"]
-fn tape_loop_write_read_share_one_cell() {
-    // A NAMED tape binding (`tape = tape_loop 1024`) creates one cell; both
-    // `write_head` and `read_head` reference it by name, so they share one
-    // buffer. Writing constant samples must make the read head eventually
-    // return non-zero taps (delay 0.1s at 44.1 kHz = 4410 samples ≈ 69 blocks).
-    use rill_lang::ffi::ForeignRegistry;
-    use rill_sampler::tape::lang::register_tape_ffi;
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    register_tape_ffi(&mut ffi);
-
-    // write_head (2-in: dry+fb) and read_head (0-in) run in parallel; both bind
-    // the SAME named tape (one cell per name).
-    let src = r#"
-        tape = tape_loop 1024;
-        main = write_head _ _ tape 0.0 0.0, read_head tape 0.1;
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let dry = [1.0f32; 64];
-    let fb = [0.0f32; 64];
-    let mut out = [0.0f32; 64];
-    // Warm up past the 0.1s delay, then observe the read head's output channel.
-    for _ in 0..120 {
-        MultichannelAlgorithm::process(&mut prog, &[&dry, &fb], &mut [&mut [0.0f32; 64], &mut out])
-            .unwrap();
-    }
-    assert!(
-        out.iter().any(|v| v.abs() > 1e-3),
-        "read_head must see the write head's samples through the named shared cell, got {out:?}"
-    );
-}
-
-#[test]
-#[ignore = "resource/tape deferred: architectural issues"]
 fn inline_tape_loop_calls_are_distinct_tapes() {
     // Two INLINE `tape_loop <capacity>` occurrences are DISTINCT tapes (each
     // constructor call allocates a fresh cell). Two read heads on two inline
@@ -1804,46 +1525,18 @@ fn main_is_not_extracted_as_tape_declaration() {
     }
 }
 
-// --- SP-3b Task 12 follow-ups: mixer 3+ channels, eq 2+ bands ---
+// --- SP-3b Task 12 follow-up: eq 2+ bands ---
 
-#[test]
-fn mixer_ffi_three_channels() {
-    // `mixer` is a variadic-signal builtin: 3 channels in → 2 outs (bus + master
-    // vol 1.0). Regression guard for variadic channel counting past 2.
-    use rill_lang::ffi::ForeignRegistry;
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    rill_router::register::register_foreign_router(&mut ffi);
-
-    let src = r#"
-        main = mixer _ _ _ { buses: 0, master_vol: 1.0 };
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let ch0 = [1.0f32; 4];
-    let ch1 = [2.0f32; 4];
-    let ch2 = [3.0f32; 4];
-    let mut l = [0.0f32; 4];
-    let mut r = [0.0f32; 4];
-    let inputs: [&[f32]; 3] = [&ch0, &ch1, &ch2];
-    let mut outputs: [&mut [f32]; 2] = [&mut l, &mut r];
-    MultichannelAlgorithm::process(&mut prog, &inputs, &mut outputs).unwrap();
-    // channel_vols default 0.8 · master_vol 1.0 → (1 + 2 + 3)·0.8 = 4.8.
-    assert!(
-        (l[0] - 4.8).abs() < 1e-5,
-        "3-channel mixer sum: l[0]={}, expected ~4.8",
-        l[0]
-    );
-    assert!(r.iter().all(|v| v.is_finite()));
-}
-
+#[cfg(feature = "dsp")]
 #[test]
 fn eq_parametric_ffi_two_bands() {
     // `eq_parametric` with TWO bands: the BandList flattening must feed both
     // bands' params to the factory in order (2·4 = 8 f64s) and run finite.
     use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register::register_foreign_eq;
 
     let mut ffi = ForeignRegistry::<f32>::new();
-    rill_router::register::register_foreign_router(&mut ffi);
+    register_foreign_eq(&mut ffi);
 
     let src = r#"
         main = _ : eq_parametric { bands: [

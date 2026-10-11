@@ -90,6 +90,13 @@ pub trait Transcendental: Scalar {
         (e2x - Self::ONE) / (e2x + Self::ONE)
     }
 
+    /// Compute the four-quadrant arctangent of `y / x` (the angle of the point
+    /// `(x, y)`). Implemented through the native `f64::atan2` so scalar types
+    /// without a SIMD path get the same quadrant-correct result.
+    fn atan2(self, x: Self) -> Self {
+        Self::from_f64(self.to_f64().atan2(x.to_f64()))
+    }
+
     /// Return the sign of the value: -1, 0, or 1.
     fn signum(self) -> Self;
 

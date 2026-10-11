@@ -4,8 +4,8 @@
 //! cascaded biquad EQ the rill-lang foreign decl `eq_parametric : FixedBuffer
 //! f32 -> EqConfig -> FixedBuffer f32` lowers into.
 
+use crate::builtin::BlockBuiltin;
 use rill_core::math::Transcendental;
-use rill_lang::builtin::BlockBuiltin;
 
 /// Biquad filter type for EQ bands.
 pub enum BandType {

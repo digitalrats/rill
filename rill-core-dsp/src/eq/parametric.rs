@@ -2,7 +2,7 @@
 
 use super::band::{BandType, EqBand};
 use super::FilterFactory;
-use crate::{Filter, FilterType};
+use crate::filters::{Filter, FilterType};
 use rill_core::{Error, ErrorCode};
 
 /// Parametric equalizer with configurable bands

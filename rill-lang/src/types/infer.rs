@@ -2747,7 +2747,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
     ) {
         return Ok(ArrowTy::uniform(1, 1, ValueTy::Buffer));
     }
-    if matches!(name, "min" | "max") {
+    if matches!(name, "min" | "max" | "atan2") {
         let s = ctx.fresh_vty();
         return Ok(ArrowTy::uniform(2, 1, s));
     }
@@ -3137,6 +3137,19 @@ fn infer_apply_impl(
             });
         }
         return Ok(ArrowTy::value_channel(ValueTy::Bool));
+    }
+    // Binary elementwise buffer ops (`atan2 y x`, `min a b`, `max a b`): each
+    // operand may be a Buffer computation or a scalar constant (broadcast), so
+    // type them as 2→1 over a fresh value type and let the lowering pin it.
+    if matches!(name, "atan2" | "min" | "max") {
+        if args.len() != 2 {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` expects 2 arguments, got {}", args.len()),
+                span,
+            });
+        }
+        let s = ctx.fresh_vty();
+        return Ok(ArrowTy::uniform(2, 1, s));
     }
     if name == "smooth" {
         if args.len() != 2 {

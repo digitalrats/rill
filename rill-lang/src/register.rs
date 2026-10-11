@@ -1,194 +1,12 @@
-//! Self-registration for rill-lang's own builtins (complex) + the FFI
-//! factories for the DSP crates (rill-digital-effects, rill-core-dsp).
+//! Self-registration for the FFI factories of the DSP crates
+//! (rill-digital-effects, rill-core-dsp).
 
+#[cfg(feature = "dsp")]
 use crate::builtin::{BlockBuiltin, Registry};
+#[cfg(any(feature = "dsp", feature = "model"))]
 use rill_core::math::Transcendental;
+#[cfg(any(feature = "dsp", feature = "model"))]
 use rill_core::traits::{Algorithm, ProcessResult};
-
-// ============================================================================
-// Complex number built-in structs
-// ============================================================================
-
-struct ComplexConjBuiltin;
-impl<T: Transcendental> Algorithm<T> for ComplexConjBuiltin {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = inp.len().min(output.len()) / 2;
-                for i in 0..n {
-                    output[2 * i] = inp[2 * i];
-                    output[2 * i + 1] = -inp[2 * i + 1];
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexConjBuiltin {}
-
-struct ComplexReBuiltin;
-impl<T: Transcendental> Algorithm<T> for ComplexReBuiltin {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = inp.len().min(output.len() * 2) / 2;
-                for i in 0..n {
-                    output[i] = inp[2 * i];
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexReBuiltin {}
-
-struct ComplexImBuiltin;
-impl<T: Transcendental> Algorithm<T> for ComplexImBuiltin {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = inp.len().min(output.len() * 2) / 2;
-                for i in 0..n {
-                    output[i] = inp[2 * i + 1];
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexImBuiltin {}
-
-struct ComplexNormBuiltin;
-impl<T: Transcendental> Algorithm<T> for ComplexNormBuiltin {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = inp.len().min(output.len() * 2) / 2;
-                for i in 0..n {
-                    let re = inp[2 * i];
-                    let im = inp[2 * i + 1];
-                    output[i] = (re * re + im * im).sqrt();
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexNormBuiltin {}
-
-struct ComplexArgBuiltin;
-impl<T: Transcendental> Algorithm<T> for ComplexArgBuiltin {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = inp.len().min(output.len() * 2) / 2;
-                for i in 0..n {
-                    let im = inp[2 * i + 1];
-                    let re = inp[2 * i];
-                    let arg = im.to_f64().atan2(re.to_f64()) as f32;
-                    output[i] = T::from_f32(arg);
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexArgBuiltin {}
-
-struct ComplexMulBuiltin;
-impl<T: Transcendental> Algorithm<T> for ComplexMulBuiltin {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = inp.len().min(output.len() * 2) / 4;
-                for i in 0..n {
-                    let a_re = inp[4 * i];
-                    let a_im = inp[4 * i + 1];
-                    let b_re = inp[4 * i + 2];
-                    let b_im = inp[4 * i + 3];
-                    output[2 * i] = a_re * b_re - a_im * b_im;
-                    output[2 * i + 1] = a_re * b_im + a_im * b_re;
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexMulBuiltin {}
-
-struct ComplexAddBuiltin;
-impl<T: Transcendental> Algorithm<T> for ComplexAddBuiltin {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        match input {
-            Some(inp) => {
-                let n = inp.len().min(output.len() * 2) / 4;
-                for i in 0..n {
-                    output[2 * i] = inp[4 * i] + inp[4 * i + 2];
-                    output[2 * i + 1] = inp[4 * i + 1] + inp[4 * i + 3];
-                }
-            }
-            None => output.fill(T::ZERO),
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexAddBuiltin {}
-
-struct ComplexGenBuiltin<T: Transcendental> {
-    re: T,
-    im: T,
-}
-impl<T: Transcendental> Algorithm<T> for ComplexGenBuiltin<T> {
-    fn process(&mut self, _input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        let n = output.len() / 2;
-        for i in 0..n {
-            output[2 * i] = self.re;
-            output[2 * i + 1] = self.im;
-        }
-        Ok(())
-    }
-    fn reset(&mut self) {}
-}
-impl<T: Transcendental> BlockBuiltin<T> for ComplexGenBuiltin<T> {}
-
-// ============================================================================
-// Registration functions
-// ============================================================================
-
-/// Register rill-lang core builtins. Call after
-/// [`register_core_dsp_builtins`](register_core_dsp_builtins).
-pub fn register_core_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    register_complex(reg);
-}
-
-/// Register complex number built-ins (dsl: complex, conj, re, im, norm, arg, cmul, cadd).
-fn register_complex<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    reg.register_block("complex", |p, _sr, _alloc| {
-        let re = T::from_f64(p[0]);
-        let im = T::from_f64(p[1]);
-        Box::new(ComplexGenBuiltin { re, im })
-    });
-    reg.register_block("conj", |_p, _sr, _alloc| Box::new(ComplexConjBuiltin));
-    reg.register_block("re", |_p, _sr, _alloc| Box::new(ComplexReBuiltin));
-    reg.register_block("im", |_p, _sr, _alloc| Box::new(ComplexImBuiltin));
-    reg.register_block("norm", |_p, _sr, _alloc| Box::new(ComplexNormBuiltin));
-    reg.register_block("arg", |_p, _sr, _alloc| Box::new(ComplexArgBuiltin));
-    reg.register_block("cmul", |_p, _sr, _alloc| Box::new(ComplexMulBuiltin));
-    reg.register_block("cadd", |_p, _sr, _alloc| Box::new(ComplexAddBuiltin));
-}
 
 // ============================================================================
 // rill-digital-effects FFI factories (feature `dsp`)
@@ -608,5 +426,129 @@ pub fn register_foreign_model<T: Transcendental + 'static>(
         );
         Algorithm::init(&mut inner, sr);
         Box::new(AnalogMoogBuiltin { inner })
+    });
+}
+
+// ============================================================================
+// EQ FFI factories (graphic_eq / eq_parametric)
+// ============================================================================
+
+#[cfg(feature = "dsp")]
+/// Default factory creating `Biquad<f32>` filters for the graphic EQ.
+#[derive(Debug, Clone, Default)]
+struct BiquadFactory;
+
+#[cfg(feature = "dsp")]
+impl rill_core_dsp::eq::FilterFactory<rill_core_dsp::filters::Biquad<f32>> for BiquadFactory {
+    fn create_filter(
+        &self,
+        filter_type: rill_core_dsp::filters::FilterType,
+        frequency: f32,
+        q: f32,
+        gain_db: f32,
+    ) -> rill_core_dsp::filters::Biquad<f32> {
+        let params = rill_core_dsp::filters::FilterParams {
+            filter_type,
+            cutoff: frequency,
+            q,
+            gain_db,
+        };
+        rill_core_dsp::filters::Biquad::new(params)
+    }
+}
+
+#[cfg(feature = "dsp")]
+/// A `graphic_eq` block builtin: wraps a [`rill_core_dsp::eq::GraphicEq`] over
+/// third-octave `Biquad` filters. Scalar `f32` scratch in/out because the EQ
+/// is a fixed-`f32` filter bank (the language's `T` may be `f64`).
+struct GraphicEqBuiltin<T: Transcendental> {
+    eq: rill_core_dsp::eq::GraphicEq<rill_core_dsp::filters::Biquad<f32>>,
+    scratch_in: Vec<f32>,
+    scratch_out: Vec<f32>,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+#[cfg(feature = "dsp")]
+impl<T: Transcendental> Algorithm<T> for GraphicEqBuiltin<T> {
+    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
+        let n = output.len();
+        if self.scratch_in.len() < n {
+            self.scratch_in.resize(n, 0.0);
+            self.scratch_out.resize(n, 0.0);
+        }
+        let inp_buf = &mut self.scratch_in[..n];
+        let out_buf = &mut self.scratch_out[..n];
+        if let Some(inp) = input {
+            for (b, &s) in inp_buf.iter_mut().zip(inp.iter()) {
+                *b = s.to_f32();
+            }
+        } else {
+            inp_buf.fill(0.0);
+        }
+        self.eq.process_block(inp_buf, out_buf);
+        for (o, &s) in output.iter_mut().zip(out_buf.iter()) {
+            *o = T::from_f32(s);
+        }
+        Ok(())
+    }
+    fn reset(&mut self) {
+        self.eq.reset();
+    }
+}
+
+#[cfg(feature = "dsp")]
+impl<T: Transcendental> BlockBuiltin<T> for GraphicEqBuiltin<T> {
+    fn set_param(&mut self, index: usize, value: &rill_core::traits::ParamValue) {
+        if index == 0 {
+            if let Some(v) = value.as_f32() {
+                self.eq.set_output_gain(v.clamp(0.0, 4.0));
+            }
+        }
+    }
+}
+
+/// Register the EQ FFI factories (`graphic_eq` / `eq_parametric`). The
+/// algorithms live in `rill-core-dsp` (moved from the deleted `rill-router`);
+/// the wrappers implementing `BlockBuiltin` live in [`crate::builtins::eq`].
+/// Call this on the `ForeignRegistry` you pass to `compile_with_ffi`.
+#[cfg(feature = "dsp")]
+pub fn register_foreign_eq<T: Transcendental + 'static>(ffi: &mut crate::ffi::ForeignRegistry<T>) {
+    use crate::builtins::eq::{BandType, EqBandConfig, EqBuiltin, EqConfig, EqState};
+
+    ffi.register_block("graphic_eq", |p: &[f64], sr: f32, _alloc| {
+        let factory = BiquadFactory;
+        let mut eq = rill_core_dsp::eq::GraphicEq::new_third_octave(factory, sr);
+        eq.set_output_gain(p[0] as f32);
+        eq.init(sr);
+        Box::new(GraphicEqBuiltin::<T> {
+            eq,
+            scratch_in: vec![0.0f32; 64],
+            scratch_out: vec![0.0f32; 64],
+            _phantom: std::marker::PhantomData,
+        })
+    });
+
+    ffi.register_block("eq_parametric", |p: &[f64], sr: f32, _alloc| {
+        let mut bands = Vec::new();
+        let mut i = 0usize;
+        while i + 3 < p.len() {
+            bands.push(EqBandConfig {
+                freq: p[i],
+                q: p[i + 1],
+                gain_db: p[i + 2],
+                band_type: match p[i + 3].round() as i32 {
+                    1 => BandType::LowShelf,
+                    2 => BandType::HighShelf,
+                    3 => BandType::LowPass,
+                    4 => BandType::HighPass,
+                    5 => BandType::BandPass,
+                    6 => BandType::Notch,
+                    _ => BandType::Peak,
+                },
+            });
+            i += 4;
+        }
+        let inner = EqState::new(EqConfig { bands }, sr);
+        Box::new(EqBuiltin::new(inner))
     });
 }

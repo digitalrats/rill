@@ -22,7 +22,3 @@ rill-lang = { workspace = true }
 default = ["wav"]
 wav = ["dep:hound"]
 lang = ["rill-lang"]
-
-[[test]]
-name = "tape_builtins"
-required-features = ["lang"]

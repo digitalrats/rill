@@ -30,7 +30,6 @@ growable-arena = []
 float-cmp = "0.9"
 serde_json = "1.0"
 criterion = { workspace = true, features = ["html_reports"] }
-rill-router = { workspace = true, features = ["lang"] }
 rill-sampler = { workspace = true, features = ["lang"] }
 rill-fft = { workspace = true, features = ["lang"] }
 rill-lofi = { workspace = true, features = ["lang"] }
@@ -41,10 +40,6 @@ required-features = ["dsp"]
 
 [[test]]
 name = "graph_partition"
-required-features = ["dsp"]
-
-[[test]]
-name = "duplex_runtime"
 required-features = ["dsp"]
 
 [[test]]

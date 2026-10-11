@@ -1,7 +1,7 @@
 //! Equalizer band implementation
 
-use crate::{Filter, FilterType};
-use rill_core_dsp::filters::FilterParams;
+use crate::filters::FilterParams;
+use crate::filters::{Filter, FilterType};
 
 /// Type of EQ band
 #[derive(Debug, Clone, Copy, PartialEq)]
