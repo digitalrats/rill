@@ -3,7 +3,7 @@
 //! names (no `rill/` prefix, no aliases).
 use rill_adrift::lang_builtins::full_registry_f32;
 use rill_core::traits::{MultichannelAlgorithm, ParamValue, Params};
-use rill_graph::GraphBuilder;
+use rill_lang::graph::GraphBuilder;
 
 #[test]
 fn graph_compiles_and_runs() {

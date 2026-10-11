@@ -85,8 +85,8 @@ fn main() {
                 eprintln!("ERROR: {}", e);
                 std::process::exit(1);
             });
-            let graph_def: rill_graph::serialization::GraphDef = serde_json::from_str(&json_str)
-                .unwrap_or_else(|e| {
+            let graph_def: rill_lang::graph::serialization::GraphDef =
+                serde_json::from_str(&json_str).unwrap_or_else(|e| {
                     eprintln!("ERROR: invalid graph JSON: {}", e);
                     std::process::exit(1);
                 });

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use rill_core::traits::ParamValue;
-use rill_graph::serialization::GraphDef;
+use rill_lang::graph::serialization::GraphDef;
 use rill_patchbay::serialization::{AutomatonDef, ClockDef, MappingDef, SensorDef, ServoDef};
 
 // ============================================================================

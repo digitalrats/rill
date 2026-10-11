@@ -1,7 +1,5 @@
 use rill_core::math::Transcendental;
-use rill_core::queues::CommandEnum;
 use rill_core::traits::Params;
-use rill_core_actor::ActorRef;
 
 // ============================================================================
 // Build Errors
@@ -42,7 +40,6 @@ impl std::fmt::Display for BuildError {
 struct NodeRecipe<T: Transcendental, const BUF_SIZE: usize> {
     type_name: String,
     params: Params,
-    routing_entries: Vec<(usize, usize, f32)>,
     _phantom: std::marker::PhantomData<(T, [(); BUF_SIZE])>,
 }
 
@@ -65,12 +62,9 @@ pub struct GraphResource {
 pub struct GraphBuilder<T: Transcendental, const BUF_SIZE: usize> {
     recipes: Vec<NodeRecipe<T, BUF_SIZE>>,
     signal_edges: Vec<(usize, usize, usize, usize)>,
-    control_edges: Vec<(usize, usize, usize, usize)>,
-    clock_edges: Vec<(usize, usize, usize, usize)>,
     feedback_edges: Vec<(usize, usize, usize, usize)>,
     resources: Vec<GraphResource>,
     sample_rate: Option<f32>,
-    parent_ref: Option<ActorRef<CommandEnum>>,
 }
 
 impl<T: Transcendental, const BUF_SIZE: usize> Default for GraphBuilder<T, BUF_SIZE> {
@@ -85,17 +79,12 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         Self {
             recipes: Vec::new(),
             signal_edges: Vec::new(),
-            control_edges: Vec::new(),
-            clock_edges: Vec::new(),
             feedback_edges: Vec::new(),
             resources: Vec::new(),
             sample_rate: None,
-            parent_ref: None,
         }
     }
 
-    /// Add a node by type name.
-    ///
     /// Add a node by type name.
     ///
     /// Returns the index of the newly added node.
@@ -104,17 +93,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.recipes.push(NodeRecipe {
             type_name: type_name.to_string(),
             params: params.clone(),
-            routing_entries: Vec::new(),
             _phantom: std::marker::PhantomData,
         });
         idx
-    }
-
-    /// Store a routing matrix entry to be applied at build time.
-    pub fn add_routing_entry(&mut self, idx: usize, from: usize, to: usize, gain: f32) {
-        if let Some(recipe) = self.recipes.get_mut(idx) {
-            recipe.routing_entries.push((from, to, gain));
-        }
     }
 
     /// Register a named resource (tape loop, buffer, etc.).
@@ -132,11 +113,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         self.sample_rate = Some(sr);
     }
 
-    /// Set the parent RackCase actor reference (Graph → parent ClockTick).
-    pub fn set_parent_ref(&mut self, parent: ActorRef<CommandEnum>) {
-        self.parent_ref = Some(parent);
-    }
-
     /// Connect signal ports.
     pub fn connect_signal(
         &mut self,
@@ -146,30 +122,6 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
         to_port: usize,
     ) {
         self.signal_edges
-            .push((from_node, from_port, to_node, to_port));
-    }
-
-    /// Connect control ports (modulation values).
-    pub fn connect_control(
-        &mut self,
-        from_node: usize,
-        from_port: usize,
-        to_node: usize,
-        to_port: usize,
-    ) {
-        self.control_edges
-            .push((from_node, from_port, to_node, to_port));
-    }
-
-    /// Connect clock ports (timing events).
-    pub fn connect_clock(
-        &mut self,
-        from_node: usize,
-        from_port: usize,
-        to_node: usize,
-        to_port: usize,
-    ) {
-        self.clock_edges
             .push((from_node, from_port, to_node, to_port));
     }
 
@@ -187,9 +139,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
 
     /// Convert the graph to an rill-lang AST `Program`.
     ///
-    /// Each graph node becomes an [`Expr::Apply`](rill_lang::ast::Expr::Apply) with parameters ordered
+    /// Each graph node becomes an [`Expr::Apply`](crate::ast::Expr::Apply) with parameters ordered
     /// according to the builtin's `FfiSig::param_names`. Nodes are
-    /// chained via [`Expr::Seq`](rill_lang::ast::Expr::Seq) according to their signal connections.
+    /// chained via [`Expr::Seq`](crate::ast::Expr::Seq) according to their signal connections.
     ///
     /// Only simple chain topologies are supported (fan-out/fan-in will
     /// return [`BuildError::UnsupportedTopology`]).
@@ -200,8 +152,8 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// Passive nodes (software generators and tape heads) are classified
     /// [`NodeBackendKind::Passive`]; active rill-io attachment points are
     /// populated by the caller via `spec.backends`.
-    pub fn to_graph_spec(&self) -> rill_lang::graph::spec::GraphSpec {
-        use rill_lang::graph::spec::{
+    pub fn to_graph_spec(&self) -> crate::graph::spec::GraphSpec {
+        use crate::graph::spec::{
             GraphEdgeKind, GraphResourceSpec, GraphSpec, GraphSpecEdge, GraphSpecNode,
             NodeBackendKind,
         };
@@ -282,9 +234,9 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     /// from the read heads) are the active outputs.
     pub fn infer_backends(
         &self,
-        spec: &rill_lang::graph::spec::GraphSpec,
-    ) -> Vec<rill_lang::graph::spec::BackendAttachment> {
-        use rill_lang::graph::spec::{BackendAttachment, GraphEdgeKind};
+        spec: &crate::graph::spec::GraphSpec,
+    ) -> Vec<crate::graph::spec::BackendAttachment> {
+        use crate::graph::spec::{BackendAttachment, GraphEdgeKind};
         let n = spec.nodes.len();
         let wh = spec.nodes.iter().position(|x| x.type_name == "write_head");
         let read_heads: Vec<usize> = (0..n)
@@ -362,17 +314,17 @@ impl<T: Transcendental, const BUF_SIZE: usize> GraphBuilder<T, BUF_SIZE> {
     ///
     /// Returns the single-program engine for a plain graph. Tape-echo graphs
     /// partition into a duplex stream — use [`to_graph_spec`](Self::to_graph_spec)
-    /// + [`rill_lang::graph::compile`] directly for those.
+    /// + [`crate::graph::compile`] directly for those.
     pub fn compile_def(
         &self,
-        registry: &rill_lang::builtin::Registry<T>,
+        registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
-    ) -> Result<rill_lang::program_engine::ProgramEngine<T, BUF_SIZE>, BuildError> {
+    ) -> Result<crate::program_engine::ProgramEngine<T, BUF_SIZE>, BuildError> {
         let spec = self.to_graph_spec();
-        match rill_lang::graph::compile::<T, BUF_SIZE>(&spec, registry, sample_rate) {
-            Ok(rill_lang::graph::CompiledStream::Single(engine)) => Ok(engine),
+        match crate::graph::compile::<T, BUF_SIZE>(&spec, registry, sample_rate) {
+            Ok(crate::graph::CompiledStream::Single(engine)) => Ok(engine),
             Ok(_) => Err(BuildError::CompilationFailed(
-                "graph is a tape echo; use rill_lang::graph::compile for the duplex stream".into(),
+                "graph is a tape echo; use crate::graph::compile for the duplex stream".into(),
             )),
             Err(e) => Err(BuildError::CompilationFailed(format!("{e}"))),
         }

@@ -10,8 +10,7 @@ documentation = "https://docs.rs/rill-analyzer"
 
 [dependencies]
 rill-core = { workspace = true }
-rill-lang = { workspace = true, features = ["debug"] }
-rill-graph = { workspace = true, features = ["serialization"] }
+rill-lang = { workspace = true, features = ["debug", "serialization"] }
 rill-telemetry = { workspace = true, features = ["debug"] }
 dashmap = "6"
 clap = { version = "4", features = ["derive"] }

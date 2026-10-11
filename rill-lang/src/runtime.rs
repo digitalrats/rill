@@ -9,10 +9,14 @@ use std::sync::Arc;
 
 use rill_core::buffer::FixedBuffer;
 use rill_core::io::{IoCapture, IoDriver, IoPlayback};
+
+#[cfg(feature = "graph")]
 use rill_core::traits::MultichannelAlgorithm;
 
-use crate::graph::CompiledStream;
 use crate::program_runner::ProgramRunner;
+
+#[cfg(feature = "graph")]
+use crate::graph::CompiledStream;
 
 /// Maximum number of channels `launch` drives per direction.
 ///
@@ -97,6 +101,7 @@ impl Runtime {
     /// `write_head` builtin writes the shared tape) then playback
     /// (`[dryL, dryR] → [fb, out]`, the internal `read_head` builtins read the
     /// shared tape; `fb` is shadowed one tick).
+    #[cfg(feature = "graph")]
     pub fn launch_stream<const BUF: usize>(
         driver: Arc<dyn IoDriver>,
         capture: Option<Arc<dyn IoCapture>>,

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use rill_core::traits::ParamValue;
 use rill_core_actor::ActorSystem;
-use rill_graph::GraphBuilder;
+use rill_lang::graph::GraphBuilder;
 use rill_patchbay::module_factory::ModuleFactory;
 
 #[cfg(feature = "serialization")]
@@ -16,7 +16,7 @@ use crate::modular::serialization::ModularSystemDef;
 #[cfg(feature = "serialization")]
 use crate::modular::serialization::ModuleDef;
 #[cfg(feature = "serialization")]
-use rill_graph::serialization::GraphDef;
+use rill_lang::graph::serialization::GraphDef;
 
 #[cfg(feature = "serialization")]
 use rill_core::queues::CommandEnum;

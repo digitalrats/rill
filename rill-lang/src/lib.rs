@@ -22,6 +22,7 @@ pub mod error;
 /// FFI factory registry: foreign-declared builtins' Rust implementations.
 pub mod ffi;
 /// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → [`CompiledStream`](graph::CompiledStream).
+#[cfg(feature = "graph")]
 pub mod graph;
 pub mod ir;
 pub mod lexer;

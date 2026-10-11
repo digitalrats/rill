@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use rill_core::math::Transcendental;
 use rill_core::traits::{ParamValue, Params};
 
-use crate::graph::GraphBuilder;
+use crate::graph::builder::GraphBuilder;
 
 use serde::de;
 use serde::{Deserialize, Serialize};
@@ -75,8 +75,6 @@ pub enum NodeDef {
     Source(SourceDef),
     /// DSP processor — transforms signal (filter, effect, gain).
     Processor(ProcessorDef),
-    /// Signal router — N×M dynamic routing (mixer, splitter).
-    Router(RouterDef),
     /// Signal sink — consumes signal (output, recorder).
     Sink(SinkDef),
 }
@@ -118,37 +116,6 @@ pub struct ProcessorDef {
     pub parameters: HashMap<String, ParamValue>,
 }
 
-/// Definition of a router node (N×M signal routing).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RouterDef {
-    /// Unique node identifier.
-    pub id: u32,
-    /// Canonical type name for factory lookup.
-    pub type_name: String,
-    /// Human-readable instance name.
-    pub name: String,
-    /// Runtime parameters.
-    #[serde(
-        deserialize_with = "deserialize_params",
-        serialize_with = "serialize_params"
-    )]
-    pub parameters: HashMap<String, ParamValue>,
-    /// Pre-configured routing matrix entries (from_input, to_output, gain).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub routing_matrix: Vec<RoutingEntry>,
-}
-
-/// A single entry in a router's N×M routing matrix.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoutingEntry {
-    /// Input port index.
-    pub from: usize,
-    /// Output port index.
-    pub to: usize,
-    /// Gain coefficient.
-    pub gain: f32,
-}
-
 /// Definition of a sink node (consumes signal).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SinkDef {
@@ -175,7 +142,6 @@ impl NodeDef {
         match self {
             NodeDef::Source(s) => s.id,
             NodeDef::Processor(p) => p.id,
-            NodeDef::Router(r) => r.id,
             NodeDef::Sink(s) => s.id,
         }
     }
@@ -185,7 +151,6 @@ impl NodeDef {
         match self {
             NodeDef::Source(s) => &s.type_name,
             NodeDef::Processor(p) => &p.type_name,
-            NodeDef::Router(r) => &r.type_name,
             NodeDef::Sink(s) => &s.type_name,
         }
     }
@@ -195,7 +160,6 @@ impl NodeDef {
         match self {
             NodeDef::Source(s) => &s.name,
             NodeDef::Processor(p) => &p.name,
-            NodeDef::Router(r) => &r.name,
             NodeDef::Sink(s) => &s.name,
         }
     }
@@ -205,7 +169,6 @@ impl NodeDef {
         match self {
             NodeDef::Source(s) => &s.parameters,
             NodeDef::Processor(p) => &p.parameters,
-            NodeDef::Router(r) => &r.parameters,
             NodeDef::Sink(s) => &s.parameters,
         }
     }
@@ -215,7 +178,6 @@ impl NodeDef {
         match self {
             NodeDef::Source(s) => &mut s.parameters,
             NodeDef::Processor(p) => &mut p.parameters,
-            NodeDef::Router(r) => &mut r.parameters,
             NodeDef::Sink(s) => &mut s.parameters,
         }
     }
@@ -225,7 +187,6 @@ impl NodeDef {
         match self {
             NodeDef::Source(s) => s.backend.as_deref(),
             NodeDef::Processor(_) => None,
-            NodeDef::Router(_) => None,
             NodeDef::Sink(s) => s.backend.as_deref(),
         }
     }
@@ -235,7 +196,6 @@ impl NodeDef {
         match self {
             NodeDef::Source(_) => "Source",
             NodeDef::Processor(_) => "Processor",
-            NodeDef::Router(_) => "Router",
             NodeDef::Sink(_) => "Sink",
         }
     }
@@ -268,10 +228,6 @@ pub struct ConnectionDef {
 pub enum SignalKind {
     /// Sample-rate signal data.
     Signal,
-    /// Low-frequency control signal (one value per block).
-    Control,
-    /// Clock/timing signal.
-    Clock,
     /// Feedback loop signal (delay/state).
     Feedback,
 }
@@ -386,7 +342,7 @@ impl GraphDef {
         }
 
         for rd in &self.resources {
-            builder.add_resource(crate::graph::GraphResource {
+            builder.add_resource(crate::graph::builder::GraphResource {
                 name: rd.name.clone(),
                 kind: rd.kind.clone(),
                 capacity: rd.capacity,
@@ -398,13 +354,7 @@ impl GraphDef {
             for (k, v) in nd.parameters() {
                 p = p.with(k.clone(), v.clone());
             }
-            let idx = builder.add_node(nd.type_name(), &p);
-
-            if let NodeDef::Router(ref r) = nd {
-                for entry in &r.routing_matrix {
-                    builder.add_routing_entry(idx, entry.from, entry.to, entry.gain);
-                }
-            }
+            let _idx = builder.add_node(nd.type_name(), &p);
         }
 
         let id_to_idx: HashMap<u32, usize> = self
@@ -431,12 +381,6 @@ impl GraphDef {
             match conn.kind {
                 SignalKind::Signal => {
                     builder.connect_signal(from, conn.from_port, to, conn.to_port);
-                }
-                SignalKind::Control => {
-                    builder.connect_control(from, conn.from_port, to, conn.to_port);
-                }
-                SignalKind::Clock => {
-                    builder.connect_clock(from, conn.from_port, to, conn.to_port);
                 }
                 SignalKind::Feedback => {
                     builder.connect_feedback(from, conn.from_port, to, conn.to_port);

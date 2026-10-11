@@ -7,13 +7,13 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 #[cfg(feature = "serialization")]
-use rill_graph::serialization::GraphDef;
+use rill_lang::graph::serialization::GraphDef;
 #[cfg(feature = "serialization")]
 use rill_patchbay::serialization::PatchbayDef;
 
 /// Modular system configuration types.
 ///
-/// Separate from `rill_graph::serialization::GraphDef` and
+/// Separate from `rill_lang::graph::serialization::GraphDef` and
 /// `rill_patchbay::serialization::PatchbayDef` — this module holds
 /// **host-level** parameters: sample rate, default backend config,
 /// OSC bind address, and optional paths to initial preset files.

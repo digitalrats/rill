@@ -232,7 +232,7 @@ fn source_node_without_param_produces_default() {
 #[ignore = "deferred: FFI scalar-as-value + Seq in value lowering"]
 fn graph_builder_param_routing_works() {
     use rill_core::traits::Params;
-    use rill_graph::GraphBuilder;
+    use rill_lang::graph::GraphBuilder;
 
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let mut builder = GraphBuilder::<f32, 256>::new();

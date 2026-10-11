@@ -1,7 +1,7 @@
 //! Centralized registration of all built-in node types and backends.
 //!
 //! Provides `register_all_nodes` and `register_all_backends` for
-//! populating factories before creating a `rill_graph::GraphBuilder`.
+//! populating factories before creating a `rill_lang::graph::GraphBuilder`.
 //!
 //! `register_all_nodes` is deprecated — use per-crate `register_lang_builtins()`
 //! with `rill_lang::builtin::Registry` instead.
@@ -394,13 +394,16 @@ fn cfg_from_params(p: &HashMap<String, ParamValue>) -> crate::io::AudioConfig {
 }
 
 /// Deserialise a JSON graph string into a
-/// [rill_graph::serialization::GraphDef].
+/// [rill_lang::graph::serialization::GraphDef].
 ///
 /// Use `ModularSystem::create_builder`
 /// to build a graph from the definition.
 #[cfg(feature = "serialization")]
 pub fn load_graph_json(
     json: &str,
-) -> Result<rill_graph::serialization::GraphDef, rill_graph::serialization::SerializationError> {
-    rill_graph::serialization::from_json(json)
+) -> Result<
+    rill_lang::graph::serialization::GraphDef,
+    rill_lang::graph::serialization::SerializationError,
+> {
+    rill_lang::graph::serialization::from_json(json)
 }

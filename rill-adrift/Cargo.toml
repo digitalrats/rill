@@ -22,7 +22,6 @@ path = "benches/lang_dsp_bench.rs"
 rill-core = { workspace = true }
 rill-core-actor = { workspace = true }
 rill-core-dsp = { workspace = true }
-rill-graph = { workspace = true }
 rill-digital-effects = { workspace = true }
 rill-patchbay = { workspace = true }
 dashmap = { version = "6", optional = true }
@@ -37,7 +36,7 @@ rill-telemetry = { workspace = true, optional = true }
 rill-osc = { workspace = true, optional = true }
 rill-core-model = { workspace = true, optional = true }
 rill-sampler = { workspace = true, optional = true }
-rill-lang = { workspace = true, features = ["dsp"] }
+rill-lang = { workspace = true, features = ["dsp", "graph"] }
 rill-fft = { workspace = true, optional = true }
 
 # Runtime sub-dependencies (feature gates match the consuming module)
@@ -85,13 +84,13 @@ default = ["io", "lofi", "telemetry", "osc", "sampler", "fft", "portaudio", "ser
 io = ["dep:rill-io"]
 lofi = ["dep:rill-lofi", "rill-lofi/lang"]
 telemetry = ["dep:rill-telemetry"]
-debug = ["telemetry", "rill-telemetry/debug", "rill-patchbay/debug", "rill-graph/debug", "rill-lang/debug", "dep:dashmap"]
+debug = ["telemetry", "rill-telemetry/debug", "rill-patchbay/debug", "rill-lang/debug", "dep:dashmap"]
 osc = ["dep:rill-osc", "dep:tokio", "rill-patchbay/osc"]
 analog = ["dep:rill-core-model", "rill-lang/model"]
 sampler = ["dep:rill-sampler", "rill-sampler/lang"]
 fft = ["dep:rill-fft", "rill-fft/lang"]
 serialization = [
-    "rill-graph/serialization",
+    "rill-lang/serialization",
     "rill-patchbay/serialization",
     "rill-lang/serde",
     "dep:serde",

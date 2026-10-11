@@ -17,11 +17,15 @@ rill-core-model = { workspace = true, optional = true }
 indexmap = "2"
 thiserror = "1.0"
 serde = { workspace = true, optional = true, features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
+serde_cbor = { version = "0.11", optional = true }
 
 [features]
 default = []
 dsp = ["dep:rill-digital-effects", "dep:rill-core-dsp"]
 model = ["dep:rill-core-model"]
+graph = []
+serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "graph"]
 serde = ["dep:serde"]
 debug = []
 growable-arena = []
@@ -36,11 +40,11 @@ rill-lofi = { workspace = true, features = ["lang"] }
 
 [[test]]
 name = "graph_reconstruct"
-required-features = ["dsp"]
+required-features = ["dsp", "graph"]
 
 [[test]]
 name = "graph_partition"
-required-features = ["dsp"]
+required-features = ["dsp", "graph"]
 
 [[test]]
 name = "caf_free_variables"
