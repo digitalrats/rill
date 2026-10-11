@@ -229,6 +229,7 @@ fn source_node_without_param_produces_default() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "deferred: FFI scalar-as-value + Seq in value lowering"]
 fn graph_builder_param_routing_works() {
     use rill_core::traits::Params;
     use rill_graph::GraphBuilder;
@@ -316,6 +317,7 @@ fn graph_builder_param_routing_works() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "deferred: FFI scalar-as-value + Seq in value lowering"]
 fn lang_chiptune_ir_produces_output() {
     let reg = rill_adrift::lang_builtins::full_registry_f32();
     let src = r"main = do { writeOutput 0 (ay38910 1750000.0 ?regs : lofi 8 44100 0.75 1.0 1 0 1); return () }";

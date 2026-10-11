@@ -322,6 +322,23 @@ fn alloc_owned<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// Resolve a value register's `Value::Buffer` handle index. Falls back to the
+/// register index itself (the 1:1 signal-lowering convention: register N holds
+/// buffer N) when the register is empty or not a Buffer marker.
+fn buffer_index<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    reg: usize,
+    base: usize,
+) -> usize {
+    match prog.value_regs.get(reg + base).copied().flatten() {
+        Some(r) => match prog.arena.get(r) {
+            Some(Value::Buffer(idx)) => *idx,
+            _ => reg,
+        },
+        _ => reg,
+    }
+}
+
 /// Recount (RC++) every child of a value for a fresh slot that will own them
 /// independently of the original owner.
 fn recount_children<T: Transcendental, const BUF: usize>(
@@ -1470,50 +1487,76 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueBufferStateRead { dst, slot } => {
             let n = prog.block_len;
-            prog.buffers[*dst]
+            let di = buffer_index(prog, *dst, base);
+            prog.buffers[di]
                 .with_data_mut(|b| b[..n].copy_from_slice(&prog.block_state[*slot][..n]));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferDelayRead { dst, line } => {
             let n = prog.block_len;
-            prog.buffers[*dst].with_data_mut(|b| prog.delays[*line].read_block(&mut b[..n]));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            let di = buffer_index(prog, *dst, base);
+            prog.buffers[di].with_data_mut(|b| prog.delays[*line].read_block(&mut b[..n]));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferUn { dst, op, src } => {
             let n = prog.block_len;
+            let si = buffer_index(prog, *src, base);
+            let di = buffer_index(prog, *dst, base);
             let mut scratch = [T::ZERO; BUF];
-            prog.buffers[*src].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
-            prog.buffers[*dst].with_data_mut(|b| {
+            prog.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.buffers[di].with_data_mut(|b| {
                 apply_un_slice(*op, &scratch[..n], &mut b[..n]);
             });
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferBin { dst, op, a, b } => {
             let n = prog.block_len;
+            let ai = buffer_index(prog, *a, base);
+            let bi = buffer_index(prog, *b, base);
+            let di = buffer_index(prog, *dst, base);
             let mut sa = [T::ZERO; BUF];
             let mut sb = [T::ZERO; BUF];
-            prog.buffers[*a].with_data(|s| sa[..n].copy_from_slice(&s[..n]));
-            prog.buffers[*b].with_data(|s| sb[..n].copy_from_slice(&s[..n]));
-            prog.buffers[*dst].with_data_mut(|out| {
+            prog.buffers[ai].with_data(|s| sa[..n].copy_from_slice(&s[..n]));
+            prog.buffers[bi].with_data(|s| sb[..n].copy_from_slice(&s[..n]));
+            prog.buffers[di].with_data_mut(|out| {
                 apply_bin_slice(*op, &sa[..n], &sb[..n], &mut out[..n]);
             });
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferMove { dst, src } => {
             let n = prog.block_len;
+            let si = buffer_index(prog, *src, base);
+            let di = buffer_index(prog, *dst, base);
             let mut scratch = [T::ZERO; BUF];
-            prog.buffers[*src].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
-            prog.buffers[*dst].with_data_mut(|b| b[..n].copy_from_slice(&scratch[..n]));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            prog.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.buffers[di].with_data_mut(|b| b[..n].copy_from_slice(&scratch[..n]));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+        }
+        ValueInstr::ValueBufferFill { dst, src } => {
+            // Broadcast a scalar Float value register into a buffer constant.
+            let n = prog.block_len;
+            let v = match prog.value_regs.get(*src + base).copied().flatten() {
+                Some(r) => match prog.arena.get(r) {
+                    Some(Value::Float(f)) => *f,
+                    Some(Value::Int(i)) => *i as f64,
+                    _ => 0.0,
+                },
+                _ => 0.0,
+            };
+            let di = buffer_index(prog, *dst, base);
+            prog.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferStateWrite { slot, src } => {
             let n = prog.block_len;
-            prog.buffers[*src]
+            let si = buffer_index(prog, *src, base);
+            prog.buffers[si]
                 .with_data(|s| prog.block_state_next[*slot][..n].copy_from_slice(&s[..n]));
         }
         ValueInstr::ValueBufferDelayWrite { line, src } => {
             let n = prog.block_len;
-            prog.buffers[*src].with_data(|s| prog.delays[*line].write_block(&s[..n]));
+            let si = buffer_index(prog, *src, base);
+            prog.buffers[si].with_data(|s| prog.delays[*line].write_block(&s[..n]));
         }
         ValueInstr::ValueCallForeign {
             dst,
@@ -1525,8 +1568,9 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueBufferParamRead { dst, idx } => {
             let n = prog.block_len;
             let v = T::from_f64(param_to_f64(&prog.params[*idx]));
-            prog.buffers[*dst].with_data_mut(|b| b[..n].fill(v));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            let di = buffer_index(prog, *dst, base);
+            prog.buffers[di].with_data_mut(|b| b[..n].fill(v));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferMainCellRead { dst, cell } => {
             let n = prog.block_len;
@@ -1537,14 +1581,16 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
                 _ => 0.0,
             };
-            prog.buffers[*dst].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            let di = buffer_index(prog, *dst, base);
+            prog.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
-        ValueInstr::ValueReadInput { dst, index: _ } => {
-            // The input slice was already materialized by `process()` into
-            // `buffers[input_buffers[index]]`; this instruction only allocates
-            // the `Value::Buffer` marker at `dst`.
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+        ValueInstr::ValueReadInput { dst, index } => {
+            // `main`'s λ-parameter is the program input: `readInput k`
+            // materializes `buffers[input_buffers[k]]` (the input's buffer
+            // register) as the value's handle.
+            let buf = prog.ir.input_buffers.get(*index).copied().unwrap_or(*dst);
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(buf));
         }
         ValueInstr::ValueWriteOutput { index, src } => {
             // Record the (output index → buffer handle) pair for the tick-end
@@ -2672,6 +2718,8 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
         bi.name
     );
     let n = prog.block_len;
+    let src_bufs: Vec<usize> = srcs.iter().map(|&r| buffer_index(prog, r, base)).collect();
+    let dst_buf = buffer_index(prog, first_dst, base);
 
     if n_in <= 1 && n_out == 1 {
         assert!(
@@ -2684,12 +2732,12 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
         let maybe_in = if n_in == 0 {
             None
         } else {
-            prog.buffers[srcs[0]].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.buffers[src_bufs[0]].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
             Some(&scratch[..n])
         };
         match &mut prog.builtins[instance] {
             crate::program::BuiltinInst::Block(b) => {
-                prog.buffers[first_dst].with_data_mut(|out| {
+                prog.buffers[dst_buf].with_data_mut(|out| {
                     let _ = b.process(maybe_in, &mut out[..n]);
                 });
             }
@@ -2703,7 +2751,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
                 let mut in_bufs: [FixedBuffer<T, BUF>; MAX_BUILTIN_CHANNELS] =
                     std::array::from_fn(|_| FixedBuffer::new());
                 for ch in 0..n_in {
-                    prog.buffers[srcs[ch]].with_data(|s| {
+                    prog.buffers[src_bufs[ch]].with_data(|s| {
                         in_bufs[ch][..n].copy_from_slice(&s[..n]);
                     });
                 }
@@ -2724,7 +2772,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
                     &mut out_refs[..n_out],
                 );
                 for (ch, ob) in out_bufs.iter().take(n_out).enumerate() {
-                    prog.buffers[first_dst + ch].with_data_mut(|out| {
+                    prog.buffers[dst_buf + ch].with_data_mut(|out| {
                         out[..n].copy_from_slice(&ob[..n]);
                     });
                 }
@@ -2732,8 +2780,8 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
             crate::program::BuiltinInst::Block(b) => {
                 let mut inp: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
                     std::array::from_fn(|_| [T::ZERO; BUF]);
-                for (ch, &reg) in srcs.iter().enumerate() {
-                    prog.buffers[reg].with_data(|s| {
+                for (ch, _) in srcs.iter().enumerate() {
+                    prog.buffers[src_bufs[ch]].with_data(|s| {
                         inp[ch][..n].copy_from_slice(&s[..n]);
                     });
                 }
@@ -2744,7 +2792,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
                     &mut out_buf.as_flattened_mut()[..n_out * n],
                 );
                 for ch in 0..n_out {
-                    prog.buffers[first_dst + ch].with_data_mut(|out| {
+                    prog.buffers[dst_buf + ch].with_data_mut(|out| {
                         let start = ch * n;
                         out[..n].copy_from_slice(&out_buf.as_flattened()[start..start + n]);
                     });

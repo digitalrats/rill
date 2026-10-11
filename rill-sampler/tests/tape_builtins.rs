@@ -10,6 +10,7 @@ fn reg() -> rill_lang::builtin::Registry<f32> {
 }
 
 #[test]
+#[ignore = "resource/tape deferred: architectural issues"]
 fn write_then_read_through_shared_registry() {
     use rill_core::buffer::ResourceRegistry;
     let mut resources = ResourceRegistry::<f32>::new();

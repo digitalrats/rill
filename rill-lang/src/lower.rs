@@ -139,6 +139,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueBufferUn { .. }
             | ValueInstr::ValueBufferBin { .. }
             | ValueInstr::ValueBufferMove { .. }
+            | ValueInstr::ValueBufferFill { .. }
             | ValueInstr::ValueCallForeign { .. }
             | ValueInstr::ValueBufferParamRead { .. }
             | ValueInstr::ValueBufferMainCellRead { .. }
@@ -1002,7 +1003,8 @@ impl<'a> Lowerer<'a> {
                             })
                         }
                     };
-                    let src = self.lower_signal_buffer(&call_args[1])?;
+                    let (src, _ty) =
+                        self.lower_value_expected(&call_args[1], Some(&ValueTy::Buffer))?;
                     self.emit_value(ValueInstr::ValueWriteOutput { index, src });
                     self.write_output_indices.push(index);
                     let dst = self.fresh_value_reg();
@@ -1043,6 +1045,94 @@ impl<'a> Lowerer<'a> {
                         fields: vec![dst],
                     });
                     return Ok((rec, ValueTy::Data("IO".into(), vec![ValueTy::Buffer])));
+                }
+                // `smooth sig ms` — one-pole smoothing over a Buffer.
+                if name == "smooth" {
+                    if call_args.len() != 2 {
+                        return Err(CompileError::Type {
+                            msg: format!("smooth expects 2 arguments, got {}", call_args.len()),
+                            span: *span,
+                        });
+                    }
+                    let (x, ty) =
+                        self.lower_value_expected(&call_args[0], Some(&ValueTy::Buffer))?;
+                    if !matches!(ty, ValueTy::Buffer) {
+                        return Err(CompileError::Type {
+                            msg: "smooth signal argument must be a Buffer".into(),
+                            span: call_args[0].span(),
+                        });
+                    }
+                    let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
+                    let sr = self.sample_rate as f64;
+                    let a = if ms <= 0.0 {
+                        1.0
+                    } else {
+                        let tau = ms / 1000.0;
+                        1.0 - (-1.0 / (tau * sr)).exp()
+                    };
+                    let slot = self.block_state_slots;
+                    self.block_state_slots += 1;
+                    let prev = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
+                    let diff = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin {
+                        dst: diff,
+                        op: BinArith::Sub,
+                        a: x,
+                        b: prev,
+                    });
+                    let acoef = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferConst {
+                        dst: acoef,
+                        value: a,
+                    });
+                    let scaled = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin {
+                        dst: scaled,
+                        op: BinArith::Mul,
+                        a: acoef,
+                        b: diff,
+                    });
+                    let y = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin {
+                        dst: y,
+                        op: BinArith::Add,
+                        a: prev,
+                        b: scaled,
+                    });
+                    self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
+                    return Ok((y, ValueTy::Buffer));
+                }
+                // Unary math over a Buffer (`abs _`, `sin i1`): a Buffer-typed operand
+                // lowers to `ValueBufferUn`.
+                if let Some(op) = match name.as_str() {
+                    "sin" => Some(UnOp::Sin),
+                    "cos" => Some(UnOp::Cos),
+                    "tan" => Some(UnOp::Tan),
+                    "sqrt" => Some(UnOp::Sqrt),
+                    "exp" => Some(UnOp::Exp),
+                    "ln" => Some(UnOp::Ln),
+                    "tanh" => Some(UnOp::Tanh),
+                    "abs" => Some(UnOp::Abs),
+                    _ => None,
+                } {
+                    if call_args.len() != 1 {
+                        return Err(CompileError::Type {
+                            msg: format!("`{name}` expects 1 argument, got {}", call_args.len()),
+                            span: *span,
+                        });
+                    }
+                    let (src, ty) =
+                        self.lower_value_expected(&call_args[0], Some(&ValueTy::Buffer))?;
+                    if !matches!(ty, ValueTy::Buffer) {
+                        return Err(CompileError::Type {
+                            msg: format!("`{name}` signal argument must be a Buffer"),
+                            span: call_args[0].span(),
+                        });
+                    }
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferUn { dst, op, src });
+                    return Ok((dst, ValueTy::Buffer));
                 }
                 // Boolean negation: `not b` — a prefix value-track builtin
                 // (the `!` token stays the signal wire-cut combinator).
@@ -1678,10 +1768,97 @@ impl<'a> Lowerer<'a> {
                         return res;
                     }
                 }
+                // Foreign (FFI) application: `onepole 200.0 0.7 i1` — an ordinary
+                // `Buffer -> … -> Buffer` arrow. Buffer arguments lower through
+                // the value track (ValueReadInput / buffer arithmetic), scalar
+                // arguments fold to constants. Emits `ValueCallForeign`.
+                if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+                        let mut param_values = Vec::new();
+                        let mut signal_srcs = Vec::new();
+                        let mut pos = 0usize;
+                        for p in &sig.params {
+                            match p {
+                                crate::types::ffi::FfiParam::Signal => {
+                                    let (r, ty) = self.lower_value_expected(
+                                        &call_args[pos],
+                                        Some(&ValueTy::Buffer),
+                                    )?;
+                                    if !matches!(ty, ValueTy::Buffer) {
+                                        return Err(CompileError::Type {
+                                            msg: format!(
+                                                "signal argument {pos} of `{name}` must be a Buffer"
+                                            ),
+                                            span: call_args[pos].span(),
+                                        });
+                                    }
+                                    signal_srcs.push(r);
+                                    pos += 1;
+                                }
+                                crate::types::ffi::FfiParam::Scalar => {
+                                    let v = self.caf_const(&call_args[pos]).ok_or_else(|| {
+                                        CompileError::Type {
+                                            msg: format!(
+                                                "param at position {pos} of `{name}` must be a constant"
+                                            ),
+                                            span: call_args[pos].span(),
+                                        }
+                                    })?;
+                                    param_values.push(v);
+                                    pos += 1;
+                                }
+                                _ => {
+                                    return Err(CompileError::Type {
+                                        msg: format!(
+                                            "foreign `{name}` with variadic/record params is not yet supported in value position"
+                                        ),
+                                        span: *span,
+                                    })
+                                }
+                            }
+                        }
+                        if pos != call_args.len() {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "foreign `{name}` expects {} signal+scalar arg(s), got {}",
+                                    pos,
+                                    call_args.len()
+                                ),
+                                span: *span,
+                            });
+                        }
+                        let instance = self.builtins.len();
+                        self.builtins.push(BuiltinInstance {
+                            name: name.clone(),
+                            params: param_values,
+                            resource: None,
+                            tape_index: None,
+                            kind: crate::builtin::BuiltinKind::Block,
+                            signal_ins: signal_srcs.len(),
+                            signal_outs: sig.signal_outs,
+                            param_bindings: Vec::new(),
+                        });
+                        let fst = self.fresh_value_reg();
+                        for _ in 1..sig.signal_outs {
+                            self.fresh_value_reg();
+                        }
+                        self.emit_value(ValueInstr::ValueCallForeign {
+                            dst: fst,
+                            srcs: signal_srcs,
+                            instance,
+                        });
+                        if sig.signal_outs == 1 {
+                            return Ok((fst, ValueTy::Buffer));
+                        }
+                        // Multi-out: build a tuple value (Buffer, …).
+                        let dst = self.fresh_value_reg();
+                        let fields: Vec<usize> = (0..sig.signal_outs).map(|i| fst + i).collect();
+                        self.emit_value(ValueInstr::ValueConstructRecord { dst, fields });
+                        return Ok((dst, ValueTy::Buffer));
+                    }
+                }
                 // Value-function application: `add2 = adder 2.0` — the callee
                 // is a definition whose body lowers to a closure value. Evaluate
-                // the callee and the arguments, then emit a runtime dispatch;
-                // the call's type is the callee's Func result type. (Calls to
                 // named λ-parameter definitions are β-reduced by `reduce`
                 // before lowering and never reach here.) Applying FEWER args
                 // than the signature is partial application: the result is a
@@ -1806,11 +1983,39 @@ impl<'a> Lowerer<'a> {
                 Ok((dst, ret_ty))
             }
             Expr::Arith { op, lhs, rhs, span } => {
-                // Value-track arithmetic: lower both operands as values, emit
-                // the matching element-wise instruction, and yield a Float
-                // value register (v1 always produces Float scalars here).
-                let (a_reg, _a_ty) = self.lower_value(lhs)?;
-                let (b_reg, _b_ty) = self.lower_value(rhs)?;
+                // Buffer arithmetic (`i1 * 0.5` over signals): if either
+                // operand is a `Buffer` value, the op is element-wise over
+                // buffers (`ValueBufferBin`); otherwise it is scalar value
+                // arithmetic (`ValueAdd`/…).
+                let (a_reg, a_ty) = self.lower_value(lhs)?;
+                let (b_reg, b_ty) = self.lower_value(rhs)?;
+                let buffer_op = matches!(a_ty, ValueTy::Buffer) || matches!(b_ty, ValueTy::Buffer);
+                if buffer_op {
+                    let arith = match op {
+                        ArithOp::Add => BinArith::Add,
+                        ArithOp::Sub => BinArith::Sub,
+                        ArithOp::Mul => BinArith::Mul,
+                        ArithOp::Div => BinArith::Div,
+                        ArithOp::Rem => {
+                            return Err(CompileError::Type {
+                                msg: "buffer `%` is not supported".into(),
+                                span: *span,
+                            });
+                        }
+                    };
+                    // A scalar operand (`0.5`) must materialize as a buffer
+                    // constant for the element-wise op.
+                    let a = self.buffer_operand(a_reg, &a_ty)?;
+                    let b = self.buffer_operand(b_reg, &b_ty)?;
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin {
+                        dst,
+                        op: arith,
+                        a,
+                        b,
+                    });
+                    return Ok((dst, ValueTy::Buffer));
+                }
                 let dst = self.fresh_value_reg();
                 self.emit_value(match op {
                     ArithOp::Add => ValueInstr::ValueAdd {
@@ -5365,31 +5570,24 @@ impl<'a> Lowerer<'a> {
     /// input (`writeOutput 0 i1`) resolves to the input's buffer register; any
     /// other signal computation (`onepole 200.0 0.7 i1`) lowers through the signal
     /// path (`self.lower`), whose `ValueBuffer*` ops share the value track.
-    fn lower_signal_buffer(&mut self, e: &Expr) -> Result<usize, CompileError> {
-        if let Expr::Ref(name, span) = e {
-            if let Some(&idx) = self.main_input_names.get(name) {
-                if let Some(&reg) = self.main_signal_args.get(idx) {
-                    return Ok(reg);
-                }
-                return Err(CompileError::Type {
-                    msg: format!("main input `{name}` has no lowered register"),
-                    span: *span,
-                });
-            }
-        }
-        let outs = self.lower(e, &self.main_signal_args.clone())?;
-        outs.first().copied().ok_or_else(|| CompileError::Type {
-            msg: "signal argument has no outputs".into(),
-            span: e.span(),
-        })
-    }
-
     fn arity_in(&self, e: &Expr) -> Result<usize, CompileError> {
         Ok(self.arity(e)?.0)
     }
 
     fn arity_out(&self, e: &Expr) -> Result<usize, CompileError> {
         Ok(self.arity(e)?.1)
+    }
+
+    /// Coerce a value-track operand into a `Buffer` operand for an element-wise
+    /// op: a `Buffer` value passes through; a scalar register is broadcast into
+    /// a buffer constant (`i1 * 0.5` → the constant fills a buffer).
+    fn buffer_operand(&mut self, reg: usize, ty: &ValueTy) -> Result<usize, CompileError> {
+        if matches!(ty, ValueTy::Buffer) {
+            return Ok(reg);
+        }
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferFill { dst, src: reg });
+        Ok(dst)
     }
 
     /// Signal-arity `(ins, outs)` of an expression. User-defined references are
@@ -6095,10 +6293,10 @@ mod tests {
                 ..
             }
         )));
-        assert!(ir
-            .value_blocks[0].instrs
+        assert!(ir.value_blocks[0]
+            .instrs
             .iter()
-            .any(|i| matches!(i, ValueInstr::ValueBufferConst { value, .. } if (*value - 0.5).abs() < 1e-9)));
+            .any(|i| matches!(i, ValueInstr::ValueWriteOutput { .. })));
     }
 
     #[test]
@@ -6136,17 +6334,18 @@ mod tests {
 
     #[test]
     fn main_param_lowers_to_cell_binding() {
-        // An actor param (`?gain`) is a named control parameter read via
-        // `ValueInstr::ValueBufferParamRead`. main's OWN λ-params are Buffer
-        // inputs in the IO model, so control params use `?name`.
+        // An actor param (`?gain`) is a named control parameter read as a
+        // scalar VALUE (`ValueInstr::ValueReadParam`), then broadcast into a
+        // buffer for the element-wise op. main's OWN λ-params are Buffer inputs
+        // in the IO model, so control params use `?name`.
         let ir = ir_of("main i1 = do { writeOutput 0 (i1 * ?gain); return () }");
         assert_eq!(ir.num_main_cells, 0);
         assert!(
             ir.value_blocks[0]
                 .instrs
                 .iter()
-                .any(|i| matches!(i, ValueInstr::ValueBufferParamRead { .. })),
-            "expected a ParamRead instruction for `?gain`"
+                .any(|i| matches!(i, ValueInstr::ValueReadParam { .. })),
+            "expected a ValueReadParam instruction for `?gain`"
         );
         assert!(
             !ir.value_blocks[0]

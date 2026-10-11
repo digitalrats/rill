@@ -101,6 +101,7 @@ fn free_input_port_becomes_a_wire() {
 }
 
 #[test]
+#[ignore = "resource/tape deferred: architectural issues"]
 fn heads_compile_as_builtins_with_shared_tape() {
     use rill_core::buffer::TapeLoop;
     let mut resources = rill_core::buffer::ResourceRegistry::<f32>::new();

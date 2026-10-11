@@ -569,6 +569,13 @@ pub enum ValueInstr {
         /// Source value register (holds `Value::Buffer(src)`).
         src: usize,
     },
+    /// Fill a buffer with a scalar value register's Float payload.
+    ValueBufferFill {
+        /// Destination value register (holds `Value::Buffer(dst)`).
+        dst: usize,
+        /// Source scalar value register (Float).
+        src: usize,
+    },
     /// Schedule a write of `src` buffer into a block-state slot (applied at
     /// tick end via the double-buffer swap).
     ValueBufferStateWrite {
