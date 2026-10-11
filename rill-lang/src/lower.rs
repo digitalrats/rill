@@ -1815,9 +1815,22 @@ impl<'a> Lowerer<'a> {
                         let mut param_bindings = Vec::new();
                         let mut signal_srcs = Vec::new();
                         let mut pos = 0usize;
+                        // Signal slots with no explicit call arg: a first-class
+                        // partial application (`onepole 200.0 0.7` → the scalars
+                        // fold at build, the Buffer stays open). The resulting
+                        // FFI arrow is a `Func` value applied on call.
+                        let mut missing_signals = 0usize;
                         for p in &sig.params {
                             match p {
                                 crate::types::ffi::FfiParam::Signal => {
+                                    if pos >= call_args.len() {
+                                        // Partial application: the scalar params
+                                        // before this slot were consumed; the
+                                        // Buffer stays open for a later call.
+                                        missing_signals += 1;
+                                        pos += 1;
+                                        continue;
+                                    }
                                     let (r, ty) = self.lower_value_expected(
                                         &call_args[pos],
                                         Some(&ValueTy::Buffer),
@@ -1834,6 +1847,13 @@ impl<'a> Lowerer<'a> {
                                     pos += 1;
                                 }
                                 crate::types::ffi::FfiParam::Scalar => {
+                                    if pos >= call_args.len() {
+                                        // Missing scalar before a trailing
+                                        // signal slot — a partial application
+                                        // gap; the arity check above rejected
+                                        // this shape, so it is unreachable.
+                                        break;
+                                    }
                                     // A main λ-param / actor param / named
                                     // param ref is a LIVE value: record a
                                     // param binding (set_param per tick). A
@@ -1891,16 +1911,6 @@ impl<'a> Lowerer<'a> {
                                 }
                             }
                         }
-                        if pos != call_args.len() {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "foreign `{name}` expects {} signal+scalar arg(s), got {}",
-                                    pos,
-                                    call_args.len()
-                                ),
-                                span: *span,
-                            });
-                        }
                         let instance = self.builtins.len();
                         self.builtins.push(BuiltinInstance {
                             name: name.clone(),
@@ -1908,10 +1918,27 @@ impl<'a> Lowerer<'a> {
                             resource: None,
                             tape_index: None,
                             kind: crate::builtin::BuiltinKind::Block,
-                            signal_ins: signal_srcs.len(),
+                            signal_ins: signal_srcs.len() + missing_signals,
                             signal_outs: sig.signal_outs,
                             param_bindings,
                         });
+                        // Partial application: the trailing Buffer slots are
+                        // open (`onepole 200.0 0.7 : Buffer -> Buffer`). The
+                        // scalars are baked into the instance; the FFI arrow is
+                        // returned as a first-class `Func` value — its fragment
+                        // reads the missing Buffer(s) from the call frame and
+                        // runs the single `ValueCallForeign` on call.
+                        if missing_signals > 0 {
+                            let (callee_reg, _) =
+                                self.build_ffi_arrow(instance, missing_signals, sig.signal_outs)?;
+                            return Ok((
+                                callee_reg,
+                                ValueTy::Func(
+                                    vec![ValueTy::Buffer; missing_signals],
+                                    vec![ValueTy::Buffer; sig.signal_outs],
+                                ),
+                            ));
+                        }
                         // Build the FFI arrow as a Callable fragment: its body
                         // extracts the Buffer args from the call frame and runs
                         // one `ValueCallForeign`. Applying it (ValueCallFunc)

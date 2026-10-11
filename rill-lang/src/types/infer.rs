@@ -594,7 +594,7 @@ fn infer_method_value_vty(ctx: &mut Ctx, e: &Expr, what: &str) -> Result<ValueTy
 fn infer_method_value_vty_expected(
     ctx: &mut Ctx,
     e: &Expr,
-    what: &str,
+    _what: &str,
     expected: Option<ValueTy>,
 ) -> Result<ValueTy, CompileError> {
     let span = e.span();
@@ -610,15 +610,14 @@ fn infer_method_value_vty_expected(
         });
     }
     match &t.outs[0] {
+        // A Buffer is an ordinary value (the block track is gone): a 0→1
+        // Buffer expression is a valid value-track operand. Numeric literals
+        // stay Int/Float (their `Buffer` typing is the signal-constant
+        // compatibility), everything else resolves to `Buffer`.
         ValueTy::Buffer => match e {
             Expr::Int(_, _) => Ok(ValueTy::Int),
             Expr::Float(_, _) => Ok(ValueTy::Float),
-            _ => Err(CompileError::Type {
-                msg: format!(
-                    "typeclass method {what} must be a value expression (found signal channel)"
-                ),
-                span,
-            }),
+            _ => Ok(ValueTy::Buffer),
         },
         vty => Ok(vty.clone()),
     }
@@ -955,7 +954,7 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
                 ctx.locals
                     .insert(p.clone(), ArrowTy::value_channel(pt.clone()));
             }
-            let res = infer_method_value_vty_expected(ctx, body, "body", body_expected);
+            let res = infer_method_value_vty_expected(ctx, body, "body", body_expected.clone());
             ctx.locals = saved;
             ctx.method_lifting.remove(&key);
             res?;
@@ -2947,6 +2946,17 @@ fn infer_apply_expr(
         });
     }
     for (a, pt) in args.iter().zip(arg_tys.iter()) {
+        // A `Func` parameter typed `Buffer` accepts a signal computation
+        // (`fp i1` where `fp : Buffer -> Buffer` and `i1` is the program's
+        // Buffer input) as well as a Buffer value — mirroring the builtin-sig
+        // Buffer-param acceptance in `infer_apply_impl`.
+        if matches!(ctx.subst.resolve_value(pt), ValueTy::Buffer) {
+            let at = infer_expr(ctx, a)?;
+            if at.arity_out() == 1 && matches!(at.outs[0], ValueTy::Buffer) {
+                unify_value(&at.outs[0], pt, &mut ctx.subst, a.span())?;
+                continue;
+            }
+        }
         let vt = infer_method_value_vty(ctx, a, "argument")?;
         unify_value(&vt, pt, &mut ctx.subst, a.span())?;
     }
@@ -3954,15 +3964,23 @@ fn infer_apply_impl(
             }
             let mut signal_ins = 0usize;
             let mut pos = 0usize;
+            // Trailing signal slots with no explicit call arg: either a
+            // combinator-fed channel (the graph-reconstruct `(_, _) :> node`
+            // style feeds signals via Merge, so the FFI Apply carries only the
+            // scalar params) or a first-class partial application (`map (onepole
+            // 200.0 0.7) buffers` — the scalars fold at build, the missing
+            // Buffer remains). Count them; the arm's result distinguishes the
+            // two at the end.
+            let mut fed_signals = 0usize;
             for p in &sig.params {
                 match p {
                     crate::types::ffi::FfiParam::Signal => {
                         if pos >= args.len() {
-                            // Combinator-fed signal: no explicit wire call arg
-                            // (the graph-reconstruct `(_, _) :> dry_wet` style
-                            // feeds the channels via the combinator, not the
-                            // Apply). The channel contributes to the arity; the
-                            // remaining params consume no call args.
+                            // Combinator-fed signal / partial-application slot:
+                            // no explicit wire call arg. The channel contributes
+                            // to the arity; the remaining params consume no call
+                            // args.
+                            fed_signals += 1;
                             signal_ins += 1;
                             pos += 1;
                             continue;
@@ -4084,6 +4102,20 @@ fn infer_apply_impl(
                         pos += 1;
                     }
                 }
+            }
+            // A trailing run of omitted Signal slots (no explicit wire call
+            // args) is either a combinator-fed channel (the legacy
+            // graph-reconstruct `(_, _) :> node` style) or a first-class
+            // partial application (`map (onepole 200.0 0.7) buffers` — the
+            // scalars fold at build, the Buffer remains). After the
+            // combinator-sugar pass appends wires for direct combinator
+            // operands, only genuine partial applications reach here, so the
+            // result is a `Func` value: `Buffer -> … -> Buffer`.
+            if fed_signals > 0 {
+                return Ok(ArrowTy::value_channel(ValueTy::Func(
+                    vec![ValueTy::Buffer; fed_signals],
+                    vec![ValueTy::Buffer; sig.signal_outs],
+                )));
             }
             return Ok(ArrowTy::uniform(
                 signal_ins,

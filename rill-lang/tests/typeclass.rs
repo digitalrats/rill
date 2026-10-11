@@ -121,9 +121,10 @@ fn recursive_constructor_class_method_is_compile_error() {
 }
 
 #[test]
-fn signal_method_argument_is_compile_error() {
-    // A genuine signal computation (`sin 1.0`) cannot select a typeclass
-    // instance — only value expressions (and bare Float/Int literals) can.
+fn buffer_value_does_not_select_scalar_instance() {
+    // A Buffer computation (`sin 1.0 : Buffer`) is an ordinary value now, but
+    // it cannot select a `Show Float` instance — the argument type is not
+    // concrete (Buffer), so resolution fails.
     let src = r#"
         typeclass Show a where { show: a; }
         instance Show Float where { show f = f; }
@@ -134,8 +135,8 @@ fn signal_method_argument_is_compile_error() {
     match res.err().expect("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
-                msg.contains("value expression"),
-                "expected value-expression message, got: {msg}",
+                msg.contains("cannot resolve method `show`"),
+                "expected method-resolution message, got: {msg}",
             );
         }
         other => panic!("expected a Type error, got {other:?}"),
@@ -143,16 +144,18 @@ fn signal_method_argument_is_compile_error() {
 }
 
 #[test]
-fn invalid_instance_body_is_compile_error() {
-    // An instance body is validated at compile time even when the instance is
-    // never called — a signal-expression body must be rejected.
+fn instance_body_accepts_value_expression() {
+    // A Buffer computation (`sin 1.0 : Buffer`) is an ordinary value: a
+    // typeclass method body may now be a buffer-value expression (the block
+    // track is gone; buffers are values). The body is validated as a value
+    // channel at compile time even when the instance is never called.
     let src = r#"
         typeclass Show a where { show: a; }
         instance Show Float where { show f = sin 1.0; }
         main = 1.0;
     "#;
     let res = compile::<f32>(src);
-    assert!(res.is_err(), "expected a compile error, got success");
+    assert!(res.is_ok(), "expected success");
 }
 
 #[test]
