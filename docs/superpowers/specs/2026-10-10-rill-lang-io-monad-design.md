@@ -104,23 +104,35 @@ main i1 i2 = do
   writes into the external output slices.
 - `readInput : Int -> IO Buffer` reads the k-th materialized input buffer.
 
-### 2.3 Primitives: `writeOutput`, `readInput`
+### 2.3 FFI: one ordinary arrow `Buffer -> … -> Buffer`
 
-```haskell
-readInput  : Int -> IO Buffer
-writeOutput : Int -> Buffer -> IO ()
+FFI is an **ordinary first-class function**. A foreign call lowers through the
+SAME value track as a user function:
+
+```rust
+ValueInstr::ValueCallForeign { dst: usize, args: Vec<usize>, instance: usize },
 ```
 
-- Registered as builtin signatures (like `runST`), NOT foreign fns (they are not
-  `Algorithm` calls).
-- Lowering:
-  - `writeOutput k buf` → an instruction that copies `buf`'s `RegionHandle`
-    slice into the k-th program output register (`output_regs[k]`), or marks the
-    output for drain. Implemented as `ValueInstr::ValueWriteOutput { index, src }`.
-  - `readInput k` → `ValueInstr::ValueReadInput { dst, index }` — materializes
-    `buffers[input_buffers[k]]` as `Value::Buffer(dst)`.
-- The program's outputs are exactly the `writeOutput` sites; `num_outputs` =
-  max index + 1 (or the count of distinct indices).
+- `args` carries ALL the arrow's arguments as value registers in signature
+  order (homogeneous with `ValueCallFunc::args`): Buffer args, scalar params
+  (constants, `read_param` — the `?name` mailbox read), and **collections of
+  Buffers**.
+- Scalar params are read as ordinary values and pushed into the `Algorithm` via
+  `set_param` before `process`. `?name` is sugar for `read_param name` — no
+  fold-time magic.
+- **Multichannel is collections, not a runtime mechanism.** All multichannel
+  algorithms reduce to `List Buffer -> List Buffer` or `List Buffer -> Buffer`
+  (`dry_wet`); `mono_to_stereo` is `Buffer -> Pair Buffer`. The signature
+  expresses channels via `Pair (FixedBuffer f32)`/`List (FixedBuffer f32)`, and
+  the value track handles them with ordinary collection ops.
+- `MultichannelAlgorithm`, `MAX_BUILTIN_CHANNELS`, and the interleaved
+  `Block` path are **deleted**.
+
+The foreign call dispatches through `run_call` like any function (its fragment
+is one `ValueCallForeign` instruction).
+
+`readInput : Int -> IO Buffer` and `writeOutput : Int -> Buffer -> IO ()` are
+the IO primitives; `read_param` reads a scalar from the actor mailbox.
 
 ### 2.4 Faust combinators → ordinary functions (desugar)
 

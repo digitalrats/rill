@@ -200,7 +200,8 @@ fn foreign_fn_wrong_arity_is_error() {
 #[test]
 fn foreign_fn_lowers_to_callblock() {
     // Lower `gain _ 0.5` and assert the IR contains a CallBlock referencing the
-    // `gain` builtin with one signal input and the folded param 0.5.
+    // `gain` builtin with one signal input; the scalar param 0.5 is an ordinary
+    // value-track argument (not a folded param).
     use rill_lang::lower::lower_with_cafs;
 
     let src = r#"
@@ -211,13 +212,28 @@ fn foreign_fn_lowers_to_callblock() {
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
     let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
-    assert!(
-        ir.builtins
-            .iter()
-            .any(|b| b.name == "gain" && b.signal_ins == 1 && b.params == vec![0.5]),
-        "expected gain CallBlock with 1 signal in and folded param 0.5, got {:?}",
-        ir.builtins
+    let gain = ir
+        .builtins
+        .iter()
+        .find(|b| b.name == "gain")
+        .expect("gain builtin");
+    assert_eq!(gain.signal_ins, 1, "one signal input");
+    assert_eq!(
+        gain.params,
+        vec![0.5],
+        "scalar param folds into the builtin at build (currying)"
     );
+    // The ValueCallForeign carries both args: the Buffer input and the scalar.
+    let call = ir
+        .value_blocks[0]
+        .instrs
+        .iter()
+        .find(|i| matches!(i, rill_lang::ir::ValueInstr::ValueCallForeign { instance, .. } if *instance == ir.builtins.iter().position(|b| b.name == "gain").unwrap()))
+        .expect("gain ValueCallForeign");
+    let rill_lang::ir::ValueInstr::ValueCallForeign { srcs, .. } = call else {
+        unreachable!()
+    };
+    assert_eq!(srcs.len(), 1, "one Buffer input; scalar params are folded");
 }
 
 #[test]

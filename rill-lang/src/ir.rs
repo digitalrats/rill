@@ -595,10 +595,16 @@ pub enum ValueInstr {
     /// buffer(s) (consecutive registers for multi-output). Dispatches
     /// `Algorithm::process`/`MultichannelAlgorithm::process` over the buffers'
     /// `RegionHandle` slices (no copy at the FFI boundary).
+    ///
+    /// Scalar params are NOT value registers: constants are folded into
+    /// `BuiltinInstance.params` at build (currying — the arrow's scalar args
+    /// are applied at construction), live `?name`/`read_param` params flow via
+    /// `param_bindings` → `set_param` before `process`. The `Algorithm` stays a
+    /// pure function over its baked params.
     ValueCallForeign {
         /// Destination value register (first output; holds `Value::Buffer(dst)`).
         dst: usize,
-        /// Source value registers (each holds `Value::Buffer`).
+        /// Source Buffer value registers (the arrow's explicit Buffer args).
         srcs: Vec<usize>,
         /// Index into [`Ir::builtins`].
         instance: usize,

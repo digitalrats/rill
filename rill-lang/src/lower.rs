@@ -1769,12 +1769,16 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 // Foreign (FFI) application: `onepole 200.0 0.7 i1` — an ordinary
-                // `Buffer -> … -> Buffer` arrow. Buffer arguments lower through
-                // the value track (ValueReadInput / buffer arithmetic), scalar
-                // arguments fold to constants. Emits `ValueCallForeign`.
+                // `Buffer -> … -> Buffer` arrow. Buffer args lower through the
+                // value track (ValueReadInput / buffer arithmetic) into `srcs`;
+                // scalar params are folded into the builtin (currying): a
+                // constant → `BuiltinInstance.params`, a `?name`/param ref →
+                // `param_bindings` (pushed via `set_param` before `process`).
+                // The `Algorithm` stays a pure function over its baked params.
                 if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
                     if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
                         let mut param_values = Vec::new();
+                        let mut param_bindings = Vec::new();
                         let mut signal_srcs = Vec::new();
                         let mut pos = 0usize;
                         for p in &sig.params {
@@ -1796,10 +1800,46 @@ impl<'a> Lowerer<'a> {
                                     pos += 1;
                                 }
                                 crate::types::ffi::FfiParam::Scalar => {
+                                    // A main λ-param / actor param / named
+                                    // param ref is a LIVE value: record a
+                                    // param binding (set_param per tick). A
+                                    // constant folds into the builtin's params.
+                                    if let Expr::Ref(ref_name, _) = &call_args[pos] {
+                                        if let Some(&pidx) = self.param_names.get(ref_name) {
+                                            param_values.push(0.0);
+                                            param_bindings
+                                                .push((param_values.len() - 1, pidx));
+                                            pos += 1;
+                                            continue;
+                                        }
+                                    }
+                                    if let Expr::ActorParam {
+                                        name: aname,
+                                        default,
+                                        span: aspan,
+                                    } = &call_args[pos]
+                                    {
+                                        let default_val = if let Some(d) = default {
+                                            const_f64(d).unwrap_or(0.0)
+                                        } else {
+                                            0.0
+                                        };
+                                        let idx = self.intern_param(
+                                            aname.clone(),
+                                            default_val,
+                                            f64::NEG_INFINITY,
+                                            f64::INFINITY,
+                                            *aspan,
+                                        )?;
+                                        param_values.push(0.0);
+                                        param_bindings.push((param_values.len() - 1, idx));
+                                        pos += 1;
+                                        continue;
+                                    }
                                     let v = self.caf_const(&call_args[pos]).ok_or_else(|| {
                                         CompileError::Type {
                                             msg: format!(
-                                                "param at position {pos} of `{name}` must be a constant"
+                                                "param at position {pos} of `{name}` must be a constant or parameter reference"
                                             ),
                                             span: call_args[pos].span(),
                                         }
@@ -1836,7 +1876,7 @@ impl<'a> Lowerer<'a> {
                             kind: crate::builtin::BuiltinKind::Block,
                             signal_ins: signal_srcs.len(),
                             signal_outs: sig.signal_outs,
-                            param_bindings: Vec::new(),
+                            param_bindings,
                         });
                         let fst = self.fresh_value_reg();
                         for _ in 1..sig.signal_outs {
