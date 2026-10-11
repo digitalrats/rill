@@ -1878,21 +1878,24 @@ impl<'a> Lowerer<'a> {
                             signal_outs: sig.signal_outs,
                             param_bindings,
                         });
-                        let fst = self.fresh_value_reg();
-                        for _ in 1..sig.signal_outs {
-                            self.fresh_value_reg();
-                        }
-                        self.emit_value(ValueInstr::ValueCallForeign {
-                            dst: fst,
-                            srcs: signal_srcs,
-                            instance,
-                        });
+                        // Build the FFI arrow as a Callable fragment: its body
+                        // extracts the Buffer args from the call frame and runs
+                        // one `ValueCallForeign`. Applying it (ValueCallFunc)
+                        // dispatches through run_call like any user function, so
+                        // the arrow is a first-class value (HOF works for FFI).
+                        let (callee_reg, call_reg) =
+                            self.build_ffi_arrow(instance, signal_srcs.len(), sig.signal_outs)?;
+                        // Apply the arrow to the Buffer args.
                         if sig.signal_outs == 1 {
-                            return Ok((fst, ValueTy::Buffer));
+                            self.emit_call(call_reg, callee_reg, signal_srcs);
+                            return Ok((call_reg, ValueTy::Buffer));
                         }
-                        // Multi-out: build a tuple value (Buffer, …).
+                        // Multi-out: build a tuple value (Buffer, …) from the
+                        // consecutive output registers after the call result.
+                        self.emit_call(call_reg, callee_reg, signal_srcs);
                         let dst = self.fresh_value_reg();
-                        let fields: Vec<usize> = (0..sig.signal_outs).map(|i| fst + i).collect();
+                        let fields: Vec<usize> =
+                            (0..sig.signal_outs).map(|i| call_reg + i).collect();
                         self.emit_value(ValueInstr::ValueConstructRecord { dst, fields });
                         return Ok((dst, ValueTy::Buffer));
                     }
@@ -3553,6 +3556,75 @@ impl<'a> Lowerer<'a> {
     ///
     /// Mirrors `lower_fragment`'s register scheme: fragment-local registers
     /// `0..num_value_regs`, offset by the interpreter per call.
+    /// Build the FFI arrow as a first-class `Value::Callable`: a fragment whose
+    /// body reads the Buffer argument registers from the call frame and runs one
+    /// `ValueCallForeign`. Returns `(callee_reg, call_dst, first_out_reg)`.
+    ///
+    /// The fragment is built in a temporary block context (like `apply_partial`),
+    /// then restored. Applying the arrow through `ValueCallFunc` dispatches via
+    /// `run_call`, so FFI arrows are ordinary values (HOF: `map (onepole 200.0
+    /// 0.7) buffers`).
+    fn build_ffi_arrow(
+        &mut self,
+        instance: usize,
+        n_buf_args: usize,
+        n_out: usize,
+    ) -> Result<(usize, usize), CompileError> {
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
+        let saved_next = self.next_value_reg;
+        let saved_locals = std::mem::take(&mut self.value_locals);
+        let saved_captures = std::mem::take(&mut self.fragment_captures);
+
+        // Fragment-local registers: Buffer args at 0..n_buf_args; the output(s)
+        // follow.
+        let fst = n_buf_args;
+        for _ in 1..n_out {
+            self.fresh_value_reg();
+        }
+        self.emit_value(ValueInstr::ValueCallForeign {
+            dst: fst,
+            srcs: (0..n_buf_args).collect(),
+            instance,
+        });
+        let frag = FragmentIr {
+            value_blocks: std::mem::take(&mut self.value_blocks),
+            entry: 0,
+            num_value_regs: fst + n_out,
+            output_value_regs: (0..n_out).map(|i| fst + i).collect(),
+            num_capture_cells: 0,
+            sig: FuncSig {
+                value_ins: n_buf_args,
+                value_outs: n_out,
+                signal_ins: 0,
+            },
+        };
+        let fid = self.fragments.len();
+        self.fragments.push(std::sync::Arc::new(frag));
+
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
+        self.next_value_reg = saved_next;
+        self.value_locals = saved_locals;
+        self.fragment_captures = saved_captures;
+
+        // Allocate the closure on the OUTER track.
+        let env = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueConstructRecord {
+            dst: env,
+            fields: vec![],
+        });
+        let callee_reg = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueMakeClosure {
+            dst: callee_reg,
+            env,
+            fragment: fid,
+        });
+        let call_dst = self.fresh_value_reg();
+        Ok((callee_reg, call_dst))
+    }
+
     fn apply_partial(
         &mut self,
         applied: usize,

@@ -106,33 +106,36 @@ main i1 i2 = do
 
 ### 2.3 FFI: one ordinary arrow `Buffer -> … -> Buffer`
 
-FFI is an **ordinary first-class function**. A foreign call lowers through the
-SAME value track as a user function:
+FFI is an **ordinary first-class function**, dispatched through the SAME
+`run_call` path as any user function. A foreign call compiles to a
+**Callable whose fragment holds a sequence: extract the Buffer argument
+registers from the fragment's local frame, then one `ValueCallForeign`** that
+invokes the `Algorithm`:
 
 ```rust
-ValueInstr::ValueCallForeign { dst: usize, args: Vec<usize>, instance: usize },
+ValueInstr::ValueCallForeign { dst: usize, srcs: Vec<usize>, instance: usize },
 ```
 
-- `args` carries ALL the arrow's arguments as value registers in signature
-  order (homogeneous with `ValueCallFunc::args`): Buffer args, scalar params
-  (constants, `read_param` — the `?name` mailbox read), and **collections of
-  Buffers**.
-- Scalar params are read as ordinary values and pushed into the `Algorithm` via
-  `set_param` before `process`. `?name` is sugar for `read_param name` — no
-  fold-time magic.
+- Scalar params are NOT value registers: constants are folded into
+  `BuiltinInstance.params` at build (currying — the arrow's scalar args are
+  applied at construction), live `?name`/`read_param` params flow via
+  `param_bindings` → `set_param` before `process`. The `Algorithm` stays a
+  pure function over its baked params.
+- The foreign call's fragment is `[ValueCallForeign { dst, srcs, instance }]`;
+  applying it to a Buffer goes through `ValueCallFunc` → `run_call`. This makes
+  the FFI arrow a first-class value, so **HOF works for FFI**: `map
+  (onepole 200.0 0.7) buffers`, and mixer algorithms fold a mono kernel over a
+  `List Buffer`.
 - **Multichannel is collections, not a runtime mechanism.** All multichannel
   algorithms reduce to `List Buffer -> List Buffer` or `List Buffer -> Buffer`
   (`dry_wet`); `mono_to_stereo` is `Buffer -> Pair Buffer`. The signature
   expresses channels via `Pair (FixedBuffer f32)`/`List (FixedBuffer f32)`, and
-  the value track handles them with ordinary collection ops.
+  the value track handles them with ordinary collection ops. `Algorithm`
+  stays **SISO** (`process(Option<&[T]>, &mut [T])` — zero overhead, existing
+  algorithms untouched); multichannel is built from mono kernels + HOF on the
+  language side.
 - `MultichannelAlgorithm`, `MAX_BUILTIN_CHANNELS`, and the interleaved
   `Block` path are **deleted**.
-
-The foreign call dispatches through `run_call` like any function (its fragment
-is one `ValueCallForeign` instruction).
-
-`readInput : Int -> IO Buffer` and `writeOutput : Int -> Buffer -> IO ()` are
-the IO primitives; `read_param` reads a scalar from the actor mailbox.
 
 ### 2.4 Faust combinators → ordinary functions (desugar)
 

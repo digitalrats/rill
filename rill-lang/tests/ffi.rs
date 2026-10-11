@@ -223,13 +223,19 @@ fn foreign_fn_lowers_to_callblock() {
         vec![0.5],
         "scalar param folds into the builtin at build (currying)"
     );
-    // The ValueCallForeign carries both args: the Buffer input and the scalar.
-    let call = ir
-        .value_blocks[0]
-        .instrs
+    // The FFI arrow is a Callable fragment holding one ValueCallForeign with
+    // the Buffer input as its src; scalar params are folded into the builtin.
+    let gain_idx = ir
+        .builtins
         .iter()
-        .find(|i| matches!(i, rill_lang::ir::ValueInstr::ValueCallForeign { instance, .. } if *instance == ir.builtins.iter().position(|b| b.name == "gain").unwrap()))
-        .expect("gain ValueCallForeign");
+        .position(|b| b.name == "gain")
+        .expect("gain builtin index");
+    let call = ir
+        .fragments
+        .iter()
+        .flat_map(|f| f.value_blocks.iter().flat_map(|b| &b.instrs))
+        .find(|i| matches!(i, rill_lang::ir::ValueInstr::ValueCallForeign { instance, .. } if *instance == gain_idx))
+        .expect("gain ValueCallForeign in its fragment");
     let rill_lang::ir::ValueInstr::ValueCallForeign { srcs, .. } = call else {
         unreachable!()
     };
