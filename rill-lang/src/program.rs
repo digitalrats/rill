@@ -109,6 +109,16 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Outputs written by `ValueWriteOutput` this tick: (output index, buffer
     /// handle index). Drained into the external `outputs[]` slices at tick end.
     pub(crate) pending_outputs: Vec<(usize, usize)>,
+    /// Buffer-table indices of the program input channels (the `readInput`
+    /// List). Pre-allocated at build (one per channel, capped at
+    /// [`MAX_BUILTIN_CHANNELS`]); the channel count is a runtime property
+    /// (fixed by the backend at the first tick), so only the first
+    /// [`Self::cur_num_inputs`] are materialized each tick.
+    pub(crate) input_buffers: Vec<usize>,
+    /// Number of input channels on the current tick — set by
+    /// [`run_block_mimo`](crate::backend::interp::run_block_mimo) from the
+    /// backend's actual channel count. Immutable after the first tick.
+    pub(crate) cur_num_inputs: usize,
 }
 
 /// A region-backed `@` delay site: a [`TapeRing`] over a [`RegionHandle`].
@@ -361,6 +371,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let (delays, _allocator) = Self::alloc_delays(&ir);
         let buffers = Self::alloc_buffers(&ir);
+        let input_buffers: Vec<usize> =
+            (ir.num_buffers..ir.num_buffers + MAX_BUILTIN_CHANNELS).collect();
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
@@ -406,6 +418,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             value_outputs,
             value_error: None,
             pending_outputs: Vec::new(),
+            input_buffers,
+            cur_num_inputs: 0,
         }
     }
 
@@ -485,6 +499,13 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let buffers = Self::alloc_buffers(&ir);
+        // The IO model's input channels: pre-allocate the buffer-table slots
+        // the `readInput` List materializes into. The channel count is a
+        // runtime property (fixed by the backend at the first tick), so we
+        // reserve the maximum possible here; only the first `cur_num_inputs`
+        // are actually written each tick.
+        let input_buffers: Vec<usize> =
+            (ir.num_buffers..ir.num_buffers + MAX_BUILTIN_CHANNELS).collect();
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
@@ -530,6 +551,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             value_outputs,
             value_error: None,
             pending_outputs: Vec::new(),
+            input_buffers,
+            cur_num_inputs: 0,
         })
     }
 
@@ -563,12 +586,13 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
 
     /// Carve the program-level signal buffer table out of a fresh region
     /// allocator: one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers`
-    /// (each `Value::Buffer` index). Chunk capacity is `BUF` rounded up to a
-    /// power of two, so every handle fits within a single chunk (non-spanning).
-    /// Memory is static with program lifetime (SP-4 Tier-1); `process()` never
-    /// touches the allocator.
+    /// (each `Value::Buffer` index), plus the [`MAX_BUILTIN_CHANNELS`] input
+    /// slots the `readInput` List materializes into. Chunk capacity is `BUF`
+    /// rounded up to a power of two, so every handle fits within a single chunk
+    /// (non-spanning). Memory is static with program lifetime (SP-4 Tier-1);
+    /// `process()` never touches the allocator.
     fn alloc_buffers(ir: &Ir) -> Vec<RegionHandle<T>> {
-        let n = ir.num_buffers;
+        let n = ir.num_buffers + MAX_BUILTIN_CHANNELS;
         if n == 0 {
             return Vec::new();
         }

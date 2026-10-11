@@ -1,15 +1,17 @@
-use rill_core::traits::{Algorithm, ParamValue};
-use rill_lang::builtin::Registry;
-use rill_lang::compile_with;
+use rill_core::traits::Algorithm;
+use rill_lang::compile_with_ffi_channels;
+use rill_lang::ffi::ForeignRegistry;
 
 #[test]
 fn smooth_ramps_toward_target_across_ticks() {
     // IO model: the target is the program's BUFFER input (`i1`), not a
     // SetParameter control.
-    let mut p = compile_with::<f32>(
-        "main i1 = do { writeOutput 0 (smooth i1 5.0); return () }",
-        &Registry::new(),
+    let mut p = compile_with_ffi_channels::<f32>(
+        "main i1 = do { writeOutput [smooth i1 5.0]; return () }",
+        &ForeignRegistry::new(),
         48_000.0,
+        1,
+        1,
     )
     .unwrap();
     let mut out = [0.0f32; 64];

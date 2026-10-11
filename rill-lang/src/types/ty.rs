@@ -556,9 +556,9 @@ impl TypeEnv {
         env.builtin_sigs.insert(
             "readInput".to_string(),
             crate::ast::TypeExpr::TFunc(
-                vec![crate::ast::TypeExpr::TName("Int".into())],
+                vec![],
                 Box::new(crate::ast::TypeExpr::TApp(
-                    "IO".to_string(),
+                    "List".to_string(),
                     vec![crate::ast::TypeExpr::TName("Buffer".into())],
                 )),
             ),
@@ -566,10 +566,10 @@ impl TypeEnv {
         env.builtin_sigs.insert(
             "writeOutput".to_string(),
             crate::ast::TypeExpr::TFunc(
-                vec![
-                    crate::ast::TypeExpr::TName("Int".into()),
-                    crate::ast::TypeExpr::TName("Buffer".into()),
-                ],
+                vec![crate::ast::TypeExpr::TApp(
+                    "List".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )],
                 Box::new(crate::ast::TypeExpr::TApp(
                     "IO".to_string(),
                     vec![crate::ast::TypeExpr::TName("()".into())],

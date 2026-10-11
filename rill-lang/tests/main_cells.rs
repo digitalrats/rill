@@ -5,12 +5,20 @@
 
 use rill_core::traits::{MultichannelAlgorithm, ParamValue};
 use rill_lang::compile;
+use rill_lang::compile_with_ffi_channels;
+use rill_lang::ffi::ForeignRegistry;
 
 #[test]
 fn main_lambda_params_become_cells() {
     // main's λ-param `gain` is a runtime-stack cell, not intern_param.
-    let mut prog =
-        compile::<f32>("main i1 = do { writeOutput 0 (i1 * ?gain); return () }").unwrap();
+    let mut prog = compile_with_ffi_channels::<f32>(
+        "main i1 = do { writeOutput [i1 * ?gain]; return () }",
+        &ForeignRegistry::new(),
+        44100.0,
+        1,
+        1,
+    )
+    .unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(
         &mut prog,
@@ -25,8 +33,14 @@ fn main_lambda_params_become_cells() {
 #[test]
 fn set_param_writes_into_the_cell() {
     // SetParameter must reach the SAME persistent cell and keep applying.
-    let mut prog =
-        compile::<f32>("main i1 = do { writeOutput 0 (i1 * ?gain); return () }").unwrap();
+    let mut prog = compile_with_ffi_channels::<f32>(
+        "main i1 = do { writeOutput [i1 * ?gain]; return () }",
+        &ForeignRegistry::new(),
+        44100.0,
+        1,
+        1,
+    )
+    .unwrap();
     let idx = prog.param_index("gain").unwrap();
     prog.set_param(idx, ParamValue::Float(2.0));
     let mut out = [0.0f32; 4];

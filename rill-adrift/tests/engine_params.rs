@@ -44,12 +44,12 @@ fn run_with_param(
 
 #[test]
 fn main_arg_param_affects_output() {
-    // main g = _ * g
+    // main = do { writeOutput (map (fn i1 -> i1 * ?g) (readInput)); return () }
     // Default: g = 0.0 (parameters default to 0.0 when compiled via rill-lang)
     // After SetParameter("g", 2.0): output = input * 2.0
     let signal = [1.0f32; 256];
     let out = run_with_param(
-        "main i1 = do { writeOutput 0 (i1 * ?g); return () }",
+        "main = do { writeOutput (map (fn i1 -> i1 * ?g) (readInput)); return () }",
         "g",
         ParamValue::Float(2.0),
         &[&signal[..]],
@@ -67,10 +67,15 @@ fn main_arg_param_affects_output() {
 
 #[test]
 fn actor_param_default_applies() {
-    // main = _ * ?gain=0.25
+    // main = do { writeOutput (map (fn x -> x * ?gain=0.25) (readInput)); return () }
     // No SetParameter — default 0.25 should apply
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 256>("main = _ * ?gain=0.25", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 256>(
+        "main = do { writeOutput (map (fn x -> x * ?gain=0.25) (readInput)); return () }",
+        &reg,
+        44100.0,
+    )
+    .unwrap();
 
     let signal = [2.0f32; 256];
     let mut output = vec![0.0f32; 256];
@@ -88,11 +93,11 @@ fn actor_param_default_applies() {
 
 #[test]
 fn actor_param_set_param_affects_output() {
-    // main = _ * ?gain=0.25
+    // main = do { writeOutput (map (fn x -> x * ?gain=0.25) (readInput)); return () }
     // After SetParameter("gain", 4.0): output = input * 4.0
     let signal = [2.0f32; 256];
     let out = run_with_param(
-        "main = _ * ?gain=0.25",
+        "main = do { writeOutput (map (fn x -> x * ?gain=0.25) (readInput)); return () }",
         "gain",
         ParamValue::Float(4.0),
         &[&signal[..]],
@@ -130,11 +135,16 @@ fn actor_param_no_default_applies() {
 
 #[test]
 fn actor_param_persists_across_ticks() {
-    // main = _ * ?gain=1.0
+    // main = do { writeOutput (map (fn x -> x * ?gain=1.0) (readInput)); return () }
     // SetParameter("gain", 3.0) → tick 1
     // No SetParameter → tick 2 — gain should still be 3.0
     let reg = full_registry::<f32>();
-    let mut engine = compile_graph::<f32, 256>("main = _ * ?gain=1.0", &reg, 44100.0).unwrap();
+    let mut engine = compile_graph::<f32, 256>(
+        "main = do { writeOutput (map (fn x -> x * ?gain=1.0) (readInput)); return () }",
+        &reg,
+        44100.0,
+    )
+    .unwrap();
 
     // Tick 1: set gain to 3.0
     let sp = SetParameter::new(

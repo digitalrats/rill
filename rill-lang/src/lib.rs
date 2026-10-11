@@ -138,6 +138,28 @@ pub fn compile_with_ffi_mode<T: Transcendental>(
     RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
 }
 
+/// Like [`compile_with_ffi`], with explicit input/output channel counts known
+/// before launch (the external I/O layer wires a backend with exactly these
+/// channels). `readInput` returns a `List Buffer` of `input_channels` entries;
+/// `writeOutput` writes `output_channels` channels from its `List Buffer`.
+pub fn compile_with_ffi_channels<T: Transcendental>(
+    src: &str,
+    ffi: &crate::ffi::ForeignRegistry<T>,
+    sample_rate: f32,
+    input_channels: usize,
+    output_channels: usize,
+) -> Result<RillProgram<T, 256>, CompileError> {
+    let ir = compile_to_ir_channels(
+        src,
+        sample_rate,
+        Mode::Strict,
+        input_channels,
+        Some(output_channels),
+    )?;
+    let registry = Registry::<T>::new();
+    RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
+}
+
 /// Resolve the effective evaluation mode for a parsed program: the file's
 /// `{-# MODE ... #-}` pragma wins; the API-supplied mode is the default only
 /// when the file carries no pragma.
@@ -151,6 +173,18 @@ fn apply_api_mode(program: &mut crate::ast::Program, api_mode: Mode) {
 /// → mode resolution → infer → reduce → lower. The effective mode (pragma or
 /// API key) is threaded onto the [`TypedProgram`](types::infer::TypedProgram).
 fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileError> {
+    compile_to_ir_channels(src, sample_rate, mode, 0, None)
+}
+
+/// The shared source-compile pipeline with explicit I/O channels (see
+/// [`compile_with_ffi_channels`]).
+fn compile_to_ir_channels(
+    src: &str,
+    sample_rate: f32,
+    mode: Mode,
+    input_channels: usize,
+    output_channels: Option<usize>,
+) -> Result<Ir, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let (mut program, tape_decls) = extract_resources(&program)?;
@@ -161,7 +195,14 @@ fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileE
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-    lower::lower_with_cafs_mode(&typed, sample_rate, &typed.cafs, typed.mode)
+    lower::lower_program_with_channels(
+        &typed,
+        sample_rate,
+        &typed.cafs,
+        typed.mode,
+        input_channels,
+        output_channels,
+    )
 }
 
 /// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
@@ -425,7 +466,7 @@ mod ir_tests {
         // lofi: 1 signal in (from pipeline :), 1 out, 7 params
         registry.register_block("lofi", |_, _, _alloc| panic!("not instantiated"));
 
-        let src = r"main = do { writeOutput 0 (lofi 8 44100 0.75 1.0 1 0 1 (ay38910 1750000.0 1.0)); return () }";
+        let src = r"main = do { writeOutput [lofi 8 44100 0.75 1.0 1 0 1 (ay38910 1750000.0 1.0)]; return () }";
         let tokens = lexer::tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
         let mut typed = types::infer::infer_program_with(&program, program.mode).unwrap();
@@ -438,7 +479,7 @@ mod ir_tests {
         assert!(ir.value_blocks[0]
             .instrs
             .iter()
-            .any(|i| matches!(i, ir::ValueInstr::ValueWriteOutput { .. })));
+            .any(|i| matches!(i, ir::ValueInstr::ValueWriteOutputList { .. })));
     }
 
     #[test]

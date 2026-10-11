@@ -530,6 +530,16 @@ pub enum ValueInstr {
         /// Program input index.
         index: usize,
     },
+    /// Collect ALL program input channels into a first-class `List Buffer`
+    /// value (the IO `readInput` primitive). The number of channels is a
+    /// runtime property — fixed at the first tick by the backend, then
+    /// immutable — so the List's length is determined at run time, not at
+    /// compile time. Buffers for the channels are lazily materialized on the
+    /// first tick (see `RillProgram::input_buffers`).
+    ValueReadInputs {
+        /// Destination value register (holds `Value::List` of `Value::Buffer`).
+        dst: usize,
+    },
     /// Read the previous tick's block-state slot into the destination buffer.
     ValueBufferStateRead {
         /// Destination value register (holds `Value::Buffer(dst)`).
@@ -640,6 +650,13 @@ pub enum ValueInstr {
         /// Program output index.
         index: usize,
         /// Source value register (holds `Value::Buffer`).
+        src: usize,
+    },
+    /// Write a List of Buffers into the program outputs (push): the runtime
+    /// drains each list element (a `Value::Buffer`) into `outputs[k]` at tick
+    /// end, one channel per element.
+    ValueWriteOutputList {
+        /// Source value register (holds `Value::List` of `Value::Buffer`).
         src: usize,
     },
 }

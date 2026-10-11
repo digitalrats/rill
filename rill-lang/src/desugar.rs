@@ -289,52 +289,48 @@ pub(crate) fn desugar_main_io(program: &mut Program) -> bool {
             if outs.is_empty() {
                 outs.push(collect_and_rewrite(&body, &mut wire_names));
             }
-            let params: Vec<Param> = wire_names
-                .iter()
-                .enumerate()
-                .map(|(k, n)| Param {
-                    name: n.clone(),
-                    span: crate::error::Span::new(k, k + 1),
-                })
-                .collect();
-            // Build: do { writeOutput 0 <out0>; …; return () }.
             let span = body.span();
-            let mut stmts: Vec<Expr> = Vec::with_capacity(outs.len());
-            for (k, o) in outs.iter().enumerate() {
-                stmts.push(Expr::Apply {
-                    name: "writeOutput".to_string(),
-                    args: vec![Expr::Int(k as i64, span), o.clone()],
+            // Build the IO argument: a single-wire signal program is mapped
+            // over `readInput` (per-channel pull), a generator (no wire) is a
+            // literal one-element List.
+            let list_arg = if wire_names.is_empty() {
+                Expr::ListLit(vec![outs[0].clone()], span)
+            } else {
+                let wire = wire_names[0].clone();
+                let lam = Expr::Lambda {
+                    params: vec![Param {
+                        name: wire,
+                        span: crate::error::Span::new(0, 1),
+                    }],
+                    body: Box::new(outs[0].clone()),
                     span,
-                });
-            }
+                };
+                Expr::Apply {
+                    name: "map".to_string(),
+                    args: vec![lam, Expr::Ref("readInput".to_string(), span)],
+                    span,
+                }
+            };
+            // Build: do { writeOutput <list-arg>; return () }.
+            let stmts = vec![Expr::Apply {
+                name: "writeOutput".to_string(),
+                args: vec![list_arg],
+                span,
+            }];
             let ret = Expr::Apply {
                 name: "return".to_string(),
                 args: vec![Expr::Void(span)],
                 span,
             };
             let io_body = wrap_do(stmts, ret, span);
-            // Rebuild the Def: a `Local` (`main = expr`) becomes an `Anchor`
-            // with the wire λ-parameters; an existing `Anchor` gains them.
+            // Rebuild the Def: the wire lives inside the `map` lambda, so the
+            // def keeps its shape (no wire λ-parameters are added).
             match def {
-                Def::Local {
-                    name,
-                    where_defs,
-                    span: dspan,
-                    ..
-                } => {
-                    *def = Def::Anchor {
-                        name: name.clone(),
-                        params,
-                        body: io_body,
-                        where_defs: where_defs.clone(),
-                        span: *dspan,
-                    };
-                }
-                Def::Anchor {
-                    body: b, params: p, ..
-                } => {
+                Def::Local { body: b, .. } => {
                     *b = io_body;
-                    p.extend(params);
+                }
+                Def::Anchor { body: b, .. } => {
+                    *b = io_body;
                 }
                 _ => {}
             }

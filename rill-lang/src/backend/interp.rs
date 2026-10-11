@@ -68,9 +68,14 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
 
     // Materialize the program inputs into the buffer table: input `k` lands in
-    // `buffers[ir.input_buffers[k]]` (the value register `ValueBufferLoadInput`
-    // allocates its marker for). Zero-pads to the tick length.
-    for (k, &buf) in prog.ir.input_buffers.iter().enumerate() {
+    // `buffers[input_buffers[k]]` (the value register `ValueReadInputs` builds
+    // its List from). The channel count is a runtime property — the number of
+    // inputs the backend actually drives this tick — and is immutable across
+    // ticks, so `cur_num_inputs` is latched on the first tick. Zero-pads to
+    // the tick length.
+    let n_in = inputs.len().min(prog.input_buffers.len());
+    prog.cur_num_inputs = n_in;
+    for (k, &buf) in prog.input_buffers.iter().take(n_in).enumerate() {
         prog.buffers[buf].with_data_mut(|b| {
             b[..n].fill(T::ZERO);
             if let Some(inp) = inputs.get(k) {
@@ -1480,10 +1485,13 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 .with_data_mut(|b| crate::buffer_math::fill_into(&mut b[..n], T::from_f64(*value)));
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
         }
-        ValueInstr::ValueBufferLoadInput { dst, .. } => {
+        ValueInstr::ValueBufferLoadInput { dst, index } => {
             // The input slice was already materialized by `process()` into
-            // `buffers[*dst]`; this instruction only allocates the marker.
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            // `buffers[input_buffers[*index]]` (see `RillProgram::input_buffers`);
+            // this instruction only allocates the marker for the k-th input
+            // channel's buffer.
+            let buf = prog.input_buffers.get(*index).copied().unwrap_or(*dst);
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(buf));
         }
         ValueInstr::ValueBufferStateRead { dst, slot } => {
             let n = prog.block_len;
@@ -1585,11 +1593,39 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             prog.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
+        ValueInstr::ValueReadInputs { dst } => {
+            // `readInput : () -> List Buffer` — collect the first
+            // `cur_num_inputs` input-channel buffers into a first-class List.
+            // The channel count is latched at the first tick (the backend's
+            // channel count is immutable), so the List's length is stable.
+            let bufs: Vec<usize> = prog
+                .input_buffers
+                .iter()
+                .take(prog.cur_num_inputs)
+                .copied()
+                .collect();
+            let mut elems: Vec<ArenaRef> = Vec::with_capacity(bufs.len());
+            let mut ok = true;
+            for buf in bufs {
+                match alloc_owned(prog, Value::Buffer(buf)) {
+                    Some(r) => elems.push(r),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            prog.value_regs[*dst + base] = if ok {
+                alloc_owned(prog, Value::List { elems })
+            } else {
+                None
+            };
+        }
         ValueInstr::ValueReadInput { dst, index } => {
             // `main`'s λ-parameter is the program input: `readInput k`
             // materializes `buffers[input_buffers[k]]` (the input's buffer
             // register) as the value's handle.
-            let buf = prog.ir.input_buffers.get(*index).copied().unwrap_or(*dst);
+            let buf = prog.input_buffers.get(*index).copied().unwrap_or(*dst);
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(buf));
         }
         ValueInstr::ValueWriteOutput { index, src } => {
@@ -1599,6 +1635,20 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             if let Some(r) = prog.value_regs.get(*src + base).copied().flatten() {
                 if let Some(Value::Buffer(idx)) = prog.arena.get(r) {
                     prog.pending_outputs.push((*index, *idx));
+                }
+            }
+        }
+        ValueInstr::ValueWriteOutputList { src } => {
+            // Push: drain a List of Buffers into the outputs, one channel per
+            // element. Each list element is a `Value::Buffer`; record
+            // (channel, buffer) pairs for the tick-end drain.
+            if let Some(r) = prog.value_regs.get(*src + base).copied().flatten() {
+                if let Some(Value::List { elems }) = prog.arena.get(r).cloned() {
+                    for (ch, &e) in elems.iter().enumerate() {
+                        if let Some(Value::Buffer(idx)) = prog.arena.get(e) {
+                            prog.pending_outputs.push((ch, *idx));
+                        }
+                    }
                 }
             }
         }

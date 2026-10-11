@@ -150,15 +150,21 @@ fn colon_cons_chains_right_associatively() {
 
 #[test]
 fn colon_seq_still_composes_buffers() {
-    // `:` on Buffer operands stays Faust sequencing: `_ : onepole 200.0 0.7`
-    // feeds the input wire through the one-pole filter.
+    // `:` on Buffer operands stays Faust sequencing: a partial arrow
+    // `onepole 200.0 0.7` applied per channel through `map (readInput)`.
     use rill_lang::ffi::ForeignRegistry;
     use rill_lang::register;
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_filters(&mut ffi);
-    let mut prog =
-        rill_lang::compile_with_ffi::<f32>("main = _ : onepole 200.0 0.7;", &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(
+        "main = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () };",
+        &ffi,
+        44100.0,
+        1,
+        1,
+    )
+    .unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out[..]]).unwrap();
     assert!(

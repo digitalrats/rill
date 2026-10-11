@@ -43,8 +43,17 @@ mod tests {
 
     #[test]
     fn compile_def_runs() {
-        let def = RillLangDef::new("gain", "main = _ * 0.5");
-        let mut prog = compile_def::<f32>(&def).unwrap();
+        use crate::ffi::ForeignRegistry;
+        use crate::register;
+
+        let def = RillLangDef::new(
+            "gain",
+            "main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }",
+        );
+        let mut ffi = ForeignRegistry::<f32>::new();
+        register::register_foreign_filters(&mut ffi);
+        let mut prog =
+            crate::compile_with_ffi_channels::<f32>(&def.source, &ffi, 44100.0, 1, 1).unwrap();
         let mut out = [0.0f32; 2];
         prog.process(Some(&[2.0, 6.0]), &mut out).unwrap();
         assert_eq!(out, [1.0, 3.0]);

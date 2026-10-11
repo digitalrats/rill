@@ -2455,8 +2455,23 @@ fn infer_expr_expected(
             // misread as recursion.
             ctx.method_lifting.clear();
             let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(params.len());
-            for p in params {
-                let pty = ctx.fresh_vty();
+            // When the lambda's expected type is a `Func`, bind each parameter
+            // to the corresponding ARGUMENT type (not a fresh Var). This lets a
+            // caller thread a concrete element type through: `map (fn x -> x *
+            // 0.5) (readInput)` unifies `x : Buffer` BEFORE the body infers, so
+            // the arithmetic sees a Buffer (not a Var that later conflicts).
+            let expected_args = match &expected {
+                Some(ValueTy::Func(es, _)) => Some(es.clone()),
+                _ => None,
+            };
+            for (i, p) in params.iter().enumerate() {
+                let pty = match &expected_args {
+                    Some(es) => match es.get(i) {
+                        Some(e) => e.clone(),
+                        None => ctx.fresh_vty(),
+                    },
+                    _ => ctx.fresh_vty(),
+                };
                 arg_tys.push(pty.clone());
                 ctx.locals
                     .insert(p.name.clone(), ArrowTy::value_channel(pty));
@@ -2760,12 +2775,26 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
                 && sig.signal_outs > 0
             {
-                return Ok(ArrowTy::uniform(
-                    sig.params.len(),
-                    sig.signal_outs,
-                    ValueTy::Buffer,
-                ));
+                // A bare FFI ref is a Buffer ARROW (`Buffer -> … -> Buffer`),
+                // not a signal arrow: signals are Buffer values, so a bare
+                // `integrator` is a first-class function value (HOF: `map
+                // (fn x -> integrator x) (readInput)`). Mirrors the partial
+                // application typing in the FFI apply arm.
+                let n_sig = sig.params.len();
+                return Ok(ArrowTy::value_channel(ValueTy::Func(
+                    vec![ValueTy::Buffer; n_sig],
+                    vec![ValueTy::Buffer; sig.signal_outs],
+                )));
             }
+        }
+    }
+    // A NULLARY builtin signature (`readInput : () -> ST s (List Buffer)`):
+    // a bare reference is a zero-argument call, returning the signature's
+    // result. (`writeOutput` takes an argument, so it only appears as Apply.)
+    if let Some(crate::ast::TypeExpr::TFunc(params, ret)) = ctx.env.builtin_sigs.get(name).cloned()
+    {
+        if params.is_empty() {
+            return Ok(ArrowTy::value_channel(type_expr_to_vty(ctx, &ret)?));
         }
     }
     if let Some(t) = ctx.locals.get(name) {
@@ -2826,7 +2855,22 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
 /// application (their types are ordinary, unlike `runST`'s forall).
 fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, CompileError> {
     match te {
-        crate::ast::TypeExpr::TName(n) => Ok(ctx.env.vty_of_name(n)),
+        crate::ast::TypeExpr::TName(n) => {
+            // A phantom region token (`s` inside `runST (fn s -> …)`) resolves
+            // through the caller's locals FIRST — `ST s (List Buffer)` in a
+            // builtin signature refers to the enclosing region's `s`, not a
+            // global type. Falls back to the env for ordinary type names.
+            match ctx.locals.get(n) {
+                Some(ArrowTy { ins, outs, .. })
+                    if ins.is_empty()
+                        && outs.len() == 1
+                        && matches!(outs[0], ValueTy::TyConVar(_)) =>
+                {
+                    Ok(outs[0].clone())
+                }
+                _ => Ok(ctx.env.vty_of_name(n)),
+            }
+        }
         crate::ast::TypeExpr::TApp(head, args) => {
             let mut targs = Vec::with_capacity(args.len());
             for a in args {
@@ -4011,7 +4055,7 @@ fn infer_apply_impl(
                                 span: args[pos].span(),
                             });
                         }
-                        signal_ins += 1;
+                        signal_ins += at.arity_in();
                         pos += 1;
                     }
                     crate::types::ffi::FfiParam::VariadicSignal => {
@@ -4480,12 +4524,38 @@ fn infer_collection_call(
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
-            expect_closure(ctx, 1, "unary")?;
+            // Infer the source list FIRST so its element type is known, then
+            // infer the closure with the element threaded as its parameter
+            // type (`map : (a -> b) -> List a -> List b`). Without this, a
+            // lambda over a `List Buffer` (`fn x -> x * 0.5` on readInput)
+            // types `x` as a bare Var and the body's Buffer ops conflict.
+            let src_ty = arg_vty(ctx, 1)?;
+            let elem_ty = match &src_ty {
+                ValueTy::App(n, inner) if n == "List" => {
+                    inner.first().cloned().unwrap_or(ValueTy::Float)
+                }
+                _ => ValueTy::Float,
+            };
+            let fresh_ret = ctx.fresh_vty();
+            let ft0 = infer_expr_expected(
+                ctx,
+                &args[0],
+                Some(ValueTy::Func(vec![elem_ty], vec![fresh_ret])),
+            )?;
+            // The closure must take exactly one element argument.
+            match ctx.subst.resolve_value(&ft0.outs[0]) {
+                ValueTy::Func(a, _) if a.len() != 1 => {
+                    return Err(CompileError::Type {
+                        msg: "`map` expects a unary function".to_string(),
+                        span: args[0].span(),
+                    });
+                }
+                _ => {}
+            }
             // The result list's ELEMENT type is the closure's RETURN type
             // (`map : (a -> b) -> List a -> List b`), not the source list's
             // element type — a type-changing map must be typed `List b`.
-            let ft0 = arg_vty(ctx, 0)?;
-            let ft = ctx.subst.resolve_value(&ft0);
+            let ft = ctx.subst.resolve_value(&ft0.outs[0]);
             let ret_ty = match &ft {
                 ValueTy::Func(_, rets) => {
                     let r = rets.first().cloned().unwrap_or(ValueTy::Float);
@@ -5047,14 +5117,22 @@ mod tests {
 
     #[test]
     fn wire_is_1_to_1() {
+        // A bare wire `main` auto-desugars to the IO form: the input channel
+        // is pulled through `readInput` and written back unchanged.
         let t = ty_of("main = _").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert_eq!(
+            t.process_ty.outs[0],
+            ValueTy::Data("IO".into(), vec![ValueTy::Void])
+        );
     }
 
     #[test]
     fn gain_is_1_to_1() {
         let t = ty_of("main = _ * 0.5").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert_eq!(
+            t.process_ty.outs[0],
+            ValueTy::Data("IO".into(), vec![ValueTy::Void])
+        );
     }
 
     #[test]
@@ -5188,13 +5266,19 @@ mod tests {
     #[test]
     fn actor_param_no_default_typechecks() {
         let t = ty_of("main = _ * ?gain").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert_eq!(
+            t.process_ty.outs[0],
+            ValueTy::Data("IO".into(), vec![ValueTy::Void])
+        );
     }
 
     #[test]
     fn actor_param_with_default_typechecks() {
         let t = ty_of("main = _ * ?gain=0.5").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert_eq!(
+            t.process_ty.outs[0],
+            ValueTy::Data("IO".into(), vec![ValueTy::Void])
+        );
     }
 
     #[test]

@@ -176,7 +176,7 @@ fn foreign_fn_types_as_signal_arrow() {
     // and a wire — types as a 1→1 signal arrow (buffer-LAST: the signal trails).
     let src = r#"
         foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = gain 0.5 _;
+        main = _ : gain 0.5;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -215,7 +215,7 @@ fn foreign_fn_lowers_to_callblock() {
 
     let src = r#"
         foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = gain 0.5 _;
+        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -410,9 +410,9 @@ fn foreign_fn_runs_end_to_end() {
 
     let src = r#"
         foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = gain 0.5 _;
+        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     assert_eq!(out, [0.5, 1.0, 1.5, 2.0]);
@@ -425,9 +425,9 @@ fn foreign_fn_not_registered_is_compile_error() {
     let ffi = ForeignRegistry::<f32>::new();
     let src = r#"
         foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = gain 0.5 _;
+        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
     "#;
-    let err = match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+    let err = match rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1) {
         Err(e) => e,
         Ok(_) => panic!("expected a compile error for an unregistered foreign builtin"),
     };
@@ -441,9 +441,10 @@ fn foreign_fn_not_registered_is_compile_error() {
 fn builtin_catalog_is_auto_registered() {
     // `sine` resolves WITHOUT a user-written `foreign fn` declaration — the
     // inline builtin catalog auto-registers the declaration into
-    // `TypeEnv::foreign_sigs` (SP-3b Task 3).
+    // `TypeEnv::foreign_sigs` (SP-3b Task 3). The generator list is a
+    // 0-input IO program.
     let src = r#"
-        main = sine 440.0 1.0 0.0;
+        main = do { writeOutput [sine 440.0 1.0 0.0]; return () };
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -999,9 +1000,9 @@ fn eq_parametric_ffi_end_to_end() {
     register_foreign_eq(&mut ffi);
 
     let src = r#"
-        main = _ : eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] };
+        main = do { writeOutput (map (eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] }) (readInput)); return () };
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 4]], &mut [&mut out]).unwrap();
     assert!(
@@ -1067,9 +1068,9 @@ fn digital_effects_ffi_end_to_end() {
     register_foreign_digital_effects(&mut ffi);
 
     let src = r#"
-        main = _ : delay 0.1 0.3 0.5;
+        main = do { writeOutput (map (delay 0.1 0.3 0.5) (readInput)); return () };
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     // Fresh delay line: wet = 0, so the first block is the dry path at mix 0.5.
@@ -1090,9 +1091,9 @@ fn digital_effects_distortion_runs() {
     register_foreign_digital_effects(&mut ffi);
 
     let src = r#"
-        main = _ : distortion 2.0 1.0;
+        main = do { writeOutput (map (distortion 2.0 1.0) (readInput)); return () };
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     // Soft-clip: tanh(2.0) with output gain 1.0.
@@ -1121,9 +1122,9 @@ fn digital_effects_delay_live_param_reaches_algorithm() {
     register_foreign_digital_effects(&mut ffi);
 
     let src = r#"
-        main i1 = do { writeOutput 0 (delay ?t 0.0 1.0 i1); return () };
+        main = do { writeOutput (map (delay ?t 0.0 1.0) (readInput)); return () };
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
 
     // Default t = 0.0 clamps to 0.01 s → 441 samples at 44.1 kHz.
     let t_idx = prog.param_index("t").expect("param `t`");
@@ -1163,9 +1164,9 @@ fn digital_effects_limiter_runs() {
     register_foreign_digital_effects(&mut ffi);
 
     let src = r#"
-        main = _ : limiter (-6.0) 0.1;
+        main = do { writeOutput (map (limiter (-6.0) 0.1) (readInput)); return () };
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     // Lookahead warm-up: the limiter passes the first `lookahead_samples` (220)
@@ -1186,8 +1187,8 @@ fn generators_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = sine 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput [sine 440.0 1.0 0.0]; return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     // Sine at t=0, amp 1.0, phase 0.0: starts at 0.0 and rises.
@@ -1214,8 +1215,8 @@ fn saw_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = saw 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput [saw 440.0 1.0 0.0]; return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert!(
@@ -1237,8 +1238,8 @@ fn square_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = square 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput [square 440.0 1.0 0.0]; return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert!(
@@ -1259,8 +1260,8 @@ fn triangle_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = triangle 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput [triangle 440.0 1.0 0.0]; return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert!(
@@ -1283,8 +1284,8 @@ fn noise_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = noise 1.0 0.5;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput [noise 1.0 0.5]; return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert!(
@@ -1305,8 +1306,8 @@ fn leaky_integrator_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = _ : leaky_integrator 0.5;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput (map (leaky_integrator 0.5) (readInput)); return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
     let expected = [1.0, 1.5, 1.75, 1.875];
@@ -1333,8 +1334,8 @@ fn lowpass_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_filters(&mut ffi);
 
-    let src = r#"main = _ : lowpass 1000.0 0.7;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput (map (lowpass 1000.0 0.7) (readInput)); return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
     assert!(
@@ -1359,8 +1360,9 @@ fn biquad_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_filters(&mut ffi);
 
-    let src = r#"main = _ : biquad 0.0 1000.0 0.7 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src =
+        r#"main = do { writeOutput (map (biquad 0.0 1000.0 0.7 0.0) (readInput)); return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
     assert!(
@@ -1385,8 +1387,8 @@ fn integrator_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = + ~ _;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput (map integrator (readInput)); return () };"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
     assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
@@ -1539,12 +1541,12 @@ fn eq_parametric_ffi_two_bands() {
     register_foreign_eq(&mut ffi);
 
     let src = r#"
-        main = _ : eq_parametric { bands: [
+        main = do { writeOutput (map (eq_parametric { bands: [
             { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 },
             { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
-        ] };
+        ] }) (readInput)); return () };
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 4]], &mut [&mut out]).unwrap();
     assert!(
