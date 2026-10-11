@@ -4660,6 +4660,26 @@ fn expr_has_variadic_signal(ctx: &Ctx, e: &Expr) -> bool {
 fn infer_seq(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
+    // `:` overload: for List operands it is Haskell-style cons
+    // (`x : xs` ≣ `cons x xs`), for signal/Buffer operands it is Faust
+    // sequencing (`a : b` — run a then b). With signals unified onto the value
+    // track (Buffer is an ordinary value), the two are distinguished by
+    // operand type: a List-typed rhs makes `:` cons; otherwise it is seq.
+    let rhs_list = matches!(b.outs.first(), Some(ValueTy::App(n, _)) if n == "List");
+    let both_values =
+        a.arity_in() == 0 && a.arity_out() == 1 && b.arity_in() == 0 && b.arity_out() == 1;
+    if rhs_list && both_values {
+        // cons x xs : element must unify with the list's element type.
+        let elem = match &b.outs[0] {
+            ValueTy::App(_, inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
+            _ => ValueTy::Float,
+        };
+        unify_value(&a.outs[0], &elem, &mut ctx.subst, lhs.span())?;
+        return Ok(ArrowTy::value_channel(ValueTy::App(
+            "List".into(),
+            vec![ctx.subst.resolve_value(&elem)],
+        )));
+    }
     seq(ctx, &a, &b, span)
 }
 

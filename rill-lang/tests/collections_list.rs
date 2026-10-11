@@ -113,6 +113,66 @@ fn cons_prepends_new_head() {
 }
 
 #[test]
+fn colon_is_cons_for_list_operands() {
+    // `x : xs` — Haskell-style cons via the `:` overload. `:` is right-
+    // associative for a List rhs: `1.0 : 2.0 : list` ≡ `1.0 : (2.0 : list)`.
+    let mut prog = compile::<f32>("main = length (1.0 : 2.0 : list);").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Int(2),
+        "1.0 : 2.0 : list must build a 2-element list"
+    );
+}
+
+#[test]
+fn colon_cons_chains_right_associatively() {
+    // The parser builds `:` LEFT-associatively; a List-terminated chain is
+    // re-associated right: `1.0 : 2.0 : 3.0 : list` ≡ 1.0 : (2.0 : (3.0 :
+    // list)). Head must be the first element.
+    let mut prog = compile::<f32>("main = head (1.0 : 2.0 : 3.0 : list);").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::Sum(0, payload) => {
+            assert_eq!(
+                prog.arena().get(payload[0]).unwrap(),
+                &rill_lang::arena::Value::Float(1.0),
+                "head of a cons chain must be the first element"
+            );
+        }
+        other => panic!("expected Just 1.0, got {other:?}"),
+    }
+}
+
+#[test]
+fn colon_seq_still_composes_buffers() {
+    // `:` on Buffer operands stays Faust sequencing: `_ : onepole 200.0 0.7`
+    // feeds the input wire through the one-pole filter.
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::register;
+
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register::register_foreign_filters(&mut ffi);
+    let mut prog =
+        rill_lang::compile_with_ffi::<f32>("main = _ : onepole 200.0 0.7;", &ffi, 44100.0).unwrap();
+    let mut out = [0.0f32; 64];
+    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out[..]]).unwrap();
+    assert!(
+        out.iter().all(|v| v.is_finite()),
+        "onepole seq output must be finite"
+    );
+    assert!(
+        out[0] > 0.0,
+        "onepole must pass a DC step, got out[0]={}",
+        out[0]
+    );
+}
+
+#[test]
 fn fold_rejects_wrong_arity_closure_at_compile_time() {
     // `fold` calls its closure with (acc, elem), so a unary closure is a type
     // error. It used to compile and then panic the runtime path with an

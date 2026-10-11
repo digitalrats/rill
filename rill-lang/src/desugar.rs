@@ -42,11 +42,26 @@ fn rewrite_def(def: &mut Def, env: &TypeEnv) {
 /// args bound by [`bind_signal_args`].
 fn rewrite(e: &Expr, env: &TypeEnv) -> Expr {
     match e {
-        Expr::Seq(l, r, sp) => Expr::Seq(
-            Box::new(bind_signal_args(&rewrite(l, env), env)),
-            Box::new(bind_signal_args(&rewrite(r, env), env)),
-            *sp,
-        ),
+        Expr::Seq(l, r, sp) => {
+            let l = rewrite(l, env);
+            let r = rewrite(r, env);
+            // `:` overload — a List rhs makes `:` Haskell-style cons
+            // (`x : xs` ≣ `cons x xs`), a Buffer rhs keeps Faust sequencing.
+            // The parser builds `a : b : c` LEFT-associatively
+            // (`(a : b) : c`); cons must chain right, so re-associate a
+            // list-terminated chain into `a : (b : c)`.
+            if is_list_expression(&r) {
+                let mut elems = Vec::new();
+                flatten_seq(&Expr::Seq(Box::new(l), Box::new(r), *sp), &mut elems);
+                rebuild_right_chain(elems, *sp)
+            } else {
+                Expr::Seq(
+                    Box::new(bind_signal_args(&l, env)),
+                    Box::new(bind_signal_args(&r, env)),
+                    *sp,
+                )
+            }
+        }
         Expr::Loop(l, r, sp) => Expr::Loop(
             Box::new(bind_signal_args(&rewrite(l, env), env)),
             Box::new(bind_signal_args(&rewrite(r, env), env)),
@@ -101,6 +116,41 @@ fn rewrite(e: &Expr, env: &TypeEnv) -> Expr {
         }
         other => other.clone(),
     }
+}
+
+/// Whether `e` syntactically denotes a List value: a `[]` literal, a bare
+/// `list`, a `cons` call, or a `:` cons-chain terminating in one. Used to
+/// disambiguate the `:` overload BEFORE inference (List rhs → cons, else seq).
+fn is_list_expression(e: &Expr) -> bool {
+    match e {
+        Expr::ListLit(..) => true,
+        Expr::Ref(name, _) => matches!(name.as_str(), "list"),
+        Expr::Apply { name, .. } => matches!(name.as_str(), "list" | "cons"),
+        Expr::Seq(_, r, _) => is_list_expression(r),
+        _ => false,
+    }
+}
+
+/// Flatten a LEFT-associative `a : b : c` (`(a : b) : c`) into `[a, b, c]`.
+fn flatten_seq(e: &Expr, out: &mut Vec<Expr>) {
+    match e {
+        Expr::Seq(l, r, _) => {
+            flatten_seq(l, out);
+            out.push((**r).clone());
+        }
+        other => out.push(other.clone()),
+    }
+}
+
+/// Rebuild a flattened chain RIGHT-associatively: `[a, b, c]` →
+/// `a : (b : c)` (the cons/`::`-like shape).
+fn rebuild_right_chain(elems: Vec<Expr>, span: crate::error::Span) -> Expr {
+    let mut it = elems.into_iter().rev();
+    let mut acc = it.next().expect("non-empty chain");
+    for e in it {
+        acc = Expr::Seq(Box::new(e), Box::new(acc), span);
+    }
+    acc
 }
 
 /// If `e` is an `Apply`/`Ref` to a foreign fn whose trailing signal params are

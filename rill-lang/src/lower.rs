@@ -2246,6 +2246,32 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::String))
             }
+            Expr::Seq(lhs, rhs, _) => {
+                // `:` overload — Haskell-style cons for List operands
+                // (`x : xs` ≣ `cons x xs`). Inference already resolved a
+                // List-typed rhs to this branch; lower the element and the
+                // list, then cons them (lazy in complete mode).
+                let (x, xt) = self.lower_value(lhs)?;
+                let (xs, xts) = self.lower_value(rhs)?;
+                let op = if self.mode == Mode::Complete {
+                    ValueBuiltinOp::LazyCons
+                } else {
+                    ValueBuiltinOp::Cons
+                };
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueCallBuiltin {
+                    dst,
+                    op,
+                    args: vec![x, xs],
+                });
+                let elem = match &xts {
+                    ValueTy::App(_, inner) => inner.first().cloned().unwrap_or(xt),
+                    _ => xt,
+                };
+                let ret = ValueTy::App("List".into(), vec![elem]);
+                self.note_container(&ret);
+                Ok((dst, ret))
+            }
             Expr::ListLit(elems, _) => {
                 // In complete mode the empty literal `[]` is the lazy Nil.
                 if elems.is_empty() && self.mode == Mode::Complete {
