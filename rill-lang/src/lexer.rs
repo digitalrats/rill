@@ -123,6 +123,14 @@ pub enum Tok {
     KwDo,
     /// `<-` — do-block monadic binding.
     LArrow,
+    /// `\` — lambda literal `\x -> body`.
+    Backslash,
+    /// `case` keyword — pattern matching (`case e of { .. }`).
+    KwCase,
+    /// `::` — type signature annotation (`name :: TypeExpr`).
+    DoubleColon,
+    /// Newline — layout (offside rule) boundary.
+    Newline,
     /// End of input.
     Eof,
     /// Imaginary literal, e.g. `3i`, `2.5i`.
@@ -156,13 +164,24 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
     let is_ident_start = |c: u8| c.is_ascii_alphabetic() || c == b'_';
     let is_ident_cont = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
 
+    // Whitespace (except newline) is skipped. `--` starts a line comment. A
+    // newline is emitted as `Tok::Newline` so the parser can implement the
+    // offside rule (layout) — each line boundary is a layout point.
     while i < bytes.len() {
         let c = bytes[i];
+        if c == b'\n' {
+            out.push(Token {
+                tok: Tok::Newline,
+                span: Span::new(i, i + 1),
+            });
+            i += 1;
+            continue;
+        }
         if c.is_ascii_whitespace() {
             i += 1;
             continue;
         }
-        if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+        if c == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'-' {
             while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
@@ -229,6 +248,14 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             i += 2;
             out.push(Token {
                 tok: Tok::Merge,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+        if c == b':' && i + 1 < bytes.len() && bytes[i + 1] == b':' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::DoubleColon,
                 span: Span::new(start, i),
             });
             continue;
@@ -393,6 +420,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "foreign" if !followed_by_paren => Tok::KwForeign,
                 "forall" if !followed_by_paren => Tok::KwForall,
                 "match" => Tok::KwMatch,
+                "case" if !followed_by_paren => Tok::KwCase,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "if" if !followed_by_paren => Tok::KwIf,
                 "then" if !followed_by_paren => Tok::KwThen,
@@ -426,6 +454,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             continue;
         }
         let single = match c {
+            b'\\' => Tok::Backslash,
             b':' => Tok::Colon,
             b'~' => Tok::Tilde,
             b'@' => Tok::At,
@@ -517,9 +546,10 @@ mod tests {
     #[test]
     fn lexes_idents_and_skips_comments() {
         assert_eq!(
-            kinds("process // a comment\n sin"),
+            kinds("process -- a comment\n sin"),
             vec![
                 Tok::Ident("process".into()),
+                Tok::Newline,
                 Tok::Ident("sin".into()),
                 Tok::Eof
             ]
@@ -761,6 +791,64 @@ mod tests {
                 Tok::Comma,
                 Tok::Ident("y".into()),
                 Tok::RParen,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_backslash_lambda() {
+        assert_eq!(
+            kinds(r"\x -> x + 1.0"),
+            vec![
+                Tok::Backslash,
+                Tok::Ident("x".into()),
+                Tok::FatArrow,
+                Tok::Ident("x".into()),
+                Tok::Plus,
+                Tok::Float(1.0),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_dash_dash_comment() {
+        assert_eq!(
+            kinds("1.0 -- a comment\n + 2.0"),
+            vec![
+                Tok::Float(1.0),
+                Tok::Newline,
+                Tok::Plus,
+                Tok::Float(2.0),
+                Tok::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_case_keyword() {
+        assert_eq!(
+            kinds("case e of { }"),
+            vec![
+                Tok::KwCase,
+                Tok::Ident("e".into()),
+                Tok::KwOf,
+                Tok::LBrace,
+                Tok::RBrace,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_double_colon() {
+        assert_eq!(
+            kinds("x :: Float"),
+            vec![
+                Tok::Ident("x".into()),
+                Tok::DoubleColon,
+                Tok::Ident("Float".into()),
                 Tok::Eof,
             ]
         );

@@ -304,23 +304,23 @@ instance Buffer (FixedBuffer a) where { }
 data Tape a = { };
 instance Buffer (Tape f32) where { }
 
-// Faust combinators over Buffer arrows (`Buffer -> Buffer` as first-class
-// values). `seq`/`par`/`split`/`merge` are pure functions — they compose
-// Buffer arrows; `loop` (`~`) and `delay` (`@ n`) are stateful and are
-// implemented as builtins. The `:` / `,` / `<:` / `:>` sugar desugars to
-// these (see `desugar.rs`). They use the builtin `Pair a b` record
-// (`first`/`second`) to carry two channels.
-//
-// `seq f g` runs f then g on one channel: `fn x -> g (f x)`.
+--  Faust combinators over Buffer arrows (`Buffer -> Buffer` as first-class
+--  values). `seq`/`par`/`split`/`merge` are pure functions — they compose
+--  Buffer arrows; `loop` (`~`) and `delay` (`@ n`) are stateful and are
+--  implemented as builtins. The `:` / `,` / `<:` / `:>` sugar desugars to
+--  these (see `desugar.rs`). They use the builtin `Pair a b` record
+--  (`first`/`second`) to carry two channels.
+
+--  `seq f g` runs f then g on one channel: `fn x -> g (f x)`.
 seq = fn f -> fn g -> fn x -> g (f x);
-// `par f g` runs f and g independently on a two-channel Pair:
-// `fn p -> Pair { first: f p.first, second: g p.second }`.
+--  `par f g` runs f and g independently on a two-channel Pair:
+--  `fn p -> Pair { first: f p.first, second: g p.second }`.
 par = fn f -> fn g -> fn p -> Pair { first: f p.first, second: g p.second };
-// `split f g` fans one channel out to both f and g:
-// `fn x -> Pair { first: f x, second: g x }`.
+--  `split f g` fans one channel out to both f and g:
+--  `fn x -> Pair { first: f x, second: g x }`.
 split = fn f -> fn g -> fn x -> Pair { first: f x, second: g x };
-// `merge f g` sums the two channels through f and g into one:
-// `fn p -> f p.first + g p.second`.
+--  `merge f g` sums the two channels through f and g into one:
+--  `fn p -> f p.first + g p.second`.
 merge = fn f -> fn g -> fn p -> f p.first + g p.second;
 
 main = _;

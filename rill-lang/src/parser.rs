@@ -190,13 +190,28 @@ impl<'a> Parser<'a> {
         Self { toks, src, pos: 0 }
     }
     fn peek(&self) -> &Token {
-        &self.toks[self.pos]
+        // Skip layout newlines: the parser is whitespace-agnostic outside
+        // layout blocks (offside rule in Task 11). Newline tokens are kept in
+        // the stream for layout analysis but skipped here by default.
+        let mut i = self.pos;
+        while i < self.toks.len() && self.toks[i].tok == Tok::Newline {
+            i += 1;
+        }
+        if i < self.toks.len() {
+            &self.toks[i]
+        } else {
+            &self.toks[self.toks.len() - 1]
+        }
     }
     fn bump(&mut self) -> Token {
-        let t = self.toks[self.pos].clone();
-        if self.pos + 1 < self.toks.len() {
-            self.pos += 1;
+        // Return the current non-newline token, then advance past it and any
+        // following layout newlines.
+        let mut i = self.pos;
+        while i < self.toks.len() && self.toks[i].tok == Tok::Newline {
+            i += 1;
         }
+        let t = self.toks[i.min(self.toks.len() - 1)].clone();
+        self.pos = (i + 1).min(self.toks.len() - 1);
         t
     }
     fn eat(&mut self, want: &Tok) -> Result<Token, CompileError> {
