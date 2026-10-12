@@ -20,7 +20,7 @@ execution system, not feature growth.
 
 | #   | Decision                                                                                                                                                                                                                        |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | Lambdas: `\x -> body` (replaces `fn x -> body`). Multi-param is sugar: `\x y -> body` ≡ `\x -> \y -> body`.                                                                                                                     |
+| D1  | Lambdas: `\x -> body` (replaces `fn x -> body`). A lambda is strictly unary; multi-parameter currying lives only in definitions (`foo x y = body` ≡ `foo = \x -> \y -> body`) and applications (`f a b` ≡ `((f a) b)`). |
 | D2  | Comments: `--` (replaces `//`).                                                                                                                                                                                                 |
 | D3  | Case: `case e of { p -> e; ... }` (replaces `match e of { p => e }`).                                                                                                                                                           |
 | D4  | Offside rule: layout (indentation) delimits blocks; `{}`/`;`/`where {}` removed.                                                                                                                                                |
@@ -117,7 +117,7 @@ Consequences:
 ### 5.2 Parser (`parser.rs`)
 - Layout-aware parsing (offside rule) replacing `{}`/`;`/`where {}` blocks.
   `let ... in` and local defs use layout, as in Haskell.
-- Parse `\x -> body` lambdas; desugar multi-param lambdas to nested.
+- Parse `\x -> body` lambdas (strictly unary).
 - Parse `case e of { p -> e; ... }`.
 - Desugar multi-arg application `f x y z` → `((f x) y) z`.
 - Desugar `name p1 p2 = body` → `name = \p1 -> \p2 -> body`.

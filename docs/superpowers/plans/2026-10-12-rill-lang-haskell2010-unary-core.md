@@ -141,20 +141,17 @@ In `rill-lang/src/parser.rs`, in the atom arm (currently `Tok::KwFn => { ... }` 
 ```rust
 Tok::Backslash => {
     self.bump();
-    let mut params = Vec::new();
-    while let Tok::Ident(_) = self.peek().tok {
-        let (pname, pspan) = self.expect_ident()?;
-        params.push(Param { name: pname, span: pspan });
-    }
+    // A lambda is strictly unary: `\x -> body`. Multi-parameter currying
+    // lives in definitions and applications, never in a lambda literal.
+    let (pname, pspan) = self.expect_ident()?;
     self.eat(&Tok::FatArrow)?;
     let body = self.parse_expr(0, true)?;
     let span = t.span.merge(body.span());
-    // Desugar multi-param to nested lambdas: \x y -> b  ≡  \x -> \y -> b
-    let mut lam = Expr::Lambda { params: vec![params.pop().expect("lambda needs a param")], body: Box::new(body), span };
-    for p in params.into_iter().rev() {
-        lam = Expr::Lambda { params: vec![p], body: Box::new(lam), span };
-    }
-    Ok(lam)
+    Ok(Expr::Lambda {
+        params: vec![Param { name: pname, span: pspan }],
+        body: Box::new(body),
+        span,
+    })
 }
 ```
 

@@ -426,6 +426,13 @@ impl<'a> Parser<'a> {
                 span: pspan,
             });
         }
+        // Optional `:: TypeExpr` signature annotation (Haskell 2010). Typing is
+        // still inferred (HM); the signature is a hint/constraint checked by a
+        // later task. Parsed and discarded for now.
+        if self.peek().tok == Tok::DoubleColon {
+            self.bump();
+            let _sig = self.parse_type_expr()?;
+        }
         self.eat(&Tok::Eq)?;
         let body = self.parse_expr(0, false)?;
 
@@ -936,6 +943,35 @@ impl<'a> Parser<'a> {
                     span,
                 })
             }
+            Tok::KwCase => {
+                self.bump();
+                let scrutinee = self.parse_expr(0, false)?;
+                self.eat(&Tok::KwOf)?;
+                self.eat(&Tok::LBrace)?;
+                let mut arms = Vec::new();
+                while self.peek().tok != Tok::RBrace {
+                    let pat_span = self.peek().span;
+                    let pattern = self.parse_pattern()?;
+                    self.eat(&Tok::FatArrow)?;
+                    let body = self.parse_expr(0, true)?;
+                    let arm_span = pat_span.merge(body.span());
+                    arms.push(MatchArm {
+                        pattern,
+                        guards: vec![(Expr::Bool(true, pat_span), body)],
+                        span: arm_span,
+                    });
+                    if self.peek().tok == Tok::Semi {
+                        self.bump();
+                    }
+                }
+                self.eat(&Tok::RBrace)?;
+                let span = t.span.merge(self.peek().span);
+                Ok(Expr::Match {
+                    scrutinee: Box::new(scrutinee),
+                    arms,
+                    span,
+                })
+            }
             Tok::KwMatch => {
                 self.bump();
                 let scrutinee = self.parse_expr(0, false)?;
@@ -987,6 +1023,25 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Match {
                     scrutinee: Box::new(scrutinee),
                     arms,
+                    span,
+                })
+            }
+            Tok::Backslash => {
+                self.bump();
+                // A lambda is strictly unary: `\x -> body`. Multi-parameter
+                // currying lives in definitions (`foo x y = body` ≡
+                // `foo = \x -> \y -> body`) and applications (`f a b` ≡
+                // `((f a) b)`), never in a single lambda literal.
+                let (pname, pspan) = self.expect_ident()?;
+                self.eat(&Tok::FatArrow)?;
+                let body = self.parse_expr(0, true)?;
+                let span = t.span.merge(body.span());
+                Ok(Expr::Lambda {
+                    params: vec![Param {
+                        name: pname,
+                        span: pspan,
+                    }],
+                    body: Box::new(body),
                     span,
                 })
             }
@@ -2113,6 +2168,31 @@ mod tests {
                 assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 4.0));
             }
             other => panic!("expected Cmp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backslash_lambda_is_unary() {
+        match body("main = \\x -> x + 1.0") {
+            Expr::Lambda { params, body, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(matches!(body.as_ref(), Expr::Arith { .. }));
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn case_parses_like_match() {
+        match body("main = case x of { Just v -> v; Nothing -> 0.0; }") {
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                assert!(matches!(scrutinee.as_ref(), Expr::Ref(n, _) if n == "x"));
+                assert_eq!(arms.len(), 2);
+            }
+            other => panic!("expected Match, got {other:?}"),
         }
     }
 }
