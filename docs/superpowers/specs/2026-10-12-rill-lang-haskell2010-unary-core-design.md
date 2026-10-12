@@ -1,4 +1,4 @@
-# rill-lang — Haskell 98 Syntax + Unary Core Design
+# rill-lang — Haskell 2010 Syntax + Unary Core Design
 
 **Date:** 2026-10-12
 **Status:** Design (draft for review)
@@ -8,7 +8,9 @@
 
 Riduce rill-lang to a **unary lambda calculus**: every function has arity 1
 (currying), every expression is a single value, and the syntax follows
-Haskell 98. This eliminates the signal path (wires, combinators, channel
+Haskell 2010 (the 2010 revision that formally supports the
+higher-kinded typeclasses we already use — `Functor f`, `Kleisli m`). This
+eliminates the signal path (wires, combinators, channel
 arity) entirely and unifies inference/lowering around one model.
 
 The purpose is **simplification and unification** of the syntax and the

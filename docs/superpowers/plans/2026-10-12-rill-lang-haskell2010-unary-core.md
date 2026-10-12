@@ -1,14 +1,14 @@
-# rill-lang Haskell 98 Syntax + Unary Core Implementation Plan
+# rill-lang Haskell 2010 Syntax + Unary Core Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rewrite rill-lang to Haskell 98 syntax (lambdas `\x -> body`, `--` comments, `case`/`of`, offside rule, `::` annotations) with a unary core (every function arity 1, currying sugar in both definition and application) and a single value type `Thunk(captures, result)`.
+**Goal:** Rewrite rill-lang to Haskell 2010 syntax (lambdas `\x -> body`, `--` comments, `case`/`of`, offside rule, `::` annotations) with a unary core (every function arity 1, currying sugar in both definition and application) and a single value type `Thunk(captures, result)`.
 
 **Architecture:** Delete the signal path (wires `_`, Faust combinators `: , <: :> ~ @`, channel arity `ArrowTy.ins/outs`) and the dual lower track. Everything becomes unary functions over single values, FFI is curried unary builtins, and `do { }` / `readInput` / `writeOutput` / `instance Monad (ST s)` provide IO.
 
 **Tech Stack:** Rust, rill-lang crate (lexer/parser/AST/infer/reduce/lower/interp/render), rill-core. Tests: `cargo test -p rill-lang --features dsp`.
 
-**Spec:** `docs/superpowers/specs/2026-10-12-rill-lang-haskell98-unary-core-design.md`
+**Spec:** `docs/superpowers/specs/2026-10-12-rill-lang-haskell2010-unary-core-design.md`
 
 ---
 
@@ -127,7 +127,7 @@ Expected: PASS.
 
 ```bash
 git add rill-lang/src/lexer.rs
-git commit -m 'feat(rill-lang): lexer tokens for Haskell 98 (backslash, --, case, ::, newline)'
+git commit -m 'feat(rill-lang): lexer tokens for Haskell 2010 (backslash, --, case, ::, newline)'
 ```
 
 ### Task 3: Parser — lambda `\x -> body`, case, `::`, offside skeleton
@@ -597,7 +597,7 @@ Expected: PASS.
 
 ```bash
 git add rill-lang/src/render.rs
-git commit -m 'feat(rill-lang): renderer emits Haskell 98 syntax'
+git commit -m 'feat(rill-lang): renderer emits Haskell 2010 syntax'
 ```
 
 ### Task 13: Migrate tests — lexical (mechanical)
@@ -623,7 +623,7 @@ assert messages and roundtrip tests).
 
 ```bash
 git add -A
-git commit -m 'test(rill-lang): migrate lambdas, case, foreign to Haskell 98'
+git commit -m 'test(rill-lang): migrate lambdas, case, foreign to Haskell 2010'
 ```
 
 ### Task 13b: Migrate tests — value-model rewrites (signal programs)
@@ -753,9 +753,9 @@ git commit -m 'refactor(rill-lang): delete dead defs/desugar, curried-Thunk prel
 Run: `cargo test --workspace && cargo clippy --workspace && cargo fmt --check`
 Expected: green, no warnings, formatted.
 
-- [ ] **Step 2: Spec smoke — write a new Haskell-98 program**
+- [ ] **Step 2: Spec smoke — write a new Haskell-2010 program**
 
-Create `rill-lang/tests/haskell98_syntax.rs`:
+Create `rill-lang/tests/haskell2010_syntax.rs`:
 
 ```rust
 use rill_core::traits::Algorithm;
@@ -763,7 +763,7 @@ use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
 
 #[test]
-fn haskell98_syntax_end_to_end() {
+fn haskell2010_syntax_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_filters(&mut ffi);
     let src = r#"
@@ -775,18 +775,18 @@ fn haskell98_syntax_end_to_end() {
             return ()
     "#;
     let r = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1);
-    assert!(r.is_ok(), "Haskell 98 program must compile: {:?}", r.err());
+    assert!(r.is_ok(), "Haskell 2010 program must compile: {:?}", r.err());
 }
 ```
 
-Run: `cargo test -p rill-lang --features dsp --test haskell98_syntax`
+Run: `cargo test -p rill-lang --features dsp --test haskell2010_syntax`
 Expected: PASS.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add -A
-git commit -m 'test(rill-lang): Haskell 98 end-to-end smoke'
+git commit -m 'test(rill-lang): Haskell 2010 end-to-end smoke'
 ```
 
 ---
