@@ -92,12 +92,6 @@ fn lexes_case_keyword() {
 fn lexes_double_colon() {
     assert_eq!(kinds("x :: Float"), vec![Tok::Ident("x".into()), Tok::DoubleColon, Tok::Ident("Float".into()), Tok::Eof]);
 }
-
-#[test]
-fn no_fn_or_match_keywords() {
-    assert_eq!(kinds("fn x"), vec![Tok::Ident("fn".into()), Tok::Ident("x".into()), Tok::Eof]);
-    assert_eq!(kinds("match x"), vec![Tok::Ident("match".into()), Tok::Ident("x".into()), Tok::Eof]);
-}
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -337,10 +331,19 @@ fn curry_apply(e: &Expr) -> Expr {
 Run after parsing, before inference. FFI multi-arg calls become curry chains
 here; the FFI catalog signature stays `Float -> (Float -> (Float -> Buffer))`.
 
-- [ ] **Step 3: Remove `fn`/`match` parser arms**
+- [ ] **Step 3: Remove `fn`/`match` parser arms and lexer keywords**
 
 Delete the `Tok::KwFn` arm (now `Tok::Backslash`) and `Tok::KwMatch` arm (now
-`Tok::KwCase`); remove `KwFn`/`KwMatch` from the lexer enum.
+`Tok::KwCase`); remove `KwFn`/`KwMatch` from the lexer enum and keyword map.
+Add a lexer test confirming the removal:
+
+```rust
+#[test]
+fn no_fn_or_match_keywords() {
+    assert_eq!(kinds("fn x"), vec![Tok::Ident("fn".into()), Tok::Ident("x".into()), Tok::Eof]);
+    assert_eq!(kinds("match x"), vec![Tok::Ident("match".into()), Tok::Ident("x".into()), Tok::Eof]);
+}
+```
 
 - [ ] **Step 4: Run parser roundtrip tests**
 
