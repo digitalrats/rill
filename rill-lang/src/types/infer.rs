@@ -989,6 +989,35 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
     // Typeclass/instance declarations are registered by `register_decls` (the
     // same path the category prelude uses).
     env.register_decls(&program.defs);
+    // Prelude function definitions (the Faust combinators over Buffer arrows:
+    // `seq`/`par`/`split`/`merge`) are typed HERE, BEFORE the user's `data`
+    // declarations register (a user `data Pair` would otherwise shadow the
+    // builtin `Pair a b` the combinators' bodies use). They are pure functions,
+    // so typing them against the builtin env is sound; they then flow into
+    // `program.defs` so reduce/lower see them as ordinary top-level defs.
+    let prelude_defs: Vec<crate::ast::Def> = env.prelude_defs.clone();
+    let mut prelude_ctx: Option<Ctx> = None;
+    if !prelude_defs.is_empty() {
+        let mut pc = Ctx {
+            next: 0,
+            subst: Subst::default(),
+            defs: HashMap::new(),
+            def_bodies: HashMap::new(),
+            locals: HashMap::new(),
+            env: env.clone(),
+            method_lifting: HashSet::new(),
+            type_var_bindings: HashMap::new(),
+            anchor_param_tys: HashMap::new(),
+            mode,
+        };
+        infer_def_group(&mut pc, &prelude_defs)?;
+        prelude_ctx = Some(pc);
+        let mut all_defs: Vec<crate::ast::Def> =
+            Vec::with_capacity(program.defs.len() + prelude_defs.len());
+        all_defs.extend(prelude_defs.iter().cloned());
+        all_defs.extend(program.defs.iter().cloned());
+        program.defs = all_defs;
+    }
     for def in &program.defs {
         match def {
             Def::TypeAlias { name, target, .. } => {
@@ -1095,7 +1124,30 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         mode,
     };
 
-    infer_def_group(&mut ctx, &program.defs)?;
+    // The prelude combinators were already typed above (against the builtin
+    // env, before user `data` shadowed any builtin record). Seed their schemes
+    // into the main context and exclude them from the per-program re-inference
+    // so `seq`/`par`/`split`/`merge` resolve without re-typing (a user `data
+    // Pair` would otherwise shadow the builtin `Pair` the bodies use).
+    let prelude_names: std::collections::HashSet<String> =
+        prelude_defs.iter().map(|d| d.name().to_string()).collect();
+    if let Some(pc) = prelude_ctx {
+        for def in &prelude_defs {
+            if let Some(scheme) = pc.defs.get(def.name()).cloned() {
+                ctx.defs.insert(def.name().to_string(), scheme);
+            }
+            if let Some(b) = pc.def_bodies.get(def.name()).cloned() {
+                ctx.def_bodies.insert(def.name().to_string(), b);
+            }
+        }
+    }
+    let user_defs: Vec<crate::ast::Def> = program
+        .defs
+        .iter()
+        .filter(|d| prelude_names.is_empty() || !prelude_names.contains(d.name()))
+        .cloned()
+        .collect();
+    infer_def_group(&mut ctx, &user_defs)?;
 
     // Validate instance method bodies even when the instance is never called:
     // each body must infer to a single value channel with its parameter bound
@@ -2794,7 +2846,8 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
     if let Some(crate::ast::TypeExpr::TFunc(params, ret)) = ctx.env.builtin_sigs.get(name).cloned()
     {
         if params.is_empty() {
-            return Ok(ArrowTy::value_channel(type_expr_to_vty(ctx, &ret)?));
+            let v = type_expr_to_vty(ctx, &ret)?;
+            return Ok(ArrowTy::value_channel(v));
         }
     }
     if let Some(t) = ctx.locals.get(name) {

@@ -218,6 +218,13 @@ pub struct TypeEnv {
     /// methods (these are ordinary functions, not instance-dispatched): a
     /// `forall`-bound argument makes the callee's application rank-N.
     pub builtin_sigs: HashMap<String, crate::ast::TypeExpr>,
+    /// Ordinary function definitions declared by the prelude (the Faust
+    /// combinators `seq`/`par`/`split`/`merge` over Buffer arrows). Unlike
+    /// typeclasses/instances/foreign fns, these are plain `Def::Local`s — they
+    /// must be visible to inference as top-level definitions, so
+    /// [`infer_program_with`](crate::types::infer::infer_program_with) threads
+    /// them into the program's defs before typing.
+    pub prelude_defs: Vec<crate::ast::Def>,
 }
 
 /// Built-in category-theory typeclasses, declared in rill-lang itself and
@@ -251,6 +258,11 @@ instance Monad List where {
 data Kleisli m a b = { unKleisli: a -> m b };
 data ST s a = { unST: a };
 data IO a = { unIO: a };
+
+instance Monad (ST s) where {
+    return x = ST { unST: x };
+    bind m f = ST { unST: (f m.unST).unST };
+};
 
 instance Monad IO where {
     return x = IO { unIO: x };
@@ -291,6 +303,25 @@ typeclass Buffer b where { }
 instance Buffer (FixedBuffer a) where { }
 data Tape a = { };
 instance Buffer (Tape f32) where { }
+
+// Faust combinators over Buffer arrows (`Buffer -> Buffer` as first-class
+// values). `seq`/`par`/`split`/`merge` are pure functions — they compose
+// Buffer arrows; `loop` (`~`) and `delay` (`@ n`) are stateful and are
+// implemented as builtins. The `:` / `,` / `<:` / `:>` sugar desugars to
+// these (see `desugar.rs`). They use the builtin `Pair a b` record
+// (`first`/`second`) to carry two channels.
+//
+// `seq f g` runs f then g on one channel: `fn x -> g (f x)`.
+seq = fn f -> fn g -> fn x -> g (f x);
+// `par f g` runs f and g independently on a two-channel Pair:
+// `fn p -> Pair { first: f p.first, second: g p.second }`.
+par = fn f -> fn g -> fn p -> Pair { first: f p.first, second: g p.second };
+// `split f g` fans one channel out to both f and g:
+// `fn x -> Pair { first: f x, second: g x }`.
+split = fn f -> fn g -> fn x -> Pair { first: f x, second: g x };
+// `merge f g` sums the two channels through f and g into one:
+// `fn p -> f p.first + g p.second`.
+merge = fn f -> fn g -> fn p -> f p.first + g p.second;
 
 main = _;
 "#;
@@ -361,8 +392,23 @@ const FUNCTOR_FROM_APPLICATIVE: &str = "fmap g x = ap (pure g) x;";
 
 /// Parse an `instance C T where { <template> }` source fragment and build the
 /// [`InstanceInfo`]. Used by superclass auto-derivation.
-fn instance_from_template(ty: &str, class: &str, bodies: &str) -> InstanceInfo {
-    let src = format!("instance {class} {ty} where {{ {bodies} }}; main = _;");
+fn instance_from_template(
+    ty: &str,
+    class: &str,
+    bodies: &str,
+    head_args: &[String],
+) -> InstanceInfo {
+    let head = if head_args.is_empty() {
+        ty.to_string()
+    } else {
+        let joined: String = head_args
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("({} {})", ty, joined)
+    };
+    let src = format!("instance {class} {head} where {{ {bodies} }}; main = _;");
     let toks = crate::lexer::tokenize(&src);
     debug_assert!(toks.is_ok(), "derived instance template must lex");
     let program = crate::parser::parse(&toks.ok().unwrap(), src.as_bytes());
@@ -385,7 +431,7 @@ fn instance_from_template(ty: &str, class: &str, bodies: &str) -> InstanceInfo {
         class: class.to_string(),
         ty: ty.to_string(),
         constraints: vec![],
-        head_args: vec![],
+        head_args: head_args.to_vec(),
         methods,
     }
 }
@@ -430,6 +476,24 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         }
     }
     env.register_decls(&defs);
+    // Plain function definitions in a prelude (`seq = fn f -> fn g -> …`)
+    // become top-level defs visible to inference — see
+    // [`TypeEnv::prelude_defs`]. `Def::Foreign`/`Typeclass`/`Instance`/`Data`
+    // are registered by [`Self::register_decls`]; only `Local`/`Anchor` defs
+    // (the Faust-combinator sugar over Buffer arrows) land here.
+    for def in &defs {
+        if matches!(
+            def,
+            Def::Local { .. }
+                | Def::Anchor { .. }
+                | Def::TypeAlias { .. }
+                | Def::Newtype { .. }
+                | Def::Sum { .. }
+        ) && def.name() != "main"
+        {
+            env.prelude_defs.push(def.clone());
+        }
+    }
 }
 
 impl TypeEnv {
@@ -650,19 +714,31 @@ impl TypeEnv {
     /// Superclass auto-derivation: `instance Monad T` synthesizes
     /// `Applicative T` and `Functor T`; `instance Applicative T` synthesizes
     /// `Functor T`. Explicit instances always win. The derived bodies are the
-    /// standard definitions, parsed from templates.
+    /// standard definitions, parsed from templates. A partial head
+    /// (`instance Monad (ST s)`) carries its bound head args into the derived
+    /// instances so the kind check sees the same remaining arity.
     pub(crate) fn derive_superclass_instances(&mut self) {
-        let monad_tys = self
+        let monad_insts = self
             .instances
             .get("Monad")
-            .map(|m| m.keys().cloned().collect())
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or(vec![]);
+        let monad_tys: Vec<String> = monad_insts.iter().map(|(t, _)| t.clone()).collect();
         let applicative_tys = self
             .instances
             .get("Applicative")
             .map(|m| m.keys().cloned().collect())
             .unwrap_or(vec![]);
         for t in monad_tys {
+            let head_args = monad_insts
+                .iter()
+                .find(|(ty, _)| *ty == t)
+                .map(|(_, info)| info.head_args.clone())
+                .unwrap_or(vec![]);
             if !self
                 .instances
                 .entry("Applicative".to_string())
@@ -674,7 +750,12 @@ impl TypeEnv {
                     .or_default()
                     .insert(
                         t.clone(),
-                        instance_from_template(t.as_str(), "Applicative", APPLICATIVE_FROM_MONAD),
+                        instance_from_template(
+                            t.as_str(),
+                            "Applicative",
+                            APPLICATIVE_FROM_MONAD,
+                            &head_args,
+                        ),
                     );
             }
             if !self
@@ -688,10 +769,24 @@ impl TypeEnv {
                     .or_default()
                     .insert(
                         t.clone(),
-                        instance_from_template(t.as_str(), "Functor", FUNCTOR_FROM_MONAD),
+                        instance_from_template(
+                            t.as_str(),
+                            "Functor",
+                            FUNCTOR_FROM_MONAD,
+                            &head_args,
+                        ),
                     );
             }
         }
+        let applicative_insts = self
+            .instances
+            .get("Applicative")
+            .map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or(vec![]);
         for t in applicative_tys {
             if !self
                 .instances
@@ -699,12 +794,22 @@ impl TypeEnv {
                 .or_default()
                 .contains_key(&t)
             {
+                let head_args = applicative_insts
+                    .iter()
+                    .find(|(ty, _)| *ty == t)
+                    .map(|(_, info)| info.head_args.clone())
+                    .unwrap_or(vec![]);
                 self.instances
                     .entry("Functor".to_string())
                     .or_default()
                     .insert(
                         t.clone(),
-                        instance_from_template(t.as_str(), "Functor", FUNCTOR_FROM_APPLICATIVE),
+                        instance_from_template(
+                            t.as_str(),
+                            "Functor",
+                            FUNCTOR_FROM_APPLICATIVE,
+                            &head_args,
+                        ),
                     );
             }
         }
