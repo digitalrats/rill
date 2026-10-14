@@ -36,14 +36,29 @@ fn mode_name(mode: Mode) -> String {
 fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileError> {
     let pad = " ".repeat(indent);
     match def {
-        Def::Anchor {
+        Def::Eval {
             name,
             params,
             body,
             where_defs,
+            sig,
             ..
+        } => {
+            write!(buf, "{pad}{name}").ok();
+            for p in params {
+                write!(buf, " {}", p.name).ok();
+            }
+            // Haskell 2010 signature annotation: `name args :: sig = body`.
+            if let Some(sig) = sig {
+                write!(buf, " :: ").ok();
+                render_type_expr(sig, buf);
+            }
+            write!(buf, " = ").ok();
+            render_expr(body, buf, 3)?;
+            render_where(where_defs, buf, indent, &pad)?;
+            Ok(())
         }
-        | Def::Eval {
+        Def::Anchor {
             name,
             params,
             body,
@@ -56,14 +71,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             }
             write!(buf, " = ").ok();
             render_expr(body, buf, 3)?;
-            if !where_defs.is_empty() {
-                writeln!(buf, " where {{").ok();
-                for wd in where_defs {
-                    render_def(wd, buf, indent + 4)?;
-                    writeln!(buf, ";").ok();
-                }
-                write!(buf, "{pad}}}").ok();
-            }
+            render_where(where_defs, buf, indent, &pad)?;
             Ok(())
         }
         Def::Local {
@@ -74,14 +82,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
         } => {
             write!(buf, "{pad}{name} = ").ok();
             render_expr(body, buf, 0)?;
-            if !where_defs.is_empty() {
-                writeln!(buf, " where {{").ok();
-                for wd in where_defs {
-                    render_def(wd, buf, indent + 4)?;
-                    writeln!(buf, ";").ok();
-                }
-                write!(buf, "{pad}}}").ok();
-            }
+            render_where(where_defs, buf, indent, &pad)?;
             Ok(())
         }
         Def::Data {
@@ -174,6 +175,27 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             Ok(())
         }
     }
+}
+
+/// Render an optional `where { … }` clause. The braces keep the clause on one
+/// visual block and round-trip through the parser's brace form of
+/// `parse_where_block`.
+fn render_where(
+    where_defs: &[Def],
+    buf: &mut String,
+    indent: usize,
+    pad: &str,
+) -> Result<(), CompileError> {
+    if where_defs.is_empty() {
+        return Ok(());
+    }
+    writeln!(buf, " where {{").ok();
+    for wd in where_defs {
+        render_def(wd, buf, indent + 4)?;
+        writeln!(buf, ";").ok();
+    }
+    write!(buf, "{pad}}}").ok();
+    Ok(())
 }
 
 /// Render a type expression in a declaration (name, application, function
@@ -639,6 +661,46 @@ mod tests {
     fn render_roundtrip_if() {
         let dsl = roundtrip_main("main = if true then 1.0 else 2.0;");
         assert_eq!(dsl, "main = if true then 1.0 else 2.0");
+    }
+
+    #[test]
+    fn render_def_with_signature() {
+        // `Def::Eval` with a `sig` renders the annotation between the head and
+        // the `=`.
+        let prog = Program {
+            mode: Mode::Strict,
+            mode_explicit: false,
+            defs: vec![Def::Eval {
+                name: "main".into(),
+                params: vec![],
+                body: Expr::Float(1.0, span()),
+                where_defs: vec![],
+                sig: Some(TypeExpr::TName("Float".into())),
+                span: span(),
+            }],
+        };
+        assert_eq!(render(&prog).unwrap(), "main :: Float = 1.0");
+    }
+
+    #[test]
+    fn render_roundtrip_def_signature() {
+        let dsl = roundtrip_main("main :: Float = 1.0;");
+        assert_eq!(dsl, "main :: Float = 1.0");
+    }
+
+    #[test]
+    fn render_roundtrip_def_signature_forall() {
+        // A `forall` signature survives render → parse → render (the `forall`
+        // body is parenthesized in argument position so it cannot absorb the
+        // arrow chain on re-parse).
+        let dsl = roundtrip_main("main :: (forall b. b -> b) = \\x -> x;");
+        assert_eq!(dsl, "main :: forall b. (b -> b) = \\x -> x");
+    }
+
+    #[test]
+    fn render_roundtrip_def_signature_with_where() {
+        let dsl = roundtrip_main("main :: Float = g where { g = 1.0; };");
+        assert_eq!(dsl, "main :: Float = g where {\n    g = 1.0;\n}");
     }
 
     #[test]

@@ -443,10 +443,12 @@ impl<'a> Parser<'a> {
         }
         // Optional `:: TypeExpr` signature annotation (Haskell 2010). Typing is
         // still inferred (HM); the signature is a hint/constraint checked by a
-        // later task. Parsed and discarded for now.
+        // later task. Kept on the `Def::Eval` node so the renderer can round-trip
+        // it.
+        let mut sig = None;
         if self.peek().tok == Tok::DoubleColon {
             self.bump();
-            let _sig = self.parse_type_expr()?;
+            sig = Some(self.parse_type_expr()?);
         }
         self.eat(&Tok::Eq)?;
         let body = self.parse_expr(0, false)?;
@@ -467,7 +469,7 @@ impl<'a> Parser<'a> {
             params,
             body,
             where_defs,
-            sig: None,
+            sig,
             span,
         })
     }
