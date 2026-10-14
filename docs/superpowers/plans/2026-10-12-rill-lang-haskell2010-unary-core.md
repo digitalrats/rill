@@ -12,6 +12,21 @@
 
 ---
 
+## Status (2026-10-14)
+
+**All phases complete** on branch `feature/rill-lang-arrays` (Tasks 1–15).
+Per-step checkboxes below were ticked as each task landed; the Phase 0–3
+(Tasks 1–10) boxes predate a bookkeeping convention and read as unticked — they
+are complete in git (`cf719c5` … `056c08b`). See the per-task notes and the
+**Remaining gaps** section at the end for the two deferred items.
+
+Supported verification bar:
+`cargo test -p rill-lang --features dsp,serde,model` → **550 passed / 4 failed**
+(the 4 pre-existing `arrow.rs` inference gaps), `cargo clippy` clean,
+`cargo fmt --check` clean.
+
+---
+
 ## File Structure
 
 | File | Responsibility | Change |
