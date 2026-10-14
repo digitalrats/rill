@@ -10,18 +10,37 @@ fn run(src: &str, input: &[f32]) -> Vec<f32> {
 
 #[test]
 fn dc_offset() {
-    assert_eq!(run("main = _ + 1", &[0.0, 1.0, 2.0]), vec![1.0, 2.0, 3.0]);
+    assert_eq!(
+        run(
+            "main = do { writeOutput (map (\\x -> x + 1.0) (readInput)); return () }",
+            &[0.0, 1.0, 2.0]
+        ),
+        vec![1.0, 2.0, 3.0]
+    );
 }
 
 #[test]
 fn math_builtin_abs() {
-    assert_eq!(run("main = abs _", &[-2.0, 3.0, -4.0]), vec![2.0, 3.0, 4.0]);
+    assert_eq!(
+        run(
+            "main = do { writeOutput (map (\\x -> abs x) (readInput)); return () }",
+            &[-2.0, 3.0, -4.0]
+        ),
+        vec![2.0, 3.0, 4.0]
+    );
 }
 
+/// The `_` input wire is gone from the unary value model, so "fanout" is now
+/// expressed as a definition that reads the input itself: the where-defined
+/// `scale` is applied to a scalar and maps the transform over the input
+/// channels through `readInput`.
 #[test]
 fn application_in_fanout_lowers_correctly() {
     assert_eq!(
-        run("main = g 0.5 where { g x = _ * x; }", &[2.0, 4.0, 8.0]),
+        run(
+            "main = scale 0.5 where { scale k = do { writeOutput (map (\\x -> x * k) (readInput)); return () }; }",
+            &[2.0, 4.0, 8.0],
+        ),
         vec![1.0, 2.0, 4.0]
     );
 }

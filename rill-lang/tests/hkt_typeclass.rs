@@ -47,7 +47,7 @@ fn kind_mismatch_is_compile_error() {
     let src = r#"
         typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
         instance Functor Pair where { fmap g p = p; }
-        main = _;
+        main = 1.0;
     "#;
     let res = compile::<f32>(src);
     assert!(res.is_err(), "Pair has arity 2; Functor needs arity 1");
@@ -72,7 +72,7 @@ fn parameterized_user_sum_instance_is_kind_error() {
         typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
         data Opt a = Some a | None;
         instance Functor Opt where { fmap g o = o; }
-        main = _;
+        main = 1.0;
     "#;
     let res = compile::<f32>(src);
     assert!(

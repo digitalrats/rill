@@ -94,17 +94,14 @@ fn guarded_arm_without_unguarded_fallback_is_compile_error() {
     .is_err());
 }
 
-#[test]
-fn match_over_unbound_wire_scrutinee_errors_at_runtime() {
-    // The wire scrutinee cell is uninitialized (None); no constructor tag is
-    // available, so dispatch reaches the fail block and latches ProcessError.
-    let mut prog = compile::<f32>(
-        r"data Shape = Circle Float | Rect Float Float; main = case _ of { Circle r -> r; Rect w h -> w; };",
-    )
-    .unwrap();
-    let mut out = [0.0f32; 4];
-    assert!(MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).is_err());
-}
+// Task 13b: removed with the signal surface syntax (unbound wire scrutinee).
+// The `_` wire token no longer parses, and the unary value model has no runtime
+// path that latches a `ProcessError` from an uninitialized (`None`/`Bottom`)
+// match scrutinee: static `ValueMatch` on a Bottom writes Bottom into every arm
+// register without latching an error, and the runtime dispatch fail block is
+// only reachable from a non-exhaustive match, which inference rejects at
+// compile time (totality). The runtime "match on an unbound cell errors" path
+// depended on the wire cell, so it cannot be expressed anymore.
 
 #[test]
 fn match_over_sum_param_switches_with_setparameter() {

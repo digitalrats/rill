@@ -1,18 +1,24 @@
 //! Multichannel runtime test: `Runtime::launch` must drive **all** backend
 //! channels, not just channel 0.
 //!
-//! A 2→2 program (`main = _ , _` — identity on both channels) is processed
-//! through a fake capture/playback that each expose 2 channels. Each output
-//! channel must receive the per-channel data read from the matching input
-//! channel.
+//! In the unary value model the channel arity is declared at compile time:
+//! `compile_with_ffi_channels` sizes the program's `num_inputs`/`num_outputs`,
+//! the `readInput` List is materialized from the backend channel count at
+//! runtime, and `writeOutput` drains one buffer per channel. A 2→2 identity
+//! program (`main = do { writeOutput (readInput); return () }`) is run through
+//! a fake capture/playback that each expose 2 channels. Each output channel
+//! must receive the per-channel data read from the matching input channel.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rill_core::io::{IoCapture, IoDriver, IoPlayback, IoResult};
+use rill_core::queues::CommandEnum;
 use rill_core::time::ClockTick;
-use rill_lang::builtin::Registry;
-use rill_lang::compile_graph;
+use rill_core_actor::Mailbox;
+use rill_lang::compile_with_ffi_channels;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::program_engine::ProgramEngine;
 use rill_lang::program_runner::ProgramRunner;
 use rill_lang::runtime::Runtime;
 
@@ -116,10 +122,24 @@ impl IoDriver for FakeDriver {
 
 // ── tests ───────────────────────────────────────────────────────────────────
 
+/// Compile a 2→2 IO-model program and wrap it in a runner, mirroring the
+/// `compile_graph` → `ProgramRunner` shape used elsewhere.
+fn runner_2x2() -> ProgramRunner<BUF> {
+    let rp = compile_with_ffi_channels::<f32>(
+        "main = do { writeOutput (readInput); return () }",
+        &ForeignRegistry::new(),
+        44100.0,
+        2,
+        2,
+    )
+    .unwrap();
+    let engine = ProgramEngine::new(rp, Arc::new(Mailbox::<CommandEnum>::new(64)));
+    ProgramRunner::new(engine, None)
+}
+
 #[test]
 fn launch_drives_all_channels() {
-    let engine = compile_graph::<f32, BUF>("main = _ , _", &Registry::new(), 44100.0).unwrap();
-    let runner = ProgramRunner::new(engine, None);
+    let runner = runner_2x2();
 
     let capture = Arc::new(FakeCapture { channels: 2 });
     let playback = Arc::new(FakePlayback::new(2));
@@ -160,8 +180,7 @@ fn launch_drives_all_channels() {
 
 #[test]
 fn launch_rejects_channel_count_mismatch() {
-    let engine = compile_graph::<f32, BUF>("main = _ , _", &Registry::new(), 44100.0).unwrap();
-    let runner = ProgramRunner::new(engine, None);
+    let runner = runner_2x2();
 
     // Mono capture behind a 2→2 program: must be rejected, not silently zero-filled.
     let capture = Arc::new(FakeCapture { channels: 1 });

@@ -28,7 +28,23 @@ fn parses_main_with_where_layout() {
 fn parses_main_simple() {
     let prg = parse_str("main = sine 440.0 0.5").unwrap();
     let main = prg.main_def().unwrap();
-    assert!(matches!(main.body(), Expr::Apply { .. }));
+    // The unary core curries a multi-argument application into a right-nested
+    // chain of single-argument `ApplyExpr` nodes:
+    // `sine 440.0 0.5` => `ApplyExpr(ApplyExpr(Ref sine, [440.0]), [0.5])`.
+    assert!(
+        matches!(
+            main.body(),
+            Expr::ApplyExpr { callee, args, .. }
+                if args.len() == 1
+                    && matches!(
+                        callee.as_ref(),
+                        Expr::ApplyExpr { callee, args, .. }
+                            if args.len() == 1
+                                && matches!(callee.as_ref(), Expr::Ref(n, _) if n == "sine")
+                    )
+        ),
+        "expected a curried ApplyExpr chain rooted at `sine`"
+    );
 }
 
 #[test]

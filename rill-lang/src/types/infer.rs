@@ -2704,7 +2704,6 @@ fn infer_ref_expected(
                 let ty_name = match ctx.env.type_name_of_vty(&exp) {
                     Some(t) => t,
                     None => {
-                        eprintln!("result-directed {name} of {class_name}: expected not concrete: {exp:?}");
                         return Err(CompileError::Type {
                             msg: format!(
                                 "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
@@ -2858,11 +2857,17 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         name,
         "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
     ) {
-        return Ok(ArrowTy::uniform(1, 1, ValueTy::Buffer));
+        // A math builtin is an ordinary unary VALUE function, not a signal
+        // arrow: `abs b : Buffer` over a buffer, `abs 1.0 : Float` over a
+        // scalar. The parameter and result are the same type.
+        let s = ctx.fresh_vty();
+        return Ok(ArrowTy::value(ValueTy::Thunk(vec![s.clone()], vec![s])));
     }
     if matches!(name, "min" | "max" | "atan2") {
+        // Binary math builtin: a curried value function of two arguments.
         let s = ctx.fresh_vty();
-        return Ok(ArrowTy::uniform(2, 1, s));
+        let ty = nest_thunk(&[s.clone(), s.clone()], vec![s]);
+        return Ok(ArrowTy::value(ty));
     }
     // Foreign (FFI) declaration: type through the language-side signature. A bare
     // ref is valid when every param is a signal channel (no scalar params yet).
@@ -3728,7 +3733,6 @@ fn infer_apply_impl(
                 let ty_name = match ctx.env.type_name_of_vty(&exp) {
                     Some(t) => t,
                     None => {
-                        eprintln!("result-directed {name} of {class_name}: expected not concrete: {exp:?}");
                         return Err(CompileError::Type {
                             msg: format!(
                                 "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
@@ -4407,7 +4411,8 @@ fn infer_apply_impl(
                 // `add3 = add 3.0` types as `Func([Float], [Float])`.
                 if args.len() < arg_tys.len() {
                     for (a, pty) in args.iter().zip(arg_tys.iter()) {
-                        let vt = infer_method_value_vty(ctx, a, "argument")?;
+                        let vt =
+                            infer_method_value_vty_expected(ctx, a, "argument", Some(pty.clone()))?;
                         unify_value(&vt, pty, &mut ctx.subst, a.span())?;
                     }
                     let remaining: &[ValueTy] = &arg_tys[args.len()..];
@@ -4427,7 +4432,8 @@ fn infer_apply_impl(
                     });
                 }
                 for (a, pty) in args.iter().zip(arg_tys.iter()) {
-                    let vt = infer_method_value_vty(ctx, a, "argument")?;
+                    let vt =
+                        infer_method_value_vty_expected(ctx, a, "argument", Some(pty.clone()))?;
                     unify_value(&vt, pty, &mut ctx.subst, a.span())?;
                 }
                 let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
@@ -4699,27 +4705,22 @@ fn infer_collection_call(
                 &args[0],
                 Some(ValueTy::Thunk(vec![elem_ty], vec![fresh_ret])),
             )?;
-            // The closure must take exactly one element argument.
-            match ctx.subst.resolve_value(&ft0.vty) {
-                ValueTy::Thunk(a, _) if a.len() != 1 => {
-                    return Err(CompileError::Type {
-                        msg: "`map` expects a unary function".to_string(),
-                        span: args[0].span(),
-                    });
-                }
-                _ => {}
-            }
-            // The result list's ELEMENT type is the closure's RETURN type
-            // (`map : (a -> b) -> List a -> List b`), not the source list's
-            // element type — a type-changing map must be typed `List b`.
+            // The closure must take exactly one element argument. Flatten the
+            // curried nest so a binary closure (`\a -> \b -> b`) is rejected and
+            // the result element type is the chain's FINAL result, not the
+            // leftover inner closure.
             let ft = ctx.subst.resolve_value(&ft0.vty);
-            let ret_ty = match &ft {
-                ValueTy::Thunk(_, rets) => {
-                    let r = rets.first().cloned().unwrap_or(ValueTy::Float);
-                    ctx.subst.resolve_value(&r)
-                }
-                _ => ValueTy::Float,
+            let (closure_args, closure_rets) = match &ft {
+                ValueTy::Thunk(..) => flatten_thunk(&ft),
+                _ => (Vec::new(), Vec::new()),
             };
+            if !closure_args.is_empty() && closure_args.len() != 1 {
+                return Err(CompileError::Type {
+                    msg: "`map` expects a unary function".to_string(),
+                    span: args[0].span(),
+                });
+            }
+            let ret_ty = closure_rets.first().cloned().unwrap_or(ValueTy::Float);
             Ok(ValueTy::App("List".into(), vec![ret_ty]))
         }
         "fold" => {

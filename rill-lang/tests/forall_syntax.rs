@@ -5,7 +5,7 @@ use rill_lang::CompileError;
 
 #[test]
 fn forall_parses_and_roundtrips() {
-    let src = "typeclass C a where { f: forall b. a -> b -> a; }; main = _;";
+    let src = "typeclass C a where { f: forall b. a -> b -> a; }; main = 1.0;";
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes());
     assert!(
@@ -30,7 +30,7 @@ fn forall_parses_and_roundtrips() {
 fn forall_requires_at_least_one_type_variable() {
     // Spec: `forall . T` (an empty binder) is a parse error, not a
     // degenerate quantification that silently absorbs the whole type.
-    let src = "typeclass C a where { f: forall . a; }; main = _;";
+    let src = "typeclass C a where { f: forall . a; }; main = 1.0;";
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes());
     assert!(
@@ -62,7 +62,7 @@ fn forall_render_is_fixed_point() {
             g: forall b. forall c. b -> c;
             h: (forall b. a) -> a -> a;
         };
-        main = _;
+        main = 1.0;
     "#;
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes());

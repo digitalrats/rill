@@ -172,17 +172,19 @@ fn foreign_decl_registers_into_type_env() {
 
 #[test]
 fn foreign_fn_types_as_signal_arrow() {
-    // `gain : Float -> FixedBuffer f32 -> FixedBuffer f32` applied to a constant
-    // and a wire — types as a 1→1 signal arrow (buffer-LAST: the signal trails).
+    // Task 13b: `gain : Float -> FixedBuffer f32 -> FixedBuffer f32` with its
+    // scalar params and the signal over the program input — in the unary value
+    // model the arrow typing is gone, but the foreign fn over the input still
+    // types as a value program (arity_in is always 0; arity_out is 1).
     let src = r"
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = _ : gain 0.5;
+        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    // `process_ty` is the diagram type of the whole program (main).
-    assert_eq!(typed.process_ty.arity_in(), 1);
+    // `process_ty` is the value type of the whole program (main).
+    assert_eq!(typed.process_ty.arity_in(), 0);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
 
@@ -273,51 +275,6 @@ fn foreign_fn_signal_slot_rejects_value() {
 }
 
 #[test]
-fn foreign_fn_multi_signal_wires_distinct_inputs() {
-    // `cross 0.5 _ _` — two distinct signal inputs must wire to two registers,
-    // not both to the first (the k-th Wire in a Signal slot binds the k-th
-    // wiring register).
-    use rill_lang::lower::lower_with_cafs;
-
-    let src = r"
-        foreign cross : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
-        main = cross 0.5 _ _;
-    ";
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
-    let cross_idx = ir
-        .builtins
-        .iter()
-        .position(|b| b.name == "cross")
-        .expect("cross builtin");
-    let bi = &ir.builtins[cross_idx];
-    assert_eq!(bi.signal_ins, 2);
-    // The ValueCallForeign for cross must reference two distinct src registers.
-    let calls: Vec<_> = ir
-        .value_blocks[0]
-        .instrs
-        .iter()
-        .filter(|i| {
-            matches!(
-                i,
-                rill_lang::ir::ValueInstr::ValueCallForeign { instance, .. } if *instance == cross_idx
-            )
-        })
-        .collect();
-    assert_eq!(calls.len(), 1);
-    let rill_lang::ir::ValueInstr::ValueCallForeign { srcs, .. } = calls[0] else {
-        unreachable!()
-    };
-    assert_eq!(srcs.len(), 2);
-    assert_ne!(
-        srcs[0], srcs[1],
-        "two signal inputs must wire to distinct registers"
-    );
-}
-
-#[test]
 fn foreign_sig_rejects_non_terminal_variadic_signal() {
     // A VariadicSignal (`List (FixedBuffer f32)`) that is not the LAST param
     // is ambiguous: lowering would fold any trailing scalar as a signal, while
@@ -366,10 +323,11 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
 fn foreign_fn_non_terminal_variadic_fails_inference() {
     // `foreign fn bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;`
     // — a non-terminal VariadicSignal — must be rejected: the descriptor
-    // returns None and the name does not resolve as a foreign builtin.
+    // returns None, so `bad` does not resolve as a foreign builtin and any
+    // call to it fails inference (value-model call form).
     let src = r"
         foreign bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;
-        main = bad _ _ 0.5;
+        main = do { writeOutput (map (bad 0.5) (readInput)); return () };
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -455,145 +413,83 @@ fn builtin_catalog_is_auto_registered() {
 
 #[test]
 fn signal_input_builtin_legacy_call_style_sugar() {
-    // `_ : onepole 200.0 0.7` — the legacy combinator style must desugar to
-    // `onepole 200.0 0.7 _` (signal arg appended), so the FFI declaration
-    // types and lowers without rewriting the program.
+    // Task 13b: the legacy `_ : onepole 200.0 0.7` combinator style is removed;
+    // the same signal-input builtin now applies as an ordinary value function
+    // over the program input. This pins the value-model typing.
     let src = r"
         foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = _ : onepole 200.0 0.7;
+        main = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () };
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_in(), 0);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
+
+// Task 13b: the following tests were removed with the signal surface syntax —
+// each exercised a construct that no longer exists in the unary value model, so
+// there is no value-model equivalent to preserve:
+//
+//   combinator_sugar_binds_delay_lhs           — the `@` delay combinator
+//   combinator_sugar_binds_loop_operand        — the `~` loop/feedback combinator
+//   combinator_sugar_binds_merge_operand       — the `:` / `:>` channel merge
+//   combinator_sugar_binds_split_operand       — the `<:` / `:` channel split
+//   combinator_sugar_binds_par_operand_with_two_signals
+//                                              — parallel two-signal wiring
+//   combinator_sugar_binds_gain_scalar_only_call
+//                                              — the wire-counting sugar pass
+//   combinator_sugar_does_not_double_bind_positional_call
+//                                              — the positional wire sugar
+//   foreign_fn_multi_signal_wires_distinct_inputs
+//                                              — multi-channel signal routing
+//   foreign_variadic_signal_merge_accepts_channels
+//                                              — variadic channel merge
+//
+// The surviving `combinator_sugar_*` tests below cover the value-model
+// equivalents (partial application mapped over `readInput`).
 
 #[test]
 fn combinator_sugar_binds_both_seq_operands() {
-    // `onepole 200.0 0.7 : onepole 1000.0 0.9` — the LEFT operand of `:` is a
-    // signal-input builtin in combinator style too; both sides get a Wire.
+    // Task 13b: the `:` sequential combinator is removed; two signal-input
+    // builtins in sequence (`onepole 200.0 0.7` then `onepole 1000.0 0.9`)
+    // now compose as nested `map`s over the program input. The program types
+    // as a value program (arity_in 0, arity_out 1).
     let src = r#"
-        main = onepole 200.0 0.7 : onepole 1000.0 0.9;
+        main = do { writeOutput (map (onepole 1000.0 0.9) (map (onepole 200.0 0.7) (readInput))); return () };
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
-    assert_eq!(typed.process_ty.arity_out(), 1);
-}
-
-#[test]
-fn combinator_sugar_binds_loop_operand() {
-    // `+ ~ onepole 500.0 0.5` — the feedback right operand is an arrow; the
-    // sugar binds its missing signal wire.
-    let src = r#"
-        main = + ~ onepole 500.0 0.5;
-    "#;
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
-    assert_eq!(typed.process_ty.arity_out(), 1);
-}
-
-#[test]
-fn combinator_sugar_binds_par_operand_with_two_signals() {
-    // `_, _ : crossfade 0.5` — a 2-signal-in builtin (user-declared FFI) binds
-    // the two trailing wires; the leading scalar stays a call arg.
-    let src = r"
-        foreign crossfade : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
-        main = _, _ : crossfade 0.5;
-    ";
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 2);
-    assert_eq!(typed.process_ty.arity_out(), 1);
-}
-
-#[test]
-fn combinator_sugar_binds_split_operand() {
-    // `onepole 200.0 0.7 <: _ , _` — fan-out: the 1-out builtin distributes
-    // over the 2-in Par.
-    let src = r#"
-        main = onepole 200.0 0.7 <: _ , _;
-    "#;
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
-    assert_eq!(typed.process_ty.arity_out(), 2);
-}
-
-#[test]
-fn combinator_sugar_binds_merge_operand() {
-    // `_ , _ :> onepole 200.0 0.7` — fan-in: the 2 outputs sum into the
-    // 1-in builtin.
-    let src = r#"
-        main = _ , _ :> onepole 200.0 0.7;
-    "#;
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 2);
-    assert_eq!(typed.process_ty.arity_out(), 1);
-}
-
-#[test]
-fn combinator_sugar_does_not_double_bind_positional_call() {
-    // `_ : onepole 200.0 0.7 _` — the signal arg is already supplied
-    // positionally (scalars then the trailing wire, buffer-LAST); the sugar
-    // must leave the call alone.
-    let src = r#"
-        main = _ : onepole 200.0 0.7 _;
-    "#;
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
-    assert_eq!(typed.process_ty.arity_out(), 1);
-}
-
-#[test]
-fn combinator_sugar_binds_gain_scalar_only_call() {
-    // `_ : gain 0.5` — a foreign with one leading scalar param and one trailing
-    // signal. The supplied arg is exactly the leading scalar; the sugar appends
-    // the single wire (`gain 0.5 _`), not zero (the supplied arg is NOT a
-    // signal).
-    let src = r"
-        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = _ : gain 0.5;
-    ";
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_in(), 0);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
 
 #[test]
 fn combinator_sugar_rewrites_where_block_defs() {
-    // A combinator call inside a `where` definition desugars too (where defs
-    // are inferred as their own def group, so the pass must descend).
+    // Task 13b: the combinator desugar pass is gone; a where-block def is now
+    // inferred as its own def group in the value model. The def carries the
+    // whole value program (FFI effect over the input), and the program types
+    // as a value program.
     let src = r#"
-        main = x where { x = _ : onepole 200.0 0.7; }
+        main = x where { x = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () }; }
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_in(), 0);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
 
 #[test]
 fn combinator_sugar_lowers_positionally() {
-    // End-to-end: the desugared `onepole _ 200.0 0.7` folds the scalars and
-    // wires one signal input through the FFI lowering path.
+    // Task 13b: the `_ :` combinator desugar is gone; the FFI lowering path is
+    // now driven by the canonical value form. `onepole 200.0 0.7` mapped over
+    // the input folds the scalars and wires one signal input through lowering.
     use rill_lang::lower::lower_with_cafs;
 
     let src = r#"
-        main = _ : onepole 200.0 0.7;
+        main = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () };
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -602,21 +498,6 @@ fn combinator_sugar_lowers_positionally() {
     let bi = ir.builtins.iter().find(|b| b.name == "onepole").unwrap();
     assert_eq!(bi.signal_ins, 1);
     assert_eq!(bi.params, vec![200.0, 0.7]);
-}
-
-#[test]
-fn combinator_sugar_binds_delay_lhs() {
-    // `onepole 200.0 0.7 @ 3` — the Delay (`@`) combinator's lhs is a foreign
-    // builtin used as an arrow; the sugar must bind its missing signal wire.
-    let src = r"
-        foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = _ : onepole 200.0 0.7 @ 3;
-    ";
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
-    assert_eq!(typed.process_ty.arity_out(), 1);
 }
 
 #[test]
@@ -765,12 +646,12 @@ fn record_param_infer_accepts_record_literal() {
     // the named data type (previously an unconditional SP-3b error).
     let src = r"
         foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
-        main = eq_parametric { bands: [] } _;
+        main = do { writeOutput (map (eq_parametric { bands: [] }) (readInput)); return () };
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 1);
+    assert_eq!(typed.process_ty.arity_in(), 0);
     assert_eq!(typed.process_ty.arity_out(), 1);
 }
 
@@ -781,10 +662,10 @@ fn record_param_flattens_schema_fields() {
     // list — two bands → 8 f64s.
     let src = r"
         foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
-        main = eq_parametric { bands: [
+        main = do { writeOutput (map (eq_parametric { bands: [
             { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 },
             { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
-        ] } _;
+        ] }) (readInput)); return () };
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -822,7 +703,7 @@ fn record_param_missing_fields_use_zero_defaults() {
 fn record_param_rejects_non_record_arg() {
     let src = r"
         foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
-        main = eq_parametric 0.5 _;
+        main = do { writeOutput (map (eq_parametric 0.5) (readInput)); return () };
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -871,22 +752,6 @@ fn resource_param_rejects_non_ref_arg() {
     }
 }
 
-#[test]
-fn foreign_variadic_signal_merge_accepts_channels() {
-    // `expr_has_variadic_signal` must recognize a foreign sig's VariadicSignal:
-    // `_, _ :> sum_all _ _` merges both channels into the variadic input (the
-    // rhs is an Apply, the shape reconstruct emits for a variadic builtin).
-    let src = r"
-        foreign sum_all : List (FixedBuffer f32) -> FixedBuffer f32;
-        main = _ , _ :> sum_all _ _;
-    ";
-    let toks = rill_lang::lexer::tokenize(src).unwrap();
-    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 2);
-    assert_eq!(typed.process_ty.arity_out(), 1);
-}
-
 // --- SP-3b Task 7: record defaults + List EqBand band-list (router migration) ---
 
 #[test]
@@ -925,7 +790,7 @@ fn record_default_ffi_applies() {
     // Follow-up A end-to-end: omitted BAND fields in a `bands` list must apply
     // the legacy `EqBand` defaults (`freq: 1000.0`) — not silently 0.0.
     let src = r#"
-        main = _ : eq_parametric { bands: [ { q: 2.0 } ] };
+        main = do { writeOutput (map (eq_parametric { bands: [ { q: 2.0 } ] }) (readInput)); return () };
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -945,7 +810,7 @@ fn band_list_flattens_band_fields() {
     // gain_db: 0.0, band_type: 0.0 } ] }` flattens each band's fields in schema
     // order into the folded param list.
     let src = r#"
-        main = _ : eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] };
+        main = do { writeOutput (map (eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] }) (readInput)); return () };
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();

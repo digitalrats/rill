@@ -513,7 +513,7 @@ git commit -m 'feat(rill-lang): unary inference over Thunk, no channel arity'
 **Files:**
 - Modify: `rill-lang/src/reduce.rs`
 
-- [ ] **Step 1: β-reduce unary applications**
+- [x] **Step 1: β-reduce unary applications**
 
 `((\x -> body) v)` → `body[x := v]`. The existing β-reduction handles
 `reduced_args.len() >= def.params().len()`; with curried defs every Apply is a
@@ -524,12 +524,12 @@ single-arg ApplyExpr to a lambda or a name. Update `reduce_expr`:
   all Fn bodies are lambdas).
 - Recursion (complete mode) keeps thunks (`ValueLazy`).
 
-- [ ] **Step 2: Run closure/thunk tests**
+- [x] **Step 2: Run closure/thunk tests**
 
 Run: `cargo test -p rill-lang --features dsp --test closures`
 Expected: `adder = \n -> \x -> x + n; add2 = adder 2.0; main = add2 3.0` → 5.0.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add rill-lang/src/reduce.rs
@@ -541,19 +541,19 @@ git commit -m 'feat(rill-lang): unary beta-reduction for curried lambdas'
 **Files:**
 - Modify: `rill-lang/src/lower.rs`
 
-- [ ] **Step 1: Delete the block-track signal path**
+- [x] **Step 1: Delete the block-track signal path**
 
 Delete `fn lower` (signal lowering), `lower_value_ref_inner`'s signal arms,
 `lower_signal_buffer`, `main_signal_args`, `input_buffers` (compile-time),
 `bind_signal_args`. Keep `lower_value*`, fragments, closures, `ValueCallFunc`.
 
-- [ ] **Step 2: Single entry: `lower_value`**
+- [x] **Step 2: Single entry: `lower_value`**
 
 `lower(tp)` lowers `main`'s body through `lower_value` only. `is_io_program`
 detection stays (IO `main` has side-effecting `writeOutput`); non-IO `main`
 produces one value output.
 
-- [ ] **Step 3: FFI curried lowering**
+- [x] **Step 3: FFI curried lowering**
 
 A curried FFI chain `(((sine 440.0) 1.0) 0.0)` lowers to: each scalar
 application folds into the builtin instance params (`ValueCallForeign`), the
@@ -561,18 +561,18 @@ final Buffer application runs the DSP and yields `Value::Buffer`. A partial
 application (missing Buffer) builds the `Thunk([Buffer],[Buffer])` arrow via
 `build_ffi_arrow` (already implemented).
 
-- [ ] **Step 4: IO primitives**
+- [x] **Step 4: IO primitives**
 
 Keep `readInput : () -> List Buffer` and `writeOutput : List Buffer -> IO ()`
 lowering (`ValueReadInputs`, `ValueWriteOutputList`). Runtime input buffers
 stay as in commit 51ebb03.
 
-- [ ] **Step 5: Build + run value tests**
+- [x] **Step 5: Build + run value tests**
 
 Run: `cargo test -p rill-lang --features dsp`
 Expected: value/IO/FFI partial tests pass; signal tests already deleted.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -685,17 +685,43 @@ value-model forms (see memory: readinput-writeoutput-runtime-channels):
   makes sense, otherwise DELETE the test with a `// multichannel: removed in
   the unary model` comment.
 
-- [ ] **Step 1: Rewrite the 16 combinator-program files**
+- [x] **Step 1: Rewrite the 16 combinator-program files**
 
 Work file-by-file (ffi.rs is the largest). Keep the test INTENT (e.g. "onepole
 smooths", "integrator sums") — only the program string and harness change.
 
-- [ ] **Step 2: Run and fix**
+> **Executed 2026-10-14.** Migrated `ffi.rs`, `ffi_extended.rs`,
+> `caf_free_variables.rs`, `atan2_lang_op.rs`, `multichannel_runtime.rs`,
+> `match_patterns.rs`, `integration.rs`, `forall_syntax.rs`, `hkt_typeclass.rs`,
+> `graph_parse.rs`, `collections_list.rs` to the value model
+> (`do { writeOutput (map f (readInput)); return () }`). Tests whose construct
+> was removed with no value-model equivalent (the `@`/`~`/`<:`/`:>`/`,` signal
+> combinators, multi-channel routing, the unbound-wire scrutinee) were deleted
+> with a `// Task 13b: removed with the signal surface syntax (…)` marker.
+> Additionally fixed three inference gaps surfaced by the migration: math
+> builtins (`abs`/`sin`/… unary, `min`/`max`/`atan2` curried) are now ordinary
+> value functions; `map`'s closure arity check flattens the curried nest; and a
+> closure-valued definition infers its arguments against the signature's
+> parameter types (bidirectional threading).
+
+- [x] **Step 2: Run and fix**
 
 Run: `cargo test -p rill-lang --features dsp` then `cargo test -p rill-adrift`
 Fix failures until green.
 
-- [ ] **Step 3: Commit**
+> `cargo test -p rill-lang --features dsp` → 535 passed / 4 failed, zero
+> regressions (Task 10 baseline: 503/47). The 4 remaining reds are all in
+> `arrow.rs` and are pre-existing typeclass-inference gaps (failing since before
+> Task 10): `kleisli_arrow_end_to_end`, `constraint_instance_resolves`,
+> `arrow_default_both_composes`, `arrow_default_fan_composes`. They need
+> expected-type threading through the category prelude's `arr`/`compose`
+> instance bodies (and the `Monad`-side `return`) — deferred, tracked below.
+> `cargo test -p rill-adrift` is still blocked by 11 pre-existing
+> `rill-adrift/src/graph/reconstruct.rs` compile errors (references removed
+> `Expr::*` variants) — the adrift test files cannot be built until that crate
+> compiles.
+
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A
