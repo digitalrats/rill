@@ -27,6 +27,9 @@ fn rewrite_def(def: &mut Def, env: &TypeEnv) {
         }
         | Def::Anchor {
             body, where_defs, ..
+        }
+        | Def::Eval {
+            body, where_defs, ..
         } => {
             *body = rewrite(body, env);
             for wd in where_defs.iter_mut() {
@@ -330,6 +333,9 @@ pub(crate) fn desugar_main_io(program: &mut Program) -> bool {
                     *b = io_body;
                 }
                 Def::Anchor { body: b, .. } => {
+                    *b = io_body;
+                }
+                Def::Eval { body: b, .. } => {
                     *b = io_body;
                 }
                 _ => {}

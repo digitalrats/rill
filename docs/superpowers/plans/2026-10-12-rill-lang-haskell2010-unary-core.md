@@ -18,7 +18,7 @@
 |---|---|---|
 | `rill-lang/src/lexer.rs` | tokens, comments, keywords | add `\`, `--`, `case`, `::`, offside indentation; remove `fn`/`match`/combinator tokens |
 | `rill-lang/src/parser.rs` | Pratt + layout, def/expr grammar | `\x -> body`, `case of`, currying desugar, offside, merge Anchor/Local |
-| `rill-lang/src/ast.rs` | AST types | remove combinators/wire/cut/imag; merge `Def::Anchor`→`Def::Fn`; `ArrowTy`→single value |
+| `rill-lang/src/ast.rs` | AST types | remove combinators/wire/cut/imag; merge `Def::Anchor`→`Def::Eval`; `ArrowTy`→single value |
 | `rill-lang/src/types/ty.rs` | `ValueTy`, prelude | `Thunk(captures, result)` as the one type; prelude rewrite |
 | `rill-lang/src/types/infer.rs` | HM inference | drop arity; unary application; Thunk unification |
 | `rill-lang/src/reduce.rs` | β-reduction | unary apply; curried defs |
@@ -182,7 +182,7 @@ Tok::KwCase => {
 
 - [ ] **Step 3: Add `::` signature parsing**
 
-In `parse_def` (top-level def), after parsing `name args? = value` is complete, if the NEXT token is `Tok::DoubleColon`, parse a `TypeExpr` and attach it. For now, store it in a new optional field on the def (add `sig: Option<TypeExpr>` to `Def::Fn` in Task 4). Minimal: parse and discard with a debug assert in this task.
+In `parse_def` (top-level def), after parsing `name args? = value` is complete, if the NEXT token is `Tok::DoubleColon`, parse a `TypeExpr` and attach it. For now, store it in a new optional field on the def (add `sig: Option<TypeExpr>` to `Def::Eval` in Task 4). Minimal: parse and discard with a debug assert in this task.
 
 - [ ] **Step 4: Add `Tok::Newline` skipping in layout-neutral spots**
 
@@ -204,12 +204,12 @@ git commit -m 'feat(rill-lang): parser accepts \lambda and case/of alongside fn/
 
 ## Phase 2: AST — one def form, unary expressions, drop signal path
 
-### Task 4: Merge `Def::Anchor`/`Def::Local` into `Def::Fn`; add `sig`; remove combinators/wire/cut/imag
+### Task 4: Merge `Def::Anchor`/`Def::Local` into `Def::Eval`; add `sig`; remove combinators/wire/cut/imag
 
 **Files:**
 - Modify: `rill-lang/src/ast.rs`
 
-- [ ] **Step 1: Add `Def::Fn` and keep a compatibility shim**
+- [ ] **Step 1: Add `Def::Eval` and keep a compatibility shim**
 
 In `rill-lang/src/ast.rs`:
 
@@ -230,11 +230,11 @@ Add `type Fn = Anchor` for the transition? No — instead make `Anchor`/`Local` 
 
 - [ ] **Step 2: Update AST helper functions**
 
-In `rill-lang/src/ast.rs`, extend every `match def { ... }` (name/body/params/where_defs/is_decl, lines ~470-530) with the `Def::Fn` arm.
+In `rill-lang/src/ast.rs`, extend every `match def { ... }` (name/body/params/where_defs/is_decl, lines ~470-530) with the `Def::Eval` arm.
 
-- [ ] **Step 3: Parser emits `Def::Fn`**
+- [ ] **Step 3: Parser emits `Def::Eval`**
 
-In `rill-lang/src/parser.rs` `parse_def`, replace Anchor/Local construction with `Def::Fn { name, params, body, where_defs, sig, span }`. Keep `Anchor`/`Local` variants in the enum (dead) until Task 6.
+In `rill-lang/src/parser.rs` `parse_def`, replace Anchor/Local construction with `Def::Eval { name, params, body, where_defs, sig, span }`. Keep `Anchor`/`Local` variants in the enum (dead) until Task 6.
 
 - [ ] **Step 4: Run parser roundtrip tests**
 
@@ -245,7 +245,7 @@ Expected: PASS (render still emits old syntax; render updated in Phase 4).
 
 ```bash
 git add rill-lang/src/ast.rs rill-lang/src/parser.rs
-git commit -m 'feat(rill-lang): single Def::Fn form with optional :: signature'
+git commit -m 'feat(rill-lang): single Def::Eval form with optional :: signature'
 ```
 
 ### Task 5: Remove `Expr::Wire/Cut/Seq/Par/Split/Merge/Loop/Delay/Imag`
@@ -297,20 +297,20 @@ git commit -m 'refactor(rill-lang): delete signal combinators, wire, cut, imagin
 - [ ] **Step 1: Definition currying**
 
 Multi-param `name p1 p2 = body` is already desugared by the parser into
-`Def::Fn` with `params=[p1,p2]`. Add a desugar pass (in `parse_program` after
-all defs parse) that rewrites each `Def::Fn` with `params.len() > 1` into
-`Def::Fn { name, params: [], body: nested_lambdas(params, body) }` where
+`Def::Eval` with `params=[p1,p2]`. Add a desugar pass (in `parse_program` after
+all defs parse) that rewrites each `Def::Eval` with `params.len() > 1` into
+`Def::Eval { name, params: [], body: nested_lambdas(params, body) }` where
 `nested_lambdas` builds `\p1 -> (\p2 -> body)`.
 
 ```rust
 fn curry_def(def: &mut Def) {
-    let Def::Fn { params, body, .. } = *def else { return };
+    let Def::Eval { params, body, .. } = *def else { return };
     if params.len() <= 1 { return; }
     let mut lam: Expr = *body;
     for p in params.into_iter().rev() {
         lam = Expr::Lambda { params: vec![p], body: Box::new(lam), span: p.span };
     }
-    def = Def::Fn { name: def.name().clone(), params: vec![], body: Box::new(lam), where_defs: def.where_defs().cloned().collect(), sig: def.sig().cloned(), span: def.span() };
+    def = Def::Eval { name: def.name().clone(), params: vec![], body: Box::new(lam), where_defs: def.where_defs().cloned().collect(), sig: def.sig().cloned(), span: def.span() };
 }
 ```
 
@@ -481,7 +481,7 @@ git commit -m 'feat(rill-lang): unary inference over Thunk, no channel arity'
 single-arg ApplyExpr to a lambda or a name. Update `reduce_expr`:
 - `ApplyExpr { callee: Lambda, args: [v] }` → substitute.
 - `ApplyExpr { callee: Ref(name), args: [v] }` where `name` is a
-  `Def::Fn` with no params whose body is a Lambda → substitute (after currying,
+  `Def::Eval` with no params whose body is a Lambda → substitute (after currying,
   all Fn bodies are lambdas).
 - Recursion (complete mode) keeps thunks (`ValueLazy`).
 
@@ -582,7 +582,7 @@ git commit -m 'feat(rill-lang): offside rule for where/do/case blocks'
 
 - [ ] **Step 1: Update lambdas, case, defs, comments**
 
-`Expr::Lambda` renders `\` instead of `fn`; `Expr::Match` renders `case … of { … }`; `Def::Fn` renders `name args? = body` with optional `:: sig`; comments render `--`.
+`Expr::Lambda` renders `\` instead of `fn`; `Expr::Match` renders `case … of { … }`; `Def::Eval` renders `name args? = body` with optional `:: sig`; comments render `--`.
 
 - [ ] **Step 2: Remove combinator/wire rendering**
 
@@ -704,7 +704,7 @@ git commit -m 'test(rill-lang): migrate unit/integration tests to unary model'
 
 - [ ] **Step 1: Remove `Def::Anchor`/`Def::Local` variants**
 
-Delete the old variants now that `Def::Fn` is the only def form; update every
+Delete the old variants now that `Def::Eval` is the only def form; update every
 `match def` in the crate (parser, infer, lower, reduce, render, ast helpers).
 
 - [ ] **Step 2: Delete `desugar.rs`**

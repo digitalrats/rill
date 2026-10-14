@@ -42,6 +42,13 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             body,
             where_defs,
             ..
+        }
+        | Def::Eval {
+            name,
+            params,
+            body,
+            where_defs,
+            ..
         } => {
             write!(buf, "{pad}{name}").ok();
             for p in params {
@@ -59,9 +66,22 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             }
             Ok(())
         }
-        Def::Local { name, body, .. } => {
+        Def::Local {
+            name,
+            body,
+            where_defs,
+            ..
+        } => {
             write!(buf, "{pad}{name} = ").ok();
             render_expr(body, buf, 0)?;
+            if !where_defs.is_empty() {
+                writeln!(buf, " where {{").ok();
+                for wd in where_defs {
+                    render_def(wd, buf, indent + 4)?;
+                    writeln!(buf, ";").ok();
+                }
+                write!(buf, "{pad}}}").ok();
+            }
             Ok(())
         }
         Def::Data {

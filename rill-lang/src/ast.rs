@@ -378,6 +378,24 @@ pub enum Def {
         /// Span of the whole definition.
         span: Span,
     },
+    /// `name p1 p2 = body` — one definition form (params optional; multi-param
+    /// is currying sugar). `sig` is an optional `::` type annotation
+    /// (inference-only hint/constraint). Named so it reads as «evaluable
+    /// definition» in contrast to the `is_decl()` declarations.
+    Eval {
+        /// Definition name.
+        name: String,
+        /// Formal parameters (curried).
+        params: Vec<Param>,
+        /// Right-hand side.
+        body: Expr,
+        /// Optional where-block definitions.
+        where_defs: Vec<Def>,
+        /// Optional `:: TypeExpr` signature annotation.
+        sig: Option<TypeExpr>,
+        /// Span of the whole definition.
+        span: Span,
+    },
     /// `data Name tv1 tv2 = { f1: T1, f2: T2 }` — product type.
     Data {
         /// Type name.
@@ -471,6 +489,7 @@ impl Def {
         match self {
             Def::Anchor { name, .. } => name,
             Def::Local { name, .. } => name,
+            Def::Eval { name, .. } => name,
             Def::Data { name, .. } => name,
             Def::Sum { name, .. } => name,
             Def::TypeAlias { name, .. } => name,
@@ -489,6 +508,7 @@ impl Def {
         match self {
             Def::Anchor { body, .. } => body,
             Def::Local { body, .. } => body,
+            Def::Eval { body, .. } => body,
             _ => unreachable!("declaration variant has no body"),
         }
     }
@@ -497,6 +517,7 @@ impl Def {
     pub fn params(&self) -> &[Param] {
         match self {
             Def::Anchor { params, .. } => params,
+            Def::Eval { params, .. } => params,
             _ => &[],
         }
     }
@@ -506,6 +527,7 @@ impl Def {
         match self {
             Def::Anchor { where_defs, .. } => where_defs,
             Def::Local { where_defs, .. } => where_defs,
+            Def::Eval { where_defs, .. } => where_defs,
             _ => &[],
         }
     }

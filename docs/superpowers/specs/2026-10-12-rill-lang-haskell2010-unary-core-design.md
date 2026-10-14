@@ -121,13 +121,13 @@ Consequences:
 - Parse `case e of { p -> e; ... }`.
 - Desugar multi-arg application `f x y z` → `((f x) y) z`.
 - Desugar `name p1 p2 = body` → `name = \p1 -> \p2 -> body`.
-- Merge Anchor/Local AST nodes into one `Def::Fn` (params optional).
+- Merge Anchor/Local AST nodes into one `Def::Eval` (params optional).
 - Drop combinator/wire/cut expressions from the grammar.
 
 ### 5.3 AST (`ast.rs`)
 - Remove `Expr::Wire`, `Expr::Cut`, `Expr::Seq/Par/Split/Merge/Loop/Delay`,
   `Expr::Imag`.
-- Remove `Def::Anchor` (fold into `Def::Fn`).
+- Remove `Def::Anchor` (fold into `Def::Eval`).
 - Reduce `ArrowTy` to a single value type (or remove it, threading `ValueTy`
   directly).
 

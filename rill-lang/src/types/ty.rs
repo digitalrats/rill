@@ -485,6 +485,7 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         if matches!(
             def,
             Def::Local { .. }
+                | Def::Eval { .. }
                 | Def::Anchor { .. }
                 | Def::TypeAlias { .. }
                 | Def::Newtype { .. }

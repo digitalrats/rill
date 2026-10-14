@@ -371,6 +371,13 @@ fn extract_resources(
                 name: ctor, args, ..
             },
             ..
+        }
+        | Def::Eval {
+            name,
+            body: Expr::Apply {
+                name: ctor, args, ..
+            },
+            ..
         } = def
         {
             if ctor == "tape_loop" || ctor == "TapeLoop" {

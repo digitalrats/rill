@@ -264,6 +264,24 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
                 .collect(),
             span: *span,
         },
+        Def::Eval {
+            name,
+            params,
+            body,
+            where_defs,
+            sig,
+            span,
+        } => Def::Eval {
+            name: name.clone(),
+            params: params.clone(),
+            body: substitute(body, subst),
+            where_defs: where_defs
+                .iter()
+                .map(|w| substitute_def(w, subst))
+                .collect(),
+            sig: sig.clone(),
+            span: *span,
+        },
         other => other.clone(),
     }
 }
@@ -286,6 +304,12 @@ fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<Str
     }
     match ctx.get(name) {
         Some(Def::Local { body, .. }) => match body {
+            Expr::Lambda { .. } => true,
+            Expr::Ref(next, _) => is_closure_def(ctx, next, seen),
+            Expr::Apply { .. } => true,
+            _ => false,
+        },
+        Some(Def::Eval { params, body, .. }) if params.is_empty() => match body {
             Expr::Lambda { .. } => true,
             Expr::Ref(next, _) => is_closure_def(ctx, next, seen),
             Expr::Apply { .. } => true,
@@ -327,6 +351,20 @@ fn reduce_def(
             name: name.clone(),
             body: reduced_body,
             where_defs: reduced_where,
+            span: *span,
+        },
+        Def::Eval {
+            name,
+            params,
+            sig,
+            span,
+            ..
+        } => Def::Eval {
+            name: name.clone(),
+            params: params.clone(),
+            body: reduced_body,
+            where_defs: reduced_where,
+            sig: sig.clone(),
             span: *span,
         },
         _ => def.clone(),
@@ -386,7 +424,11 @@ fn reduce_expr(
             // exactly like a call from any other function). Leave the Apply for
             // lowering to build the closure + `ValueCallLazy`.
             if mode == Mode::Complete
-                && matches!(ctx.get(name), Some(Def::Anchor { params, .. }) if !params.is_empty())
+                && matches!(
+                    ctx.get(name),
+                    Some(Def::Anchor { params, .. }) | Some(Def::Eval { params, .. })
+                        if !params.is_empty()
+                )
             {
                 return Expr::Apply {
                     name: name.clone(),

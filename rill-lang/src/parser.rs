@@ -445,22 +445,16 @@ impl<'a> Parser<'a> {
 
         let span = Span::new(start, body.span().end);
 
-        if params.is_empty() {
-            Ok(Def::Local {
-                name,
-                body,
-                where_defs,
-                span,
-            })
-        } else {
-            Ok(Def::Anchor {
-                name,
-                params,
-                body,
-                where_defs,
-                span,
-            })
-        }
+        // Unify Anchor/Local into the single `Def::Eval` form. Multi-parameter
+        // definitions are curried later (Task 6); params are kept here.
+        Ok(Def::Eval {
+            name,
+            params,
+            body,
+            where_defs,
+            sig: None,
+            span,
+        })
     }
 
     fn parse_def(&mut self) -> Result<Def, CompileError> {
@@ -1482,18 +1476,18 @@ mod tests {
         let main = p.main_def().unwrap();
         assert_eq!(main.where_defs().len(), 2);
         match &main.where_defs()[0] {
-            Def::Anchor { name, params, .. } => {
+            Def::Eval { name, params, .. } => {
                 assert_eq!(name, "osc");
                 assert_eq!(params.len(), 1);
             }
-            _ => panic!("expected Anchor"),
+            _ => panic!("expected Eval"),
         }
         match &main.where_defs()[1] {
-            Def::Anchor { name, params, .. } => {
+            Def::Eval { name, params, .. } => {
                 assert_eq!(name, "lpf");
                 assert_eq!(params.len(), 1);
             }
-            _ => panic!("expected Anchor"),
+            _ => panic!("expected Eval"),
         }
     }
 

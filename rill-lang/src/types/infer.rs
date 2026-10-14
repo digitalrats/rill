@@ -337,6 +337,13 @@ fn fragment_target(
             Expr::Ref(next, _) => fragment_target(defs, next, seen),
             _ => None,
         },
+        Some(Def::Eval { params, body, .. }) if params.is_empty() => match body {
+            Expr::Lambda { .. } => Some(name.to_string()),
+            Expr::Apply { .. } => Some(name.to_string()),
+            Expr::Ref(next, _) => fragment_target(defs, next, seen),
+            _ => None,
+        },
+        Some(Def::Eval { params, .. }) if !params.is_empty() => Some(name.to_string()),
         Some(Def::Anchor { params, .. }) if !params.is_empty() => Some(name.to_string()),
         _ => None,
     }
@@ -1186,7 +1193,12 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
                 .get(name)
                 .filter(|s| s.lam_count == 0 && s.ty.ins.is_empty())
                 .map(|_| name.clone()),
-            Def::Anchor { .. } => None,
+            Def::Eval { name, params, .. } if params.is_empty() => ctx
+                .defs
+                .get(name)
+                .filter(|s| s.lam_count == 0 && s.ty.ins.is_empty())
+                .map(|_| name.clone()),
+            Def::Anchor { .. } | Def::Eval { .. } => None,
             _ => None,
         })
         .collect();
@@ -1200,8 +1212,8 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
     // which lowering treats as an untyped scalar).
     let mut fn_param_tys: HashMap<String, Vec<ValueTy>> = HashMap::new();
     for def in &program.defs {
-        if let Def::Local { name, body, .. } = def {
-            if matches!(body, Expr::Lambda { .. }) {
+        if let Def::Local { name, body, .. } | Def::Eval { name, body, .. } = def {
+            if def.params().is_empty() && matches!(body, Expr::Lambda { .. }) {
                 let scheme = ctx.defs.get(name).cloned();
                 if let Some(s) = scheme {
                     if let Some(ValueTy::Func(arg_tys, _)) = s.ty.outs.first() {
@@ -1224,8 +1236,9 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         // like `fibs = cons … fibs …`). Collecting every such def is harmless —
         // lowering only consults the map for shared-cell references.
         let is_shared = match def {
-            Def::Anchor { params, .. } => !params.is_empty(),
+            Def::Anchor { params, .. } | Def::Eval { params, .. } if !params.is_empty() => true,
             Def::Local { body, .. } => !matches!(body, Expr::Lambda { .. }),
+            Def::Eval { body, .. } => !matches!(body, Expr::Lambda { .. }),
             _ => false,
         };
         if is_shared {
@@ -1237,7 +1250,8 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
                     // dispatches), not just the result type. A recursive local
                     // (`fibs` : List) keeps its result type.
                     let capture_ty = match def {
-                        Def::Anchor { params, .. } => {
+                        Def::Eval { params, .. } if params.is_empty() => resolved,
+                        Def::Anchor { params, .. } | Def::Eval { params, .. } => {
                             let mut arg_tys = Vec::with_capacity(params.len());
                             for p in params {
                                 let lt = ctx.locals.get(p.name.as_str()).cloned();
