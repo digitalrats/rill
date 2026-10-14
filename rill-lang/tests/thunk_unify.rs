@@ -8,9 +8,9 @@ use rill_core::traits::MultichannelAlgorithm;
 #[test]
 fn eager_and_lazy_calls_still_work() {
     // eager: a named function applied to args; lazy: a thunk over a closure.
-    let src = "{-# MODE complete #-}\n\
-        id2 = fn x -> x;\n\
-        main = match (head (id2 [1.0, 2.0])) of { Nothing => 0.0; Just x => x };";
+    let src = r"{-# MODE complete #-}
+id2 = \x -> x;
+main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -27,9 +27,9 @@ fn closure_and_thunk_are_one_variant() {
     // Both construction paths (MakeClosure, ValueLazy, ValueCallLazy) now
     // produce Value::Callable; the arena has no Closure/Thunk variants.
     // (Compile a program using a lambda + a lazy let to exercise both.)
-    let src = "{-# MODE complete #-}\n\
-        id2 = fn x -> x;\n\
-        main = match (head (let y = id2 [1.0, 2.0] in y)) of { Nothing => 0.0; Just x => x };";
+    let src = r"{-# MODE complete #-}
+id2 = \x -> x;
+main = case (head (let y = id2 [1.0, 2.0] in y)) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -45,9 +45,9 @@ fn closure_and_thunk_are_one_variant() {
 fn fragment_call_with_record_construction_still_works() {
     // Exercises ValueConstructRecord (Vec payload) inside a fragment call —
     // the instruction must not be mis-remapped when base is threaded.
-    let src = "{-# MODE complete #-}\n\
-        mk = fn x -> Pair { first: x, second: x };\n\
-        main = match (head ((mk [1.0, 2.0]).first)) of { Nothing => 0.0; Just x => x };";
+    let src = r"{-# MODE complete #-}
+mk = \x -> Pair { first: x, second: x };
+main = case (head ((mk [1.0, 2.0]).first)) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];

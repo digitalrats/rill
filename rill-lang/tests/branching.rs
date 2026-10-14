@@ -54,7 +54,7 @@ fn if_and_runtime_match_combined() {
     // A SetParameter-driven Bool selects a sum at runtime; the outer match
     // dispatches on the runtime constructor.
     let mut prog = compile::<f32>(
-        "main = match (if ?g > 0.5 then Just 1.0 else Nothing) of { Just x => x; Nothing => 0.0; }",
+        r"main = case (if ?g > 0.5 then Just 1.0 else Nothing) of { Just x -> x; Nothing -> 0.0; }",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

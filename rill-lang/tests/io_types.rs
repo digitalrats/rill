@@ -17,17 +17,14 @@ fn arrowty(src: &str) -> rill_lang::types::ty::ArrowTy {
 fn write_output_types_as_io_void() {
     // `writeOutput : List Buffer -> IO ()` — the result is `IO Void`.
     let t = arrowty("main = writeOutput (readInput)");
-    assert_eq!(t.outs[0], ValueTy::Data("IO".into(), vec![ValueTy::Void]));
+    assert_eq!(t.vty, ValueTy::Data("IO".into(), vec![ValueTy::Void]));
 }
 
 #[test]
 fn read_input_types_as_list_buffer() {
     // `readInput : () -> List Buffer`.
     let t = arrowty("main = readInput");
-    assert_eq!(
-        t.outs[0],
-        ValueTy::App("List".into(), vec![ValueTy::Buffer])
-    );
+    assert_eq!(t.vty, ValueTy::App("List".into(), vec![ValueTy::Buffer]));
 }
 
 #[test]
@@ -35,5 +32,5 @@ fn do_notation_over_io_uses_monad_instance() {
     // A do-block over IO binds through `instance Monad IO`; the result is the
     // final action's type.
     let t = arrowty("main = do { writeOutput (readInput); return () }");
-    assert_eq!(t.outs[0], ValueTy::Data("IO".into(), vec![ValueTy::Void]));
+    assert_eq!(t.vty, ValueTy::Data("IO".into(), vec![ValueTy::Void]));
 }

@@ -100,13 +100,13 @@ fn recursive_constructor_class_method_is_compile_error() {
     // arms around the inlined BODY only (not the arguments — composed
     // defaults legitimately re-enter other methods' bodies through arguments),
     // so genuine body self-re-entry must still trip it.
-    let src = r#"
+    let src = r"
         typeclass A a where { f: a b c -> a b c; }
         data K m a b = { unK: a -> m b };
-        instance (Monad m) => A (K m) where { f k = f k; }
+        instance (Monad m) -> A (K m) where { f k = f k; }
         apply k x = let u = k.unK in u x;
-        main = match (apply (f (K { unK: fn x -> Just x })) 3.0) of { Just v => v; Nothing => 0.0; };
-    "#;
+        main = case (apply (f (K { unK: \x -> Just x })) 3.0) of { Just v -> v; Nothing -> 0.0; };
+    ";
     let res = compile::<f32>(src);
     assert!(res.is_err(), "expected a compile error, got success");
     match res.err().expect("compile failed") {
@@ -162,10 +162,10 @@ fn instance_body_accepts_value_expression() {
 fn user_def_shadows_builtin_eq_ord_method_names() {
     // The builtin `Eq`/`Ord` typeclasses declare `eq`/`lt` methods, but a user
     // definition with the same name is a plain function and must compile.
-    let src = r#"
-        lt = fn a b -> a * b;
+    let src = r"
+        lt = \a -> \b -> a * b;
         main = lt 2.0 3.0;
-    "#;
+    ";
     let mut prog = compile::<f32>(src).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();

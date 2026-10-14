@@ -17,7 +17,8 @@ fn runst_region_compiles_ok() {
     // the region types as its body (`1.0` is a signal constant today, hence
     // `main` is `Rate::Signal`). The rank-N application must ACCEPT a result
     // that does not mention `s`.
-    let src = "{-# MODE complete #-}\nmain = runST (fn s -> 1.0);";
+    let src = r"{-# MODE complete #-}
+main = runST (\s -> 1.0);";
     let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
     let r = infer_program(&p, Mode::Complete);
     assert!(
@@ -31,7 +32,8 @@ fn runst_region_compiles_ok() {
 fn runst_region_rejects_escaping_phantom() {
     // A result whose type mentions `s` must NOT escape the region:
     // check-escaping rejects it at compile time.
-    let src = "{-# MODE complete #-}\nmain = runST (fn s -> (s));";
+    let src = r"{-# MODE complete #-}
+main = runST (\s -> (s));";
     let p = tokenize(src).unwrap();
     let prog = parse(&p, src.as_bytes()).unwrap();
     let r = infer_program(&prog, Mode::Complete);

@@ -48,7 +48,7 @@ mod tests {
 
         let def = RillLangDef::new(
             "gain",
-            "main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }",
+            r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }",
         );
         let mut ffi = ForeignRegistry::<f32>::new();
         register::register_foreign_filters(&mut ffi);

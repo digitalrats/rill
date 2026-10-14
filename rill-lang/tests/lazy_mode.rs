@@ -47,7 +47,8 @@ fn countdown_compile_only() {
 
 #[test]
 fn lambda_arith_plus_works() {
-    let src = "{-# MODE complete #-}\nmain = (fn a b -> a + b) 5.0 2.0";
+    let src = r"{-# MODE complete #-}
+main = (\a -> \b -> a + b) 5.0 2.0";
     match rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete) {
         Ok(_) => {}
         Err(e) => panic!("lambda plus must compile, got: {e}"),
@@ -73,10 +74,10 @@ fn complete_recursive_countup_runtime() {
 fn complete_from_infinite_cons() {
     // `from` produces an infinite lazy cons list; `head`/`tail` force elements.
     // take 3 (from 10) -> [10, 11, 12]; head of the 3rd tail is 12.
-    let src = r#"{-# MODE complete #-}
+    let src = r"{-# MODE complete #-}
 from n = cons n (from (n + 1.0));
-headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
-main = headv (tail (tail (tail (from 10.0))));"#;
+headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
+main = headv (tail (tail (tail (from 10.0))));";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -92,10 +93,11 @@ main = headv (tail (tail (tail (from 10.0))));"#;
 
 #[test]
 fn match_maybe_syntax_works() {
-    let src = "{-# MODE complete #-}\nmain = match head (cons 1.0 (list)) of { Nothing => 0.0; Just x => x }";
+    let src = r"{-# MODE complete #-}
+main = case head (cons 1.0 (list)) of { Nothing -> 0.0; Just x -> x }";
     match rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete) {
         Ok(_) => {}
-        Err(e) => panic!("match syntax must compile, got: {e}"),
+        Err(e) => panic!(r"case syntax must compile, got: {e}"),
     }
 }
 
@@ -110,10 +112,11 @@ fn simple_headv_def_parses() {
 
 #[test]
 fn headv_match_def_parses() {
-    let src = "headv xs = match (head xs) of { Nothing => 0.0; Just x => x }\nmain = headv (cons 1.0 (list))";
+    let src = r"headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x }
+main = headv (cons 1.0 (list))";
     match rill_lang::compile::<f32>(src) {
         Ok(_) => {}
-        Err(e) => panic!("headv match def must parse, got: {e}"),
+        Err(e) => panic!(r"headv case def must parse, got: {e}"),
     }
 }
 
@@ -198,7 +201,9 @@ fn value_track_minus_and_negative_literal() {
     // `n - 1.0` is infix subtraction; `-2.0` is a negative literal.
     // `cons` forces `sub` value-rate; `-2.0` is a negative literal, `n - 1.0`
     // infix subtraction in the value track.
-    let src = "{-# MODE complete #-}\nsub n = cons (n - 1.0) (list);\nmain = match (head (sub -2.0)) of { Nothing => 0.0; Just x => x };";
+    let src = r"{-# MODE complete #-}
+sub n = cons (n - 1.0) (list);
+main = case (head (sub -2.0)) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -247,10 +252,10 @@ fn complete_nth_with_list_param_recursive() {
     // Self-recursive function with a List parameter: every call is a lazy
     // thunk (complete mode never β-reduces calls — including calls from main),
     // so `nth (from 10.0) 2.0` suspends and recurses through the shared cell.
-    let src = r#"{-# MODE complete #-}
+    let src = r"{-# MODE complete #-}
 from n = cons n (from (n + 1.0));
-nth xs k = if k == 0.0 then match (head xs) of { Nothing => 0.0; Just x => x } else nth (tail xs) (k - 1.0);
-main = nth (from 10.0) 2.0;"#;
+nth xs k = if k == 0.0 then case (head xs) of { Nothing -> 0.0; Just x -> x } else nth (tail xs) (k - 1.0);
+main = nth (from 10.0) 2.0;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -268,10 +273,10 @@ main = nth (from 10.0) 2.0;"#;
 fn complete_take_self_recursive_list() {
     // `take` recurses on a List param and produces a list result; the
     // recursive call suspends as a thunk.
-    let src = r#"{-# MODE complete #-}
+    let src = r"{-# MODE complete #-}
 from n = cons n (from (n + 1.0));
-take n xs = if n == 0.0 then list else cons (match (head xs) of { Nothing => 0.0; Just x => x }) (take (n - 1.0) (tail xs));
-main = take 2.0 (from 10.0);"#;
+take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (n - 1.0) (tail xs));
+main = take 2.0 (from 10.0);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -292,7 +297,10 @@ main = take 2.0 (from 10.0);"#;
 fn complete_let_binding_is_lazy_thunk() {
     // A `let` binding in complete mode suspends as a thunk: xs = from 10 is
     // forced by headv/tail on demand.
-    let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nheadv xs = match (head xs) of { Nothing => 0.0; Just x => x };\nmain = let xs = from 10.0 in headv (tail (tail xs));";
+    let src = r"{-# MODE complete #-}
+from n = cons n (from (n + 1.0));
+headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
+main = let xs = from 10.0 in headv (tail (tail xs));";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -333,10 +341,10 @@ fn complete_fibs_zipwith_infinite() {
     // The canonical lazy-list example: fibs = 0 : 1 : zipWith (+) fibs (tail
     // fibs). Requires: self-referential local thunk, lazy application args
     // (`tail fibs` suspends, not forces), and shared cells for recursion.
-    let src = r#"{-# MODE complete #-}
-zipWith f xs ys = if match (head xs) of { Nothing => 1.0; Just x => x } == 999.0 then list else cons (f (match (head xs) of { Nothing => 0.0; Just x => x }) (match (head ys) of { Nothing => 0.0; Just x => x })) (zipWith f (tail xs) (tail ys));
-fibs = cons 0.0 (cons 1.0 (zipWith (fn a b -> a + b) fibs (tail fibs)));
-main = match (head (tail (tail (tail (tail fibs))))) of { Nothing => 0.0; Just x => x };"#;
+    let src = r"{-# MODE complete #-}
+zipWith f xs ys = if case (head xs) of { Nothing -> 1.0; Just x -> x } == 999.0 then list else cons (f (case (head xs) of { Nothing -> 0.0; Just x -> x }) (case (head ys) of { Nothing -> 0.0; Just x -> x })) (zipWith f (tail xs) (tail ys));
+fibs = cons 0.0 (cons 1.0 (zipWith (\a -> \b -> a + b) fibs (tail fibs)));
+main = case (head (tail (tail (tail (tail fibs))))) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -352,10 +360,10 @@ main = match (head (tail (tail (tail (tail fibs))))) of { Nothing => 0.0; Just x
 
 #[test]
 fn complete_repeat_take() {
-    let src = r#"{-# MODE complete #-}
+    let src = r"{-# MODE complete #-}
 repeat x = cons x (repeat x);
-take n xs = if n == 0.0 then list else cons (match (head xs) of { Nothing => 0.0; Just x => x }) (take (n - 1.0) (tail xs));
-main = take 3.0 (repeat 42.0);"#;
+take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (n - 1.0) (tail xs));
+main = take 3.0 (repeat 42.0);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -374,10 +382,10 @@ main = take 3.0 (repeat 42.0);"#;
 
 #[test]
 fn complete_iterate_take() {
-    let src = r#"{-# MODE complete #-}
+    let src = r"{-# MODE complete #-}
 iterate f x = cons x (iterate f (f x));
-take n xs = if n == 0.0 then list else cons (match (head xs) of { Nothing => 0.0; Just x => x }) (take (n - 1.0) (tail xs));
-main = take 4.0 (iterate (fn x -> x + 1.0) 0.0);"#;
+take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (n - 1.0) (tail xs));
+main = take 4.0 (iterate (\x -> x + 1.0) 0.0);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -397,7 +405,9 @@ main = take 4.0 (iterate (fn x -> x + 1.0) 0.0);"#;
 #[test]
 fn complete_bottom_propagates_not_hang() {
     // 1 + a where a = a → Bottom (divergence detected, not a hang).
-    let src = "{-# MODE complete #-}\na = a;\nmain = match (head (cons (1.0 + a) (list))) of { Nothing => 0.0; Just x => x };";
+    let src = r"{-# MODE complete #-}
+a = a;
+main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -427,10 +437,10 @@ fn complete_mutual_recursion_evens_odd() {
 fn complete_shared_thunk_forced_once() {
     // x = from 10; body uses x twice — the shared let thunk is forced once and
     // memoized (call-by-need), so both uses observe the same list head.
-    let src = r#"{-# MODE complete #-}
+    let src = r"{-# MODE complete #-}
 from n = cons n (from (n + 1.0));
-headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
-main = headv (let x = from 10.0 in x);"#;
+headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
+main = headv (let x = from 10.0 in x);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -483,10 +493,10 @@ main = if 1.0 == 1.0 then even 4.0 else even 3.0;"#;
 fn mutual_local_recursion_is_bottom() {
     // I2 regression: mutual LOCAL recursion (`a = b; b = a`) in the value track
     // must force to Bottom (divergence is a value), not a wrong Float.
-    let src = r#"{-# MODE complete #-}
+    let src = r"{-# MODE complete #-}
 a = b;
 b = a;
-main = match (head (cons (1.0 + a) (list))) of { Nothing => 0.0; Just x => x }"#;
+main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x }";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];

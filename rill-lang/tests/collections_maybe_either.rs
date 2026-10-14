@@ -6,7 +6,7 @@ use rill_lang::compile;
 #[test]
 fn nothing_and_just_via_match() {
     let mut prog =
-        compile::<f32>("main = match (Nothing) of { Nothing => 42.0; Just x => x; };").unwrap();
+        compile::<f32>(r"main = case (Nothing) of { Nothing -> 42.0; Just x -> x; };").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -19,7 +19,7 @@ fn nothing_and_just_via_match() {
 #[test]
 fn user_nullary_constructors_work() {
     let mut prog = compile::<f32>(
-        "data Color = Red | Green Float; main = match (Red) of { Red => 1.0; Green g => g; };",
+        r"data Color = Red | Green Float; main = case (Red) of { Red -> 1.0; Green g -> g; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -59,7 +59,7 @@ fn pair_heterogeneous_fields() {
 #[test]
 fn either_ctors_and_match() {
     let mut prog =
-        compile::<f32>("main = match (Left 5.0) of { Left x => x; Right y => 0.0; };").unwrap();
+        compile::<f32>(r"main = case (Left 5.0) of { Left x -> x; Right y -> 0.0; };").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -73,7 +73,7 @@ fn either_ctors_and_match() {
 fn right_ctor_places_payload_in_second_slot() {
     // `Right b` binds the payload to the second type-var slot of `Either a b`.
     let mut prog =
-        compile::<f32>("main = match (Right 7.0) of { Left x => 0.0; Right y => y; };").unwrap();
+        compile::<f32>(r"main = case (Right 7.0) of { Left x -> 0.0; Right y -> y; };").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -87,7 +87,7 @@ fn right_ctor_places_payload_in_second_slot() {
 fn nullary_match_is_arm_order_independent() {
     // Nothing matched with the Just arm FIRST must still select Nothing.
     let mut prog =
-        compile::<f32>("main = match (Nothing) of { Just x => x; Nothing => 42.0; };").unwrap();
+        compile::<f32>(r"main = case (Nothing) of { Just x -> x; Nothing -> 42.0; };").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -102,7 +102,7 @@ fn lookup_key_via_let_binding_is_not_statically_misjudged() {
     // The static lookup analysis must NOT claim the key is absent when it
     // comes through a let-bound variable (would silently pick Nothing).
     let mut prog = compile::<f32>(
-        "k = \"a\"; m = insert k 5.0 (empty_map); main = match (lookup \"a\" m) of { Nothing => 0.0; Just x => x; };",
+        r#"k = "a"; m = insert k 5.0 (empty_map); main = case (lookup "a" m) of { Nothing -> 0.0; Just x -> x; };"#,
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -117,7 +117,7 @@ fn lookup_key_via_let_binding_is_not_statically_misjudged() {
 #[test]
 fn match_builtin_sum_with_compound_payload_projects() {
     let mut prog = compile::<f32>(
-        "main = match (Just (Pair { first: 1.0, second: 2.0 })) of { Just p => p.first; Nothing => 0.0; };",
+        r"main = case (Just (Pair { first: 1.0, second: 2.0 })) of { Just p -> p.first; Nothing -> 0.0; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

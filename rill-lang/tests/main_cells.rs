@@ -70,7 +70,7 @@ fn main_param_reads_as_value_in_value_context() {
     // value output would pin its whole subtree — a separate, pre-existing
     // capacity limitation unrelated to main cells).
     let mut prog =
-        compile::<f32>("data Shape = Circle Float; main = match Circle ?g of { Circle r => r; }")
+        compile::<f32>(r"data Shape = Circle Float; main = case Circle ?g of { Circle r -> r; }")
             .unwrap();
     prog.set_param(prog.param_index("g").unwrap(), ParamValue::Float(2.5));
     let mut out = [0.0f32; 4];

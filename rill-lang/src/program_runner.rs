@@ -89,7 +89,7 @@ mod tests {
         use crate::compile_graph;
 
         let engine = compile_graph::<f32, 256>(
-            "main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }",
+            r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }",
             &Registry::new(),
             44100.0,
         )

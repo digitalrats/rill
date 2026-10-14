@@ -8,7 +8,7 @@ use rill_lang::compile;
 fn twice_applies_twice() {
     // twice = fn f x -> f (f x);  double = fn x -> x * 2.0;  main = twice double 3.0 -> 12.0
     let mut prog = compile::<f32>(
-        "twice = fn f x -> f (f x); double = fn x -> x * 2.0; main = twice double 3.0",
+        r"twice = \f -> \x -> f (f x); double = \x -> x * 2.0; main = twice double 3.0",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -23,14 +23,14 @@ fn twice_applies_twice() {
 #[test]
 fn recursion_is_rejected() {
     // f = fn x -> f x  -> compile error (acyclic contract)
-    let res = compile::<f32>("f = fn x -> f x; main = f 1.0");
+    let res = compile::<f32>(r"f = \x -> f x; main = f 1.0");
     assert!(res.is_err());
 }
 
 #[test]
 fn mutual_recursion_is_rejected() {
     // g calls h and h calls g: a static cycle in the fragment call graph.
-    let res = compile::<f32>("g = fn n -> h n; h = fn m -> g m; main = g 1.0");
+    let res = compile::<f32>(r"g = \n -> h n; h = \m -> g m; main = g 1.0");
     assert!(res.is_err());
 }
 
@@ -41,7 +41,7 @@ fn omega_combinator_is_compile_error() {
     // contract must reject it with a clean compile error, never a compiler
     // crash (regression: self-application cycled the value unification and
     // overflowed the stack).
-    let res = compile::<f32>("make = fn f -> f f; main = 1.0");
+    let res = compile::<f32>(r"make = \f -> f f; main = 1.0");
     assert!(res.is_err());
 }
 
@@ -50,9 +50,9 @@ fn map_combinator_over_fixed_shape() {
     // map over a 2-field record: apply f to each element -> a 2-field result.
     // pair_map = fn f p -> Pair (f p.x) (f p.y)
     let mut prog = compile::<f32>(
-        "data Pair = { x: Float, y: Float };
-         pair_map = fn f p -> Pair { x: f p.x, y: f p.y };
-         double = fn x -> x * 2.0;
+        r"data Pair = { x: Float, y: Float };
+         pair_map = \f -> \p -> Pair { x: f p.x, y: f p.y };
+         double = \x -> x * 2.0;
          main = pair_map double (Pair { x: 1.0, y: 2.0 })",
     )
     .unwrap();
@@ -75,7 +75,7 @@ fn map_combinator_over_fixed_shape() {
 fn compose_three_times_does_not_exhaust_arena() {
     // Deep HOF nesting across ticks must stay within the static capacity bound.
     let mut prog = compile::<f32>(
-        "apply3 = fn f x -> f (f (f x)); inc = fn x -> x + 1.0; main = apply3 inc 0.0",
+        r"apply3 = \f -> \x -> f (f (f x)); inc = \x -> x + 1.0; main = apply3 inc 0.0",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

@@ -168,7 +168,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             Ok(())
         }
         Def::Foreign { name, sig, .. } => {
-            write!(buf, "{pad}foreign fn {name}: ").ok();
+            write!(buf, r"{pad}foreign {name}: ").ok();
             render_type_expr(sig, buf);
             write!(buf, ";").ok();
             Ok(())
@@ -344,11 +344,11 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
                     // every other alternative — including a written `true`
                     // guard — renders its guard explicitly.
                     if i == 0 && matches!(g, Expr::Bool(true, _)) {
-                        write!(buf, " => ").ok();
+                        write!(buf, " -> ").ok();
                     } else {
                         write!(buf, " | ").ok();
                         render_expr(g, buf, 0)?;
-                        write!(buf, " => ").ok();
+                        write!(buf, " -> ").ok();
                     }
                     render_expr(body, buf, 0)?;
                 }
@@ -643,10 +643,11 @@ mod tests {
 
     #[test]
     fn render_roundtrip_foreign_decl() {
-        // A `foreign fn` declaration renders a trailing `;` (render.rs
+        // A `foreign` declaration renders a trailing `;` (render.rs
         // Def::Foreign arm) that the top-level parse loop — not the def parser
         // — consumes. Full-program round-trip must stay idempotent.
-        let src = "foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;\nmain = 1.0;";
+        let src = r"foreign biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+main = 1.0;";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
         let first = render(&program).unwrap();
@@ -662,24 +663,23 @@ mod tests {
     #[test]
     fn render_roundtrip_match_bare_ctor_arms() {
         let dsl = roundtrip_main(
-            "data Shape = Circle Float | Rect Float Float; \
-             main = case s of { Circle r => r; Rect w h => w; };",
+            r"data Shape = Circle Float | Rect Float Float; main = case s of { Circle r -> r; Rect w h -> w; };",
         );
-        assert_eq!(dsl, "main = case s of { Circle r => r; Rect w h => w; }");
+        assert_eq!(dsl, r"main = case s of { Circle r -> r; Rect w h -> w; }");
     }
 
     #[test]
     fn render_roundtrip_match_guarded_arm() {
-        let dsl = roundtrip_main("main = case n of { n | n > 0 => 1.0; _ => 0.0; };");
-        assert_eq!(dsl, "main = case n of { n | n > 0 => 1.0; _ => 0.0; }");
+        let dsl = roundtrip_main(r"main = case n of { n | n > 0 -> 1.0; _ -> 0.0; };");
+        assert_eq!(dsl, r"main = case n of { n | n > 0 -> 1.0; _ -> 0.0; }");
     }
 
     #[test]
     fn render_roundtrip_match_nested_pattern_literal_wildcard() {
-        let dsl = roundtrip_main("main = case x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; };");
+        let dsl = roundtrip_main(r"main = case x of { Just (Left y) -> y; 0 -> 0.0; _ -> 1.0; };");
         assert_eq!(
             dsl,
-            "main = case x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; }"
+            r"main = case x of { Just (Left y) -> y; 0 -> 0.0; _ -> 1.0; }"
         );
     }
 
@@ -689,20 +689,20 @@ mod tests {
         // both guards must be rendered (regression for the first alternative
         // being dropped).
         let dsl =
-            roundtrip_main("main = case n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; };");
+            roundtrip_main(r"main = case n of { n | n > 0 -> 1.0 | n == 1.0 -> 2.0; _ -> 0.0; };");
         assert_eq!(
             dsl,
-            "main = case n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; }"
+            r"main = case n of { n | n > 0 -> 1.0 | n == 1.0 -> 2.0; _ -> 0.0; }"
         );
     }
 
     #[test]
     fn render_roundtrip_match_bare_then_guarded_alternative() {
         // Bare first alternative followed by a guarded alternative.
-        let dsl = roundtrip_main("main = case n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; };");
+        let dsl = roundtrip_main(r"main = case n of { n -> 1.0 | n > 0 -> 2.0; _ -> 0.0; };");
         assert_eq!(
             dsl,
-            "main = case n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; }"
+            r"main = case n of { n -> 1.0 | n > 0 -> 2.0; _ -> 0.0; }"
         );
     }
 
@@ -711,10 +711,10 @@ mod tests {
         // A written `true` guard in a non-first position must not be conflated
         // with the bare arm's synthetic first-alternative `true` sentinel
         // (regression: it previously rendered as `n => 1.0 => 2.0`).
-        let dsl = roundtrip_main("main = case n of { n => 1.0 | true => 2.0; _ => 0.0; };");
+        let dsl = roundtrip_main(r"main = case n of { n -> 1.0 | true -> 2.0; _ -> 0.0; };");
         assert_eq!(
             dsl,
-            "main = case n of { n => 1.0 | true => 2.0; _ => 0.0; }"
+            r"main = case n of { n -> 1.0 | true -> 2.0; _ -> 0.0; }"
         );
     }
 
@@ -724,8 +724,8 @@ mod tests {
         // inner ctor cannot swallow the sibling on re-parse (regression: it
         // previously rendered as `Just Left y 1` and re-parsed as
         // `Just (Left y 1)`).
-        let dsl = roundtrip_main("main = case x of { Just (Left y) 1 => y; _ => 0.0; };");
-        assert_eq!(dsl, "main = case x of { Just (Left y) 1 => y; _ => 0.0; }");
+        let dsl = roundtrip_main(r"main = case x of { Just (Left y) 1 -> y; _ -> 0.0; };");
+        assert_eq!(dsl, r"main = case x of { Just (Left y) 1 -> y; _ -> 0.0; }");
     }
 
     #[test]

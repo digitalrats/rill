@@ -2119,7 +2119,7 @@ mod tests {
         // (regression: it used to eat its own semi, double-eating and failing
         // on the next def with "expected Semi").
         let p = prog(
-            "main = x where { foreign fn biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }",
+            r"main = x where { foreign biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }",
         );
         let main = p.main_def().unwrap();
         assert_eq!(main.where_defs().len(), 2);
@@ -2178,7 +2178,7 @@ mod tests {
 
     #[test]
     fn parses_match_expression() {
-        let p = prog("area x = case x of { Circle r => r; Rect w h => w; }; main = area");
+        let p = prog(r"area x = case x of { Circle r -> r; Rect w h -> w; }; main = area");
         let area = p.defs.iter().find(|d| d.name() == "area").unwrap();
         assert!(matches!(area.body(), Expr::Match { .. }));
     }
@@ -2193,8 +2193,7 @@ mod tests {
     #[test]
     fn parse_match_patterns_and_guards() {
         let p = prog(
-            "data Shape = Circle Float | Rect Float Float; \
-             main = case s of { Circle r => r; 0 => 0.0; _ => 1.0; n | n > 0 => n; };",
+            r"data Shape = Circle Float | Rect Float Float; main = case s of { Circle r -> r; 0 -> 0.0; _ -> 1.0; n | n > 0 -> n; };",
         );
         let Expr::Match { arms, .. } = p.main_def().unwrap().body() else {
             panic!("expected a match expression");

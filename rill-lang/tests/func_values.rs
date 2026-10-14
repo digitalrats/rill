@@ -150,7 +150,7 @@ fn value_function_with_match_body_calls_correct_arm() {
     // shadowing the outer parameter), so `f (Circle 7.0)` selects Circle's
     // arm and yields Float(7.0).
     let mut prog = compile::<f32>(
-        "data Shape = Circle Float | Rect Float Float; radius s = match s of { Circle r => r; Rect w h => w; }; f = radius; main = f (Circle 7.0)",
+        r"data Shape = Circle Float | Rect Float Float; radius s = case s of { Circle r -> r; Rect w h -> w; }; f = radius; main = f (Circle 7.0)",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

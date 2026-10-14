@@ -74,15 +74,15 @@ fn constraint_instance_container_arg_discharges() {
     // so the head arg `m := Maybe` is concrete when the `Monad m` constraint
     // discharges (strictly, by instance lookup), and the class pattern matches
     // the container args AFTER the bound head (`[Float, Float]`).
-    let src = r#"
+    let src = r"
         typeclass Unwrap a where { unwrap: a b c -> c; }
         data Kleisli m a b = { unKleisli: a -> m b };
-        instance (Monad m) => Unwrap (Kleisli m) where {
+        instance (Monad m) -> Unwrap (Kleisli m) where {
             unwrap k = k.unKleisli;
         }
-        main = match ((unwrap (Kleisli { unKleisli: fn x -> Just x })) 3.0)
-                of { Just v => v; Nothing => 0.0; };
-    "#;
+        main = case ((unwrap (Kleisli { unKleisli: \x -> Just x })) 3.0)
+                of { Just v -> v; Nothing -> 0.0; };
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -92,11 +92,11 @@ fn constraint_instance_container_arg_discharges() {
 #[test]
 fn field_projection_applies_as_function() {
     // `(b.f) 3.0` applies the projected closure.
-    let src = r#"
+    let src = r"
         data Box = { f: Float -> Float };
-        b = Box { f: fn x -> x * 2.0 };
+        b = Box { f: \x -> x * 2.0 };
         main = (b.f) 3.0;
-    "#;
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -107,12 +107,12 @@ fn field_projection_applies_as_function() {
 fn let_bound_projected_closure_applies() {
     // `let u = b.f in u x`: a nullary func-value def whose body is a field
     // projection (not a `Ref`) must not drop the application during reduce.
-    let src = r#"
+    let src = r"
         data Box = { f: Float -> Float };
-        b = Box { f: fn x -> x * 2.0 };
+        b = Box { f: \x -> x * 2.0 };
         apply x = let u = b.f in u x;
         main = apply 3.0;
-    "#;
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -123,11 +123,11 @@ fn let_bound_projected_closure_applies() {
 fn bare_field_projection_applies_as_function() {
     // `b.f 3.0` — a bare field projection applied as the callee (the shape
     // Task 9's Arrow instance body writes: `bind (k.unKleisli p.first) …`).
-    let src = r#"
+    let src = r"
         data Box = { f: Float -> Float };
-        b = Box { f: fn x -> x * 2.0 };
+        b = Box { f: \x -> x * 2.0 };
         main = b.f 3.0;
-    "#;
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -146,12 +146,12 @@ fn hkt_data_field_applies_type_parameter() {
     // whose body is not a `Ref`). This test verifies the TYPE behavior of
     // TyConApp: without it, constructing `K { f: fn x -> Just x }` fails to
     // unify `m b` with `Maybe Float`.
-    let src = r#"
+    let src = r"
         data K m a b = { f: a -> m b };
-        k = K { f: fn x -> Just x };
-        apply_f = fn f x -> f x;
-        main = match (apply_f k.f 3.0) of { Just v => v; Nothing => 0.0; };
-    "#;
+        k = K { f: \x -> Just x };
+        apply_f = \f -> \x -> f x;
+        main = case (apply_f k.f 3.0) of { Just v -> v; Nothing -> 0.0; };
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -184,7 +184,7 @@ fn apply_expr_non_function_callee_is_error() {
 #[test]
 fn apply_expr_lambda_callee() {
     // `(fn x -> x) 1.0` applies a lambda literal directly.
-    let mut prog = run("main = (fn x -> x * 2.0) 3.0;");
+    let mut prog = run(r"main = (\x -> x * 2.0) 3.0;");
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);
@@ -196,16 +196,16 @@ fn constraint_instance_resolves() {
     // constraint: `arr f` must resolve `(Monad m) => Arrow (Kleisli m)`.
     // `lifted` is a top-level def so reduce β-reduces the `apply` call
     // (a def-call inside a match scrutinee is not β-reduced).
-    let src = r#"
+    let src = r"
         typeclass Arrow a where { arr: (b -> c) -> a b c; }
         data Kleisli m a b = { unKleisli: a -> m b };
-        instance (Monad m) => Arrow (Kleisli m) where {
-            arr f = Kleisli { unKleisli: fn x -> Just (f x) };
+        instance (Monad m) -> Arrow (Kleisli m) where {
+            arr f = Kleisli { unKleisli: \x -> Just (f x) };
         }
         apply k x = k.unKleisli x;
-        lifted = apply (arr (fn x -> x * 2.0)) 3.0;
-        main = match lifted of { Just v => v; Nothing => 0.0; };
-    "#;
+        lifted = apply (arr (\x -> x * 2.0)) 3.0;
+        main = case lifted of { Just v -> v; Nothing -> 0.0; };
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -216,11 +216,11 @@ fn constraint_instance_resolves() {
 fn single_field_record_newtype_style() {
     // `Box (fn x -> x * 2.0)` constructs a single-field record from the field
     // VALUE — newtype-style, equivalent to `Box { f: fn x -> x * 2.0 }`.
-    let src = r#"
+    let src = r"
         data Box = { f: Float -> Float };
-        b = Box (fn x -> x * 2.0);
+        b = Box (\x -> x * 2.0);
         main = b.f 21.0;
-    "#;
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -234,12 +234,12 @@ fn kleisli_arrow_end_to_end() {
     // `(Monad m) => Arrow (Kleisli m)` at a CONCRETE container (`m := Maybe`),
     // and the instance bodies use `return`/`bind` (resolved via expected-type
     // threading) rather than a hardcoded `Just`.
-    let src = r#"
+    let src = r"
         apply k x = let u = k.unKleisli in u x;
-        main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
-            Just v => v; Nothing => 0.0;
+        main = case (apply (compose (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
+            Just v -> v; Nothing -> 0.0;
         };
-    "#;
+    ";
     let mut prog = run(src);
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -252,12 +252,12 @@ fn arrow_default_both_composes() {
     // composition reaches `compose` again through `second`'s default body —
     // that is NOT recursion (compose's body never calls compose). Regression:
     // the method_lifting recursion guard must only fire on BODY re-entry.
-    let src = r#"
+    let src = r"
         apply k x = let u = k.unKleisli in u x;
-        main = match (apply (both (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
-            Just v => v; Nothing => 0.0;
+        main = case (apply (both (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
+            Just v -> v; Nothing -> 0.0;
         };
-    "#;
+    ";
     // PRIMARY bar: `both` must COMPILE — before the recursion-guard fix this
     // fails with "recursive typeclass method `compose` for type `Kleisli`"
     // (the key was held while `second g`'s default body re-entered `compose`).
@@ -277,12 +277,12 @@ fn arrow_default_fan_composes() {
     // chain in the Arrow prelude: fan → both → second, all re-entering
     // `compose` through a NESTED method's default body. None of these bodies
     // call their own method; the recursion guard must not fire.
-    let src = r#"
+    let src = r"
         apply k x = let u = k.unKleisli in u x;
-        main = match (apply (fan (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
-            Just v => v; Nothing => 0.0;
+        main = case (apply (fan (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
+            Just v -> v; Nothing -> 0.0;
         };
-    "#;
+    ";
     assert!(
         compile::<f32>(src).is_ok(),
         "fan's default must compile (recursion guard must only fire on body re-entry)"

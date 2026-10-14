@@ -6217,8 +6217,8 @@ mod tests {
         // captured — otherwise the env snapshot misses it and lowering reports
         // "unknown `f` in value lowering" (Task 6 nested-HOF).
         let p = parse(
-            &tokenize("outer = fn f -> fn x -> f x; main = 1.0").unwrap(),
-            "outer = fn f -> fn x -> f x; main = 1.0".as_bytes(),
+            &tokenize(r"outer = \f -> \x -> f x; main = 1.0").unwrap(),
+            r"outer = \f -> \x -> f x; main = 1.0".as_bytes(),
         )
         .unwrap();
         let outer = p.defs.iter().find(|d| d.name() == "outer").unwrap();
@@ -6245,7 +6245,7 @@ mod tests {
 
     #[test]
     fn gain_lowers_to_const_and_mul() {
-        let ir = ir_of("main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }");
+        let ir = ir_of(r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }");
         assert_eq!(ir.num_inputs, 0);
         assert!(has_instr(&ir, |i| matches!(
             i,
@@ -6266,8 +6266,7 @@ mod tests {
         // scalar VALUE (`ValueInstr::ValueReadParam`), then broadcast into a
         // buffer for the element-wise op. main's own λ-params are pulled
         // through `readInput` in the IO model, so control params use `?name`.
-        let ir =
-            ir_of("main = do { writeOutput (map (fn x -> x * ?gain) (readInput)); return () }");
+        let ir = ir_of(r"main = do { writeOutput (map (\x -> x * ?gain) (readInput)); return () }");
         assert_eq!(ir.num_main_cells, 0);
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueReadParam { .. })),
@@ -6285,7 +6284,7 @@ mod tests {
     #[test]
     fn onepole_lowers_to_callblock() {
         let ir = ir_of(
-            "main = do { writeOutput (map (fn x -> onepole 200.0 0.5 x) (readInput)); return () }",
+            r"main = do { writeOutput (map (\x -> onepole 200.0 0.5 x) (readInput)); return () }",
         );
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueCallForeign { .. })),
@@ -6300,7 +6299,7 @@ mod tests {
     #[test]
     fn block_builtin_lowers_to_callblock() {
         let ir = ir_of(
-            "main = do { writeOutput (map (fn x -> lowpass 1000.0 0.7 x) (readInput)); return () }",
+            r"main = do { writeOutput (map (\x -> lowpass 1000.0 0.7 x) (readInput)); return () }",
         );
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueCallForeign { .. })),
@@ -6315,7 +6314,7 @@ mod tests {
     #[test]
     fn smooth_allocates_state() {
         let ir =
-            ir_of("main = do { writeOutput (map (fn x -> smooth x 10.0) (readInput)); return () }");
+            ir_of(r"main = do { writeOutput (map (\x -> smooth x 10.0) (readInput)); return () }");
         assert_eq!(ir.state.block_state_slots, 1);
         assert!(has_instr(&ir, |i| matches!(
             i,
@@ -6332,7 +6331,7 @@ mod tests {
         // Two independent `smooth` applications (each allocates a state slot)
         // must produce two state slots.
         let ir = ir_of(
-            "main = do { writeOutput (map (fn x -> smooth (smooth x 10.0) 20.0) (readInput)); return () }",
+            r"main = do { writeOutput (map (\x -> smooth (smooth x 10.0) 20.0) (readInput)); return () }",
         );
         assert_eq!(ir.state.block_state_slots, 2);
     }
@@ -6341,7 +6340,7 @@ mod tests {
     fn caf_const_param_still_folds() {
         // cutoff = 1000.0; lowpass cutoff 0.7 -> param 1000.0
         let ir = ir_with_cafs(
-            "cutoff = 1000.0; main = do { writeOutput (map (fn x -> lowpass cutoff 0.7 x) (readInput)); return () }",
+            r"cutoff = 1000.0; main = do { writeOutput (map (\x -> lowpass cutoff 0.7 x) (readInput)); return () }",
         );
         let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
         assert!((lp.params[0] - 1000.0).abs() < 1e-9);
@@ -6351,7 +6350,7 @@ mod tests {
     fn transitive_caf_const_fold() {
         // b = 1000.0; a = b; main = lowpass a 0.7 -> a resolves through b to 1000.0
         let ir = ir_with_cafs(
-            "b = 1000.0; a = b; main = do { writeOutput (map (fn x -> lowpass a 0.7 x) (readInput)); return () }",
+            r"b = 1000.0; a = b; main = do { writeOutput (map (\x -> lowpass a 0.7 x) (readInput)); return () }",
         );
         let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
         assert!((lp.params[0] - 1000.0).abs() < 1e-9);
@@ -6363,10 +6362,10 @@ mod tests {
         // a builtin param position must error, not silently become 0.
         let p = parse(
             &tokenize(
-                "osc = sine 440 0.5 0; main = do { writeOutput (map (fn x -> lowpass osc 0.7 x) (readInput)); return () }",
+                r"osc = sine 440 0.5 0; main = do { writeOutput (map (\x -> lowpass osc 0.7 x) (readInput)); return () }",
             )
             .unwrap(),
-            "osc = sine 440 0.5 0; main = do { writeOutput (map (fn x -> lowpass osc 0.7 x) (readInput)); return () }"
+            r"osc = sine 440 0.5 0; main = do { writeOutput (map (\x -> lowpass osc 0.7 x) (readInput)); return () }"
                 .as_bytes(),
         )
         .unwrap();
@@ -6422,10 +6421,10 @@ mod tests {
         // visited-set guard (not the caf_lifting guard in lower_ref).
         let p = parse(
             &tokenize(
-                "a = b; b = a; main = do { writeOutput (map (fn x -> lowpass a 0.7 x) (readInput)); return () }",
+                r"a = b; b = a; main = do { writeOutput (map (\x -> lowpass a 0.7 x) (readInput)); return () }",
             )
             .unwrap(),
-            "a = b; b = a; main = do { writeOutput (map (fn x -> lowpass a 0.7 x) (readInput)); return () }"
+            r"a = b; b = a; main = do { writeOutput (map (\x -> lowpass a 0.7 x) (readInput)); return () }"
                 .as_bytes(),
         )
         .unwrap();
@@ -6451,7 +6450,7 @@ mod tests {
     fn unreferenced_caf_is_not_lowered() {
         // dead = sine 440 0.5 0; main = x * 0.5  -> no sine builtin
         let ir = ir_with_cafs(
-            "dead = sine 440 0.5 0; main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }",
+            r"dead = sine 440 0.5 0; main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }",
         );
         assert!(!ir.builtins.iter().any(|b| b.name == "sine"));
     }
@@ -6524,7 +6523,7 @@ mod tests {
     #[test]
     fn match_lowers_to_value_match() {
         let ir = ir_of(
-            "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Circle r => r; Rect w h => w; }",
+            r"data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = case s of { Circle r -> r; Rect w h -> w; }",
         );
         assert!(ir.value_blocks[0]
             .instrs
@@ -6539,7 +6538,7 @@ mod tests {
         // the output to the Circle arm's body register (not Rect's `w`, which
         // would be None at runtime).
         let ir = ir_of(
-            "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Rect w h => w; Circle r => r; }",
+            r"data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = case s of { Rect w h -> w; Circle r -> r; }",
         );
         let matches = ir.value_blocks[0]
             .instrs
@@ -6574,9 +6573,7 @@ mod tests {
     fn lower_match_runtime_dispatch_emits_branch_ctor() {
         // A guarded arm can fail its guard at runtime, so the match must lower
         // to runtime BranchCtor dispatch instead of the static fast path.
-        let src = "data Shape = Circle Float | Rect Float Float; \
-                   main = match (Circle 1.5) of { Circle r | r > 0.0 => r; \
-                   Circle r => r; Rect w h => w; };";
+        let src = r"data Shape = Circle Float | Rect Float Float; main = case (Circle 1.5) of { Circle r | r > 0.0 -> r; Circle r -> r; Rect w h -> w; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
         let tp = infer_program(&p, p.mode).unwrap();
@@ -6591,7 +6588,7 @@ mod tests {
 
     #[test]
     fn lower_match_literal_and_wildcard() {
-        let src = "main = match 0 of { 0 => 1.0; _ => 2.0; };";
+        let src = r"main = case 0 of { 0 -> 1.0; _ -> 2.0; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
         let tp = infer_program(&p, p.mode).unwrap();
@@ -6611,10 +6608,10 @@ mod tests {
         // of the static-only compile-time selection.
         let p = parse(
             &tokenize(
-                "data Shape = Circle Float | Rect Float Float; main = match (Circle 1.5) of { Circle r | r > 0.5 => r; Circle r => r; Rect w h => w; }",
+                r"data Shape = Circle Float | Rect Float Float; main = case (Circle 1.5) of { Circle r | r > 0.5 -> r; Circle r -> r; Rect w h -> w; }",
             )
             .unwrap(),
-            "data Shape = Circle Float | Rect Float Float; main = match (Circle 1.5) of { Circle r | r > 0.5 => r; Circle r => r; Rect w h => w; }"
+            r"data Shape = Circle Float | Rect Float Float; main = case (Circle 1.5) of { Circle r | r > 0.5 -> r; Circle r -> r; Rect w h -> w; }"
                 .as_bytes(),
         )
         .unwrap();

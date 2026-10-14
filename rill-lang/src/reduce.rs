@@ -798,12 +798,17 @@ mod tests {
 
     #[test]
     fn builtin_not_reduced() {
+        // A builtin is not a definition: the reducer must leave the curried
+        // application chain intact. Walk to the head of the chain — it must
+        // stay the `lowpass` reference, not be inlined or folded.
         let body = reduced_body("main = lowpass 1000.0 0.7");
-        match &body {
-            Expr::Apply { name, .. } => {
-                assert_eq!(name, "lowpass");
-            }
-            other => panic!("expected Apply, got {other:?}"),
+        let mut e = &body;
+        while let Expr::ApplyExpr { callee, .. } = e {
+            e = callee;
+        }
+        match e {
+            Expr::Ref(name, _) => assert_eq!(name, "lowpass"),
+            other => panic!("expected the lowpass builtin chain, got {other:?}"),
         }
     }
 
@@ -828,7 +833,7 @@ mod tests {
     fn lambda_param_shadows_local_def() {
         // x = 1.0 * 0.5; main = fn x -> x  →  the outer `x` must NOT be inlined
         // into the lambda body (the param shadows it).
-        let body = reduced_body("x = 1.0 * 0.5; main = fn x -> x");
+        let body = reduced_body(r"x = 1.0 * 0.5; main = \x -> x");
         match &body {
             Expr::Lambda {
                 params,

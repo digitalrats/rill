@@ -77,7 +77,7 @@ fn forall_render_is_fixed_point() {
     let out2 = render(&prog2.unwrap()).unwrap();
     assert_eq!(
         out1, out2,
-        "render must be a fixed point: re-render of the re-parse must match"
+        r"render must be a fixed point: re-render of the re-parse must case"
     );
 }
 

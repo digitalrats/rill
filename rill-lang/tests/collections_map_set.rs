@@ -6,7 +6,7 @@ use rill_lang::compile;
 #[test]
 fn map_insert_lookup_member() {
     let mut prog = compile::<f32>(
-        "m = { \"a\": 1.0, \"b\": 2.0 }; main = match (lookup \"a\" m) of { Nothing => 0.0; Just x => x; };",
+        r#"m = { "a": 1.0, "b": 2.0 }; main = case (lookup "a" m) of { Nothing -> 0.0; Just x -> x; };"#,
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -36,7 +36,7 @@ fn tail_and_filter_preserve_capacity() {
     // satisfying the predicate (both do), so the length is 2 — the point is
     // that tail/filter work end-to-end and preserve the source capacity.
     let mut prog =
-        compile::<f32>("main = length (filter (fn x -> x > 1.0) (tail [1.0, 2.0, 3.0]));").unwrap();
+        compile::<f32>(r"main = length (filter (\x -> x > 1.0) (tail [1.0, 2.0, 3.0]));").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -139,7 +139,7 @@ fn map_literal_entries_are_sorted_regardless_of_write_order() {
 #[test]
 fn func_key_is_compile_error() {
     // `Func` has no derived Ord instance — a Map with a function key must not compile.
-    let src = "f = fn x -> x; main = lookup f { \"a\": 1.0 };";
+    let src = r#"f = \x -> x; main = lookup f { "a": 1.0 };"#;
     let res = compile::<f32>(src);
     assert!(res.is_err(), "function-typed map key must be rejected");
     if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
@@ -210,7 +210,7 @@ fn map_literal_value_type_matches_lookup() {
     // A Float-valued map literal: lookup must yield the entry's value in the
     // Just arm.
     let mut prog = compile::<f32>(
-        "main = match (lookup \"a\" { \"a\": 1.0, \"b\": 2.0 }) of { Nothing => 0.0; Just x => x; };",
+        r#"main = case (lookup "a" { "a": 1.0, "b": 2.0 }) of { Nothing -> 0.0; Just x -> x; };"#,
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -227,7 +227,7 @@ fn map_literal_value_type_is_actual_entry_type() {
     // The map literal's value type must be the ACTUAL entry type (a record),
     // not a pinned Float: projecting the looked-up record's field works.
     let mut prog = compile::<f32>(
-        "data P = { x: Float, y: Float }; main = match (lookup \"a\" { \"a\": P { x: 1.0, y: 2.0 } }) of { Nothing => 0.0; Just p => p.x; };",
+        r#"data P = { x: Float, y: Float }; main = case (lookup "a" { "a": P { x: 1.0, y: 2.0 } }) of { Nothing -> 0.0; Just p -> p.x; };"#,
     )
     .unwrap();
     let mut out = [0.0f32; 4];

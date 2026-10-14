@@ -40,9 +40,9 @@ fn foreign_fn_in_brace_where_block_parses() {
     // Regression: `parse_foreign_def` must leave the trailing `;` for
     // `parse_where_block` (brace style) to consume — double-eating used to
     // fail with "expected Semi, found Ident(x)".
-    let src = r#"
-        main = x where { foreign fn biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }
-    "#;
+    let src = r"
+        main = x where { foreign biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let main = prog.main_def().expect("main def");
@@ -56,10 +56,10 @@ fn foreign_fn_in_brace_where_block_parses() {
 fn foreign_fn_declaration_parses() {
     // `foreign fn name : TypeExpr;` — a carried signal signature. Parsing alone
     // is the bar here; resolution lands in Task 4.
-    let src = r#"
-        foreign fn biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = 1.0;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let foreign = prog
@@ -69,7 +69,7 @@ fn foreign_fn_declaration_parses() {
             rill_lang::ast::Def::Foreign { name, sig, .. } if name == "biquad" => Some(sig),
             _ => None,
         })
-        .expect("foreign fn biquad not found");
+        .expect(r"foreign biquad not found");
     // Pin the flat-curried signature shape: `Float -> Float -> Float -> Float
     // -> FixedBuffer f32 -> FixedBuffer f32` (buffer-LAST: signal trails).
     assert_eq!(
@@ -129,7 +129,7 @@ fn foreign_sig_from_parser_flat_curried_form() {
     // Feed the real parser output into the descriptor to pin that compatibility.
     use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 
-    let src = "foreign fn biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32; main = 1.0;";
+    let src = r"foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32; main = 1.0;";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let sig = prog
@@ -139,7 +139,7 @@ fn foreign_sig_from_parser_flat_curried_form() {
             rill_lang::ast::Def::Foreign { sig, .. } => Some(sig),
             _ => None,
         })
-        .expect("foreign fn biquad not found");
+        .expect(r"foreign biquad not found");
     let ffi = ffi_sig_from_typeexpr("biquad", sig).expect("FFI sig from parser output");
     assert_eq!(ffi.params.len(), 5);
     assert!(matches!(ffi.params[0], FfiParam::Scalar));
@@ -155,10 +155,10 @@ fn foreign_decl_registers_into_type_env() {
     // A foreign fn declaration registers its signature into TypeEnv::foreign_sigs
     // via the shared `register_decls` path (the same path inference phase 1 uses).
     // This is the compiler state Task 4 (infer foreign names) will consume.
-    let src = r#"
-        foreign fn biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = 1.0;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let mut env = TypeEnv::with_builtins();
@@ -174,10 +174,10 @@ fn foreign_decl_registers_into_type_env() {
 fn foreign_fn_types_as_signal_arrow() {
     // `gain : Float -> FixedBuffer f32 -> FixedBuffer f32` applied to a constant
     // and a wire — types as a 1→1 signal arrow (buffer-LAST: the signal trails).
-    let src = r#"
-        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = _ : gain 0.5;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -191,10 +191,10 @@ fn foreign_fn_wrong_arity_is_error() {
     // `onepole` takes 2 scalars + 1 signal = 3 args; a 1-arg call is a type
     // error (omitting a scalar is an arity error — only a TRAILING run of
     // omitted signals may be combinator-fed).
-    let src = r#"
-        foreign fn onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = onepole 200.0;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     match rill_lang::types::infer::infer_program(&prog, prog.mode) {
@@ -213,10 +213,10 @@ fn foreign_fn_lowers_to_callblock() {
     // value-track argument (not a folded param).
     use rill_lang::lower::lower_with_cafs;
 
-    let src = r#"
-        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = do { writeOutput (map (gain 0.5) (readInput)); return () };
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -258,7 +258,7 @@ fn foreign_fn_signal_slot_rejects_value() {
     // (0-in generator), so the rejection needs a genuine Value expression —
     // here a String literal in the trailing signal slot.
     let src = r#"
-        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 "oops";
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -279,10 +279,10 @@ fn foreign_fn_multi_signal_wires_distinct_inputs() {
     // wiring register).
     use rill_lang::lower::lower_with_cafs;
 
-    let src = r#"
-        foreign fn cross : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign cross : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
         main = cross 0.5 _ _;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -367,10 +367,10 @@ fn foreign_fn_non_terminal_variadic_fails_inference() {
     // `foreign fn bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;`
     // — a non-terminal VariadicSignal — must be rejected: the descriptor
     // returns None and the name does not resolve as a foreign builtin.
-    let src = r#"
-        foreign fn bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;
+    let src = r"
+        foreign bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;
         main = bad _ _ 0.5;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     assert!(
@@ -408,10 +408,10 @@ fn foreign_fn_runs_end_to_end() {
         Box::new(Gain(params.first().copied().unwrap_or(1.0)))
     });
 
-    let src = r#"
-        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = do { writeOutput (map (gain 0.5) (readInput)); return () };
-    "#;
+    ";
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
@@ -423,10 +423,10 @@ fn foreign_fn_not_registered_is_compile_error() {
     use rill_lang::ffi::ForeignRegistry;
 
     let ffi = ForeignRegistry::<f32>::new();
-    let src = r#"
-        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = do { writeOutput (map (gain 0.5) (readInput)); return () };
-    "#;
+    ";
     let err = match rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1) {
         Err(e) => e,
         Ok(_) => panic!("expected a compile error for an unregistered foreign builtin"),
@@ -458,10 +458,10 @@ fn signal_input_builtin_legacy_call_style_sugar() {
     // `_ : onepole 200.0 0.7` — the legacy combinator style must desugar to
     // `onepole 200.0 0.7 _` (signal arg appended), so the FFI declaration
     // types and lowers without rewriting the program.
-    let src = r#"
-        foreign fn onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = _ : onepole 200.0 0.7;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -501,10 +501,10 @@ fn combinator_sugar_binds_loop_operand() {
 fn combinator_sugar_binds_par_operand_with_two_signals() {
     // `_, _ : crossfade 0.5` — a 2-signal-in builtin (user-declared FFI) binds
     // the two trailing wires; the leading scalar stays a call arg.
-    let src = r#"
-        foreign fn crossfade : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign crossfade : Float -> FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
         main = _, _ : crossfade 0.5;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -561,10 +561,10 @@ fn combinator_sugar_binds_gain_scalar_only_call() {
     // signal. The supplied arg is exactly the leading scalar; the sugar appends
     // the single wire (`gain 0.5 _`), not zero (the supplied arg is NOT a
     // signal).
-    let src = r#"
-        foreign fn gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = _ : gain 0.5;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -608,10 +608,10 @@ fn combinator_sugar_lowers_positionally() {
 fn combinator_sugar_binds_delay_lhs() {
     // `onepole 200.0 0.7 @ 3` — the Delay (`@`) combinator's lhs is a foreign
     // builtin used as an arrow; the sugar must bind its missing signal wire.
-    let src = r#"
-        foreign fn onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = _ : onepole 200.0 0.7 @ 3;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -763,10 +763,10 @@ fn ffi_record_schema_reads_data_types() {
 fn record_param_infer_accepts_record_literal() {
     // The FFI infer arm validates a Record param's arg is a record literal of
     // the named data type (previously an unconditional SP-3b error).
-    let src = r#"
-        foreign fn eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
         main = eq_parametric { bands: [] } _;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -779,13 +779,13 @@ fn record_param_flattens_schema_fields() {
     // `eq_parametric` takes an EqConfig record whose `bands: List EqBand`
     // flattens each band's schema fields (4 per band) into the folded param
     // list — two bands → 8 f64s.
-    let src = r#"
-        foreign fn eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
         main = eq_parametric { bands: [
             { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 },
             { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
         ] } _;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -805,11 +805,11 @@ fn record_param_flattens_schema_fields() {
 fn record_param_missing_fields_use_zero_defaults() {
     // A partial record fills the omitted schema field with its default (0.0 in
     // the FFI schema — the catalog `data` declaration carries no defaults).
-    let src = r#"
+    let src = r"
         data TestCfg = { a: Float, b: Float };
-        foreign fn cfg : TestCfg -> FixedBuffer f32;
+        foreign cfg : TestCfg -> FixedBuffer f32;
         main = cfg { a: 1.5 };
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -820,10 +820,10 @@ fn record_param_missing_fields_use_zero_defaults() {
 
 #[test]
 fn record_param_rejects_non_record_arg() {
-    let src = r#"
-        foreign fn eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+    let src = r"
+        foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
         main = eq_parametric 0.5 _;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     match rill_lang::types::infer::infer_program(&prog, prog.mode) {
@@ -840,10 +840,10 @@ fn record_param_rejects_non_record_arg() {
 fn resource_param_wires_tape_ref() {
     // A `Tape f32` param is a Resource: lowering sets the builtin's resource to
     // the symbolic `Ref` name (the build path resolves it in the registry).
-    let src = r#"
-        foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
+    let src = r"
+        foreign read_head : Tape f32 -> Float -> FixedBuffer f32;
         main = read_head tape_0 0.1;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
@@ -856,10 +856,10 @@ fn resource_param_wires_tape_ref() {
 #[test]
 #[ignore = "resource/tape deferred: architectural issues"]
 fn resource_param_rejects_non_ref_arg() {
-    let src = r#"
-        foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
+    let src = r"
+        foreign read_head : Tape f32 -> Float -> FixedBuffer f32;
         main = read_head 0.5 0.1;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     match rill_lang::types::infer::infer_program(&prog, prog.mode) {
@@ -876,10 +876,10 @@ fn foreign_variadic_signal_merge_accepts_channels() {
     // `expr_has_variadic_signal` must recognize a foreign sig's VariadicSignal:
     // `_, _ :> sum_all _ _` merges both channels into the variadic input (the
     // rhs is an Apply, the shape reconstruct emits for a variadic builtin).
-    let src = r#"
-        foreign fn sum_all : List (FixedBuffer f32) -> FixedBuffer f32;
+    let src = r"
+        foreign sum_all : List (FixedBuffer f32) -> FixedBuffer f32;
         main = _ , _ :> sum_all _ _;
-    "#;
+    ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();

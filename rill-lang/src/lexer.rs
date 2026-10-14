@@ -415,7 +415,10 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "instance" => Tok::KwInstance,
                 "foreign" if !followed_by_paren => Tok::KwForeign,
                 "forall" if !followed_by_paren => Tok::KwForall,
-                "case" if !followed_by_paren => Tok::KwCase,
+                // `case` is always a keyword — its scrutinee may start with a
+                // parenthesized expression (`case (f x) of …`), so the
+                // `followed_by_paren` call-guard must not apply here.
+                "case" => Tok::KwCase,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "if" if !followed_by_paren => Tok::KwIf,
                 "then" if !followed_by_paren => Tok::KwThen,
@@ -838,6 +841,26 @@ mod tests {
             vec![
                 Tok::KwCase,
                 Tok::Ident("e".into()),
+                Tok::KwOf,
+                Tok::LBrace,
+                Tok::RBrace,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn case_is_keyword_before_paren() {
+        // `case (f x) of …` — a parenthesized scrutinee must not turn the
+        // keyword into a call-style identifier.
+        assert_eq!(
+            kinds("case (C 1.0) of { }"),
+            vec![
+                Tok::KwCase,
+                Tok::LParen,
+                Tok::Ident("C".into()),
+                Tok::Float(1.0),
+                Tok::RParen,
                 Tok::KwOf,
                 Tok::LBrace,
                 Tok::RBrace,

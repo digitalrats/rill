@@ -12,7 +12,7 @@ fn sum_match_runs() {
     // `main` matches on it. The match selects the `Circle` arm; its output is
     // the payload value 1.5.
     let mut prog = compile::<f32>(
-        "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Circle r => r; Rect w h => w; }",
+        r"data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = case s of { Circle r -> r; Rect w h -> w; }",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -30,7 +30,7 @@ fn sum_match_selects_second_arm() {
     // arm and route its `w` payload to the output (regression for the Task 8
     // fix, which previously hard-wired the first arm's register).
     let mut prog = compile::<f32>(
-        "data Shape = Circle Float | Rect Float Float; s = Rect 2.0 3.0; main = match s of { Circle r => r; Rect w h => w; }",
+        r"data Shape = Circle Float | Rect Float Float; s = Rect 2.0 3.0; main = case s of { Circle r -> r; Rect w h -> w; }",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -48,7 +48,7 @@ fn parameterized_user_sum_still_constructs_and_matches() {
     // parameterized RECORDS are) — they cannot be typeclass instances in v1,
     // but they must still work as ordinary data types: construction + match.
     let mut prog = compile::<f32>(
-        "data Opt a = Some a | None; s = Some 1.5; main = match s of { Some x => x; None => 0.0; }",
+        r"data Opt a = Some a | None; s = Some 1.5; main = case s of { Some x -> x; None -> 0.0; }",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

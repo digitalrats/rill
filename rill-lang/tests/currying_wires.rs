@@ -7,7 +7,7 @@ use rill_lang::compile;
 fn currying_applies_partially() {
     // add = fn a b -> a + b;  add3 = add 3.0;  main = add3 4.0 -> 7.0
     let mut prog =
-        compile::<f32>("add = fn a b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
+        compile::<f32>(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -34,7 +34,7 @@ fn currying_named_function() {
 #[ignore = "signal-lambda macros: separate stage"]
 fn signal_wire_argument_scales_block() {
     // amp = fn g x -> x * g;  main = amp 2.0 _  ->  input * 2.0  (block output)
-    let mut prog = compile::<f32>("amp = fn g x -> x * g; main = amp 2.0 _").unwrap();
+    let mut prog = compile::<f32>(r"amp = \g -> \x -> x * g; main = amp 2.0 _").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     assert_eq!(out, [2.0, 4.0, 6.0, 8.0]);
@@ -46,9 +46,10 @@ fn chained_currying_dispatches_without_leak() {
     // Repeated dispatch through nested curry closures must not exhaust the
     // fixed arena (each curry call allocates cells + scratch; all released on
     // return).
-    let mut prog =
-        compile::<f32>("add = fn a b c -> a + b + c; a1 = add 1.0; a2 = a1 2.0; main = a2 3.0")
-            .unwrap();
+    let mut prog = compile::<f32>(
+        r"add = \a -> \b -> \c -> a + b + c; a1 = add 1.0; a2 = a1 2.0; main = a2 3.0",
+    )
+    .unwrap();
     let mut out = [0.0f32; 4];
     for _ in 0..10 {
         MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -67,7 +68,7 @@ fn partial_application_captures_free_variable() {
     // The curry env holds the function AND the applied arg; the lambda's own
     // env holds k.
     let mut prog =
-        compile::<f32>("k = 10.0; add = fn a b -> a + b + k; addk = add 1.0; main = addk 2.0")
+        compile::<f32>(r"k = 10.0; add = \a -> \b -> a + b + k; addk = add 1.0; main = addk 2.0")
             .unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -86,7 +87,7 @@ fn caf_applied_at_two_sites_with_different_wires() {
     // must lower with ITS OWN wire, not reuse the first site's lowered body
     // (regression: the CAF cache was keyed by name only).
     let mut prog =
-        compile::<f32>("amp = fn g x -> x * g; amp2 = amp 2.0; main = (amp2 _) , (amp2 _)")
+        compile::<f32>(r"amp = \g -> \x -> x * g; amp2 = amp 2.0; main = (amp2 _) , (amp2 _)")
             .unwrap();
     let mut l = [0.0f32; 4];
     let mut r = [0.0f32; 4];

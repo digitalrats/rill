@@ -18,7 +18,7 @@ fn list_literal_length_and_head() {
 #[test]
 fn cons_builds_list_and_head_is_maybe() {
     let mut prog = compile::<f32>(
-        "main = match (head (cons 1.0 (list))) of { Nothing => 0.0; Just x => x; };",
+        r"main = case (head (cons 1.0 (list))) of { Nothing -> 0.0; Just x -> x; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -33,7 +33,7 @@ fn cons_builds_list_and_head_is_maybe() {
 #[test]
 fn map_fold_filter_over_list() {
     let mut prog = compile::<f32>(
-        "main = fold (fn a b -> a + b) 0.0 (map (fn x -> x * 2.0) [1.0, 2.0, 3.0]);",
+        r"main = fold (\a -> \b -> a + b) 0.0 (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -82,7 +82,8 @@ fn cons_list_fold_sum() {
     // End-to-end: `list` gives an empty List; cons builds
     // 9 : 1 : [] and `fold (+)` reduces it to 10.0.
     let mut prog =
-        compile::<f32>("main = fold (fn a b -> a + b) 0.0 (cons 9.0 (cons 1.0 (list)));").unwrap();
+        compile::<f32>(r"main = fold (\a -> \b -> a + b) 0.0 (cons 9.0 (cons 1.0 (list)));")
+            .unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -183,7 +184,7 @@ fn fold_rejects_wrong_arity_closure_at_compile_time() {
     // `fold` calls its closure with (acc, elem), so a unary closure is a type
     // error. It used to compile and then panic the runtime path with an
     // index-out-of-bounds in `call_closure_args`.
-    let err = match compile::<f32>("main = fold (fn a -> a) 0.0 [1.0, 2.0, 3.0];") {
+    let err = match compile::<f32>(r"main = fold (\a -> a) 0.0 [1.0, 2.0, 3.0];") {
         Ok(_) => panic!("wrong-arity fold closure must not compile"),
         Err(e) => e,
     };
@@ -197,7 +198,7 @@ fn fold_rejects_wrong_arity_closure_at_compile_time() {
 fn map_rejects_wrong_arity_closure_at_compile_time() {
     // `map` calls its closure with one element, so a binary closure is a type
     // error. It used to compile and silently produce an empty list.
-    let err = match compile::<f32>("main = map (fn a b -> b) [1.0, 2.0];") {
+    let err = match compile::<f32>(r"main = map (\a -> \b -> b) [1.0, 2.0];") {
         Ok(_) => panic!("wrong-arity map closure must not compile"),
         Err(e) => e,
     };
@@ -257,13 +258,13 @@ fn map_result_element_type_comes_from_closure_return() {
     // element type): a later `cons 4.0` must typecheck — it used to fail with a
     // spurious "cannot unify Int with Float".
     assert!(
-        compile::<f32>("main = cons 4.0 (map (fn x -> x + 0.5) [1, 2, 3]);").is_ok(),
+        compile::<f32>(r"main = cons 4.0 (map (\x -> x + 0.5) [1, 2, 3]);").is_ok(),
         "a type-changing map followed by a Float cons must compile"
     );
     // End-to-end length 4: the source needs spare capacity for the cons (map
     // preserves the source cap).
     let mut prog = compile::<f32>(
-        "main = length (cons 4.0 (map (fn x -> x + 0.5) (cons 3.0 (cons 2.0 (cons 1.0 (list))))));",
+        r"main = length (cons 4.0 (map (\x -> x + 0.5) (cons 3.0 (cons 2.0 (cons 1.0 (list))))));",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -279,8 +280,7 @@ fn map_result_element_type_comes_from_closure_return() {
 fn map_preserves_type_when_closure_returns_same_type() {
     // A same-type closure (`x * 2.0` : Float -> Float) keeps the map result a
     // `List Float` — the common case must keep typechecking.
-    let mut prog =
-        compile::<f32>("main = length (map (fn x -> x * 2.0) [1.0, 2.0, 3.0]);").unwrap();
+    let mut prog = compile::<f32>(r"main = length (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     let v = prog.value_outputs()[0].unwrap();
@@ -296,7 +296,7 @@ fn match_over_non_analyzable_scrutinee_dispatches_at_runtime() {
     // must select `Just` and expose its payload (regression for the old
     // static-only behavior which rejected it).
     let mut prog = compile::<f32>(
-        "main = match (head (filter (fn x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing => 0.0; Just x => x; };",
+        r"main = case (head (filter (\x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing -> 0.0; Just x -> x; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

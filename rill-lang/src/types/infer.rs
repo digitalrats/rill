@@ -4882,7 +4882,7 @@ mod tests {
 
     #[test]
     fn gain_is_1_to_1() {
-        let t = ty_of("main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }")
+        let t = ty_of(r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }")
             .unwrap();
         assert_eq!(
             t.process_ty.vty,
@@ -4992,7 +4992,7 @@ mod tests {
 
     #[test]
     fn actor_param_no_default_typechecks() {
-        let t = ty_of("main = do { writeOutput (map (fn x -> x * ?gain) (readInput)); return () }")
+        let t = ty_of(r"main = do { writeOutput (map (\x -> x * ?gain) (readInput)); return () }")
             .unwrap();
         assert_eq!(
             t.process_ty.vty,
@@ -5003,7 +5003,7 @@ mod tests {
     #[test]
     fn actor_param_with_default_typechecks() {
         let t =
-            ty_of("main = do { writeOutput (map (fn x -> x * ?gain=0.5) (readInput)); return () }")
+            ty_of(r"main = do { writeOutput (map (\x -> x * ?gain=0.5) (readInput)); return () }")
                 .unwrap();
         assert_eq!(
             t.process_ty.vty,
@@ -5052,7 +5052,7 @@ mod tests {
     #[test]
     fn sum_match_branches_on_constructor() {
         let t = ty_of(
-            "data Shape = Circle Float | Rect Float Float; main = match Circle 1.0 of { Circle r => r; Rect w h => w; }",
+            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r -> r; Rect w h -> w; }",
         )
         .unwrap();
         assert_eq!(t.process_ty.vty, ValueTy::Float);
@@ -5072,27 +5072,27 @@ mod tests {
         // A bare literal arm body is value-compatible (`Circle r => 1.0`);
         // arms are value channels, so a bare literal is accepted.
         assert!(
-            ty_of("data Shape = Circle Float; main = match Circle 1.0 of { Circle r => 1.0 }")
+            ty_of(r"data Shape = Circle Float; main = case Circle 1.0 of { Circle r -> 1.0 }")
                 .is_ok()
         );
     }
 
     #[test]
     fn match_scrutinee_must_be_value() {
-        assert!(ty_of("data Shape = Circle Float; main = match 3 of { Circle r => r }").is_err());
+        assert!(ty_of(r"data Shape = Circle Float; main = case 3 of { Circle r -> r }").is_err());
     }
 
     #[test]
     fn match_arms_same_sum_type() {
         assert!(
-            ty_of("data A = C Float; data B = C Int; main = match C 1.0 of { C r => r }").is_err()
+            ty_of(r"data A = C Float; data B = C Int; main = case C 1.0 of { C r -> r }").is_err()
         );
     }
 
     #[test]
     fn match_too_many_arm_bindings_is_error() {
         assert!(
-            ty_of("data Shape = Circle Float; main = match Circle 1.0 of { Circle r s => r }")
+            ty_of(r"data Shape = Circle Float; main = case Circle 1.0 of { Circle r s -> r }")
                 .is_err()
         );
     }
@@ -5104,8 +5104,7 @@ mod tests {
         // exhaustiveness: without a wildcard the match must fail loudly, not
         // silently drop the guard.
         let res = ty_of(
-            "data Shape = Circle Float | Rect Float Float; \
-             main = match Circle 1.0 of { Circle r | r > 0.0 => r; };",
+            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; };",
         );
         let err = match res {
             Err(e) => e,
@@ -5119,14 +5118,12 @@ mod tests {
         // A wildcard arm makes the guarded match exhaustive; the guard is
         // type-checked as a Bool value.
         assert!(ty_of(
-            "data Shape = Circle Float | Rect Float Float; \
-             main = match Circle 1.0 of { Circle r | r > 0.0 => r; _ => 0.0; };"
+            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; _ -> 0.0; };"
         )
         .is_ok());
         // A non-Bool guard is a type error.
         let res = ty_of(
-            "data Shape = Circle Float | Rect Float Float; \
-             main = match Circle 1.0 of { Circle r | r + 1.0 => r; _ => 0.0; };",
+            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r + 1.0 -> r; _ -> 0.0; };",
         );
         assert!(
             res.is_err(),
@@ -5159,10 +5156,10 @@ mod tests {
 
     #[test]
     fn scalar_match_infers_literal_patterns_and_totality() {
-        let t = ty_of("main = match 0 of { 0 => 1.0; _ => 2.0; }").unwrap();
+        let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
         assert_eq!(t.process_ty.vty, ValueTy::Float);
-        assert!(ty_of("main = match 0 of { 0 => 1.0 }").is_err());
-        let t2 = ty_of("main = match true of { true => 1.0; false => 2.0 }").unwrap();
+        assert!(ty_of(r"main = case 0 of { 0 -> 1.0 }").is_err());
+        let t2 = ty_of(r"main = case true of { true -> 1.0; false -> 2.0 }").unwrap();
         assert_eq!(t2.process_ty.vty, ValueTy::Float);
     }
 
@@ -5170,9 +5167,9 @@ mod tests {
     fn bare_int_literal_scrutinee_infers_as_value() {
         // `match 0 of {...}`: a bare Int literal is a signal-rate channel in v1
         // but value-compatible in value positions (mirroring arm_result_vty).
-        let t = ty_of("main = match 0 of { 0 => 1.0; _ => 2.0; }").unwrap();
+        let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
         assert_eq!(t.process_ty.vty, ValueTy::Float);
-        let t2 = ty_of("main = match 0.0 of { 0.0 => 1; _ => 2; }").unwrap();
+        let t2 = ty_of(r"main = case 0.0 of { 0.0 -> 1; _ -> 2; }").unwrap();
         assert_eq!(t2.process_ty.vty, ValueTy::Int);
     }
 
@@ -5181,7 +5178,7 @@ mod tests {
         // `Just (Left x)`: the nested `Left` constructor belongs to `Either`,
         // NOT `Maybe`. The sum context must be re-derived from the payload type
         // at each pattern level.
-        let t = ty_of("main = match Just (Left 2.0) of { Just (Left x) => x; _ => 0.0; }").unwrap();
+        let t = ty_of(r"main = case Just (Left 2.0) of { Just (Left x) -> x; _ -> 0.0; }").unwrap();
         assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
@@ -5190,8 +5187,7 @@ mod tests {
         // Same nesting for a USER sum: `Wrap (Foo x)` — `Foo` is looked up in
         // `Inner`, not `Outer`.
         let t = ty_of(
-            "data Inner = Foo Float; data Outer = Wrap Inner | Empty; \
-             main = match Wrap (Foo 2.0) of { Wrap (Foo x) => x; _ => 0.0; }",
+            r"data Inner = Foo Float; data Outer = Wrap Inner | Empty; main = case Wrap (Foo 2.0) of { Wrap (Foo x) -> x; _ -> 0.0; }",
         )
         .unwrap();
         assert_eq!(t.process_ty.vty, ValueTy::Float);
@@ -5250,7 +5246,7 @@ mod tests {
     fn lambda_def_infers_as_func() {
         // A Def::Local whose body is a lambda literal infers to a Func value
         // channel via the normal def-body inference path.
-        let t = ty_of("double = fn x -> x; main = double").unwrap();
+        let t = ty_of(r"double = \x -> x; main = double").unwrap();
         assert!(matches!(t.process_ty.vty, ValueTy::Thunk(_, _)));
     }
 
@@ -5259,7 +5255,7 @@ mod tests {
         // `(x , x)` with a value λ-param is a channel tuple → `Pair`, a single
         // 0→1 value channel, so the lambda body is well-typed (the tuple no
         // longer parses as two signal channels).
-        let t = ty_of("main = fn x -> (x , x)").unwrap();
+        let t = ty_of(r"main = \x -> (x , x)").unwrap();
         match &t.process_ty.vty {
             ValueTy::Thunk(_, ret) => {
                 assert_eq!(ret.len(), 1);
@@ -5278,7 +5274,7 @@ mod tests {
     fn value_channel_arithmetic_infers() {
         // double = fn x -> x * 2.0  -> lambda body is value arithmetic over
         // value params, inferred as Func([Float], [Float]).
-        let t = ty_of("double = fn x -> x * 2.0; main = double").unwrap();
+        let t = ty_of(r"double = \x -> x * 2.0; main = double").unwrap();
         match &t.process_ty.vty {
             ValueTy::Thunk(arg_tys, ret_tys) => {
                 assert_eq!(arg_tys.len(), 1);
@@ -5292,12 +5288,12 @@ mod tests {
     fn partial_application_types_as_remaining_func() {
         // add3 = add 3.0 (partial application of a two-arg lambda) types as
         // Func([Float], [Float]); fully applying it yields a Float.
-        let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3").unwrap();
+        let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3").unwrap();
         assert_eq!(
             t.process_ty.vty,
             ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])
         );
-        let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
+        let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
         assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
@@ -5315,7 +5311,7 @@ mod tests {
         // argument IS `f`, which would construct an infinite type. The
         // occurs-check must reject it with a clean type error (regression:
         // it recorded a cyclic binding and overflowed the stack).
-        let res = ty_of("main = fn f -> f f");
+        let res = ty_of(r"main = \f -> f f");
         assert!(res.is_err());
     }
 }

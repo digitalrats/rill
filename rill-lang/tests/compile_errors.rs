@@ -16,38 +16,36 @@ fn if_branch_type_mismatch() {
 #[test]
 fn match_missing_ctor() {
     assert!(compile::<f32>(
-        "data Shape = Circle Float | Rect Float Float; \
-         main = match Circle 1.0 of { Circle r => r; };"
+        r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r -> r; };"
     )
     .is_err());
 }
 
 #[test]
 fn match_scalar_without_wildcard() {
-    assert!(compile::<f32>("main = match 0 of { 0 => 1.0; };").is_err());
+    assert!(compile::<f32>(r"main = case 0 of { 0 -> 1.0; };").is_err());
 }
 
 #[test]
 fn match_guarded_no_unguarded_fallback() {
     assert!(compile::<f32>(
-        "data Shape = Circle Float | Rect Float Float; \
-         main = match Circle 1.0 of { Circle r | r > 0.0 => r; Rect w h => w; };"
+        r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; Rect w h -> w; };"
     )
     .is_err());
 }
 
 #[test]
 fn match_ctor_arity_mismatch() {
-    assert!(compile::<f32>("main = match Just 1.0 of { Just x y => x; _ => 0.0; };").is_err());
+    assert!(compile::<f32>(r"main = case Just 1.0 of { Just x y -> x; _ -> 0.0; };").is_err());
 }
 
 #[test]
 fn match_unknown_ctor() {
-    assert!(compile::<f32>("main = match Just 1.0 of { Nope x => x; _ => 0.0; };").is_err());
+    assert!(compile::<f32>(r"main = case Just 1.0 of { Nope x -> x; _ -> 0.0; };").is_err());
 }
 
 #[test]
 fn match_signal_scrutinee() {
     // A signal-rate scrutinee is not a value channel.
-    assert!(compile::<f32>("main = match (_ * 2.0) of { _ => 0.0; };").is_err());
+    assert!(compile::<f32>(r"main = case (_ * 2.0) of { _ -> 0.0; };").is_err());
 }
