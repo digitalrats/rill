@@ -138,24 +138,56 @@ impl Ctx {
     }
 }
 
+/// Flatten a curried `Thunk` chain into its total argument list and final
+/// result: `Thunk([a], [Thunk([b], [r])])` → `(vec![a, b], vec![r])`.
+///
+/// The unary value model represents a multi-parameter function as a nest of
+/// single-argument thunks (`\a -> \b -> …`), so a call site that applies `n`
+/// arguments peels `n` layers. A non-`Thunk`, or a `Thunk` whose single result
+/// is not itself a `Thunk`, flattens to itself.
+fn flatten_thunk(vty: &ValueTy) -> (Vec<ValueTy>, Vec<ValueTy>) {
+    let mut args: Vec<ValueTy> = Vec::new();
+    let mut cur = vty.clone();
+    loop {
+        match cur {
+            ValueTy::Thunk(caps, res) => {
+                args.extend(caps);
+                if res.len() == 1 {
+                    if let ValueTy::Thunk(..) = &res[0] {
+                        cur = res[0].clone();
+                        continue;
+                    }
+                }
+                return (args, res);
+            }
+            other => {
+                if args.is_empty() {
+                    return (Vec::new(), vec![other]);
+                }
+                return (args, vec![other]);
+            }
+        }
+    }
+}
+
 /// Consume `n` leading λ-captures from a definition's value type: for a
 /// `Thunk(captures, result)` with `n` applied parameters, the remaining value
 /// type is the result (or a `Thunk` over the leftover captures). A non-`Thunk`
-/// (a plain value) is returned unchanged.
+/// (a plain value) is returned unchanged. Nested curried chains are flattened
+/// first, so `applied_result(Thunk([a], [Thunk([b], [r])]), 2)` is `r`.
 fn applied_result(vty: &ValueTy, n: usize) -> ValueTy {
     if n == 0 {
         return vty.clone();
     }
-    match vty {
-        ValueTy::Thunk(caps, res) if caps.len() >= n => {
-            let rest = caps[n..].to_vec();
-            if rest.is_empty() {
-                res.first().cloned().unwrap_or(ValueTy::Float)
-            } else {
-                ValueTy::Thunk(rest, res.clone())
-            }
-        }
-        _ => vty.clone(),
+    let (args, res) = flatten_thunk(vty);
+    if args.len() < n {
+        return vty.clone();
+    }
+    let rest = args[n..].to_vec();
+    if rest.is_empty() {
+        res.first().cloned().unwrap_or(ValueTy::Float)
+    } else {
+        ValueTy::Thunk(rest, res.clone())
     }
 }
 
@@ -4286,7 +4318,7 @@ fn infer_apply_impl(
                 // bound var and fails.
                 let inst = ctx.instantiate(&scheme);
                 let (arg_tys, ret_tys) = match &inst.vty {
-                    ValueTy::Thunk(a, r) => (a.clone(), r.clone()),
+                    ValueTy::Thunk(..) => flatten_thunk(&inst.vty),
                     _ => {
                         return Err(CompileError::Type {
                             msg: format!("`{name}` must be a function value"),
