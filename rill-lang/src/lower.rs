@@ -3246,6 +3246,47 @@ impl<'a> Lowerer<'a> {
             .collect()
     }
 
+    /// Whether `name` resolves at lowering time — a collection/math/FFI
+    /// builtin, a data/newtype/sum constructor, a typeclass method, or a
+    /// builtin-signature function. Such a name is a compile-time primitive,
+    /// never a captured runtime value.
+    fn resolves_at_lowering(&self, name: &str) -> bool {
+        self.is_builtin_op(name)
+            || self.env.data_types.contains_key(name)
+            || self.env.newtypes.contains_key(name)
+            || self.sum_ctor(name).is_some()
+            || self.env.class_of_method(name).is_some()
+            || self.env.builtin_sigs.contains_key(name)
+    }
+
+    /// Record a name that appears in callee position of an application as a
+    /// free variable when it is a genuine enclosing-scope closure: `fn x -> f x`
+    /// applies a closure `f`, so the env snapshot must capture it. Type and
+    /// constructor names (`Pair { ... }`, `Circle 1.5`) are NOT free variables
+    /// — a lambda body constructs data types without capturing them.
+    /// Typeclass methods (`pure`, `return`, `fmap`, `bind`, …) and builtins
+    /// resolve at compile time via inlining, and top-level definitions are
+    /// inlined at each use site (captured as a shared self-cell only in
+    /// complete mode, for recursion).
+    fn note_callee_name(
+        &self,
+        name: &str,
+        bound: &HashSet<String>,
+        out: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) {
+        if bound.contains(name) || !seen.insert(name.to_string()) {
+            return;
+        }
+        if self.defs.contains_key(name) {
+            if self.mode == Mode::Complete {
+                out.push(name.to_string());
+            }
+        } else if !self.resolves_at_lowering(name) {
+            out.push(name.to_string());
+        }
+    }
+
     fn free_vars_impl(
         &self,
         e: &Expr,
@@ -3256,8 +3297,11 @@ impl<'a> Lowerer<'a> {
         match e {
             Expr::Ref(name, _) => {
                 // Top-level value defs are inlined at each use site (see
-                // `lower_value_ref_inner`), so they are never captured.
+                // `lower_value_ref_inner`), so they are never captured. A name
+                // that resolves at lowering (a builtin, constructor, typeclass
+                // method or builtin signature) is not a runtime value either.
                 if !bound.contains(name)
+                    && !self.resolves_at_lowering(name)
                     && (self.mode == Mode::Complete || !self.defs.contains_key(name))
                     && seen.insert(name.clone())
                 {
@@ -3267,56 +3311,32 @@ impl<'a> Lowerer<'a> {
             Expr::Int(_, _) | Expr::Float(_, _) | Expr::Void(_) | Expr::Str(_, _) => {}
             Expr::Neg(inner, _) => self.free_vars_impl(inner, bound, out, seen),
             Expr::Apply { name, args, .. } => {
-                // The applied callee is a reference too: `fn x -> f x` applies
-                // a closure `f` from an enclosing scope, and the name is a free
-                // variable even though it only appears in callee position
-                // (without this, the env snapshot would miss it and lowering
-                // would report "unknown `f` in value lowering"). Type and
-                // constructor names (`Pair { ... }`, `Circle 1.5`) are NOT free
-                // variables — a lambda body constructs data types without
-                // capturing them.
-                if !bound.contains(name) && seen.insert(name.clone()) {
-                    let is_ctor = self.env.data_types.contains_key(name)
-                        || self.env.newtypes.contains_key(name)
-                        || self.sum_ctor(name).is_some();
-                    // Typeclass methods (`pure`, `return`, `fmap`, `bind`, …)
-                    // resolve at compile time via inlining — they are not
-                    // runtime values and must not be captured by the env
-                    // snapshot. Top-level value defs are likewise inlined at
-                    // each use site (`lower_value_ref_inner`).
-                    let is_class_method = self.env.class_of_method(name).is_some();
-                    let is_top_level_def = self.defs.contains_key(name);
-                    // Builtin-signature functions (`runST`, `readInput`,
-                    // `writeOutput`) are compile-time primitives — not runtime
-                    // values, so a lambda body applying one must not capture it.
-                    let is_builtin_sig = self.env.builtin_sigs.contains_key(name.as_str());
-                    if is_top_level_def {
-                        // Recursion: capture top-level defs only in complete
-                        // mode (the shared self-cell closure). Strict inlines
-                        // them at each use site.
-                        if self.mode == Mode::Complete {
-                            out.push(name.clone());
-                        }
-                    } else if !is_ctor
-                        && !is_class_method
-                        && !is_builtin_sig
-                        && !self.is_builtin_op(name)
-                    {
-                        // A genuine free variable (an enclosing lambda's
-                        // closure) or a non-def name; builtins (collection
-                        // ops, math, FFI) resolve at lowering and are never
-                        // captured.
-                        out.push(name.clone());
-                    }
-                }
+                self.note_callee_name(name, bound, out, seen);
                 for a in args {
                     self.free_vars_impl(a, bound, out, seen);
                 }
             }
             Expr::ApplyExpr { callee, args, .. } => {
-                self.free_vars_impl(callee, bound, out, seen);
-                for a in args {
-                    self.free_vars_impl(a, bound, out, seen);
+                // After the currying pass a name-based application is a
+                // right-nested chain of single-argument `ApplyExpr` nodes, so
+                // the innermost CALLEE must be resolved exactly like
+                // `Expr::Apply`'s name. Walking it as an ordinary expression
+                // would capture `cons` from `cons n (list)` and fail the env
+                // snapshot with "unknown `cons` in value lowering".
+                match uncurry_apply_chain(callee) {
+                    Some((name, mut inner)) => {
+                        self.note_callee_name(&name, bound, out, seen);
+                        inner.extend(args.iter().cloned());
+                        for a in &inner {
+                            self.free_vars_impl(a, bound, out, seen);
+                        }
+                    }
+                    None => {
+                        self.free_vars_impl(callee, bound, out, seen);
+                        for a in args {
+                            self.free_vars_impl(a, bound, out, seen);
+                        }
+                    }
                 }
             }
             Expr::Arith { lhs, rhs, .. } => {
