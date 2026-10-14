@@ -154,6 +154,74 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
+/// Re-associate a right-nested `ApplyExpr` chain whose innermost callee is a
+/// name into the equivalent `Expr::Apply` argument list.
+///
+/// The parser's currying pass turns a multi-argument application (`cons n xs`)
+/// into single-argument `ApplyExpr` nodes, but the name-dispatched lowering
+/// arms (collection ops, constructors, FFI, user definitions) expect the full
+/// argument list. Returns `None` when the callee is not a name chain (a field
+/// projection, a lambda, an application of a function value), which must stay
+/// on the opaque call path.
+fn uncurry_apply_chain(e: &Expr) -> Option<(String, Vec<Expr>)> {
+    match e {
+        Expr::Ref(name, _) => Some((name.clone(), Vec::new())),
+        Expr::ApplyExpr { callee, args, .. } => {
+            let (name, mut acc) = uncurry_apply_chain(callee)?;
+            acc.extend(args.iter().cloned());
+            Some((name, acc))
+        }
+        _ => None,
+    }
+}
+
+/// Flatten a curried `Thunk` chain into its total argument list and final
+/// result, mirroring `types::infer::flatten_thunk`:
+/// `Thunk([a], [Thunk([b], [r])])` → `(vec![a, b], vec![r])`. A flat signature
+/// (`Thunk([a, b], [r])`) or a non-`Thunk` is returned as its own single level.
+fn flatten_value_thunk(vty: &ValueTy) -> (Vec<ValueTy>, Vec<ValueTy>) {
+    let mut args: Vec<ValueTy> = Vec::new();
+    let mut cur = vty.clone();
+    loop {
+        match cur {
+            ValueTy::Thunk(caps, res) if res.len() == 1 && matches!(res[0], ValueTy::Thunk(..)) => {
+                args.extend(caps);
+                cur = res[0].clone();
+            }
+            ValueTy::Thunk(caps, res) => {
+                args.extend(caps);
+                return (args, res);
+            }
+            other => return (args, vec![other]),
+        }
+    }
+}
+
+/// Whether a value type is a curried nest (`Thunk([a], [Thunk(…, …)])`) rather
+/// than a flat single-level signature. A curried nest is applied one argument
+/// at a time; a flat signature consumes all its arguments in one dispatch.
+fn is_curried_thunk(vty: &ValueTy) -> bool {
+    matches!(vty, ValueTy::Thunk(caps, res)
+        if caps.len() == 1 && res.len() == 1 && matches!(res[0], ValueTy::Thunk(..)))
+}
+
+/// Wrap a flat argument list back into the curried nest a leftover closure
+/// value has at runtime: `([b, c], [r])` → `Thunk([b], [Thunk([c], [r])])`.
+/// Keeping the nest (rather than a flat `Thunk([b, c], [r])`) means a further
+/// partial application is applied one argument at a time as well.
+fn nest_value_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
+    match arg_tys.split_last() {
+        Some((last, rest)) => {
+            let mut ty = ValueTy::Thunk(vec![last.clone()], ret_tys);
+            for a in rest.iter().rev() {
+                ty = ValueTy::Thunk(vec![a.clone()], vec![ty]);
+            }
+            ty
+        }
+        None => ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+    }
+}
+
 /// Map a parsed comparison operator to its IR form (the two enums share their
 /// variant names, so the match is mechanical).
 fn cmp_op_from_ast(op: crate::ast::CmpOp) -> CmpOp {
@@ -1991,7 +2059,8 @@ impl<'a> Lowerer<'a> {
                 let callee_res = self.lower_value_ref(name, *span);
                 let (callee_reg, callee_ty) = callee_res?;
                 match &callee_ty {
-                    ValueTy::Thunk(arg_tys, ret_tys) => {
+                    ValueTy::Thunk(_, _) => {
+                        let (arg_tys, ret_tys) = flatten_value_thunk(&callee_ty);
                         if call_args.len() > arg_tys.len() {
                             return Err(CompileError::Type {
                                 msg: format!(
@@ -2008,6 +2077,27 @@ impl<'a> Lowerer<'a> {
                             arg_regs.push(ar);
                         }
                         let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                        // A curried definition (`twice = \f -> \x -> …`, after the
+                        // parser's currying pass emptied its parameter list)
+                        // lowers to a NEST of single-argument closures, so its
+                        // arguments are applied one at a time: `f a b` becomes
+                        // `(f a) b`. Stopping after a partial application leaves
+                        // the leftover closure value in place — no synthetic
+                        // curry record is needed.
+                        if is_curried_thunk(&callee_ty) {
+                            let mut cur = callee_reg;
+                            for ar in &arg_regs {
+                                let dst = self.fresh_value_reg();
+                                self.emit_call(dst, cur, vec![*ar]);
+                                cur = dst;
+                            }
+                            if call_args.len() < arg_tys.len() {
+                                let remaining = &arg_tys[call_args.len()..];
+                                let leftover = nest_value_thunk(remaining, vec![ret_ty]);
+                                return Ok((cur, leftover));
+                            }
+                            return Ok((cur, ret_ty));
+                        }
                         if call_args.len() < arg_tys.len() {
                             // Partial application → a curry closure. Its env captures
                             // `[func, arg0, arg1, ...]` by value; on call it reads
@@ -2057,6 +2147,18 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expr::ApplyExpr { callee, args, span } => {
+                // Re-associate a name-based curried chain into a single Apply so
+                // the name-dispatched arms below (collection ops, constructors,
+                // FFI, user defs, IO primitives) see the full argument list.
+                if let Some((name, mut all_args)) = uncurry_apply_chain(callee) {
+                    all_args.extend(args.iter().cloned());
+                    let apply = Expr::Apply {
+                        name,
+                        args: all_args,
+                        span: *span,
+                    };
+                    return self.lower_value_expected(&apply, expected);
+                }
                 // Thread the call's expected result type into the callee as a
                 // `Func` signature so a result-directed method chain in callee
                 // position (`(compose …).unKleisli` in a `Just`-matched
