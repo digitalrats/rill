@@ -3128,7 +3128,7 @@ impl<'a> Lowerer<'a> {
                 span,
             })?;
         match def {
-            Def::Local { body, .. } | Def::Eval { body, .. } if def.params().is_empty() => {
+            Def::Eval { body, .. } if def.params().is_empty() => {
                 // Complete mode: a RECURSIVE local definition (`fibs = cons …
                 // fibs …`) is a self-referential THUNK in a shared cell (the
                 // STG model) — the same shared-cell mechanism as Anchor
@@ -3177,13 +3177,7 @@ impl<'a> Lowerer<'a> {
                 self.value_inline.remove(name);
                 res
             }
-            Def::Anchor {
-                params: def_params,
-                body,
-                span: dspan,
-                ..
-            }
-            | Def::Eval {
+            Def::Eval {
                 params: def_params,
                 body,
                 span: dspan,
@@ -3635,14 +3629,8 @@ impl<'a> Lowerer<'a> {
     /// goes through the cell.
     fn is_shared_cell_def(&self, name: &str) -> bool {
         match self.defs.get(name) {
-            Some(Def::Anchor { params, .. }) | Some(Def::Eval { params, .. })
-                if !params.is_empty() =>
-            {
-                true
-            }
-            Some(Def::Local { .. }) | Some(Def::Eval { .. }) => {
-                self.recursive_locals.contains(name)
-            }
+            Some(Def::Eval { params, .. }) if !params.is_empty() => true,
+            Some(Def::Eval { .. }) => self.recursive_locals.contains(name),
             _ => false,
         }
     }
@@ -3759,13 +3747,9 @@ impl<'a> Lowerer<'a> {
         // forward-declared type; the fragment ret type refines it).
         let seeded_ty = self.shared_cell_result_tys.get(name).cloned();
         let (def_params, body, dspan, is_anchor) = match &def {
-            Def::Anchor {
-                params, body, span, ..
-            }
-            | Def::Eval {
+            Def::Eval {
                 params, body, span, ..
             } if !params.is_empty() => (params.clone(), body.clone(), *span, true),
-            Def::Local { body, span, .. } => (Vec::new(), body.clone(), *span, false),
             Def::Eval { body, span, .. } => (Vec::new(), body.clone(), *span, false),
             _ => {
                 self.anchor_compiling.remove(name);
@@ -4075,9 +4059,7 @@ impl<'a> Lowerer<'a> {
                 if visited.contains(name) {
                     return None;
                 }
-                if let Some(Def::Local { body, .. }) | Some(Def::Eval { body, .. }) =
-                    self.defs.get(name).cloned()
-                {
+                if let Some(Def::Eval { body, .. }) = self.defs.get(name).cloned() {
                     visited.insert(name.clone());
                     let r = self.static_scrutinee_ctor_impl(&body, visited);
                     visited.remove(name);
@@ -4093,7 +4075,7 @@ impl<'a> Lowerer<'a> {
                 }
                 // A bare nullary constructor (`Nothing`, `Red`) is a complete
                 // sum value: its constructor is statically known even though it
-                // is not a `Def::Local` body.
+                // is not a bare `Def::Eval` body.
                 if let Some((_, _, payload)) = self.sum_ctor(name) {
                     if payload.is_empty() {
                         return Some(name.clone());
@@ -4168,9 +4150,7 @@ impl<'a> Lowerer<'a> {
                 if visited.contains(name) {
                     return None;
                 }
-                if let Some(Def::Local { body, .. }) | Some(Def::Eval { body, .. }) =
-                    self.defs.get(name).cloned()
-                {
+                if let Some(Def::Eval { body, .. }) = self.defs.get(name).cloned() {
                     visited.insert(name.clone());
                     let r = self.static_list_nonempty(&body, visited);
                     visited.remove(name);
@@ -4218,9 +4198,7 @@ impl<'a> Lowerer<'a> {
                 if visited.contains(name) {
                     return None;
                 }
-                if let Some(Def::Local { body, .. }) | Some(Def::Eval { body, .. }) =
-                    self.defs.get(name).cloned()
-                {
+                if let Some(Def::Eval { body, .. }) = self.defs.get(name).cloned() {
                     visited.insert(name.clone());
                     let r = self.static_map_has_key(&body, key, visited);
                     visited.remove(name);
@@ -4242,9 +4220,7 @@ impl<'a> Lowerer<'a> {
                 if visited.contains(name) {
                     return None;
                 }
-                if let Some(Def::Local { body, .. }) | Some(Def::Eval { body, .. }) =
-                    self.defs.get(name).cloned()
-                {
+                if let Some(Def::Eval { body, .. }) = self.defs.get(name).cloned() {
                     visited.insert(name.clone());
                     let r = self.static_string_literal(&body, visited);
                     visited.remove(name);
@@ -4279,9 +4255,7 @@ impl<'a> Lowerer<'a> {
                 if !seen.insert(name.clone()) {
                     return vec![];
                 }
-                if let Some(Def::Local { body, .. }) | Some(Def::Eval { body, .. }) =
-                    self.defs.get(name).cloned()
-                {
+                if let Some(Def::Eval { body, .. }) = self.defs.get(name).cloned() {
                     let r = self.builtin_sum_scrutinee_args_impl(&body, seen);
                     seen.remove(name);
                     return r;
@@ -5540,9 +5514,7 @@ impl<'a> Lowerer<'a> {
                 if visited.contains(ref_name) {
                     return None;
                 }
-                if let Some(Def::Local { body, .. }) | Some(Def::Eval { body, .. }) =
-                    self.defs.get(ref_name)
-                {
+                if let Some(Def::Eval { body, .. }) = self.defs.get(ref_name) {
                     visited.insert(ref_name.clone());
                     let v = self.caf_const_impl(body, visited);
                     visited.remove(ref_name);
@@ -5668,12 +5640,7 @@ impl<'a> Lowerer<'a> {
                 span: crate::error::Span::new(0, 0),
             })?;
         match def {
-            Def::Anchor {
-                params: def_params,
-                ref body,
-                ..
-            }
-            | Def::Eval {
+            Def::Eval {
                 params: def_params,
                 ref body,
                 ..
@@ -5688,7 +5655,7 @@ impl<'a> Lowerer<'a> {
                 self.locals.pop();
                 Ok(out)
             }
-            Def::Local { ref body, .. } | Def::Eval { ref body, .. } => {
+            Def::Eval { ref body, .. } => {
                 if let Expr::Lambda {
                     params: lp,
                     body: lbody,
@@ -6389,7 +6356,7 @@ mod tests {
 
     #[test]
     fn free_vars_walks_apply_callee() {
-        // `outer = fn f -> fn x -> f x`: the inner lambda applies the closure
+        // `outer = \ f -> \ x -> f x`: the inner lambda applies the closure
         // `f` from the ENCLOSING lambda. `f` appears only as the callee NAME of
         // an `Apply`, but it is a free variable of the body and must be
         // captured — otherwise the env snapshot misses it and lowering reports

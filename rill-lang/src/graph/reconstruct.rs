@@ -28,7 +28,7 @@ pub fn compile_spec<T: Transcendental + 'static, const BUF: usize>(
 
 /// Reconstruct a [`GraphSpec`] into an rill-lang AST `Program`.
 ///
-/// Every node's builtin must be in the FFI catalog (`foreign fn` in
+/// Every node's builtin must be in the FFI catalog (`foreign` in
 /// `TypeEnv::foreign_sigs`) — that catalog is the single signature source (the
 /// legacy `BuiltinSig` machinery was removed).
 pub fn reconstruct(spec: &GraphSpec) -> Result<Program, CompileError> {

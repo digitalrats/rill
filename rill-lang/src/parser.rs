@@ -781,18 +781,13 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `foreign fn name : TypeExpr;` — a foreign builtin signature declared in the
+    /// `foreign name : TypeExpr;` — a foreign builtin signature declared in the
     /// language. Parsed by the standard type parser; the carried arrow's `FixedBuffer`
     /// channels are the signal-track parameters. Like every sibling def parser
     /// (data/sum/typeclass/instance/alias/newtype), leaves the trailing `;` for the
     /// caller (`parse_program` / `parse_where_block`) to consume.
     fn parse_foreign_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
-        // `fn` is no longer a keyword (Task 6): `foreign fn name : sig` keeps
-        // the legacy spelling by consuming the `fn` identifier when present.
-        if matches!(self.peek().tok, Tok::Ident(ref s) if s == "fn") {
-            self.bump();
-        }
         let (name, _) = self.expect_ident()?;
         self.eat(&Tok::Colon)?;
         let sig = self.parse_type_expr()?;
@@ -1166,10 +1161,12 @@ impl<'a> Parser<'a> {
                 DoStmt::Let(x, e) => {
                     let span = self.span_from(start);
                     rest = Expr::Let {
-                        defs: vec![Def::Local {
+                        defs: vec![Def::Eval {
                             name: x.clone(),
+                            params: vec![],
                             body: e.clone(),
                             where_defs: vec![],
+                            sig: None,
                             span,
                         }],
                         body: Box::new(rest),
@@ -1439,19 +1436,6 @@ fn curry_defs_in(defs: &mut Vec<Def>) {
                 curry_defs_in(where_defs);
                 curry_expr(body);
             }
-            Def::Anchor {
-                body, where_defs, ..
-            } => {
-                // Dead variant (Task 14 removes it); keep the walk total.
-                curry_defs_in(where_defs);
-                curry_expr(body);
-            }
-            Def::Local {
-                body, where_defs, ..
-            } => {
-                curry_defs_in(where_defs);
-                curry_expr(body);
-            }
             Def::Typeclass { defaults, .. } => {
                 for (_, _, body) in defaults {
                     curry_expr(body);
@@ -1694,7 +1678,7 @@ mod tests {
         let p = prog("main = osc where { freq = 440; }");
         let main = p.main_def().unwrap();
         assert_eq!(main.where_defs().len(), 1);
-        matches!(&main.where_defs()[0], Def::Local { name, .. } if name == "freq");
+        matches!(&main.where_defs()[0], Def::Eval { name, .. } if name == "freq");
     }
 
     #[test]
@@ -1939,8 +1923,8 @@ mod tests {
         assert_eq!(where_defs.len(), 1);
         assert_eq!(where_defs[0].name(), "run");
         let body = match &where_defs[0] {
-            Def::Anchor { body, .. } | Def::Local { body, .. } | Def::Eval { body, .. } => body,
-            other => panic!("expected an anchor/local/eval def, got {other:?}"),
+            Def::Eval { body, .. } => body,
+            other => panic!("expected an eval def, got {other:?}"),
         };
         assert_eq!(
             curry_head(body).map(|(name, _)| name),
@@ -2290,7 +2274,7 @@ mod tests {
 
     #[test]
     fn parses_foreign_def_in_brace_where_block() {
-        // `foreign fn` inside a brace-style where-block: the def parser must
+        // `foreign` inside a brace-style where-block: the def parser must
         // leave the trailing `;` for `parse_where_block` to consume
         // (regression: it used to eat its own semi, double-eating and failing
         // on the next def with "expected Semi").

@@ -240,9 +240,9 @@ pub struct TypeEnv {
     /// methods (these are ordinary functions, not instance-dispatched): a
     /// `forall`-bound argument makes the callee's application rank-N.
     pub builtin_sigs: HashMap<String, crate::ast::TypeExpr>,
-    /// Ordinary function definitions declared by the prelude (the Faust
+    /// Ordinary function definitions declared by the prelude (the Buffer-arrow
     /// combinators `seq`/`par`/`split`/`merge` over Buffer arrows). Unlike
-    /// typeclasses/instances/foreign fns, these are plain `Def::Local`s — they
+    /// typeclasses/instances/foreign decls, these are plain `Def::Eval`s — they
     /// must be visible to inference as top-level definitions, so
     /// [`infer_program_with`](crate::types::infer::infer_program_with) threads
     /// them into the program's defs before typing.
@@ -314,7 +314,7 @@ main = ();
 
 /// Built-in signal-track declarations: the first-class buffer type and the
 /// `Buffer` typeclass. Registered by [`TypeEnv::with_builtins`]. The home of the
-/// Faust combinators and buffer math in later stages.
+/// Buffer-arrow combinators and buffer math in later stages.
 ///
 /// `Tape a` is the shared-buffer handle — a `Buffer` family member alongside
 /// `FixedBuffer a`. It is a marker record (empty field list): its runtime
@@ -326,12 +326,12 @@ instance Buffer (FixedBuffer a) where { }
 data Tape a = { };
 instance Buffer (Tape f32) where { }
 
---  Faust combinators over Buffer arrows (`Buffer -> Buffer` as first-class
---  values). `seq`/`par`/`split`/`merge` are pure functions — they compose
---  Buffer arrows; `loop` (`~`) and `delay` (`@ n`) are stateful and are
---  implemented as builtins. The `:` / `,` / `<:` / `:>` sugar desugars to
---  these (see `desugar.rs`). They use the builtin `Pair a b` record
---  (`first`/`second`) to carry two channels.
+--  Legacy Buffer-arrow combinators (`Buffer -> Buffer` as first-class
+--  values), retained as plain value functions after the signal surface
+--  syntax (`:` / `,` / `<:` / `:>` and the `~` / `@` stateful operators)
+--  was removed. `seq`/`par`/`split`/`merge` compose Buffer arrows directly;
+--  they use the builtin `Pair a b` record (`first`/`second`) to carry two
+--  channels.
 
 --  `seq f g` runs f then g on one channel: `\ x -> g (f x)`.
 seq = \ f -> \ g -> \ x -> g (f x);
@@ -351,13 +351,12 @@ main = ();
 /// Inline catalog of foreign builtin declarations auto-registered into
 /// [`TypeEnv::foreign_sigs`] (and their record `data` types into
 /// [`TypeEnv::data_types`]). Programs resolve these names without a
-/// user-written `foreign fn` per program — the single signature source since
+/// user-written `foreign` per program — the single signature source since
 /// the legacy `BuiltinSig` machinery was removed (SP-3b Task 12).
 ///
-/// Scope note: signal-input builtins are listed here because the
-/// Faust-combinator sugar (see [`crate::desugar`]) keeps their legacy call
-/// style working — `_ : onepole 200.0 0.7` desugars to the positional
-/// `onepole _ 200.0 0.7` before inference. The record-param builtins
+/// Scope note: signal-input builtins are listed here so a program can apply
+/// them to a signal value directly — `onepole 200.0 0.7 buf` applies the
+/// partial application to the buffer. The record-param builtins
 /// (`mixer`/`eq_parametric`/`dry_wet`) declare their record configs here too
 /// (`mixer`'s leading `List (FixedBuffer f32)` is a VariadicSignal followed
 /// only by a record — [`crate::types::ffi::ffi_sig_from_typeexpr`] accepts the
@@ -368,34 +367,34 @@ main = ();
 /// declaration) and produces the tape index, which flows to `write_head` /
 /// `read_head` via their `Tape f32` resource params (Task 11).
 pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
-foreign fn sine : Float -> Float -> Float -> FixedBuffer f32;
-foreign fn saw : Float -> Float -> Float -> FixedBuffer f32;
-foreign fn square : Float -> Float -> Float -> FixedBuffer f32;
-foreign fn triangle : Float -> Float -> Float -> FixedBuffer f32;
-foreign fn noise : Float -> Float -> FixedBuffer f32;
-foreign fn ay38910 : Float -> Float -> FixedBuffer f32;
-foreign fn sampler : Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+foreign sine : Float -> Float -> Float -> FixedBuffer f32;
+foreign saw : Float -> Float -> Float -> FixedBuffer f32;
+foreign square : Float -> Float -> Float -> FixedBuffer f32;
+foreign triangle : Float -> Float -> Float -> FixedBuffer f32;
+foreign noise : Float -> Float -> FixedBuffer f32;
+foreign ay38910 : Float -> Float -> FixedBuffer f32;
+foreign sampler : Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
 
-foreign fn integrator : FixedBuffer f32 -> FixedBuffer f32;
-foreign fn leaky_integrator : Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn moog : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn lowpass : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn highpass : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn delay : Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn distortion : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn limiter : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn graphic_eq : Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn spectralgate : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn spectraldelay : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn convolver : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn analog_moog : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn lofi : Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+foreign integrator : FixedBuffer f32 -> FixedBuffer f32;
+foreign leaky_integrator : Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign moog : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign lowpass : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign highpass : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign delay : Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign distortion : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign limiter : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign graphic_eq : Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign spectralgate : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign spectraldelay : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign convolver : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign analog_moog : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign lofi : Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
 
-foreign fn tape_loop : Int -> Tape f32;
-foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
+foreign tape_loop : Int -> Tape f32;
+foreign read_head : Tape f32 -> Float -> FixedBuffer f32;
 
 data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };
 data EqConfig = { bands: List EqBand };
@@ -461,7 +460,7 @@ fn instance_from_template(
 /// Parse a prelude/catalog fragment and register its defs: `Def::Data` through
 /// the phase-2 path ([`crate::types::infer::data_field_vty`], the same path
 /// user data declarations use) and every other declaration
-/// (`typeclass`/`instance`/`foreign fn`) through
+/// (`typeclass`/`instance`/`foreign`) through
 /// [`TypeEnv::register_decls`]. A parse failure is a compiler bug (the
 /// constants are fixed) — assert loudly.
 fn register_prelude(env: &mut TypeEnv, src: &str) {
@@ -498,20 +497,15 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         }
     }
     env.register_decls(&defs);
-    // Plain function definitions in a prelude (`seq = fn f -> fn g -> …`)
+    // Plain function definitions in a prelude (`seq = \ f -> \ g -> …`)
     // become top-level defs visible to inference — see
     // [`TypeEnv::prelude_defs`]. `Def::Foreign`/`Typeclass`/`Instance`/`Data`
-    // are registered by [`Self::register_decls`]; only `Local`/`Anchor` defs
-    // (the Faust-combinator sugar over Buffer arrows) land here.
+    // are registered by [`Self::register_decls`]; only `Eval` defs (the
+    // combinator sugar over Buffer arrows) land here.
     for def in &defs {
         if matches!(
             def,
-            Def::Local { .. }
-                | Def::Eval { .. }
-                | Def::Anchor { .. }
-                | Def::TypeAlias { .. }
-                | Def::Newtype { .. }
-                | Def::Sum { .. }
+            Def::Eval { .. } | Def::TypeAlias { .. } | Def::Newtype { .. } | Def::Sum { .. }
         ) && def.name() != "main"
         {
             env.prelude_defs.push(def.clone());
@@ -616,7 +610,7 @@ impl TypeEnv {
         // preludes — a parse failure here is a compiler bug.
         register_prelude(&mut env, BUILTIN_FOREIGN_DECLS);
         // Builtin polymorphic functions: `runST : (forall s. ST s a) -> a` is a
-        // forall-typed ordinary function (NOT a foreign fn — FFI conversion
+        // forall-typed ordinary function (NOT a foreign decl — FFI conversion
         // hits its `other` arm on `forall`, and it is not instance-dispatched).
         // The `ST s a` type is declared in `CATEGORY_PRELUDE`; rank-N
         // application of the signature lives in `infer_apply_impl`.
@@ -666,7 +660,7 @@ impl TypeEnv {
         env
     }
 
-    /// Register declaration defs (`typeclass`/`instance`/`foreign fn`) into the
+    /// Register declaration defs (`typeclass`/`instance`/`foreign`) into the
     /// env. Extracted from inference phase 1 so the category prelude (parsed in
     /// [`Self::with_builtins`]) and user declarations share one registration
     /// path.

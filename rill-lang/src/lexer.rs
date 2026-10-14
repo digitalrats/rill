@@ -65,7 +65,7 @@ pub enum Tok {
     KwTypeclass,
     /// `instance` keyword — concrete typeclass instance.
     KwInstance,
-    /// `foreign` keyword — foreign fn declaration.
+    /// `foreign` keyword — foreign declaration.
     KwForeign,
     /// `forall` keyword — explicit universal quantification in a type.
     KwForall,

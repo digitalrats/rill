@@ -414,12 +414,6 @@ fn fragment_target(
         return None;
     }
     match defs.get(name) {
-        Some(Def::Local { body, .. }) => match body {
-            Expr::Lambda { .. } => Some(name.to_string()),
-            Expr::Apply { .. } => Some(name.to_string()),
-            Expr::Ref(next, _) => fragment_target(defs, next, seen),
-            _ => None,
-        },
         Some(Def::Eval { params, body, .. }) if params.is_empty() => match body {
             Expr::Lambda { .. } => Some(name.to_string()),
             Expr::Apply { .. } => Some(name.to_string()),
@@ -427,7 +421,6 @@ fn fragment_target(
             _ => None,
         },
         Some(Def::Eval { params, .. }) if !params.is_empty() => Some(name.to_string()),
-        Some(Def::Anchor { params, .. }) if !params.is_empty() => Some(name.to_string()),
         _ => None,
     }
 }
@@ -1044,7 +1037,7 @@ pub fn infer_program(program: &Program, mode: Mode) -> Result<TypedProgram, Comp
 }
 
 /// Infer a program. Built-in signatures come from the FFI catalog in the type
-/// environment (`foreign fn` declarations); no external signature source is
+/// environment (`foreign` declarations); no external signature source is
 /// needed.
 ///
 /// Top-level definitions are mutually recursive: all names are visible
@@ -1057,14 +1050,14 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
     // field/payload types against the COMPLETE alias/newtype environment. A
     // single-pass registration would wrongly reject
     // `data P = { x: Angles }; type Angles = Float; ...`.
-    // The program is cloned so the Faust-combinator sugar (below) can rewrite
+    // The program is cloned so the prelude-combinator typing (below) can rewrite
     // it in place; inference, reduce and lower all consume the desugared form.
     let mut program = program.clone();
     let mut env = TypeEnv::with_builtins();
     // Typeclass/instance declarations are registered by `register_decls` (the
     // same path the category prelude uses).
     env.register_decls(&program.defs);
-    // Prelude function definitions (the Faust combinators over Buffer arrows:
+    // Prelude function definitions (the Buffer-arrow combinators:
     // `seq`/`par`/`split`/`merge`) are typed HERE, BEFORE the user's `data`
     // declarations register (a user `data Pair` would otherwise shadow the
     // builtin `Pair a b` the combinators' bodies use). They are pure functions,
@@ -1249,17 +1242,12 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         .defs
         .iter()
         .filter_map(|def| match def {
-            Def::Local { name, .. } => ctx
-                .defs
-                .get(name)
-                .filter(|s| s.lam_count == 0)
-                .map(|_| name.clone()),
             Def::Eval { name, params, .. } if params.is_empty() => ctx
                 .defs
                 .get(name)
                 .filter(|s| s.lam_count == 0)
                 .map(|_| name.clone()),
-            Def::Anchor { .. } | Def::Eval { .. } => None,
+            Def::Eval { .. } => None,
             _ => None,
         })
         .collect();
@@ -1273,7 +1261,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
     // which lowering treats as an untyped scalar).
     let mut fn_param_tys: HashMap<String, Vec<ValueTy>> = HashMap::new();
     for def in &program.defs {
-        if let Def::Local { name, body, .. } | Def::Eval { name, body, .. } = def {
+        if let Def::Eval { name, body, .. } = def {
             if def.params().is_empty() && matches!(body, Expr::Lambda { .. }) {
                 let scheme = ctx.defs.get(name).cloned();
                 if let Some(s) = scheme {
@@ -1302,8 +1290,8 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         // like `fibs = cons … fibs …`). Collecting every such def is harmless —
         // lowering only consults the map for shared-cell references.
         let is_shared = match def {
-            Def::Anchor { params, .. } | Def::Eval { params, .. } if !params.is_empty() => true,
-            Def::Local { body, .. } | Def::Eval { body, .. } => {
+            Def::Eval { params, .. } if !params.is_empty() => true,
+            Def::Eval { body, .. } => {
                 // A self-recursive CAF (`fibs = cons … fibs …`) keeps its result
                 // type; a CURRIED named function (`take = \n -> \xs -> …`) is a
                 // function value, so its shared-cell type is its λ signature —
@@ -2547,7 +2535,7 @@ fn infer_expr_expected(
             // inside resolve at the lambda's own call sites (with the lambda's
             // params concrete), NOT against the enclosing method-inlining path.
             // Clear the recursion guard so legitimate nested calls of the same
-            // method (`ap mf mx = bind mf (fn f -> bind mx (..))`) are not
+            // method (`ap mf mx = bind mf (\ f -> bind mx (..))`) are not
             // misread as recursion.
             ctx.method_lifting.clear();
             let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(params.len());
@@ -2930,7 +2918,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
 
 /// Resolve the definition a func value dispatches to.
 ///
-/// A func value binding (`f = double`) is a `Def::Local` whose body is a bare
+/// A func value binding (`f = double`) is a bare `Def::Eval` whose body is a bare
 /// `Ref` to another definition; chains (`g = f`) follow the body refs until a
 /// definition that is itself not a func value is reached (the referenced
 /// definition, with λ-parameters). The structural `ValueTy::Thunk` no longer
@@ -5361,7 +5349,7 @@ mod tests {
 
     #[test]
     fn lambda_def_infers_as_func() {
-        // A Def::Local whose body is a lambda literal infers to a Func value
+        // A bare Def::Eval whose body is a lambda literal infers to a Func value
         // channel via the normal def-body inference path.
         let t = ty_of(r"double = \x -> x; main = double").unwrap();
         assert!(matches!(t.process_ty.vty, ValueTy::Thunk(_, _)));

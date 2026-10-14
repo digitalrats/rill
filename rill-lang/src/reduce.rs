@@ -202,37 +202,6 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
 /// descending into a `Let` block.
 fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
     match def {
-        Def::Anchor {
-            name,
-            params,
-            body,
-            where_defs,
-            span,
-        } => Def::Anchor {
-            name: name.clone(),
-            params: params.clone(),
-            // A let-Anchor's own λ-params are not shadowed (only affects constructs already broken at base).
-            body: substitute(body, subst),
-            where_defs: where_defs
-                .iter()
-                .map(|w| substitute_def(w, subst))
-                .collect(),
-            span: *span,
-        },
-        Def::Local {
-            name,
-            body,
-            where_defs,
-            span,
-        } => Def::Local {
-            name: name.clone(),
-            body: substitute(body, subst),
-            where_defs: where_defs
-                .iter()
-                .map(|w| substitute_def(w, subst))
-                .collect(),
-            span: *span,
-        },
         Def::Eval {
             name,
             params,
@@ -261,7 +230,7 @@ fn defs_map(defs: &[Def]) -> HashMap<String, Def> {
         .collect()
 }
 
-/// Whether `name` resolves to a closure-valued definition: a `Def::Local`
+/// Whether `name` resolves to a closure-valued definition: a bare `Def::Eval`
 /// whose body is a lambda literal or a reference/application chain that
 /// produces one (e.g. `add2 = adder 2.0`). Applying a closure value is a
 /// RUNTIME dispatch (`ValueCallFunc`), so such `Apply` nodes must survive
@@ -272,12 +241,6 @@ fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<Str
         return false;
     }
     match ctx.get(name) {
-        Some(Def::Local { body, .. }) => match body {
-            Expr::Lambda { .. } => true,
-            Expr::Ref(next, _) => is_closure_def(ctx, next, seen),
-            Expr::Apply { .. } => true,
-            _ => false,
-        },
         Some(Def::Eval { params, body, .. }) if params.is_empty() => match body {
             Expr::Lambda { .. } => true,
             Expr::Ref(next, _) => is_closure_def(ctx, next, seen),
@@ -338,21 +301,6 @@ fn reduce_def(
         .map(|d| reduce_def(d, ctx, cafs, reducing, mode))
         .collect();
     let result = match def {
-        Def::Anchor {
-            name, params, span, ..
-        } => Def::Anchor {
-            name: name.clone(),
-            params: params.clone(),
-            body: reduced_body,
-            where_defs: reduced_where,
-            span: *span,
-        },
-        Def::Local { name, span, .. } => Def::Local {
-            name: name.clone(),
-            body: reduced_body,
-            where_defs: reduced_where,
-            span: *span,
-        },
         Def::Eval {
             name,
             params,
@@ -426,8 +374,7 @@ fn reduce_expr(
             if mode == Mode::Complete
                 && matches!(
                     ctx.get(name),
-                    Some(Def::Anchor { params, .. }) | Some(Def::Eval { params, .. })
-                        if !params.is_empty()
+                    Some(Def::Eval { params, .. }) if !params.is_empty()
                 )
             {
                 return Expr::Apply {
@@ -676,7 +623,7 @@ fn merge_contexts(
 /// β-reduce all user-defined function calls in the program, keeping references
 /// to closed top-level definitions (`cafs`) un-inlined.
 ///
-/// CAFs (closed top-level `Def::Local`s with zero signal inputs and zero
+/// CAFs (closed top-level `Def::Eval`s with zero signal inputs and zero
 /// λ-parameters) are shared state: duplicating their body at each use site
 /// would fork the stateful process. They are left as `Expr::Ref`s so lowering
 /// can lift them once and route multiple consumers to the single instance.

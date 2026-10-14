@@ -1,6 +1,6 @@
 //! FFI signature descriptors: the language-side contract for foreign builtins.
 //!
-//! A `foreign fn name : TypeExpr;` declaration is converted into an [`FfiSig`]
+//! A `foreign name : TypeExpr;` declaration is converted into an [`FfiSig`]
 //! — a flat list of parameter descriptors consumed by inference, lowering and
 //! graph reconstruction. `FixedBuffer a` is the signal-channel type; scalars are
 //! compile-time params; `Tape a` is a shared-buffer resource handle.

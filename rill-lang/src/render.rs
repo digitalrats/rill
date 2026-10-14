@@ -58,33 +58,6 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             render_where(where_defs, buf, indent, &pad)?;
             Ok(())
         }
-        Def::Anchor {
-            name,
-            params,
-            body,
-            where_defs,
-            ..
-        } => {
-            write!(buf, "{pad}{name}").ok();
-            for p in params {
-                write!(buf, " {}", p.name).ok();
-            }
-            write!(buf, " = ").ok();
-            render_expr(body, buf, 3)?;
-            render_where(where_defs, buf, indent, &pad)?;
-            Ok(())
-        }
-        Def::Local {
-            name,
-            body,
-            where_defs,
-            ..
-        } => {
-            write!(buf, "{pad}{name} = ").ok();
-            render_expr(body, buf, 0)?;
-            render_where(where_defs, buf, indent, &pad)?;
-            Ok(())
-        }
         Def::Data {
             name,
             tyvars,
@@ -544,7 +517,7 @@ mod tests {
         let prog = Program {
             mode: Mode::Strict,
             mode_explicit: false,
-            defs: vec![Def::Anchor {
+            defs: vec![Def::Eval {
                 name: "main".into(),
                 params: vec![],
                 body: Expr::Apply {
@@ -554,6 +527,7 @@ mod tests {
                 },
                 span: span(),
                 where_defs: vec![],
+                sig: None,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -565,7 +539,7 @@ mod tests {
         let prog = Program {
             mode: Mode::Strict,
             mode_explicit: false,
-            defs: vec![Def::Anchor {
+            defs: vec![Def::Eval {
                 name: "main".into(),
                 params: vec![],
                 body: Expr::Apply {
@@ -575,6 +549,7 @@ mod tests {
                 },
                 span: span(),
                 where_defs: vec![],
+                sig: None,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -586,7 +561,7 @@ mod tests {
         let prog = Program {
             mode: Mode::Strict,
             mode_explicit: false,
-            defs: vec![Def::Anchor {
+            defs: vec![Def::Eval {
                 name: "main".into(),
                 params: vec![crate::ast::Param {
                     name: "gain".into(),
@@ -600,6 +575,7 @@ mod tests {
                 },
                 span: span(),
                 where_defs: vec![],
+                sig: None,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -611,8 +587,9 @@ mod tests {
         let prog = Program {
             mode: Mode::Strict,
             mode_explicit: false,
-            defs: vec![Def::Local {
+            defs: vec![Def::Eval {
                 name: "double".into(),
+                params: vec![],
                 body: Expr::Lambda {
                     params: vec![crate::ast::Param {
                         name: "x".into(),
@@ -628,6 +605,7 @@ mod tests {
                 },
                 where_defs: vec![],
                 span: span(),
+                sig: None,
             }],
         };
         let dsl = render(&prog).unwrap();

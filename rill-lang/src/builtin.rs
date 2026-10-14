@@ -3,7 +3,7 @@
 //! `BlockBuiltin` (`rill_core::Algorithm`, opaque whole-buffer) is the only
 //! built-in form. Concrete bindings live outside this crate (e.g. `rill-adrift`);
 //! the language owns the registry contract. Built-in SIGNATURES come from the FFI
-//! catalog (`foreign fn` declarations in `TypeEnv::foreign_sigs`); this registry
+//! catalog (`foreign` declarations in `TypeEnv::foreign_sigs`); this registry
 //! holds only the Rust FACTORIES that build runtime instances.
 
 use std::collections::HashMap;

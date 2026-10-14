@@ -327,34 +327,12 @@ pub struct Param {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Def {
-    /// `name p1 p2 = body` — an anchor with parameters.
-    Anchor {
-        /// Definition name.
-        name: String,
-        /// Formal parameters.
-        params: Vec<Param>,
-        /// Right-hand side.
-        body: Expr,
-        /// Optional where-block definitions.
-        where_defs: Vec<Def>,
-        /// Span of the whole definition.
-        span: Span,
-    },
-    /// `name = body` — a local binding (no params).
-    Local {
-        /// Definition name.
-        name: String,
-        /// Right-hand side.
-        body: Expr,
-        /// Optional where-block definitions.
-        where_defs: Vec<Def>,
-        /// Span of the whole definition.
-        span: Span,
-    },
     /// `name p1 p2 = body` — one definition form (params optional; multi-param
     /// is currying sugar). `sig` is an optional `::` type annotation
     /// (inference-only hint/constraint). Named so it reads as «evaluable
-    /// definition» in contrast to the `is_decl()` declarations.
+    /// definition» in contrast to the `is_decl()` declarations. Top-level,
+    /// `where`-block, and `let`-block bindings are all this one form (a bare
+    /// binding has no params).
     Eval {
         /// Definition name.
         name: String,
@@ -443,7 +421,7 @@ pub enum Def {
         /// Span.
         span: Span,
     },
-    /// `foreign fn name : TypeExpr;` — a foreign (Rust-implemented) builtin whose
+    /// `foreign name : TypeExpr;` — a foreign (Rust-implemented) builtin whose
     /// signature is declared in the language. The language owns the contract; a
     /// runtime factory bound by name provides the implementation.
     Foreign {
@@ -460,8 +438,6 @@ impl Def {
     /// Returns the identifier name of this definition.
     pub fn name(&self) -> &str {
         match self {
-            Def::Anchor { name, .. } => name,
-            Def::Local { name, .. } => name,
             Def::Eval { name, .. } => name,
             Def::Data { name, .. } => name,
             Def::Sum { name, .. } => name,
@@ -479,17 +455,14 @@ impl Def {
     /// must skip them via [`Def::is_decl`] before calling this.
     pub fn body(&self) -> &Expr {
         match self {
-            Def::Anchor { body, .. } => body,
-            Def::Local { body, .. } => body,
             Def::Eval { body, .. } => body,
             _ => unreachable!("declaration variant has no body"),
         }
     }
 
-    /// Returns the parameters of this definition (empty for Local).
+    /// Returns the parameters of this definition (empty for a bare binding).
     pub fn params(&self) -> &[Param] {
         match self {
-            Def::Anchor { params, .. } => params,
             Def::Eval { params, .. } => params,
             _ => &[],
         }
@@ -498,8 +471,6 @@ impl Def {
     /// Returns the where-block definitions of this definition.
     pub fn where_defs(&self) -> &[Def] {
         match self {
-            Def::Anchor { where_defs, .. } => where_defs,
-            Def::Local { where_defs, .. } => where_defs,
             Def::Eval { where_defs, .. } => where_defs,
             _ => &[],
         }

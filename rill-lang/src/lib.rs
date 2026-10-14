@@ -110,7 +110,7 @@ pub fn compile_with_mode_with<T: Transcendental>(
     RillProgram::<T, 256>::new_with(ir, registry, sample_rate, None)
 }
 
-/// Compile source against a foreign registry: `foreign fn` builtins resolve
+/// Compile source against a foreign registry: `foreign` builtins resolve
 /// their Rust implementations from `ffi` (a fresh, empty legacy built-in
 /// registry is used for the built-in path). Uses the default block size
 /// (`BUF = 256`).
@@ -363,14 +363,7 @@ fn extract_resources(
             defs.push(def.clone());
             continue;
         }
-        if let Def::Local {
-            name,
-            body: Expr::Apply {
-                name: ctor, args, ..
-            },
-            ..
-        }
-        | Def::Eval {
+        if let Def::Eval {
             name,
             body: Expr::Apply {
                 name: ctor, args, ..

@@ -1,5 +1,5 @@
 //! FFI factory registry: name → Rust implementation factory for foreign
-//! builtins declared in the language (`foreign fn name : TypeExpr;`).
+//! builtins declared in the language (`foreign name : TypeExpr;`).
 //!
 //! The language owns the signature; this registry owns the implementation. A
 //! foreign call's `Instr::CallBlock` is resolved here at `RillProgram::build`
