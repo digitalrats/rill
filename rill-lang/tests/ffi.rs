@@ -839,8 +839,8 @@ fn analog_moog_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_model(&mut ffi);
 
-    let src = r#"main = _ : analog_moog 500.0 0.7;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let src = r#"main = do { writeOutput (map (analog_moog 500.0 0.7) (readInput)); return () }"#;
+    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
     assert!(

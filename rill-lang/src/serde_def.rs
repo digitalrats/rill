@@ -62,7 +62,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn round_trips_json() {
-        let def = RillLangDef::new("gain", "main = _ * 0.5");
+        let def = RillLangDef::new("gain", "main = 1.0 * 0.5");
         let json = serde_json::to_string(&def).unwrap();
         let back: RillLangDef = serde_json::from_str(&json).unwrap();
         assert_eq!(def, back);
