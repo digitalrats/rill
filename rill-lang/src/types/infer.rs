@@ -1303,8 +1303,15 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         // lowering only consults the map for shared-cell references.
         let is_shared = match def {
             Def::Anchor { params, .. } | Def::Eval { params, .. } if !params.is_empty() => true,
-            Def::Local { body, .. } => !matches!(body, Expr::Lambda { .. }),
-            Def::Eval { body, .. } => !matches!(body, Expr::Lambda { .. }),
+            Def::Local { body, .. } | Def::Eval { body, .. } => {
+                // A self-recursive CAF (`fibs = cons … fibs …`) keeps its result
+                // type; a CURRIED named function (`take = \n -> \xs -> …`) is a
+                // function value, so its shared-cell type is its λ signature —
+                // lowering needs it while the def's own anchor closure is still
+                // compiling, so a recursive self-call dispatches through the nest
+                // instead of falling back to `Float`.
+                !matches!(body, Expr::Lambda { .. }) || leading_lambda_count(body) > 1
+            }
             _ => false,
         };
         if is_shared {

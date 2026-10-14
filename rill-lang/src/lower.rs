@@ -2087,8 +2087,24 @@ impl<'a> Lowerer<'a> {
                         if is_curried_thunk(&callee_ty) {
                             let mut cur = callee_reg;
                             for ar in &arg_regs {
+                                // In complete mode `emit_call` is a LAZY
+                                // application: it builds a thunk (a callable
+                                // with a memo cell). Applying the next argument
+                                // needs the inner closure itself, so force the
+                                // intermediate to WHNF first (forcing a closure
+                                // is a no-op — only a thunk actually runs).
+                                let callee = if self.mode == Mode::Complete {
+                                    let forced = self.fresh_value_reg();
+                                    self.emit_value(ValueInstr::ValueForce {
+                                        dst: forced,
+                                        src: cur,
+                                    });
+                                    forced
+                                } else {
+                                    cur
+                                };
                                 let dst = self.fresh_value_reg();
-                                self.emit_call(dst, cur, vec![*ar]);
+                                self.emit_call(dst, callee, vec![*ar]);
                                 cur = dst;
                             }
                             if call_args.len() < arg_tys.len() {
