@@ -64,7 +64,7 @@ use crate::mode::Mode;
 /// use rill_lang::compile;
 /// use rill_core::traits::Algorithm;
 ///
-/// let mut prog = compile::<f32>("main = _ * 0.5").unwrap();
+/// let mut prog = compile::<f32>("main g = g * 0.5").unwrap();
 /// let mut out = [0.0f32; 2];
 /// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
 /// assert_eq!(out, [1.0, 2.0]);

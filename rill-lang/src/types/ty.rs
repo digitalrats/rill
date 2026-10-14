@@ -243,12 +243,12 @@ instance Monoid List where { mempty = list; mappend a b = append_list a b; }
 
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
-    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+    fmap g m = case m of { Nothing => Nothing; Just x => Just (g x); };
 }
 
 instance Monad Maybe where {
     return x = Just x;
-    bind m f = match m of { Nothing => Nothing; Just x => f x; };
+    bind m f = case m of { Nothing => Nothing; Just x => f x; };
 }
 instance Monad List where {
     return x = cons x (list);
@@ -274,17 +274,17 @@ typeclass Arrow a where {
     first: a b c -> a (Pair b d) (Pair c d);
     compose: a b c -> a c d -> a b d;
     second: a b c -> a (Pair d b) (Pair d c) =
-        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+        k (compose (compose (arr (\ p -> Pair { first: p.second, second: p.first })) (first k)) (arr (\ p -> Pair { first: p.second, second: p.first })));
     both: a b c -> a d e -> a (Pair b d) (Pair c e) =
         f g (compose (first f) (second g));
     fan: a b c -> a b d -> a b (Pair c d) =
-        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+        f g (compose (arr (\ x -> Pair { first: x, second: x })) (both f g));
 }
 
 instance (Monad m) => Arrow (Kleisli m) where {
-    arr f = Kleisli (fn x -> return (f x));
-    first k = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
-    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+    arr f = Kleisli (\ x -> return (f x));
+    first k = Kleisli (\ p -> bind (k.unKleisli p.first) (\ z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (\ x -> bind (k1.unKleisli x) (\ y -> k2.unKleisli y));
 }
 
 main = ();
@@ -311,17 +311,17 @@ instance Buffer (Tape f32) where { }
 --  these (see `desugar.rs`). They use the builtin `Pair a b` record
 --  (`first`/`second`) to carry two channels.
 
---  `seq f g` runs f then g on one channel: `fn x -> g (f x)`.
-seq = fn f -> fn g -> fn x -> g (f x);
+--  `seq f g` runs f then g on one channel: `\ x -> g (f x)`.
+seq = \ f -> \ g -> \ x -> g (f x);
 --  `par f g` runs f and g independently on a two-channel Pair:
---  `fn p -> Pair { first: f p.first, second: g p.second }`.
-par = fn f -> fn g -> fn p -> Pair { first: f p.first, second: g p.second };
+--  `\ p -> Pair { first: f p.first, second: g p.second }`.
+par = \ f -> \ g -> \ p -> Pair { first: f p.first, second: g p.second };
 --  `split f g` fans one channel out to both f and g:
---  `fn x -> Pair { first: f x, second: g x }`.
-split = fn f -> fn g -> fn x -> Pair { first: f x, second: g x };
+--  `\ x -> Pair { first: f x, second: g x }`.
+split = \ f -> \ g -> \ x -> Pair { first: f x, second: g x };
 --  `merge f g` sums the two channels through f and g into one:
---  `fn p -> f p.first + g p.second`.
-merge = fn f -> fn g -> fn p -> f p.first + g p.second;
+--  `\ p -> f p.first + g p.second`.
+merge = \ f -> \ g -> \ p -> f p.first + g p.second;
 
 main = ();
 "#;
@@ -386,8 +386,8 @@ main = ();
 /// `Functor T` (`fmap` via `bind`); `instance Applicative T` ⇒ `Functor T`
 /// (`fmap` via `ap`/`pure`). Referenced by [`TypeEnv::derive_superclass_instances`].
 const APPLICATIVE_FROM_MONAD: &str =
-    "pure x = return x; ap mf mx = bind mf (fn f -> bind mx (fn x -> return (f x)));";
-const FUNCTOR_FROM_MONAD: &str = "fmap g x = bind x (fn y -> return (g y));";
+    "pure x = return x; ap mf mx = bind mf (\\ f -> bind mx (\\ x -> return (f x)));";
+const FUNCTOR_FROM_MONAD: &str = "fmap g x = bind x (\\ y -> return (g y));";
 const FUNCTOR_FROM_APPLICATIVE: &str = "fmap g x = ap (pure g) x;";
 
 /// Parse an `instance C T where { <template> }` source fragment and build the

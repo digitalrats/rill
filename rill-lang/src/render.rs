@@ -333,7 +333,7 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
         Expr::Match {
             scrutinee, arms, ..
         } => {
-            write!(buf, "match ").ok();
+            write!(buf, "case ").ok();
             render_expr(scrutinee, buf, 0)?;
             write!(buf, " of {{ ").ok();
             for arm in arms {
@@ -369,9 +369,12 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             Ok(())
         }
         Expr::Lambda { params, body, .. } => {
-            write!(buf, "fn").ok();
-            for p in params {
-                write!(buf, " {}", p.name).ok();
+            write!(buf, "\\").ok();
+            for (i, p) in params.iter().enumerate() {
+                if i > 0 {
+                    write!(buf, " ").ok();
+                }
+                write!(buf, "{}", p.name).ok();
             }
             write!(buf, " -> ").ok();
             render_expr(body, buf, 0)?;
@@ -606,7 +609,7 @@ mod tests {
             }],
         };
         let dsl = render(&prog).unwrap();
-        assert_eq!(dsl, "double = fn x -> x * 2.0");
+        assert_eq!(dsl, "double = \\x -> x * 2.0");
     }
 
     /// Render `main` from `src`, re-parse the rendered text, render again, and
@@ -660,23 +663,23 @@ mod tests {
     fn render_roundtrip_match_bare_ctor_arms() {
         let dsl = roundtrip_main(
             "data Shape = Circle Float | Rect Float Float; \
-             main = match s of { Circle r => r; Rect w h => w; };",
+             main = case s of { Circle r => r; Rect w h => w; };",
         );
-        assert_eq!(dsl, "main = match s of { Circle r => r; Rect w h => w; }");
+        assert_eq!(dsl, "main = case s of { Circle r => r; Rect w h => w; }");
     }
 
     #[test]
     fn render_roundtrip_match_guarded_arm() {
-        let dsl = roundtrip_main("main = match n of { n | n > 0 => 1.0; _ => 0.0; };");
-        assert_eq!(dsl, "main = match n of { n | n > 0 => 1.0; _ => 0.0; }");
+        let dsl = roundtrip_main("main = case n of { n | n > 0 => 1.0; _ => 0.0; };");
+        assert_eq!(dsl, "main = case n of { n | n > 0 => 1.0; _ => 0.0; }");
     }
 
     #[test]
     fn render_roundtrip_match_nested_pattern_literal_wildcard() {
-        let dsl = roundtrip_main("main = match x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; };");
+        let dsl = roundtrip_main("main = case x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; };");
         assert_eq!(
             dsl,
-            "main = match x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; }"
+            "main = case x of { Just (Left y) => y; 0 => 0.0; _ => 1.0; }"
         );
     }
 
@@ -686,20 +689,20 @@ mod tests {
         // both guards must be rendered (regression for the first alternative
         // being dropped).
         let dsl =
-            roundtrip_main("main = match n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; };");
+            roundtrip_main("main = case n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; };");
         assert_eq!(
             dsl,
-            "main = match n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; }"
+            "main = case n of { n | n > 0 => 1.0 | n == 1.0 => 2.0; _ => 0.0; }"
         );
     }
 
     #[test]
     fn render_roundtrip_match_bare_then_guarded_alternative() {
         // Bare first alternative followed by a guarded alternative.
-        let dsl = roundtrip_main("main = match n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; };");
+        let dsl = roundtrip_main("main = case n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; };");
         assert_eq!(
             dsl,
-            "main = match n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; }"
+            "main = case n of { n => 1.0 | n > 0 => 2.0; _ => 0.0; }"
         );
     }
 
@@ -708,10 +711,10 @@ mod tests {
         // A written `true` guard in a non-first position must not be conflated
         // with the bare arm's synthetic first-alternative `true` sentinel
         // (regression: it previously rendered as `n => 1.0 => 2.0`).
-        let dsl = roundtrip_main("main = match n of { n => 1.0 | true => 2.0; _ => 0.0; };");
+        let dsl = roundtrip_main("main = case n of { n => 1.0 | true => 2.0; _ => 0.0; };");
         assert_eq!(
             dsl,
-            "main = match n of { n => 1.0 | true => 2.0; _ => 0.0; }"
+            "main = case n of { n => 1.0 | true => 2.0; _ => 0.0; }"
         );
     }
 
@@ -721,8 +724,8 @@ mod tests {
         // inner ctor cannot swallow the sibling on re-parse (regression: it
         // previously rendered as `Just Left y 1` and re-parsed as
         // `Just (Left y 1)`).
-        let dsl = roundtrip_main("main = match x of { Just (Left y) 1 => y; _ => 0.0; };");
-        assert_eq!(dsl, "main = match x of { Just (Left y) 1 => y; _ => 0.0; }");
+        let dsl = roundtrip_main("main = case x of { Just (Left y) 1 => y; _ => 0.0; };");
+        assert_eq!(dsl, "main = case x of { Just (Left y) 1 => y; _ => 0.0; }");
     }
 
     #[test]

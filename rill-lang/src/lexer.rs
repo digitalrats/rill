@@ -69,9 +69,7 @@ pub enum Tok {
     KwForeign,
     /// `forall` keyword — explicit universal quantification in a type.
     KwForall,
-    /// `match` keyword — pattern matching over a sum value.
-    KwMatch,
-    /// `of` keyword — separator in `match x of { .. }`.
+    /// `of` keyword — separator in `case x of { .. }`.
     KwOf,
     /// `if` keyword — conditional expression.
     KwIf,
@@ -79,8 +77,6 @@ pub enum Tok {
     KwThen,
     /// `else` keyword — `if` branch separator.
     KwElse,
-    /// `fn` keyword — lambda literal `fn p1 p2 ... -> body`.
-    KwFn,
     /// `=>` fat arrow — match arm separator.
     FatArrow,
     /// `|` — sum-type constructor separator.
@@ -419,13 +415,11 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "instance" => Tok::KwInstance,
                 "foreign" if !followed_by_paren => Tok::KwForeign,
                 "forall" if !followed_by_paren => Tok::KwForall,
-                "match" => Tok::KwMatch,
                 "case" if !followed_by_paren => Tok::KwCase,
                 "of" if !followed_by_paren => Tok::KwOf,
                 "if" if !followed_by_paren => Tok::KwIf,
                 "then" if !followed_by_paren => Tok::KwThen,
                 "else" if !followed_by_paren => Tok::KwElse,
-                "fn" if !followed_by_paren => Tok::KwFn,
                 "do" if !followed_by_paren => Tok::KwDo,
                 "true" if !followed_by_paren => Tok::KwTrue,
                 "false" if !followed_by_paren => Tok::KwFalse,
@@ -669,7 +663,7 @@ mod tests {
     #[test]
     fn lexes_new_declaration_keywords() {
         assert_eq!(
-            kinds("data type newtype typeclass instance foreign match of"),
+            kinds("data type newtype typeclass instance foreign of"),
             vec![
                 Tok::KwData,
                 Tok::KwType,
@@ -677,10 +671,22 @@ mod tests {
                 Tok::KwTypeclass,
                 Tok::KwInstance,
                 Tok::KwForeign,
-                Tok::KwMatch,
                 Tok::KwOf,
                 Tok::Eof,
             ]
+        );
+    }
+
+    #[test]
+    fn no_fn_or_match_keywords() {
+        // Haskell 2010 surface: `fn` and `match` are ordinary identifiers.
+        assert_eq!(
+            kinds("fn x"),
+            vec![Tok::Ident("fn".into()), Tok::Ident("x".into()), Tok::Eof,]
+        );
+        assert_eq!(
+            kinds("match x"),
+            vec![Tok::Ident("match".into()), Tok::Ident("x".into()), Tok::Eof,]
         );
     }
 
@@ -693,14 +699,13 @@ mod tests {
     }
 
     #[test]
-    fn paren_following_keyword_is_not_a_call_for_match() {
-        // `match` is exclusively a keyword (`match (Nothing) of { ... }`), so a
-        // parenthesized scrutinee must NOT re-lex it as a function name. Other
-        // keywords stay paren-guarded (`data(y)` is a call-style identifier).
+    fn paren_following_keyword_is_not_a_call_for_other_keywords() {
+        // Keywords stay paren-guarded (`data(y)` is a call-style identifier).
+        // `match` is no longer a keyword — it lexes as a plain identifier.
         assert_eq!(
             kinds(r#"match(x) data(y)"#),
             vec![
-                Tok::KwMatch,
+                Tok::Ident("match".into()),
                 Tok::LParen,
                 Tok::Ident("x".into()),
                 Tok::RParen,
@@ -714,11 +719,11 @@ mod tests {
     }
 
     #[test]
-    fn lexes_fn_keyword_and_lambda_arrow() {
+    fn lexes_backslash_lambda_arrow() {
         assert_eq!(
-            kinds("fn x -> x"),
+            kinds(r"\x -> x"),
             vec![
-                Tok::KwFn,
+                Tok::Backslash,
                 Tok::Ident("x".into()),
                 Tok::FatArrow,
                 Tok::Ident("x".into()),

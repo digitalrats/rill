@@ -765,7 +765,11 @@ impl<'a> Parser<'a> {
     /// caller (`parse_program` / `parse_where_block`) to consume.
     fn parse_foreign_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
-        self.eat(&Tok::KwFn)?;
+        // `fn` is no longer a keyword (Task 6): `foreign fn name : sig` keeps
+        // the legacy spelling by consuming the `fn` identifier when present.
+        if matches!(self.peek().tok, Tok::Ident(ref s) if s == "fn") {
+            self.bump();
+        }
         let (name, _) = self.expect_ident()?;
         self.eat(&Tok::Colon)?;
         let sig = self.parse_type_expr()?;
@@ -920,35 +924,6 @@ impl<'a> Parser<'a> {
                 while self.peek().tok != Tok::RBrace {
                     let pat_span = self.peek().span;
                     let pattern = self.parse_pattern()?;
-                    self.eat(&Tok::FatArrow)?;
-                    let body = self.parse_expr(0, true)?;
-                    let arm_span = pat_span.merge(body.span());
-                    arms.push(MatchArm {
-                        pattern,
-                        guards: vec![(Expr::Bool(true, pat_span), body)],
-                        span: arm_span,
-                    });
-                    if self.peek().tok == Tok::Semi {
-                        self.bump();
-                    }
-                }
-                self.eat(&Tok::RBrace)?;
-                let span = t.span.merge(self.peek().span);
-                Ok(Expr::Match {
-                    scrutinee: Box::new(scrutinee),
-                    arms,
-                    span,
-                })
-            }
-            Tok::KwMatch => {
-                self.bump();
-                let scrutinee = self.parse_expr(0, false)?;
-                self.eat(&Tok::KwOf)?;
-                self.eat(&Tok::LBrace)?;
-                let mut arms = Vec::new();
-                while self.peek().tok != Tok::RBrace {
-                    let pat_span = self.peek().span;
-                    let pattern = self.parse_pattern()?;
                     let mut guards = Vec::new();
                     if self.peek().tok == Tok::Pipe {
                         // Guarded arm: `pat | g1 => b1 | g2 => b2` — the first
@@ -985,7 +960,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.eat(&Tok::RBrace)?;
-                // Span from the `match` keyword through the last arm (an empty
+                // Span from the `case` keyword through the last arm (an empty
                 // arm list falls back to the keyword alone).
                 let span = arms.last().map(|a| t.span.merge(a.span)).unwrap_or(t.span);
                 Ok(Expr::Match {
@@ -1009,25 +984,6 @@ impl<'a> Parser<'a> {
                         name: pname,
                         span: pspan,
                     }],
-                    body: Box::new(body),
-                    span,
-                })
-            }
-            Tok::KwFn => {
-                self.bump();
-                let mut params = Vec::new();
-                while let Tok::Ident(_) = self.peek().tok {
-                    let (pname, pspan) = self.expect_ident()?;
-                    params.push(Param {
-                        name: pname,
-                        span: pspan,
-                    });
-                }
-                self.eat(&Tok::FatArrow)?;
-                let body = self.parse_expr(0, true)?;
-                let span = t.span.merge(body.span());
-                Ok(Expr::Lambda {
-                    params,
                     body: Box::new(body),
                     span,
                 })
@@ -1371,7 +1327,175 @@ impl<'a> Parser<'a> {
 
 /// Parse a complete program (list of mutually-recursive top-level definitions).
 pub fn parse(tokens: &[Token], src: &[u8]) -> Result<Program, CompileError> {
-    Parser::new(tokens, src).parse_program()
+    let mut program = Parser::new(tokens, src).parse_program()?;
+    desugar_program(&mut program);
+    Ok(program)
+}
+
+/// Currying desugar (Task 6): multi-parameter definitions and multi-argument
+/// applications become nested unary lambdas / applications. This is the single
+/// point where the surface syntax `step a b = body` / `f a b c` is reduced to
+/// the unary core `step = \a -> (\b -> body)` / `((f a) b) c`. Runs once, at
+/// the end of [`parse`], before inference or lowering see the AST.
+pub(crate) fn desugar_program(p: &mut Program) {
+    curry_defs_in(&mut p.defs);
+}
+
+/// Curry every `Def::Eval` with more than one parameter into nested unary
+/// lambdas (`params: vec![]`), and walk every expression contained in the defs
+/// (`where`/`let` blocks, instance/default method bodies) for application
+/// currying.
+fn curry_defs_in(defs: &mut Vec<Def>) {
+    for d in defs {
+        match d {
+            Def::Eval {
+                params,
+                body,
+                where_defs,
+                ..
+            } => {
+                if params.len() > 1 {
+                    let mut lam = body.clone();
+                    for p in params.iter().rev() {
+                        lam = Expr::Lambda {
+                            params: vec![p.clone()],
+                            body: Box::new(lam),
+                            span: p.span,
+                        };
+                    }
+                    *body = lam;
+                    params.clear();
+                }
+                curry_defs_in(where_defs);
+                curry_expr(body);
+            }
+            Def::Anchor {
+                body, where_defs, ..
+            } => {
+                // Dead variant (Task 14 removes it); keep the walk total.
+                curry_defs_in(where_defs);
+                curry_expr(body);
+            }
+            Def::Local {
+                body, where_defs, ..
+            } => {
+                curry_defs_in(where_defs);
+                curry_expr(body);
+            }
+            Def::Typeclass { defaults, .. } => {
+                for (_, _, body) in defaults {
+                    curry_expr(body);
+                }
+            }
+            Def::Instance { method_bodies, .. } => {
+                for (_, _, body) in method_bodies {
+                    curry_expr(body);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Post-order walk: curry every `Expr::Apply` with more than one argument into
+/// a right-nested chain of single-argument `Expr::ApplyExpr` nodes.
+///
+/// `f a b c` ⇒ `ApplyExpr(ApplyExpr(ApplyExpr(Ref f, [a]), [b]), [c])`. A
+/// single-argument `Apply` is already unary and is left in place. `ApplyExpr`
+/// nodes are walked but not rewritten (the plan's application currying covers
+/// name-based applications; expression callees already parse left-associatively
+/// as juxtaposition).
+fn curry_expr(e: &mut Expr) {
+    match e {
+        Expr::Apply { name, args, span } => {
+            for a in args.iter_mut() {
+                curry_expr(a);
+            }
+            if args.len() > 1 {
+                let name = name.clone();
+                let sp = *span;
+                let mut callee = Expr::ApplyExpr {
+                    callee: Box::new(Expr::Ref(name, sp)),
+                    args: vec![args[0].clone()],
+                    span: sp,
+                };
+                for a in args.iter().skip(1) {
+                    callee = Expr::ApplyExpr {
+                        callee: Box::new(callee),
+                        args: vec![a.clone()],
+                        span: a.span(),
+                    };
+                }
+                *e = callee;
+            }
+        }
+        Expr::ApplyExpr { callee, args, .. } => {
+            curry_expr(callee);
+            for a in args.iter_mut() {
+                curry_expr(a);
+            }
+        }
+        Expr::Neg(inner, _) => curry_expr(inner),
+        Expr::Arith { lhs, rhs, .. } => {
+            curry_expr(lhs);
+            curry_expr(rhs);
+        }
+        Expr::Let { defs, body, .. } => {
+            curry_defs_in(defs);
+            curry_expr(body);
+        }
+        Expr::Record(fields, _) => {
+            for (_, f) in fields.iter_mut() {
+                curry_expr(f);
+            }
+        }
+        Expr::ActorParam {
+            default: Some(d), ..
+        } => curry_expr(d),
+        Expr::FieldProject { record, .. } => curry_expr(record),
+        Expr::FieldUpdate { record, value, .. } => {
+            curry_expr(record);
+            curry_expr(value);
+        }
+        Expr::Match {
+            scrutinee, arms, ..
+        } => {
+            curry_expr(scrutinee);
+            for arm in arms {
+                for (g, b) in arm.guards.iter_mut() {
+                    curry_expr(g);
+                    curry_expr(b);
+                }
+            }
+        }
+        Expr::If {
+            cond, then, els, ..
+        } => {
+            curry_expr(cond);
+            curry_expr(then);
+            curry_expr(els);
+        }
+        Expr::Lambda { body, .. } => curry_expr(body),
+        Expr::ListLit(xs, _) => {
+            for x in xs.iter_mut() {
+                curry_expr(x);
+            }
+        }
+        Expr::MapLit(fields, _) => {
+            for (_, v) in fields.iter_mut() {
+                curry_expr(v);
+            }
+        }
+        Expr::Cmp { lhs, rhs, .. } => {
+            curry_expr(lhs);
+            curry_expr(rhs);
+        }
+        Expr::Logic { lhs, rhs, .. } => {
+            curry_expr(lhs);
+            curry_expr(rhs);
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -1386,6 +1510,25 @@ mod tests {
         let p = prog(src);
         let main = p.main_def().expect("no main def");
         main.body().clone()
+    }
+
+    /// Descend a curried application chain (`((f a) b) c`) back to its named
+    /// callee and the original argument list. Returns `None` for anything that
+    /// does not bottom out in a name-based application.
+    fn curry_head(e: &Expr) -> Option<(&str, Vec<&Expr>)> {
+        match e {
+            Expr::ApplyExpr { callee, args, .. } => match callee.as_ref() {
+                // Base of a curried chain: `ApplyExpr(Ref f, [a])` is `f a`.
+                Expr::Ref(name, _) => Some((name.as_str(), args.iter().collect())),
+                _ => {
+                    let (name, mut collected) = curry_head(callee)?;
+                    collected.extend(args.iter());
+                    Some((name, collected))
+                }
+            },
+            Expr::Apply { name, args, .. } => Some((name.as_str(), args.iter().collect())),
+            _ => None,
+        }
     }
 
     #[test]
@@ -1432,11 +1575,26 @@ mod tests {
 
     #[test]
     fn parses_main_with_params() {
-        let p = prog("main regs x = 1.0 * 0.5");
+        let p = prog("main f x = 1.0 * 0.5");
         let main = p.main_def().unwrap();
-        assert_eq!(main.params().len(), 2);
-        assert_eq!(main.params()[0].name, "regs");
-        assert_eq!(main.params()[1].name, "x");
+        // Multi-parameter definitions are curried (Task 6): `main f x = body`
+        // becomes `main = \f -> \x -> body`.
+        assert_eq!(main.params().len(), 0);
+        match main.body() {
+            Expr::Lambda { params, body, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "f");
+                match body.as_ref() {
+                    Expr::Lambda { params, body, .. } => {
+                        assert_eq!(params.len(), 1);
+                        assert_eq!(params[0].name, "x");
+                        assert!(matches!(body.as_ref(), Expr::Arith { .. }));
+                    }
+                    other => panic!("expected nested lambda, got {other:?}"),
+                }
+            }
+            other => panic!("expected curried lambdas, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1492,15 +1650,17 @@ mod tests {
     #[test]
     fn colon_is_right_associative_cons() {
         // `1.0 : 2.0 : list` ≡ `1.0 : (2.0 : list)` — cons nests to the right.
-        match body("main = 1.0 : 2.0 : list") {
-            Expr::Apply { name, args, .. } => {
-                assert_eq!(name, "cons");
+        // The name-based application curries to a chain, but `curry_head`
+        // recovers the original argument list `cons 1.0 (cons 2.0 list)`.
+        match curry_head(&body("main = 1.0 : 2.0 : list")) {
+            Some(("cons", args)) => {
                 assert_eq!(args.len(), 2);
-                assert!(matches!(&args[0], Expr::Float(1.0, _)));
-                match &args[1] {
-                    Expr::Apply { name, args, .. } if name == "cons" => {
-                        assert!(matches!(&args[0], Expr::Float(2.0, _)));
-                        assert!(matches!(&args[1], Expr::Ref(r, _) if r == "list"));
+                assert!(matches!(args[0], Expr::Float(1.0, _)));
+                match curry_head(args[1]) {
+                    Some(("cons", args)) => {
+                        assert_eq!(args.len(), 2);
+                        assert!(matches!(args[0], Expr::Float(2.0, _)));
+                        assert!(matches!(args[1], Expr::Ref(r, _) if r == "list"));
                     }
                     other => panic!("expected nested cons, got {other:?}"),
                 }
@@ -1513,9 +1673,8 @@ mod tests {
     fn application_uses_juxtaposition() {
         let p = prog("main = gain 1.0 2");
         let main = p.main_def().unwrap();
-        match main.body() {
-            Expr::Apply { name, args, .. } => {
-                assert_eq!(name, "gain");
+        match curry_head(main.body()) {
+            Some(("gain", args)) => {
                 assert_eq!(args.len(), 2);
             }
             other => panic!("expected Apply, got {other:?}"),
@@ -1546,12 +1705,11 @@ mod tests {
     fn application_arg_may_be_a_composed_expression() {
         let p = prog("main = let g = 1.0 : list in f g 2");
         match p.main_def().unwrap().body() {
-            Expr::Let { body, .. } => match body.as_ref() {
-                Expr::Apply { name, args, .. } => {
-                    assert_eq!(name, "f");
+            Expr::Let { body, .. } => match curry_head(body) {
+                Some(("f", args)) => {
                     assert_eq!(args.len(), 2);
-                    assert!(matches!(&args[0], Expr::Ref(g, _) if g == "g"));
-                    assert!(matches!(&args[1], Expr::Int(2, _)));
+                    assert!(matches!(args[0], Expr::Ref(g, _) if g == "g"));
+                    assert!(matches!(args[1], Expr::Int(2, _)));
                 }
                 other => panic!("expected Apply, got {other:?}"),
             },
@@ -1562,10 +1720,18 @@ mod tests {
     #[test]
     fn juxtaposition_parse() {
         let p = prog("main regs = ay38910 1750000.0 regs : list");
-        match p.main_def().unwrap().body() {
-            Expr::Apply { name, args, .. } => {
-                assert_eq!(name, "cons");
+        match curry_head(p.main_def().unwrap().body()) {
+            Some(("cons", args)) => {
                 assert_eq!(args.len(), 2);
+                match curry_head(args[0]) {
+                    Some(("ay38910", args)) => {
+                        assert_eq!(args.len(), 2);
+                        assert!(matches!(args[0], Expr::Float(1750000.0, _)));
+                        assert!(matches!(args[1], Expr::Ref(r, _) if r == "regs"));
+                    }
+                    other => panic!("expected ay38910 apply, got {other:?}"),
+                }
+                assert!(matches!(args[1], Expr::Ref(r, _) if r == "list"));
             }
             other => panic!("expected cons, got {other:?}"),
         }
@@ -1778,9 +1944,8 @@ mod tests {
     fn parse_multiple_actor_params() {
         let p = prog("main = lofi ?bitdepth=8 ?sr=44100 0.5 1.0");
         let main = p.main_def().unwrap();
-        match main.body() {
-            Expr::Apply { name, args, .. } => {
-                assert_eq!(name, "lofi");
+        match curry_head(main.body()) {
+            Some(("lofi", args)) => {
                 assert_eq!(args.len(), 4);
                 match &args[0] {
                     Expr::ActorParam { name, default, .. } => {
@@ -2013,7 +2178,7 @@ mod tests {
 
     #[test]
     fn parses_match_expression() {
-        let p = prog("area x = match x of { Circle r => r; Rect w h => w; }; main = area");
+        let p = prog("area x = case x of { Circle r => r; Rect w h => w; }; main = area");
         let area = p.defs.iter().find(|d| d.name() == "area").unwrap();
         assert!(matches!(area.body(), Expr::Match { .. }));
     }
@@ -2029,7 +2194,7 @@ mod tests {
     fn parse_match_patterns_and_guards() {
         let p = prog(
             "data Shape = Circle Float | Rect Float Float; \
-             main = match s of { Circle r => r; 0 => 0.0; _ => 1.0; n | n > 0 => n; };",
+             main = case s of { Circle r => r; 0 => 0.0; _ => 1.0; n | n > 0 => n; };",
         );
         let Expr::Match { arms, .. } = p.main_def().unwrap().body() else {
             panic!("expected a match expression");
@@ -2088,14 +2253,14 @@ mod tests {
 
     #[test]
     fn parses_lambda_literal() {
-        let p = prog("double = fn x -> x * 2.0; main = double");
+        let p = prog(r"double = \x -> x * 2.0; main = double");
         let d = p.defs.iter().find(|d| d.name() == "double").unwrap();
         assert!(matches!(d.body(), Expr::Lambda { .. }));
     }
 
     #[test]
     fn parses_nested_lambda() {
-        let p = prog("adder = fn n -> fn x -> x + n; main = adder 2.0");
+        let p = prog(r"adder = \n -> \x -> x + n; main = adder 2.0");
         let d = p.defs.iter().find(|d| d.name() == "adder").unwrap();
         assert!(matches!(d.body(), Expr::Lambda { .. }));
     }
