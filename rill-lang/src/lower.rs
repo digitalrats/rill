@@ -2194,15 +2194,7 @@ impl<'a> Lowerer<'a> {
                     Some(ce) => self.lower_value_expected(callee, Some(ce))?,
                     None => self.lower_value(callee)?,
                 };
-                let (arg_tys, ret_tys) = match &cty {
-                    ValueTy::Thunk(a, r) => (a.clone(), r.clone()),
-                    _ => {
-                        return Err(CompileError::Type {
-                            msg: "applied expression must be a function value".into(),
-                            span: *span,
-                        });
-                    }
-                };
+                let (arg_tys, ret_tys) = flatten_value_thunk(&cty);
                 // Inference enforces exact arity (infer_apply_expr); this guard is defensive/unreachable via compilation.
                 if args.len() > arg_tys.len() {
                     return Err(CompileError::Type {
@@ -2220,6 +2212,32 @@ impl<'a> Lowerer<'a> {
                     arg_regs.push(ar);
                 }
                 let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                // A closure value is a curried NEST of single-argument thunks
+                // (`\a -> \b -> …`), so the arguments are applied one at a time:
+                // `f a b` becomes `(f a) b`. A partial application leaves the
+                // leftover closure value in place.
+                if is_curried_thunk(&cty) {
+                    let mut cur = cr;
+                    for ar in &arg_regs {
+                        let callee = if self.mode == Mode::Complete {
+                            let forced = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueForce {
+                                dst: forced,
+                                src: cur,
+                            });
+                            forced
+                        } else {
+                            cur
+                        };
+                        let dst = self.fresh_value_reg();
+                        self.emit_call(dst, callee, vec![*ar]);
+                        cur = dst;
+                    }
+                    if args.len() < arg_tys.len() {
+                        return Ok((cur, nest_value_thunk(&arg_tys[args.len()..], vec![ret_ty])));
+                    }
+                    return Ok((cur, ret_ty));
+                }
                 let dst = self.fresh_value_reg();
                 self.emit_call(dst, cr, arg_regs);
                 Ok((dst, ret_ty))

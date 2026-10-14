@@ -170,11 +170,6 @@ fn flatten_thunk(vty: &ValueTy) -> (Vec<ValueTy>, Vec<ValueTy>) {
     }
 }
 
-/// Consume `n` leading λ-captures from a definition's value type: for a
-/// `Thunk(captures, result)` with `n` applied parameters, the remaining value
-/// type is the result (or a `Thunk` over the leftover captures). A non-`Thunk`
-/// (a plain value) is returned unchanged. Nested curried chains are flattened
-/// first, so `applied_result(Thunk([a], [Thunk([b], [r])]), 2)` is `r`.
 /// The number of leading λs of a definition body.
 ///
 /// The parser's currying pass clears a multi-parameter definition's parameter
@@ -208,6 +203,11 @@ fn nest_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
     }
 }
 
+/// Consume `n` leading λ-captures from a definition's value type: for a
+/// `Thunk(captures, result)` with `n` applied parameters, the remaining value
+/// type is the result (or a `Thunk` over the leftover captures). A non-`Thunk`
+/// (a plain value) is returned unchanged. Nested curried chains are flattened
+/// first, so `applied_result(Thunk([a], [Thunk([b], [r])]), 2)` is `r`.
 fn applied_result(vty: &ValueTy, n: usize) -> ValueTy {
     if n == 0 {
         return vty.clone();
@@ -1318,30 +1318,13 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             if let Some(s) = ctx.defs.get(def.name()).cloned() {
                 let out = &s.ty.vty;
                 let resolved = ctx.subst.resolve_value(out);
-                // A named λ-parameter function's capture type must be its
-                // `Func` signature (so an application via the captured value
-                // dispatches), not just the result type. A recursive local
-                // (`fibs` : List) keeps its result type.
-                let capture_ty = match def {
-                    Def::Eval { params, .. } if params.is_empty() => resolved,
-                    Def::Anchor { params, .. } | Def::Eval { params, .. } => {
-                        let mut arg_tys = Vec::with_capacity(params.len());
-                        for p in params {
-                            let lt = ctx.locals.get(p.name.as_str()).cloned();
-                            let vty = match lt {
-                                Some(t) => t.vty.clone(),
-                                _ => ValueTy::Float,
-                            };
-                            let resolved_p = ctx.subst.resolve_value(&vty);
-                            arg_tys.push(match resolved_p {
-                                ValueTy::Var(_) => ValueTy::Float,
-                                other => other,
-                            });
-                        }
-                        ValueTy::Thunk(arg_tys, vec![resolved])
-                    }
-                    _ => resolved,
-                };
+                // The def's scheme already carries its FULL function type
+                // (`countup : Func([Float],[Float])`, `nth : <curried nest>`),
+                // so the shared-cell capture type IS that signature. Wrapping it
+                // in another λ layer would double the parameter list, and an
+                // application through the captured value would then return the
+                // leftover function type instead of the result.
+                let capture_ty = resolved;
                 shared_cell_result_tys.insert(def.name().to_string(), capture_ty);
             }
         }
@@ -3100,7 +3083,9 @@ fn infer_apply_expr(
     }
     let cty = ct.vty.clone();
     let (arg_tys, ret_tys) = match ctx.subst.resolve_value(&cty) {
-        ValueTy::Thunk(a, r) => (a, r),
+        // A function value is a curried NEST of single-argument thunks
+        // (`\a -> \b -> …`), so its total arity comes from flattening.
+        ValueTy::Thunk(..) => flatten_thunk(&ctx.subst.resolve_value(&cty)),
         ValueTy::Var(_) => {
             let a = (0..args.len()).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
             let r = vec![ctx.fresh_vty()];
@@ -3119,7 +3104,7 @@ fn infer_apply_expr(
             })
         }
     };
-    if args.len() != arg_tys.len() {
+    if args.len() > arg_tys.len() {
         return Err(CompileError::Type {
             msg: format!(
                 "expression expects {} argument(s), got {}",
@@ -3143,6 +3128,16 @@ fn infer_apply_expr(
         }
         let vt = infer_method_value_vty(ctx, a, "argument")?;
         unify_value(&vt, pt, &mut ctx.subst, a.span())?;
+    }
+    if args.len() < arg_tys.len() {
+        // Partial application of a closure-valued expression: the remaining λs
+        // stay as the value arguments of the leftover closure (kept nested, so
+        // a further application unifies against the real lambda type).
+        let remaining = &arg_tys[args.len()..];
+        return Ok(ArrowTy::value_channel(nest_thunk(
+            remaining,
+            ret_tys.clone(),
+        )));
     }
     Ok(ArrowTy::value_channel(
         ret_tys.first().cloned().unwrap_or(ValueTy::Float),
