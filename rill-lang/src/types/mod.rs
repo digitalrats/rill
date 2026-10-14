@@ -1,6 +1,5 @@
 //! HM type system: scalar unification + arity synthesis.
 
-pub mod arrow;
 pub mod ffi;
 pub mod infer;
 pub mod ty;

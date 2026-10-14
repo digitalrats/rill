@@ -120,8 +120,7 @@ impl Ctx {
         }
         let block = |b: &Block| value_instantiate(b, &vremap);
         ArrowTy {
-            ins: scheme.ty.ins.iter().map(&block).collect(),
-            outs: scheme.ty.outs.iter().map(&block).collect(),
+            vty: block(&scheme.ty.vty),
         }
     }
 
@@ -130,14 +129,33 @@ impl Ctx {
         // Value channels generalize their free value-type variables, so a
         // polymorphic value function (`id2 = fn x -> x`) is instantiated fresh
         // at every call site.
-        for b in t.ins.iter().chain(t.outs.iter()) {
-            for v in value_free_vars(b, &self.subst) {
-                if !acc.contains(&v) {
-                    acc.push(v);
-                }
+        for v in value_free_vars(&t.vty, &self.subst) {
+            if !acc.contains(&v) {
+                acc.push(v);
             }
         }
         acc
+    }
+}
+
+/// Consume `n` leading λ-captures from a definition's value type: for a
+/// `Thunk(captures, result)` with `n` applied parameters, the remaining value
+/// type is the result (or a `Thunk` over the leftover captures). A non-`Thunk`
+/// (a plain value) is returned unchanged.
+fn applied_result(vty: &ValueTy, n: usize) -> ValueTy {
+    if n == 0 {
+        return vty.clone();
+    }
+    match vty {
+        ValueTy::Thunk(caps, res) if caps.len() >= n => {
+            let rest = caps[n..].to_vec();
+            if rest.is_empty() {
+                res.first().cloned().unwrap_or(ValueTy::Float)
+            } else {
+                ValueTy::Thunk(rest, res.clone())
+            }
+        }
+        _ => vty.clone(),
     }
 }
 
@@ -290,7 +308,7 @@ fn infer_const_value(ctx: &mut Ctx, e: &Expr) -> Result<ValueTy, CompileError> {
             span,
         });
     }
-    let ch = &t.outs[0];
+    let ch = &t.vty;
     Ok(ch.clone())
 }
 
@@ -601,7 +619,7 @@ fn infer_method_value_vty_expected(
             span,
         });
     }
-    match &t.outs[0] {
+    match &t.vty {
         // A Buffer is an ordinary value (the block track is gone): a 0→1
         // Buffer expression is a valid value-track operand. Numeric literals
         // stay Int/Float (their `Buffer` typing is the signal-constant
@@ -1147,7 +1165,10 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             span: Span::new(0, 0),
         })?;
 
-    let signal_arity_in = main_scheme.ty.arity_in() - main_scheme.lam_count;
+    // The unary core has no signal-port channels: a program's `main` consumes
+    // no wire inputs (`signal_arity_in` is always 0) and always produces one
+    // value.
+    let signal_arity_in = 0usize;
     let signal_arity_out = main_scheme.ty.arity_out();
 
     if signal_arity_out == 0 {
@@ -1166,12 +1187,12 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             Def::Local { name, .. } => ctx
                 .defs
                 .get(name)
-                .filter(|s| s.lam_count == 0 && s.ty.ins.is_empty())
+                .filter(|s| s.lam_count == 0)
                 .map(|_| name.clone()),
             Def::Eval { name, params, .. } if params.is_empty() => ctx
                 .defs
                 .get(name)
-                .filter(|s| s.lam_count == 0 && s.ty.ins.is_empty())
+                .filter(|s| s.lam_count == 0)
                 .map(|_| name.clone()),
             Def::Anchor { .. } | Def::Eval { .. } => None,
             _ => None,
@@ -1191,7 +1212,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             if def.params().is_empty() && matches!(body, Expr::Lambda { .. }) {
                 let scheme = ctx.defs.get(name).cloned();
                 if let Some(s) = scheme {
-                    if let Some(ValueTy::Thunk(arg_tys, _)) = s.ty.outs.first() {
+                    if let ValueTy::Thunk(arg_tys, _) = &s.ty.vty {
                         let resolved = arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
                         fn_param_tys.insert(name.to_string(), resolved);
                     }
@@ -1218,36 +1239,33 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         };
         if is_shared {
             if let Some(s) = ctx.defs.get(def.name()).cloned() {
-                if let Some(out) = s.ty.outs.first() {
-                    let resolved = ctx.subst.resolve_value(out);
-                    // A named λ-parameter function's capture type must be its
-                    // `Func` signature (so an application via the captured value
-                    // dispatches), not just the result type. A recursive local
-                    // (`fibs` : List) keeps its result type.
-                    let capture_ty = match def {
-                        Def::Eval { params, .. } if params.is_empty() => resolved,
-                        Def::Anchor { params, .. } | Def::Eval { params, .. } => {
-                            let mut arg_tys = Vec::with_capacity(params.len());
-                            for p in params {
-                                let lt = ctx.locals.get(p.name.as_str()).cloned();
-                                let vty = match lt {
-                                    Some(ArrowTy { outs, .. }) if !outs.is_empty() => {
-                                        outs[0].clone()
-                                    }
-                                    _ => ValueTy::Float,
-                                };
-                                let resolved_p = ctx.subst.resolve_value(&vty);
-                                arg_tys.push(match resolved_p {
-                                    ValueTy::Var(_) => ValueTy::Float,
-                                    other => other,
-                                });
-                            }
-                            ValueTy::Thunk(arg_tys, vec![resolved])
+                let out = &s.ty.vty;
+                let resolved = ctx.subst.resolve_value(out);
+                // A named λ-parameter function's capture type must be its
+                // `Func` signature (so an application via the captured value
+                // dispatches), not just the result type. A recursive local
+                // (`fibs` : List) keeps its result type.
+                let capture_ty = match def {
+                    Def::Eval { params, .. } if params.is_empty() => resolved,
+                    Def::Anchor { params, .. } | Def::Eval { params, .. } => {
+                        let mut arg_tys = Vec::with_capacity(params.len());
+                        for p in params {
+                            let lt = ctx.locals.get(p.name.as_str()).cloned();
+                            let vty = match lt {
+                                Some(t) => t.vty.clone(),
+                                _ => ValueTy::Float,
+                            };
+                            let resolved_p = ctx.subst.resolve_value(&vty);
+                            arg_tys.push(match resolved_p {
+                                ValueTy::Var(_) => ValueTy::Float,
+                                other => other,
+                            });
                         }
-                        _ => resolved,
-                    };
-                    shared_cell_result_tys.insert(def.name().to_string(), capture_ty);
-                }
+                        ValueTy::Thunk(arg_tys, vec![resolved])
+                    }
+                    _ => resolved,
+                };
+                shared_cell_result_tys.insert(def.name().to_string(), capture_ty);
             }
         }
     }
@@ -1358,12 +1376,8 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 collect_ref_names(def.body(), &mut refs);
                 for n in refs {
                     if let Some(s) = ctx.defs.get(n.as_str()) {
-                        if s.ty.ins.is_empty() && s.ty.outs.is_empty() {
-                            // placeholder only (not yet inferred)
-                            rerate_value(ctx, n.as_str(), 0);
-                        } else {
-                            rerate_value(ctx, n.as_str(), s.lam_count);
-                        }
+                        let lam_count = s.lam_count;
+                        rerate_value(ctx, n.as_str(), lam_count);
                     }
                 }
             }
@@ -1378,7 +1392,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 for p in def.params() {
                     let lt = ctx.locals.get(p.name.as_str()).cloned();
                     let vty = match lt {
-                        Some(ArrowTy { outs, .. }) if !outs.is_empty() => outs[0].clone(),
+                        Some(t) => t.vty.clone(),
                         _ => ValueTy::Float,
                     };
                     let resolved = ctx.subst.resolve_value(&vty);
@@ -1413,15 +1427,17 @@ fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize) {
     }
     let out = ctx.next;
     ctx.next += 1;
+    let vty = if lam_count == 0 {
+        ValueTy::Var(out)
+    } else {
+        ValueTy::Thunk(ins, vec![ValueTy::Var(out)])
+    };
     ctx.defs.insert(
         name.to_string(),
         Scheme {
             lam_count,
             vars: vec![],
-            ty: ArrowTy {
-                ins,
-                outs: vec![ValueTy::Var(out)],
-            },
+            ty: ArrowTy { vty },
         },
     );
 }
@@ -1490,15 +1506,17 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
             ins.push(ctx.fresh_vty());
         }
         let out = ctx.fresh_vty();
+        let vty = if lam_count == 0 {
+            out
+        } else {
+            ValueTy::Thunk(ins, vec![out])
+        };
         ctx.defs.insert(
             def.name().to_string(),
             Scheme {
                 lam_count,
                 vars: vec![],
-                ty: ArrowTy {
-                    ins,
-                    outs: vec![out],
-                },
+                ty: ArrowTy { vty },
             },
         );
     }
@@ -1513,20 +1531,21 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         }
         let body_ty = infer_def_body(ctx, def)?;
         let lam_count = def.params().len();
-        let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
+        let mut param_tys = Vec::with_capacity(lam_count);
         for _ in 0..lam_count {
             // IO-model `main`: λ-parameters are the program's BUFFER inputs.
-            full_ins.push(if def.name() == "main" {
+            param_tys.push(if def.name() == "main" {
                 ValueTy::Buffer
             } else {
                 ValueTy::Float
             });
         }
-        full_ins.extend(body_ty.ins);
-        let resolved = ctx.subst.apply(&ArrowTy {
-            ins: full_ins,
-            outs: body_ty.outs,
-        });
+        let vty = if lam_count == 0 {
+            body_ty.vty
+        } else {
+            ValueTy::Thunk(param_tys, vec![body_ty.vty])
+        };
+        let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = ctx.free_vars(&resolved);
         ctx.defs.remove(def.name());
         ctx.defs.insert(
@@ -1546,20 +1565,21 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         }
         let body_ty = infer_def_body(ctx, def)?;
         let lam_count = def.params().len();
-        let mut full_ins = Vec::with_capacity(lam_count + body_ty.ins.len());
+        let mut param_tys = Vec::with_capacity(lam_count);
         for _ in 0..lam_count {
             // IO-model `main`: λ-parameters are the program's BUFFER inputs.
-            full_ins.push(if def.name() == "main" {
+            param_tys.push(if def.name() == "main" {
                 ValueTy::Buffer
             } else {
                 ValueTy::Float
             });
         }
-        full_ins.extend(body_ty.ins);
-        let resolved = ctx.subst.apply(&ArrowTy {
-            ins: full_ins,
-            outs: body_ty.outs,
-        });
+        let vty = if lam_count == 0 {
+            body_ty.vty
+        } else {
+            ValueTy::Thunk(param_tys, vec![body_ty.vty])
+        };
+        let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = ctx.free_vars(&resolved);
         ctx.defs.remove(def.name());
         ctx.defs.insert(
@@ -1585,7 +1605,7 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
             span,
         });
     }
-    match &bt.outs[0] {
+    match &bt.vty {
         ValueTy::Buffer => match body {
             Expr::Int(_, _) => Ok(ValueTy::Int),
             Expr::Float(_, _) => Ok(ValueTy::Float),
@@ -1717,8 +1737,7 @@ fn infer_guarded_arm_body(
     for (g, body) in &arm.guards {
         if !matches!(g, Expr::Bool(true, _)) {
             let gt = infer_expr(ctx, g)?;
-            if gt.arity_out() != 1 || !matches!(ctx.subst.resolve_value(&gt.outs[0]), ValueTy::Bool)
-            {
+            if gt.arity_out() != 1 || !matches!(ctx.subst.resolve_value(&gt.vty), ValueTy::Bool) {
                 return Err(CompileError::Type {
                     msg: "match guard must be a Bool value".into(),
                     span: g.span(),
@@ -1976,22 +1995,16 @@ fn infer_expr_expected(
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
     match e {
-        Expr::Int(_, _) => Ok(ArrowTy {
-            ins: vec![],
-            outs: vec![match expected {
-                // A numeric literal in a Buffer-expected position is a signal
-                // constant (`_ * 0.5` → `0.5 : Buffer`).
-                Some(ValueTy::Buffer) => ValueTy::Buffer,
-                _ => ValueTy::Int,
-            }],
-        }),
-        Expr::Float(_, _) => Ok(ArrowTy {
-            ins: vec![],
-            outs: vec![match expected {
-                Some(ValueTy::Buffer) => ValueTy::Buffer,
-                _ => ValueTy::Float,
-            }],
-        }),
+        Expr::Int(_, _) => Ok(ArrowTy::value(match expected {
+            // A numeric literal in a Buffer-expected position is a signal
+            // constant (`_ * 0.5` → `0.5 : Buffer`).
+            Some(ValueTy::Buffer) => ValueTy::Buffer,
+            _ => ValueTy::Int,
+        })),
+        Expr::Float(_, _) => Ok(ArrowTy::value(match expected {
+            Some(ValueTy::Buffer) => ValueTy::Buffer,
+            _ => ValueTy::Float,
+        })),
         Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
         Expr::Ref(name, span) => infer_ref_expected(ctx, name, *span, expected),
         Expr::Neg(inner, span) => {
@@ -2079,7 +2092,7 @@ fn infer_expr_expected(
                     span: *span,
                 });
             }
-            match &t.outs[0] {
+            match &t.vty {
                 ValueTy::Data(name, args) => match ctx.env.data_types.get(name.as_str()) {
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
@@ -2177,10 +2190,7 @@ fn infer_expr_expected(
                     }
                 }
                 _ => Err(CompileError::Type {
-                    msg: format!(
-                        "field projection requires a record value (got {:?})",
-                        t.outs[0]
-                    ),
+                    msg: format!("field projection requires a record value (got {:?})", t.vty),
                     span: *span,
                 }),
             }
@@ -2198,7 +2208,7 @@ fn infer_expr_expected(
                     span: *span,
                 });
             }
-            match &rt.outs[0] {
+            match &rt.vty {
                 ValueTy::Data(name, _) => {
                     let fty = ctx
                         .env
@@ -2302,7 +2312,7 @@ fn infer_expr_expected(
                     span: *span,
                 });
             }
-            if matches!(st.outs[0], ValueTy::Buffer) {
+            if matches!(st.vty, ValueTy::Buffer) {
                 return Err(CompileError::Type {
                     msg:
                         "match scrutinee cannot be a signal buffer; match requires a value channel"
@@ -2310,7 +2320,7 @@ fn infer_expr_expected(
                     span: *span,
                 });
             }
-            let scrutinee_vty = st.outs[0].clone();
+            let scrutinee_vty = st.vty.clone();
             // Sum or scalar? Resolve the scrutinee type enough to decide.
             // Builtin sums are parameterized (`Maybe a`, `Either a b`):
             // `Nothing` infers as `App("Maybe", [..])` and `head`/`lookup` as
@@ -2419,7 +2429,7 @@ fn infer_expr_expected(
                     span: cond.span(),
                 });
             }
-            if !matches!(ctx.subst.resolve_value(&ct.outs[0]), ValueTy::Bool) {
+            if !matches!(ctx.subst.resolve_value(&ct.vty), ValueTy::Bool) {
                 return Err(CompileError::Type {
                     msg: "if condition must be a Bool value".into(),
                     span: cond.span(),
@@ -2487,7 +2497,7 @@ fn infer_expr_expected(
                     span: *span,
                 });
             }
-            let ret_ty = bt.outs[0].clone();
+            let ret_ty = bt.vty.clone();
             Ok(ArrowTy::value_channel(ValueTy::Thunk(
                 arg_tys,
                 vec![ret_ty],
@@ -2837,7 +2847,7 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
         let is_func_value = ctx
             .defs
             .get(cur.as_str())
-            .is_some_and(|s| s.ty.outs.len() == 1 && matches!(s.ty.outs[0], ValueTy::Thunk(_, _)));
+            .is_some_and(|s| matches!(s.ty.vty, ValueTy::Thunk(_, _)));
         match ctx.def_bodies.get(cur.as_str()) {
             Some(Expr::Ref(next, _)) if is_func_value => {
                 cur = next.clone();
@@ -2861,13 +2871,7 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
             // builtin signature refers to the enclosing region's `s`, not a
             // global type. Falls back to the env for ordinary type names.
             match ctx.locals.get(n) {
-                Some(ArrowTy { ins, outs, .. })
-                    if ins.is_empty()
-                        && outs.len() == 1
-                        && matches!(outs[0], ValueTy::TyConVar(_)) =>
-                {
-                    Ok(outs[0].clone())
-                }
+                Some(t) if matches!(t.vty, ValueTy::TyConVar(_)) => Ok(t.vty.clone()),
                 _ => Ok(ctx.env.vty_of_name(n)),
             }
         }
@@ -2943,6 +2947,23 @@ fn infer_apply_expected(
     infer_apply_impl(ctx, name, args, span, expected)
 }
 
+/// Flatten a curried application chain rooted at a bare `Ref` name into
+/// `(name, [args…])`. `f a b` parses as
+/// `ApplyExpr(ApplyExpr(Ref f, [a]), [b])`; this returns `("f", [a, b])`.
+/// Returns `None` when the chain root is not a bare reference, or a node in the
+/// chain applies other than exactly one argument.
+fn uncurry_name_chain(e: &Expr) -> Option<(String, Vec<&Expr>)> {
+    match e {
+        Expr::Ref(name, _) => Some((name.clone(), Vec::new())),
+        Expr::ApplyExpr { callee, args, .. } if args.len() == 1 => {
+            let (name, mut chain) = uncurry_name_chain(callee)?;
+            chain.push(&args[0]);
+            Some((name, chain))
+        }
+        _ => None,
+    }
+}
+
 /// `(expr) a b` — apply a closure-valued expression. Infer the callee, unify it
 /// against a fresh `Func` signature, infer and check args, return the result.
 fn infer_apply_expr(
@@ -2951,6 +2972,18 @@ fn infer_apply_expr(
     args: &[Expr],
     span: Span,
 ) -> Result<ArrowTy, CompileError> {
+    // Un-curry a chain rooted at a bare name (`ApplyExpr(ApplyExpr(Ref f, [a]), [b])`
+    // from the parser's currying pass) back to the name-based form so the
+    // name-dispatched arms (FFI builtins, collection ops, typeclass methods,
+    // definitions) see the full argument list. A callee that is not a bare
+    // reference (a lambda, a field projection, a nested application of another
+    // expression) keeps the generic runtime-application path below.
+    if let Some((name, chain_args)) = uncurry_name_chain(callee) {
+        let mut all: Vec<&Expr> = chain_args;
+        all.extend(args.iter());
+        let owned: Vec<Expr> = all.into_iter().cloned().collect();
+        return infer_apply_impl(ctx, &name, &owned, span, None);
+    }
     let ct = infer_expr(ctx, callee)?;
     if ct.arity_out() != 1 {
         return Err(CompileError::Type {
@@ -2958,7 +2991,7 @@ fn infer_apply_expr(
             span,
         });
     }
-    let cty = ct.outs[0].clone();
+    let cty = ct.vty.clone();
     let (arg_tys, ret_tys) = match ctx.subst.resolve_value(&cty) {
         ValueTy::Thunk(a, r) => (a, r),
         ValueTy::Var(_) => {
@@ -2996,8 +3029,8 @@ fn infer_apply_expr(
         // Buffer-param acceptance in `infer_apply_impl`.
         if matches!(ctx.subst.resolve_value(pt), ValueTy::Buffer) {
             let at = infer_expr(ctx, a)?;
-            if at.arity_out() == 1 && matches!(at.outs[0], ValueTy::Buffer) {
-                unify_value(&at.outs[0], pt, &mut ctx.subst, a.span())?;
+            if at.arity_out() == 1 && matches!(at.vty, ValueTy::Buffer) {
+                unify_value(&at.vty, pt, &mut ctx.subst, a.span())?;
                 continue;
             }
         }
@@ -3097,7 +3130,7 @@ fn infer_apply_impl(
         // `value_map.contains_key(s_id)` catches the case where a cross-kind
         // unification bound the phantom itself away into an outer variable
         // (the phantom leaked even though `s_id` no longer appears).
-        let ret_vty = bt.outs[0].clone();
+        let ret_vty = bt.vty.clone();
         let resolved = ctx.subst.resolve_value(&ret_vty);
         if vty_mentions_tyvar(&resolved, s_id) || ctx.subst.value_map.contains_key(&s_id) {
             return Err(CompileError::Type {
@@ -3139,7 +3172,7 @@ fn infer_apply_impl(
             // used as `writeOutput 0 c`). Re-infer a numeric constant with
             // `Buffer` expected so it unifies as a buffer channel.
             let numeric_const = at0.arity_out() == 1
-                && matches!(at0.outs[0], ValueTy::Float | ValueTy::Int)
+                && matches!(at0.vty, ValueTy::Float | ValueTy::Int)
                 && (matches!(a, Expr::Int(_, _) | Expr::Float(_, _)) || is_const_value_ref(ctx, a));
             let at = if pt == ValueTy::Buffer && numeric_const {
                 infer_expr_expected(ctx, a, Some(ValueTy::Buffer))?
@@ -3170,7 +3203,7 @@ fn infer_apply_impl(
                     span: a.span(),
                 });
             }
-            unify_value(&at.outs[0], &pt, &mut ctx.subst, a.span())?;
+            unify_value(&at.vty, &pt, &mut ctx.subst, a.span())?;
         }
         // A builtin-sig result is a VALUE channel (`IO Buffer` is a
         // record value; `IO ()` a Void value).
@@ -3642,7 +3675,7 @@ fn infer_apply_impl(
                         .locals
                         .get(p)
                         .cloned()
-                        .map(|t| t.outs[0].clone())
+                        .map(|t| t.vty.clone())
                         .unwrap_or(ValueTy::Float);
                     unify_value(&av, &pt, &mut ctx.subst, a.span())?;
                 }
@@ -4041,12 +4074,23 @@ fn infer_apply_impl(
                                 && at.arity_out() == 1;
                         if is_sig_const {
                             unify_value(
-                                &at.outs[0],
+                                &at.vty,
                                 &ValueTy::Buffer,
                                 &mut ctx.subst,
                                 args[pos].span(),
                             )?;
-                        } else if at.outs.len() != 1 || !matches!(at.outs[0], ValueTy::Buffer) {
+                        } else if matches!(at.vty, ValueTy::Var(_)) {
+                            // An unresolved λ-parameter used in a signal slot is
+                            // a signal parameter: bind it to `Buffer`. (Curried
+                            // definitions bind their λ-parameters as values, so a
+                            // signal parameter arrives here as a fresh `Var`.)
+                            unify_value(
+                                &at.vty,
+                                &ValueTy::Buffer,
+                                &mut ctx.subst,
+                                args[pos].span(),
+                            )?;
+                        } else if !matches!(at.vty, ValueTy::Buffer) {
                             return Err(CompileError::Type {
                                 msg: format!(
                                     "signal argument {pos} of `{name}` must be a signal \
@@ -4179,7 +4223,7 @@ fn infer_apply_impl(
     // an arity inconsistency is rejected.
     if let Some(local) = ctx.locals.get(name).cloned() {
         if local.arity_out() == 1 {
-            let lty = &local.outs[0];
+            let lty = &local.vty;
             let resolved = ctx.subst.resolve_value(lty);
             let arg_tys: Vec<ValueTy>;
             let ret_tys: Vec<ValueTy>;
@@ -4220,71 +4264,70 @@ fn infer_apply_impl(
         // its scheme (v1 resolves calls at compile time — `reduce` β-reduces
         // the body for lowering). The referenced definition's arity must match
         // the applied arguments.
-        if scheme.ty.outs.len() == 1 {
-            if let ValueTy::Thunk(_, _) = &scheme.ty.outs[0] {
-                let ref_name = func_target(ctx, name);
-                let target = ctx.defs.get(ref_name.as_str()).cloned();
-                // A closure-valued definition (a lambda literal, or an
-                // application/ref chain that produces one) dispatches at
-                // RUNTIME — `add2 = adder 2.0`, `main = add2 3.0`. Its call
-                // type comes from the Func signature, and the args are value
-                // expressions unified against the parameter types.
-                let apply_by_signature = target.as_ref().is_some_and(|ts| {
-                    ts.lam_count == 0 && matches!(ts.ty.outs.first(), Some(ValueTy::Thunk(_, _)))
-                });
-                if apply_by_signature {
-                    // Instantiate the quantified Func signature so every call
-                    // site gets FRESH value-type variables (rank-N value
-                    // polymorphism). Without instantiation, a closure-valued
-                    // def with a free value var in its signature
-                    // (`id2 = fn x -> x` → `Func([Var(v)],[Var(v)])`) shares
-                    // that var across applications: the first call binds it,
-                    // and a second call at another type re-unifies against the
-                    // bound var and fails.
-                    let inst = ctx.instantiate(&scheme);
-                    let (arg_tys, ret_tys) = match &inst.outs[0] {
-                        ValueTy::Thunk(a, r) => (a.clone(), r.clone()),
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: format!("`{name}` must be a function value"),
-                                span,
-                            })
-                        }
-                    };
-                    // Partial application (currying): fewer args than the
-                    // signature produce a function over the remaining parameters.
-                    // `add3 = add 3.0` types as `Func([Float], [Float])`.
-                    if args.len() < arg_tys.len() {
-                        for (a, pty) in args.iter().zip(arg_tys.iter()) {
-                            let vt = infer_method_value_vty(ctx, a, "argument")?;
-                            unify_value(&vt, pty, &mut ctx.subst, a.span())?;
-                        }
-                        let remaining: Vec<ValueTy> = arg_tys[args.len()..].to_vec();
-                        return Ok(ArrowTy::value_channel(ValueTy::Thunk(
-                            remaining,
-                            ret_tys.clone(),
-                        )));
-                    }
-                    if args.len() > arg_tys.len() {
+        if let ValueTy::Thunk(_, _) = &scheme.ty.vty {
+            let ref_name = func_target(ctx, name);
+            let target = ctx.defs.get(ref_name.as_str()).cloned();
+            // A closure-valued definition (a lambda literal, or an
+            // application/ref chain that produces one) dispatches at
+            // RUNTIME — `add2 = adder 2.0`, `main = add2 3.0`. Its call
+            // type comes from the Func signature, and the args are value
+            // expressions unified against the parameter types.
+            let apply_by_signature = target
+                .as_ref()
+                .is_some_and(|ts| ts.lam_count == 0 && matches!(&ts.ty.vty, ValueTy::Thunk(_, _)));
+            if apply_by_signature {
+                // Instantiate the quantified Func signature so every call
+                // site gets FRESH value-type variables (rank-N value
+                // polymorphism). Without instantiation, a closure-valued
+                // def with a free value var in its signature
+                // (`id2 = fn x -> x` → `Func([Var(v)],[Var(v)])`) shares
+                // that var across applications: the first call binds it,
+                // and a second call at another type re-unifies against the
+                // bound var and fails.
+                let inst = ctx.instantiate(&scheme);
+                let (arg_tys, ret_tys) = match &inst.vty {
+                    ValueTy::Thunk(a, r) => (a.clone(), r.clone()),
+                    _ => {
                         return Err(CompileError::Type {
-                            msg: format!(
-                                "`{name}` expects {} argument(s), got {}",
-                                arg_tys.len(),
-                                args.len()
-                            ),
+                            msg: format!("`{name}` must be a function value"),
                             span,
-                        });
+                        })
                     }
+                };
+                // Partial application (currying): fewer args than the
+                // signature produce a function over the remaining parameters.
+                // `add3 = add 3.0` types as `Func([Float], [Float])`.
+                if args.len() < arg_tys.len() {
                     for (a, pty) in args.iter().zip(arg_tys.iter()) {
                         let vt = infer_method_value_vty(ctx, a, "argument")?;
                         unify_value(&vt, pty, &mut ctx.subst, a.span())?;
                     }
-                    let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
-                    return Ok(ArrowTy::value_channel(ret_ty));
+                    let remaining: Vec<ValueTy> = arg_tys[args.len()..].to_vec();
+                    return Ok(ArrowTy::value_channel(ValueTy::Thunk(
+                        remaining,
+                        ret_tys.clone(),
+                    )));
                 }
-                if let Some(ref_scheme) = target {
-                    if args.len() != ref_scheme.lam_count {
-                        return Err(CompileError::Type {
+                if args.len() > arg_tys.len() {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "`{name}` expects {} argument(s), got {}",
+                            arg_tys.len(),
+                            args.len()
+                        ),
+                        span,
+                    });
+                }
+                for (a, pty) in args.iter().zip(arg_tys.iter()) {
+                    let vt = infer_method_value_vty(ctx, a, "argument")?;
+                    unify_value(&vt, pty, &mut ctx.subst, a.span())?;
+                }
+                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                return Ok(ArrowTy::value_channel(ret_ty));
+            }
+            if let Some(ref_scheme) = target {
+                if args.len() != ref_scheme.lam_count {
+                    return Err(CompileError::Type {
                             msg: format!(
                                 "`{name}` references `{ref_name}`, which expects {} argument(s), got {}",
                                 ref_scheme.lam_count,
@@ -4292,13 +4335,12 @@ fn infer_apply_impl(
                             ),
                             span,
                         });
-                    }
-                    let ty = ctx.instantiate(&ref_scheme);
-                    return Ok(ArrowTy {
-                        ins: ty.ins[ref_scheme.lam_count..].to_vec(),
-                        outs: ty.outs,
-                    });
                 }
+                let ty = ctx.instantiate(&ref_scheme);
+                return Ok(ArrowTy::value(applied_result(
+                    &ty.vty,
+                    ref_scheme.lam_count,
+                )));
             }
         }
         if args.len() != scheme.lam_count {
@@ -4328,34 +4370,66 @@ fn infer_apply_impl(
             });
         }
         let ty = ctx.instantiate(&scheme);
-        return Ok(ArrowTy {
-            ins: ty.ins[scheme.lam_count..].to_vec(),
-            outs: ty.outs,
-        });
+        return Ok(ArrowTy::value(applied_result(&ty.vty, scheme.lam_count)));
     }
-    // Fallback: builtin reference (abs, sin, +, etc.) applied to signal args
+    // Fallback: builtin reference (abs, sin, +, etc.) applied to arguments.
+    // The unary core applies one argument at a time; the parser has already
+    // curried multi-argument applications into nested `ApplyExpr`, so this
+    // name-based arm receives at most one argument.
     let callee = infer_ref(ctx, name, span)?;
-    let mut combined: Option<ArrowTy> = None;
-    for arg in args {
-        // A numeric literal argument to a Buffer-consuming signal function
-        // (`sin 440.0`) is a SIGNAL constant: infer it with `Buffer` expected
-        // so the literal unifies as a buffer channel, not a value Float.
-        let at = if matches!(arg, Expr::Int(_, _) | Expr::Float(_, _))
-            && callee.arity_in() >= 1
-            && matches!(callee.ins[0], ValueTy::Buffer)
-        {
-            infer_expr_expected(ctx, arg, Some(ValueTy::Buffer))?
-        } else {
-            infer_expr(ctx, arg)?
-        };
-        combined = Some(match combined {
-            None => at,
-            Some(acc) => par(&acc, &at),
-        });
+    if args.is_empty() {
+        return Ok(callee);
     }
-    match combined {
-        Some(args_ty) => seq(ctx, &args_ty, &callee, span),
-        None => Ok(callee),
+    let arg = &args[0];
+    // A numeric literal argument to a Buffer-consuming function (`sin 440.0`)
+    // is a SIGNAL constant: infer it with `Buffer` expected so the literal
+    // unifies as a buffer value, not a value Float.
+    let want_buffer = match ctx.subst.resolve_value(&callee.vty) {
+        ValueTy::Thunk(caps, _) => caps.first().is_some_and(|c| matches!(c, ValueTy::Buffer)),
+        _ => false,
+    };
+    let at = if matches!(arg, Expr::Int(_, _) | Expr::Float(_, _)) && want_buffer {
+        infer_expr_expected(ctx, arg, Some(ValueTy::Buffer))?
+    } else {
+        infer_expr(ctx, arg)?
+    };
+    apply_one(ctx, &callee, &at, name, arg.span())
+}
+
+/// Apply a single argument to a callee value type (unary application): `f : Thunk([a], [b])`,
+/// `x : a` ⇒ `f x : b`. An unresolved callee `Var` is bound to a fresh unary
+/// `Thunk([p], [r])`.
+fn apply_one(
+    ctx: &mut Ctx,
+    callee: &ArrowTy,
+    arg: &ArrowTy,
+    name: &str,
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    match ctx.subst.resolve_value(&callee.vty) {
+        ValueTy::Thunk(caps, res) => {
+            let param = caps.first().cloned().unwrap_or(ValueTy::Float);
+            unify_value(&arg.vty, &param, &mut ctx.subst, span)?;
+            Ok(ArrowTy::value(
+                res.first().cloned().unwrap_or(ValueTy::Float),
+            ))
+        }
+        ValueTy::Var(_) => {
+            let p = ctx.fresh_vty();
+            let r = ctx.fresh_vty();
+            unify_value(
+                &callee.vty,
+                &ValueTy::Thunk(vec![p.clone()], vec![r.clone()]),
+                &mut ctx.subst,
+                span,
+            )?;
+            unify_value(&arg.vty, &p, &mut ctx.subst, span)?;
+            Ok(ArrowTy::value(r))
+        }
+        _ => Err(CompileError::Type {
+            msg: format!("`{name}` is not a function value"),
+            span,
+        }),
     }
 }
 
@@ -4510,7 +4584,7 @@ fn infer_collection_call(
                 Some(ValueTy::Thunk(vec![elem_ty], vec![fresh_ret])),
             )?;
             // The closure must take exactly one element argument.
-            match ctx.subst.resolve_value(&ft0.outs[0]) {
+            match ctx.subst.resolve_value(&ft0.vty) {
                 ValueTy::Thunk(a, _) if a.len() != 1 => {
                     return Err(CompileError::Type {
                         msg: "`map` expects a unary function".to_string(),
@@ -4522,7 +4596,7 @@ fn infer_collection_call(
             // The result list's ELEMENT type is the closure's RETURN type
             // (`map : (a -> b) -> List a -> List b`), not the source list's
             // element type — a type-changing map must be typed `List b`.
-            let ft = ctx.subst.resolve_value(&ft0.outs[0]);
+            let ft = ctx.subst.resolve_value(&ft0.vty);
             let ret_ty = match &ft {
                 ValueTy::Thunk(_, rets) => {
                     let r = rets.first().cloned().unwrap_or(ValueTy::Float);
@@ -4679,8 +4753,8 @@ fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
     // combinator output, a foreign call). A numeric literal / constant on the
     // OTHER side is then a SIGNAL constant — unify it with `Buffer` so
     // `_ * 0.5` types `0.5 : Buffer`, not a value `Float`.
-    let a_buffer = a.outs.iter().all(|c| matches!(c, ValueTy::Buffer));
-    let b_buffer = b.outs.iter().all(|c| matches!(c, ValueTy::Buffer));
+    let a_buffer = matches!(a.vty, ValueTy::Buffer);
+    let b_buffer = matches!(b.vty, ValueTy::Buffer);
     if a_buffer || b_buffer {
         // A numeric literal / constant on the non-buffer side is a SIGNAL
         // constant: `_ * 0.5` types `0.5 : Buffer`. Re-infer it with `Buffer`
@@ -4703,8 +4777,8 @@ fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
     // value channel — this is what makes lambda bodies like `fn x -> x * 2.0`
     // meaningful. A value channel mixed with a genuine signal computation
     // (`sin _`, a wire, a combinator) is still rejected.
-    let a_value = a.outs.iter().any(|c| !matches!(c, ValueTy::Buffer));
-    let b_value = b.outs.iter().any(|c| !matches!(c, ValueTy::Buffer));
+    let a_value = !matches!(a.vty, ValueTy::Buffer);
+    let b_value = !matches!(b.vty, ValueTy::Buffer);
     if a_value || b_value {
         // A value operand must be a numeric scalar (Float/Int, or an as-yet
         // unresolved Var such as a lambda parameter). Func values, records and
@@ -4715,13 +4789,13 @@ fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
         let scalar_vty = |v: &ValueTy| matches!(v, ValueTy::Float | ValueTy::Int | ValueTy::Var(_));
         let mut unify_operand = |t: &ArrowTy, e: &Expr| -> Result<(), CompileError> {
             if t.arity_in() == 0 && t.arity_out() == 1 {
-                if scalar_vty(&t.outs[0]) {
+                if scalar_vty(&t.vty) {
                     // A structural parameter variable in arithmetic is a
                     // numeric scalar: bind it to Float so the lambda's
                     // Func signature resolves concretely (`fn x -> x * 2`
                     // types `x` as Float, not an unconstrained Var).
-                    if matches!(&t.outs[0], ValueTy::Var(_)) {
-                        unify_value(&t.outs[0], &ValueTy::Float, &mut ctx.subst, e.span())?;
+                    if matches!(&t.vty, ValueTy::Var(_)) {
+                        unify_value(&t.vty, &ValueTy::Float, &mut ctx.subst, e.span())?;
                     }
                     return Ok(());
                 } else if matches!(e, Expr::Int(_, _) | Expr::Float(_, _))
@@ -4747,68 +4821,15 @@ fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<Arro
 /// numeric literal or a reference to a compile-time constant (`k = 2.0`). In
 /// signal arithmetic such an operand unifies with `Buffer` (`_ * 0.5`).
 fn is_signal_const(ctx: &Ctx, t: &ArrowTy, e: &Expr) -> bool {
-    t.arity_in() == 0
-        && t.arity_out() == 1
-        && matches!(t.outs[0], ValueTy::Float | ValueTy::Int | ValueTy::Var(_))
+    matches!(t.vty, ValueTy::Float | ValueTy::Int | ValueTy::Var(_))
         && (matches!(e, Expr::Int(_, _) | Expr::Float(_, _)) || is_const_value_ref(ctx, e))
-}
-
-pub(crate) fn par(a: &ArrowTy, b: &ArrowTy) -> ArrowTy {
-    let mut ins = a.ins.clone();
-    ins.extend(b.ins.clone());
-    let mut outs = a.outs.clone();
-    outs.extend(b.outs.clone());
-    ArrowTy { ins, outs }
-}
-
-fn seq(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
-    // A signal-constant lhs (`sin 440.0`): a 0→1 numeric literal feeding a
-    // Buffer-consuming callee (`sin : Buffer`) is a SIGNAL constant, not a
-    // value Float — accept it before the value-channel rejection below and
-    // treat its channel as the callee's Buffer input.
-    let signal_const_lhs = a.arity_in() == 0
-        && a.arity_out() == 1
-        && matches!(a.outs[0], ValueTy::Float | ValueTy::Int)
-        && b.arity_in() == 1
-        && matches!(b.ins[0], ValueTy::Buffer);
-    if !signal_const_lhs {
-        reject_value_channels(a, span)?;
-    }
-    if a.arity_out() != b.arity_in() {
-        return Err(CompileError::Type {
-            msg: format!(
-                "sequential `:` arity mismatch: lhs outputs {}, rhs inputs {}",
-                a.arity_out(),
-                b.arity_in()
-            ),
-            span,
-        });
-    }
-    for (x, y) in a.outs.iter().zip(b.ins.iter()) {
-        unify_value(x, y, &mut ctx.subst, span)?;
-    }
-    Ok(ArrowTy {
-        ins: a.ins.clone(),
-        outs: b.outs.clone(),
-    })
 }
 
 fn arith(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     reject_value_channels(a, span)?;
     reject_value_channels(b, span)?;
-    if a.arity_out() != 1 || b.arity_out() != 1 {
-        return Err(CompileError::Type {
-            msg: "arithmetic operands must each produce exactly one wire".into(),
-            span,
-        });
-    }
-    unify_value(&a.outs[0], &b.outs[0], &mut ctx.subst, span)?;
-    let mut ins = a.ins.clone();
-    ins.extend(b.ins.clone());
-    Ok(ArrowTy {
-        ins,
-        outs: vec![a.outs[0].clone()],
-    })
+    unify_value(&a.vty, &b.vty, &mut ctx.subst, span)?;
+    Ok(ArrowTy::value(a.vty.clone()))
 }
 
 fn check_all_numeric(_ctx: &mut Ctx, _t: &ArrowTy, _span: Span) -> Result<(), CompileError> {
@@ -4825,10 +4846,7 @@ fn check_all_numeric(_ctx: &mut Ctx, _t: &ArrowTy, _span: Span) -> Result<(), Co
 /// Unresolved `Var`s pass (they unify with `Buffer` when the combinator
 /// connects to a buffer channel).
 fn reject_value_channels(t: &ArrowTy, span: Span) -> Result<(), CompileError> {
-    if t.outs
-        .iter()
-        .any(|c| !matches!(c, ValueTy::Buffer | ValueTy::Var(_)))
-    {
+    if !matches!(t.vty, ValueTy::Buffer | ValueTy::Var(_)) {
         return Err(CompileError::Type {
             msg: "a value channel cannot be used in a signal combinator".into(),
             span,
@@ -4857,7 +4875,7 @@ mod tests {
         // the process result is `IO ()`.
         let t = ty_of("main = do { writeOutput (readInput); return () }").unwrap();
         assert_eq!(
-            t.process_ty.outs[0],
+            t.process_ty.vty,
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
         );
     }
@@ -4867,7 +4885,7 @@ mod tests {
         let t = ty_of("main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }")
             .unwrap();
         assert_eq!(
-            t.process_ty.outs[0],
+            t.process_ty.vty,
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
         );
     }
@@ -4876,43 +4894,43 @@ mod tests {
     fn integrator_is_1_to_1() {
         // A bare FFI builtin applied to a signal λ-param is a 1→1 Buffer arrow.
         let t = ty_of("main g = integrator g").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn user_def_alias_resolves() {
         let t = ty_of("main x = gain x where { gain y = y * 0.5; }").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn function_application_ok() {
         let t = ty_of("main x = g x where { g y = y * 0.5; }").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn where_mutual_visibility() {
         let t = ty_of("main x = a x where { a y = y * 0.5; b y = a y; }").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn top_level_mutual_visibility() {
         let t = ty_of("a x = x * 0.5; main x = a x").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn top_level_reverse_order() {
         let t = ty_of("main x = g x; g y = y * 0.5").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn let_expression_scoping() {
         let t = ty_of("main x = let g = 0.5 in g * x").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
@@ -4930,7 +4948,7 @@ mod tests {
     #[test]
     fn builtin_call_is_1_to_1() {
         let t = ty_with("main x = lowpass 1000.0 0.7 x").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
@@ -4953,14 +4971,17 @@ mod tests {
     #[test]
     fn transitive_var_chain_resolves() {
         let t = ty_of("main x = g x where { f y = y * 0.5; g y = f 0.5; }").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn scalar_param_broadcasts_to_buffer() {
         let t = ty_of("main g = g * 0.5").unwrap();
-        // A signal λ-param is a Buffer; scalar arithmetic over it stays Buffer.
-        assert_eq!(t.process_ty.outs[0], ValueTy::Buffer);
+        // A signal λ-param is a Buffer: `main` is a `Buffer -> Buffer` function.
+        assert_eq!(
+            t.process_ty.vty,
+            ValueTy::Thunk(vec![ValueTy::Buffer], vec![ValueTy::Buffer])
+        );
     }
 
     #[test]
@@ -4974,7 +4995,7 @@ mod tests {
         let t = ty_of("main = do { writeOutput (map (fn x -> x * ?gain) (readInput)); return () }")
             .unwrap();
         assert_eq!(
-            t.process_ty.outs[0],
+            t.process_ty.vty,
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
         );
     }
@@ -4985,7 +5006,7 @@ mod tests {
             ty_of("main = do { writeOutput (map (fn x -> x * ?gain=0.5) (readInput)); return () }")
                 .unwrap();
         assert_eq!(
-            t.process_ty.outs[0],
+            t.process_ty.vty,
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
         );
     }
@@ -5017,8 +5038,7 @@ mod tests {
     fn data_record_constructor_infers_value_channel() {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
-        assert_eq!(t.process_ty.outs.len(), 1);
-        assert_eq!(t.process_ty.outs[0], ValueTy::Data("Point".into(), vec![]));
+        assert_eq!(t.process_ty.vty, ValueTy::Data("Point".into(), vec![]));
     }
 
     #[test]
@@ -5026,7 +5046,7 @@ mod tests {
         let t =
             ty_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x")
                 .unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -5035,7 +5055,7 @@ mod tests {
             "data Shape = Circle Float | Rect Float Float; main = match Circle 1.0 of { Circle r => r; Rect w h => w; }",
         )
         .unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -5044,7 +5064,7 @@ mod tests {
             "data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x := 3.0",
         )
         .unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Data("Point".into(), vec![]));
+        assert_eq!(t.process_ty.vty, ValueTy::Data("Point".into(), vec![]));
     }
 
     #[test]
@@ -5130,20 +5150,20 @@ mod tests {
     #[test]
     fn if_infers_bool_condition_and_branch_types() {
         let t = ty_of("main = if 1.0 < 2.0 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
         assert!(ty_of("main = if 1.0 then 1.0 else 2.0").is_err());
         assert!(ty_of("main = if 1.0 < 2.0 then 1 else 2").is_ok());
         let t2 = ty_of("main = if 1.0 < 2.0 then 1 else 2").unwrap();
-        assert_eq!(t2.process_ty.outs[0], ValueTy::Int);
+        assert_eq!(t2.process_ty.vty, ValueTy::Int);
     }
 
     #[test]
     fn scalar_match_infers_literal_patterns_and_totality() {
         let t = ty_of("main = match 0 of { 0 => 1.0; _ => 2.0; }").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
         assert!(ty_of("main = match 0 of { 0 => 1.0 }").is_err());
         let t2 = ty_of("main = match true of { true => 1.0; false => 2.0 }").unwrap();
-        assert_eq!(t2.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t2.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -5151,9 +5171,9 @@ mod tests {
         // `match 0 of {...}`: a bare Int literal is a signal-rate channel in v1
         // but value-compatible in value positions (mirroring arm_result_vty).
         let t = ty_of("main = match 0 of { 0 => 1.0; _ => 2.0; }").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
         let t2 = ty_of("main = match 0.0 of { 0.0 => 1; _ => 2; }").unwrap();
-        assert_eq!(t2.process_ty.outs[0], ValueTy::Int);
+        assert_eq!(t2.process_ty.vty, ValueTy::Int);
     }
 
     #[test]
@@ -5162,7 +5182,7 @@ mod tests {
         // NOT `Maybe`. The sum context must be re-derived from the payload type
         // at each pattern level.
         let t = ty_of("main = match Just (Left 2.0) of { Just (Left x) => x; _ => 0.0; }").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -5174,7 +5194,7 @@ mod tests {
              main = match Wrap (Foo 2.0) of { Wrap (Foo x) => x; _ => 0.0; }",
         )
         .unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -5182,7 +5202,7 @@ mod tests {
         // Regression: the synonym is declared AFTER the data type that uses it.
         // Registration must be order-independent (two-phase: aliases first).
         let t = ty_of("data P = { x: Angles }; type Angles = Float; main = P { x: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Data("P".into(), vec![]));
+        assert_eq!(t.process_ty.vty, ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -5191,7 +5211,7 @@ mod tests {
         // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
         // it requires the explicit `Hz 440.0` wrapper.
         let t = ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: Hz 440.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Data("P".into(), vec![]));
+        assert_eq!(t.process_ty.vty, ValueTy::Data("P".into(), vec![]));
         // Newtypes are distinct wrappers: a bare Float does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
         // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
@@ -5202,7 +5222,7 @@ mod tests {
     fn chained_alias_resolves() {
         let t =
             ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Data("P".into(), vec![]));
+        assert_eq!(t.process_ty.vty, ValueTy::Data("P".into(), vec![]));
     }
 
     #[test]
@@ -5223,7 +5243,7 @@ mod tests {
     fn acyclic_data_type_still_compiles() {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Data("Point".into(), vec![]));
+        assert_eq!(t.process_ty.vty, ValueTy::Data("Point".into(), vec![]));
     }
 
     #[test]
@@ -5231,8 +5251,7 @@ mod tests {
         // A Def::Local whose body is a lambda literal infers to a Func value
         // channel via the normal def-body inference path.
         let t = ty_of("double = fn x -> x; main = double").unwrap();
-        assert_eq!(t.process_ty.outs.len(), 1);
-        assert!(matches!(t.process_ty.outs[0], ValueTy::Thunk(_, _)));
+        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(_, _)));
     }
 
     #[test]
@@ -5241,7 +5260,7 @@ mod tests {
         // 0→1 value channel, so the lambda body is well-typed (the tuple no
         // longer parses as two signal channels).
         let t = ty_of("main = fn x -> (x , x)").unwrap();
-        match &t.process_ty.outs[0] {
+        match &t.process_ty.vty {
             ValueTy::Thunk(_, ret) => {
                 assert_eq!(ret.len(), 1);
                 match &ret[0] {
@@ -5260,7 +5279,7 @@ mod tests {
         // double = fn x -> x * 2.0  -> lambda body is value arithmetic over
         // value params, inferred as Func([Float], [Float]).
         let t = ty_of("double = fn x -> x * 2.0; main = double").unwrap();
-        match &t.process_ty.outs[0] {
+        match &t.process_ty.vty {
             ValueTy::Thunk(arg_tys, ret_tys) => {
                 assert_eq!(arg_tys.len(), 1);
                 assert_eq!(ret_tys, &vec![ValueTy::Float]);
@@ -5275,11 +5294,11 @@ mod tests {
         // Func([Float], [Float]); fully applying it yields a Float.
         let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3").unwrap();
         assert_eq!(
-            t.process_ty.outs[0],
+            t.process_ty.vty,
             ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])
         );
         let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -5287,7 +5306,7 @@ mod tests {
         // add5 = add2 5.0 (partial application of a named def) types as
         // Func([Float], [Float]).
         let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
-        assert_eq!(t.process_ty.outs[0], ValueTy::Float);
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]

@@ -81,58 +81,67 @@ impl ValueTy {
     }
 }
 
-/// An arrow: n input values → m output values. Every data is equal; there is no
-/// `Rate`/`Channel`/`Scalar` split (linear lambda model).
+/// The type of a single expression: a unary core value type.
+///
+/// Every `infer_expr` produces one `Ty` (a single value); there is no channel
+/// arity any more (`ins`/`outs` vectors are gone). A function value carries a
+/// `ValueTy::Thunk(captures, result)`; a constant carries its leaf/scalar type.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ArrowTy {
-    /// Value type of each input (len = input arity).
-    pub ins: Vec<ValueTy>,
-    /// Value type of each output (len = output arity).
-    pub outs: Vec<ValueTy>,
+pub struct Ty {
+    /// The value type of the expression.
+    pub vty: ValueTy,
 }
 
-impl ArrowTy {
-    /// A (n_in → n_out) transform where every channel has the same type `t`.
-    pub fn uniform(n_in: usize, n_out: usize, t: ValueTy) -> ArrowTy {
-        ArrowTy {
-            ins: vec![t.clone(); n_in],
-            outs: vec![t; n_out],
-        }
+impl Ty {
+    /// A plain value of type `vty`.
+    pub fn value(vty: ValueTy) -> Ty {
+        Ty { vty }
     }
-    /// A value channel (per-block value): 0 inputs → 1 output.
-    pub fn value_channel(vty: ValueTy) -> ArrowTy {
-        ArrowTy {
-            ins: vec![],
-            outs: vec![vty],
-        }
+    /// Back-compat constructor: a value channel is just a single value.
+    pub fn value_channel(vty: ValueTy) -> Ty {
+        Ty { vty }
     }
-    /// Input arity (channel count).
+    /// Back-compat constructor for `(0 → 1)` transforms; a non-unary
+    /// `(n_in → n_out)` shape no longer exists — both are collapsed to the
+    /// single value `t`.
+    pub fn uniform(_n_in: usize, _n_out: usize, t: ValueTy) -> Ty {
+        Ty { vty: t }
+    }
+    /// Input arity: always 0 — a `Ty` is a single value (channel arity is gone).
     pub fn arity_in(&self) -> usize {
-        self.ins.len()
+        0
     }
-    /// Output arity (channel count).
+    /// Output arity: always 1 (a `Ty` is a single value).
     pub fn arity_out(&self) -> usize {
-        self.outs.len()
+        1
+    }
+    /// The single output value type (replaces the old `outs[0]`).
+    pub fn out(&self) -> &ValueTy {
+        &self.vty
     }
 }
+
+/// Back-compat alias for the unary expression type.
+pub type ArrowTy = Ty;
 
 /// Back-compat alias: every channel is a value type.
 pub type Block = ValueTy;
 
 /// A polymorphic type scheme `∀ vars. ty`.
 ///
-/// `lam_count` is the number of λ-parameters for this definition
-/// (user-defined function arguments — distinct from signal port inputs).
-/// These appear as the **first** `lam_count` elements of `ty.ins`.
-/// `ty.ins[lam_count..]` are signal port inputs (from `_` references in the body).
+/// `lam_count` is the number of λ-parameters for this definition (user-defined
+/// function arguments). With the unary core the parameters live inside the
+/// `Thunk` value type (`f = \a -> \b -> r` has type
+/// `Thunk([a], Thunk([b], [r]))`); `lam_count` is retained for the placeholder
+/// and lowering paths that count λ-parameters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Scheme {
     /// Number of λ-parameters.
     pub lam_count: usize,
     /// Quantified type variables.
     pub vars: Vec<TypeVarId>,
-    /// The generalized diagram type.
-    pub ty: ArrowTy,
+    /// The generalized value type.
+    pub ty: Ty,
 }
 
 /// A substitution mapping type variables to value types.
@@ -1218,10 +1227,8 @@ impl Subst {
     /// Every channel is a value type (lambda-parameter variables become the
     /// concrete types bound by call-site unification).
     pub fn apply(&self, t: &ArrowTy) -> ArrowTy {
-        let block = |b: &ValueTy| self.resolve_value(b);
-        ArrowTy {
-            ins: t.ins.iter().map(&block).collect(),
-            outs: t.outs.iter().map(&block).collect(),
+        Ty {
+            vty: self.resolve_value(&t.vty),
         }
     }
 }
@@ -1309,12 +1316,9 @@ mod channel_tests {
     #[test]
     fn apply_preserves_value_types() {
         let s = Subst::default();
-        let t = ArrowTy {
-            ins: vec![ValueTy::Int],
-            outs: vec![],
-        };
+        let t = ArrowTy::value(ValueTy::Int);
         let r = s.apply(&t);
-        assert_eq!(r.ins[0], ValueTy::Int);
+        assert_eq!(r.vty, ValueTy::Int);
     }
 }
 

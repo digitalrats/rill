@@ -5792,7 +5792,10 @@ pub fn lower_with_cafs_mode(
 ) -> Result<Ir, CompileError> {
     // Default channels: main's Buffer λ-params (legacy) — the new model
     // passes them explicitly via `lower_program_with_channels`.
-    let main_ins = tp.process_ty.ins.clone();
+    let main_ins = match &tp.process_ty.vty {
+        ValueTy::Thunk(ins, _) => ins.clone(),
+        _ => Vec::new(),
+    };
     let in_ch = main_ins
         .iter()
         .filter(|t| matches!(t, ValueTy::Buffer))
@@ -5831,7 +5834,10 @@ pub fn lower_program_with_channels(
     // `ValueTy::Buffer` in `process_ty.ins`) or a scalar control parameter.
     // Buffer params materialize as program inputs (`main_signal_args`);
     // control params get a persistent main cell (the `set_param` path).
-    let main_ins = tp.process_ty.ins.clone();
+    let main_ins = match &tp.process_ty.vty {
+        ValueTy::Thunk(ins, _) => ins.clone(),
+        _ => Vec::new(),
+    };
     // When the caller does not know the backend's channel count (the legacy
     // `compile_with`/`compile_graph` path), the IO model's `readInput` List is
     // sized at runtime; only a SIGNAL main (Buffer λ-parameters or a signal
@@ -5932,16 +5938,11 @@ pub fn lower_program_with_channels(
     // programs through the block track. The two tracks never mix — inference
     // guarantees a value-typed body has arity_in() == 0, so `main_args` is
     // empty on the value path.
-    let is_io_program = tp
-        .process_ty
-        .outs
-        .iter()
-        .any(|c| matches!(c, ValueTy::Data(n, _) | ValueTy::App(n, _) if n == "IO"));
-    let has_value_out = !tp
-        .process_ty
-        .outs
-        .iter()
-        .all(|c| matches!(c, ValueTy::Buffer));
+    let is_io_program = matches!(
+        &tp.process_ty.vty,
+        ValueTy::Data(n, _) | ValueTy::App(n, _) if n == "IO"
+    );
+    let has_value_out = !matches!(tp.process_ty.vty, ValueTy::Buffer);
     let outs = if has_value_out {
         if is_io_program {
             // IO-model `main`: the body is an IO action; signal outputs are
