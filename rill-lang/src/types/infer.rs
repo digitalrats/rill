@@ -201,7 +201,7 @@ pub(crate) fn data_field_vty(
                 )
             }
         }
-        crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Func(
+        crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
             args.iter()
                 .map(|a| data_field_vty(env, tyvars, a))
                 .collect(),
@@ -257,7 +257,7 @@ pub(crate) fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueT
                     _ => ValueTy::TyConApp(*f, sub_args),
                 }
             }
-            ValueTy::Func(fa, fr) => ValueTy::Func(
+            ValueTy::Thunk(fa, fr) => ValueTy::Thunk(
                 fa.iter().map(|x| sub(x, args)).collect(),
                 fr.iter().map(|x| sub(x, args)).collect(),
             ),
@@ -767,7 +767,7 @@ pub(crate) fn signature_param_tys_conv(
                     .map(|a| conv(env, class_var, ctor, vars, fresh, a))
                     .collect(),
             ),
-            crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Func(
+            crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
                 args.iter()
                     .map(|a| conv(env, class_var, ctor, vars, fresh, a))
                     .collect(),
@@ -1191,7 +1191,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             if def.params().is_empty() && matches!(body, Expr::Lambda { .. }) {
                 let scheme = ctx.defs.get(name).cloned();
                 if let Some(s) = scheme {
-                    if let Some(ValueTy::Func(arg_tys, _)) = s.ty.outs.first() {
+                    if let Some(ValueTy::Thunk(arg_tys, _)) = s.ty.outs.first() {
                         let resolved = arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
                         fn_param_tys.insert(name.to_string(), resolved);
                     }
@@ -1242,7 +1242,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
                                     other => other,
                                 });
                             }
-                            ValueTy::Func(arg_tys, vec![resolved])
+                            ValueTy::Thunk(arg_tys, vec![resolved])
                         }
                         _ => resolved,
                     };
@@ -1607,7 +1607,7 @@ fn vty_mentions_tyvar(t: &ValueTy, id: TypeVarId) -> bool {
     match t {
         ValueTy::Var(v) | ValueTy::TyConVar(v) => *v == id,
         ValueTy::TyConApp(f, args) => *f == id || args.iter().any(|a| vty_mentions_tyvar(a, id)),
-        ValueTy::Func(args, rets) => {
+        ValueTy::Thunk(args, rets) => {
             args.iter().any(|a| vty_mentions_tyvar(a, id))
                 || rets.iter().any(|r| vty_mentions_tyvar(r, id))
         }
@@ -1654,7 +1654,7 @@ fn value_free_vars_into(t: &ValueTy, subst: &Subst, acc: &mut Vec<TypeVarId>) {
                 value_free_vars_into(a, subst, acc);
             }
         }
-        ValueTy::Func(args, rets) => {
+        ValueTy::Thunk(args, rets) => {
             for a in args {
                 value_free_vars_into(a, subst, acc);
             }
@@ -1690,7 +1690,7 @@ fn value_instantiate(t: &ValueTy, fresh: &HashMap<TypeVarId, TypeVarId>) -> Valu
             let f = fresh.get(f).copied().unwrap_or(*f);
             ValueTy::TyConApp(f, args)
         }
-        ValueTy::Func(args, rets) => ValueTy::Func(
+        ValueTy::Thunk(args, rets) => ValueTy::Thunk(
             args.iter().map(|a| value_instantiate(a, fresh)).collect(),
             rets.iter().map(|r| value_instantiate(r, fresh)).collect(),
         ),
@@ -2457,7 +2457,7 @@ fn infer_expr_expected(
             // 0.5) (readInput)` unifies `x : Buffer` BEFORE the body infers, so
             // the arithmetic sees a Buffer (not a Var that later conflicts).
             let expected_args = match &expected {
-                Some(ValueTy::Func(es, _)) => Some(es.clone()),
+                Some(ValueTy::Thunk(es, _)) => Some(es.clone()),
                 _ => None,
             };
             for (i, p) in params.iter().enumerate() {
@@ -2475,7 +2475,7 @@ fn infer_expr_expected(
             // The lambda's BODY is expected to produce the lambda's RESULT type, not
             // the whole `Func` type (which is what the caller expects).
             let body_expected = match expected {
-                Some(ValueTy::Func(_, rets)) => rets.first().cloned(),
+                Some(ValueTy::Thunk(_, rets)) => rets.first().cloned(),
                 _ => None,
             };
             let bt = infer_expr_expected(ctx, body, body_expected)?;
@@ -2488,7 +2488,10 @@ fn infer_expr_expected(
                 });
             }
             let ret_ty = bt.outs[0].clone();
-            Ok(ArrowTy::value_channel(ValueTy::Func(arg_tys, vec![ret_ty])))
+            Ok(ArrowTy::value_channel(ValueTy::Thunk(
+                arg_tys,
+                vec![ret_ty],
+            )))
         }
         Expr::Bool(_, _) => Ok(ArrowTy::value_channel(ValueTy::Bool)),
         Expr::ListLit(elems, _) => {
@@ -2777,7 +2780,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 // (fn x -> integrator x) (readInput)`). Mirrors the partial
                 // application typing in the FFI apply arm.
                 let n_sig = sig.params.len();
-                return Ok(ArrowTy::value_channel(ValueTy::Func(
+                return Ok(ArrowTy::value_channel(ValueTy::Thunk(
                     vec![ValueTy::Buffer; n_sig],
                     vec![ValueTy::Buffer; sig.signal_outs],
                 )));
@@ -2801,11 +2804,11 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         if scheme.lam_count > 0 {
             // A bare reference to a user definition with λ-parameters is a
             // first-class function value: `f = double` binds `f` to
-            // `ValueTy::Func([], [])` (an unknown signature — a bare named
+            // `ValueTy::Thunk([], [])` (an unknown signature — a bare named
             // ref's arity is resolved when it is applied, see `infer_apply`).
             // Using it where a signal is required is rejected by the signal
             // combinators.
-            return Ok(ArrowTy::value_channel(ValueTy::Func(vec![], vec![])));
+            return Ok(ArrowTy::value_channel(ValueTy::Thunk(vec![], vec![])));
         }
         return Ok(ctx.instantiate(&scheme));
     }
@@ -2825,7 +2828,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
 /// A func value binding (`f = double`) is a `Def::Local` whose body is a bare
 /// `Ref` to another definition; chains (`g = f`) follow the body refs until a
 /// definition that is itself not a func value is reached (the referenced
-/// definition, with λ-parameters). The structural `ValueTy::Func` no longer
+/// definition, with λ-parameters). The structural `ValueTy::Thunk` no longer
 /// carries the referenced name, so it is recovered from the AST bodies here.
 /// (A later task replaces this with signature-based dispatch.)
 fn func_target(ctx: &Ctx, name: &str) -> String {
@@ -2834,7 +2837,7 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
         let is_func_value = ctx
             .defs
             .get(cur.as_str())
-            .is_some_and(|s| s.ty.outs.len() == 1 && matches!(s.ty.outs[0], ValueTy::Func(_, _)));
+            .is_some_and(|s| s.ty.outs.len() == 1 && matches!(s.ty.outs[0], ValueTy::Thunk(_, _)));
         match ctx.def_bodies.get(cur.as_str()) {
             Some(Expr::Ref(next, _)) if is_func_value => {
                 cur = next.clone();
@@ -2848,7 +2851,7 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
 
 /// Convert a builtin-signature type expression to a concrete `ValueTy`.
 /// `TName` resolves through the env; `TApp` builds `App(head, args)`; a `TFunc`
-/// becomes `ValueTy::Func`. Used by `readInput`/`writeOutput` builtin-sig
+/// becomes `ValueTy::Thunk`. Used by `readInput`/`writeOutput` builtin-sig
 /// application (their types are ordinary, unlike `runST`'s forall).
 fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, CompileError> {
     match te {
@@ -2887,7 +2890,7 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
             for a in args {
                 targs.push(type_expr_to_vty(ctx, a)?);
             }
-            Ok(ValueTy::Func(targs, vec![type_expr_to_vty(ctx, ret)?]))
+            Ok(ValueTy::Thunk(targs, vec![type_expr_to_vty(ctx, ret)?]))
         }
         crate::ast::TypeExpr::TForall(_, _) => Err(CompileError::Type {
             msg: "a forall-typed signature cannot be applied as a plain builtin".into(),
@@ -2957,13 +2960,13 @@ fn infer_apply_expr(
     }
     let cty = ct.outs[0].clone();
     let (arg_tys, ret_tys) = match ctx.subst.resolve_value(&cty) {
-        ValueTy::Func(a, r) => (a, r),
+        ValueTy::Thunk(a, r) => (a, r),
         ValueTy::Var(_) => {
             let a = (0..args.len()).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
             let r = vec![ctx.fresh_vty()];
             unify_value(
                 &cty,
-                &ValueTy::Func(a.clone(), r.clone()),
+                &ValueTy::Thunk(a.clone(), r.clone()),
                 &mut ctx.subst,
                 span,
             )?;
@@ -3349,7 +3352,7 @@ fn infer_apply_impl(
                                 .map(|x| freshen_placeholder(x, bindings, ctx))
                                 .collect(),
                         ),
-                        ValueTy::Func(fa, fr) => ValueTy::Func(
+                        ValueTy::Thunk(fa, fr) => ValueTy::Thunk(
                             fa.iter()
                                 .map(|x| freshen_placeholder(x, bindings, ctx))
                                 .collect(),
@@ -4153,7 +4156,7 @@ fn infer_apply_impl(
             // operands, only genuine partial applications reach here, so the
             // result is a `Func` value: `Buffer -> … -> Buffer`.
             if fed_signals > 0 {
-                return Ok(ArrowTy::value_channel(ValueTy::Func(
+                return Ok(ArrowTy::value_channel(ValueTy::Thunk(
                     vec![ValueTy::Buffer; fed_signals],
                     vec![ValueTy::Buffer; sig.signal_outs],
                 )));
@@ -4181,7 +4184,7 @@ fn infer_apply_impl(
             let arg_tys: Vec<ValueTy>;
             let ret_tys: Vec<ValueTy>;
             match resolved {
-                ValueTy::Func(a, r) => {
+                ValueTy::Thunk(a, r) => {
                     arg_tys = a;
                     ret_tys = r;
                 }
@@ -4190,7 +4193,7 @@ fn infer_apply_impl(
                     ret_tys = vec![ctx.fresh_vty()];
                 }
             }
-            let func_ty = ValueTy::Func(arg_tys.clone(), ret_tys.clone());
+            let func_ty = ValueTy::Thunk(arg_tys.clone(), ret_tys.clone());
             if args.len() != arg_tys.len() {
                 return Err(CompileError::Type {
                     msg: format!(
@@ -4212,13 +4215,13 @@ fn infer_apply_impl(
     }
     // User-defined function: λ-params are consumed, signal ports remain open
     if let Some(scheme) = ctx.defs.get(name).cloned() {
-        // Func-value application: `f = double` binds `f` to `ValueTy::Func`,
+        // Func-value application: `f = double` binds `f` to `ValueTy::Thunk`,
         // and `f x` dispatches to the referenced definition by instantiating
         // its scheme (v1 resolves calls at compile time — `reduce` β-reduces
         // the body for lowering). The referenced definition's arity must match
         // the applied arguments.
         if scheme.ty.outs.len() == 1 {
-            if let ValueTy::Func(_, _) = &scheme.ty.outs[0] {
+            if let ValueTy::Thunk(_, _) = &scheme.ty.outs[0] {
                 let ref_name = func_target(ctx, name);
                 let target = ctx.defs.get(ref_name.as_str()).cloned();
                 // A closure-valued definition (a lambda literal, or an
@@ -4227,7 +4230,7 @@ fn infer_apply_impl(
                 // type comes from the Func signature, and the args are value
                 // expressions unified against the parameter types.
                 let apply_by_signature = target.as_ref().is_some_and(|ts| {
-                    ts.lam_count == 0 && matches!(ts.ty.outs.first(), Some(ValueTy::Func(_, _)))
+                    ts.lam_count == 0 && matches!(ts.ty.outs.first(), Some(ValueTy::Thunk(_, _)))
                 });
                 if apply_by_signature {
                     // Instantiate the quantified Func signature so every call
@@ -4240,7 +4243,7 @@ fn infer_apply_impl(
                     // bound var and fails.
                     let inst = ctx.instantiate(&scheme);
                     let (arg_tys, ret_tys) = match &inst.outs[0] {
-                        ValueTy::Func(a, r) => (a.clone(), r.clone()),
+                        ValueTy::Thunk(a, r) => (a.clone(), r.clone()),
                         _ => {
                             return Err(CompileError::Type {
                                 msg: format!("`{name}` must be a function value"),
@@ -4257,7 +4260,7 @@ fn infer_apply_impl(
                             unify_value(&vt, pty, &mut ctx.subst, a.span())?;
                         }
                         let remaining: Vec<ValueTy> = arg_tys[args.len()..].to_vec();
-                        return Ok(ArrowTy::value_channel(ValueTy::Func(
+                        return Ok(ArrowTy::value_channel(ValueTy::Thunk(
                             remaining,
                             ret_tys.clone(),
                         )));
@@ -4310,7 +4313,7 @@ fn infer_apply_impl(
                     let vt = infer_const_value(ctx, a)?;
                     unify_value(&vt, &ValueTy::Float, &mut ctx.subst, a.span())?;
                 }
-                return Ok(ArrowTy::value_channel(ValueTy::Func(
+                return Ok(ArrowTy::value_channel(ValueTy::Thunk(
                     vec![ValueTy::Float; remaining],
                     vec![ValueTy::Float],
                 )));
@@ -4415,8 +4418,7 @@ fn infer_collection_call(
     // panic the runtime path.
     let expect_closure = |ctx: &mut Ctx, want: usize, what: &str| -> Result<(), CompileError> {
         let ft = arg_vty(ctx, 0)?;
-        let ok =
-            matches!(&ft, ValueTy::Func(arg_tys, _) if arg_tys.is_empty() || arg_tys.len() == want);
+        let ok = matches!(&ft, ValueTy::Thunk(arg_tys, _) if arg_tys.is_empty() || arg_tys.len() == want);
         if ok {
             Ok(())
         } else {
@@ -4505,11 +4507,11 @@ fn infer_collection_call(
             let ft0 = infer_expr_expected(
                 ctx,
                 &args[0],
-                Some(ValueTy::Func(vec![elem_ty], vec![fresh_ret])),
+                Some(ValueTy::Thunk(vec![elem_ty], vec![fresh_ret])),
             )?;
             // The closure must take exactly one element argument.
             match ctx.subst.resolve_value(&ft0.outs[0]) {
-                ValueTy::Func(a, _) if a.len() != 1 => {
+                ValueTy::Thunk(a, _) if a.len() != 1 => {
                     return Err(CompileError::Type {
                         msg: "`map` expects a unary function".to_string(),
                         span: args[0].span(),
@@ -4522,7 +4524,7 @@ fn infer_collection_call(
             // element type — a type-changing map must be typed `List b`.
             let ft = ctx.subst.resolve_value(&ft0.outs[0]);
             let ret_ty = match &ft {
-                ValueTy::Func(_, rets) => {
+                ValueTy::Thunk(_, rets) => {
                     let r = rets.first().cloned().unwrap_or(ValueTy::Float);
                     ctx.subst.resolve_value(&r)
                 }
@@ -4561,7 +4563,7 @@ fn infer_collection_call(
             let ft0 = arg_vty(ctx, 0)?;
             let ft = ctx.subst.resolve_value(&ft0);
             let b = match &ft {
-                ValueTy::Func(_, rets) => match rets.first() {
+                ValueTy::Thunk(_, rets) => match rets.first() {
                     Some(ValueTy::App(n, inner)) if n == "List" => {
                         inner.first().cloned().unwrap_or(elem)
                     }
@@ -5230,7 +5232,7 @@ mod tests {
         // channel via the normal def-body inference path.
         let t = ty_of("double = fn x -> x; main = double").unwrap();
         assert_eq!(t.process_ty.outs.len(), 1);
-        assert!(matches!(t.process_ty.outs[0], ValueTy::Func(_, _)));
+        assert!(matches!(t.process_ty.outs[0], ValueTy::Thunk(_, _)));
     }
 
     #[test]
@@ -5240,7 +5242,7 @@ mod tests {
         // longer parses as two signal channels).
         let t = ty_of("main = fn x -> (x , x)").unwrap();
         match &t.process_ty.outs[0] {
-            ValueTy::Func(_, ret) => {
+            ValueTy::Thunk(_, ret) => {
                 assert_eq!(ret.len(), 1);
                 match &ret[0] {
                     ValueTy::App(name, _) => {
@@ -5259,7 +5261,7 @@ mod tests {
         // value params, inferred as Func([Float], [Float]).
         let t = ty_of("double = fn x -> x * 2.0; main = double").unwrap();
         match &t.process_ty.outs[0] {
-            ValueTy::Func(arg_tys, ret_tys) => {
+            ValueTy::Thunk(arg_tys, ret_tys) => {
                 assert_eq!(arg_tys.len(), 1);
                 assert_eq!(ret_tys, &vec![ValueTy::Float]);
             }
@@ -5274,7 +5276,7 @@ mod tests {
         let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3").unwrap();
         assert_eq!(
             t.process_ty.outs[0],
-            ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float])
+            ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])
         );
         let t = ty_of("add = fn a b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
         assert_eq!(t.process_ty.outs[0], ValueTy::Float);

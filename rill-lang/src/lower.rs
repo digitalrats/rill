@@ -56,8 +56,8 @@ fn match_field_expected(
             }
             _ => false,
         },
-        ValueTy::Func(pat_args, pat_rets) => match concrete {
-            ValueTy::Func(c_args, c_rets) => {
+        ValueTy::Thunk(pat_args, pat_rets) => match concrete {
+            ValueTy::Thunk(c_args, c_rets) => {
                 pat_args.len() == c_args.len()
                     && pat_rets.len() == c_rets.len()
                     && pat_args
@@ -1193,7 +1193,7 @@ impl<'a> Lowerer<'a> {
                         let elem = list_type_args(&lt)
                             .and_then(|inner| inner.first().cloned())
                             .unwrap_or(ValueTy::Float);
-                        let fexp = ValueTy::Func(vec![elem], vec![]);
+                        let fexp = ValueTy::Thunk(vec![elem], vec![]);
                         let (fr, ft) = self.lower_value_expected(&call_args[0], Some(&fexp))?;
                         arg_regs.push(fr);
                         arg_regs.push(lr);
@@ -1953,7 +1953,7 @@ impl<'a> Lowerer<'a> {
                                 self.build_ffi_arrow(instance, missing_signals, sig.signal_outs)?;
                             return Ok((
                                 callee_reg,
-                                ValueTy::Func(
+                                ValueTy::Thunk(
                                     vec![ValueTy::Buffer; missing_signals],
                                     vec![ValueTy::Buffer; sig.signal_outs],
                                 ),
@@ -1991,7 +1991,7 @@ impl<'a> Lowerer<'a> {
                 let callee_res = self.lower_value_ref(name, *span);
                 let (callee_reg, callee_ty) = callee_res?;
                 match &callee_ty {
-                    ValueTy::Func(arg_tys, ret_tys) => {
+                    ValueTy::Thunk(arg_tys, ret_tys) => {
                         if call_args.len() > arg_tys.len() {
                             return Err(CompileError::Type {
                                 msg: format!(
@@ -2032,7 +2032,7 @@ impl<'a> Lowerer<'a> {
                             });
                             let remaining_arg_tys: Vec<ValueTy> =
                                 arg_tys[call_args.len()..].to_vec();
-                            return Ok((dst, ValueTy::Func(remaining_arg_tys, vec![ret_ty])));
+                            return Ok((dst, ValueTy::Thunk(remaining_arg_tys, vec![ret_ty])));
                         }
                         let dst = self.fresh_value_reg();
                         self.emit_call(dst, callee_reg, arg_regs);
@@ -2070,14 +2070,14 @@ impl<'a> Lowerer<'a> {
                             ValueTy::Var(v)
                         })
                         .collect();
-                    ValueTy::Func(fresh_args, vec![exp.clone()])
+                    ValueTy::Thunk(fresh_args, vec![exp.clone()])
                 });
                 let (cr, cty) = match &callee_expected {
                     Some(ce) => self.lower_value_expected(callee, Some(ce))?,
                     None => self.lower_value(callee)?,
                 };
                 let (arg_tys, ret_tys) = match &cty {
-                    ValueTy::Func(a, r) => (a.clone(), r.clone()),
+                    ValueTy::Thunk(a, r) => (a.clone(), r.clone()),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "applied expression must be a function value".into(),
@@ -2216,7 +2216,7 @@ impl<'a> Lowerer<'a> {
                     .pending_param_tys
                     .take()
                     .or_else(|| match expected {
-                        Some(ValueTy::Func(arg_tys, _)) if arg_tys.len() == params.len() => {
+                        Some(ValueTy::Thunk(arg_tys, _)) if arg_tys.len() == params.len() => {
                             Some(arg_tys.clone())
                         }
                         _ => None,
@@ -2227,7 +2227,7 @@ impl<'a> Lowerer<'a> {
                 // result-directed method call inside (`bind mx (fn x -> return
                 // x)`) resolves by that type.
                 let body_expected = match expected {
-                    Some(ValueTy::Func(_, rets)) => rets.first().cloned(),
+                    Some(ValueTy::Thunk(_, rets)) => rets.first().cloned(),
                     _ => None,
                 };
                 let (fragment_id, ret_ty) = self.lower_fragment(
@@ -2246,7 +2246,7 @@ impl<'a> Lowerer<'a> {
                     env: env_reg,
                     fragment: fragment_id,
                 });
-                Ok((dst, ValueTy::Func(param_tys, vec![ret_ty])))
+                Ok((dst, ValueTy::Thunk(param_tys, vec![ret_ty])))
             }
             Expr::Bool(b, _) => {
                 let dst = self.fresh_value_reg();
@@ -2572,7 +2572,9 @@ impl<'a> Lowerer<'a> {
                 // `Func` signature of `args[0]`; a closure with no known return
                 // falls back to the source element type.
                 let elem = match args.first() {
-                    Some(ValueTy::Func(_, rets)) => rets.first().cloned().unwrap_or(ValueTy::Float),
+                    Some(ValueTy::Thunk(_, rets)) => {
+                        rets.first().cloned().unwrap_or(ValueTy::Float)
+                    }
                     _ => match args.get(1).and_then(list_type_args) {
                         Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
                         _ => ValueTy::Float,
@@ -2918,7 +2920,7 @@ impl<'a> Lowerer<'a> {
                         self.build_ffi_arrow(instance, sig.params.len(), sig.signal_outs)?;
                     return Ok((
                         callee_reg,
-                        ValueTy::Func(
+                        ValueTy::Thunk(
                             vec![ValueTy::Buffer; sig.params.len()],
                             vec![ValueTy::Buffer; sig.signal_outs],
                         ),
@@ -3092,7 +3094,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
-                Ok((dst, ValueTy::Func(arg_tys, vec![ret_ty])))
+                Ok((dst, ValueTy::Thunk(arg_tys, vec![ret_ty])))
             }
             _ => Err(CompileError::Type {
                 msg: format!("`{name}` is not a value expression in v1"),
@@ -3659,7 +3661,7 @@ impl<'a> Lowerer<'a> {
         self.emit_value(ValueInstr::ValueWriteCell { cell, src: dst });
         let ty = if is_anchor {
             let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
-            ValueTy::Func(arg_tys, vec![ret_ty])
+            ValueTy::Thunk(arg_tys, vec![ret_ty])
         } else {
             ret_ty
         };
@@ -4585,7 +4587,7 @@ impl<'a> Lowerer<'a> {
             | ValueTy::String
             | ValueTy::Buffer
             | ValueTy::Void
-            | ValueTy::Func(_, _)
+            | ValueTy::Thunk(_, _)
             | ValueTy::Var(_)
             | ValueTy::TyConVar(_) => 1,
             ValueTy::TyConApp(_, args) => {

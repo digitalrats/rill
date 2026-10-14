@@ -38,7 +38,7 @@ fn value_contains_var_impl(
                 None => false,
             }
         }
-        ValueTy::Func(args, rets) => {
+        ValueTy::Thunk(args, rets) => {
             args.iter()
                 .any(|a| value_contains_var_impl(subst, a, v, seen))
                 || rets
@@ -182,7 +182,7 @@ pub fn unify_value(
             subst.value_map.insert(*f, other.clone());
             Ok(())
         }
-        (ValueTy::Func(ax, rx), ValueTy::Func(by, sy)) => {
+        (ValueTy::Thunk(ax, rx), ValueTy::Thunk(by, sy)) => {
             if ax.len() == by.len() && rx.len() == sy.len() {
                 for i in 0..ax.len() {
                     unify_value(&ax[i], &by[i], subst, span)?;
@@ -275,19 +275,19 @@ mod tests {
         // A Func binds structurally: var 2 -> Func([Float],[Float]).
         unify_value(
             &ValueTy::Var(2),
-            &ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float]),
+            &ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float]),
             &mut s,
             sp(),
         )
         .unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::Var(2)),
-            ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float])
+            ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])
         );
         // Arity mismatch through a bound var is still rejected.
         assert!(unify_value(
             &ValueTy::Var(2),
-            &ValueTy::Func(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]),
+            &ValueTy::Thunk(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]),
             &mut s,
             sp(),
         )

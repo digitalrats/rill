@@ -421,6 +421,17 @@ git add rill-lang/src/types/ty.rs
 git commit -m 'feat(rill-lang): ValueTy::Thunk as the single value type'
 ```
 
+> **Ruling (2026-10-14) — Task 7 re-scoped to the minimal core.** The literal
+> plan text contradicted the codebase and Task 8: the `Func`→`Thunk` rename is
+> the only shape change that keeps `cargo build` green, while the `ArrowTy →
+> Ty` rewrite spells the signal-track arity that Task 8 Step 1 already deletes,
+> and the scalar variants must survive as `Thunk` payload leaves (the plan's own
+> `Thunk([], [Float])` examples require them). Foreign curried-chain semantics
+> are Task 10 (FFI curried); the nested-Thunk conversion lives there. So Task 7
+> = add `Thunk`, rename `Func`→`Thunk` (mechanical, zero test-outcome change),
+> add `thunk`/`const_ty` constructors. ArrowTy→Ty and scalar-leaf unification
+> fold into Task 8.
+
 ### Task 8: Inference — drop arity, unary application, Thunk unification
 
 **Files:**

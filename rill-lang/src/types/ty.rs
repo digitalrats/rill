@@ -52,10 +52,10 @@ pub enum ValueTy {
     Newtype(String, Vec<ValueTy>),
     /// Builtin constructor application: `List Float`.
     App(String, Vec<ValueTy>),
-    /// Function type: value-argument types and value-result types. Signal-wire
-    /// arguments are positional wire-captures at the call site, not part of the
-    /// type.
-    Func(Vec<ValueTy>, Vec<ValueTy>),
+    /// A function/expression type (unary): capture types and result type.
+    /// `Thunk([], [t])` is a constant `t`; `Thunk([a], [b])` is `\x:a -> b`.
+    /// Replaces the legacy `Func` (same two-list shape, unary core model).
+    Thunk(Vec<ValueTy>, Vec<ValueTy>),
     /// Unresolved value-type unification variable.
     Var(TypeVarId),
     /// Type-constructor variable (kind `* -> *` or higher), bound by a
@@ -66,6 +66,19 @@ pub enum ValueTy {
     /// the data-type's type parameter (same id space as `Var`/`TyConVar`); when it
     /// resolves to a concrete constructor the application becomes `App(c, args)`.
     TyConApp(TypeVarId, Vec<ValueTy>),
+}
+
+impl ValueTy {
+    /// The type of a unary function capturing `captures` and producing
+    /// `result`: `\x:a -> b` is `Thunk([a], [b])`.
+    pub fn thunk(captures: Vec<ValueTy>, result: Vec<ValueTy>) -> ValueTy {
+        ValueTy::Thunk(captures, result)
+    }
+
+    /// The type of a constant of type `t`: a nullary thunk `Thunk([], [t])`.
+    pub fn const_ty(t: ValueTy) -> ValueTy {
+        ValueTy::Thunk(vec![], vec![t])
+    }
 }
 
 /// An arrow: n input values → m output values. Every data is equal; there is no
@@ -1164,7 +1177,7 @@ impl Subst {
                 Some(inner) => self.resolve_value_depth(inner, depth + 1),
                 None => t.clone(),
             },
-            ValueTy::Func(args, rets) => ValueTy::Func(
+            ValueTy::Thunk(args, rets) => ValueTy::Thunk(
                 args.iter()
                     .map(|a| self.resolve_value_depth(a, depth + 1))
                     .collect(),
@@ -1219,12 +1232,12 @@ mod funcsig_tests {
 
     #[test]
     fn func_signature_carries_arg_and_result_types() {
-        let f = ValueTy::Func(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]);
+        let f = ValueTy::Thunk(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]);
         assert_eq!(
             f,
-            ValueTy::Func(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float])
+            ValueTy::Thunk(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float])
         );
-        let g = ValueTy::Func(vec![ValueTy::Float], vec![ValueTy::Float]);
+        let g = ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float]);
         assert_ne!(f, g);
     }
 }
@@ -1370,6 +1383,6 @@ mod eq_ord_tests {
         assert!(by_ty.contains_key("String"));
         assert!(by_ty.contains_key("Point"));
         assert!(by_ty.contains_key("List"));
-        assert!(!by_ty.contains_key("Func"), "Func has no derived Ord");
+        assert!(!by_ty.contains_key("Thunk"), "Thunk has no derived Ord");
     }
 }
