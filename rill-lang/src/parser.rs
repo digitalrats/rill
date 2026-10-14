@@ -305,6 +305,27 @@ impl<'a> Parser<'a> {
         off - line_start
     }
 
+    /// True when a `Newline` layout separator sits immediately after the last
+    /// consumed token, i.e. the next non-newline token begins a new line. The
+    /// offside rule compares that token's column against the enclosing layout
+    /// context to decide whether it continues the block or closes it.
+    fn at_line_start(&self) -> bool {
+        self.pos < self.toks.len() && self.toks[self.pos].tok == Tok::Newline
+    }
+
+    /// True when the next token opens a fresh layout item in an offside block
+    /// whose first item starts at `layout_col`: it begins a new line at the
+    /// same column (or deeper).
+    fn layout_continues(&self, layout_col: usize) -> bool {
+        self.peek().tok != Tok::Eof && self.at_line_start() && self.cur_col() >= layout_col
+    }
+
+    /// True when an offside block's layout context closes before the next
+    /// token: a line indented less than the block's column.
+    fn layout_closes(&self, layout_col: usize) -> bool {
+        self.at_line_start() && self.cur_col() < layout_col
+    }
+
     fn span_from(&self, start: usize) -> Span {
         if self.pos > 0 {
             Span::new(start, self.toks[self.pos - 1].span.end)
@@ -919,9 +940,23 @@ impl<'a> Parser<'a> {
                 self.bump();
                 let scrutinee = self.parse_expr(0, false)?;
                 self.eat(&Tok::KwOf)?;
-                self.eat(&Tok::LBrace)?;
+                // Both spellings are accepted: `case x of { … }` with explicit
+                // braces, or the offside form where the first alternative's
+                // column opens the layout context.
+                let braced = self.peek().tok == Tok::LBrace;
+                if braced {
+                    self.bump();
+                }
+                let layout_col = self.cur_col();
                 let mut arms = Vec::new();
-                while self.peek().tok != Tok::RBrace {
+                loop {
+                    if braced {
+                        if self.peek().tok == Tok::RBrace {
+                            break;
+                        }
+                    } else if self.peek().tok == Tok::Eof || self.layout_closes(layout_col) {
+                        break;
+                    }
                     let pat_span = self.peek().span;
                     let pattern = self.parse_pattern()?;
                     let mut guards = Vec::new();
@@ -959,7 +994,9 @@ impl<'a> Parser<'a> {
                         self.bump();
                     }
                 }
-                self.eat(&Tok::RBrace)?;
+                if braced {
+                    self.eat(&Tok::RBrace)?;
+                }
                 // Span from the `case` keyword through the last arm (an empty
                 // arm list falls back to the keyword alone).
                 let span = arms.last().map(|a| t.span.merge(a.span)).unwrap_or(t.span);
@@ -1031,19 +1068,36 @@ impl<'a> Parser<'a> {
     /// and bare statement expressions to `bind e (fn _ -> rest)`.
     fn parse_do_block(&mut self) -> Result<Expr, CompileError> {
         let start = self.bump().span.start; // consume `do`
-        self.eat(&Tok::LBrace)?;
+        let braced = self.peek().tok == Tok::LBrace;
+        if braced {
+            self.bump();
+        }
+        // Offside context: the column of the block's first statement (unused
+        // in the brace form, where `;` delimits statements).
+        let layout_col = self.cur_col();
         let mut stmts: Vec<DoStmt> = Vec::new();
         let mut result: Option<Expr> = None;
-        while self.peek().tok != Tok::RBrace {
+        loop {
+            // Block end: `}` (brace form) or a line indented less than the
+            // layout column / end of input (offside form).
+            if braced {
+                if self.peek().tok == Tok::RBrace {
+                    break;
+                }
+            } else if self.peek().tok == Tok::Eof || self.layout_closes(layout_col) {
+                break;
+            }
             if matches!(self.peek().tok, Tok::Ident(_)) {
-                // `x <- e` (bind) or `let x = e` (let) or a bare expression.
+                // `x <- e` (bind) or a bare expression.
                 let save = self.pos();
                 if let Ok((n, _)) = self.expect_ident() {
                     if self.peek().tok == Tok::LArrow {
                         self.bump();
                         let e = self.parse_expr(0, true)?;
                         stmts.push(DoStmt::Bind(n, e));
-                        self.eat(&Tok::Semi)?;
+                        if braced {
+                            self.eat(&Tok::Semi)?;
+                        }
                         continue;
                     }
                 }
@@ -1055,25 +1109,39 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::Eq)?;
                 let e = self.parse_expr(0, true)?;
                 stmts.push(DoStmt::Let(n, e));
-                self.eat(&Tok::Semi)?;
+                if braced {
+                    self.eat(&Tok::Semi)?;
+                }
                 continue;
             }
             let e = self.parse_expr(0, true)?;
-            if self.peek().tok == Tok::Semi {
-                self.bump();
-                // A trailing `;` before `}`: the statement is the block's
-                // result expression (`do { x <- mx; pure x; }`).
-                if self.peek().tok == Tok::RBrace {
+            if braced {
+                if self.peek().tok == Tok::Semi {
+                    self.bump();
+                    // A trailing `;` before `}`: the statement is the block's
+                    // result expression (`do { x <- mx; pure x; }`).
+                    if self.peek().tok == Tok::RBrace {
+                        result = Some(e);
+                        break;
+                    }
+                    stmts.push(DoStmt::Stmt(e));
+                } else {
                     result = Some(e);
                     break;
                 }
+            } else if self.layout_continues(layout_col) {
+                // Another statement follows on a line at the layout column; this
+                // one is a `bind`-once statement (`Stmt`).
                 stmts.push(DoStmt::Stmt(e));
             } else {
+                // The block's final expression.
                 result = Some(e);
                 break;
             }
         }
-        self.eat(&Tok::RBrace)?;
+        if braced {
+            self.eat(&Tok::RBrace)?;
+        }
         let mut rest = result.ok_or_else(|| self.error("do block must end with an expression"))?;
         for s in stmts.iter().rev() {
             match s {
@@ -1794,6 +1862,112 @@ mod tests {
         let p = prog("main = let { g = 1.0 * 0.5; } in g");
         let main = p.main_def().unwrap();
         assert!(matches!(main.body(), Expr::Let { .. }));
+    }
+
+    #[test]
+    fn parses_do_block_with_layout() {
+        // Offside rule: a `do` block without braces — statements delimited by
+        // the layout context's indentation column.
+        let b = body("main = do\n    writeOutput [1.0]\n    return ()\n");
+        assert_eq!(
+            curry_head(&b).map(|(name, _)| name),
+            Some("bind"),
+            "expected the trailing statement to desugar to a `bind`, got {b:?}"
+        );
+    }
+
+    #[test]
+    fn parses_do_block_layout_bind_statement() {
+        // `x <- e` in layout form (no `;`): the block's first statement binds.
+        let b = body("main = do\n    x <- readInput\n    writeOutput x\n");
+        assert_eq!(
+            curry_head(&b).map(|(name, _)| name),
+            Some("bind"),
+            "expected `bind`, got {b:?}"
+        );
+    }
+
+    #[test]
+    fn parses_case_with_layout() {
+        // Offside rule: a `case` alternatives block without braces.
+        let b = body("main = case n of\n    Just v -> v\n    Nothing -> 0.0\n");
+        match b {
+            Expr::Match { arms, .. } => assert_eq!(arms.len(), 2),
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_case_layout_then_top_level_def() {
+        // The layout block must close when the next line is indented LESS than
+        // the alternatives, so the following top-level definition is separate.
+        let p = prog("main = case n of\n    Just v -> v\n    Nothing -> 0.0\nother = 1.0\n");
+        assert_eq!(p.defs.len(), 2);
+        assert_eq!(p.defs[1].name(), "other");
+    }
+
+    #[test]
+    fn parses_do_layout_then_top_level_def() {
+        let p = prog("main = do\n    writeOutput [1.0]\n    return ()\nother = 1.0\n");
+        assert_eq!(p.defs.len(), 2);
+        assert_eq!(p.defs[1].name(), "other");
+    }
+
+    #[test]
+    fn parses_where_block_layout_no_semicolons() {
+        // Offside defs in a `where` clause, separated only by the layout
+        // context's column (no `;`).
+        let src = "main = myFilter where\n    myFilter = sin 440.0\n    gain = 1.0 * 0.5\n";
+        let p = prog(src);
+        let main = p.main_def().unwrap();
+        let where_defs = main.where_defs();
+        assert_eq!(where_defs.len(), 2);
+        assert_eq!(where_defs[0].name(), "myFilter");
+        assert_eq!(where_defs[1].name(), "gain");
+        assert!(matches!(main.body(), Expr::Ref(name, _) if name == "myFilter"));
+    }
+
+    #[test]
+    fn parses_do_inside_layout_where() {
+        // Nested layout contexts: a `do` block indented inside a `where` def.
+        let src = "main = run where\n    run = do\n        writeOutput [1.0]\n        return ()\n";
+        let p = prog(src);
+        let main = p.main_def().unwrap();
+        let where_defs = main.where_defs();
+        assert_eq!(where_defs.len(), 1);
+        assert_eq!(where_defs[0].name(), "run");
+        let body = match &where_defs[0] {
+            Def::Anchor { body, .. } | Def::Local { body, .. } | Def::Eval { body, .. } => body,
+            other => panic!("expected an anchor/local/eval def, got {other:?}"),
+        };
+        assert_eq!(
+            curry_head(body).map(|(name, _)| name),
+            Some("bind"),
+            "expected the do body to desugar to a `bind`, got {body:?}"
+        );
+    }
+
+    #[test]
+    fn parses_do_block_layout_case_body() {
+        // Layout `case` whose arms' bodies are layout `do` blocks.
+        let src = "main = case x of\n    Just v -> do\n        writeOutput [v]\n        return ()\n    Nothing -> do\n        return ()\n";
+        let b = body(src);
+        let Expr::Match { arms, .. } = b else {
+            panic!("expected Match, got {b:?}");
+        };
+        assert_eq!(arms.len(), 2);
+        // A multi-statement `do` desugars to a `bind` chain; a single-statement
+        // block is just its result expression.
+        assert_eq!(
+            curry_head(&arms[0].guards[0].1).map(|(name, _)| name),
+            Some("bind"),
+            "expected the first arm body to desugar to a `bind`, got {:?}",
+            arms[0].guards[0].1
+        );
+        assert!(matches!(
+            &arms[1].guards[0].1,
+            Expr::Apply { name, .. } if name == "return"
+        ));
     }
 
     #[test]
