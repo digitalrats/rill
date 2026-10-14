@@ -52,11 +52,17 @@ fn closure_output_survives_ticks() {
 
 #[test]
 fn nested_capture_produces_constant_output() {
-    // addn = fn n -> fn x -> x + n;  main = addn 3.0 4.0
-    // `addn 3.0 4.0` is a single Apply with TWO arguments, but `addn` takes one
-    // λ-parameter — this must be a compile error (partial application is a
-    // later task), not a silent wrong value.
-    assert!(compile::<f32>(r"addn = \n -> \x -> x + n; main = addn 3.0 4.0").is_err());
+    // addn = \n -> \x -> x + n;  main = addn 3.0 4.0
+    // `addn 3.0 4.0` fully applies the curried definition: unary β-reduction
+    // substitutes both λ-parameters and folds to the constant `4.0 + 3.0`.
+    let mut prog = compile::<f32>(r"addn = \n -> \x -> x + n; main = addn 3.0 4.0").unwrap();
+    let mut out = [0.0f32; 4];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    assert_eq!(
+        prog.arena().get(v).unwrap(),
+        &rill_lang::arena::Value::Float(7.0)
+    );
 }
 
 #[test]

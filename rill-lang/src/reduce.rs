@@ -288,6 +288,37 @@ fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<Str
     }
 }
 
+/// Resolve a unary β-reduct: the (definition name, parameter name, body) of a
+/// function-valued callee that can be reduced by substituting one argument.
+///
+/// A syntactic lambda is reducible; so is a reference to a niladic definition
+/// whose body is a lambda — a curried definition (`twice = \f -> \x -> f (f x)`)
+/// after the parser's currying pass emptied its parameter list. CAFs (shared
+/// closed definitions) and non-lambda definitions are not reducible here.
+fn unary_reduct<'a>(
+    callee: &'a Expr,
+    ctx: &'a HashMap<String, Def>,
+    cafs: &HashSet<String>,
+) -> Option<(Option<&'a str>, &'a str, &'a Expr)> {
+    match callee {
+        Expr::Lambda { params, body, .. } if params.len() == 1 => {
+            Some((None, params[0].name.as_str(), body.as_ref()))
+        }
+        Expr::Ref(name, _) if !cafs.contains(name) => {
+            let def = ctx.get(name.as_str())?;
+            if def.params().is_empty() && !def.is_decl() {
+                if let Expr::Lambda { params, body, .. } = def.body() {
+                    if params.len() == 1 {
+                        return Some((Some(name.as_str()), params[0].name.as_str(), body.as_ref()));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 fn reduce_def(
     def: &Def,
     ctx: &HashMap<String, Def>,
@@ -491,14 +522,39 @@ fn reduce_expr(
                 }
             }
         }
-        Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {
-            callee: Box::new(reduce_expr(callee, ctx, cafs, reducing, mode)),
-            args: args
+        Expr::ApplyExpr { callee, args, span } => {
+            let rc = reduce_expr(callee, ctx, cafs, reducing, mode);
+            let ra: Vec<Expr> = args
                 .iter()
                 .map(|a| reduce_expr(a, ctx, cafs, reducing, mode))
-                .collect(),
-            span: *span,
-        },
+                .collect();
+            // Unary β-reduction. The parser's currying pass turns `f a b` into a
+            // right-nested chain of single-argument `ApplyExpr` nodes, so a
+            // function-valued callee is peeled one argument at a time:
+            // `((\x -> body) v)` → `body[x := v]`. A named curried definition
+            // (`twice = \f -> \x -> f (f x)`) reduces the same way: after
+            // currying its parameter list is empty and its body is a lambda.
+            if ra.len() == 1 {
+                if let Some((def_name, param, body)) = unary_reduct(&rc, ctx, cafs) {
+                    // A call to a definition currently on the β-reduction path
+                    // is recursion: leave it for lowering to suspend as a lazy
+                    // thunk — inlining would recurse forever.
+                    let recursive = def_name.is_some_and(|n| reducing.contains(n));
+                    if param != "_" && !recursive {
+                        let mut subst = HashMap::new();
+                        subst.insert(param.to_string(), ra[0].clone());
+                        let inlined =
+                            reduce_expr(&substitute(body, &subst), ctx, cafs, reducing, mode);
+                        return inlined;
+                    }
+                }
+            }
+            Expr::ApplyExpr {
+                callee: Box::new(rc),
+                args: ra,
+                span: *span,
+            }
+        }
         Expr::Let {
             defs,
             body,
