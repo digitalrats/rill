@@ -588,7 +588,7 @@ git commit -m 'refactor(rill-lang): value-track-only lowering, curried FFI'
 **Files:**
 - Modify: `rill-lang/src/parser.rs`
 
-- [ ] **Step 1: Layout token stream**
+- [x] **Step 1: Layout token stream**
 
 The lexer emits `Tok::Newline`; the parser maintains a column stack. Rules
 (Haskell layout):
@@ -597,22 +597,33 @@ The lexer emits `Tok::Newline`; the parser maintains a column stack. Rules
 - Subsequent lines indented MORE continue the block; indented LESS close it.
 - `{ }` and `;` become optional; the layout closes blocks.
 
-- [ ] **Step 2: Rewrite `parse_where_block`/`parse_do_block`/`case` on layout**
+- [x] **Step 2: Rewrite `parse_where_block`/`parse_do_block`/`case` on layout**
 
 Replace `{ ... }` consumption with the layout algorithm. Keep accepting `{}`
 as an alternative (explicit brace form) so tests can migrate incrementally.
 
-- [ ] **Step 3: Run parser tests with explicit braces**
+- [x] **Step 3: Run parser tests with explicit braces**
 
 Run: `cargo test -p rill-lang --features dsp --lib parser`
 Expected: existing tests (which use `{ }`) still pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add rill-lang/src/parser.rs
 git commit -m 'feat(rill-lang): offside rule for where/do/case blocks'
 ```
+
+> **Implementation note (Task 11):** layout blocks are driven by two parser
+> primitives — `at_line_start()` (a `Tok::Newline` separator sits immediately
+> after the last consumed token) and the enclosing layout column. The `where`
+> block already consumed layout defs; `do` and `case` now accept both the brace
+> form and the offside form. Because juxtaposition already stops at a `Newline`,
+> expressions never swallow the next line, so statements are naturally
+> line-delimited. `layout_continues`/`layout_closes` decide whether the next
+> line opens a fresh item or closes the context (indented LESS). 8 new parser
+> tests cover layout `do`, layout `case`, no-`;` layout `where`, nested layout
+> contexts, and closing a layout block before a following top-level def.
 
 ### Task 12: Render — new syntax
 
