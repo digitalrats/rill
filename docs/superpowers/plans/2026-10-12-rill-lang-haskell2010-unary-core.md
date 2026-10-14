@@ -808,29 +808,45 @@ git commit -m 'test(rill-lang): migrate unit/integration tests to unary model'
 **Files:**
 - Modify: `rill-lang/src/types/ty.rs`, `rill-lang/src/desugar.rs`, `rill-lang/src/ast.rs`
 
-- [ ] **Step 1: Remove `Def::Anchor`/`Def::Local` variants**
+- [x] **Step 1: Remove `Def::Anchor`/`Def::Local` variants**
 
 Delete the old variants now that `Def::Eval` is the only def form; update every
 `match def` in the crate (parser, infer, lower, reduce, render, ast helpers).
 
-- [ ] **Step 2: Delete `desugar.rs`**
+- [x] **Step 2: Delete `desugar.rs`**
 
 `desugar_foreign_combinators`, `desugar_main_io`, `bind_signal_args`,
 `has_internal_wire_feed`, `is_io_action`, `wrap_do` (do-block is parsed by the
 parser now), `collect_and_rewrite`, `split_par`, `flatten_seq`,
 `rebuild_right_chain` — all dead after Tasks 5–6. Remove the module.
 
-- [ ] **Step 3: Prelude to curried Thunk form**
+> Already gone before Task 14 (no `mod desugar` in `lib.rs`, no `desugar.rs`).
+
+- [x] **Step 3: Prelude to curried Thunk form**
 
 Rewrite `CATEGORY_PRELUDE`/`SIGNAL_PRELUDE`/`BUILTIN_FOREIGN_DECLS` so every
 foreign sig and literal type uses `Thunk([], [T])`/curried chains. Remove the
 `main = _;` placeholders (no longer needed — prelude is not a full program).
 
-- [ ] **Step 4: `ffi_sig_from_typeexpr` maps curried chain**
+> The preludes already parse and type under the unary value model (achieved by
+> Tasks 9–10): all defs are `Def::Eval`, combinator bodies are curried
+> `\f -> \g -> …` lambdas, and foreign sigs are flat arrow chains. Concrete
+> Task-14 cleanup: the catalog now spells declarations `foreign name : …`
+> (the `fn` keyword is gone), the parser's legacy `foreign fn` compat is
+> removed, and the stale comments referencing `desugar.rs` / the `:` `,` `<:`
+> `:>` sugar / `Def::Local` are rewritten. `main = ();` placeholders stay
+> because `register_prelude` still parses each prelude through
+> `parser::parse`, which requires a `main` def.
+
+- [x] **Step 4: `ffi_sig_from_typeexpr` maps curried chain**
 
 Update `types/ffi.rs` so a curried `Thunk`-typed signature yields the
 `FfiSig` (scalar params, trailing Buffer signal, signal_outs) that
 `build_builtin` consumes.
+
+> Already satisfied: `ffi_sig_from_typeexpr` unrolls the flat `TFunc` arrow
+> chain into scalar params + a trailing `FixedBuffer`/`Pair` signal, and every
+> FFI/partial-application test passes.
 
 - [ ] **Step 5: Full workspace test + clippy + fmt**
 
@@ -842,12 +858,21 @@ cargo fmt
 ```
 Expected: green, no warnings.
 
-- [ ] **Step 6: Commit**
+> **BLOCKED (pre-existing)** by the `graph` feature (see Task 13c Step 3):
+> `cargo test --workspace` cannot build `rill-lang` with `graph`/`serialization`
+> or `rill-adrift`. Green for the supported bar:
+> `cargo test -p rill-lang --features dsp,serde,model` → **549 passed / 4
+> failed** (the 4 pre-existing `arrow.rs` inference gaps); `cargo clippy` clean;
+> `cargo fmt --check` clean.
+
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
 git commit -m 'refactor(rill-lang): delete dead defs/desugar, curried-Thunk prelude'
 ```
+
+> Commit `0427098`.
 
 ### Task 15: Final verification
 
