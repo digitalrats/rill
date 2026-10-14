@@ -789,6 +789,14 @@ git add -A
 git commit -m 'test(rill-lang): Haskell 2010 end-to-end smoke'
 ```
 
+### Task 16: Strictness annotations (`!`) — follow-up feature
+
+Executed **after** Task 14 in this plan. The full task list lives in its own
+plan: `docs/superpowers/plans/2026-10-14-rill-lang-strictness-annotations.md`
+(design: `docs/superpowers/specs/2026-10-14-rill-lang-strictness-annotations-design.md`).
+Entry condition: only `Def::Eval` remains, def params live in
+`Expr::Lambda.params`, lowering is value-track-only.
+
 ---
 
 ## Self-Review Notes
