@@ -2314,16 +2314,27 @@ impl<'a> Lowerer<'a> {
                 // expected type is a `Func` signature, which types the params
                 // structurally (the swap lambda `fn p -> Pair { first: p.second,
                 // … }` of `arr (fn p -> …)` keeps `p` a `Pair`, not Float).
-                let param_tys: Vec<ValueTy> = self
-                    .pending_param_tys
-                    .take()
-                    .or_else(|| match expected {
-                        Some(ValueTy::Thunk(arg_tys, _)) if arg_tys.len() == params.len() => {
-                            Some(arg_tys.clone())
+                // A curried definition's λ-parameter types arrive as one FLAT
+                // list (`take = \n -> \xs -> …` → `[Float, List]`), so this
+                // lambda consumes its own leading slice and leaves the rest for
+                // its body's inner lambda.
+                let saved_pending = self.pending_param_tys.take();
+                let param_tys: Vec<ValueTy> = match saved_pending.clone() {
+                    Some(mut pending) if pending.len() >= params.len() => {
+                        let rest = pending.split_off(params.len());
+                        if !rest.is_empty() {
+                            self.pending_param_tys = Some(rest);
                         }
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| vec![ValueTy::Float; params.len()]);
+                        pending
+                    }
+                    Some(pending) => pending,
+                    None => match expected {
+                        Some(ValueTy::Thunk(arg_tys, _)) if arg_tys.len() == params.len() => {
+                            arg_tys.clone()
+                        }
+                        _ => vec![ValueTy::Float; params.len()],
+                    },
+                };
                 // The lambda's BODY is expected to produce the lambda's RESULT
                 // type (not the whole `Func` type the caller expects) — a
                 // result-directed method call inside (`bind mx (fn x -> return
@@ -2332,7 +2343,7 @@ impl<'a> Lowerer<'a> {
                     Some(ValueTy::Thunk(_, rets)) => rets.first().cloned(),
                     _ => None,
                 };
-                let (fragment_id, ret_ty) = self.lower_fragment(
+                let frag = self.lower_fragment(
                     params,
                     body,
                     &free,
@@ -2340,7 +2351,9 @@ impl<'a> Lowerer<'a> {
                     &param_tys,
                     body_expected.as_ref(),
                     *span,
-                )?;
+                );
+                self.pending_param_tys = saved_pending;
+                let (fragment_id, ret_ty) = frag?;
                 let (env_reg, _self_cell) = self.emit_env_snapshot(&free, *span, None)?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMakeClosure {
@@ -3749,7 +3762,14 @@ impl<'a> Lowerer<'a> {
         if let Some(seed) = seeded_ty.clone() {
             self.anchor_types.insert(name.to_string(), seed);
         }
-        let (fragment_id, ret_ty) = self.lower_fragment(
+        // A curried definition (`take = \n -> \xs -> …`) is niladic at the IR
+        // level but its body is a nest of λs; their types come from inference's
+        // flattened λ-parameter list (`take` → `[Float, List]`).
+        let saved_pending = self.pending_param_tys.take();
+        if !is_anchor {
+            self.pending_param_tys = self.fn_param_tys.get(name).cloned();
+        }
+        let frag = self.lower_fragment(
             &def_params,
             &body,
             &free,
@@ -3757,7 +3777,9 @@ impl<'a> Lowerer<'a> {
             &param_tys,
             None,
             dspan,
-        )?;
+        );
+        self.pending_param_tys = saved_pending;
+        let (fragment_id, ret_ty) = frag?;
         let (env_reg, _) = self.emit_env_snapshot(&free, dspan, Some(name))?;
         let dst = self.fresh_value_reg();
         if is_anchor {

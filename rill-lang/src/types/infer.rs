@@ -175,6 +175,39 @@ fn flatten_thunk(vty: &ValueTy) -> (Vec<ValueTy>, Vec<ValueTy>) {
 /// type is the result (or a `Thunk` over the leftover captures). A non-`Thunk`
 /// (a plain value) is returned unchanged. Nested curried chains are flattened
 /// first, so `applied_result(Thunk([a], [Thunk([b], [r])]), 2)` is `r`.
+/// The number of leading λs of a definition body.
+///
+/// The parser's currying pass clears a multi-parameter definition's parameter
+/// list and wraps the body in nested lambdas (`take n xs = …` becomes
+/// `take = \n -> \xs -> …`), so a definition's true λ-arity is its remaining
+/// `params().len()` plus the body's leading λs.
+fn leading_lambda_count(body: &Expr) -> usize {
+    match body {
+        Expr::Lambda { body, .. } => 1 + leading_lambda_count(body),
+        _ => 0,
+    }
+}
+
+/// Wrap a flat argument list into a curried nest: `([a, b], [r])` →
+/// `Thunk([a], [Thunk([b], [r])])`.
+///
+/// The unary value model represents a multi-parameter function as a nest of
+/// single-argument thunks, so a reconstructed signature must be nested: a flat
+/// `Thunk([a, b], [r])` would not unify with an inferred lambda type
+/// (`\a -> \b -> …` infers to the nest).
+fn nest_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
+    match arg_tys.split_last() {
+        Some((last, rest)) => {
+            let mut ty = ValueTy::Thunk(vec![last.clone()], ret_tys);
+            for a in rest.iter().rev() {
+                ty = ValueTy::Thunk(vec![a.clone()], vec![ty]);
+            }
+            ty
+        }
+        None => ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+    }
+}
+
 fn applied_result(vty: &ValueTy, n: usize) -> ValueTy {
     if n == 0 {
         return vty.clone();
@@ -1244,7 +1277,12 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             if def.params().is_empty() && matches!(body, Expr::Lambda { .. }) {
                 let scheme = ctx.defs.get(name).cloned();
                 if let Some(s) = scheme {
-                    if let ValueTy::Thunk(arg_tys, _) = &s.ty.vty {
+                    if let ValueTy::Thunk(..) = &s.ty.vty {
+                        // A curried definition's signature is a NEST of unary
+                        // thunks (`take = \n -> \xs -> …`); flatten to the flat
+                        // λ-parameter list so the nested lambdas in lowering can
+                        // consume their own leading slice.
+                        let (arg_tys, _) = flatten_thunk(&s.ty.vty);
                         let resolved = arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
                         fn_param_tys.insert(name.to_string(), resolved);
                     }
@@ -1335,7 +1373,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             let saved_next = ctx.next;
             let saved_defs = ctx.defs.clone();
             let saved_bodies = ctx.def_bodies.clone();
-            rerate_value(ctx, def.name(), 0);
+            rerate_value(ctx, def.name(), 0, leading_lambda_count(def.body()));
             let retry = infer_expr(ctx, def.body());
             if retry.is_err() {
                 ctx.subst = saved_subst;
@@ -1399,7 +1437,12 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             // leak into the recursive call and fail any value-demanding site.
             if ctx.mode == Mode::Complete {
                 // Re-register the CURRENT def as value-rate (self-recursion).
-                rerate_value(ctx, def.name(), def.params().len());
+                rerate_value(
+                    ctx,
+                    def.name(),
+                    def.params().len(),
+                    leading_lambda_count(def.body()),
+                );
                 // Also re-register the top-level defs this body REFERENCES —
                 // mutual recursion (`even` calls `odd`) would otherwise leave
                 // the partner on a signal placeholder and fail value-demanding
@@ -1409,7 +1452,12 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 for n in refs {
                     if let Some(s) = ctx.defs.get(n.as_str()) {
                         let lam_count = s.lam_count;
-                        rerate_value(ctx, n.as_str(), lam_count);
+                        let body_lams = ctx
+                            .def_bodies
+                            .get(n.as_str())
+                            .map(leading_lambda_count)
+                            .unwrap_or(0);
+                        rerate_value(ctx, n.as_str(), lam_count, body_lams);
                     }
                 }
             }
@@ -1450,7 +1498,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
 /// mode): recursion in the lazy model IS the value track, and a signal-default
 /// placeholder would leak into a recursive call and fail any value-demanding
 /// site. `lam_count` is the number of λ-parameters.
-fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize) {
+fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize, body_lams: usize) {
     let mut ins = Vec::with_capacity(lam_count);
     for _ in 0..lam_count {
         let v = ctx.next;
@@ -1459,8 +1507,16 @@ fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize) {
     }
     let out = ctx.next;
     ctx.next += 1;
-    let vty = if lam_count == 0 {
+    let vty = if lam_count == 0 && body_lams == 0 {
         ValueTy::Var(out)
+    } else if lam_count == 0 {
+        let mut ty = ValueTy::Var(out);
+        for _ in 0..body_lams {
+            let v = ctx.next;
+            ctx.next += 1;
+            ty = ValueTy::Thunk(vec![ValueTy::Var(v)], vec![ty]);
+        }
+        ty
     } else {
         ValueTy::Thunk(ins, vec![ValueTy::Var(out)])
     };
@@ -1533,13 +1589,25 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         ctx.def_bodies
             .insert(def.name().to_string(), def.body().clone());
         let lam_count = def.params().len();
+        let body_lams = leading_lambda_count(def.body());
         let mut ins = Vec::with_capacity(lam_count);
         for _ in 0..lam_count {
             ins.push(ctx.fresh_vty());
         }
         let out = ctx.fresh_vty();
-        let vty = if lam_count == 0 {
+        let vty = if lam_count == 0 && body_lams == 0 {
             out
+        } else if lam_count == 0 {
+            // Curried definition (`take n xs = …` → `take = \n -> \xs -> …`):
+            // the parameter list is empty but the body is a nest of λs. The
+            // placeholder must already be a function value, otherwise a
+            // recursive self-call in the body cannot dispatch — `take` sees a
+            // bare placeholder var and reports "expects 0 argument(s)".
+            let mut ty = out;
+            for _ in 0..body_lams {
+                ty = ValueTy::Thunk(vec![ctx.fresh_vty()], vec![ty]);
+            }
+            ty
         } else {
             ValueTy::Thunk(ins, vec![out])
         };
@@ -4257,19 +4325,22 @@ fn infer_apply_impl(
         if local.arity_out() == 1 {
             let lty = &local.vty;
             let resolved = ctx.subst.resolve_value(lty);
-            let arg_tys: Vec<ValueTy>;
-            let ret_tys: Vec<ValueTy>;
-            match resolved {
-                ValueTy::Thunk(a, r) => {
-                    arg_tys = a;
-                    ret_tys = r;
+            // A resolved function value is a curried NEST of single-argument
+            // thunks (`\a -> \b -> …`), so its total arity comes from
+            // flattening the chain. An unresolved parameter (a `Var`) is bound
+            // to a fresh nest of the applied arity — nested, not flat, so it
+            // unifies with the lambda actually passed for it.
+            let (arg_tys, ret_tys, unresolved) = match &resolved {
+                ValueTy::Thunk(..) => {
+                    let (a, r) = flatten_thunk(&resolved);
+                    (a, r, false)
                 }
-                _ => {
-                    arg_tys = (0..args.len()).map(|_| ctx.fresh_vty()).collect();
-                    ret_tys = vec![ctx.fresh_vty()];
-                }
-            }
-            let func_ty = ValueTy::Thunk(arg_tys.clone(), ret_tys.clone());
+                _ => (
+                    (0..args.len()).map(|_| ctx.fresh_vty()).collect::<Vec<_>>(),
+                    vec![ctx.fresh_vty()],
+                    true,
+                ),
+            };
             if args.len() != arg_tys.len() {
                 return Err(CompileError::Type {
                     msg: format!(
@@ -4280,7 +4351,10 @@ fn infer_apply_impl(
                     span,
                 });
             }
-            unify_value(lty, &func_ty, &mut ctx.subst, span)?;
+            if unresolved {
+                let func_ty = nest_thunk(&arg_tys, ret_tys.clone());
+                unify_value(lty, &func_ty, &mut ctx.subst, span)?;
+            }
             for (a, pty) in args.iter().zip(arg_tys.iter()) {
                 let vt = infer_method_value_vty(ctx, a, "argument")?;
                 unify_value(&vt, pty, &mut ctx.subst, a.span())?;
@@ -4334,8 +4408,8 @@ fn infer_apply_impl(
                         let vt = infer_method_value_vty(ctx, a, "argument")?;
                         unify_value(&vt, pty, &mut ctx.subst, a.span())?;
                     }
-                    let remaining: Vec<ValueTy> = arg_tys[args.len()..].to_vec();
-                    return Ok(ArrowTy::value_channel(ValueTy::Thunk(
+                    let remaining: &[ValueTy] = &arg_tys[args.len()..];
+                    return Ok(ArrowTy::value_channel(nest_thunk(
                         remaining,
                         ret_tys.clone(),
                     )));
@@ -4387,8 +4461,8 @@ fn infer_apply_impl(
                     let vt = infer_const_value(ctx, a)?;
                     unify_value(&vt, &ValueTy::Float, &mut ctx.subst, a.span())?;
                 }
-                return Ok(ArrowTy::value_channel(ValueTy::Thunk(
-                    vec![ValueTy::Float; remaining],
+                return Ok(ArrowTy::value_channel(nest_thunk(
+                    &vec![ValueTy::Float; remaining],
                     vec![ValueTy::Float],
                 )));
             }
