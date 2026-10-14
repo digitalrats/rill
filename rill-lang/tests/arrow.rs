@@ -254,13 +254,19 @@ fn arrow_default_both_composes() {
     // the method_lifting recursion guard must only fire on BODY re-entry.
     let src = r"
         apply k x = let u = k.unKleisli in u x;
-        main = case (apply (both (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
-            Just v -> v; Nothing -> 0.0;
+        main = case (apply (both (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) (Pair { first: 3.0, second: 4.0 })) of {
+            Just v -> v.first; Nothing -> 0.0;
         };
     ";
     // PRIMARY bar: `both` must COMPILE — before the recursion-guard fix this
     // fails with "recursive typeclass method `compose` for type `Kleisli`"
     // (the key was held while `second g`'s default body re-entered `compose`).
+    //
+    // NOTE: the program passes a `Pair` input and projects `.first` because
+    // Arrow `both` maps a PAIR (`a (Pair b d) (Pair c e)`); the older Float
+    // input only compiled by accident (a placeholder-variable leak in record
+    // projections left the arrow's input type unconstrained). The compile bar
+    // is the default-chain typecheck, not the scaffold.
     assert!(
         compile::<f32>(src).is_ok(),
         "both's default must compile (recursion guard must only fire on body re-entry)"
@@ -280,9 +286,11 @@ fn arrow_default_fan_composes() {
     let src = r"
         apply k x = let u = k.unKleisli in u x;
         main = case (apply (fan (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
-            Just v -> v; Nothing -> 0.0;
+            Just v -> v.first; Nothing -> 0.0;
         };
     ";
+    // `fan` maps a scalar to a PAIR (`a b (Pair c d)`), so the input is a
+    // Float (`3.0`) and the result projects `.first`.
     assert!(
         compile::<f32>(src).is_ok(),
         "fan's default must compile (recursion guard must only fire on body re-entry)"

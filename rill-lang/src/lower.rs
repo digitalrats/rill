@@ -247,6 +247,80 @@ fn logic_op_from_ast(op: crate::ast::LogicOp) -> LogicOp {
     }
 }
 
+/// Mirror inference's `pin_result_to_expected` at a user-def call site: when the
+/// callee's result is a type-constructor variable applied to args (`m b`) and the
+/// call site expects a concrete container (`Maybe`, from a match arm or an
+/// enclosing method parameter), bind that head var to the expected's constructor
+/// throughout the callee's argument and result types. Lowering has no
+/// unification substitution, so the bind is a structural replacement:
+/// `Kleisli m a b` becomes `Kleisli Maybe a b`, so a result-directed method
+/// chain in an argument (`arr f` inside `apply (compose …) 3.0`) threads the
+/// concrete monad into the instance body's `return`/`bind`.
+fn pin_ret_head_types(
+    arg_tys: &[ValueTy],
+    ret_tys: &[ValueTy],
+    expected: Option<&ValueTy>,
+) -> (Vec<ValueTy>, Vec<ValueTy>) {
+    let Some(exp) = expected else {
+        return (arg_tys.to_vec(), ret_tys.to_vec());
+    };
+    let repl = match exp {
+        ValueTy::Data(c, _) | ValueTy::App(c, _) => ValueTy::App(c.clone(), vec![]),
+        _ => return (arg_tys.to_vec(), ret_tys.to_vec()),
+    };
+    let Some(ValueTy::TyConApp(hv, _)) = ret_tys.first() else {
+        return (arg_tys.to_vec(), ret_tys.to_vec());
+    };
+    let hv = *hv;
+    (
+        arg_tys
+            .iter()
+            .map(|t| subst_tycon_head(t, hv, &repl))
+            .collect(),
+        ret_tys
+            .iter()
+            .map(|t| subst_tycon_head(t, hv, &repl))
+            .collect(),
+    )
+}
+
+/// Replace a type-constructor variable (`hv`) with `repl` throughout `t`: bare
+/// occurrences (`Kleisli m a b` → `Kleisli Maybe a b`) and applied heads
+/// (`m b` → `Maybe b`).
+fn subst_tycon_head(t: &ValueTy, hv: u32, repl: &ValueTy) -> ValueTy {
+    match t {
+        ValueTy::Var(v) | ValueTy::TyConVar(v) if *v == hv => repl.clone(),
+        ValueTy::TyConApp(f, args) => {
+            let args: Vec<ValueTy> = args.iter().map(|a| subst_tycon_head(a, hv, repl)).collect();
+            if *f == hv {
+                match repl {
+                    ValueTy::App(c, _) => ValueTy::App(c.clone(), args),
+                    _ => ValueTy::TyConApp(*f, args),
+                }
+            } else {
+                ValueTy::TyConApp(*f, args)
+            }
+        }
+        ValueTy::Thunk(a, r) => ValueTy::Thunk(
+            a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
+            r.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
+        ),
+        ValueTy::Data(n, a) => ValueTy::Data(
+            n.clone(),
+            a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
+        ),
+        ValueTy::Newtype(n, a) => ValueTy::Newtype(
+            n.clone(),
+            a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
+        ),
+        ValueTy::App(n, a) => ValueTy::App(
+            n.clone(),
+            a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 struct Lowerer<'a> {
     defs: HashMap<String, Def>,
     cafs: &'a HashSet<String>,
@@ -458,8 +532,21 @@ impl<'a> Lowerer<'a> {
     /// still Forcing, yielding bottom. In strict mode there are no thunks, so
     /// `e` lowers eagerly as usual.
     fn lower_lazy_arg(&mut self, e: &Expr) -> Result<usize, CompileError> {
+        self.lower_lazy_arg_expected(e, None)
+    }
+
+    /// [`Self::lower_lazy_arg`] with an optional expected value type, threaded
+    /// into the argument's own lowering so a result-directed/constructor-class
+    /// method inside it can select its instance by the callee's parameter type
+    /// (`apply (arr f) 3.0` with `apply k x = k.unKleisli x`: `arr f` is
+    /// lowered with `k`'s parameter type `Kleisli m a b` expected).
+    fn lower_lazy_arg_expected(
+        &mut self,
+        e: &Expr,
+        expected: Option<&ValueTy>,
+    ) -> Result<usize, CompileError> {
         if self.mode == Mode::Strict {
-            let (r, _) = self.lower_value(e)?;
+            let (r, _) = self.lower_value_expected(e, expected)?;
             return Ok(r);
         }
         // A lazy argument that is ALREADY a value (a lambda literal → a
@@ -472,7 +559,7 @@ impl<'a> Lowerer<'a> {
             // thunk/closure in the cell; to anything else it is a capture or an
             // inlined constant — never a computation that must be suspended.
             Expr::Ref(..) => {
-                let (r, _) = self.lower_value(e)?;
+                let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
             }
             Expr::Lambda { .. }
@@ -480,14 +567,21 @@ impl<'a> Lowerer<'a> {
             | Expr::Int(_, _)
             | Expr::Bool(_, _)
             | Expr::Str(_, _) => {
-                let (r, _) = self.lower_value(e)?;
+                let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
             }
             _ => {}
         }
         let free = self.free_vars(e, &HashSet::new());
-        let (fragment_id, _) =
-            self.lower_fragment(&[], e, &free, &self.capture_tys(&free), &[], None, e.span())?;
+        let (fragment_id, _) = self.lower_fragment(
+            &[],
+            e,
+            &free,
+            &self.capture_tys(&free),
+            &[],
+            expected,
+            e.span(),
+        )?;
         let (env_reg, _) = self.emit_env_snapshot(&free, e.span(), None)?;
         let dst = self.fresh_value_reg();
         self.emit_value(ValueInstr::ValueLazy {
@@ -2061,6 +2155,14 @@ impl<'a> Lowerer<'a> {
                 match &callee_ty {
                     ValueTy::Thunk(_, _) => {
                         let (arg_tys, ret_tys) = flatten_value_thunk(&callee_ty);
+                        // Mirror inference's `pin_result_to_expected`: a def whose
+                        // result is `m b` (`apply k x = k.unKleisli x`) applied
+                        // under a concrete container expected (`apply (compose …)
+                        // 3.0` matched by `Just v`) pins the monad BEFORE its
+                        // arguments are lowered, so a result-directed /
+                        // constructor-class method inside an argument (`arr f`)
+                        // threads the concrete monad into the instance body.
+                        let (arg_tys, ret_tys) = pin_ret_head_types(&arg_tys, &ret_tys, expected);
                         if call_args.len() > arg_tys.len() {
                             return Err(CompileError::Type {
                                 msg: format!(
@@ -2072,8 +2174,18 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                         let mut arg_regs = Vec::with_capacity(call_args.len());
-                        for a in call_args {
-                            let ar = self.lower_lazy_arg(a)?;
+                        for (i, a) in call_args.iter().enumerate() {
+                            // Thread the callee's parameter type as the
+                            // argument's expected type: a result-directed /
+                            // constructor-class method inside the argument
+                            // (`arr f`, `compose …`) selects its instance by the
+                            // container type the parameter demands
+                            // (`apply (arr f) 3.0`).
+                            let pt = arg_tys.get(i).cloned();
+                            let ar = match pt {
+                                Some(p) => self.lower_lazy_arg_expected(a, Some(&p))?,
+                                None => self.lower_lazy_arg(a)?,
+                            };
                             arg_regs.push(ar);
                         }
                         let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);

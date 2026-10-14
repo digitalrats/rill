@@ -138,6 +138,28 @@ impl Ctx {
     }
 }
 
+/// Standard HM let-generalization: the quantified variables of a `let`/`where`
+/// definition are the body's free variables MINUS those free in the enclosing
+/// environment (lambda/match parameters). Generalizing over environment-free
+/// variables is unsound: `let u = k.unKleisli in u x` inside `\k -> …` would
+/// re-instantiate `u`'s type at each use with FRESH `m a b`, severing the link
+/// between the parameter's container (`k : Kleisli m a b`) and the result
+/// (`u x : m b`) — so a result-directed method chain (`apply (compose (arr f)
+/// (arr g)) 3.0`) never learns its monad. A top-level def (empty environment)
+/// still generalizes fully and stays polymorphic at every call site.
+fn free_vars_quantified(ctx: &Ctx, t: &ArrowTy) -> Vec<TypeVarId> {
+    let all = ctx.free_vars(t);
+    let mut env: Vec<TypeVarId> = Vec::new();
+    for (_, at) in ctx.locals.iter() {
+        for v in value_free_vars(&at.vty, &ctx.subst) {
+            if !env.contains(&v) {
+                env.push(v);
+            }
+        }
+    }
+    all.into_iter().filter(|v| !env.contains(v)).collect()
+}
+
 /// Flatten a curried `Thunk` chain into its total argument list and final
 /// result: `Thunk([a], [Thunk([b], [r])])` → `(vec![a, b], vec![r])`.
 ///
@@ -361,8 +383,20 @@ pub(crate) fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueT
 /// constant or a per-block value. Signal-rate constants (literals) are coerced
 /// to their value type; returns the resulting `ValueTy`.
 fn infer_const_value(ctx: &mut Ctx, e: &Expr) -> Result<ValueTy, CompileError> {
+    infer_const_value_expected(ctx, e, None)
+}
+
+/// [`infer_const_value`] with an optional expected value type threaded into `e`'s
+/// own inference. A record field value (`unKleisli: \ x -> return (f x)`) is a
+/// result-directed method container, so the declared field type must be visible
+/// while it infers — see the record-constructor arm of `infer_apply_impl`.
+fn infer_const_value_expected(
+    ctx: &mut Ctx,
+    e: &Expr,
+    expected: Option<&ValueTy>,
+) -> Result<ValueTy, CompileError> {
     let span = e.span();
-    let t = infer_expr(ctx, e)?;
+    let t = infer_expr_expected(ctx, e, expected.cloned())?;
     if t.arity_in() != 0 || t.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: format!(
@@ -799,8 +833,26 @@ pub(crate) fn signature_param_tys_conv(
     class_var: &str,
     ctor: &str,
     sig: &crate::ast::TypeExpr,
-    mut fresh: impl FnMut() -> ValueTy,
+    fresh: impl FnMut() -> ValueTy,
 ) -> Vec<ValueTy> {
+    signature_param_and_result_tys_conv(env, class_var, ctor, sig, fresh).0
+}
+
+/// [`signature_param_tys_conv`] plus the method's RESULT type, computed in the
+/// SAME fresh-variable scope so a variable shared between a parameter and the
+/// result (`compose: a b c -> a c d -> a b d`) stays linked. The result type is
+/// used as the inlined body's expected type, so a default body that calls other
+/// class methods (`both f g = compose (first f) (second g)`, `second k =
+/// compose (compose (arr swap) (first k)) (arr swap)`) resolves their container
+/// from the method's own result instead of failing with "expected type unknown".
+/// `None` when the signature is not a function type (a nullary method).
+pub(crate) fn signature_param_and_result_tys_conv(
+    env: &TypeEnv,
+    class_var: &str,
+    ctor: &str,
+    sig: &crate::ast::TypeExpr,
+    mut fresh: impl FnMut() -> ValueTy,
+) -> (Vec<ValueTy>, Option<ValueTy>) {
     let mut vars: HashMap<String, ValueTy> = HashMap::new();
     fn conv(
         env: &TypeEnv,
@@ -855,11 +907,18 @@ pub(crate) fn signature_param_tys_conv(
         }
     }
     match sig {
-        crate::ast::TypeExpr::TFunc(args, _) if !args.is_empty() => args
-            .iter()
-            .map(|a| conv(env, class_var, ctor, &mut vars, &mut fresh, a))
-            .collect(),
-        other => vec![conv(env, class_var, ctor, &mut vars, &mut fresh, other)],
+        crate::ast::TypeExpr::TFunc(args, ret) if !args.is_empty() => {
+            let params: Vec<ValueTy> = args
+                .iter()
+                .map(|a| conv(env, class_var, ctor, &mut vars, &mut fresh, a))
+                .collect();
+            let result = conv(env, class_var, ctor, &mut vars, &mut fresh, ret);
+            (params, Some(result))
+        }
+        other => (
+            vec![conv(env, class_var, ctor, &mut vars, &mut fresh, other)],
+            None,
+        ),
     }
 }
 
@@ -1624,7 +1683,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
             ValueTy::Thunk(param_tys, vec![body_ty.vty])
         };
         let resolved = ctx.subst.apply(&ArrowTy { vty });
-        let vars = ctx.free_vars(&resolved);
+        let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
         ctx.defs.insert(
             def.name().to_string(),
@@ -1658,7 +1717,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
             ValueTy::Thunk(param_tys, vec![body_ty.vty])
         };
         let resolved = ctx.subst.apply(&ArrowTy { vty });
-        let vars = ctx.free_vars(&resolved);
+        let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
         ctx.defs.insert(
             def.name().to_string(),
@@ -2091,7 +2150,9 @@ fn infer_expr_expected(
             Ok(t)
         }
         Expr::Apply { name, args, span } => infer_apply_expected(ctx, name, args, *span, expected),
-        Expr::ApplyExpr { callee, args, span } => infer_apply_expr(ctx, callee, args, *span),
+        Expr::ApplyExpr { callee, args, span } => {
+            infer_apply_expr(ctx, callee, args, *span, expected)
+        }
         Expr::Str(_, _) => Ok(ArrowTy::value_channel(ValueTy::String)),
         Expr::Arith { lhs, rhs, span, .. } => infer_arith(ctx, lhs, rhs, *span),
         Expr::Let {
@@ -2148,14 +2209,28 @@ fn infer_expr_expected(
                 })
                 .collect();
             let rec_expected = if rec_candidates.len() == 1 {
+                let rec_name = &rec_candidates[0];
+                // A builtin constructor (`Pair a b`) lives in `ctor_kinds`, not
+                // `data_arities`. Consult both so the record's type args are
+                // FRESH vars, not the placeholder positions `Var(1)`/`Var(2)`
+                // from [`DataInfo::Record`] — those placeholders share the id
+                // space with live inference vars, so leaking them corrupts the
+                // substitution (`p.second` typed as raw `Var(2)`).
                 let arity = ctx
                     .env
                     .data_arities
-                    .get(&rec_candidates[0])
+                    .get(rec_name)
                     .copied()
+                    .or_else(|| ctx.env.ctor_arity(rec_name))
                     .unwrap_or(0);
                 let args = (0..arity).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
-                Some(ValueTy::Data(rec_candidates[0].clone(), args))
+                // Builtin constructors are spelled `App`; user data types `Data`.
+                let shape = if ctx.env.ctor_arity(rec_name).is_some() {
+                    ValueTy::App(rec_name.clone(), args)
+                } else {
+                    ValueTy::Data(rec_name.clone(), args)
+                };
+                Some(shape)
             } else {
                 None
             };
@@ -2242,7 +2317,7 @@ fn infer_expr_expected(
                     // record defers to a fresh var, resolved when the function
                     // is called with a concrete argument (`reduce` β-reduces).
                     let field_ty = match &rec_expected {
-                        Some(ValueTy::Data(name, args)) => {
+                        Some(ValueTy::Data(name, args)) | Some(ValueTy::App(name, args)) => {
                             match ctx.env.data_types.get(name.as_str()) {
                                 Some(DataInfo::Record(fields)) => {
                                     fields.iter().find(|(f, _)| f == field).map(|(_, ft)| {
@@ -2378,10 +2453,51 @@ fn infer_expr_expected(
             // sum type (or a literal arm's scalar type) below by unification.
             // Bare Int/Float literals are signal-rate channels in v1 but
             // value-compatible in value positions (mirroring `arm_result_vty`).
+            // Derive the arm constructors' sum type BEFORE inferring the
+            // scrutinee, so the scrutinee can be inferred with that sum as its
+            // expected type. This pins a result-directed method chain's container
+            // (`apply (compose (arr f) (arr g)) 3.0` matched by `Just v` → `m :=
+            // Maybe`) before the chain's arguments infer, so the instance bodies'
+            // `return`/`bind` resolve against the concrete monad.
+            let pre_sum: Option<String> = if arms
+                .iter()
+                .any(|a| matches!(a.pattern, Pattern::Ctor(_, _)))
+            {
+                let mut candidates: Option<Vec<String>> = None;
+                let mut ok = true;
+                for a in arms {
+                    if let Pattern::Ctor(name, _) = &a.pattern {
+                        let per_ctor = sum_types_with_ctor(ctx, name);
+                        if per_ctor.is_empty() {
+                            ok = false;
+                            break;
+                        }
+                        candidates = Some(match candidates {
+                            None => per_ctor,
+                            Some(acc) => acc.into_iter().filter(|n| per_ctor.contains(n)).collect(),
+                        });
+                    }
+                }
+                match candidates {
+                    Some(v) if ok && v.len() == 1 => Some(v[0].clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let pre_expected: Option<ValueTy> = pre_sum.as_ref().and_then(|n| {
+                ctx.env.ctor_arity(n).map(|arity| {
+                    let mut args: Vec<ValueTy> = Vec::new();
+                    while args.len() < arity {
+                        args.push(ctx.fresh_vty());
+                    }
+                    ValueTy::App(n.clone(), args)
+                })
+            });
             let st = match scrutinee.as_ref() {
                 Expr::Int(_, _) => ArrowTy::value_channel(ValueTy::Int),
                 Expr::Float(_, _) => ArrowTy::value_channel(ValueTy::Float),
-                _ => infer_expr(ctx, scrutinee)?,
+                _ => infer_expr_expected(ctx, scrutinee, pre_expected)?,
             };
             // The scrutinee must be a single value channel (not a signal buffer).
             if st.arity_out() != 1 {
@@ -2745,7 +2861,29 @@ fn infer_ref_expected(
     {
         return Ok(ArrowTy::uniform(0, 1, ValueTy::Buffer));
     }
-    infer_ref_inner(ctx, name, span)
+    let t = infer_ref_inner(ctx, name, span)?;
+    // Thread the expected type into a bare reference whose value type is
+    // still an unresolved variable: a local (`k` in `k.unKleisli`) or a
+    // definition used through a parameterized function has no type of its
+    // own yet, so the surrounding expected type pins it. This is what lets a
+    // result-directed/constructor-class method select its instance when its
+    // container arrives through a function parameter (`apply (arr f) 3.0`
+    // with `apply k x = k.unKleisli x`: `k : Kleisli m a b`, so `arr`
+    // resolves over the concrete `Kleisli` head instead of an opaque var).
+    //
+    // The guard looks at the RAW local type, not the resolved one: the
+    // multi-pass inference re-pins a lambda parameter on every pass (pass 2's
+    // `k` is already bound to a concrete `Data` in the substitution from pass
+    // 1), so skipping when `resolve_value` is concrete would let a let-bound
+    // projection (`let u = k.unKleisli in u x`) re-freshen its type vars and
+    // sever the parameter↔result link. `unify_value` resolves both sides, so
+    // a re-pin is an arg-wise unify, not a clobber.
+    if let Some(exp) = expected {
+        if t.arity_in() == 0 && t.arity_out() == 1 && matches!(&t.vty, ValueTy::Var(_)) {
+            unify_value(&t.vty, &exp, &mut ctx.subst, span)?;
+        }
+    }
+    Ok(t)
 }
 
 /// The original `infer_ref` body: resolve a named reference (data type, sum
@@ -3049,11 +3187,15 @@ fn uncurry_name_chain(e: &Expr) -> Option<(String, Vec<&Expr>)> {
 
 /// `(expr) a b` — apply a closure-valued expression. Infer the callee, unify it
 /// against a fresh `Func` signature, infer and check args, return the result.
+/// `expected` is the expression's expected result type; it is forwarded to a
+/// name-based chain (a result-directed method chain keeps its expected type) and
+/// threaded into the callee as a `Func` signature for the generic runtime path.
 fn infer_apply_expr(
     ctx: &mut Ctx,
     callee: &Expr,
     args: &[Expr],
     span: Span,
+    expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
     // Un-curry a chain rooted at a bare name (`ApplyExpr(ApplyExpr(Ref f, [a]), [b])`
     // from the parser's currying pass) back to the name-based form so the
@@ -3065,9 +3207,21 @@ fn infer_apply_expr(
         let mut all: Vec<&Expr> = chain_args;
         all.extend(args.iter());
         let owned: Vec<Expr> = all.into_iter().cloned().collect();
-        return infer_apply_impl(ctx, &name, &owned, span, None);
+        return infer_apply_impl(ctx, &name, &owned, span, expected);
     }
-    let ct = infer_expr(ctx, callee)?;
+    // Thread the call's expected result type into the callee as a `Func`
+    // signature (`Thunk([fresh; arity], [expected])`) so a result-directed
+    // method chain in callee position (`(compose …).unKleisli` in a
+    // `Just`-matched scrutinee) resolves its instance from the concrete result
+    // type before the callee is inferred — mirroring lowering.
+    let callee_expected: Option<ValueTy> = expected.map(|exp| {
+        let fresh_args: Vec<ValueTy> = (0..args.len()).map(|_| ctx.fresh_vty()).collect();
+        ValueTy::Thunk(fresh_args, vec![exp])
+    });
+    let ct = match &callee_expected {
+        Some(ce) => infer_expr_expected(ctx, callee, Some(ce.clone()))?,
+        None => infer_expr(ctx, callee)?,
+    };
     if ct.arity_out() != 1 {
         return Err(CompileError::Type {
             msg: "applied expression must be a value (function)".into(),
@@ -3119,7 +3273,11 @@ fn infer_apply_expr(
                 continue;
             }
         }
-        let vt = infer_method_value_vty(ctx, a, "argument")?;
+        // Thread the callee's parameter type as the argument's expected type
+        // (mirroring the user-def path): a result-directed/constructor-class
+        // method inside the argument selects its instance by the container the
+        // parameter demands.
+        let vt = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
         unify_value(&vt, pt, &mut ctx.subst, a.span())?;
     }
     if args.len() < arg_tys.len() {
@@ -3135,6 +3293,32 @@ fn infer_apply_expr(
     Ok(ArrowTy::value_channel(
         ret_tys.first().cloned().unwrap_or(ValueTy::Float),
     ))
+}
+
+/// Unify an application's RESULT type with the caller's expected type before the
+/// arguments are inferred. A result-directed method chain whose container is
+/// fixed only by its result (`apply (compose (arr f) (arr g)) 3.0` matched by
+/// `Just v` → `m := Maybe`) then binds its monad ahead of the argument
+/// inference, so the inlined instance bodies' `return`/`bind` resolve by
+/// instance. A non-concrete (`Var`) or function-shaped (`Thunk`) expectation is
+/// left to the normal call-site unification.
+fn pin_result_to_expected(
+    ctx: &mut Ctx,
+    ret: &ValueTy,
+    expected: Option<&ValueTy>,
+    span: Span,
+) -> Result<(), CompileError> {
+    if let Some(exp) = expected {
+        let exp = ctx.subst.resolve_value(exp);
+        if matches!(
+            exp,
+            ValueTy::Data(..) | ValueTy::App(..) | ValueTy::Newtype(..)
+        ) {
+            let ret = ctx.subst.resolve_value(ret);
+            unify_value(&ret, &exp, &mut ctx.subst, span)?;
+        }
+    }
+    Ok(())
 }
 
 fn infer_apply_impl(
@@ -3518,6 +3702,28 @@ fn infer_apply_impl(
                         )
                     })
                     .collect();
+                // Seed the type-parameter placeholders from the record's own
+                // expected type when the heads match: `Kleisli m a b` built
+                // under an expected `Kleisli Maybe Float Float` pins `m :=
+                // Maybe`, so a result-directed method inside a field value
+                // (`arr f = Kleisli (\ x -> return (f x))` inlined under a
+                // concrete container) resolves its instance. Each expected arg
+                // is unified against the placeholder's fresh var so the field
+                // types below resolve through the substitution.
+                if let Some(exp) = &expected {
+                    let eargs = match ctx.subst.resolve_value(exp) {
+                        ValueTy::Data(n, a) if n == *name => Some(a.clone()),
+                        ValueTy::App(n, a) if n == *name => Some(a.clone()),
+                        _ => None,
+                    };
+                    if let Some(eargs) = eargs {
+                        for (k, t) in eargs.into_iter().enumerate() {
+                            let pid = (k + 1) as u32;
+                            let f = fresh_placeholder_id(pid, &mut placeholder_bindings, ctx);
+                            unify_value(&ValueTy::Var(f), &t, &mut ctx.subst, span)?;
+                        }
+                    }
+                }
                 for (f, e) in &fields_expr {
                     let fty = field_tys
                         .iter()
@@ -3532,7 +3738,13 @@ fn infer_apply_impl(
                             });
                         }
                     };
-                    let vt = infer_const_value(ctx, e)?;
+                    // Resolve the field type through the substitution so a
+                    // container pinned by the expected type (or by an earlier
+                    // field, `unKleisli: a -> m b` with `m := Maybe` from
+                    // `unKleisli: \x -> Just x`) is visible to the field value
+                    // as it infers.
+                    let fty_resolved = ctx.subst.resolve_value(&fty);
+                    let vt = infer_const_value_expected(ctx, e, Some(&fty_resolved))?;
                     unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
                 }
                 if is_builtin {
@@ -3757,21 +3969,31 @@ fn infer_apply_impl(
                 ctx.method_lifting.insert(key.clone());
                 let saved = ctx.locals.clone();
                 let param_tys = signature_param_tys(ctx, &class_var, &ty_name, sig);
+                // Infer the arguments BEFORE binding the method's params into
+                // `ctx.locals`: a param that shares a name with a caller-local
+                // (`return x` in `\x -> return (f x)` — the `arr` instance
+                // body) must not capture the argument's free `x` (that made
+                // `f x` apply the FRESH param var, and a later unify of that
+                // var against the closure's result type tripped the occurs
+                // check: `Var44 ~ Pair[Var44, Var44]`).
+                let mut arg_vtys = Vec::with_capacity(args.len());
+                for a in args.iter() {
+                    arg_vtys.push(infer_method_value_vty(ctx, a, "argument")?);
+                }
                 for (p, pt) in params.iter().zip(param_tys) {
                     ctx.locals
                         .insert(p.clone(), ArrowTy::value_channel(pt.clone()));
                 }
                 // The single element argument (`pure x` / `return x`) unifies
                 // against the signature's leading parameter type.
-                for (a, p) in args.iter().zip(params.iter()) {
-                    let av = infer_method_value_vty(ctx, a, "argument")?;
+                for ((a, p), av) in args.iter().zip(params.iter()).zip(arg_vtys.iter()) {
                     let pt = ctx
                         .locals
                         .get(p)
                         .cloned()
                         .map(|t| t.vty.clone())
                         .unwrap_or(ValueTy::Float);
-                    unify_value(&av, &pt, &mut ctx.subst, a.span())?;
+                    unify_value(av, &pt, &mut ctx.subst, a.span())?;
                 }
                 let body_vty =
                     infer_method_value_vty_expected(ctx, &body, "body", Some(exp.clone()));
@@ -3833,7 +4055,11 @@ fn infer_apply_impl(
                 ctx.method_lifting.insert(key.clone());
                 let saved = ctx.locals.clone();
                 let param_tys = signature_param_tys(ctx, &class_var, &ty_name, sig);
-                for (i, p) in params.iter().enumerate() {
+                // Infer every argument BEFORE binding the method's params into
+                // `ctx.locals`: an argument is a caller expression, so a param
+                // that shares a name with a caller-local must not capture it.
+                let mut param_bind: Vec<ValueTy> = Vec::with_capacity(params.len());
+                for (i, _p) in params.iter().enumerate() {
                     let pt = if i == selector_idx
                         || !is_bare_nullary_method_ref(ctx, &args[i], &class_name)
                     {
@@ -3851,8 +4077,10 @@ fn infer_apply_impl(
                         let expected = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
                         infer_method_value_vty_expected(ctx, &nbody, "argument", Some(expected))?
                     };
-                    ctx.locals
-                        .insert(p.clone(), ArrowTy::value_channel(pt.clone()));
+                    param_bind.push(pt);
+                }
+                for (p, pt) in params.iter().zip(param_bind) {
+                    ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
                 }
                 let body_vty = infer_method_value_vty(ctx, &body, "body");
                 ctx.locals = saved;
@@ -4003,10 +4231,13 @@ fn infer_apply_impl(
             // Phase 2: infer the remaining args with their signature param type
             // as expected (so `bind mx (fn x -> return x)` resolves `return` by
             // the monad), then bind all params.
-            let mut param_tys =
-                signature_param_tys_conv(&ctx.env.clone(), &class_var, &ctor, sig, || {
-                    ctx.fresh_vty()
-                });
+            let (mut param_tys, result_ty) = signature_param_and_result_tys_conv(
+                &ctx.env.clone(),
+                &class_var,
+                &ctor,
+                sig,
+                || ctx.fresh_vty(),
+            );
             // A partial instance head (`Kleisli m` → head arg `m`): the
             // signature-converted container type drops the head (`a b c` →
             // `Data("Kleisli", [b, c])`). Prepend the head args bound at the
@@ -4022,6 +4253,24 @@ fn infer_apply_impl(
                 &ctx.type_var_bindings.clone(),
                 || ctx.fresh_vty(),
             );
+            // The body's expected type is the method's own RESULT (with the
+            // instance head args restored), so a default/instance body that
+            // calls other class methods threads its concrete container into
+            // them (`both f g = compose (first f) (second g)` → `compose` sees
+            // `Kleisli m …`). Without this the body is inferred with no expected
+            // and the nested `arr`/`first`/`second` calls fail with "expected
+            // type unknown". The result shares fresh vars with `param_tys`.
+            let body_expected = result_ty.map(|mut rt| {
+                prepend_instance_head_args(
+                    &ctx.env.clone(),
+                    &class_name,
+                    std::slice::from_mut(&mut rt),
+                    &ctor,
+                    &ctx.type_var_bindings.clone(),
+                    || ctx.fresh_vty(),
+                );
+                rt
+            });
             let mut arg_vtys = Vec::with_capacity(args.len());
             for (i, a) in args.iter().enumerate() {
                 if i == container_idx {
@@ -4056,7 +4305,7 @@ fn infer_apply_impl(
                 ctx.locals
                     .insert(p.clone(), ArrowTy::value_channel(av.clone()));
             }
-            let body_vty = infer_method_value_vty(ctx, &body, "body");
+            let body_vty = infer_method_value_vty_expected(ctx, &body, "body", body_expected);
             ctx.locals = saved;
             ctx.method_lifting.remove(&key);
             let body_vty = body_vty?;
@@ -4419,6 +4668,18 @@ fn infer_apply_impl(
                         span,
                     });
                 }
+                // Pin the application's RESULT type to the caller's expected
+                // type BEFORE the arguments infer: a chain whose container is
+                // fixed only by its result (`apply (compose (arr f) (arr g))
+                // 3.0` matched by `Just v` → `m := Maybe`) then binds the
+                // monad ahead of the inlined instance bodies, so their
+                // `return`/`bind` resolve by instance.
+                pin_result_to_expected(
+                    ctx,
+                    &ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+                    expected.as_ref(),
+                    span,
+                )?;
                 for (a, pty) in args.iter().zip(arg_tys.iter()) {
                     let vt =
                         infer_method_value_vty_expected(ctx, a, "argument", Some(pty.clone()))?;

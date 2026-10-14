@@ -974,8 +974,8 @@ Entry condition: only `Def::Eval` remains, def params live in
 
 ## Remaining gaps (deferred, pre-existing)
 
-Both are recorded here so the follow-up work has a single entry point. Neither
-was introduced by this migration; both were surfaced by it.
+Item 1 below is the only open gap. Item 2 was resolved after the migration (see
+its note). Neither was introduced by this migration; both were surfaced by it.
 
 1. **`graph`-feature reconstructor — `rill-lang/src/graph/reconstruct.rs`.**
    Blocks `cargo test --workspace` (11 compile errors). The file turns a
@@ -989,8 +989,32 @@ was introduced by this migration; both were surfaced by it.
    `required-features = ["dsp", "graph"]`) are also written against the old
    surface and move with it.
 
-2. **Four `arrow.rs` typeclass-inference gaps.** `kleisli_arrow_end_to_end`,
+2. **Four `arrow.rs` typeclass-inference gaps — RESOLVED.** `kleisli_arrow_end_to_end`,
    `constraint_instance_resolves`, `arrow_default_both_composes`,
-   `arrow_default_fan_composes` — red since before this migration. They need
-   expected-type threading through the category prelude's `arr`/`compose`
-   instance bodies and the `Monad`-side `return`.
+   `arrow_default_fan_composes` — `arrow.rs` is now 17/17. The root cause was a
+   cluster of inference defects, not one:
+   - the method-inline branch inferred the inlined body with no expected type,
+     so a default/instance body calling another class method (`both f g =
+     compose (first f) (second g)`) failed with "expected type unknown". Fixed by
+     threading the method's RESULT type (class var substituted, instance head
+     args restored) as the body's expected (`signature_param_and_result_tys_conv`
+     + `body_expected`).
+   - record projection of a BUILTIN constructor (`Pair`) consulted only
+     `data_arities` (not `ctor_kinds`), so it built `Data("Pair", [])` with zero
+     args and returned the raw placeholder positions `Var(1)`/`Var(2)` — ids
+     that share the live inference space. `p.second` typed as raw `Var(2)`,
+     silently unconstraining the arrow's input. Fixed (arity from
+     `data_arities` OR `ctor_arity`; builtin shapes spelled `App`).
+   - the selector-class branch bound the method's params into `ctx.locals`
+     BEFORE inferring the arguments, so `return x`'s param `x` captured the free
+     `x` of the argument in `\x -> return (f x)` and tripped the occurs check
+     (`Var44 ~ Pair[Var44, Var44]`). Fixed by inferring arguments first.
+   - `Subst::resolve_value` kept a stale `TyConApp` head id across a
+     `TyConApp(f) → Var(w)` union-find hop, severing a monad's
+     parameter↔result link after `instantiate`. Fixed.
+   The `arrow_default_{both,fan}_composes` test PROGRAMS were also ill-typed
+   (`apply (both …) 3.0` passes a Float to a Pair-shaped arrow input; `fan`'s
+   Pair result was matched as Float). They had compiled only by accident, via
+   the placeholder leak above. The programs now pass a `Pair` / project
+   `.first`, keeping the tests' real bar (the default chain must typecheck and
+   the recursion guard must not fire).

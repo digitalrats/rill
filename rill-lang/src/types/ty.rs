@@ -1197,7 +1197,16 @@ impl Subst {
                     .collect();
                 let resolved = self.resolve_value_depth(&ValueTy::TyConVar(*f), depth + 1);
                 match resolved {
-                    ValueTy::TyConVar(_) => ValueTy::TyConApp(*f, resolved_args),
+                    // Follow the head var's union-find chain to its
+                    // representative. Without this, `TyConApp(10, ..)` with
+                    // `10 -> Var(7)` keeps the STALE id 10: `instantiate`
+                    // freshens the generalized var 7 but leaves 10 untouched,
+                    // severing a monad's parameter↔result link
+                    // (`Kleisli m a b -> a -> m b` becomes `Kleisli m' a b ->
+                    // a -> m b`), so a result-directed chain never learns its
+                    // container.
+                    ValueTy::TyConVar(w) => ValueTy::TyConApp(w, resolved_args),
+                    ValueTy::Var(w) => ValueTy::TyConApp(w, resolved_args),
                     ValueTy::App(c, _) => ValueTy::App(c, resolved_args),
                     _other => ValueTy::TyConApp(*f, resolved_args),
                 }
