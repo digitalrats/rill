@@ -36,11 +36,17 @@ impl BufferPool {
 
     /// Pre-allocate `budget` refs of pooled buffers.
     ///
-    /// Every size class gets at least one buffer (so a request of any size has a
-    /// candidate), then the remainder fills classes proportionally — more small
-    /// buffers, since small payloads (records, sums, closures, short lists)
-    /// dominate. `take` searches the request's class upward, so a small request
-    /// prefers a small buffer and a large request falls through to a larger one.
+    /// The binding constraint is buffer **count**, not total refs: every live
+    /// payload borrows exactly one buffer, so a program whose peak live payloads
+    /// are all small needs many small buffers. A cap-256 buffer consumes the refs
+    /// of 32 cap-8 buffers yet serves at most one payload, so the remainder is
+    /// split with a share per class in inverse proportion to its capacity — small
+    /// payloads (records, sums, closures, short lists) dominate live slots, so
+    /// small classes get many buffers and large classes a few. Every size class
+    /// still gets at least one buffer (guaranteed smallest-first) so a request of
+    /// any size has a candidate. `take` searches the request's class upward, so a
+    /// small request prefers a small buffer and a large request falls through to
+    /// a larger one.
     pub fn new(budget: usize, growable: bool) -> Self {
         let mut classes: Vec<Vec<Vec<ArenaRef>>> = vec![Vec::new(); 6];
         let mut remaining = budget;
@@ -52,17 +58,21 @@ impl BufferPool {
                 remaining -= cap;
             }
         }
-        // Fill the remainder proportionally to inverse capacity (bounded passes).
-        let mut passes = 0;
-        while remaining >= 8 && passes < 64 {
-            for (class, bucket) in classes.iter_mut().enumerate() {
-                let cap = Self::class_cap(class);
-                if remaining >= cap {
-                    bucket.push(Vec::with_capacity(cap));
-                    remaining -= cap;
-                }
+        // Fill each class up to its inverse-capacity share of the budget.
+        for (class, bucket) in classes.iter_mut().enumerate() {
+            let cap = Self::class_cap(class);
+            let want = budget / (cap * 6);
+            while bucket.len() < want && remaining >= cap {
+                bucket.push(Vec::with_capacity(cap));
+                remaining -= cap;
             }
-            passes += 1;
+        }
+        // Any leftover refs go to the smallest class: a partial large buffer
+        // would only serve one payload, whereas the leftovers make several more
+        // small buffers.
+        while remaining >= Self::class_cap(0) {
+            classes[0].push(Vec::with_capacity(Self::class_cap(0)));
+            remaining -= Self::class_cap(0);
         }
         Self { classes, growable }
     }
