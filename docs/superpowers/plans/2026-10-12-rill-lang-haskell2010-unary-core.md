@@ -437,14 +437,14 @@ git commit -m 'feat(rill-lang): ValueTy::Thunk as the single value type'
 **Files:**
 - Modify: `rill-lang/src/types/infer.rs`
 
-- [ ] **Step 1: Remove arity from expression inference**
+- [x] **Step 1: Remove arity from expression inference**
 
 Every `infer_expr` returns `Ty` (single value). Delete `ArrowTy::uniform`/
 `value_channel` multi-channel logic; `arity_in()/arity_out()` become
 `0`/`1` on `Ty`. Remove `41+` call sites that branch on arity (combinators are
 gone; the remaining sites become value-channel checks).
 
-- [ ] **Step 2: Unify against Thunk**
+- [x] **Step 2: Unify against Thunk**
 
 `unify_value` (and `Subst.resolve_value`) treat `Thunk(caps, res)` structurally:
 - `Thunk([], [r])` unifies with a plain result `r` (a constant's type).
@@ -453,32 +453,60 @@ gone; the remaining sites become value-channel checks).
 
 Keep the occurs-check (MAX_VALUE_RESOLVE_DEPTH).
 
-- [ ] **Step 3: Application inference is unary**
+- [x] **Step 3: Application inference is unary**
 
 `infer_apply_expr` accepts exactly one argument `f x` (parser already curried
 multi-arg). `f` must be `Thunk([a], [b])`; `x : a`; result `b`. Partial
 application (`add5 = add 5.0`) is the same rule.
 
-- [ ] **Step 4: FFI application**
+- [x] **Step 4: FFI application**
 
 The FFI apply arm types the curried chain: each scalar application folds
 against `Thunk([], [S])`; the final Buffer application yields
 `Thunk([], [Buffer])`. Keep `signal_ins`/`signal_outs` derived from the LAST
 `FixedBuffer` in the signature.
 
-- [ ] **Step 5: Run existing tests, fix arity-typed tests**
+- [x] **Step 5: Run existing tests, fix arity-typed tests**
 
 Run: `cargo test -p rill-lang --features dsp`
 Expected: the value-track tests (lists, maps, match, closures, monads) pass;
 signal/combinator tests were deleted in Task 5. Fix any test that asserted
 `arity_in()==2` etc. — those tests are obsolete; delete them.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
 git commit -m 'feat(rill-lang): unary inference over Thunk, no channel arity'
 ```
+
+> **Ruling (2026-10-14) — Task 8 executed with three pragmatic reductions.**
+> 1. **Un-currying bridge.** The plan wants `infer_apply_expr` to type one
+>    argument at a time. The name-dispatched arms (FFI builtins, collections,
+>    typeclass methods, definitions) are inherently multi-argument in
+>    `infer_apply_impl`, so the parser's curried chains
+>    (`ApplyExpr(ApplyExpr(Ref f,[a]),[b])`) are flattened back to
+>    `(f, [a, b])` in `infer_apply_expr` and dispatched by name; only a
+>    non-`Ref` callee (a lambda, a projection) keeps the generic unary
+>    `apply_one` path. A per-argument folding of the name-dispatched arms is
+>    Task 10 work (FFI curried); this keeps the machinery correct meanwhile.
+> 2. **`Ty::arity_in()` stays `0`** (the plan's Step 1 wording) rather than
+>    reporting the `Thunk` capture count: the "constant/value expression" guards
+>    (`arity_in()==0 && arity_out()==1`, ~40 sites) rely on a function value
+>    still being a single value. The obsolete `(arity_in, arity_out) == (1, 1)`
+>    process-arrow assertions were replaced with a `Thunk` capture check.
+> 3. **Foreign signal slots accept an unresolved `Var`.** After Task 6 currying,
+>    a multi-parameter definition's λ-parameters bind as values, so a signal
+>    parameter reaches the FFI arm as a fresh `Var`; it is now unified with
+>    `Buffer` instead of being rejected.
+>
+> Result: `cargo test -p rill-lang --features dsp --lib` → 208 passed / 41 failed
+> (was 174/78; +32). Zero regressions. The 41 remaining reds are not inference
+> failures: 38 are test *sources* still using the pre-migration syntax
+> (`fn x ->`, `match … of`) — Task 13c; 2 are `unknown \`bind\` in value
+> lowering` — Task 10 (lowering); 1 is `reduce::builtin_not_reduced`, whose AST
+> expectation predates the Task 6 currying — Task 13c. `Ty`/`ArrowTy` alias and
+> the `types/arrow.rs` arrow-law test module were dropped.
 
 ### Task 9: Reduce — unary β-reduction
 
