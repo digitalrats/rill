@@ -4600,7 +4600,15 @@ fn infer_collection_call(
     // panic the runtime path.
     let expect_closure = |ctx: &mut Ctx, want: usize, what: &str| -> Result<(), CompileError> {
         let ft = arg_vty(ctx, 0)?;
-        let ok = matches!(&ft, ValueTy::Thunk(arg_tys, _) if arg_tys.is_empty() || arg_tys.len() == want);
+        // A closure value is a curried NEST of single-argument thunks
+        // (`\a -> \b -> …`), so its total arity comes from flattening the chain.
+        let ok = match &ft {
+            ValueTy::Thunk(..) => {
+                let (arg_tys, _) = flatten_thunk(&ft);
+                arg_tys.is_empty() || arg_tys.len() == want
+            }
+            _ => false,
+        };
         if ok {
             Ok(())
         } else {

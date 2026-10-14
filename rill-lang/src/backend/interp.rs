@@ -2348,48 +2348,69 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
     result_reg: usize,
     drops: &mut Vec<ArenaRef>,
 ) -> Option<ArenaRef> {
-    let (env_ref, fragment_id) = match prog.value_regs.get(closure_reg).copied().flatten() {
-        Some(r) => match prog.arena.get(r) {
-            Some(Value::Callable {
-                fragment,
-                env,
-                cell: None,
-            }) => (*env, *fragment),
-            _ => return None,
-        },
-        None => return None,
-    };
-    let frag = prog.ir.fragments.get(fragment_id as usize).cloned()?;
-    let base = prog.value_regs_top;
-    // Bounds-guard: the pre-sized call scratch reserves `max_call_regs` slots,
-    // so a wrong-arity callable (e.g. `fold (fn a -> a) ...`) could pass more
-    // args than the fragment declares and write the raw borrows past the store.
-    // Clamp to `frag.sig.value_ins` and the store's tail; the type checker
-    // rejects wrong-arity callables at compile time, this is belt-and-suspenders
-    // so a bad callable cannot crash the RT path.
-    let n = args
-        .len()
-        .min(frag.sig.value_ins)
-        .min(prog.value_regs.len().saturating_sub(base));
-    for (i, e) in args.iter().take(n).enumerate() {
-        prog.value_regs[base + i] = Some(*e);
+    // A curried closure is a NEST of single-argument fragments (`\a -> \b -> …`
+    // lowers to a one-parameter fragment whose body returns the inner closure),
+    // so more arguments than the fragment declares are applied one batch at a
+    // time: the intermediate result becomes the next callee.
+    let mut callee_reg = closure_reg;
+    let mut start = 0usize;
+    loop {
+        let (env_ref, fragment_id) = match prog.value_regs.get(callee_reg).copied().flatten() {
+            Some(r) => match prog.arena.get(r) {
+                Some(Value::Callable {
+                    fragment,
+                    env,
+                    cell: None,
+                }) => (*env, *fragment),
+                _ => return None,
+            },
+            None => return None,
+        };
+        let frag = prog.ir.fragments.get(fragment_id as usize).cloned()?;
+        let base = prog.value_regs_top;
+        // Bounds-guard: the pre-sized call scratch reserves `max_call_regs`
+        // slots, so a wrong-arity callable (e.g. `fold (fn a -> a) ...`) could
+        // pass more args than the fragment declares and write the raw borrows
+        // past the store. Clamp to `frag.sig.value_ins` and the store's tail;
+        // the type checker rejects wrong-arity callables at compile time, this
+        // is belt-and-suspenders so a bad callable cannot crash the RT path.
+        let remaining = &args[start..];
+        let n = remaining
+            .len()
+            .min(frag.sig.value_ins)
+            .min(prog.value_regs.len().saturating_sub(base));
+        if n < remaining.len() && n < frag.sig.value_ins {
+            // The scratch region cannot hold the arguments: nothing to do.
+            return None;
+        }
+        for (i, e) in remaining.iter().take(n).enumerate() {
+            prog.value_regs[base + i] = Some(*e);
+        }
+        if let Some(old) = prog.value_regs.get_mut(result_reg).and_then(|r| r.take()) {
+            drops.push(old);
+        }
+        let arg_regs: Vec<usize> = (0..n).map(|i| base + i).collect();
+        run_call(
+            prog,
+            &frag,
+            env_ref,
+            ArgsSource::Registers {
+                regs: &arg_regs,
+                base: 0,
+            },
+            Some(result_reg),
+            drops,
+        );
+        let out = prog.value_regs.get_mut(result_reg).and_then(|r| r.take());
+        start += n;
+        if start >= args.len() {
+            return out;
+        }
+        // More arguments remain: the result must itself be a closure. Park it in
+        // the (now free) result register and use it as the next callee.
+        prog.value_regs[result_reg] = Some(out?);
+        callee_reg = result_reg;
     }
-    if let Some(old) = prog.value_regs.get_mut(result_reg).and_then(|r| r.take()) {
-        drops.push(old);
-    }
-    let arg_regs: Vec<usize> = (0..n).map(|i| base + i).collect();
-    run_call(
-        prog,
-        &frag,
-        env_ref,
-        ArgsSource::Registers {
-            regs: &arg_regs,
-            base: 0,
-        },
-        Some(result_reg),
-        drops,
-    );
-    prog.value_regs.get_mut(result_reg).and_then(|r| r.take())
 }
 
 /// Where a fragment call's value arguments come from.
