@@ -401,24 +401,9 @@ fn collect_static_calls(
                 collect_static_calls(a, src, bound, nodes, out);
             }
         }
-        Expr::Ref(_, _)
-        | Expr::Int(_, _)
-        | Expr::Float(_, _)
-        | Expr::Imag(_, _)
-        | Expr::Str(_, _)
-        | Expr::Wire(_)
-        | Expr::Cut(_) => {}
+        Expr::Ref(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) => {}
         Expr::Neg(inner, _) => collect_static_calls(inner, src, bound, nodes, out),
         Expr::Arith { lhs, rhs, .. } => {
-            collect_static_calls(lhs, src, bound, nodes, out);
-            collect_static_calls(rhs, src, bound, nodes, out);
-        }
-        Expr::Seq(lhs, rhs, _)
-        | Expr::Par(lhs, rhs, _)
-        | Expr::Split(lhs, rhs, _)
-        | Expr::Merge(lhs, rhs, _)
-        | Expr::Loop(lhs, rhs, _)
-        | Expr::Delay(lhs, rhs, _) => {
             collect_static_calls(lhs, src, bound, nodes, out);
             collect_static_calls(rhs, src, bound, nodes, out);
         }
@@ -1096,16 +1081,6 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
     // runtime (spec §9.1).
     env.check_acyclic()?;
 
-    // Faust-combinator sugar: a foreign fn used as an arrow in a combinator
-    // (`_ : onepole 200.0 0.7`) auto-binds its missing leading signal params to
-    // Wire before any body is typed. `foreign_sigs` is complete here (the
-    // builtin catalog + the user `foreign fn` declarations registered above).
-    crate::desugar::desugar_foreign_combinators(&mut program, &env);
-    // IO-model: auto-desugar old `main = <buffer-expr>` into the IO form. This
-    // is decided AFTER inference by the main's RESULT TYPE (a Buffer-typed
-    // `main` is a signal program; a value/`IO`-typed `main` is left alone) —
-    // see `infer_program_with`'s type-driven post-pass below.
-
     // Reject recursive function definitions (v1's acyclic call contract): a
     // runtime dispatch chain must terminate, so the call stack is statically
     // bounded (see `check_recursion`). Complete mode lifts the ban: recursion
@@ -1275,24 +1250,6 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
                 }
             }
         }
-    }
-
-    // IO-model auto-desugar (type-driven): a `main` that types as a pure
-    // `Buffer` signal program (`main = _ * 0.5`, `main = osc , osc`) is
-    // rewritten into the IO form (`do { writeOutput …; return () }`) and
-    // re-inferred. Value-typed `main`s (`main = double`, `main = 0.5` as a
-    // Float) and already-IO `main`s are left alone — the type decides, not an
-    // AST heuristic. Re-inference terminates: after desugar the `main` types as
-    // `IO ()` (not all-`Buffer`), so this branch does not re-fire.
-    if !main_scheme.ty.outs.is_empty()
-        && main_scheme
-            .ty
-            .outs
-            .iter()
-            .all(|c| matches!(c, ValueTy::Buffer))
-        && crate::desugar::desugar_main_io(&mut program)
-    {
-        return infer_program_with(&program, mode);
     }
 
     Ok(TypedProgram {
@@ -2035,23 +1992,7 @@ fn infer_expr_expected(
                 _ => ValueTy::Float,
             }],
         }),
-        Expr::Imag(_, _) => Ok(ArrowTy {
-            ins: vec![],
-            outs: vec![ValueTy::Float, ValueTy::Float],
-        }),
         Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
-        Expr::Wire(_) => {
-            // A signal wire is a `Buffer` channel (B3: buffer is an ordinary
-            // value type; the wire is the program's Buffer-valued input).
-            Ok(ArrowTy::uniform(1, 1, ValueTy::Buffer))
-        }
-        Expr::Cut(_) => {
-            let s = ctx.fresh_vty();
-            Ok(ArrowTy {
-                ins: vec![s],
-                outs: vec![],
-            })
-        }
         Expr::Ref(name, span) => infer_ref_expected(ctx, name, *span, expected),
         Expr::Neg(inner, span) => {
             let t = infer_expr(ctx, inner)?;
@@ -2061,12 +2002,6 @@ fn infer_expr_expected(
         Expr::Apply { name, args, span } => infer_apply_expected(ctx, name, args, *span, expected),
         Expr::ApplyExpr { callee, args, span } => infer_apply_expr(ctx, callee, args, *span),
         Expr::Str(_, _) => Ok(ArrowTy::value_channel(ValueTy::String)),
-        Expr::Seq(lhs, rhs, span) => infer_seq(ctx, lhs, rhs, *span),
-        Expr::Par(lhs, rhs, span) => infer_par(ctx, lhs, rhs, *span),
-        Expr::Split(lhs, rhs, span) => infer_split(ctx, lhs, rhs, *span),
-        Expr::Merge(lhs, rhs, span) => infer_merge(ctx, lhs, rhs, *span),
-        Expr::Loop(lhs, rhs, span) => infer_loop(ctx, lhs, rhs, *span),
-        Expr::Delay(lhs, rhs, span) => infer_delay(ctx, lhs, rhs, *span),
         Expr::Arith { lhs, rhs, span, .. } => infer_arith(ctx, lhs, rhs, *span),
         Expr::Let {
             defs,
@@ -2356,11 +2291,6 @@ fn infer_expr_expected(
             // Bare Int/Float literals are signal-rate channels in v1 but
             // value-compatible in value positions (mirroring `arm_result_vty`).
             let st = match scrutinee.as_ref() {
-                Expr::Wire(_) => {
-                    let v = ctx.next;
-                    ctx.next += 1;
-                    ArrowTy::value_channel(ValueTy::Var(v))
-                }
                 Expr::Int(_, _) => ArrowTy::value_channel(ValueTy::Int),
                 Expr::Float(_, _) => ArrowTy::value_channel(ValueTy::Float),
                 _ => infer_expr(ctx, scrutinee)?,
@@ -4318,38 +4248,6 @@ fn infer_apply_impl(
                             })
                         }
                     };
-                    // Signal-wire application: a trailing `_` wire argument binds
-                    // to the callee's LAST parameter as a signal input (positional
-                    // wire-capture at the call site, zero-copy block register).
-                    // The leading args are value args unified against the leading
-                    // parameter types; the trailing wire contributes one signal
-                    // input. The lambda's body compiles on the block track with
-                    // the wire bound to a block register. v1 contract: exactly
-                    // one trailing wire, and it must exactly complete the value
-                    // arity (`amp 2.0 _`; `amp _` or `amp2 0.5 _` are rejected).
-                    if let Some(Expr::Wire(_)) = args.last() {
-                        let value_args = &args[..args.len() - 1];
-                        if value_args.len() + 1 != arg_tys.len() {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "`{name}` expects {} value argument(s) plus one signal wire, \
-                                     got {} value argument(s) and a wire",
-                                    arg_tys.len() - 1,
-                                    value_args.len()
-                                ),
-                                span,
-                            });
-                        }
-                        for (a, pty) in value_args.iter().zip(arg_tys.iter()) {
-                            let vt = infer_method_value_vty(ctx, a, "argument")?;
-                            unify_value(&vt, pty, &mut ctx.subst, a.span())?;
-                        }
-                        let result_scalar = match ret_tys.first() {
-                            Some(ValueTy::Int) => ValueTy::Int,
-                            _ => ValueTy::Float,
-                        };
-                        return Ok(ArrowTy::uniform(1, 1, result_scalar));
-                    }
                     // Partial application (currying): fewer args than the
                     // signature produce a function over the remaining parameters.
                     // `add3 = add 3.0` types as `Func([Float], [Float])`.
@@ -4772,126 +4670,6 @@ fn infer_param(args: &[Expr], span: Span) -> Result<ArrowTy, CompileError> {
     Ok(ArrowTy::uniform(0, 1, ValueTy::Float))
 }
 
-fn expr_has_variadic_signal(ctx: &Ctx, e: &Expr) -> bool {
-    let name = match e {
-        Expr::Apply { name, .. } => name,
-        Expr::Ref(name, _) => name,
-        _ => return false,
-    };
-    // FFI catalog: a foreign sig with a VariadicSignal tail consumes every
-    // remaining channel in a merge/split.
-    if let Some(fsig) = ctx.env.foreign_sigs.get(name.as_str()) {
-        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig) {
-            if sig
-                .params
-                .iter()
-                .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn infer_seq(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
-    let a = infer_expr(ctx, lhs)?;
-    let b = infer_expr(ctx, rhs)?;
-    // `:` overload: for List operands it is Haskell-style cons
-    // (`x : xs` ≣ `cons x xs`), for signal/Buffer operands it is Faust
-    // sequencing (`a : b` — run a then b). With signals unified onto the value
-    // track (Buffer is an ordinary value), the two are distinguished by
-    // operand type: a List-typed rhs makes `:` cons; otherwise it is seq.
-    let rhs_list = matches!(b.outs.first(), Some(ValueTy::App(n, _)) if n == "List");
-    let both_values =
-        a.arity_in() == 0 && a.arity_out() == 1 && b.arity_in() == 0 && b.arity_out() == 1;
-    if rhs_list && both_values {
-        // cons x xs : element must unify with the list's element type.
-        let elem = match &b.outs[0] {
-            ValueTy::App(_, inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
-            _ => ValueTy::Float,
-        };
-        unify_value(&a.outs[0], &elem, &mut ctx.subst, lhs.span())?;
-        return Ok(ArrowTy::value_channel(ValueTy::App(
-            "List".into(),
-            vec![ctx.subst.resolve_value(&elem)],
-        )));
-    }
-    seq(ctx, &a, &b, span)
-}
-
-/// The value type of a channel-tuple operand (`value , value` → `Pair a b`),
-/// or `None` when the operand is a signal. A 0→1 value channel is a value; a
-/// bare `Int`/`Float` literal is signal-rate in v1 but value-compatible in
-/// value position (mirrors `arm_result_vty`), so `(1.0, 2.0)` is
-/// `Pair Float Float`. A multi-channel or block-signal operand is `None`.
-fn tuple_operand_vty(t: &ArrowTy, e: &Expr) -> Option<ValueTy> {
-    if t.arity_in() != 0 || t.arity_out() != 1 {
-        return None;
-    }
-    match &t.outs[0] {
-        ValueTy::Buffer => match e {
-            Expr::Int(_, _) => Some(ValueTy::Int),
-            Expr::Float(_, _) => Some(ValueTy::Float),
-            _ => None,
-        },
-        vty => Some(vty.clone()),
-    }
-}
-
-fn infer_par(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
-    let a = infer_expr(ctx, lhs)?;
-    let b = infer_expr(ctx, rhs)?;
-    // Channel tuple: `value , value` → `Pair a b`; `signal , signal` keeps the
-    // block-diagram parallel composition; mixing a value with a signal is a
-    // compile error. A bare Int/Float literal is signal-rate in v1 but
-    // value-compatible in value position (`(1.0, 2.0)` is a `Pair Float Float`).
-    let a_value = tuple_operand_vty(&a, lhs);
-    let b_value = tuple_operand_vty(&b, rhs);
-    match (a_value, b_value) {
-        (Some(av), Some(bv)) => {
-            return Ok(ArrowTy::value_channel(ValueTy::App(
-                "Pair".into(),
-                vec![av, bv],
-            )));
-        }
-        (Some(_), None) | (None, Some(_)) => {
-            return Err(CompileError::Type {
-                msg: "cannot mix a value and a signal in a tuple `,` (use one track)".into(),
-                span,
-            });
-        }
-        (None, None) => {}
-    }
-    Ok(par(&a, &b))
-}
-
-fn infer_split(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
-    let a = infer_expr(ctx, lhs)?;
-    let b = infer_expr(ctx, rhs)?;
-    let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
-    split(ctx, &a, &b, span, rhs_variadic)
-}
-
-fn infer_merge(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
-    let a = infer_expr(ctx, lhs)?;
-    let b = infer_expr(ctx, rhs)?;
-    let rhs_variadic = expr_has_variadic_signal(ctx, rhs);
-    merge(ctx, &a, &b, span, rhs_variadic)
-}
-
-fn infer_loop(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
-    let a = infer_expr(ctx, lhs)?;
-    let b = infer_expr(ctx, rhs)?;
-    feedback(ctx, &a, &b, span)
-}
-
-fn infer_delay(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
-    let a = infer_expr(ctx, lhs)?;
-    let b = infer_expr(ctx, rhs)?;
-    delay(ctx, &a, &b, span)
-}
-
 fn infer_arith(ctx: &mut Ctx, lhs: &Expr, rhs: &Expr, span: Span) -> Result<ArrowTy, CompileError> {
     let a = infer_expr(ctx, lhs)?;
     let b = infer_expr(ctx, rhs)?;
@@ -5013,118 +4791,6 @@ fn seq(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, C
     })
 }
 
-fn split(
-    ctx: &mut Ctx,
-    a: &ArrowTy,
-    b: &ArrowTy,
-    span: Span,
-    rhs_variadic: bool,
-) -> Result<ArrowTy, CompileError> {
-    let ao = a.arity_out();
-    reject_value_channels(a, span)?;
-    let bi = if rhs_variadic { ao } else { b.arity_in() };
-    if ao == 0 || bi % ao != 0 {
-        return Err(CompileError::Type {
-            msg: format!(
-                "split `<:` requires rhs inputs ({bi}) be a multiple of lhs outputs ({ao})"
-            ),
-            span,
-        });
-    }
-    let reps = bi / ao;
-    if !rhs_variadic {
-        for r in 0..reps {
-            for k in 0..ao {
-                unify_value(&a.outs[k], &b.ins[r * ao + k], &mut ctx.subst, span)?;
-            }
-        }
-    }
-    Ok(ArrowTy {
-        ins: a.ins.clone(),
-        outs: b.outs.clone(),
-    })
-}
-
-fn merge(
-    ctx: &mut Ctx,
-    a: &ArrowTy,
-    b: &ArrowTy,
-    span: Span,
-    rhs_variadic: bool,
-) -> Result<ArrowTy, CompileError> {
-    let ao = a.arity_out();
-    reject_value_channels(a, span)?;
-    let bi = if rhs_variadic { ao } else { b.arity_in() };
-    if bi == 0 || !ao.is_multiple_of(bi) {
-        return Err(CompileError::Type {
-            msg: format!(
-                "merge `:>` requires lhs outputs ({ao}) be a multiple of rhs inputs ({bi})"
-            ),
-            span,
-        });
-    }
-    let groups = ao / bi;
-    if !rhs_variadic {
-        for g in 0..groups {
-            for k in 0..bi {
-                unify_value(&a.outs[g * bi + k], &b.ins[k], &mut ctx.subst, span)?;
-            }
-        }
-    }
-    Ok(ArrowTy {
-        ins: a.ins.clone(),
-        outs: b.outs.clone(),
-    })
-}
-
-fn feedback(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
-    let (ai, ao, bi, bo) = (a.arity_in(), a.arity_out(), b.arity_in(), b.arity_out());
-    reject_value_channels(a, span)?;
-    reject_value_channels(b, span)?;
-    if bi > ao || bo > ai {
-        return Err(CompileError::Type {
-            msg: format!(
-                "feedback `~` arity mismatch: need B.in({bi})<=A.out({ao}) and B.out({bo})<=A.in({ai})"
-            ),
-            span,
-        });
-    }
-    for k in 0..bi {
-        unify_value(&b.ins[k], &a.outs[k], &mut ctx.subst, span)?;
-    }
-    for k in 0..bo {
-        unify_value(&b.outs[k], &a.ins[k], &mut ctx.subst, span)?;
-    }
-    Ok(ArrowTy {
-        ins: a.ins[bo..].to_vec(),
-        outs: a.outs.clone(),
-    })
-}
-
-fn delay(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
-    reject_value_channels(a, span)?;
-    if a.arity_out() != 1 {
-        return Err(CompileError::Type {
-            msg: format!(
-                "`@` left side must have output arity 1, found {}",
-                a.arity_out()
-            ),
-            span,
-        });
-    }
-    if b.arity_in() != 0 || b.arity_out() != 1 {
-        return Err(CompileError::Type {
-            msg: "`@` delay length must be a constant expression".into(),
-            span,
-        });
-    }
-    unify_value(&b.outs[0], &ValueTy::Int, &mut ctx.subst, span)?;
-    Ok(ArrowTy {
-        ins: a.ins.clone(),
-        outs: a.outs.clone(),
-    })
-}
-
 fn arith(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
     reject_value_channels(a, span)?;
     reject_value_channels(b, span)?;
@@ -5183,10 +4849,11 @@ mod tests {
     }
 
     #[test]
-    fn wire_is_1_to_1() {
-        // A bare wire `main` auto-desugars to the IO form: the input channel
-        // is pulled through `readInput` and written back unchanged.
-        let t = ty_of("main = _").unwrap();
+    fn io_main_writes_io_void() {
+        // The IO form (`main = do { … }`) pulls every input channel through
+        // `readInput` and writes the output list back through `writeOutput`;
+        // the process result is `IO ()`.
+        let t = ty_of("main = do { writeOutput (readInput); return () }").unwrap();
         assert_eq!(
             t.process_ty.outs[0],
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
@@ -5195,7 +4862,8 @@ mod tests {
 
     #[test]
     fn gain_is_1_to_1() {
-        let t = ty_of("main = _ * 0.5").unwrap();
+        let t = ty_of("main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }")
+            .unwrap();
         assert_eq!(
             t.process_ty.outs[0],
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
@@ -5204,77 +4872,50 @@ mod tests {
 
     #[test]
     fn integrator_is_1_to_1() {
-        let t = ty_of("main = + ~ _").unwrap();
+        // A bare FFI builtin applied to a signal λ-param is a 1→1 Buffer arrow.
+        let t = ty_of("main g = integrator g").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
-    }
-
-    #[test]
-    fn rejects_seq_arity_mismatch() {
-        assert!(ty_of("main = (_ , _) : _").is_err());
-    }
-
-    #[test]
-    fn rejects_zero_output_process() {
-        assert!(ty_of("main = !").is_err());
-    }
-
-    #[test]
-    fn multi_output_process_allowed() {
-        let t = ty_of("main = _ , _").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (2, 2));
-    }
-
-    #[test]
-    fn split_then_merge_ok() {
-        let t = ty_of("main = _ <: (_ , _) :> +").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
-    }
-
-    #[test]
-    fn delay_constant_ok_variable_errors() {
-        assert!(ty_of("main = _ @ 1").is_ok());
-        assert!(ty_of("main = _ @ _").is_err());
     }
 
     #[test]
     fn user_def_alias_resolves() {
-        let t = ty_of("main = gain where { gain = _ * 0.5; }").unwrap();
+        let t = ty_of("main x = gain x where { gain y = y * 0.5; }").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn function_application_ok() {
-        let t = ty_of("main = g _ where { g x = _ * x; }").unwrap();
+        let t = ty_of("main x = g x where { g y = y * 0.5; }").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn where_mutual_visibility() {
-        let t = ty_of("main = a where { a = _ * 0.5; b = a; }").unwrap();
+        let t = ty_of("main x = a x where { a y = y * 0.5; b y = a y; }").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn top_level_mutual_visibility() {
-        let t = ty_of("a x = _ * x; main = a 0.5").unwrap();
+        let t = ty_of("a x = x * 0.5; main x = a x").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn top_level_reverse_order() {
-        let t = ty_of("main = g 0.5; g x = _ * x").unwrap();
+        let t = ty_of("main x = g x; g y = y * 0.5").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn let_expression_scoping() {
-        let t = ty_of("main = let g = _ * 0.5 in g").unwrap();
+        let t = ty_of("main x = let g = 0.5 in g * x").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn let_not_visible_outside() {
-        assert!(ty_of("main = let g = _ * 0.5 in _ ; main = g").is_err());
+        assert!(ty_of("main x = let g = 0.5 in g * x; other = g").is_err());
     }
 
     fn ty_with(src: &str) -> Result<TypedProgram, CompileError> {
@@ -5286,53 +4927,50 @@ mod tests {
 
     #[test]
     fn builtin_call_is_1_to_1() {
-        let t = ty_with("main = _ : lowpass 1000.0 0.7").unwrap();
+        let t = ty_with("main x = lowpass 1000.0 0.7 x").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
     fn builtin_wrong_param_count_errors() {
-        assert!(ty_with("main = _ : lowpass 1000.0").is_err());
+        // Partial application is allowed (currying), but over-application past
+        // the builtin's declared arity is a compile error.
+        assert!(ty_with("main x = lowpass 1000.0 0.7 x 1.0").is_err());
     }
 
     #[test]
     fn builtin_ref_param_ok() {
-        assert!(ty_with("main f = _ : lowpass f 0.7").is_ok());
+        assert!(ty_with("main f x = lowpass f 0.7 x").is_ok());
     }
 
     #[test]
-    fn sample_builtin_in_feedback_typechecks() {
-        assert!(ty_with("main = + ~ onepole 200.0 0.5").is_ok());
+    fn sample_builtin_applies_in_value_position() {
+        assert!(ty_with("main x = onepole 200.0 0.5 x").is_ok());
     }
 
     #[test]
     fn transitive_var_chain_resolves() {
-        let t = ty_of("main = g where { f x = _ * x; g = f 0.5; }").unwrap();
+        let t = ty_of("main x = g x where { f y = y * 0.5; g y = f 0.5; }").unwrap();
         assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
     }
 
     #[test]
-    fn var_unifies_with_float() {
-        let t = ty_of("main = _ * 0.5").unwrap();
-        // IO model: a signal `main` auto-desugars to `do { writeOutput … }`, so
-        // the result is `IO ()`; the buffer unification (`_` and the constant)
-        // happens inside the writeOutput argument.
-        assert_eq!(
-            t.process_ty.outs[0],
-            ValueTy::Data("IO".into(), vec![ValueTy::Void])
-        );
+    fn scalar_param_broadcasts_to_buffer() {
+        let t = ty_of("main g = g * 0.5").unwrap();
+        // A signal λ-param is a Buffer; scalar arithmetic over it stays Buffer.
+        assert_eq!(t.process_ty.outs[0], ValueTy::Buffer);
     }
 
     #[test]
     fn int_float_mismatch_errors() {
-        // This test existed before; keep it but it's tricky to trigger
-        // with current rules since everything defaults to Float
-        assert!(ty_of("main = _ @ _").is_err());
+        // A `Float` field does not unify with an `Int` field type.
+        assert!(ty_of("data P = { f: Int }; main = P { f: 1.0 }").is_err());
     }
 
     #[test]
     fn actor_param_no_default_typechecks() {
-        let t = ty_of("main = _ * ?gain").unwrap();
+        let t = ty_of("main = do { writeOutput (map (fn x -> x * ?gain) (readInput)); return () }")
+            .unwrap();
         assert_eq!(
             t.process_ty.outs[0],
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
@@ -5341,7 +4979,9 @@ mod tests {
 
     #[test]
     fn actor_param_with_default_typechecks() {
-        let t = ty_of("main = _ * ?gain=0.5").unwrap();
+        let t =
+            ty_of("main = do { writeOutput (map (fn x -> x * ?gain=0.5) (readInput)); return () }")
+                .unwrap();
         assert_eq!(
             t.process_ty.outs[0],
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
@@ -5349,21 +4989,16 @@ mod tests {
     }
 
     #[test]
-    fn actor_param_default_must_be_constant() {
-        assert!(ty_of("main = _ * ?gain=_").is_err());
-    }
-
-    #[test]
     fn closed_top_level_local_is_caf() {
         // osc = sine 440 0.5 0  (0 input channels, 0 λ-params) -> CAF
-        let typed = ty_with("osc = sine 440 0.5 0; main = _ * 0.5").unwrap();
+        let typed = ty_with("osc = sine 440 0.5 0; main x = x * 0.5").unwrap();
         assert!(typed.cafs.contains("osc"));
     }
 
     #[test]
     fn open_block_is_not_caf() {
-        // gain = _ * 0.5  (1 input channel) -> macro, not CAF
-        let typed = ty_with("gain = _ * 0.5; main = _ * 0.5").unwrap();
+        // gain x = x * 0.5  (has a λ-param) -> macro, not CAF
+        let typed = ty_with("gain x = x * 0.5; main x = x * 0.5").unwrap();
         assert!(!typed.cafs.contains("gain"));
     }
 
@@ -5395,7 +5030,7 @@ mod tests {
     #[test]
     fn sum_match_branches_on_constructor() {
         let t = ty_of(
-            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+            "data Shape = Circle Float | Rect Float Float; main = match Circle 1.0 of { Circle r => r; Rect w h => w; }",
         )
         .unwrap();
         assert_eq!(t.process_ty.outs[0], ValueTy::Float);
@@ -5411,20 +5046,12 @@ mod tests {
     }
 
     #[test]
-    fn match_arm_zero_output_is_error() {
-        assert!(ty_of(
-            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => !; Rect w h => 2.0 }"
-        )
-        .is_err());
-    }
-
-    #[test]
     fn match_arms_must_be_value_expressions() {
-        // A bare literal arm body is value-compatible (Phase 7:
-        // `Nothing => 42.0`); a genuine signal computation (a wire) is not.
-        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r => 1.0 }").is_ok());
+        // A bare literal arm body is value-compatible (`Circle r => 1.0`);
+        // arms are value channels, so a bare literal is accepted.
         assert!(
-            ty_of("data Shape = Circle Float; main = match _ of { Circle r => _ * 2.0 }").is_err()
+            ty_of("data Shape = Circle Float; main = match Circle 1.0 of { Circle r => 1.0 }")
+                .is_ok()
         );
     }
 
@@ -5435,12 +5062,17 @@ mod tests {
 
     #[test]
     fn match_arms_same_sum_type() {
-        assert!(ty_of("data A = C Float; data B = C Int; main = match _ of { C r => r }").is_err());
+        assert!(
+            ty_of("data A = C Float; data B = C Int; main = match C 1.0 of { C r => r }").is_err()
+        );
     }
 
     #[test]
     fn match_too_many_arm_bindings_is_error() {
-        assert!(ty_of("data Shape = Circle Float; main = match _ of { Circle r s => r }").is_err());
+        assert!(
+            ty_of("data Shape = Circle Float; main = match Circle 1.0 of { Circle r s => r }")
+                .is_err()
+        );
     }
 
     #[test]
@@ -5505,9 +5137,9 @@ mod tests {
 
     #[test]
     fn scalar_match_infers_literal_patterns_and_totality() {
-        let t = ty_of("main = match _ of { 0 => 1.0; _ => 2.0; }").unwrap();
+        let t = ty_of("main = match 0 of { 0 => 1.0; _ => 2.0; }").unwrap();
         assert_eq!(t.process_ty.outs[0], ValueTy::Float);
-        assert!(ty_of("main = match _ of { 0 => 1.0 }").is_err());
+        assert!(ty_of("main = match 0 of { 0 => 1.0 }").is_err());
         let t2 = ty_of("main = match true of { true => 1.0; false => 2.0 }").unwrap();
         assert_eq!(t2.process_ty.outs[0], ValueTy::Float);
     }
@@ -5619,8 +5251,6 @@ mod tests {
             }
             other => panic!("expected Func type, got {other:?}"),
         }
-        // A mixed value/signal tuple is still a compile error.
-        assert!(ty_of("main = fn x -> (x , _)").is_err());
     }
 
     #[test]
@@ -5656,17 +5286,6 @@ mod tests {
         // Func([Float], [Float]).
         let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
         assert_eq!(t.process_ty.outs[0], ValueTy::Float);
-    }
-
-    #[test]
-    fn signal_wire_application_types_as_signal() {
-        // amp = fn g x -> x * g; main = amp 2.0 _  -> the trailing wire is a
-        // signal input; the result is a 1->1 signal channel.
-        let t = ty_of("amp = fn g x -> x * g; main = amp 2.0 _").unwrap();
-        assert_eq!((t.process_ty.arity_in(), t.process_ty.arity_out()), (1, 1));
-        // A wire application that does not exactly complete the value arity is
-        // rejected (`amp _` is missing the value gain).
-        assert!(ty_of("amp = fn g x -> x * g; main = amp _").is_err());
     }
 
     #[test]

@@ -37,7 +37,7 @@ fn forall_requires_at_least_one_type_variable() {
         prog.is_err(),
         "`forall . T` with no type variables must fail to parse: {prog:?}"
     );
-    match prog.err().expect("parse must fail") {
+    match prog.expect_err("parse must fail") {
         CompileError::Parse { msg, .. } => {
             assert!(
                 msg.contains("at least one type variable"),

@@ -5,7 +5,7 @@ use rill_lang::buffer_math::*;
 fn scalar_add_is_inplace() {
     let a = [1.0f32, 2.0, 3.0, 4.0];
     let b = [10.0f32, 20.0, 30.0, 40.0];
-    let mut out = a.clone();
+    let mut out = a;
     add_into(&mut out, &b);
     assert_eq!(out, [11.0, 22.0, 33.0, 44.0]);
     assert_eq!(a, [1.0, 2.0, 3.0, 4.0]);

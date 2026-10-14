@@ -209,7 +209,7 @@ git commit -m 'feat(rill-lang): parser accepts \lambda and case/of alongside fn/
 **Files:**
 - Modify: `rill-lang/src/ast.rs`
 
-- [ ] **Step 1: Add `Def::Eval` and keep a compatibility shim**
+- [x] **Step 1: Add `Def::Eval` and keep a compatibility shim**
 
 In `rill-lang/src/ast.rs`:
 
@@ -228,20 +228,20 @@ Fn {
 
 Add `type Fn = Anchor` for the transition? No — instead make `Anchor`/`Local` build a `Fn` in the parser (Task 4 Step 3) and delete the two variants after the parser switch (Task 6). For now ADD `Fn` and route `anchor_arity`/`is_decl`/`name`/`body`/`params` helpers to it.
 
-- [ ] **Step 2: Update AST helper functions**
+- [x] **Step 2: Update AST helper functions**
 
 In `rill-lang/src/ast.rs`, extend every `match def { ... }` (name/body/params/where_defs/is_decl, lines ~470-530) with the `Def::Eval` arm.
 
-- [ ] **Step 3: Parser emits `Def::Eval`**
+- [x] **Step 3: Parser emits `Def::Eval`**
 
 In `rill-lang/src/parser.rs` `parse_def`, replace Anchor/Local construction with `Def::Eval { name, params, body, where_defs, sig, span }`. Keep `Anchor`/`Local` variants in the enum (dead) until Task 6.
 
-- [ ] **Step 4: Run parser roundtrip tests**
+- [x] **Step 4: Run parser roundtrip tests**
 
 Run: `cargo test -p rill-lang --features dsp --lib parser`
 Expected: PASS (render still emits old syntax; render updated in Phase 4).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add rill-lang/src/ast.rs rill-lang/src/parser.rs
@@ -257,15 +257,15 @@ git commit -m 'feat(rill-lang): single Def::Eval form with optional :: signature
 > sweep, then fix compile errors in infer/lower/render/desugar (the errors
 > point exactly at what to delete).
 
-- [ ] **Step 1: Remove the variants from `enum Expr`**
+- [x] **Step 1: Remove the variants from `enum Expr`**
 
 Remove `Wire`, `Cut`, `Imag`, `Seq`, `Par`, `Split`, `Merge`, `Loop`, `Delay`.
 
-- [ ] **Step 2: Remove their `span()` and `walk`/collect arms**
+- [x] **Step 2: Remove their `span()` and `walk`/collect arms**
 
 In `rill-lang/src/ast.rs` (span arms ~300-330, collect_def_ref_names ~319) delete the removed variants' arms.
 
-- [ ] **Step 3: Fix compile errors — delete signal-path code**
+- [x] **Step 3: Fix compile errors — delete signal-path code**
 
 Run `cargo build -p rill-lang --features dsp` and fix each error by REMOVING the now-dead arm/function:
 - `desugar.rs`: `desugar_foreign_combinators`, `bind_signal_args`, `has_internal_wire_feed`, `collect_and_rewrite`, `split_par`, `desugar_main_io` (IO auto-desugar is superseded by explicit `main = do { … }`).
@@ -273,12 +273,12 @@ Run `cargo build -p rill-lang --features dsp` and fix each error by REMOVING the
 - `infer.rs`: `infer_seq/par/split/merge/loop/delay/arith` and `seq/par/split/merge/feedback/delay/arith` helpers (lines ~4730-5082); `expr_has_variadic_signal`.
 - `render.rs`: `Expr::Wire/Seq/Par/Split/Merge/Loop/Delay` arms.
 
-- [ ] **Step 4: Build clean**
+- [x] **Step 4: Build clean**
 
 Run: `cargo build -p rill-lang --features dsp`
 Expected: compiles.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A

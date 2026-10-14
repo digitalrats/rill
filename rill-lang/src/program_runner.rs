@@ -88,8 +88,12 @@ mod tests {
         use crate::builtin::Registry;
         use crate::compile_graph;
 
-        let engine =
-            compile_graph::<f32, 256>("main = _ * 0.5", &Registry::new(), 44100.0).unwrap();
+        let engine = compile_graph::<f32, 256>(
+            "main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }",
+            &Registry::new(),
+            44100.0,
+        )
+        .unwrap();
         let mut runner = ProgramRunner::new(engine, None);
 
         let tick = ClockTick {

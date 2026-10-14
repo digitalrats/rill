@@ -7,8 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{ArithOp, Def, Expr, MatchArm, Pattern, Program};
-use crate::error::Span;
+use crate::ast::{Def, Expr, MatchArm, Pattern, Program};
 use crate::mode::Mode;
 
 /// All variable bindings introduced by a pattern (for shadowing-aware
@@ -66,36 +65,6 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
             args: args.iter().map(|a| substitute(a, subst)).collect(),
             span: *span,
         },
-        Expr::Seq(lhs, rhs, span) => Expr::Seq(
-            Box::new(substitute(lhs, subst)),
-            Box::new(substitute(rhs, subst)),
-            *span,
-        ),
-        Expr::Par(lhs, rhs, span) => Expr::Par(
-            Box::new(substitute(lhs, subst)),
-            Box::new(substitute(rhs, subst)),
-            *span,
-        ),
-        Expr::Split(lhs, rhs, span) => Expr::Split(
-            Box::new(substitute(lhs, subst)),
-            Box::new(substitute(rhs, subst)),
-            *span,
-        ),
-        Expr::Merge(lhs, rhs, span) => Expr::Merge(
-            Box::new(substitute(lhs, subst)),
-            Box::new(substitute(rhs, subst)),
-            *span,
-        ),
-        Expr::Loop(lhs, rhs, span) => Expr::Loop(
-            Box::new(substitute(lhs, subst)),
-            Box::new(substitute(rhs, subst)),
-            *span,
-        ),
-        Expr::Delay(lhs, rhs, span) => Expr::Delay(
-            Box::new(substitute(lhs, subst)),
-            Box::new(substitute(rhs, subst)),
-            *span,
-        ),
         Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
             lhs: Box::new(substitute(lhs, subst)),
@@ -543,44 +512,6 @@ fn reduce_expr(
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
             reduce_expr(body, &let_ctx, cafs, reducing, mode)
         }
-        Expr::Loop(lhs, rhs, span) => {
-            // Desugar the Faust-style integrator short forms to block built-ins:
-            //   `+ ~ _`       → `integrator`
-            //   `+ ~ (_ * k)` → `leaky_integrator k`
-            if let Some(desugared) = desugar_integrator(lhs, rhs, *span) {
-                return desugared;
-            }
-            Expr::Loop(
-                Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-                Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-                *span,
-            )
-        }
-        Expr::Seq(lhs, rhs, span) => Expr::Seq(
-            Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            *span,
-        ),
-        Expr::Par(lhs, rhs, span) => Expr::Par(
-            Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            *span,
-        ),
-        Expr::Split(lhs, rhs, span) => Expr::Split(
-            Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            *span,
-        ),
-        Expr::Merge(lhs, rhs, span) => Expr::Merge(
-            Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            *span,
-        ),
-        Expr::Delay(lhs, rhs, span) => Expr::Delay(
-            Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            *span,
-        ),
         Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
             lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
@@ -672,37 +603,6 @@ fn reduce_expr(
             }
         }
         _ => e.clone(),
-    }
-}
-
-/// Recognize the `+ ~ _` / `+ ~ (_ * k)` integrator short forms.
-///
-/// The desugared calls bind the signal arg positionally (`integrator _`,
-/// `leaky_integrator _ k`) — the FFI model (and the inline foreign catalog)
-/// requires the signal as a positional apply arg.
-fn desugar_integrator(lhs: &Expr, rhs: &Expr, span: Span) -> Option<Expr> {
-    let is_plus = matches!(lhs, Expr::Ref(name, _) if name == "+");
-    if !is_plus {
-        return None;
-    }
-    match rhs {
-        Expr::Wire(_) => Some(Expr::Apply {
-            name: "integrator".to_string(),
-            args: vec![Expr::Wire(span)],
-            span,
-        }),
-        Expr::Arith {
-            op: ArithOp::Mul,
-            lhs: w,
-            rhs: k,
-            ..
-        } if matches!(w.as_ref(), Expr::Wire(_)) => Some(Expr::Apply {
-            name: "leaky_integrator".to_string(),
-            // Buffer-last FFI model: scalars lead, the signal wire trails.
-            args: vec![(**k).clone(), Expr::Wire(span)],
-            span,
-        }),
-        _ => None,
     }
 }
 
@@ -815,15 +715,6 @@ mod tests {
     fn contains_name(e: &Expr, name: &str) -> bool {
         match e {
             Expr::Ref(n, _) => n == name,
-            Expr::Seq(l, r, _)
-            | Expr::Par(l, r, _)
-            | Expr::Split(l, r, _)
-            | Expr::Merge(l, r, _) => {
-                contains_name(l.as_ref(), name) || contains_name(r.as_ref(), name)
-            }
-            Expr::Loop(l, r, _) | Expr::Delay(l, r, _) => {
-                contains_name(l.as_ref(), name) || contains_name(r.as_ref(), name)
-            }
             Expr::Arith { lhs, rhs, .. } => {
                 contains_name(lhs.as_ref(), name) || contains_name(rhs.as_ref(), name)
             }
@@ -844,24 +735,24 @@ mod tests {
     fn caf_ref_is_not_inlined() {
         // c = 440.0 is a closed top-level local (CAF): main must keep the shared
         // reference `c` instead of inlining the constant at both use sites.
-        let reduced = reduced_with_cafs("c = 440.0; main = c , c");
+        let reduced = reduced_with_cafs("c = 440.0; main = c + c");
         let main = reduced.main_def().unwrap();
         assert!(contains_name(main.body(), "c"));
     }
 
     #[test]
     fn non_caf_local_is_still_inlined() {
-        // gain = _ * 0.5 is open (1 signal input) — a macro. After reduce, no
+        // gain x = x * 0.5 is open (1 λ-parameter) — a macro. After reduce, no
         // `gain` reference may remain in main.
-        let reduced = reduced_with_cafs("gain = _ * 0.5; main = gain");
+        let reduced = reduced_with_cafs("gain x = x * 0.5; main = gain 2.0");
         let main = reduced.main_def().unwrap();
         assert!(!contains_name(main.body(), "gain"));
     }
 
     #[test]
     fn simple_apply_is_inlined() {
-        // main = g 0.5 where { g x = _ * x; }  →  main = _ * 0.5
-        let body = reduced_body("main = g 0.5 where { g x = _ * x; }");
+        // main = g 2.0 where { g x = x * 0.5; }  →  main = 2.0 * 0.5
+        let body = reduced_body("main = g 2.0 where { g x = x * 0.5; }");
         match &body {
             Expr::Arith {
                 op: ArithOp::Mul,
@@ -869,7 +760,7 @@ mod tests {
                 rhs,
                 ..
             } => {
-                assert!(matches!(lhs.as_ref(), Expr::Wire(_)));
+                assert!(matches!(lhs.as_ref(), Expr::Float(v, _) if *v == 2.0));
                 assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
             }
             other => panic!("expected Arith(Mul), got {other:?}"),
@@ -878,8 +769,8 @@ mod tests {
 
     #[test]
     fn nested_apply_is_inlined() {
-        // main = h where { f x = _ * x; g y = f y; h = g 0.5; }
-        let body = reduced_body("main = h where { f x = _ * x; g y = f y; h = g 0.5; }");
+        // main = h where { f x = x * 0.5; g y = f y; h = g 2.0; }  →  2.0 * 0.5
+        let body = reduced_body("main = h where { f x = x * 0.5; g y = f y; h = g 2.0; }");
         match &body {
             Expr::Arith {
                 op: ArithOp::Mul,
@@ -887,7 +778,7 @@ mod tests {
                 rhs,
                 ..
             } => {
-                assert!(matches!(lhs.as_ref(), Expr::Wire(_)));
+                assert!(matches!(lhs.as_ref(), Expr::Float(v, _) if *v == 2.0));
                 assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
             }
             other => panic!("expected Arith(Mul), got {other:?}"),
@@ -896,7 +787,7 @@ mod tests {
 
     #[test]
     fn top_level_call_is_inlined() {
-        let body = reduced_body("sq x = _ * x; main = sq 0.5");
+        let body = reduced_body("sq x = x * x; main = sq 2.0");
         match &body {
             Expr::Arith {
                 op: ArithOp::Mul, ..
@@ -907,12 +798,12 @@ mod tests {
 
     #[test]
     fn builtin_not_reduced() {
-        let body = reduced_body("main = _ : lowpass 1000.0 0.7");
+        let body = reduced_body("main = lowpass 1000.0 0.7");
         match &body {
-            Expr::Seq(_, rhs, _) => {
-                assert!(matches!(rhs.as_ref(), Expr::Apply { name, .. } if name == "lowpass"));
+            Expr::Apply { name, .. } => {
+                assert_eq!(name, "lowpass");
             }
-            other => panic!("expected Seq, got {other:?}"),
+            other => panic!("expected Apply, got {other:?}"),
         }
     }
 
@@ -935,9 +826,9 @@ mod tests {
 
     #[test]
     fn lambda_param_shadows_local_def() {
-        // x = _ * 0.5; main = fn x -> x  →  the outer `x` must NOT be inlined
+        // x = 1.0 * 0.5; main = fn x -> x  →  the outer `x` must NOT be inlined
         // into the lambda body (the param shadows it).
-        let body = reduced_body("x = _ * 0.5; main = fn x -> x");
+        let body = reduced_body("x = 1.0 * 0.5; main = fn x -> x");
         match &body {
             Expr::Lambda {
                 params,

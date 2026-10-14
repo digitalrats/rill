@@ -515,14 +515,6 @@ impl<'a> Lowerer<'a> {
                 self.emit_value(ValueInstr::ValueConstFloat { dst, value: *v });
                 Ok((dst, ValueTy::Float))
             }
-            Expr::Wire(_) => {
-                // v1 has no runtime value inputs: a value wire (`_` in match
-                // position) lowers to an unbound register, so any `ValueMatch`
-                // against it is a detectable non-match (None). The type is
-                // unknown until the surrounding match pins it.
-                let dst = self.fresh_value_reg();
-                Ok((dst, ValueTy::Var(0)))
-            }
             Expr::Ref(name, span) => self.lower_value_ref_expected(name, *span, expected),
             Expr::FieldProject {
                 record,
@@ -2274,32 +2266,6 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::String))
             }
-            Expr::Seq(lhs, rhs, _) => {
-                // `:` overload — Haskell-style cons for List operands
-                // (`x : xs` ≣ `cons x xs`). Inference already resolved a
-                // List-typed rhs to this branch; lower the element and the
-                // list, then cons them (lazy in complete mode).
-                let (x, xt) = self.lower_value(lhs)?;
-                let (xs, xts) = self.lower_value(rhs)?;
-                let op = if self.mode == Mode::Complete {
-                    ValueBuiltinOp::LazyCons
-                } else {
-                    ValueBuiltinOp::Cons
-                };
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueCallBuiltin {
-                    dst,
-                    op,
-                    args: vec![x, xs],
-                });
-                let elem = match &xts {
-                    ValueTy::App(_, inner) => inner.first().cloned().unwrap_or(xt),
-                    _ => xt,
-                };
-                let ret = ValueTy::App("List".into(), vec![elem]);
-                self.note_container(&ret);
-                Ok((dst, ret))
-            }
             Expr::ListLit(elems, _) => {
                 // In complete mode the empty literal `[]` is the lazy Nil.
                 if elems.is_empty() && self.mode == Mode::Complete {
@@ -2427,20 +2393,6 @@ impl<'a> Lowerer<'a> {
                     self.value_locals.pop();
                     res
                 }
-            }
-            Expr::Par(lhs, rhs, _) => {
-                // Channel tuple in value position: `value , value` is
-                // `Pair { first, second }`. Field order matches the declared
-                // `Pair` field order, so fields[0]/fields[1] are `first`/`second`;
-                // the returned type carries the exact element types.
-                let (lr, lt) = self.lower_value(lhs)?;
-                let (rr, rt) = self.lower_value(rhs)?;
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueConstructRecord {
-                    dst,
-                    fields: vec![lr, rr],
-                });
-                Ok((dst, ValueTy::App("Pair".into(), vec![lt, rt])))
             }
             Expr::ActorParam {
                 name,
@@ -3208,13 +3160,7 @@ impl<'a> Lowerer<'a> {
                     out.push(name.clone());
                 }
             }
-            Expr::Int(_, _)
-            | Expr::Float(_, _)
-            | Expr::Imag(_, _)
-            | Expr::Void(_)
-            | Expr::Str(_, _)
-            | Expr::Wire(_)
-            | Expr::Cut(_) => {}
+            Expr::Int(_, _) | Expr::Float(_, _) | Expr::Void(_) | Expr::Str(_, _) => {}
             Expr::Neg(inner, _) => self.free_vars_impl(inner, bound, out, seen),
             Expr::Apply { name, args, .. } => {
                 // The applied callee is a reference too: `fn x -> f x` applies
@@ -3270,15 +3216,6 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expr::Arith { lhs, rhs, .. } => {
-                self.free_vars_impl(lhs, bound, out, seen);
-                self.free_vars_impl(rhs, bound, out, seen);
-            }
-            Expr::Seq(lhs, rhs, _)
-            | Expr::Par(lhs, rhs, _)
-            | Expr::Split(lhs, rhs, _)
-            | Expr::Merge(lhs, rhs, _)
-            | Expr::Loop(lhs, rhs, _)
-            | Expr::Delay(lhs, rhs, _) => {
                 self.free_vars_impl(lhs, bound, out, seen);
                 self.free_vars_impl(rhs, bound, out, seen);
             }
@@ -4761,45 +4698,6 @@ impl<'a> Lowerer<'a> {
                 msg: "the unit value `()` is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
-            Expr::Imag(v, _) => {
-                let name = "complex".to_string();
-                if let Some(fsig) = self.env.foreign_sigs.get(&name).cloned() {
-                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&name, &fsig) {
-                        let instance = self.builtins.len();
-                        self.builtins.push(BuiltinInstance {
-                            name,
-                            params: vec![0.0, *v],
-                            resource: None,
-                            tape_index: None,
-                            kind: crate::builtin::BuiltinKind::Block,
-                            signal_ins: sig
-                                .params
-                                .iter()
-                                .filter(|p| {
-                                    matches!(p, crate::types::ffi::FfiParam::Signal)
-                                })
-                                .count(),
-                            signal_outs: sig.signal_outs,
-                            param_bindings: Vec::new(),
-                        });
-                        let fst = self.fresh_value_reg();
-                        for _ in 1..sig.signal_outs {
-                            self.fresh_value_reg();
-                        }
-                        self.emit_value(ValueInstr::ValueCallForeign {
-                            dst: fst,
-                            srcs: vec![],
-                            instance,
-                        });
-                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                    }
-                }
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBufferConst { dst, value: 0.0 });
-                Ok(vec![dst])
-            }
-            Expr::Wire(_) => Ok(vec![args[0]]),
-            Expr::Cut(_) => Ok(vec![]),
             Expr::Ref(name, span) => self.lower_ref(name, args, *span),
             Expr::Neg(inner, _) => {
                 let outs = self.lower(inner, args)?;
@@ -4900,7 +4798,7 @@ impl<'a> Lowerer<'a> {
                                 crate::types::ffi::FfiParam::Signal => {
                                     let src = if pos >= call_args.len() {
                                         // Combinator-fed signal: no explicit
-                                        // wire call arg — bind the next wiring
+                                        // call arg — bind the next wiring
                                         // register (the graph-reconstruct
                                         // `(_, _) :> dry_wet` style feeds the
                                         // channels via the combinator).
@@ -4913,20 +4811,6 @@ impl<'a> Lowerer<'a> {
                                             });
                                         }
                                         args[signal_index]
-                                    } else if matches!(&call_args[pos], Expr::Wire(_)) {
-                                        // A Wire in the k-th Signal slot binds the k-th
-                                        // wiring register; a generator (0-in) yields its
-                                        // outs via `self.lower`.
-                                        let reg = *args.get(signal_index).ok_or_else(|| {
-                                            CompileError::Type {
-                                                msg: format!(
-                                                    "signal argument {pos} of `{name}`: not \
-                                                     enough wiring inputs"
-                                                ),
-                                                span: call_args[pos].span(),
-                                            }
-                                        })?;
-                                        reg
                                     } else {
                                         let outs = self.lower(&call_args[pos], args)?;
                                         *outs.first().ok_or_else(|| CompileError::Type {
@@ -4949,29 +4833,18 @@ impl<'a> Lowerer<'a> {
                                     let trailing = variadic_idx.map(|i| sig.params.len() - i - 1)
                                     .unwrap_or(0);
                                     let end = call_args.len().saturating_sub(trailing);
-                                    for (i, arg) in call_args[pos..end].iter().enumerate() {
-                                        // The i-th Wire in the variadic span binds the
-                                        // (signal_index + i)-th wiring register.
-                                        let src = if matches!(arg, Expr::Wire(_)) {
-                                            let reg = *args
-                                                .get(signal_index + i)
-                                                .ok_or_else(|| CompileError::Type {
-                                                    msg: format!(
-                                                        "variadic signal argument of `{name}`: \
-                                                         not enough wiring inputs"
-                                                    ),
-                                                    span: arg.span(),
-                                                })?;
-                                            reg
-                                        } else {
-                                            let outs = self.lower(arg, args)?;
-                                            *outs.first().ok_or_else(|| CompileError::Type {
+                                    for arg in call_args[pos..end].iter() {
+                                        // Each arg in the variadic span is a
+                                        // signal expression feeding one channel.
+                                        let outs = self.lower(arg, args)?;
+                                        let src = *outs.first().ok_or_else(
+                                            || CompileError::Type {
                                                 msg: format!(
                                                     "signal argument of `{name}` has no outputs"
                                                 ),
                                                 span: arg.span(),
-                                            })?
-                                        };
+                                            },
+                                        )?;
                                         signal_srcs.push(src);
                                     }
                                     signal_index += end.saturating_sub(pos);
@@ -5260,12 +5133,6 @@ impl<'a> Lowerer<'a> {
                 msg: "string literal is only valid as a parameter name".into(),
                 span: *span,
             }),
-            Expr::Seq(lhs, rhs, _) => self.lower_seq(lhs, rhs, args),
-            Expr::Par(lhs, rhs, _) => self.lower_par(lhs, rhs, args),
-            Expr::Split(lhs, rhs, _) => self.lower_split(lhs, rhs, args),
-            Expr::Merge(lhs, rhs, _) => self.lower_merge(lhs, rhs, args),
-            Expr::Loop(lhs, rhs, span) => self.lower_feedback(lhs, rhs, args, *span),
-            Expr::Delay(lhs, rhs, span) => self.lower_delay(lhs, rhs, args, *span),
             Expr::Arith { op, lhs, rhs, .. } => self.lower_arith(*op, lhs, rhs, args),
             Expr::Let {
                 defs,
@@ -5731,84 +5598,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// `A : B` — lower lhs, feed its outputs into rhs.
-    fn lower_seq(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-    ) -> Result<Vec<usize>, CompileError> {
-        let mid = self.lower(lhs, args)?;
-        self.lower(rhs, &mid)
-    }
-
-    /// `A , B` — split the input registers between the two sides, concatenate outputs.
-    fn lower_par(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-    ) -> Result<Vec<usize>, CompileError> {
-        let li = self.arity_in(lhs)?;
-        let (a_in, b_in) = args.split_at(li.min(args.len()));
-        let mut out = self.lower(lhs, a_in)?;
-        out.extend(self.lower(rhs, b_in)?);
-        Ok(out)
-    }
-
-    /// `A <: B` — fan out A's outputs to fill B's inputs, then lower B.
-    fn lower_split(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-    ) -> Result<Vec<usize>, CompileError> {
-        let a_out = self.lower(lhs, args)?;
-        let bi = if self.rhs_variadic(rhs) {
-            a_out.len()
-        } else {
-            self.arity_in(rhs)?
-        };
-        let reps = bi / a_out.len().max(1);
-        let mut fanned = Vec::with_capacity(bi);
-        for _ in 0..reps {
-            fanned.extend(a_out.iter().copied());
-        }
-        self.lower(rhs, &fanned)
-    }
-
-    /// `A :> B` — sum groups of A's outputs into B's inputs, then lower B.
-    fn lower_merge(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-    ) -> Result<Vec<usize>, CompileError> {
-        let a_out = self.lower(lhs, args)?;
-        let bi = if self.rhs_variadic(rhs) {
-            a_out.len()
-        } else {
-            self.arity_in(rhs)?
-        };
-        let groups = a_out.len() / bi.max(1);
-        let mut merged = Vec::with_capacity(bi);
-        for k in 0..bi {
-            let mut acc = a_out[k];
-            for g in 1..groups {
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBufferBin {
-                    dst,
-                    op: BinArith::Add,
-                    a: acc,
-                    b: a_out[g * bi + k],
-                });
-                acc = dst;
-            }
-            merged.push(acc);
-        }
-        self.lower(rhs, &merged)
-    }
-
     /// `A op B` — elementwise arithmetic on the single output wire of each side.
     fn lower_arith(
         &mut self,
@@ -5817,49 +5606,6 @@ impl<'a> Lowerer<'a> {
         rhs: &Expr,
         args: &[usize],
     ) -> Result<Vec<usize>, CompileError> {
-        if matches!(op, ArithOp::Add | ArithOp::Sub) {
-            let re = match lhs {
-                Expr::Float(v, _) => Some(*v),
-                Expr::Int(v, _) => Some(*v as f64),
-                _ => None,
-            };
-            let im = match rhs {
-                Expr::Imag(v, _) => Some(if matches!(op, ArithOp::Sub) { -*v } else { *v }),
-                _ => None,
-            };
-            if let (Some(re), Some(im)) = (re, im) {
-                let name = "complex".to_string();
-                if let Some(fsig) = self.env.foreign_sigs.get(&name).cloned() {
-                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&name, &fsig) {
-                        let instance = self.builtins.len();
-                        self.builtins.push(BuiltinInstance {
-                            name,
-                            params: vec![re, im],
-                            resource: None,
-                            tape_index: None,
-                            kind: crate::builtin::BuiltinKind::Block,
-                            signal_ins: sig
-                                .params
-                                .iter()
-                                .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
-                                .count(),
-                            signal_outs: sig.signal_outs,
-                            param_bindings: Vec::new(),
-                        });
-                        let fst = self.fresh_value_reg();
-                        for _ in 1..sig.signal_outs {
-                            self.fresh_value_reg();
-                        }
-                        self.emit_value(ValueInstr::ValueCallForeign {
-                            dst: fst,
-                            srcs: vec![],
-                            instance,
-                        });
-                        return Ok((0..sig.signal_outs).map(|i| fst + i).collect());
-                    }
-                }
-            }
-        }
         let a = self.lower(lhs, args)?;
         let b = self.lower(rhs, args)?;
         let arith = match op {
@@ -5879,114 +5625,11 @@ impl<'a> Lowerer<'a> {
         Ok(vec![dst])
     }
 
-    /// `A ~ B` — B's output feeds A's feedback input (1-tick delay), while B is
-    /// evaluated independently (it does not consume A's output). This models a
-    /// unidirectional feedback edge.
-    fn lower_feedback(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-        _span: Span,
-    ) -> Result<Vec<usize>, CompileError> {
-        let bo = self.arity_out(rhs)?;
-        let mut fb_regs = Vec::with_capacity(bo);
-        let mut slots = Vec::with_capacity(bo);
-        for _ in 0..bo {
-            let slot = self.block_state_slots;
-            self.block_state_slots += 1;
-            slots.push(slot);
-            let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueBufferStateRead { dst, slot });
-            fb_regs.push(dst);
-        }
-        let mut a_in = args.to_vec();
-        a_in.extend(fb_regs);
-        let a_out = self.lower(lhs, &a_in)?;
-        let b_out = self.lower(rhs, args)?;
-        for (k, slot) in slots.iter().enumerate() {
-            self.emit_value(ValueInstr::ValueBufferStateWrite {
-                slot: *slot,
-                src: b_out[k],
-            });
-        }
-        Ok(a_out)
-    }
-
-    /// Whether `rhs` is a built-in that takes variadic signal inputs.
-    fn rhs_variadic(&self, rhs: &Expr) -> bool {
-        match rhs {
-            Expr::Apply { name, .. } | Expr::Ref(name, _) => {
-                // FFI catalog first: a foreign sig with a VariadicSignal tail.
-                if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()) {
-                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig) {
-                        if sig
-                            .params
-                            .iter()
-                            .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
-                        {
-                            return true;
-                        }
-                    }
-                }
-                false
-            }
-            _ => false,
-        }
-    }
-
-    fn lower_delay(
-        &mut self,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-        span: Span,
-    ) -> Result<Vec<usize>, CompileError> {
-        let len = const_int(rhs).ok_or_else(|| CompileError::Type {
-            msg: "delay length must be a constant integer expression".into(),
-            span,
-        })?;
-        if len < 0 {
-            return Err(CompileError::Type {
-                msg: "delay length must be non-negative".into(),
-                span,
-            });
-        }
-        if len as usize > crate::program::MAX_DELAY_LEN {
-            return Err(CompileError::Type {
-                msg: format!(
-                    "delay length {len} exceeds MAX_DELAY_LEN ({})",
-                    crate::program::MAX_DELAY_LEN
-                ),
-                span,
-            });
-        }
-        let signal = self.lower(lhs, args)?;
-        let src = signal[0];
-        if len == 0 {
-            return Ok(vec![src]);
-        }
-        let line = self.delay_lens.len();
-        self.delay_lens.push(len as usize);
-        let dst = self.fresh_value_reg();
-        self.emit_value(ValueInstr::ValueBufferDelayRead { dst, line });
-        self.emit_value(ValueInstr::ValueBufferDelayWrite { line, src });
-        Ok(vec![dst])
-    }
-
     /// Lower a signal expression as a `Value::Buffer` value-track register, for an
     /// IO primitive (`writeOutput`/`readInput`). A bare reference to a main BUFFER
     /// input (`writeOutput 0 i1`) resolves to the input's buffer register; any
     /// other signal computation (`onepole 200.0 0.7 i1`) lowers through the signal
     /// path (`self.lower`), whose `ValueBuffer*` ops share the value track.
-    fn arity_in(&self, e: &Expr) -> Result<usize, CompileError> {
-        Ok(self.arity(e)?.0)
-    }
-
-    fn arity_out(&self, e: &Expr) -> Result<usize, CompileError> {
-        Ok(self.arity(e)?.1)
-    }
-
     /// Coerce a value-track operand into a `Buffer` operand for an element-wise
     /// op: a `Buffer` value passes through; a scalar register is broadcast into
     /// a buffer constant (`i1 * 0.5` → the constant fills a buffer).
@@ -5997,127 +5640,6 @@ impl<'a> Lowerer<'a> {
         let dst = self.fresh_value_reg();
         self.emit_value(ValueInstr::ValueBufferFill { dst, src: reg });
         Ok(dst)
-    }
-
-    /// Signal-arity `(ins, outs)` of an expression. User-defined references are
-    /// resolved through `self.defs` so combinator fan-out/split uses the true
-    /// arity of an open block.
-    fn arity(&self, e: &Expr) -> Result<(usize, usize), CompileError> {
-        self.arity_with(e, &mut HashSet::new())
-    }
-
-    /// The signal arity `(ins, outs)` of a catalog/FFI builtin by name, if
-    /// declared. Signal inputs = the count of `Signal` params (variadic-signal
-    /// channels excluded), mirroring the legacy `BuiltinSig::signal_ins()`
-    /// semantics.
-    fn ffi_arity(&self, name: &str) -> Option<(usize, usize)> {
-        let fsig = self.env.foreign_sigs.get(name)?;
-        let sig = crate::types::ffi::ffi_sig_from_typeexpr(name, fsig)?;
-        let ins = sig
-            .params
-            .iter()
-            .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
-            .count();
-        Some((ins, sig.signal_outs))
-    }
-
-    fn arity_with(
-        &self,
-        e: &Expr,
-        visited: &mut HashSet<String>,
-    ) -> Result<(usize, usize), CompileError> {
-        let _unsupported = |m: &str| CompileError::Unsupported(m.to_string());
-        Ok(match e {
-            Expr::Int(_, _) | Expr::Float(_, _) => (0, 1),
-            Expr::Void(_) => (0, 1),
-            Expr::Imag(_, _) => (0, 2),
-            Expr::Str(_, _) => (0, 1),
-            Expr::Wire(_) => (1, 1),
-            Expr::Cut(_) => (1, 0),
-            Expr::Neg(inner, _) => self.arity_with(inner, visited)?,
-            Expr::Ref(name, _) => match name.as_str() {
-                "+" | "-" | "*" | "/" | "%" | "min" | "max" | "atan2" => (2, 1),
-                "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs" => (1, 1),
-                _ => {
-                    if let Some((ins, outs)) = self.ffi_arity(name) {
-                        (ins, outs)
-                    } else if let Some(def) = self.defs.get(name) {
-                        if def.is_decl() {
-                            // Type declarations have no signal arity.
-                            (0, 1)
-                        } else if visited.contains(name) {
-                            (0, 1)
-                        } else {
-                            visited.insert(name.clone());
-                            let a = self.arity_with(def.body(), visited)?;
-                            visited.remove(name);
-                            a
-                        }
-                    } else {
-                        (0, 1)
-                    }
-                }
-            },
-            Expr::Apply { name, args, .. } => {
-                if let Some((ins, outs)) = self.ffi_arity(name) {
-                    (ins, outs)
-                } else {
-                    let mut ins = 0;
-                    for a in args {
-                        ins += self.arity_with(a, visited)?.0;
-                    }
-                    (ins, 1)
-                }
-            }
-            Expr::Seq(lhs, rhs, _) => {
-                let (ai, _) = self.arity_with(lhs, visited)?;
-                let (_, bo) = self.arity_with(rhs, visited)?;
-                (ai, bo)
-            }
-            Expr::Par(lhs, rhs, _) => {
-                let (ai, ao) = self.arity_with(lhs, visited)?;
-                let (bi, bo) = self.arity_with(rhs, visited)?;
-                (ai + bi, ao + bo)
-            }
-            Expr::Split(lhs, rhs, _) => {
-                let (ai, _) = self.arity_with(lhs, visited)?;
-                let (_, bo) = self.arity_with(rhs, visited)?;
-                (ai, bo)
-            }
-            Expr::Merge(lhs, rhs, _) => {
-                let (ai, _) = self.arity_with(lhs, visited)?;
-                let (_, bo) = self.arity_with(rhs, visited)?;
-                (ai, bo)
-            }
-            Expr::Loop(lhs, rhs, _) => {
-                let (ai, ao) = self.arity_with(lhs, visited)?;
-                let (_, bo) = self.arity_with(rhs, visited)?;
-                (ai - bo, ao)
-            }
-            Expr::Delay(lhs, _rhs, _) => self.arity_with(lhs, visited)?,
-            Expr::Arith { lhs, rhs, .. } => {
-                let (ai, _) = self.arity_with(lhs, visited)?;
-                let (bi, _) = self.arity_with(rhs, visited)?;
-                (ai + bi, 1)
-            }
-            Expr::Let { body, .. } => self.arity_with(body, visited)?,
-            Expr::Record(..) => unreachable!("Record should be desugared before arity check"),
-            Expr::ActorParam { .. } => (0, 1),
-            // Value expressions are 0→1 value channels: they carry no signal
-            // arity. (A combinator mixing value and signal channels is outside
-            // v1 scope and errors elsewhere in lowering.)
-            Expr::FieldProject { .. }
-            | Expr::FieldUpdate { .. }
-            | Expr::Match { .. }
-            | Expr::If { .. }
-            | Expr::Bool(..)
-            | Expr::ListLit(..)
-            | Expr::MapLit(..)
-            | Expr::Cmp { .. }
-            | Expr::Logic { .. }
-            | Expr::ApplyExpr { .. } => (0, 1),
-            Expr::Lambda { .. } => (0, 1),
-        })
     }
 }
 
@@ -6143,15 +5665,6 @@ fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
         }
         Expr::Neg(inner, _) => collect_def_ref_names(inner, out),
         Expr::Arith { lhs, rhs, .. } => {
-            collect_def_ref_names(lhs, out);
-            collect_def_ref_names(rhs, out);
-        }
-        Expr::Seq(lhs, rhs, _)
-        | Expr::Par(lhs, rhs, _)
-        | Expr::Split(lhs, rhs, _)
-        | Expr::Merge(lhs, rhs, _)
-        | Expr::Loop(lhs, rhs, _)
-        | Expr::Delay(lhs, rhs, _) => {
             collect_def_ref_names(lhs, out);
             collect_def_ref_names(rhs, out);
         }
@@ -6612,12 +6125,6 @@ mod tests {
         lower(&tp).unwrap()
     }
 
-    fn ir_with(src: &str) -> Ir {
-        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
-        let tp = infer_program_with(&p, p.mode).unwrap();
-        lower_with(&tp, 44_100.0).unwrap()
-    }
-
     fn ir_with_cafs(src: &str) -> Ir {
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         let typed = infer_program_with(&p, p.mode).unwrap();
@@ -6751,39 +6258,6 @@ mod tests {
     }
 
     #[test]
-    fn integrator_allocates_one_state_slot() {
-        let ir = ir_of("main = + ~ _");
-        assert_eq!(ir.state.block_state_slots, 1);
-        assert!(ir.value_blocks[0]
-            .instrs
-            .iter()
-            .any(|i| matches!(i, ValueInstr::ValueBufferStateRead { .. })));
-        assert!(ir.value_blocks[0]
-            .instrs
-            .iter()
-            .any(|i| matches!(i, ValueInstr::ValueBufferStateWrite { .. })));
-    }
-
-    #[test]
-    fn delay_allocates_line() {
-        let ir = ir_of("main = _ @ 3");
-        assert_eq!(ir.state.delay_lens, vec![3]);
-    }
-
-    #[test]
-    fn delay_over_max_is_compile_error() {
-        // `@ 70000` exceeds MAX_DELAY_LEN (65536): must be a compile error, not
-        // a construction-time panic in DelayRing::new.
-        let p = parse(
-            &tokenize("main = _ @ 70000").unwrap(),
-            "main = _ @ 70000".as_bytes(),
-        )
-        .unwrap();
-        let tp = infer_program(&p, p.mode).unwrap();
-        assert!(lower(&tp).is_err());
-    }
-
-    #[test]
     fn main_param_lowers_to_cell_binding() {
         // An actor param (`?gain`) is a named control parameter read as a
         // scalar VALUE (`ValueInstr::ValueReadParam`), then broadcast into a
@@ -6807,12 +6281,11 @@ mod tests {
 
     #[test]
     fn onepole_lowers_to_callblock() {
-        let ir = ir_with("main = _ : onepole 200.0 0.5");
+        let ir = ir_of(
+            "main = do { writeOutput (map (fn x -> onepole 200.0 0.5 x) (readInput)); return () }",
+        );
         assert!(
-            ir.value_blocks[0]
-                .instrs
-                .iter()
-                .any(|i| matches!(i, ValueInstr::ValueCallForeign { .. })),
+            has_instr(&ir, |i| matches!(i, ValueInstr::ValueCallForeign { .. })),
             "expected a CallBlock instruction"
         );
         assert_eq!(ir.builtins.len(), 1);
@@ -6823,12 +6296,11 @@ mod tests {
 
     #[test]
     fn block_builtin_lowers_to_callblock() {
-        let ir = ir_with("main = _ : lowpass 1000.0 0.7");
+        let ir = ir_of(
+            "main = do { writeOutput (map (fn x -> lowpass 1000.0 0.7 x) (readInput)); return () }",
+        );
         assert!(
-            ir.value_blocks[0]
-                .instrs
-                .iter()
-                .any(|i| matches!(i, ValueInstr::ValueCallForeign { .. })),
+            has_instr(&ir, |i| matches!(i, ValueInstr::ValueCallForeign { .. })),
             "expected a CallBlock instruction"
         );
         assert_eq!(ir.builtins.len(), 1);
@@ -6853,32 +6325,31 @@ mod tests {
     }
 
     #[test]
-    fn closed_caf_lowers_to_single_instance() {
-        // osc = sine 440 0.5 0; main = osc , osc  -> ONE sine builtin
-        let ir = ir_with_cafs("osc = sine 440 0.5 0; main = osc , osc");
-        let sines = ir.builtins.iter().filter(|b| b.name == "sine").count();
-        assert_eq!(sines, 1);
-    }
-
-    #[test]
     fn open_block_stays_macro() {
-        // integ = + ~ _; main = integ , integ  -> 2 state slots (two independent integrators)
-        let ir = ir_of("integ = + ~ _; main = integ , integ");
+        // Two independent `smooth` applications (each allocates a state slot)
+        // must produce two state slots.
+        let ir = ir_of(
+            "main = do { writeOutput (map (fn x -> smooth (smooth x 10.0) 20.0) (readInput)); return () }",
+        );
         assert_eq!(ir.state.block_state_slots, 2);
     }
 
     #[test]
     fn caf_const_param_still_folds() {
-        // cutoff = 1000.0; main = _ : lowpass cutoff 0.7 -> param 1000.0
-        let ir = ir_with_cafs("cutoff = 1000.0; main = _ : lowpass cutoff 0.7");
+        // cutoff = 1000.0; lowpass cutoff 0.7 -> param 1000.0
+        let ir = ir_with_cafs(
+            "cutoff = 1000.0; main = do { writeOutput (map (fn x -> lowpass cutoff 0.7 x) (readInput)); return () }",
+        );
         let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
         assert!((lp.params[0] - 1000.0).abs() < 1e-9);
     }
 
     #[test]
     fn transitive_caf_const_fold() {
-        // b = 1000.0; a = b; main = _ : lowpass a 0.7 -> a resolves through b to 1000.0
-        let ir = ir_with_cafs("b = 1000.0; a = b; main = _ : lowpass a 0.7");
+        // b = 1000.0; a = b; main = lowpass a 0.7 -> a resolves through b to 1000.0
+        let ir = ir_with_cafs(
+            "b = 1000.0; a = b; main = do { writeOutput (map (fn x -> lowpass a 0.7 x) (readInput)); return () }",
+        );
         let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
         assert!((lp.params[0] - 1000.0).abs() < 1e-9);
     }
@@ -6888,8 +6359,12 @@ mod tests {
         // osc = sine 440 0.5 0 is a CAF whose body is not a constant: using it in
         // a builtin param position must error, not silently become 0.
         let p = parse(
-            &tokenize("osc = sine 440 0.5 0; main = _ : lowpass osc 0.7").unwrap(),
-            "osc = sine 440 0.5 0; main = _ : lowpass osc 0.7".as_bytes(),
+            &tokenize(
+                "osc = sine 440 0.5 0; main = do { writeOutput (map (fn x -> lowpass osc 0.7 x) (readInput)); return () }",
+            )
+            .unwrap(),
+            "osc = sine 440 0.5 0; main = do { writeOutput (map (fn x -> lowpass osc 0.7 x) (readInput)); return () }"
+                .as_bytes(),
         )
         .unwrap();
         let typed = infer_program_with(&p, p.mode).unwrap();
@@ -6939,12 +6414,16 @@ mod tests {
 
     #[test]
     fn cyclic_caf_in_builtin_param_is_error() {
-        // a = b; b = a; main = _ : lowpass a 0.7
+        // a = b; b = a; main = lowpass a 0.7
         // The cycle is reached through a BUILTIN PARAM, exercising caf_const_impl's
         // visited-set guard (not the caf_lifting guard in lower_ref).
         let p = parse(
-            &tokenize("a = b; b = a; main = _ : lowpass a 0.7").unwrap(),
-            "a = b; b = a; main = _ : lowpass a 0.7".as_bytes(),
+            &tokenize(
+                "a = b; b = a; main = do { writeOutput (map (fn x -> lowpass a 0.7 x) (readInput)); return () }",
+            )
+            .unwrap(),
+            "a = b; b = a; main = do { writeOutput (map (fn x -> lowpass a 0.7 x) (readInput)); return () }"
+                .as_bytes(),
         )
         .unwrap();
         let typed = infer_program_with(&p, p.mode).unwrap();
@@ -6967,8 +6446,10 @@ mod tests {
 
     #[test]
     fn unreferenced_caf_is_not_lowered() {
-        // dead = sine 440 0.5 0; main = _ * 0.5  -> no sine builtin
-        let ir = ir_with_cafs("dead = sine 440 0.5 0; main = _ * 0.5");
+        // dead = sine 440 0.5 0; main = x * 0.5  -> no sine builtin
+        let ir = ir_with_cafs(
+            "dead = sine 440 0.5 0; main = do { writeOutput (map (fn x -> x * 0.5) (readInput)); return () }",
+        );
         assert!(!ir.builtins.iter().any(|b| b.name == "sine"));
     }
 
@@ -7088,8 +6569,11 @@ mod tests {
 
     #[test]
     fn lower_match_runtime_dispatch_emits_branch_ctor() {
+        // A guarded arm can fail its guard at runtime, so the match must lower
+        // to runtime BranchCtor dispatch instead of the static fast path.
         let src = "data Shape = Circle Float | Rect Float Float; \
-                   main = match _ of { Circle r => r; Rect w h => w; };";
+                   main = match (Circle 1.5) of { Circle r | r > 0.0 => r; \
+                   Circle r => r; Rect w h => w; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
         let tp = infer_program(&p, p.mode).unwrap();
@@ -7098,7 +6582,7 @@ mod tests {
             ir.value_blocks
                 .iter()
                 .any(|b| matches!(b.term, ValueTerm::BranchCtor { .. })),
-            "a non-static match must lower to BranchCtor dispatch"
+            "a guarded match must lower to BranchCtor dispatch"
         );
     }
 
@@ -7119,15 +6603,15 @@ mod tests {
 
     #[test]
     fn match_wire_scrutinee_dispatches_at_runtime() {
-        // An unbound `_` scrutinee has no statically-known constructor: the
-        // match must lower to runtime BranchCtor dispatch instead of the old
-        // static-only compile error.
+        // A match arm with a real (non-`true`) guard has no statically-known
+        // outcome: the match must lower to runtime BranchCtor dispatch instead
+        // of the static-only compile-time selection.
         let p = parse(
             &tokenize(
-                "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }",
+                "data Shape = Circle Float | Rect Float Float; main = match (Circle 1.5) of { Circle r | r > 0.5 => r; Circle r => r; Rect w h => w; }",
             )
             .unwrap(),
-            "data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }"
+            "data Shape = Circle Float | Rect Float Float; main = match (Circle 1.5) of { Circle r | r > 0.5 => r; Circle r => r; Rect w h => w; }"
                 .as_bytes(),
         )
         .unwrap();
@@ -7137,7 +6621,7 @@ mod tests {
             ir.value_blocks
                 .iter()
                 .any(|b| matches!(b.term, ValueTerm::BranchCtor { .. })),
-            "a wire scrutinee must lower to BranchCtor dispatch"
+            "a guarded match must lower to BranchCtor dispatch"
         );
     }
 

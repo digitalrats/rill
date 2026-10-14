@@ -244,18 +244,6 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             }
             Ok(())
         }
-        Expr::Imag(v, _) => {
-            write!(buf, "{v}i").ok();
-            Ok(())
-        }
-        Expr::Wire(_) => {
-            write!(buf, "_").ok();
-            Ok(())
-        }
-        Expr::Cut(_) => {
-            write!(buf, "!").ok();
-            Ok(())
-        }
         Expr::Str(s, _) => {
             write!(buf, "\"{s}\"").ok();
             Ok(())
@@ -287,13 +275,7 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             render_expr(inner, buf, 15)?;
             Ok(())
         }
-        Expr::Seq(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (3, 3, 4, ":")),
-        Expr::Split(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (5, 5, 6, "<:")),
-        Expr::Merge(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (7, 7, 8, ":>")),
-        Expr::Par(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (9, 9, 10, ",")),
         Expr::Arith { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, arith_info(op)),
-        Expr::Delay(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (15, 15, 16, "@")),
-        Expr::Loop(lhs, rhs, _) => render_bin(lhs, rhs, buf, outer_bp, (1, 1, 2, "~")),
         Expr::Let { defs, body, .. } => {
             write!(buf, "let ").ok();
             if defs.len() > 1 {
@@ -554,28 +536,24 @@ mod tests {
     }
 
     #[test]
-    fn render_pipeline() {
+    fn render_apply() {
         let prog = Program {
             mode: Mode::Strict,
             mode_explicit: false,
             defs: vec![Def::Anchor {
                 name: "main".into(),
                 params: vec![],
-                body: Expr::Seq(
-                    Box::new(Expr::Wire(span())),
-                    Box::new(Expr::Apply {
-                        name: "lowpass".into(),
-                        args: vec![Expr::Float(1000.0, span()), Expr::Float(0.7, span())],
-                        span: span(),
-                    }),
-                    span(),
-                ),
+                body: Expr::Apply {
+                    name: "lowpass".into(),
+                    args: vec![Expr::Float(1000.0, span()), Expr::Float(0.7, span())],
+                    span: span(),
+                },
                 span: span(),
                 where_defs: vec![],
             }],
         };
         let dsl = render(&prog).unwrap();
-        assert_eq!(dsl, "main = _ : lowpass 1000.0 0.7");
+        assert_eq!(dsl, "main = lowpass 1000.0 0.7");
     }
 
     #[test]
@@ -591,7 +569,7 @@ mod tests {
                 }],
                 body: Expr::Arith {
                     op: ArithOp::Mul,
-                    lhs: Box::new(Expr::Wire(span())),
+                    lhs: Box::new(Expr::Float(2.0, span())),
                     rhs: Box::new(Expr::Ref("gain".into(), span())),
                     span: span(),
                 },
@@ -600,7 +578,7 @@ mod tests {
             }],
         };
         let dsl = render(&prog).unwrap();
-        assert_eq!(dsl, "main gain = _ * gain");
+        assert_eq!(dsl, "main gain = 2.0 * gain");
     }
 
     #[test]
@@ -749,22 +727,22 @@ mod tests {
 
     #[test]
     fn render_strict_default_emits_no_pragma() {
-        let src = "main = _ * 0.5";
+        let src = "main = 2.0 * 0.5";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
         let dsl = render(&program).unwrap();
-        assert_eq!(dsl, "main = _ * 0.5");
+        assert_eq!(dsl, "main = 2.0 * 0.5");
     }
 
     #[test]
     fn render_roundtrip_complete_pragma() {
         // A `{-# MODE complete #-}` pragma renders first and survives a
         // parse → render → parse → render round-trip.
-        let src = "{-# MODE complete #-}\nmain = _";
+        let src = "{-# MODE complete #-}\nmain = 1.0";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
         let first = render(&program).unwrap();
-        assert_eq!(first, "{-# MODE complete #-}\nmain = _");
+        assert_eq!(first, "{-# MODE complete #-}\nmain = 1.0");
         let tokens2 = crate::lexer::tokenize(first.as_str()).unwrap();
         let reparsed = crate::parser::parse(&tokens2, first.as_bytes()).unwrap();
         assert_eq!(render(&reparsed).unwrap(), first);

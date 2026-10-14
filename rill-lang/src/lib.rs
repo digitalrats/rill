@@ -16,8 +16,6 @@ pub mod buffer_math;
 pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
-/// Faust-combinator sugar: foreign builtins keep their legacy arrow call style.
-mod desugar;
 pub mod error;
 /// FFI factory registry: foreign-declared builtins' Rust implementations.
 pub mod ffi;
@@ -452,18 +450,20 @@ mod ir_tests {
     }
 
     #[test]
-    fn public_compile_with_shares_closed_caf() {
-        // osc = sine 440.0 1.0 0.0; main = osc , osc -> ONE sine instance
+    fn public_compile_with_closed_caf_compiles() {
+        // A closed CAF (`osc`, 0 signal inputs) referenced from the value model
+        // compiles and instantiates its generator builtin. Sharing one closed
+        // CAF across multiple references is a Thunk-model concern (Task 7);
+        // the value track lowers each reference to its own instance.
         let registry = sine_registry();
         let prog = compile_with::<f32>(
-            "osc = sine 440.0 1.0 0.0; main = osc , osc",
+            "osc = sine 440.0 1.0 0.0; main = do { writeOutput [osc]; return () }",
             &registry,
             44100.0,
         )
         .unwrap();
         let sines = prog.ir.builtins.iter().filter(|b| b.name == "sine").count();
         assert_eq!(sines, 1);
-        assert_eq!(prog.ir.builtins.len(), 1);
     }
 
     #[test]
@@ -491,16 +491,17 @@ mod ir_tests {
 
     #[test]
     fn complete_mode_is_carried_to_typed_program() {
-        let tokens = lexer::tokenize("{-# MODE complete #-}\nmain = _").unwrap();
-        let program = parser::parse(&tokens, "{-# MODE complete #-}\nmain = _".as_bytes()).unwrap();
+        let tokens = lexer::tokenize("{-# MODE complete #-}\nmain = 1.0").unwrap();
+        let program =
+            parser::parse(&tokens, "{-# MODE complete #-}\nmain = 1.0".as_bytes()).unwrap();
         let typed = types::infer::infer_program(&program, crate::mode::Mode::Complete).unwrap();
         assert_eq!(typed.mode, crate::mode::Mode::Complete);
     }
 
     #[test]
     fn api_mode_is_default_when_no_pragma() {
-        let tokens = lexer::tokenize("main = _").unwrap();
-        let mut program = parser::parse(&tokens, "main = _".as_bytes()).unwrap();
+        let tokens = lexer::tokenize("main = 1.0").unwrap();
+        let mut program = parser::parse(&tokens, "main = 1.0".as_bytes()).unwrap();
         apply_api_mode(&mut program, crate::mode::Mode::Complete);
         assert_eq!(program.mode, crate::mode::Mode::Complete);
         assert!(!program.mode_explicit);
@@ -508,9 +509,9 @@ mod ir_tests {
 
     #[test]
     fn pragma_wins_over_api_mode() {
-        let tokens = lexer::tokenize("{-# MODE complete #-}\nmain = _").unwrap();
+        let tokens = lexer::tokenize("{-# MODE complete #-}\nmain = 1.0").unwrap();
         let mut program =
-            parser::parse(&tokens, "{-# MODE complete #-}\nmain = _".as_bytes()).unwrap();
+            parser::parse(&tokens, "{-# MODE complete #-}\nmain = 1.0".as_bytes()).unwrap();
         assert!(program.mode_explicit);
         apply_api_mode(&mut program, crate::mode::Mode::Strict);
         assert_eq!(program.mode, crate::mode::Mode::Complete);
@@ -518,13 +519,13 @@ mod ir_tests {
 
     #[test]
     fn compile_with_mode_complete_compiles() {
-        let res = compile_with_mode::<f32>("main = _", crate::mode::Mode::Complete);
+        let res = compile_with_mode::<f32>("main = 1.0", crate::mode::Mode::Complete);
         assert!(res.is_ok());
     }
 
     #[test]
     fn pragma_flows_through_public_compile() {
-        let res = compile::<f32>("{-# MODE complete #-}\nmain = _");
+        let res = compile::<f32>("{-# MODE complete #-}\nmain = 1.0");
         assert!(res.is_ok());
     }
 }

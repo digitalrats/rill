@@ -9,16 +9,15 @@ fn parse_str(src: &str) -> Result<rill_lang::ast::Program, rill_lang::CompileErr
 
 #[test]
 fn parses_main_with_where() {
-    let prg = parse_str("main = myFilter : _ where { myFilter = _ : sin 440.0; }").unwrap();
+    let prg = parse_str("main = myFilter where { myFilter = sin 440.0; }").unwrap();
     let main = prg.main_def().unwrap();
     assert_eq!(main.where_defs().len(), 1);
 }
 
 #[test]
 fn parses_main_with_where_layout() {
-    let prg =
-        parse_str("main = myFilter : _ where\n    myFilter = _ : sin 440.0;\n    gain = _ * 0.5\n")
-            .unwrap();
+    let prg = parse_str("main = myFilter where\n    myFilter = sin 440.0;\n    gain = 1.0 * 0.5\n")
+        .unwrap();
     let main = prg.main_def().unwrap();
     assert_eq!(main.where_defs().len(), 2);
     assert_eq!(main.where_defs()[0].name(), "myFilter");
@@ -27,9 +26,9 @@ fn parses_main_with_where_layout() {
 
 #[test]
 fn parses_main_simple() {
-    let prg = parse_str("main = _ : _").unwrap();
+    let prg = parse_str("main = sine 440.0 0.5").unwrap();
     let main = prg.main_def().unwrap();
-    assert!(matches!(main.body(), Expr::Seq(..)));
+    assert!(matches!(main.body(), Expr::Apply { .. }));
 }
 
 #[test]
@@ -45,7 +44,7 @@ fn parses_top_level_multi_def() {
 
 #[test]
 fn parses_let_expression() {
-    let prg = parse_str("main = let g = _ * 0.5 in g").unwrap();
+    let prg = parse_str("main = let g = 1.0 * 0.5 in g").unwrap();
     let main = prg.main_def().unwrap();
     assert!(matches!(main.body(), Expr::Let { .. }));
 }

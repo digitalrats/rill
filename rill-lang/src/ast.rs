@@ -144,14 +144,9 @@ pub enum Expr {
     Int(i64, Span),
     /// Float literal.
     Float(f64, Span),
-    /// Imaginary literal, e.g. `3i`, `2.5i`.
-    Imag(f64, Span),
+    /// Imaginary literal is gone (Haskell 2010 has no imaginary literal).
     /// Unit literal `()` — the sole inhabitant of `ValueTy::Void`.
     Void(Span),
-    /// Identity wire `_` (arity 1→1).
-    Wire(Span),
-    /// Cut `!` (arity 1→0).
-    Cut(Span),
     /// String literal, e.g. `"cutoff"`.
     Str(String, Span),
     /// A reference to a definition or a bound parameter.
@@ -177,19 +172,6 @@ pub enum Expr {
     },
     /// Unary negation `-expr`.
     Neg(Box<Expr>, Span),
-    // --- arrow combinators (first-class) ---
-    /// Sequential composition `A : B`.
-    Seq(Box<Expr>, Box<Expr>, Span),
-    /// Parallel composition `A , B`.
-    Par(Box<Expr>, Box<Expr>, Span),
-    /// Fan-out `A <: B` (split).
-    Split(Box<Expr>, Box<Expr>, Span),
-    /// Fan-in `A :> B` (merge/sum).
-    Merge(Box<Expr>, Box<Expr>, Span),
-    /// Feedback `A ~ B` (1-block delayed).
-    Loop(Box<Expr>, Box<Expr>, Span),
-    /// Integer delay `A @ n`.
-    Delay(Box<Expr>, Box<Expr>, Span),
     // --- arithmetic ---
     /// Elementwise arithmetic `lhs op rhs`.
     Arith {
@@ -307,19 +289,10 @@ impl Expr {
         match self {
             Expr::Int(_, s)
             | Expr::Float(_, s)
-            | Expr::Imag(_, s)
             | Expr::Void(s)
-            | Expr::Wire(s)
-            | Expr::Cut(s)
             | Expr::Str(_, s)
             | Expr::Ref(_, s)
-            | Expr::Neg(_, s)
-            | Expr::Seq(_, _, s)
-            | Expr::Par(_, _, s)
-            | Expr::Split(_, _, s)
-            | Expr::Merge(_, _, s)
-            | Expr::Loop(_, _, s)
-            | Expr::Delay(_, _, s) => *s,
+            | Expr::Neg(_, s) => *s,
             Expr::Apply { span, .. }
             | Expr::ApplyExpr { span, .. }
             | Expr::Arith { span, .. }

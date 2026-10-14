@@ -287,7 +287,7 @@ instance (Monad m) => Arrow (Kleisli m) where {
     compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
 }
 
-main = _;
+main = ();
 "#;
 
 /// Built-in signal-track declarations: the first-class buffer type and the
@@ -323,7 +323,7 @@ split = fn f -> fn g -> fn x -> Pair { first: f x, second: g x };
 --  `fn p -> f p.first + g p.second`.
 merge = fn f -> fn g -> fn p -> f p.first + g p.second;
 
-main = _;
+main = ();
 "#;
 
 /// Inline catalog of foreign builtin declarations auto-registered into
@@ -378,7 +378,7 @@ foreign fn read_head : Tape f32 -> Float -> FixedBuffer f32;
 data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };
 data EqConfig = { bands: List EqBand };
 
-main = _;
+main = ();
 "#;
 
 /// Derived instance bodies for the superclass chain, written in rill-lang.
@@ -408,7 +408,7 @@ fn instance_from_template(
             .join(" ");
         format!("({} {})", ty, joined)
     };
-    let src = format!("instance {class} {head} where {{ {bodies} }}; main = _;");
+    let src = format!("instance {class} {head} where {{ {bodies} }}; main = ();");
     let toks = crate::lexer::tokenize(&src);
     debug_assert!(toks.is_ok(), "derived instance template must lex");
     let program = crate::parser::parse(&toks.ok().unwrap(), src.as_bytes());

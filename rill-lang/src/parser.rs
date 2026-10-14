@@ -5,15 +5,14 @@ use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 use crate::mode::Mode;
 
-/// An infix operator: a block-diagram combinator or an arithmetic operator.
+/// An infix operator: cons (`:`), tuple (`,`), or an arithmetic/logic/comparison
+/// operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InfixOp {
-    Seq,
+    /// `:` — list cons (right-associative).
+    Cons,
+    /// `,` — value tuple (Pair).
     Par,
-    Split,
-    Merge,
-    Loop,
-    Delay,
     Add,
     Sub,
     Mul,
@@ -94,25 +93,22 @@ struct Parser<'a> {
 /// Binding powers. Higher = binds tighter. Returns (op, left_bp, right_bp).
 fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
     Some(match t {
-        Tok::Tilde => (InfixOp::Loop, 1, 2),
         Tok::AndAnd => (InfixOp::LogicAnd, 1, 2),
         Tok::OrOr => (InfixOp::LogicOr, 1, 2),
-        Tok::Colon => (InfixOp::Seq, 3, 4),
+        // `:` — list cons, right-associative (`a : b : c` ≡ `a : (b : c)`).
+        Tok::Colon => (InfixOp::Cons, 3, 3),
         Tok::EqEq => (InfixOp::CmpEq, 3, 4),
         Tok::NotEq => (InfixOp::CmpNe, 3, 4),
         Tok::Lt => (InfixOp::CmpLt, 3, 4),
         Tok::Gt => (InfixOp::CmpGt, 3, 4),
         Tok::Le => (InfixOp::CmpLe, 3, 4),
         Tok::Ge => (InfixOp::CmpGe, 3, 4),
-        Tok::Merge => (InfixOp::Merge, 5, 6),
-        Tok::Split => (InfixOp::Split, 7, 8),
         Tok::Comma => (InfixOp::Par, 9, 10),
         Tok::Plus => (InfixOp::Add, 11, 12),
         Tok::Minus => (InfixOp::Sub, 11, 12),
         Tok::Star => (InfixOp::Mul, 13, 14),
         Tok::Slash => (InfixOp::Div, 13, 14),
         Tok::Percent => (InfixOp::Rem, 13, 14),
-        Tok::At => (InfixOp::Delay, 15, 16),
         _ => return None,
     })
 }
@@ -124,8 +120,6 @@ fn is_atom_start(tok: &Tok) -> bool {
         Tok::Ident(_)
             | Tok::Int(_)
             | Tok::Float(_)
-            | Tok::Wire
-            | Tok::Cut
             | Tok::Str(_)
             | Tok::LParen
             | Tok::LBrace
@@ -835,35 +829,6 @@ impl<'a> Parser<'a> {
             self.bump();
             let rhs = self.parse_expr(r_bp, no_comma)?;
 
-            if matches!(op, InfixOp::Add | InfixOp::Sub) {
-                let re = match &lhs {
-                    Expr::Float(v, _) => Some(*v),
-                    Expr::Int(v, _) => Some(*v as f64),
-                    Expr::Neg(inner, _) => match inner.as_ref() {
-                        Expr::Float(v, _) => Some(-*v),
-                        Expr::Int(v, _) => Some(-(*v as f64)),
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                let im = match &rhs {
-                    Expr::Imag(v, _) => Some(if matches!(op, InfixOp::Sub) { -*v } else { *v }),
-                    _ => None,
-                };
-                if let (Some(re), Some(im)) = (re, im) {
-                    let span = lhs.span().merge(rhs.span());
-                    lhs = Expr::Apply {
-                        name: "complex".to_string(),
-                        args: vec![
-                            Expr::Float(re, Span::new(0, 0)),
-                            Expr::Float(im, Span::new(0, 0)),
-                        ],
-                        span,
-                    };
-                    continue;
-                }
-            }
-
             let span = lhs.span().merge(rhs.span());
             lhs = if op.is_arith() {
                 Expr::Arith {
@@ -888,12 +853,21 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 match op {
-                    InfixOp::Seq => Expr::Seq(Box::new(lhs), Box::new(rhs), span),
-                    InfixOp::Par => Expr::Par(Box::new(lhs), Box::new(rhs), span),
-                    InfixOp::Split => Expr::Split(Box::new(lhs), Box::new(rhs), span),
-                    InfixOp::Merge => Expr::Merge(Box::new(lhs), Box::new(rhs), span),
-                    InfixOp::Loop => Expr::Loop(Box::new(lhs), Box::new(rhs), span),
-                    InfixOp::Delay => Expr::Delay(Box::new(lhs), Box::new(rhs), span),
+                    // `:` — list cons: `a : b` ≡ `cons a b`.
+                    InfixOp::Cons => Expr::Apply {
+                        name: "cons".to_string(),
+                        args: vec![lhs, rhs],
+                        span,
+                    },
+                    // `,` — value tuple: `a , b` ≡ `Pair { first: a, second: b }`.
+                    InfixOp::Par => Expr::Apply {
+                        name: "Pair".to_string(),
+                        args: vec![Expr::Record(
+                            vec![("first".to_string(), lhs), ("second".to_string(), rhs)],
+                            span,
+                        )],
+                        span,
+                    },
                     _ => unreachable!(),
                 }
             };
@@ -1278,9 +1252,6 @@ impl<'a> Parser<'a> {
         match t.tok {
             Tok::Int(v) => Ok(Expr::Int(v, t.span)),
             Tok::Float(v) => Ok(Expr::Float(v, t.span)),
-            Tok::Imag(v) => Ok(Expr::Imag(v, t.span)),
-            Tok::Wire => Ok(Expr::Wire(t.span)),
-            Tok::Cut => Ok(Expr::Cut(t.span)),
             Tok::Str(s) => Ok(Expr::Str(s, t.span)),
             Tok::Question => {
                 let start = t.span.start;
@@ -1419,7 +1390,7 @@ mod tests {
 
     #[test]
     fn pragma_complete_parses() {
-        let src = "{-# MODE complete #-}\nmain = _";
+        let src = "{-# MODE complete #-}\nmain = 1.0";
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         assert_eq!(p.mode, crate::mode::Mode::Complete);
         assert!(p.mode_explicit);
@@ -1427,7 +1398,7 @@ mod tests {
 
     #[test]
     fn pragma_strict_is_default() {
-        let src = "main = _";
+        let src = "main = 1.0";
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         assert_eq!(p.mode, crate::mode::Mode::Strict);
         assert!(!p.mode_explicit);
@@ -1435,33 +1406,33 @@ mod tests {
 
     #[test]
     fn pragma_overrides_previous() {
-        let src = "{-# MODE complete #-}\n{-# MODE strict #-}\nmain = _";
+        let src = "{-# MODE complete #-}\n{-# MODE strict #-}\nmain = 1.0";
         let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
         assert_eq!(p.mode, crate::mode::Mode::Strict);
     }
 
     #[test]
     fn bad_pragma_errors() {
-        let src = "{-# MODE nope #-}\nmain = _";
+        let src = "{-# MODE nope #-}\nmain = 1.0";
         assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
     }
 
     #[test]
     fn bad_pragma_unknown_name_errors() {
-        let src = "{-# FOO bar #-}\nmain = _";
+        let src = "{-# FOO bar #-}\nmain = 1.0";
         assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
     }
 
     #[test]
     fn parses_main_without_params() {
-        let p = prog("main = _ * 0.5");
+        let p = prog("main = 1.0 * 0.5");
         let main = p.main_def().unwrap();
         assert_eq!(main.params().len(), 0);
     }
 
     #[test]
     fn parses_main_with_params() {
-        let p = prog("main regs x = _ * 0.5");
+        let p = prog("main regs x = 1.0 * 0.5");
         let main = p.main_def().unwrap();
         assert_eq!(main.params().len(), 2);
         assert_eq!(main.params()[0].name, "regs");
@@ -1470,9 +1441,8 @@ mod tests {
 
     #[test]
     fn parses_main_with_where_block() {
-        let p = prog(
-            "main = osc : lpf where { osc freq = sin freq * 0.5; lpf cut = lowpass _ cut 0.7; }",
-        );
+        let p =
+            prog("main = osc where { osc freq = sin freq * 0.5; lpf cut = lowpass 1.0 cut 0.7; }");
         let main = p.main_def().unwrap();
         assert_eq!(main.where_defs().len(), 2);
         match &main.where_defs()[0] {
@@ -1500,32 +1470,48 @@ mod tests {
     }
 
     #[test]
-    fn arithmetic_binds_tighter_than_par() {
-        match body("main = _ * 2 , _") {
-            Expr::Par(..) => {}
-            other => panic!("expected Par, got {other:?}"),
+    fn arithmetic_binds_tighter_than_comma() {
+        // `1.0 * 2.0 , 3.0` — `*` binds tighter than the `,` tuple operator:
+        // the outer form is `Pair { first: (1.0 * 2.0), second: 3.0 }`.
+        match body("main = 1.0 * 2.0 , 3.0") {
+            Expr::Apply { name, args, .. } => {
+                assert_eq!(name, "Pair");
+                assert_eq!(args.len(), 1);
+                if let Expr::Record(fields, _) = &args[0] {
+                    assert_eq!(fields.len(), 2);
+                    assert!(matches!(&fields[0].1, Expr::Arith { .. }));
+                    assert!(matches!(&fields[1].1, Expr::Float(3.0, _)));
+                } else {
+                    panic!("expected Pair record, got {other:?}", other = args[0]);
+                }
+            }
+            other => panic!("expected Pair, got {other:?}"),
         }
     }
 
     #[test]
-    fn feedback_binds_loosest() {
-        match body("main = + ~ _") {
-            Expr::Loop(..) => {}
-            other => panic!("expected Loop, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn seq_is_left_associative() {
-        match body("main = _ : _ : _") {
-            Expr::Seq(..) => {}
-            other => panic!("expected Seq, got {other:?}"),
+    fn colon_is_right_associative_cons() {
+        // `1.0 : 2.0 : list` ≡ `1.0 : (2.0 : list)` — cons nests to the right.
+        match body("main = 1.0 : 2.0 : list") {
+            Expr::Apply { name, args, .. } => {
+                assert_eq!(name, "cons");
+                assert_eq!(args.len(), 2);
+                assert!(matches!(&args[0], Expr::Float(1.0, _)));
+                match &args[1] {
+                    Expr::Apply { name, args, .. } if name == "cons" => {
+                        assert!(matches!(&args[0], Expr::Float(2.0, _)));
+                        assert!(matches!(&args[1], Expr::Ref(r, _) if r == "list"));
+                    }
+                    other => panic!("expected nested cons, got {other:?}"),
+                }
+            }
+            other => panic!("expected cons, got {other:?}"),
         }
     }
 
     #[test]
     fn application_uses_juxtaposition() {
-        let p = prog("main = gain _ 2");
+        let p = prog("main = gain 1.0 2");
         let main = p.main_def().unwrap();
         match main.body() {
             Expr::Apply { name, args, .. } => {
@@ -1537,16 +1523,28 @@ mod tests {
     }
 
     #[test]
-    fn grouping_paren_is_parallel_inside() {
-        match body("main = (_ , _) :> _") {
-            Expr::Merge(..) => {}
-            other => panic!("expected Merge, got {other:?}"),
+    fn grouping_paren_comma_is_tuple() {
+        // `(1.0 , 2.0)` — inside grouping parens the `,` is the tuple operator,
+        // producing a `Pair { first, second }` construction.
+        match body("main = (1.0 , 2.0)") {
+            Expr::Apply { name, args, .. } => {
+                assert_eq!(name, "Pair");
+                assert_eq!(args.len(), 1);
+                if let Expr::Record(fields, _) = &args[0] {
+                    assert_eq!(fields.len(), 2);
+                    assert_eq!(fields[0].0, "first");
+                    assert_eq!(fields[1].0, "second");
+                } else {
+                    panic!("expected Pair record, got {other:?}", other = args[0]);
+                }
+            }
+            other => panic!("expected Pair, got {other:?}"),
         }
     }
 
     #[test]
     fn application_arg_may_be_a_composed_expression() {
-        let p = prog("main = let g = _ : _ in f g 2");
+        let p = prog("main = let g = 1.0 : list in f g 2");
         match p.main_def().unwrap().body() {
             Expr::Let { body, .. } => match body.as_ref() {
                 Expr::Apply { name, args, .. } => {
@@ -1563,10 +1561,13 @@ mod tests {
 
     #[test]
     fn juxtaposition_parse() {
-        let p = prog("main regs = ay38910 1750000.0 regs : lofi 8 44100 0.75 1.0 1 0 1");
+        let p = prog("main regs = ay38910 1750000.0 regs : list");
         match p.main_def().unwrap().body() {
-            Expr::Seq(..) => {}
-            other => panic!("expected Seq, got {other:?}"),
+            Expr::Apply { name, args, .. } => {
+                assert_eq!(name, "cons");
+                assert_eq!(args.len(), 2);
+            }
+            other => panic!("expected cons, got {other:?}"),
         }
     }
 
@@ -1593,7 +1594,7 @@ mod tests {
 
     #[test]
     fn parses_top_level_multi_def() {
-        let p = prog("sq x = x * x; main = sq _");
+        let p = prog("sq x = x * x; main = sq 1.0");
         assert_eq!(p.defs.len(), 2);
         assert_eq!(p.defs[0].name(), "sq");
         assert_eq!(p.defs[1].name(), "main");
@@ -1601,13 +1602,13 @@ mod tests {
 
     #[test]
     fn parses_top_level_multi_def_no_semicolon() {
-        let p = prog("gain = _ * 0.5; main = gain");
+        let p = prog("gain = 1.0 * 0.5; main = gain");
         assert_eq!(p.defs.len(), 2);
     }
 
     #[test]
     fn parses_let_expression() {
-        let p = prog("main = let gain = _ * 0.5 in gain");
+        let p = prog("main = let gain = 1.0 * 0.5 in gain");
         let main = p.main_def().unwrap();
         match main.body() {
             Expr::Let { defs, body, .. } => {
@@ -1624,14 +1625,14 @@ mod tests {
 
     #[test]
     fn parses_let_with_braces() {
-        let p = prog("main = let { g = _ * 0.5; } in g");
+        let p = prog("main = let { g = 1.0 * 0.5; } in g");
         let main = p.main_def().unwrap();
         assert!(matches!(main.body(), Expr::Let { .. }));
     }
 
     #[test]
     fn main_with_where_and_top_level() {
-        let p = prog("gain = _ * 0.5; main = gain where { x = 1; }");
+        let p = prog("gain = 1.0 * 0.5; main = gain where { x = 1; }");
         assert_eq!(p.defs.len(), 2);
         let main = p.main_def().unwrap();
         assert_eq!(main.where_defs().len(), 1);
@@ -1732,7 +1733,7 @@ mod tests {
 
     #[test]
     fn parse_actor_param_no_default() {
-        let p = prog("main = _ * ?gain");
+        let p = prog("main = 1.0 * ?gain");
         let main = p.main_def().unwrap();
         match main.body() {
             Expr::Arith {
@@ -1752,7 +1753,7 @@ mod tests {
 
     #[test]
     fn parse_actor_param_with_default() {
-        let p = prog("main = _ * ?gain=0.5");
+        let p = prog("main = 1.0 * ?gain=0.5");
         let main = p.main_def().unwrap();
         match main.body() {
             Expr::Arith {
@@ -1801,30 +1802,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_complex_literal() {
-        fn is_complex(e: &Expr, re: f64, im: f64) {
-            if let Expr::Apply { name, args, .. } = e {
-                assert_eq!(name, "complex");
-                match (&args[0], &args[1]) {
-                    (Expr::Float(a, _), Expr::Float(b, _)) => {
-                        assert!((a - re).abs() < 1e-9, "re={a}, expected {re}");
-                        assert!((b - im).abs() < 1e-9, "im={b}, expected {im}");
-                    }
-                    o => panic!("expected Float args, got {o:?}"),
-                }
-            } else {
-                panic!("expected Apply(complex), got {e:?}");
-            }
-        }
-        is_complex(&body("main = 3.0 + 4.0i"), 3.0, 4.0);
-        is_complex(&body("main = 1.0 - 2.0i"), 1.0, -2.0);
-        is_complex(&body("main = 0.5 + 1.5e1i"), 0.5, 15.0);
-        is_complex(&body("main = -3.0 + 4.0i"), -3.0, 4.0);
-        is_complex(&body("main = -1.0 - 2.0i"), -1.0, -2.0);
-        is_complex(&body("main = -5 + 7i"), -5.0, 7.0);
-    }
-
-    #[test]
     fn parses_data_record_declaration() {
         let p = prog("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Data { .. })));
@@ -1845,13 +1822,13 @@ mod tests {
 
     #[test]
     fn parses_typeclass_declaration() {
-        let p = prog("typeclass Envelope a where { slope: a; }; main = _");
+        let p = prog("typeclass Envelope a where { slope: a; }; main = 1.0");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Typeclass { .. })));
     }
 
     #[test]
     fn parses_parameterized_data_and_typeclass() {
-        let p = prog("data Box a = { value: a }; typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }; main = _");
+        let p = prog("data Box a = { value: a }; typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }; main = 1.0");
         match &p.defs[0] {
             Def::Data {
                 name,
@@ -1902,7 +1879,7 @@ mod tests {
     fn parses_typeclass_default_bodies() {
         // `mname : sig = p1 p2 body;` — a class-level default body the
         // instances may omit. Params bind between `=` and the body.
-        let p = prog("typeclass Arrow a where { arr: (b -> c) -> a b c; second: a b c -> a (Pair d b) (Pair d c) = k (compose (first k)); both: a b c -> a d e -> a (Pair b d) (Pair c e) = f g (compose (first f) (second g)); }; main = _");
+        let p = prog("typeclass Arrow a where { arr: (b -> c) -> a b c; second: a b c -> a (Pair d b) (Pair d c) = k (compose (first k)); both: a b c -> a d e -> a (Pair b d) (Pair c e) = f g (compose (first f) (second g)); }; main = 1.0");
         match &p.defs[0] {
             Def::Typeclass { name, defaults, .. } => {
                 assert_eq!(name, "Arrow");
@@ -1926,7 +1903,7 @@ mod tests {
         // `(Float, Float)` in type position must desugar to `TApp("Pair", …)` —
         // typeclass defs store the raw TypeExpr (no resolution), so compilation
         // alone cannot catch a wrong desugar target.
-        let p = prog("typeclass T a where { m: a (Float, Float) -> Float; }; main = _");
+        let p = prog("typeclass T a where { m: a (Float, Float) -> Float; }; main = 1.0");
         match &p.defs[0] {
             Def::Typeclass { methods, .. } => {
                 assert_eq!(
@@ -1952,7 +1929,7 @@ mod tests {
 
     #[test]
     fn parses_type_application() {
-        let p = prog("data V = { xs: List Float }; main = _");
+        let p = prog("data V = { xs: List Float }; main = 1.0");
         match &p.defs[0] {
             Def::Data { fields, .. } => {
                 assert_eq!(
@@ -1966,7 +1943,7 @@ mod tests {
 
     #[test]
     fn parses_instance_declaration() {
-        let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
+        let p = prog("instance Envelope Linear where { slope = 0.5; }; main = 1.0");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Instance { .. })));
     }
 
@@ -1989,7 +1966,7 @@ mod tests {
 
     #[test]
     fn parses_constraint_instance_head() {
-        let p = prog("instance (Monad m) => Arrow (Kleisli m) where { arr f = f; }; main = _");
+        let p = prog("instance (Monad m) => Arrow (Kleisli m) where { arr f = f; }; main = 1.0");
         let inst = p
             .defs
             .iter()
@@ -2017,7 +1994,7 @@ mod tests {
     fn plain_instance_has_empty_constraints_and_head_args() {
         // Backward compatibility: `instance C T where { … }` (no constraint
         // list, no parenthesized head) must keep both new fields empty.
-        let p = prog("instance Envelope Linear where { slope = 0.5; }; main = _");
+        let p = prog("instance Envelope Linear where { slope = 0.5; }; main = 1.0");
         let Def::Instance {
             constraints,
             head_args,

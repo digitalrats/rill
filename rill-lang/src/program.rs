@@ -15,13 +15,6 @@ use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
 use crate::ir::{BuiltinInstance, Ir, ParamDef, ValueBlock};
 
-/// Upper bound on a single `@ n` delay line, in samples.
-///
-/// Enforced at compile time by lowering (`lower.rs`); the runtime storage is a
-/// region-backed [`RegionDelay`] carved to the site's length, so the bound is
-/// a language limit, not a storage size.
-pub(crate) const MAX_DELAY_LEN: usize = 65536;
-
 /// Upper bound on built-in signal channels routed through one call site.
 ///
 /// Used for stack scratch storage in the interpreter's foreign-block path.
