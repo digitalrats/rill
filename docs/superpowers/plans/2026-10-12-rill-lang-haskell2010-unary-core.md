@@ -630,25 +630,34 @@ git commit -m 'feat(rill-lang): offside rule for where/do/case blocks'
 **Files:**
 - Modify: `rill-lang/src/render.rs`
 
-- [ ] **Step 1: Update lambdas, case, defs, comments**
+- [x] **Step 1: Update lambdas, case, defs, comments**
 
 `Expr::Lambda` renders `\` instead of `fn`; `Expr::Match` renders `case … of { … }`; `Def::Eval` renders `name args? = body` with optional `:: sig`; comments render `--`.
 
-- [ ] **Step 2: Remove combinator/wire rendering**
+- [x] **Step 2: Remove combinator/wire rendering**
 
 Delete `Expr::Wire/Seq/Par/Split/Merge/Loop/Delay` render arms (AST variants already removed).
 
-- [ ] **Step 3: Run render roundtrip tests**
+- [x] **Step 3: Run render roundtrip tests**
 
 Run: `cargo test -p rill-lang --features dsp --lib render`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add rill-lang/src/render.rs
 git commit -m 'feat(rill-lang): renderer emits Haskell 2010 syntax'
 ```
+
+> **Implementation note (Task 12):** `Def::Eval` already rendered `name args? =
+> body` with `\`-lambdas and `case … of { … }`; the missing piece was the
+> optional `:: sig` annotation. The parser now *retains* the parsed signature on
+> `Def::Eval` (previously parsed-and-discarded) and the renderer emits it, so
+> signature-carrying defs round-trip. 4 new render tests cover a plain
+> signature, a `forall` signature, and a signature with a `where` clause.
+> Comments are not AST nodes (the lexer skips `--`), so there is nothing to
+> render.
 
 ### Task 13: Migrate tests — lexical (mechanical)
 
@@ -744,30 +753,51 @@ git commit -m 'test(rill-lang): rewrite signal programs to value model'
 **Files:**
 - Modify: `rill-lang/src/types/ty.rs` unit tests, `rill-lang/src/lower.rs` unit tests, `rill-lang/src/types/infer.rs` unit tests, `rill-lang/src/lib.rs` ir_tests, `rill-lang/src/serde_def.rs`
 
-- [ ] **Step 1: Update prelude-embedded unit tests**
+- [x] **Step 1: Update prelude-embedded unit tests**
 
 `ty.rs` unit tests that assert `ValueTy::Func`/scalar shapes → `Thunk` forms.
 `lower.rs` `has_instr` tests that match `ValueBufferBin`/`ValueWriteOutputList`
 stay (those IR instructions survive); drop signal-only assertions.
 
-- [ ] **Step 2: Update infer unit tests**
+- [x] **Step 2: Update infer unit tests**
 
 `infer.rs::tests` asserting `arity_in()==1` on old signal mains — rewrite to
 the IO-form (`process_ty.outs[0] == IO ()`) or delete. `lib.rs` ir_tests
 (`lang_chiptune_ir_structure`, `compile_with_mode_complete_compiles`) → update
 program strings. `serde_def.rs::compile_def_runs` → value-form source.
 
+> The listed unit tests were already migrated incrementally during Tasks 9–13b;
+> the two stale spots that remained are now fixed: `serde_def.rs`'s serde
+> round-trip used the removed `_` placeholder (`main = _ * 0.5` → value form),
+> and `ffi.rs::analog_moog_ffi_end_to_end` (the `model`-feature test) used the
+> removed wire sequence `main = _ : analog_moog …` → `do { writeOutput (map
+> (analog_moog 500.0 0.7) (readInput)); return () }` (verified green under
+> `--features dsp,model`).
+
 - [ ] **Step 3: Full workspace suite**
 
 Run: `cargo test --workspace`
 Expected: green.
 
-- [ ] **Step 4: Commit**
+> **BLOCKED (pre-existing):** `cargo test --workspace` cannot go green while the
+> `graph` feature path is broken. `rill-lang/src/graph/reconstruct.rs` (385
+> lines, `#![cfg(feature = "graph")]`) still builds GraphSpec programs with the
+> removed combinator AST (`Expr::Wire`/`Par`/`Merge`/`Split`) — 10 compile
+> errors. The `graph` feature is pulled in by `rill-lang/serialization`
+> (`serde_cbor`/`serialization`), so every serialization-enabled build — including
+> `rill-adrift`'s default features and its `lang_builtins*`/`engine_params`
+> tests — cannot build until the reconstructor is rewritten for the unary value
+> model (`writeOutput (map … (readInput))` form). Deferred with the 4 `arrow.rs`
+> inference gaps; tracked for a follow-up.
+
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
 git commit -m 'test(rill-lang): migrate unit/integration tests to unary model'
 ```
+
+> Commit `3c48136`.
 
 ---
 
