@@ -159,6 +159,35 @@ fn instance_body_accepts_value_expression() {
 }
 
 #[test]
+fn user_instance_redefining_a_prelude_class_is_validated() {
+    // A user-declared instance whose `(class, type)` key matches a PRELUDE one
+    // (`Monad IO`) replaces the prelude entry in the instance table. It must
+    // then be validated exactly like any other user instance — otherwise a
+    // program could silently redefine how every `do`-block sequences effects,
+    // with neither the kind/method-signature check nor the self-inlining
+    // recursion guard running. The body below is the case only the validator
+    // rejects (main never calls `return`, so no call-site check fires).
+    let src = r#"
+        instance Monad IO where { return x = return x; bind m f = bind m f; }
+        main = 1.0;
+    "#;
+    let res = compile::<f32>(src);
+    assert!(
+        res.is_err(),
+        "a user instance overwriting the prelude's must be validated, got success"
+    );
+    match res.err().expect("compile failed") {
+        rill_lang::CompileError::Type { msg, .. } => {
+            assert!(
+                msg.contains("recursive typeclass method"),
+                "expected recursive-method message, got: {msg}",
+            );
+        }
+        other => panic!("expected a Type error, got {other:?}"),
+    }
+}
+
+#[test]
 fn user_def_shadows_builtin_eq_ord_method_names() {
     // The builtin `Eq`/`Ord` typeclasses declare `eq`/`lt` methods, but a user
     // definition with the same name is a plain function and must compile.

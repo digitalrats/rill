@@ -201,6 +201,21 @@ pub struct InstanceInfo {
     pub head_args: Vec<String>,
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
+    /// True when this instance was declared by a compiler prelude
+    /// ([`STD_PRELUDE`] / [`SIGNAL_PRELUDE`] / [`CATEGORY_PRELUDE`]) or derived
+    /// from one (a superclass template, a structural `Eq`/`Ord` marker).
+    ///
+    /// Such bodies are trusted compiler machinery and are not re-validated
+    /// against the USER's data environment: a user `data` declaration may
+    /// legally shadow a builtin record name (a program declaring its own
+    /// `Pair`), which would make a prelude body's field names untypeable
+    /// against the shadowed shape. Their bodies still type at every CALL SITE.
+    ///
+    /// The flag lives on the DECLARATION, not on the `(class, type)` key: a
+    /// user instance that replaces a prelude key (`instance Monad IO`) gets a
+    /// fresh `InstanceInfo` with `from_prelude: false`, so it is validated like
+    /// any other user instance.
+    pub from_prelude: bool,
 }
 
 /// The compile-time type environment: aliases, newtypes, data-type shapes, and
@@ -219,15 +234,12 @@ pub struct TypeEnv {
     /// Typeclass declarations: class name → method dictionary.
     pub typeclasses: HashMap<String, TypeclassInfo>,
     /// Instances grouped by class, then by bound type name.
+    ///
+    /// An entry carries its declaration's provenance in
+    /// [`InstanceInfo::from_prelude`]: a user `instance` replaces a prelude
+    /// entry wholesale, so the trust flag must travel with the declaration
+    /// rather than with the key.
     pub instances: HashMap<String, HashMap<String, InstanceInfo>>,
-    /// Instance keys (`(class, type)`) declared by a prelude ([`STD_PRELUDE`]
-    /// / [`SIGNAL_PRELUDE`]). Their method bodies are trusted compiler
-    /// machinery: a user `data` declaration may legally shadow a builtin
-    /// record name (a program declaring its own `Pair`), which would make a
-    /// prelude body's field names untypeable against the shadowed shape. The
-    /// bodies still type at every CALL SITE, so they are not re-validated in
-    /// the user's environment.
-    pub prelude_instances: std::collections::HashSet<(String, String)>,
     /// Builtin type constructors: name → value arity. `List a` has arity 1,
     /// `Map k v` arity 2. Open collections carry no capacity.
     pub ctor_kinds: HashMap<String, usize>,
@@ -457,11 +469,18 @@ const FUNCTOR_FROM_APPLICATIVE: &str = "fmap g x = ap (pure g) x;";
 
 /// Parse an `instance C T where { <template> }` source fragment and build the
 /// [`InstanceInfo`]. Used by superclass auto-derivation.
+///
+/// `from_prelude` copies the provenance of the instance the template derives
+/// from: a `Monad` instance declared in a prelude yields trusted superclass
+/// templates, while a user `Monad` instance yields templates that
+/// [`validate_instances`](crate::types::infer::validate_instances) checks like
+/// any user body.
 fn instance_from_template(
     ty: &str,
     class: &str,
     bodies: &str,
     head_args: &[String],
+    from_prelude: bool,
 ) -> InstanceInfo {
     let head = if head_args.is_empty() {
         ty.to_string()
@@ -498,6 +517,7 @@ fn instance_from_template(
         constraints: vec![],
         head_args: head_args.to_vec(),
         methods,
+        from_prelude,
     }
 }
 
@@ -552,12 +572,20 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         }
     }
     env.register_decls(&defs);
-    // Remember which instances the prelude itself declared: their bodies are
-    // compiler machinery and are not re-validated against the user's (possibly
-    // shadowing) data declarations — see [`TypeEnv::prelude_instances`].
+    // Mark the instances this fragment declares as trusted compiler machinery;
+    // their bodies are not re-validated against the user's (possibly
+    // shadowing) data declarations — see [`InstanceInfo::from_prelude`]. The
+    // flag is per DECLARATION: a user instance with the same `(class, type)`
+    // key replaces this entry with its own `from_prelude: false`.
     for def in &defs {
         if let Def::Instance { class, ty, .. } = def {
-            env.prelude_instances.insert((class.clone(), ty.clone()));
+            if let Some(info) = env
+                .instances
+                .get_mut(class.as_str())
+                .and_then(|by_ty| by_ty.get_mut(ty.as_str()))
+            {
+                info.from_prelude = true;
+            }
         }
     }
     // Plain function definitions in a prelude (`seq = \ f -> \ g -> …`)
@@ -873,6 +901,10 @@ impl TypeEnv {
                             constraints: constraints.clone(),
                             head_args: head_args.clone(),
                             methods,
+                            // A declaration registered here comes from user
+                            // source; `register_prelude` flips the flag for the
+                            // prelude fragments it registers.
+                            from_prelude: false,
                         },
                     );
                 }
@@ -907,11 +939,17 @@ impl TypeEnv {
             .map(|m| m.keys().cloned().collect())
             .unwrap_or(vec![]);
         for t in monad_tys {
-            let head_args = monad_insts
+            let Some(src_info) = monad_insts
                 .iter()
                 .find(|(ty, _)| *ty == t)
-                .map(|(_, info)| info.head_args.clone())
-                .unwrap_or(vec![]);
+                .map(|(_, info)| info.clone())
+            else {
+                continue;
+            };
+            let head_args = src_info.head_args.clone();
+            // A template derived from a prelude instance stays trusted; one
+            // derived from a USER instance is validated like any user body.
+            let from_prelude = src_info.from_prelude;
             if !self
                 .instances
                 .entry("Applicative".to_string())
@@ -928,15 +966,9 @@ impl TypeEnv {
                             "Applicative",
                             APPLICATIVE_FROM_MONAD,
                             &head_args,
+                            from_prelude,
                         ),
                     );
-                if self
-                    .prelude_instances
-                    .contains(&("Monad".to_string(), t.clone()))
-                {
-                    self.prelude_instances
-                        .insert(("Applicative".to_string(), t.clone()));
-                }
             }
             if !self
                 .instances
@@ -954,15 +986,9 @@ impl TypeEnv {
                             "Functor",
                             FUNCTOR_FROM_MONAD,
                             &head_args,
+                            from_prelude,
                         ),
                     );
-                if self
-                    .prelude_instances
-                    .contains(&("Monad".to_string(), t.clone()))
-                {
-                    self.prelude_instances
-                        .insert(("Functor".to_string(), t.clone()));
-                }
             }
         }
         let applicative_insts = self
@@ -981,11 +1007,14 @@ impl TypeEnv {
                 .or_default()
                 .contains_key(&t)
             {
-                let head_args = applicative_insts
+                let Some(src_info) = applicative_insts
                     .iter()
                     .find(|(ty, _)| *ty == t)
-                    .map(|(_, info)| info.head_args.clone())
-                    .unwrap_or(vec![]);
+                    .map(|(_, info)| info.clone())
+                else {
+                    continue;
+                };
+                let head_args = src_info.head_args.clone();
                 self.instances
                     .entry("Functor".to_string())
                     .or_default()
@@ -996,15 +1025,9 @@ impl TypeEnv {
                             "Functor",
                             FUNCTOR_FROM_APPLICATIVE,
                             &head_args,
+                            src_info.from_prelude,
                         ),
                     );
-                if self
-                    .prelude_instances
-                    .contains(&("Applicative".to_string(), t.clone()))
-                {
-                    self.prelude_instances
-                        .insert(("Functor".to_string(), t.clone()));
-                }
             }
         }
     }
@@ -1075,6 +1098,8 @@ impl TypeEnv {
                     constraints: vec![], // derived marker — no constraint list
                     head_args: vec![],   // derived marker — full application
                     methods: HashMap::new(), // derived marker — empty body
+                    // Compiler-derived structural marker: no body to validate.
+                    from_prelude: true,
                 });
             }
         }

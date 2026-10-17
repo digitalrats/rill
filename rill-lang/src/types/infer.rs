@@ -996,18 +996,6 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
         .flat_map(|(class, by_ty)| by_ty.keys().map(|ty_name| (class.clone(), ty_name.clone())))
         .collect();
     for (class, ty_name) in keys {
-        // A prelude-declared instance is trusted compiler machinery; validating
-        // it here would type its body against the USER's data environment,
-        // where a legal shadowing declaration (`data Pair = { x, y }`) can make
-        // a prelude body's field names unresolvable. Its bodies are still typed
-        // at every call site (do-notation binds through `Monad IO`).
-        if ctx
-            .env
-            .prelude_instances
-            .contains(&(class.clone(), ty_name.clone()))
-        {
-            continue;
-        }
         let info = ctx
             .env
             .instances
@@ -1015,6 +1003,19 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
             .and_then(|by_ty| by_ty.get(ty_name.as_str()))
             .cloned()
             .unwrap();
+        // A prelude-DECLARED instance is trusted compiler machinery; validating
+        // it here would type its body against the USER's data environment,
+        // where a legal shadowing declaration (`data Pair = { x, y }`) can make
+        // a prelude body's field names unresolvable. Its body is still typed at
+        // every call site (do-notation binds through `Monad IO`).
+        //
+        // The trust flag lives on the declaration, not on the `(class, type)`
+        // key: a user `instance Monad IO` REPLACES the prelude entry with a
+        // fresh `InstanceInfo` whose `from_prelude` is false, so it is
+        // validated here like any other user instance.
+        if info.from_prelude {
+            continue;
+        }
         // Kind check: a constructor-class instance (`Functor f`) must bind a
         // constructor whose REMAINING arity (after the instance head's bound
         // args) equals the class variable's arity. A partial head
