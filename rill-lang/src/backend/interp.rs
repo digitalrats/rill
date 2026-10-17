@@ -243,7 +243,31 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
                     };
                     applied = payload.is_some();
                     if let Some(payload) = payload {
-                        let _ = force(prog, payload, &mut drops);
+                        let payload = force(prog, payload, &mut drops);
+                        // `main : IO ()`: the contract is on the action's
+                        // RESULT, not merely on it being an action. A program
+                        // whose `main` yields a non-`()` value (e.g.
+                        // `main = return 1.0`) is malformed even though it is
+                        // an `IO` value, so report it cleanly instead of
+                        // silently discarding the payload.
+                        //
+                        // The value track's closure-cell encoding erases `()`
+                        // to `Float(0.0)` (a cell's un-set state is `Void`, so
+                        // a stored unit reads back as 0.0), so the erased form
+                        // is accepted ONLY when `main` is statically `IO ()`
+                        // (`ir.main_io_unit`): `main = do { …; return 0.0 }`
+                        // is typed `IO Float` and is still rejected.
+                        let payload_is_unit = match prog.arena.get(payload) {
+                            Some(Value::Void) => true,
+                            Some(Value::Float(f)) => prog.ir.main_io_unit && *f == 0.0,
+                            _ => false,
+                        };
+                        if !payload_is_unit {
+                            latch_fault(
+                                prog,
+                                "`main` must have type `IO ()`: the final action's result is not `()`",
+                            );
+                        }
                     }
                     prog.arena.drop_ref(pair);
                 }
@@ -2737,7 +2761,7 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
         crate::ir::ValueEffectOp::RunST => None,
         // ---- io-streams effects (the World token threads them) ----
         crate::ir::ValueEffectOp::StreamFromList => exec_stream_from_list(prog, &args, drops),
-        crate::ir::ValueEffectOp::StreamToList => exec_stream_to_list(prog, &args, drops),
+        crate::ir::ValueEffectOp::StreamToList => exec_stream_to_list(prog, &args, token, drops),
         crate::ir::ValueEffectOp::StreamWrite => exec_stream_write(prog, &args, token, drops),
         crate::ir::ValueEffectOp::StreamRead => exec_stream_read(prog, &args, token, drops),
         crate::ir::ValueEffectOp::StreamAtEnd => exec_stream_at_end(prog, &args, token, drops),
@@ -2852,18 +2876,33 @@ fn alloc_stream<T: Transcendental, const BUF: usize>(
     Some(idx)
 }
 
-/// Drain a memory input stream into a `List` value, releasing the consumed
-/// prefix from the stream table.
+/// Drain an input stream into a `List` value.
+///
+/// A memory stream (`fromList`) hands over its remaining elements directly and
+/// releases the consumed prefix. A cursor/closure-backed stream (`stdin`, a
+/// `makeInputStream` source) is drained through the ordinary read path until
+/// EOF, exactly like io-streams' `toList`: the source's action runs once per
+/// element, and the stream is spent afterwards.
 fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     args: &[ArenaRef],
+    token: u32,
     drops: &mut Vec<ArenaRef>,
 ) -> Option<ArenaRef> {
+    /// What the stream table says about draining this handle.
+    enum Drain {
+        /// The remaining memory-stream elements, already owned by the pull.
+        Items(Vec<ArenaRef>),
+        /// A cursor/closure-backed input: pull through `stream_read` until EOF.
+        Read,
+        /// A writing end (or no stream at all).
+        Fault,
+    }
     // The stream operand may arrive as an unforced thunk (a `do`-bound
     // `xs <- fromList …` is bound lazily): force it before reading its payload.
     let handle_ref = force(prog, *args.first()?, drops);
     let h = stream_handle_index(prog, handle_ref)?;
-    let taken = {
+    let drain = {
         let mut world = prog.world.borrow_mut();
         match world.streams.get_mut(h) {
             Some(StreamHandle::Input {
@@ -2880,14 +2919,35 @@ fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
                 }
                 *pos = 0;
                 rest.extend(tail);
-                Some(rest)
+                Drain::Items(rest)
             }
-            _ => None,
+            Some(StreamHandle::Source { .. }) | Some(StreamHandle::Stdin { .. }) => Drain::Read,
+            _ => Drain::Fault,
         }
     };
-    let Some(items) = taken else {
-        latch_fault(prog, "`toList` applied to a non-memory-input stream");
-        return None;
+    let items = match drain {
+        Drain::Items(items) => items,
+        Drain::Fault => {
+            latch_fault(prog, "`toList` applied to a non-input stream");
+            return None;
+        }
+        Drain::Read => {
+            let mut items: Vec<ArenaRef> = Vec::new();
+            loop {
+                match stream_read(prog, h, token, drops) {
+                    ReadOutcome::Elem(r) => items.push(r),
+                    ReadOutcome::Eof => break,
+                    ReadOutcome::Fault => {
+                        // The read path latched the fault; release the prefix.
+                        for r in items {
+                            prog.arena.drop_ref(r);
+                        }
+                        return None;
+                    }
+                }
+            }
+            items
+        }
     };
     let n = items.len();
     let mut buf = match prog.arena.take_buf(n) {
@@ -4048,6 +4108,7 @@ mod closure_dispatch_tests {
         // fragment computes const int 7; CallFunc copies the result to the
         // output register.
         let ir = Ir {
+            main_io_unit: false,
             num_inputs: 0,
             num_outputs: 0,
             state: Default::default(),
@@ -4115,6 +4176,7 @@ mod closure_dispatch_tests {
         // returns an EAGER closure over fragment 1, which echoes its argument;
         // register 3 is that argument (9).
         let ir = Ir {
+            main_io_unit: false,
             num_inputs: 0,
             num_outputs: 0,
             state: Default::default(),
@@ -4215,6 +4277,7 @@ mod value_track_tests {
         value_state_slots: usize,
     ) -> RillProgram<f32, 256> {
         let ir = Ir {
+            main_io_unit: false,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -4804,6 +4867,7 @@ mod lazy_track_tests {
         fragments: Vec<Arc<FragmentIr>>,
     ) -> RillProgram<f32, 256> {
         let ir = Ir {
+            main_io_unit: false,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),

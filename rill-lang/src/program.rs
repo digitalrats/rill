@@ -1057,6 +1057,7 @@ mod program_value_tests {
     #[test]
     fn new_program_has_empty_value_state() {
         let ir = Ir {
+            main_io_unit: false,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),
@@ -1087,6 +1088,7 @@ mod program_value_tests {
     #[test]
     fn reset_drops_value_track_refs() {
         let ir = Ir {
+            main_io_unit: false,
             num_inputs: 0,
             num_outputs: 0,
             state: StateLayout::default(),

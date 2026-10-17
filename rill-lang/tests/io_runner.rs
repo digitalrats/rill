@@ -62,13 +62,80 @@ fn main_string_args_bind() {
 #[test]
 fn bounded_memory_overflow_is_a_clean_error() {
     // An unbounded lazy list is drained by fromList: the fixed arena budget is
-    // exhausted and the runner reports a clean error instead of panicking.
+    // exhausted and the runner reports a clean CAPACITY error instead of
+    // panicking. The assertion matches the capacity wording, so any other
+    // failure path (a fault, a missing `main`, an internal invariant) does not
+    // satisfy it.
     let mut r = runner(
         r"{-# MODE complete #-}
 from n = cons n (from (n + 1.0));
 main = do { xs <- fromList (from 0.0); return () };
 ",
     );
-    let result = r.run();
-    assert!(result.is_err(), "unbounded drain must fail cleanly");
+    let err = r.run().expect_err("unbounded drain must fail cleanly");
+    let message = err.to_string();
+    // The fixed arena is a hard budget: the interpreter latches a
+    // `value-track resource exhausted: …` error (whichever resource trips
+    // first — the arena, the payload-buffer pool, or the thunk chain that
+    // depends on them) rather than panicking or looping forever.
+    assert!(
+        message.contains("resource exhausted"),
+        "expected a resource-exhaustion error, got: {message}"
+    );
+}
+
+#[test]
+fn non_void_main_result_is_a_clean_error() {
+    // `main : IO ()` constrains the ACTION's result, not just the action: an
+    // `IO Float` main is malformed and must be reported, not silently accepted.
+    // (`main = return 1.0` on its own does not compile — the monad is
+    // unconstrained — so the result type is fixed by an effect in the block.)
+    for src in [
+        r#"main = do { write (Just "a") stdout; return 1.0 };"#,
+        // The value track erases `()` to `Float(0.0)` inside a closure cell,
+        // so this case pins the static-type distinction: the block is typed
+        // `IO Float`, hence a 0.0 payload is NOT accepted as unit.
+        r#"main = do { write (Just "a") stdout; return 0.0 };"#,
+        r#"main = do { write (Just "a") stdout; return "s" };"#,
+    ] {
+        let mut r = runner(src);
+        let err = r
+            .run()
+            .expect_err("a non-`()` main result must be rejected");
+        let message = err.to_string();
+        assert!(
+            message.contains("IO ()") && message.contains("not `()`"),
+            "expected a non-`()` main contract error, got: {message}\nsource:\n{src}"
+        );
+    }
+}
+
+#[test]
+fn void_main_result_succeeds() {
+    // `return ()` travels through the value track's cell encoding (which
+    // represents unit as Float(0.0)); `main`'s static `IO ()` type accepts it.
+    let mut r = runner(r#"main = do { write (Just "a") stdout; return () };"#);
+    r.run()
+        .expect("`main` returning `()` must run to completion");
+    assert_eq!(r.stdout(), ["a"]);
+
+    // A program whose final action is an effect still succeeds: the effect's
+    // result is `()` directly.
+    let mut r = runner(r#"main = do { write (Just "ok") stdout };"#);
+    r.run()
+        .expect("an effect-final program must run to completion");
+    assert_eq!(r.stdout(), ["ok"]);
+}
+
+#[test]
+fn run_on_stack_returns_the_closure_result() {
+    // The helper spawns a grown-stack thread and hands back the closure's
+    // result. Compiling *inside* the closure is the supported pattern: the
+    // runner itself is not `Send` (it owns `Rc` state).
+    let stdout = rill_lang::run_on_stack(16 << 20, || {
+        let mut r = runner(r#"main = do { write (Just "on-stack") stdout; return () };"#);
+        r.run().expect("run must succeed");
+        r.stdout().to_vec()
+    });
+    assert_eq!(stdout, ["on-stack"]);
 }

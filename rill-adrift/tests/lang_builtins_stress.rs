@@ -1,5 +1,4 @@
-//! rill-lang builtin chains, feedback, and parameter folding on the retained
-//! value path.
+//! rill-lang builtin chains and parameter folding on the retained value path.
 
 use rill_adrift::lang_builtins::full_ffi;
 use rill_lang::compile_with_ffi;

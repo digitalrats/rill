@@ -162,6 +162,24 @@ fn concrete_or_float(t: ValueTy) -> ValueTy {
     }
 }
 
+/// Whether `main`'s lowered type is `(String…) -> IO ()` — the
+/// [`ProgramRunner`](crate::program_runner::ProgramRunner) contract.
+///
+/// A `main` with λ-parameters is a `Thunk(_, [ret])`; the IO action is the
+/// result. The runtime payload of `()` is erased to `Float(0.0)` when it
+/// travels through a closure cell, so the static type recorded here is the
+/// only way the runner can accept the erased unit without also accepting an
+/// `IO Float` that returns `0.0`.
+fn main_result_is_io_unit(t: &ValueTy) -> bool {
+    match t {
+        ValueTy::Data(name, args) => {
+            name == "IO" && args.len() == 1 && matches!(args.first(), Some(ValueTy::Void))
+        }
+        ValueTy::Thunk(_, rets) => rets.len() == 1 && main_result_is_io_unit(&rets[0]),
+        _ => false,
+    }
+}
+
 /// The type arguments of a `List` value type (`[elem]`), if `t` is one.
 fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     match t {
@@ -6587,7 +6605,13 @@ pub fn lower_program_with_channels(
     // Terminate the program's value track: the entry block's fallthrough chain
     // ends here. Every existing program is a single block ending in `Halt`.
     lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
+    // The runner contract: `main : (String…) -> IO ()`. The static type is the
+    // only place the unit payload survives — the value track represents `()`
+    // as `Float(0.0)` once it travels through a closure cell (see
+    // `Ir::main_io_unit`).
+    let main_io_unit = main_result_is_io_unit(&tp.process_ty.vty);
     Ok(Ir {
+        main_io_unit,
         num_inputs,
         num_outputs,
         state: StateLayout {

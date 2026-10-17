@@ -5,6 +5,7 @@
 use rill_lang::builtin::Registry;
 use rill_lang::compile_runner;
 use rill_lang::program_runner::ProgramRunner;
+use rill_lang::run_on_stack;
 
 fn runner(src: &str) -> ProgramRunner<f32, 256> {
     compile_runner::<f32, 256>(src, &Registry::new(), 44_100.0)
@@ -18,20 +19,15 @@ fn runner(src: &str) -> ProgramRunner<f32, 256> {
 /// in a debug build a single statement's frame chain is large enough that a
 /// multi-statement stream program would exceed libtest's default 2 MiB thread
 /// stack. That is a depth property of the lazy `IO` interpreter, not of the
-/// stream surface under test.
+/// stream surface under test; see [`rill_lang::run_on_stack`].
 fn run(src: &str) -> Vec<String> {
     let src = src.to_string();
-    std::thread::Builder::new()
-        .stack_size(16 << 20)
-        .spawn(move || {
-            let mut r = runner(&src);
-            r.run()
-                .unwrap_or_else(|e| panic!("run must succeed: {e}\nsource:\n{src}"));
-            r.stdout().to_vec()
-        })
-        .expect("spawn program thread")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    run_on_stack(16 << 20, move || {
+        let mut r = runner(&src);
+        r.run()
+            .unwrap_or_else(|e| panic!("run must succeed: {e}\nsource:\n{src}"));
+        r.stdout().to_vec()
+    })
 }
 
 /// Compile a program and run its `IO main` action `runs` times, returning the
@@ -44,20 +40,15 @@ fn run(src: &str) -> Vec<String> {
 /// like. The work runs on a big-stack thread for the same reason as [`run`].
 fn run_many(src: &str, runs: usize) -> (Vec<String>, usize, usize) {
     let src = src.to_string();
-    std::thread::Builder::new()
-        .stack_size(16 << 20)
-        .spawn(move || {
-            let mut r = runner(&src);
-            for i in 0..runs {
-                r.run()
-                    .unwrap_or_else(|e| panic!("run {i} must succeed: {e}\nsource:\n{src}"));
-            }
-            let arena = r.program().arena();
-            (r.stdout().to_vec(), arena.live(), arena.capacity())
-        })
-        .expect("spawn program thread")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    run_on_stack(16 << 20, move || {
+        let mut r = runner(&src);
+        for i in 0..runs {
+            r.run()
+                .unwrap_or_else(|e| panic!("run {i} must succeed: {e}\nsource:\n{src}"));
+        }
+        let arena = r.program().arena();
+        (r.stdout().to_vec(), arena.live(), arena.capacity())
+    })
 }
 
 /// Shared program prefix: renders a `Maybe Float` as text (`Nothing` = EOF).
@@ -87,6 +78,42 @@ fn from_list_to_list_preserves_order() {
 #[test]
 fn to_list_on_empty_stream_is_empty() {
     assert_eq!(render("fromList list"), vec![""]);
+}
+
+#[test]
+fn to_list_drains_a_closure_backed_source() {
+    // `toList` has type `InputStream a -> IO (List a)`, so it must work on the
+    // closure-backed `makeInputStream` source too (io-streams drains any input
+    // stream to EOF). The pushed-back elements come first; the source's action
+    // then reports `Nothing`, which ends the drain.
+    let src = r#"
+main = do {
+    xs <- makeInputStream (return Nothing);
+    unread 1.0 xs;
+    unread 2.0 xs;
+    unread 3.0 xs;
+    ys <- toList xs;
+    write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
+    return ()
+};
+"#;
+    assert_eq!(run(src), ["3.02.01.0"]);
+}
+
+#[test]
+fn to_list_runs_the_source_action_per_element_until_eof() {
+    // A source whose action is `return Nothing` is already at EOF: draining it
+    // yields an empty list and does not fault (the old behaviour latched
+    // "non-memory-input stream" here).
+    let src = r#"
+main = do {
+    xs <- makeInputStream (return Nothing);
+    ys <- toList xs;
+    write (Just (show_int (length ys))) stdout;
+    return ()
+};
+"#;
+    assert_eq!(run(src), ["0"]);
 }
 
 #[test]

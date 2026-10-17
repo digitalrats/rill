@@ -823,6 +823,16 @@ pub struct ParamDef {
 /// A complete lowered program.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ir {
+    /// Whether `main`'s statically inferred result type is `IO ()` (the
+    /// [`ProgramRunner`](crate::program_runner::ProgramRunner) contract).
+    ///
+    /// The value track's closure-cell encoding represents `()` as
+    /// `Float(0.0)` (a cell's un-set state is `Value::Void`, so a stored unit
+    /// reads back as `0.0`). That makes the runner's runtime payload check
+    /// ambiguous: `return ()` and `return 0.0` both arrive as `Float(0.0)`.
+    /// This static flag resolves the ambiguity — the erased unit encoding is
+    /// accepted only when `main` is typed `IO ()`.
+    pub main_io_unit: bool,
     /// Number of program inputs (0 or 1 for MVP).
     pub num_inputs: usize,
     /// Number of program outputs.

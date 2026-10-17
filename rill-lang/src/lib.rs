@@ -49,7 +49,7 @@ pub use arena::{Arena, ArenaError, ArenaRef, ThunkState, Value, ValueKind};
 pub use error::{CompileError, Span};
 pub use ir::{Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;
-pub use program_runner::ProgramRunner;
+pub use program_runner::{run_on_stack, ProgramRunner};
 pub use serde_def::{compile_def, RillLangDef};
 
 pub use builtin::{BuiltinKind, Registry};

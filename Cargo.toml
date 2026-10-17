@@ -3,7 +3,13 @@ members = [
     "rill-core",
     "rill-core-actor",
     "rill-core-dsp",
-    "rill-analyzer",
+    # `rill-analyzer` is excluded from the workspace on purpose: its default
+    # features pull `rill-lang/serialization`, which used to enable the
+    # `rill-lang` `graph` feature. Graph compilation is out of scope for the
+    # IO/streams work — `src/graph/**` does not build at this revision — so the
+    # analyzer (which imports `rill_lang::graph`) is built only once the graph
+    # execution model returns. Do not add it back before that.
+    # "rill-analyzer",
     "rill-patchbay",
     "rill-digital-effects",
     "rill-telemetry",

@@ -20,7 +20,7 @@ crates for signal processing application development.
 | `jack` | JACK backend (implies `io`) | no |
 | `pipewire` | PipeWire backend (implies `io`) | no |
 | `midi` | MIDI passthrough to `rill-patchbay` + `rill-io` | no |
-| `debug` | Shared-memory IPC (`debug_init`) for `rill-analyzer` attach + lifecycle logging. The modular host does not auto-create the shmem region or wire probes/command logs | no |
+| `debug` | Shared-memory IPC (`debug_init`) for `rill-analyzer` attach. The modular host does not auto-create the shmem region or wire probes/command logs; lifecycle logging is unconditional (see below) | no |
 
 ### Debug infrastructure (`debug` feature)
 

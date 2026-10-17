@@ -9,6 +9,7 @@
 
 use rill_lang::builtin::Registry;
 use rill_lang::compile_runner;
+use rill_lang::run_on_stack;
 
 /// Compile and run a program, returning its captured `(stdout, stderr)`.
 ///
@@ -16,23 +17,18 @@ use rill_lang::compile_runner;
 /// `read stdin` yields those lines in order. The program runs on a thread with
 /// a large stack: the lazy `IO` interpreter nests one `bind` per `do`
 /// statement, and a multi-statement program would exceed libtest's default
-/// 2 MiB thread stack in a debug build (see `io_streams_memory.rs`).
+/// 2 MiB thread stack in a debug build (see [`rill_lang::run_on_stack`]).
 fn run(src: &str, stdin_lines: &[String]) -> (Vec<String>, Vec<String>) {
     let src = src.to_string();
     let stdin_lines = stdin_lines.to_vec();
-    std::thread::Builder::new()
-        .stack_size(16 << 20)
-        .spawn(move || {
-            let mut r = compile_runner::<f32, 256>(&src, &Registry::new(), 44_100.0)
-                .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
-            r.set_stdin(&stdin_lines);
-            r.run()
-                .unwrap_or_else(|e| panic!("run must succeed: {e}\nsource:\n{src}"));
-            (r.stdout().to_vec(), r.stderr().to_vec())
-        })
-        .expect("spawn program thread")
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    run_on_stack(16 << 20, move || {
+        let mut r = compile_runner::<f32, 256>(&src, &Registry::new(), 44_100.0)
+            .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
+        r.set_stdin(&stdin_lines);
+        r.run()
+            .unwrap_or_else(|e| panic!("run must succeed: {e}\nsource:\n{src}"));
+        (r.stdout().to_vec(), r.stderr().to_vec())
+    })
 }
 
 /// [`run`] with no injected stdin, returning only the captured `stdout`.
@@ -76,6 +72,25 @@ main = do {
 "#;
     let (stdout, _) = run(src, &["alpha".to_string(), "beta".to_string()]);
     assert_eq!(stdout, ["alpha", "beta", "eof"]);
+}
+
+#[test]
+fn to_list_drains_stdin() {
+    // `toList :: InputStream a -> IO (List a)` on the cursor-backed console
+    // input: it pulls every line through the normal read path, then reports
+    // EOF. `stdin` is spent afterwards (a subsequent read yields `Nothing`).
+    let src = r#"
+show_mb m = case m of { Nothing => "eof"; Just x => x };
+main = do {
+    ys <- toList stdin;
+    write (Just (fold (\acc -> \x -> concat_string acc x) "" ys)) stdout;
+    z <- read stdin;
+    write (Just (show_mb z)) stdout;
+    return ()
+};
+"#;
+    let (stdout, _) = run(src, &["alpha".to_string(), "beta".to_string()]);
+    assert_eq!(stdout, ["alphabeta", "eof"]);
 }
 
 #[test]
