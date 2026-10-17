@@ -46,3 +46,6 @@ graph.png
 
 # Stale doc mirror
 docs/src/src/
+
+# git worktrees
+.worktrees/
