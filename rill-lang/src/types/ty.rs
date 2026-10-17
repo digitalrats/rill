@@ -351,14 +351,20 @@ main = ();
 /// Standard-library prelude: the common standard-library layer (streams now;
 /// threads/channels/actors later). This is deliberately distinct from
 /// [`CATEGORY_PRELUDE`] (pure category theory) and [`SIGNAL_PRELUDE`]
-/// (first-class buffer types). `InputStream`/`OutputStream` are the passive
-/// and active stream handles the boundary operations (`read`/`write`/
-/// `channel`/`runStream`) work on. They are higher-kinded record types
-/// (`InputStream Buffer`, `OutputStream Buffer`), declared in rill-lang
+/// (first-class buffer types). The stream contract types are higher-kinded
+/// record types (`InputStream Buffer`, `OutputStream Buffer`, the general
+/// `Stream Buffer` boundary type) plus `BackendSpec` (the backend identifier
+/// `mkStream` resolves against the runtime registry), declared in rill-lang
 /// itself like the other preludes. Registered by [`TypeEnv::with_builtins`].
 pub(crate) const STD_PRELUDE: &str = r#"
 data InputStream  a = { unInputStream: a };
 data OutputStream a = { unOutputStream: a };
+-- General stream value: the `runStream` boundary type. Streams are only ever
+-- created by `mkStream` inside the program, never constructed in source, so
+-- the payload is empty.
+data Stream a = { };
+-- A backend spec: identifies a backend in the runtime registry by name.
+data BackendSpec = { name: String };
 
 main = ();
 "#;
@@ -733,19 +739,24 @@ impl TypeEnv {
             "runStream".to_string(),
             // The handler parameter is a function value. The language's unary
             // value model represents a multi-parameter function as a nest of
-            // single-argument thunks (`\ins -> \outs -> …`), so the signature
-            // must be declared NESTED (`Thunk([ins], [Thunk([outs], [IO])])`):
-            // a flat `Thunk([ins, outs], [IO])` would not unify with a curried
-            // lambda/definition (see `nest_thunk` in infer.rs).
+            // single-argument thunks (`\master -> \slave -> …`), so the
+            // signature must be declared NESTED (`Thunk([master], [Thunk([slave],
+            // [IO])])`): a flat `Thunk([a, b], [IO])` would not unify with a
+            // curried lambda/definition (see `nest_thunk` in infer.rs).
+            // Master-slave: the FIRST handler parameter is the master stream
+            // (the active side whose backend drives the tick), the second is the
+            // slave (passive, serviced within the master's tick). Both are the
+            // general `Stream`; the body reaches the concrete
+            // `InputStream`/`OutputStream` views via `asInput`/`asOutput`.
             crate::ast::TypeExpr::TFunc(
                 vec![crate::ast::TypeExpr::TFunc(
                     vec![crate::ast::TypeExpr::TApp(
-                        "InputStream".to_string(),
+                        "Stream".to_string(),
                         vec![crate::ast::TypeExpr::TName("Buffer".into())],
                     )],
                     Box::new(crate::ast::TypeExpr::TFunc(
                         vec![crate::ast::TypeExpr::TApp(
-                            "OutputStream".to_string(),
+                            "Stream".to_string(),
                             vec![crate::ast::TypeExpr::TName("Buffer".into())],
                         )],
                         Box::new(crate::ast::TypeExpr::TApp(
@@ -757,6 +768,64 @@ impl TypeEnv {
                 Box::new(crate::ast::TypeExpr::TApp(
                     "IO".to_string(),
                     vec![crate::ast::TypeExpr::TName("()".into())],
+                )),
+            ),
+        );
+        // `asInput`/`asOutput`: project a general `Stream Buffer` to the
+        // concrete `InputStream Buffer` / `OutputStream Buffer` view the
+        // boundary operations (`read`/`write`/`channel`) operate on. The
+        // projection must match the stream's actual direction at runtime (Task 3).
+        env.builtin_sigs.insert(
+            "asInput".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TApp(
+                    "Stream".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "InputStream".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "asOutput".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TApp(
+                    "Stream".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "OutputStream".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )),
+            ),
+        );
+        // `mkStream`: create a backend (resolved by name against the runtime
+        // backend registry in the program's `State`) together with its stream
+        // pair, inside the program. Returns `IO (Stream Buffer, Stream Buffer)`
+        // — the input-side and output-side streams (`Pair` via the binary-tuple
+        // type sugar). Backends are created together with their streams; the
+        // runner exposes no external I/O.
+        env.builtin_sigs.insert(
+            "mkStream".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TName("BackendSpec".into())],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "IO".to_string(),
+                    vec![crate::ast::TypeExpr::TApp(
+                        "Pair".to_string(),
+                        vec![
+                            crate::ast::TypeExpr::TApp(
+                                "Stream".to_string(),
+                                vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                            ),
+                            crate::ast::TypeExpr::TApp(
+                                "Stream".to_string(),
+                                vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                            ),
+                        ],
+                    )],
                 )),
             ),
         );
@@ -1047,6 +1116,8 @@ impl TypeEnv {
         match cur.as_str() {
             "Float" => ValueTy::Float,
             "Int" => ValueTy::Int,
+            "Bool" => ValueTy::Bool,
+            "String" => ValueTy::String,
             "Buffer" => ValueTy::Buffer,
             "()" => ValueTy::Void,
             n => {
@@ -1369,6 +1440,20 @@ mod hkt_value_ty_tests {
     fn bool_string_are_leaves() {
         assert_ne!(ValueTy::Bool, ValueTy::Float);
         assert_ne!(ValueTy::String, ValueTy::Bool);
+    }
+
+    #[test]
+    fn vty_of_name_resolves_primitive_bool_string() {
+        // Regression: `vty_of_name` must resolve `Bool`/`String` to the
+        // primitive value types, not to `Data("Bool"/"String", [])`. Before
+        // the fix, a `data` field of type `String` (e.g. `BackendSpec.name`)
+        // became `Data("String", [])`, which failed to unify with string
+        // literals (`ValueTy::String`).
+        let env = TypeEnv::with_builtins();
+        assert_eq!(env.vty_of_name("Bool"), ValueTy::Bool);
+        assert_eq!(env.vty_of_name("String"), ValueTy::String);
+        assert_eq!(env.vty_of_name("Float"), ValueTy::Float);
+        assert_eq!(env.vty_of_name("Int"), ValueTy::Int);
     }
 
     #[test]

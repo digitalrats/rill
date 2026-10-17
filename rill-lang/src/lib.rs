@@ -36,6 +36,10 @@ pub mod register;
 pub mod render;
 pub mod runtime;
 pub mod serde_def;
+/// Stream backends: the single-threaded runtime contract behind `mkStream`
+/// (channel methods mirroring `rill_core::io`), the in-memory test backend,
+/// and the registry.
+pub mod stream_backend;
 pub mod types;
 
 #[cfg(feature = "debug")]
