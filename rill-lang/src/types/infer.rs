@@ -1954,7 +1954,7 @@ fn infer_guarded_arm_body(
 }
 
 /// An arm is "guarded" if it has more than one alternative or its first
-/// alternative is not the bare `=> body` form (guard `true`).
+/// alternative is not the bare `-> body` form (guard `true`).
 fn arm_is_guarded(arm: &MatchArm) -> bool {
     arm.guards.len() > 1 || !matches!(arm.guards.first(), Some((Expr::Bool(true, _), _)))
 }

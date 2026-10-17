@@ -120,9 +120,9 @@ pub enum Pattern {
     Ctor(String, Vec<Pattern>),
 }
 
-/// One `match` arm: a pattern, then a sequence of `(guard, body)` alternatives.
-/// The first alternative's guard is `true` only for the bare `=> body` form; a
-/// guarded arm (`pat | g => body`) carries the user-written guard `g` as its
+/// One `case` arm: a pattern, then a sequence of `(guard, body)` alternatives.
+/// The first alternative's guard is `true` only for the bare `-> body` form; a
+/// guarded arm (`pat | g -> body`) carries the user-written guard `g` as its
 /// first alternative.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

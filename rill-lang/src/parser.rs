@@ -2390,6 +2390,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_fat_arrow_as_match_arm() {
+        // Haskell 2010: `=>` is the class-constraint arrow, so a match arm
+        // spelled with `=>` must be a parse error (the legacy spelling was
+        // dropped — backward compatibility is not required).
+        let src = "main = case x of { _ => 1.0 }";
+        match parse(&tokenize(src).unwrap(), src.as_bytes()) {
+            Err(CompileError::Parse { msg, .. }) => assert!(
+                msg.contains("ThinArrow"),
+                "expected the missing-arrow message to mention ThinArrow, got: {msg}"
+            ),
+            other => panic!("expected a Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_thin_arrow_in_instance_constraint_head() {
+        // The constraint list before an instance head is introduced by `=>`;
+        // `->` is the function-type arrow and must be rejected there.
+        let src = "instance (Monad m) -> Arrow (Kleisli m) where { arr f = f; }; main = 1.0";
+        match parse(&tokenize(src).unwrap(), src.as_bytes()) {
+            Err(CompileError::Parse { msg, .. }) => assert!(
+                msg.contains("FatArrow"),
+                "expected the missing-arrow message to mention FatArrow, got: {msg}"
+            ),
+            other => panic!("expected a Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_field_projection() {
         let p = prog("main = p.x");
         assert!(matches!(

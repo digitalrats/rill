@@ -4850,7 +4850,7 @@ impl<'a> Lowerer<'a> {
             })?;
         let arm = &arms[selected];
         // Reachable only from the guard-free static fast path (`!has_guards`),
-        // so every arm here is a bare `pattern => body`; a guarded arm is a
+        // so every arm here is a bare `pattern -> body`; a guarded arm is a
         // defensive error rather than a silent drop.
         let body = crate::reduce::unguarded_arm_body(arm).ok_or_else(|| CompileError::Type {
             msg: "guarded arm reached the static match fast path".into(),
@@ -5100,7 +5100,7 @@ impl<'a> Lowerer<'a> {
                 else_t
             };
             if idx == 0 && matches!(g, Expr::Bool(true, _)) {
-                // Bare `pattern => body`: no guard to test.
+                // Bare `pattern -> body`: no guard to test.
                 let (body_reg, body_ty) = self.lower_value(body)?;
                 self.emit_value(ValueInstr::ValueMove {
                     dst: *out,
