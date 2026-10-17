@@ -18,10 +18,8 @@ fn run1(ffi: &ForeignRegistry<f32>, src: &str) -> [f32; 4] {
 fn graphic_eq_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     rill_lang::register::register_foreign_eq(&mut ffi);
-    let out = run1(
-        &ffi,
-        r#"main = do { writeOutput (map (graphic_eq 1.0) (readInput)); return () };"#,
-    );
+    rill_lang::register::register_foreign_generators(&mut ffi);
+    let out = run1(&ffi, r#"main = graphic_eq 1.0 (square 0.0 1.0 0.0);"#);
     assert!(
         out.iter().all(|v| v.is_finite()),
         "graphic_eq output must be finite, got {out:?}"
@@ -35,10 +33,7 @@ fn sampler_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     rill_sampler::register::register_foreign_lang_builtins(&mut ffi);
     // gate 1, rate 1, amp 0.5, cubic 0, source 0 — a fresh empty sample player.
-    let out = run1(
-        &ffi,
-        r#"main = do { writeOutput [sampler 1.0 1.0 0.5 0.0 0.0]; return () };"#,
-    );
+    let out = run1(&ffi, r#"main = sampler 1.0 1.0 0.5 0.0 0.0;"#);
     assert!(
         out.iter().all(|v| v.is_finite()),
         "sampler output must be finite, got {out:?}"
@@ -52,9 +47,10 @@ fn spectral_builtins_ffi_end_to_end() {
     use rill_core::traits::MultichannelAlgorithm;
     let mut ffi = ForeignRegistry::<f32>::new();
     rill_fft::register::register_foreign_lang_builtins(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
     // The FFT effects are BUF=64 windowed; feed a 64-sample block.
     let mut prog = rill_lang::compile_with_ffi::<f32>(
-        r#"main = do { writeOutput (map (spectralgate 0.1 1.0) (readInput)); return () };"#,
+        r#"main = spectralgate 0.1 1.0 (square 0.0 1.0 0.0);"#,
         &ffi,
         44100.0,
     )
@@ -67,7 +63,7 @@ fn spectral_builtins_ffi_end_to_end() {
     );
 
     let mut prog = rill_lang::compile_with_ffi::<f32>(
-        r#"main = do { writeOutput (map (spectraldelay 0.5 0.3) (readInput)); return () };"#,
+        r#"main = spectraldelay 0.5 0.3 (square 0.0 1.0 0.0);"#,
         &ffi,
         44100.0,
     )
@@ -80,7 +76,7 @@ fn spectral_builtins_ffi_end_to_end() {
     );
 
     let mut prog = rill_lang::compile_with_ffi::<f32>(
-        r#"main = do { writeOutput (map (convolver 1.0 0.5) (readInput)); return () };"#,
+        r#"main = convolver 1.0 0.5 (square 0.0 1.0 0.0);"#,
         &ffi,
         44100.0,
     )
@@ -99,18 +95,16 @@ fn spectral_builtins_ffi_end_to_end() {
 fn lofi_builtins_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     rill_lofi::register::register_foreign_lang_builtins(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
     let out = run1(
         &ffi,
-        r#"main = do { writeOutput (map (lofi 8 44100 0.75 1.0 1 0 1) (readInput)); return () };"#,
+        r#"main = lofi 8 44100 0.75 1.0 1 0 1 (square 0.0 1.0 0.0);"#,
     );
     assert!(
         out.iter().all(|v| v.is_finite()),
         "lofi output must be finite, got {out:?}"
     );
-    let out = run1(
-        &ffi,
-        r#"main = do { writeOutput [(ay38910 1750000.0 0.0)]; return () };"#,
-    );
+    let out = run1(&ffi, r#"main = (ay38910 1750000.0 0.0);"#);
     assert!(
         out.iter().all(|v| v.is_finite()),
         "ay38910 output must be finite, got {out:?}"

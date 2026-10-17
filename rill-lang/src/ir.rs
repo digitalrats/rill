@@ -111,9 +111,11 @@ pub enum ValueBuiltinOp {
     AppendList,
     /// Concatenate two strings (`Monoid String.mappend`).
     ConcatString,
+    /// Render a Float as a String (`show_float`).
+    ShowFloat,
 }
 
-/// A value-track effect operation (the ST/region primitives).
+/// A value-track effect operation (the ST/region and IO-stream primitives).
 ///
 /// The four STRef operations are first-class: lowered to
 /// [`Value::BuiltinCallable`](crate::arena::Value::BuiltinCallable), captured
@@ -121,6 +123,12 @@ pub enum ValueBuiltinOp {
 /// enclosing `ST` record's `unST` closure. `RunST` is emitted directly as a
 /// [`ValueInstr::ValueEffectOp`] — it consumes an `ST` value and runs its
 /// region.
+///
+/// The IO-stream operations use the same shape: lowered to a `BuiltinCallable`
+/// and applied to the `World` token by the enclosing `IO` record's `unIO`
+/// closure. They read and mutate the program's
+/// [`WorldState`](crate::program::WorldState), which is the runtime
+/// realization of `realWorld`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueEffectOp {
     /// `runST st`: enter a fresh, isolated region; apply the `ST` value's
@@ -135,6 +143,14 @@ pub enum ValueEffectOp {
     WriteStRef,
     /// `modifySTRef r f`: overwrite the cell value with `f` applied to it.
     ModifyStRef,
+    /// `fromList xs`: allocate a memory input stream over `xs` in the World's
+    /// stream table and yield its opaque handle.
+    StreamFromList,
+    /// `toList s`: drain a memory input stream into a `List`.
+    StreamToList,
+    /// `write mb out`: push `Just a` into an output stream (`Nothing` closes
+    /// it); the stdio targets append to the World's captured console.
+    StreamWrite,
 }
 
 /// Value-track comparison operators.
@@ -444,6 +460,15 @@ pub enum ValueInstr {
         /// Destination value register.
         dst: usize,
     },
+    /// An opaque runtime handle constant (the stdio stream handles). Programs
+    /// cannot construct opaque values themselves; only runtime-provided
+    /// constants such as `stdout`/`stderr` lower to this instruction.
+    ValueConstOpaque {
+        /// Destination value register.
+        dst: usize,
+        /// The handle payload.
+        handle: u32,
+    },
     /// String literal.
     ValueConstString {
         /// Destination value register.
@@ -572,7 +597,8 @@ pub enum ValueInstr {
         index: usize,
     },
     /// Collect ALL program input channels into a first-class `List Buffer`
-    /// value (the IO `readInput` primitive). The number of channels is a
+    /// value (the retired input-materialization instruction). The number of
+    /// channels is a
     /// runtime property — fixed at the first tick by the backend, then
     /// immutable — so the List's length is determined at run time, not at
     /// compile time. Buffers for the channels are lazily materialized on the
@@ -919,7 +945,8 @@ mod value_builtin_tests {
             ValueBuiltinOp::ConcatMap,
             ValueBuiltinOp::AppendList,
             ValueBuiltinOp::ConcatString,
+            ValueBuiltinOp::ShowFloat,
         ];
-        assert_eq!(ops.len(), 19);
+        assert_eq!(ops.len(), 20);
     }
 }

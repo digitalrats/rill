@@ -57,7 +57,7 @@ fn roundtrips_let_and_hole() {
 fn roundtrips_io_do_form() {
     // The do-form IO shape is mode-agnostic: it compiles under the default
     // Strict mode, so no pragma is needed.
-    roundtrip("main = do { writeOutput [1.0]; return () }");
+    roundtrip(r#"main = do { write (Just "x") stdout; return () }"#);
 }
 
 #[test]

@@ -92,6 +92,14 @@ impl<T: Transcendental, const BUF: usize> ProgramEngine<T, BUF> {
         &mut self.program
     }
 
+    /// Consume the engine and return the underlying program.
+    ///
+    /// Used by the retained signal-launch glue to hand the program to a
+    /// [`ProgramRunner`](crate::program_runner::ProgramRunner).
+    pub fn into_program(self) -> RillProgram<T, BUF> {
+        self.program
+    }
+
     #[cfg(feature = "debug")]
     /// Allocate `count` probe slots for the engine.
     pub fn allocate_probe_slots(&mut self, count: usize) {

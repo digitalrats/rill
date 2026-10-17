@@ -73,11 +73,11 @@ fn sine_registry() -> (Registry<f32>, Arc<AtomicUsize>) {
     (registry, calls)
 }
 
-/// `osc = sine 440.0 0.5 0.0; main = do { writeOutput [osc]; return () }` must
+/// `osc = sine 440.0 0.5 0.0; main = osc` must
 /// run exactly ONE oscillator instance per tick.
 ///
 /// The unary value model removed the multi-channel `,` merge, so the program
-/// exposes ONE output channel written from the single shared CAF. The call
+/// exposes ONE output channel fed by the single shared CAF. The call
 /// counter must advance by exactly one per tick — a duplicated or un-shared
 /// build (extra `osc` instances) would advance by more. `ch0 == ch1` (the old
 /// cross-channel agreement check) had no second channel to compare against and
@@ -85,17 +85,12 @@ fn sine_registry() -> (Registry<f32>, Arc<AtomicUsize>) {
 #[test]
 fn shared_oscillator_runs_one_instance_per_tick() {
     let (registry, calls) = sine_registry();
-    let mut prog = compile_with::<f32>(
-        "osc = sine 440.0 0.5 0.0; main = do { writeOutput [osc]; return () }",
-        &registry,
-        44100.0,
-    )
-    .expect("program with a shared CAF compiles");
+    let mut prog = compile_with::<f32>("osc = sine 440.0 0.5 0.0; main = osc", &registry, 44100.0)
+        .expect("program with a shared CAF compiles");
 
     assert_eq!(prog.num_inputs(), 0);
     // Value model: a program has ONE value output. The old two-channel
-    // `osc , osc` merge reduced to the single generator-list output written by
-    // the one `writeOutput` site.
+    // `osc , osc` merge reduced to the single generator output.
     assert_eq!(prog.num_outputs(), 1);
 
     let mut ch0 = [0.0f32; 8];
@@ -138,7 +133,7 @@ fn shared_oscillator_runs_one_instance_per_tick() {
 #[test]
 fn user_function_captures_shared_free_variable() {
     let (registry, calls) = sine_registry();
-    let src = "osc = sine 440.0 0.5 0.0; voice gain = osc * gain; main = do { writeOutput [voice 0.5]; return () }";
+    let src = "osc = sine 440.0 0.5 0.0; voice gain = osc * gain; main = voice 0.5";
     let mut prog = compile_with::<f32>(src, &registry, 44100.0)
         .expect("user function capturing a CAF compiles");
 
@@ -171,10 +166,9 @@ fn user_function_captures_shared_free_variable() {
 // block `integ = + ~ _` inlined twice into two independent stateful paths fed
 // by separate input channels — was built on the `~` loop combinator. In the
 // unary value model there is no way to express two independent per-channel
-// stateful paths: `main i1 i2 = …` IO mains wire their λ-parameters as control
-// cells (not Buffer inputs), and `map` over `readInput` reuses a single builtin
-// instance per element (shared running sum), so no two-channel independence
-// check survives the migration.
+// stateful paths: `main`'s λ-parameters are String launch arguments (not Buffer
+// inputs), and a `map` over a literal list reuses a single builtin instance per
+// element (shared running sum), so no two-channel independence check survives.
 
 /// A self-referential CAF is a compile error, not a crash.
 #[test]

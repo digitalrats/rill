@@ -152,22 +152,24 @@ fn colon_cons_chains_right_associatively() {
 #[test]
 fn colon_seq_still_composes_buffers() {
     // `:` on Buffer operands stays Faust sequencing: a partial arrow
-    // `onepole 200.0 0.7` applied per channel through `map (readInput)`.
+    // `onepole 200.0 0.7` applied to a constant +1.0 buffer (a zero-frequency
+    // square wave).
     use rill_lang::ffi::ForeignRegistry;
     use rill_lang::register;
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_filters(&mut ffi);
+    register::register_foreign_generators(&mut ffi);
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(
-        "main = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () };",
+        "main = onepole 200.0 0.7 (square 0.0 1.0 0.0);",
         &ffi,
         44100.0,
-        1,
+        0,
         1,
     )
     .unwrap();
     let mut out = [0.0f32; 64];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out[..]]).unwrap();
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out[..]]).unwrap();
     assert!(
         out.iter().all(|v| v.is_finite()),
         "onepole seq output must be finite"

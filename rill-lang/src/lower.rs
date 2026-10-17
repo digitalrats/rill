@@ -121,6 +121,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueCallFunc { .. }
             | ValueInstr::ValueBool { .. }
             | ValueInstr::ValueConstVoid { .. }
+            | ValueInstr::ValueConstOpaque { .. }
             | ValueInstr::ValueReadParam { .. }
             | ValueInstr::ValueConstString { .. }
             | ValueInstr::ValueListLit { .. }
@@ -488,18 +489,6 @@ struct Lowerer<'a> {
     /// `buffers[input_buffers[k]]` (the value register holding the input's
     /// `Value::Buffer`). Filled by the `LoadInput` emission at program entry.
     input_buffers: Vec<usize>,
-    /// The value registers holding the program's main-signal inputs (one per
-    /// program input, in order) — the `ValueBufferLoadInput` destinations.
-    /// Used by `lower_signal_buffer` to resolve a main λ-parameter reference
-    /// (`writeOutput 0 (… i1 …)`) to its input buffer register.
-    main_signal_args: Vec<usize>,
-    /// Names of main's λ-parameters that are BUFFER inputs (the `_`/`i1`/`i2`
-    /// signal params), mapped to their input index. Control params (used as
-    /// scalars) stay in `main_cell_locals`.
-    main_input_names: std::collections::HashMap<String, usize>,
-    /// Output indices written by `writeOutput` sites (IO-model programs). The
-    /// runtime drains `pending_outputs` into these external slices.
-    write_output_indices: Vec<usize>,
     /// Tape cell capacities, one entry per tape; the index IS the tape index
     /// referenced by [`BuiltinInstance::tape_index`]. A NAMED declaration
     /// (`name = tape_loop <capacity>`) gets one cell per name — repeated
@@ -1269,69 +1258,78 @@ impl<'a> Lowerer<'a> {
                     });
                     return Ok(self.finish_st_effect(effect, payload));
                 }
-                // IO primitives. `writeOutput k buf` emits the buffer-drain
-                // instruction; `readInput k` materializes the k-th input as a
-                // `Value::Buffer`. The buffer ARGUMENT of `writeOutput` is a
-                // signal expression (a `Buffer -> … -> Buffer` computation or a
-                // bare wire), lowered through the signal path into the same
-                // value track.
-                if name == "writeOutput" {
-                    if call_args.len() != 1 {
-                        return Err(CompileError::Type {
-                            msg: format!("writeOutput expects 1 argument, got {}", call_args.len()),
-                            span: *span,
-                        });
-                    }
-                    // `writeOutput : List Buffer -> IO ()` — writes ALL output
-                    // channels from one List of Buffers (push). Each list
-                    // element is a `Value::Buffer`; emit a drain per channel.
-                    let (src, ty) = self.lower_value(&call_args[0])?;
-                    if !matches!(ty, ValueTy::App(n, _) if n == "List") {
-                        return Err(CompileError::Type {
-                            msg: "writeOutput expects a List Buffer".into(),
-                            span: call_args[0].span(),
-                        });
-                    }
-                    self.write_output_indices.push(0);
-                    self.emit_value(ValueInstr::ValueWriteOutputList { src });
-                    let dst = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueConstVoid { dst });
-                    // `writeOutput` returns an `IO ()` record (`IO { unIO: () }`)
-                    // so the `Monad IO` bind/projection (`m.unIO`) sees a real
-                    // record, not a bare Void.
-                    let rec = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueConstructRecord {
-                        dst: rec,
-                        fields: vec![dst],
-                    });
-                    return Ok((rec, ValueTy::Data("IO".into(), vec![ValueTy::Void])));
-                }
-                if name == "readInput" {
-                    if call_args.len() != 1 {
-                        return Err(CompileError::Type {
-                            msg: format!("readInput expects 1 argument, got {}", call_args.len()),
-                            span: *span,
-                        });
-                    }
-                    let index = match const_int(&call_args[0]) {
-                        Some(i) if i >= 0 => i as usize,
-                        _ => {
-                            return Err(CompileError::Type {
-                                msg: "readInput index must be a non-negative integer constant"
-                                    .into(),
-                                span: call_args[0].span(),
-                            })
-                        }
+                // io-streams primitives. Each action lowers to an `IO a`
+                // record whose single `unIO` field is a primitive effect
+                // closure (`Value::BuiltinCallable`). Applying it to the World
+                // token performs the operation and returns `Pair World a`
+                // (the interpreter's `exec_stream_effect`): `fromList` allocates
+                // a memory input stream, `toList` drains one, `write` pushes (or
+                // closes with `Nothing`) into an output stream such as `stdout`.
+                if let Some(op) = match name.as_str() {
+                    "fromList" => Some(ValueEffectOp::StreamFromList),
+                    "toList" => Some(ValueEffectOp::StreamToList),
+                    "write" => Some(ValueEffectOp::StreamWrite),
+                    _ => None,
+                } {
+                    let arity = if matches!(op, ValueEffectOp::StreamWrite) {
+                        2
+                    } else {
+                        1
                     };
-                    let dst = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueReadInput { dst, index });
-                    // `readInput` returns an `IO Buffer` record.
+                    if call_args.len() != arity {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{name}` expects {arity} argument(s), got {}",
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    let mut arg_regs = Vec::with_capacity(arity);
+                    let mut arg_tys = Vec::with_capacity(arity);
+                    for a in call_args {
+                        let (r, t) = self.lower_value(a)?;
+                        arg_regs.push(r);
+                        arg_tys.push(t);
+                    }
+                    // The action's payload type (the `a` in `IO a`). The
+                    // element type is read off the argument where it is known;
+                    // an unresolved element falls back to the runtime's numeric
+                    // value type.
+                    let payload = match op {
+                        ValueEffectOp::StreamFromList => {
+                            let elem = arg_tys
+                                .first()
+                                .and_then(list_type_args)
+                                .and_then(|inner| inner.first().cloned())
+                                .unwrap_or(ValueTy::Float);
+                            ValueTy::Data("InputStream".into(), vec![elem])
+                        }
+                        ValueEffectOp::StreamToList => {
+                            let elem = match arg_tys.first() {
+                                Some(ValueTy::Data(n, a))
+                                    if n == "InputStream" && !a.is_empty() =>
+                                {
+                                    a[0].clone()
+                                }
+                                _ => ValueTy::Float,
+                            };
+                            ValueTy::App("List".into(), vec![elem])
+                        }
+                        _ => ValueTy::Void,
+                    };
+                    let effect = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueEffectOp {
+                        dst: effect,
+                        op,
+                        args: arg_regs,
+                    });
                     let rec = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueConstructRecord {
                         dst: rec,
-                        fields: vec![dst],
+                        fields: vec![effect],
                     });
-                    return Ok((rec, ValueTy::Data("IO".into(), vec![ValueTy::Buffer])));
+                    return Ok((rec, ValueTy::Data("IO".into(), vec![payload])));
                 }
                 // `smooth sig ms` — one-pole smoothing over a Buffer.
                 if name == "smooth" {
@@ -1486,7 +1484,7 @@ impl<'a> Lowerer<'a> {
                     let mut arg_tys = Vec::with_capacity(call_args.len());
                     // `map f xs`: lower the source list FIRST so its element
                     // type can type the closure's parameter — `map (fn x -> x *
-                    // 0.5) (readInput)` over a `List Buffer` keeps `x` a Buffer
+                    // 0.5) (sine 440.0 0.5 0.0)` over a `List Buffer` keeps `x` a Buffer
                     // value and `x * 0.5` lowers to a Buffer op, not scalar.
                     if name == "map" && call_args.len() == 2 {
                         let (lr, lt) = self.lower_value(&call_args[1])?;
@@ -2856,6 +2854,7 @@ impl<'a> Lowerer<'a> {
             "concat_map",
             "append_list",
             "concat_string",
+            "show_float",
             "not",
             "and",
             "or",
@@ -2871,12 +2870,14 @@ impl<'a> Lowerer<'a> {
                 name,
                 "newSTRef" | "readSTRef" | "writeSTRef" | "modifySTRef"
             )
-            // Value-track builtins lowered in `Expr::Apply` (IO primitives,
-            // one-pole smoothing, buffer elementwise ops): compile-time
-            // primitives, never captured as free variables by a lambda.
+            // Value-track builtins lowered in `Expr::Apply` (one-pole
+            // smoothing, buffer elementwise ops): compile-time primitives, never
+            // captured as free variables by a lambda. The io-streams operations
+            // (`fromList`/`toList`/`write`) and the stdio handles (`stdout`) are
+            // likewise resolved at lowering.
             || matches!(
                 name,
-                "readInput" | "writeOutput" | "smooth" | "atan2" | "min" | "max"
+                "fromList" | "toList" | "write" | "stdout" | "smooth" | "atan2" | "min" | "max"
             )
             || matches!(
                 name,
@@ -2909,6 +2910,7 @@ impl<'a> Lowerer<'a> {
             ("concat_map", 2) => ConcatMap,
             ("append_list", 2) => AppendList,
             ("concat_string", 2) => ConcatString,
+            ("show_float", 1) => ShowFloat,
             _ => return None,
         })
     }
@@ -3012,6 +3014,7 @@ impl<'a> Lowerer<'a> {
                 }),
             },
             "concat_string" => Ok(ValueTy::String),
+            "show_float" => Ok(ValueTy::String),
             "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Float])),
             "insert" => match args.len() {
                 3 => {
@@ -3283,6 +3286,20 @@ impl<'a> Lowerer<'a> {
             self.note_container(&ret);
             return Ok((dst, ret));
         }
+        if name == "stdout" {
+            // The realized standard-output handle: an opaque stream handle the
+            // runner's World owns. Programs cannot construct opaque values, so
+            // the handle is a lowering-time constant.
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueConstOpaque {
+                dst,
+                handle: crate::program::STDOUT_HANDLE,
+            });
+            return Ok((
+                dst,
+                ValueTy::Data("OutputStream".into(), vec![ValueTy::String]),
+            ));
+        }
         if let Some(idx) = self.fragment_captures.iter().position(|(f, _)| f == name) {
             // A free variable of the enclosing lambda: read it from the call's
             // env frame. `idx` is the name's position in the fragment's capture
@@ -3295,17 +3312,6 @@ impl<'a> Lowerer<'a> {
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueReadCell { dst, cell: idx });
             return Ok((dst, ty));
-        }
-        if name == "readInput" {
-            // `readInput : () -> List Buffer` — a bare reference reads ALL
-            // program input channels as one List of Buffer values (stereo
-            // friendly: the stream callback works with a List Buffer). The
-            // channel count is a runtime property (fixed by the backend at the
-            // first tick), so a single `ValueReadInputs` instruction collects
-            // the channels into the List at run time.
-            let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueReadInputs { dst });
-            return Ok((dst, ValueTy::App("List".into(), vec![ValueTy::Buffer])));
         }
         if let Some(fsig) = self.env.foreign_sigs.get(name).cloned() {
             if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
@@ -3341,22 +3347,12 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        if let Some(&input_idx) = self.main_input_names.get(name) {
-            // A main BUFFER input in value position (`writeOutput 0 i1`):
-            // materialize the input as a `Value::Buffer` value.
-            let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueReadInput {
-                dst,
-                index: input_idx,
-            });
-            return Ok((dst, ValueTy::Buffer));
-        }
         if let Some(&cell) = self.main_cell_locals.get(name) {
-            // A main λ-parameter in value position: copy the persistent cell's
-            // value into a fresh slot (a `Void` cell reads as `Float(0.0)`).
+            // A main λ-parameter (a String launch argument) in value
+            // position: copy the persistent cell's value into a fresh slot.
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueReadMainCell { dst, cell });
-            return Ok((dst, ValueTy::Float));
+            return Ok((dst, ValueTy::String));
         }
         if self.env.data_types.contains_key(name) {
             return Err(CompileError::Type {
@@ -5597,11 +5593,24 @@ impl<'a> Lowerer<'a> {
                         .into(),
                 span: *span,
             }),
-            Expr::ApplyExpr { span, .. } => Err(CompileError::Type {
-                msg: "expression application is a value expression; it cannot be used in a signal position"
-                    .into(),
-                span: *span,
-            }),
+            Expr::ApplyExpr { span, .. } => {
+                // A Buffer-valued application (`sine 440.0 1.0 0.0`,
+                // `lowpass 1000.0 0.7 (sine …)`) lowers through the value
+                // track, where first-class Buffer values and FFI arrows live.
+                // The single resulting wire feeds the block outputs like any
+                // other signal expression.
+                let (reg, ty) = self.lower_value(e)?;
+                if matches!(ty, ValueTy::Buffer) {
+                    Ok(vec![reg])
+                } else {
+                    Err(CompileError::Type {
+                        msg: format!(
+                            "expression application in a signal position must produce a Buffer, got {ty:?}"
+                        ),
+                        span: *span,
+                    })
+                }
+            }
             Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
                 msg: "field update is a value expression; it cannot be used in a signal position"
                     .into(),
@@ -5869,18 +5878,11 @@ impl<'a> Lowerer<'a> {
             });
             return Ok(vec![dst]);
         }
-        if let Some(&input_idx) = self.main_input_names.get(name) {
-            // A main BUFFER input in signal position (`writeOutput 0 i1`):
-            // the input's buffer register.
-            if let Some(&reg) = self.main_signal_args.get(input_idx) {
-                return Ok(vec![reg]);
-            }
-        }
         if let Some(&cell) = self.main_cell_locals.get(name) {
-            // A main λ-parameter: materialise the persistent cell's float
-            // value into a buffer. The cell is read directly — it is
-            // persistent, so the value set by `SetParameter` on the control
-            // thread is visible here on the next block.
+            // A main λ-parameter in signal position. `main`'s λ-parameters are
+            // String launch arguments, so a typed program never reaches here;
+            // the arm materialises the cell defensively for the value track's
+            // benefit.
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueBufferMainCellRead { dst, cell });
             return Ok(vec![dst]);
@@ -6037,8 +6039,8 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a signal expression as a `Value::Buffer` value-track register, for an
-    /// IO primitive (`writeOutput`/`readInput`). A bare reference to a main BUFFER
-    /// input (`writeOutput 0 i1`) resolves to the input's buffer register; any
+    /// input-channel primitive. A bare reference to a program BUFFER input
+    /// resolves to the input's buffer register; any
     /// other signal computation (`onepole 200.0 0.7 i1`) lowers through the signal
     /// path (`self.lower`), whose `ValueBuffer*` ops share the value track.
     /// Coerce a value-track operand into a `Buffer` operand for an element-wise
@@ -6148,26 +6150,6 @@ fn const_f64(e: &Expr) -> Option<f64> {
     }
 }
 
-fn const_int(e: &Expr) -> Option<i64> {
-    match e {
-        Expr::Int(v, _) => Some(*v),
-        Expr::Neg(inner, _) => const_int(inner).map(|v| -v),
-        Expr::Arith { op, lhs, rhs, .. } => {
-            let a = const_int(lhs)?;
-            let b = const_int(rhs)?;
-            Some(match op {
-                ArithOp::Add => a + b,
-                ArithOp::Sub => a - b,
-                ArithOp::Mul => a * b,
-                ArithOp::Div if b != 0 => a / b,
-                ArithOp::Rem if b != 0 => a % b,
-                _ => return None,
-            })
-        }
-        _ => None,
-    }
-}
-
 /// Back-compat: lower with a default sample rate of 44.1 kHz.
 pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
     lower_with(tp, 44_100.0)
@@ -6199,24 +6181,12 @@ pub fn lower_with_cafs_mode(
     cafs: &HashSet<String>,
     mode: Mode,
 ) -> Result<Ir, CompileError> {
-    // Default channels: main's Buffer λ-params (legacy) — the new model
-    // passes them explicitly via `lower_program_with_channels`.
-    let main_ins = match &tp.process_ty.vty {
-        ValueTy::Thunk(ins, _) => ins.clone(),
-        _ => Vec::new(),
-    };
-    let in_ch = main_ins
-        .iter()
-        .filter(|t| matches!(t, ValueTy::Buffer))
-        .count();
-    lower_program_with_channels(tp, sample_rate, cafs, mode, in_ch, None)
+    lower_program_with_channels(tp, sample_rate, cafs, mode, 0, None)
 }
 
-/// Like [`lower_with_cafs_mode`], with explicit I/O channel counts known
-/// before launch (the external I/O layer — rill-adrift — wires a backend with
-/// exactly these channels). `input_channels` sizes `readInput`'s `List Buffer`;
-/// `output_channels` sizes `writeOutput`'s. `None` output keeps the
-/// legacy `write_output_indices` (writeOutput sites).
+/// Like [`lower_with_cafs_mode`], with an explicit program input-channel count
+/// known before launch (the retained `MultichannelAlgorithm::process` path
+/// materializes that many input channels).
 pub fn lower_program_with_channels(
     tp: &TypedProgram,
     sample_rate: f32,
@@ -6239,27 +6209,17 @@ pub fn lower_program_with_channels(
     }
 
     let recursive_locals = Lowerer::compute_recursive_locals(&defs);
-    // IO-model `main`: each λ-parameter is either a BUFFER input (typed
-    // `ValueTy::Buffer` in `process_ty.ins`) or a scalar control parameter.
-    // Buffer params materialize as program inputs (`main_signal_args`);
-    // control params get a persistent main cell (the `set_param` path).
-    let main_ins = match &tp.process_ty.vty {
-        ValueTy::Thunk(ins, _) => ins.clone(),
-        _ => Vec::new(),
-    };
-    // When the caller does not know the backend's channel count (the legacy
-    // `compile_with`/`compile_graph` path), the IO model's `readInput` List is
-    // sized at runtime; only a SIGNAL main (Buffer λ-parameters or a signal
-    // body with wires) carries its input arity statically. Fall back to the
-    // Buffer count in `process_ty.ins` for those programs.
-    let num_inputs = if input_channels == 0 {
-        main_ins
-            .iter()
-            .filter(|t| matches!(t, ValueTy::Buffer))
-            .count()
-    } else {
-        input_channels
-    };
+    // `main` is an ordinary value definition; its λ-parameters are the
+    // program's String launch arguments, bound by
+    // [`ProgramRunner::set_args`](crate::program_runner::ProgramRunner::set_args)
+    // into persistent main cells. They are NOT control parameters: `?name` /
+    // `SetParameter` remains for dynamic builtin params only.
+    //
+    // An explicit `input_channels` still sizes the program's input table (the
+    // retained `MultichannelAlgorithm::process` path materializes that many
+    // channels); the value-track body reaches them only through the legacy
+    // signal surface, which this task removes.
+    let num_inputs = input_channels;
     let mut lw = Lowerer {
         defs,
         cafs,
@@ -6305,36 +6265,14 @@ pub fn lower_program_with_channels(
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
         input_buffers: Vec::new(),
-        main_signal_args: Vec::new(),
-        main_input_names: HashMap::new(),
-        write_output_indices: Vec::new(),
     };
 
-    let mut input_index = 0usize;
     for (cell_idx, p) in main.params().iter().enumerate() {
-        let is_buffer_input = main_ins
-            .get(cell_idx)
-            .is_some_and(|t| matches!(t, ValueTy::Buffer));
-        if is_buffer_input {
-            // A buffer input: register the name → input index so `writeOutput
-            // 0 i1` (and signal lowering) resolves it to the input register.
-            lw.main_input_names.insert(p.name.clone(), input_index);
-            input_index += 1;
-            continue;
-        }
-        // A control param: named parameter metadata + persistent cell.
-        lw.intern_param(
-            p.name.clone(),
-            0.0,
-            f64::NEG_INFINITY,
-            f64::INFINITY,
-            p.span,
-        )?;
+        // A main String launch argument: one persistent main cell, initialized
+        // to the empty string at build and written by `set_args`.
         lw.main_cell_locals.insert(p.name.clone(), cell_idx);
     }
-    // Every main λ-parameter has exactly one persistent cell (cells are
-    // indexed by param position, so the maps must line up).
-    debug_assert_eq!(lw.main_cell_locals.len() + input_index, main.params().len());
+    debug_assert_eq!(lw.main_cell_locals.len(), main.params().len());
 
     let mut main_args = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
@@ -6343,29 +6281,20 @@ pub fn lower_program_with_channels(
         lw.input_buffers.push(dst);
         main_args.push(dst);
     }
-    lw.main_signal_args = main_args.clone();
     // Value-output programs lower through the value track; signal-output
     // programs through the block track. The two tracks never mix — inference
     // guarantees a value-typed body has arity_in() == 0, so `main_args` is
     // empty on the value path.
-    let is_io_program = matches!(
-        &tp.process_ty.vty,
-        ValueTy::Data(n, _) | ValueTy::App(n, _) if n == "IO"
-    );
+    //
+    // An IO program is just a value program: `main`'s value is the `IO ()`
+    // action the runner applies to the realized `World`. Its value register is
+    // the program's single value output (no special-casing here).
     let has_value_out = !matches!(tp.process_ty.vty, ValueTy::Buffer);
     let outs = if has_value_out {
-        if is_io_program {
-            // IO-model `main`: the body is an IO action; signal outputs are
-            // written via `writeOutput` (pending_outputs at runtime), NOT
-            // returned as value channels. Lower the body for its side effects.
-            lw.lower_value(main.body())?;
-            Vec::new()
-        } else {
-            let (vr, vty) = lw.lower_value(main.body())?;
-            lw.value_regs_out.push(vr);
-            lw.value_out_tys.push(vty);
-            Vec::new()
-        }
+        let (vr, vty) = lw.lower_value(main.body())?;
+        lw.value_regs_out.push(vr);
+        lw.value_out_tys.push(vty);
+        Vec::new()
     } else {
         let outs = lw.lower(main.body(), &main_args)?;
         // Signal programs now lower to the VALUE track: the body's output
@@ -6375,23 +6304,12 @@ pub fn lower_program_with_channels(
         lw.value_out_tys = vec![ValueTy::Buffer; outs.len()];
         outs
     };
-    if outs.is_empty() && lw.value_regs_out.is_empty() && !is_io_program {
+    if outs.is_empty() && lw.value_regs_out.is_empty() {
         return Err(CompileError::Unsupported(
             "body lowered to 0 outputs, expected at least 1".into(),
         ));
     }
-    let num_outputs = if let Some(oc) = output_channels {
-        oc
-    } else if is_io_program {
-        // IO-model outputs = the writeOutput sites: max index + 1.
-        lw.write_output_indices
-            .iter()
-            .copied()
-            .max()
-            .map_or(0, |m| m + 1)
-    } else {
-        outs.len()
-    };
+    let num_outputs = output_channels.unwrap_or(outs.len());
     let num_main_cells = lw.main_cell_locals.len();
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
@@ -6607,14 +6525,11 @@ mod tests {
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
             input_buffers: Vec::new(),
-            main_signal_args: Vec::new(),
-            main_input_names: HashMap::new(),
-            write_output_indices: Vec::new(),
         }
     }
 
     /// Whether any main-block or fragment instruction matches the predicate. A
-    /// lambda argument (`map (fn x -> …) (readInput)`) compiles its body into a
+    /// lambda argument (`map (fn x -> …) xs`) compiles its body into a
     /// fragment, so the instruction under test may live outside `value_blocks`.
     fn has_instr(ir: &Ir, pred: impl Fn(&ValueInstr) -> bool) -> bool {
         let in_blocks = |blocks: &[ValueBlock]| blocks.iter().any(|b| b.instrs.iter().any(&pred));
@@ -6657,7 +6572,7 @@ mod tests {
 
     #[test]
     fn gain_lowers_to_const_and_mul() {
-        let ir = ir_of(r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }");
+        let ir = ir_of(r"main = sine 440.0 1.0 0.0 * 0.5;");
         assert_eq!(ir.num_inputs, 0);
         assert!(has_instr(&ir, |i| matches!(
             i,
@@ -6666,19 +6581,15 @@ mod tests {
                 ..
             }
         )));
-        assert!(has_instr(&ir, |i| matches!(
-            i,
-            ValueInstr::ValueWriteOutputList { .. }
-        )));
     }
 
     #[test]
     fn main_param_lowers_to_cell_binding() {
         // An actor param (`?gain`) is a named control parameter read as a
-        // scalar VALUE (`ValueInstr::ValueReadParam`), then broadcast into a
-        // buffer for the element-wise op. main's own λ-params are pulled
-        // through `readInput` in the IO model, so control params use `?name`.
-        let ir = ir_of(r"main = do { writeOutput (map (\x -> x * ?gain) (readInput)); return () }");
+        // scalar VALUE (`ValueInstr::ValueReadParam`). `main`'s own λ-params
+        // are String launch arguments (bound by the runner), so dynamic
+        // control uses `?name`.
+        let ir = ir_of(r"main = ?gain * 1.0;");
         assert_eq!(ir.num_main_cells, 0);
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueReadParam { .. })),
@@ -6695,38 +6606,39 @@ mod tests {
 
     #[test]
     fn onepole_lowers_to_callblock() {
-        let ir = ir_of(
-            r"main = do { writeOutput (map (\x -> onepole 200.0 0.5 x) (readInput)); return () }",
-        );
+        let ir = ir_of(r"main = onepole 200.0 0.5 (sine 440.0 1.0 0.0);");
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueCallForeign { .. })),
             "expected a CallBlock instruction"
         );
-        assert_eq!(ir.builtins.len(), 1);
-        let bi = &ir.builtins[0];
+        let bi = ir
+            .builtins
+            .iter()
+            .find(|b| b.name == "onepole")
+            .expect("onepole builtin");
         assert_eq!(bi.kind, BuiltinKind::Block);
         assert_eq!(bi.params, vec![200.0, 0.5]);
     }
 
     #[test]
     fn block_builtin_lowers_to_callblock() {
-        let ir = ir_of(
-            r"main = do { writeOutput (map (\x -> lowpass 1000.0 0.7 x) (readInput)); return () }",
-        );
+        let ir = ir_of(r"main = lowpass 1000.0 0.7 (sine 440.0 1.0 0.0);");
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueCallForeign { .. })),
             "expected a CallBlock instruction"
         );
-        assert_eq!(ir.builtins.len(), 1);
-        let bi = &ir.builtins[0];
+        let bi = ir
+            .builtins
+            .iter()
+            .find(|b| b.name == "lowpass")
+            .expect("lowpass builtin");
         assert_eq!(bi.kind, BuiltinKind::Block);
         assert_eq!(bi.params, vec![1000.0, 0.7]);
     }
 
     #[test]
     fn smooth_allocates_state() {
-        let ir =
-            ir_of(r"main = do { writeOutput (map (\x -> smooth x 10.0) (readInput)); return () }");
+        let ir = ir_of(r"main = smooth (sine 440.0 1.0 0.0) 10.0;");
         assert_eq!(ir.state.block_state_slots, 1);
         assert!(has_instr(&ir, |i| matches!(
             i,
@@ -6742,18 +6654,14 @@ mod tests {
     fn open_block_stays_macro() {
         // Two independent `smooth` applications (each allocates a state slot)
         // must produce two state slots.
-        let ir = ir_of(
-            r"main = do { writeOutput (map (\x -> smooth (smooth x 10.0) 20.0) (readInput)); return () }",
-        );
+        let ir = ir_of(r"main = smooth (smooth (sine 440.0 1.0 0.0) 10.0) 20.0;");
         assert_eq!(ir.state.block_state_slots, 2);
     }
 
     #[test]
     fn caf_const_param_still_folds() {
         // cutoff = 1000.0; lowpass cutoff 0.7 -> param 1000.0
-        let ir = ir_with_cafs(
-            r"cutoff = 1000.0; main = do { writeOutput (map (\x -> lowpass cutoff 0.7 x) (readInput)); return () }",
-        );
+        let ir = ir_with_cafs(r"cutoff = 1000.0; main = lowpass cutoff 0.7 (sine 440.0 1.0 0.0);");
         let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
         assert!((lp.params[0] - 1000.0).abs() < 1e-9);
     }
@@ -6761,9 +6669,7 @@ mod tests {
     #[test]
     fn transitive_caf_const_fold() {
         // b = 1000.0; a = b; main = lowpass a 0.7 -> a resolves through b to 1000.0
-        let ir = ir_with_cafs(
-            r"b = 1000.0; a = b; main = do { writeOutput (map (\x -> lowpass a 0.7 x) (readInput)); return () }",
-        );
+        let ir = ir_with_cafs(r"b = 1000.0; a = b; main = lowpass a 0.7 (sine 440.0 1.0 0.0);");
         let lp = ir.builtins.iter().find(|b| b.name == "lowpass").unwrap();
         assert!((lp.params[0] - 1000.0).abs() < 1e-9);
     }
@@ -6773,12 +6679,9 @@ mod tests {
         // osc = sine 440 0.5 0 is a CAF whose body is not a constant: using it in
         // a builtin param position must error, not silently become 0.
         let p = parse(
-            &tokenize(
-                r"osc = sine 440 0.5 0; main = do { writeOutput (map (\x -> lowpass osc 0.7 x) (readInput)); return () }",
-            )
-            .unwrap(),
-            r"osc = sine 440 0.5 0; main = do { writeOutput (map (\x -> lowpass osc 0.7 x) (readInput)); return () }"
-                .as_bytes(),
+            &tokenize(r"osc = sine 440 0.5 0; main = lowpass osc 0.7 (sine 440.0 1.0 0.0);")
+                .unwrap(),
+            r"osc = sine 440 0.5 0; main = lowpass osc 0.7 (sine 440.0 1.0 0.0);".as_bytes(),
         )
         .unwrap();
         let typed = infer_program_with(&p, p.mode).unwrap();
@@ -6834,12 +6737,8 @@ mod tests {
         // The cycle is reached through a BUILTIN PARAM, exercising caf_const_impl's
         // visited-set guard (not the caf_lifting guard in lower_ref).
         let p = parse(
-            &tokenize(
-                r"a = b; b = a; main = do { writeOutput (map (\x -> lowpass a 0.7 x) (readInput)); return () }",
-            )
-            .unwrap(),
-            r"a = b; b = a; main = do { writeOutput (map (\x -> lowpass a 0.7 x) (readInput)); return () }"
-                .as_bytes(),
+            &tokenize(r"a = b; b = a; main = lowpass a 0.7 (sine 440.0 1.0 0.0);").unwrap(),
+            r"a = b; b = a; main = lowpass a 0.7 (sine 440.0 1.0 0.0);".as_bytes(),
         )
         .unwrap();
         let typed = infer_program_with(&p, p.mode).unwrap();
@@ -6863,10 +6762,8 @@ mod tests {
 
     #[test]
     fn unreferenced_caf_is_not_lowered() {
-        // dead = sine 440 0.5 0; main = x * 0.5  -> no sine builtin
-        let ir = ir_with_cafs(
-            r"dead = sine 440 0.5 0; main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }",
-        );
+        // dead = sine 440 0.5 0; main = 0.5 * 0.5  -> no sine builtin
+        let ir = ir_with_cafs(r"dead = sine 440 0.5 0; main = 0.5 * 0.5;");
         assert!(!ir.builtins.iter().any(|b| b.name == "sine"));
     }
 

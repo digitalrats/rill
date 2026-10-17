@@ -20,6 +20,62 @@ use crate::ir::{BuiltinInstance, Ir, ParamDef, ValueBlock};
 /// Used for stack scratch storage in the interpreter's foreign-block path.
 pub(crate) const MAX_BUILTIN_CHANNELS: usize = 8;
 
+/// Tag distinguishing a stream handle from an `ST` region/cell handle in the
+/// shared `Value::Opaque(u32)` payload space. Stream handles occupy the high
+/// half; region ids and `STRef` cell ids stay below it.
+pub(crate) const STREAM_HANDLE_TAG: u32 = 1 << 31;
+
+/// The realized `World` token (`realWorld`, the GHC `State# RealWorld` analog).
+/// Only ordering matters: the mutable state it stands for lives in
+/// [`WorldState`].
+pub(crate) const WORLD_TOKEN: u32 = 0;
+
+/// The realized standard-output handle (`stdout`). Stream-table slot 0.
+pub(crate) const STDOUT_HANDLE: u32 = STREAM_HANDLE_TAG;
+
+/// One entry of the runtime stream table — what an opaque stream handle
+/// resolves to inside the interpreter.
+pub(crate) enum StreamHandle {
+    /// A memory input stream: element refs (arena-owned) plus a read cursor.
+    Input {
+        /// Element arena refs the stream owns.
+        elems: Vec<crate::arena::ArenaRef>,
+        /// Number of elements already consumed.
+        pos: usize,
+    },
+    /// The realized `stdout` sink: line-oriented text captured by the runner.
+    Stdout,
+    /// The realized `stderr` sink: line-oriented text captured by the runner.
+    Stderr,
+}
+
+/// The runtime realization of `realWorld`: the memory-stream table and the
+/// captured stdio console.
+///
+/// `main : IO ()` threads the opaque `World` token for ordering only; the state
+/// the effects actually mutate lives here, on the program. The runner captures
+/// the console (`stdout`/`stderr`) so tests can assert on it.
+pub struct WorldState {
+    /// The memory-stream table. A stream handle's payload indexes this table
+    /// (offset by [`STREAM_HANDLE_TAG`]); slots 0 and 1 are `stdout`/`stderr`.
+    pub(crate) streams: Vec<StreamHandle>,
+    /// Lines written to `stdout`, in program order.
+    pub stdout: Vec<String>,
+    /// Lines written to `stderr`, in program order.
+    pub stderr: Vec<String>,
+}
+
+impl WorldState {
+    /// A fresh world: an empty memory-stream table plus the two stdio sinks.
+    pub(crate) fn new() -> Self {
+        Self {
+            streams: vec![StreamHandle::Stdout, StreamHandle::Stderr],
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+}
+
 /// A runtime built-in instance, indexed directly by IR `instance` fields.
 pub(crate) enum BuiltinInst<T: Transcendental> {
     /// An opaque whole-buffer built-in.
@@ -99,14 +155,16 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Runtime value-track error (capacity overflow), set by a collection op
     /// and consumed at the end of the value phase. Cleared each tick.
     pub(crate) value_error: Option<ProcessError>,
-    /// Outputs written by `ValueWriteOutput` this tick: (output index, buffer
-    /// handle index). Drained into the external `outputs[]` slices at tick end.
+    /// Outputs written to the external `outputs[]` slices by a legacy
+    /// write-output instruction this tick: (output index, buffer handle
+    /// index). Drained at tick end; the IO surface that produced these is gone,
+    /// so the vector stays empty on every current path.
     pub(crate) pending_outputs: Vec<(usize, usize)>,
-    /// Buffer-table indices of the program input channels (the `readInput`
-    /// List). Pre-allocated at build (one per channel, capped at
-    /// [`MAX_BUILTIN_CHANNELS`]); the channel count is a runtime property
-    /// (fixed by the backend at the first tick), so only the first
-    /// [`Self::cur_num_inputs`] are materialized each tick.
+    /// Buffer-table indices of the program input channels (the retained
+    /// `MultichannelAlgorithm::process` input table). Pre-allocated at build
+    /// (one per channel, capped at [`MAX_BUILTIN_CHANNELS`]); the channel count
+    /// is a runtime property (fixed by the backend at the first tick), so only
+    /// the first [`Self::cur_num_inputs`] are materialized each tick.
     pub(crate) input_buffers: Vec<usize>,
     /// Number of input channels on the current tick — set by
     /// [`run_block_mimo`](crate::backend::interp::run_block_mimo) from the
@@ -122,6 +180,10 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// releases them on exit, so the table is truncated back after each region
     /// and never grows across ticks.
     pub(crate) st_cells: Vec<Option<crate::arena::ArenaRef>>,
+    /// The realized `realWorld`: the memory-stream table and captured console.
+    /// `IO` actions reach it through this shared handle; the `World` token only
+    /// orders them.
+    pub(crate) world: std::rc::Rc<std::cell::RefCell<WorldState>>,
 }
 
 /// One running `runST` region: the STRef cells it allocated.
@@ -437,6 +499,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             cur_num_inputs: 0,
             regions: Vec::new(),
             st_cells: Vec::new(),
+            world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
         }
     }
 
@@ -516,11 +579,11 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let buffers = Self::alloc_buffers(&ir);
-        // The IO model's input channels: pre-allocate the buffer-table slots
-        // the `readInput` List materializes into. The channel count is a
-        // runtime property (fixed by the backend at the first tick), so we
-        // reserve the maximum possible here; only the first `cur_num_inputs`
-        // are actually written each tick.
+        // The retained signal-input table: pre-allocate the buffer-table slots
+        // the program inputs materialize into. The channel count is a runtime
+        // property (fixed by the backend at the first tick), so we reserve the
+        // maximum possible here; only the first `cur_num_inputs` are actually
+        // written each tick.
         let input_buffers: Vec<usize> =
             (ir.num_buffers..ir.num_buffers + MAX_BUILTIN_CHANNELS).collect();
         let params_meta = ir.params.clone();
@@ -572,6 +635,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             cur_num_inputs: 0,
             regions: Vec::new(),
             st_cells: Vec::new(),
+            world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
         })
     }
 
@@ -585,7 +649,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
 
     /// Allocate the persistent main λ-parameter cells at construction.
     ///
-    /// Each cell is a `Void` slot owned solely by `main_cells`. Capacity is
+    /// Each cell holds one of `main`'s String launch arguments and is owned
+    /// solely by `main_cells`, initialized to the empty string. Capacity is
     /// computed at build time to include these `count` slots, so allocation
     /// cannot fail in a correctly-lowered program.
     fn alloc_main_cells(
@@ -596,7 +661,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .map(|_| {
                 Some(
                     arena
-                        .alloc(crate::arena::Value::Void)
+                        .alloc(crate::arena::Value::String(String::new()))
                         .expect("main-cell allocation exceeds build-time capacity bound"),
                 )
             })
@@ -605,8 +670,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
 
     /// Carve the program-level signal buffer table out of a fresh region
     /// allocator: one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers`
-    /// (each `Value::Buffer` index), plus the [`MAX_BUILTIN_CHANNELS`] input
-    /// slots the `readInput` List materializes into. Chunk capacity is `BUF`
+    /// (each `Value::Buffer` index), plus the [`MAX_BUILTIN_CHANNELS`] signal
+    /// input slots. Chunk capacity is `BUF`
     /// rounded up to a power of two, so every handle fits within a single chunk
     /// (non-spanning). Memory is static with program lifetime (SP-4 Tier-1);
     /// `process()` never touches the allocator.
@@ -706,11 +771,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
 
     /// Set a parameter by index. RT-safe (plain store).
     ///
-    /// For a main λ-parameter (`idx` within the leading [`Ir::num_main_cells`]
-    /// cells) the value additionally lands in the persistent main cell, which
-    /// is what the signal/value tracks read — so the block track sees the new
-    /// value on the very next tick. The `params` store is kept in sync for
-    /// readback (`param`) and for pushing dynamic built-in parameter bindings.
+    /// The `params` store is kept in sync for readback (`param`) and for
+    /// pushing dynamic built-in parameter bindings. `main`'s λ-parameters are
+    /// launch arguments, not parameters: bind them with
+    /// [`set_main_arg`](Self::set_main_arg).
     pub fn set_param(&mut self, idx: usize, value: ParamValue) {
         if let Some(def) = self.params_meta.get(idx) {
             let clamped = match &value {
@@ -724,31 +788,31 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             if let Some(d) = self.params_dirty.get_mut(idx) {
                 *d = true;
             }
-            if idx < self.main_cells.len() {
-                self.write_main_cell(idx, &clamped);
-            }
         }
     }
 
-    /// Store a clamped parameter value into a persistent main cell.
+    /// Bind one of `main`'s String λ-parameters (`cell` = its position).
     ///
-    /// The cell holds its value directly. The previous cell slot is released
-    /// first and the fresh `Float` slot is allocated into the freed slot (the
-    /// arena free-list reuses it immediately), so the cell's arena footprint
-    /// stays at exactly one slot and the build-time capacity bound holds. The
-    /// cell is exclusively owned by `main_cells`; this runs on the control
-    /// thread, so the momentary unbound window is never observed by the signal
-    /// path.
-    fn write_main_cell(&mut self, cell: usize, value: &ParamValue) {
-        if let Some(old) = self.main_cells[cell].take() {
-            self.arena.drop_ref(old);
+    /// The persistent main cell holds the String directly: the previous slot is
+    /// released first and the fresh `String` slot is allocated into the freed
+    /// slot (the arena free-list reuses it immediately), so the cell's footprint
+    /// stays at exactly one slot and the build-time capacity bound holds. An
+    /// out-of-range cell index is a no-op (the source has no such parameter).
+    pub fn set_main_arg(&mut self, cell: usize, value: &str) {
+        if let Some(slot) = self.main_cells.get_mut(cell) {
+            if let Some(old) = slot.take() {
+                self.arena.drop_ref(old);
+            }
+            *slot = self
+                .arena
+                .alloc(crate::arena::Value::String(value.to_string()))
+                .ok();
         }
-        let v = crate::backend::interp::param_to_f64(value);
-        self.main_cells[cell] = Some(
-            self.arena
-                .alloc(crate::arena::Value::Float(v))
-                .expect("main-cell rewrite must fit the build-time capacity bound"),
-        );
+    }
+
+    /// Number of `main` λ-parameters (the String launch arguments).
+    pub fn num_main_args(&self) -> usize {
+        self.main_cells.len()
     }
 
     /// Current value of a parameter by index.

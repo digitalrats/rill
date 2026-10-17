@@ -1,46 +1,56 @@
-use rill_core::traits::Algorithm;
+use rill_core::traits::{Algorithm, MultichannelAlgorithm};
 use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::register;
 
-fn run(src: &str, input: &[f32]) -> Vec<f32> {
+/// Run a pure value program over literal data and read back its single output
+/// as a list of floats.
+fn run_values(src: &str) -> Vec<f64> {
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = vec![0.0f32; input.len()];
-    prog.process(Some(input), &mut out).unwrap();
-    out
+    let mut out = [0.0f32; 0];
+    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out[..]]).unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v).unwrap() {
+        rill_lang::arena::Value::List { elems } => elems
+            .iter()
+            .map(|r| match prog.arena().get(*r).unwrap() {
+                rill_lang::arena::Value::Float(f) => *f,
+                other => panic!("expected a List of floats, got element {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected a List output, got {other:?}"),
+    }
 }
 
 #[test]
 fn dc_offset() {
     assert_eq!(
-        run(
-            "main = do { writeOutput (map (\\x -> x + 1.0) (readInput)); return () }",
-            &[0.0, 1.0, 2.0]
-        ),
+        run_values("main = map (\\x -> x + 1.0) [0.0, 1.0, 2.0]"),
         vec![1.0, 2.0, 3.0]
     );
 }
 
 #[test]
 fn math_builtin_abs() {
-    assert_eq!(
-        run(
-            "main = do { writeOutput (map (\\x -> abs x) (readInput)); return () }",
-            &[-2.0, 3.0, -4.0]
-        ),
-        vec![2.0, 3.0, 4.0]
-    );
+    // `abs` is a buffer-algebra builtin: it is exercised over a constant -1.0
+    // buffer (a zero-frequency square wave at amplitude -1).
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register::register_foreign_generators(&mut ffi);
+    let mut prog =
+        rill_lang::compile_with_ffi::<f32>("main = abs (square 0.0 (-1.0) 0.0)", &ffi, 44100.0)
+            .unwrap();
+    let mut out = [0.0f32; 4];
+    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    assert_eq!(out, [1.0, 1.0, 1.0, 1.0]);
 }
 
 /// The `_` input wire is gone from the unary value model, so "fanout" is now
-/// expressed as a definition that reads the input itself: the where-defined
-/// `scale` is applied to a scalar and maps the transform over the input
-/// channels through `readInput`.
+/// expressed as a definition applied to literal data: the where-defined
+/// `scale` maps its transform over the list.
 #[test]
 fn application_in_fanout_lowers_correctly() {
     assert_eq!(
-        run(
-            "main = scale 0.5 where { scale k = do { writeOutput (map (\\x -> x * k) (readInput)); return () }; }",
-            &[2.0, 4.0, 8.0],
-        ),
+        run_values("main = scale 0.5 where { scale k = map (\\x -> x * k) [2.0, 4.0, 8.0]; }"),
         vec![1.0, 2.0, 4.0]
     );
 }

@@ -8,6 +8,7 @@ use rill_lang::register;
 fn ffi() -> ForeignRegistry<f32> {
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_filters(&mut ffi);
+    register::register_foreign_generators(&mut ffi);
     ffi
 }
 
@@ -16,8 +17,7 @@ fn partial_application_is_first_class() {
     // fp = onepole 200.0 0.7 : Buffer -> Buffer; mapping it over the program's
     // input list compiles and runs (a signal-arrow typing would have arity
     // 1->1 and fail the value-track map application).
-    let src =
-        r#"fp = onepole 200.0 0.7; main = do { writeOutput (map fp (readInput)); return () };"#;
+    let src = r#"fp = onepole 200.0 0.7; main = fp (square 0.0 1.0 0.0);"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi(), 44100.0, 1, 1).unwrap();
     let ones = [1.0f32; 64];
     let mut out = [0.0f32; 64];
@@ -28,9 +28,8 @@ fn partial_application_is_first_class() {
 #[test]
 fn partial_application_matches_direct_call() {
     // fp i1 === onepole 200.0 0.7 i1.
-    let direct = r#"main = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () };"#;
-    let via_fp =
-        r#"fp = onepole 200.0 0.7; main = do { writeOutput (map fp (readInput)); return () };"#;
+    let direct = r#"main = onepole 200.0 0.7 (square 0.0 1.0 0.0);"#;
+    let via_fp = r#"fp = onepole 200.0 0.7; main = fp (square 0.0 1.0 0.0);"#;
     let run = |src: &str| -> Vec<f32> {
         let mut prog =
             rill_lang::compile_with_ffi_channels::<f32>(src, &ffi(), 44100.0, 1, 1).unwrap();
@@ -51,11 +50,13 @@ fn partial_application_matches_direct_call() {
 #[test]
 fn partial_application_keeps_scalars_folded() {
     use rill_lang::lower::lower_with_cafs;
-    let src =
-        r#"fp = onepole 200.0 0.7; main = do { writeOutput (map fp (readInput)); return () };"#;
+    let src = r#"fp = onepole 200.0 0.7; main = fp (square 0.0 1.0 0.0);"#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
+    let mut typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
+    // The compile pipeline reduces before lowering: `fp` is inlined at its use
+    // site, so `main = fp (…)` is an ordinary buffer application.
+    typed.program = rill_lang::reduce::reduce(&typed.program);
     let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
     let bi = ir
         .builtins

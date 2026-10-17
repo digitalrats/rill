@@ -43,20 +43,16 @@ mod tests {
 
     #[test]
     fn compile_def_runs() {
-        use crate::ffi::ForeignRegistry;
-        use crate::register;
+        use crate::arena::Value;
 
-        let def = RillLangDef::new(
-            "gain",
-            r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }",
-        );
-        let mut ffi = ForeignRegistry::<f32>::new();
-        register::register_foreign_filters(&mut ffi);
-        let mut prog =
-            crate::compile_with_ffi_channels::<f32>(&def.source, &ffi, 44100.0, 1, 1).unwrap();
+        let def = RillLangDef::new("sum", "main = 1.0 + 2.0");
+        let mut prog = compile_def::<f32>(&def).unwrap();
         let mut out = [0.0f32; 2];
-        prog.process(Some(&[2.0, 6.0]), &mut out).unwrap();
-        assert_eq!(out, [1.0, 3.0]);
+        prog.process(None, &mut out).unwrap();
+        assert_eq!(
+            prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+            &Value::Float(3.0)
+        );
     }
 
     #[cfg(feature = "serde")]

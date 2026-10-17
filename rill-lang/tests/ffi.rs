@@ -178,7 +178,7 @@ fn foreign_fn_types_as_signal_arrow() {
     // types as a value program (arity_in is always 0; arity_out is 1).
     let src = r"
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
+        main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -217,7 +217,7 @@ fn foreign_fn_lowers_to_callblock() {
 
     let src = r"
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
+        main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -327,7 +327,7 @@ fn foreign_fn_non_terminal_variadic_fails_inference() {
     // call to it fails inference (value-model call form).
     let src = r"
         foreign bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;
-        main = do { writeOutput (map (bad 0.5) (readInput)); return () };
+        main = bad 0.5 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -365,15 +365,16 @@ fn foreign_fn_runs_end_to_end() {
     ffi.register_block("gain", |params: &[f64], _sr: f32, _alloc| {
         Box::new(Gain(params.first().copied().unwrap_or(1.0)))
     });
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r"
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
+        main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
-    assert_eq!(out, [0.5, 1.0, 1.5, 2.0]);
+    assert_eq!(out, [0.5, 0.5, 0.5, 0.5]);
 }
 
 #[test]
@@ -383,7 +384,7 @@ fn foreign_fn_not_registered_is_compile_error() {
     let ffi = ForeignRegistry::<f32>::new();
     let src = r"
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (gain 0.5) (readInput)); return () };
+        main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let err = match rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1) {
         Err(e) => e,
@@ -402,7 +403,7 @@ fn builtin_catalog_is_auto_registered() {
     // `TypeEnv::foreign_sigs` (SP-3b Task 3). The generator list is a
     // 0-input IO program.
     let src = r#"
-        main = do { writeOutput [sine 440.0 1.0 0.0]; return () };
+        main = sine 440.0 1.0 0.0;
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -418,7 +419,7 @@ fn signal_input_builtin_legacy_call_style_sugar() {
     // over the program input. This pins the value-model typing.
     let src = r"
         foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () };
+        main = onepole 200.0 0.7 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -447,7 +448,7 @@ fn signal_input_builtin_legacy_call_style_sugar() {
 //                                              — variadic channel merge
 //
 // The surviving `combinator_sugar_*` tests below cover the value-model
-// equivalents (partial application mapped over `readInput`).
+// equivalents (partial application applied to a constant buffer).
 
 #[test]
 fn combinator_sugar_binds_both_seq_operands() {
@@ -456,7 +457,7 @@ fn combinator_sugar_binds_both_seq_operands() {
     // now compose as nested `map`s over the program input. The program types
     // as a value program (arity_in 0, arity_out 1).
     let src = r#"
-        main = do { writeOutput (map (onepole 1000.0 0.9) (map (onepole 200.0 0.7) (readInput))); return () };
+        main = onepole 1000.0 0.9 (onepole 200.0 0.7 (square 0.0 1.0 0.0));
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -472,7 +473,7 @@ fn combinator_sugar_rewrites_where_block_defs() {
     // whole value program (FFI effect over the input), and the program types
     // as a value program.
     let src = r#"
-        main = x where { x = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () }; }
+        main = x where { x = onepole 200.0 0.7 (square 0.0 1.0 0.0); }
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -489,7 +490,7 @@ fn combinator_sugar_lowers_positionally() {
     use rill_lang::lower::lower_with_cafs;
 
     let src = r#"
-        main = do { writeOutput (map (onepole 200.0 0.7) (readInput)); return () };
+        main = onepole 200.0 0.7 (square 0.0 1.0 0.0);
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -646,7 +647,7 @@ fn record_param_infer_accepts_record_literal() {
     // the named data type (previously an unconditional SP-3b error).
     let src = r"
         foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (eq_parametric { bands: [] }) (readInput)); return () };
+        main = eq_parametric { bands: [] } (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -662,10 +663,10 @@ fn record_param_flattens_schema_fields() {
     // list — two bands → 8 f64s.
     let src = r"
         foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (eq_parametric { bands: [
+        main = eq_parametric { bands: [
             { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 },
             { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
-        ] }) (readInput)); return () };
+        ] } (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -703,7 +704,7 @@ fn record_param_missing_fields_use_zero_defaults() {
 fn record_param_rejects_non_record_arg() {
     let src = r"
         foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
-        main = do { writeOutput (map (eq_parametric 0.5) (readInput)); return () };
+        main = eq_parametric 0.5 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -790,7 +791,7 @@ fn record_default_ffi_applies() {
     // Follow-up A end-to-end: omitted BAND fields in a `bands` list must apply
     // the legacy `EqBand` defaults (`freq: 1000.0`) — not silently 0.0.
     let src = r#"
-        main = do { writeOutput (map (eq_parametric { bands: [ { q: 2.0 } ] }) (readInput)); return () };
+        main = eq_parametric { bands: [ { q: 2.0 } ] } (square 0.0 1.0 0.0);
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -810,7 +811,7 @@ fn band_list_flattens_band_fields() {
     // gain_db: 0.0, band_type: 0.0 } ] }` flattens each band's fields in schema
     // order into the folded param list.
     let src = r#"
-        main = do { writeOutput (map (eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] }) (readInput)); return () };
+        main = eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] } (square 0.0 1.0 0.0);
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
@@ -839,7 +840,7 @@ fn analog_moog_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_model(&mut ffi);
 
-    let src = r#"main = do { writeOutput (map (analog_moog 500.0 0.7) (readInput)); return () }"#;
+    let src = r#"main = analog_moog 500.0 0.7 (square 0.0 1.0 0.0)"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
@@ -863,9 +864,10 @@ fn eq_parametric_ffi_end_to_end() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_eq(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"
-        main = do { writeOutput (map (eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] }) (readInput)); return () };
+        main = eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] } (square 0.0 1.0 0.0);
     "#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
@@ -931,9 +933,10 @@ fn digital_effects_ffi_end_to_end() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_digital_effects(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"
-        main = do { writeOutput (map (delay 0.1 0.3 0.5) (readInput)); return () };
+        main = delay 0.1 0.3 0.5 (square 0.0 1.0 0.0);
     "#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
@@ -954,9 +957,10 @@ fn digital_effects_distortion_runs() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_digital_effects(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"
-        main = do { writeOutput (map (distortion 2.0 1.0) (readInput)); return () };
+        main = distortion 2.0 1.0 (square 0.0 1.0 0.0);
     "#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
@@ -985,9 +989,10 @@ fn digital_effects_delay_live_param_reaches_algorithm() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_digital_effects(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"
-        main = do { writeOutput (map (delay ?t 0.0 1.0) (readInput)); return () };
+        main = delay ?t 0.0 1.0 (square 0.0 1.0 0.0);
     "#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
 
@@ -1027,16 +1032,17 @@ fn digital_effects_limiter_runs() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_digital_effects(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"
-        main = do { writeOutput (map (limiter (-6.0) 0.1) (readInput)); return () };
+        main = limiter (-6.0) 0.1 (square 0.0 1.0 0.0);
     "#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     // Lookahead warm-up: the limiter passes the first `lookahead_samples` (220)
     // unchanged, so the 4-sample block is a passthrough.
-    assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(out, [1.0, 1.0, 1.0, 1.0]);
 }
 
 #[cfg(feature = "dsp")]
@@ -1052,7 +1058,7 @@ fn generators_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput [sine 440.0 1.0 0.0]; return () };"#;
+    let src = r#"main = sine 440.0 1.0 0.0;"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -1080,7 +1086,7 @@ fn saw_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput [saw 440.0 1.0 0.0]; return () };"#;
+    let src = r#"main = saw 440.0 1.0 0.0;"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -1103,7 +1109,7 @@ fn square_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput [square 440.0 1.0 0.0]; return () };"#;
+    let src = r#"main = square 440.0 1.0 0.0;"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -1125,7 +1131,7 @@ fn triangle_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput [triangle 440.0 1.0 0.0]; return () };"#;
+    let src = r#"main = triangle 440.0 1.0 0.0;"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -1149,7 +1155,7 @@ fn noise_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput [noise 1.0 0.5]; return () };"#;
+    let src = r#"main = noise 1.0 0.5;"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -1171,7 +1177,7 @@ fn leaky_integrator_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput (map (leaky_integrator 0.5) (readInput)); return () };"#;
+    let src = r#"main = leaky_integrator 0.5 (square 0.0 1.0 0.0);"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
@@ -1198,8 +1204,9 @@ fn lowpass_ffi_end_to_end() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_filters(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput (map (lowpass 1000.0 0.7) (readInput)); return () };"#;
+    let src = r#"main = lowpass 1000.0 0.7 (square 0.0 1.0 0.0);"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
@@ -1224,9 +1231,9 @@ fn biquad_ffi_end_to_end() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_filters(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
-    let src =
-        r#"main = do { writeOutput (map (biquad 0.0 1000.0 0.7 0.0) (readInput)); return () };"#;
+    let src = r#"main = biquad 0.0 1000.0 0.7 0.0 (square 0.0 1.0 0.0);"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 64];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
@@ -1252,7 +1259,7 @@ fn integrator_ffi_end_to_end() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_generators(&mut ffi);
 
-    let src = r#"main = do { writeOutput (map integrator (readInput)); return () };"#;
+    let src = r#"main = integrator (square 0.0 1.0 0.0);"#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
@@ -1404,12 +1411,13 @@ fn eq_parametric_ffi_two_bands() {
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_eq(&mut ffi);
+    rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"
-        main = do { writeOutput (map (eq_parametric { bands: [
+        main = eq_parametric { bands: [
             { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 },
             { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
-        ] }) (readInput)); return () };
+        ] } (square 0.0 1.0 0.0);
     "#;
     let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
     let mut out = [0.0f32; 4];

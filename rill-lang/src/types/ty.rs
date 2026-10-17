@@ -220,6 +220,14 @@ pub struct TypeEnv {
     pub typeclasses: HashMap<String, TypeclassInfo>,
     /// Instances grouped by class, then by bound type name.
     pub instances: HashMap<String, HashMap<String, InstanceInfo>>,
+    /// Instance keys (`(class, type)`) declared by a prelude ([`STD_PRELUDE`]
+    /// / [`SIGNAL_PRELUDE`]). Their method bodies are trusted compiler
+    /// machinery: a user `data` declaration may legally shadow a builtin
+    /// record name (a program declaring its own `Pair`), which would make a
+    /// prelude body's field names untypeable against the shadowed shape. The
+    /// bodies still type at every CALL SITE, so they are not re-validated in
+    /// the user's environment.
+    pub prelude_instances: std::collections::HashSet<(String, String)>,
     /// Builtin type constructors: name → value arity. `List a` has arity 1,
     /// `Map k v` arity 2. Open collections carry no capacity.
     pub ctor_kinds: HashMap<String, usize>,
@@ -325,13 +333,11 @@ main = ();
 
 /// Standard-library prelude: the common standard-library layer — the primitive
 /// opaque tokens (`World`/`STState`/`STRef`), the `ST`/`IO` monads and their
-/// instances, and the stream contract types. This is deliberately distinct from
-/// [`CATEGORY_PRELUDE`] (pure category theory) and [`SIGNAL_PRELUDE`]
-/// (first-class buffer types). The stream contract types are higher-kinded
-/// record types (`InputStream Buffer`, `OutputStream Buffer`, the general
-/// `Stream Buffer` boundary type) plus `BackendSpec` (the backend identifier
-/// `mkStream` resolves against the runtime registry), declared in rill-lang
-/// itself like the other preludes. Registered by [`TypeEnv::with_builtins`].
+/// instances, and the opaque io-streams handles (`InputStream`/`OutputStream`).
+/// This is deliberately distinct from [`CATEGORY_PRELUDE`] (pure category
+/// theory) and [`SIGNAL_PRELUDE`] (first-class buffer types). Every type is
+/// declared in rill-lang itself like the other preludes. Registered by
+/// [`TypeEnv::with_builtins`].
 pub(crate) const STD_PRELUDE: &str = r#"
 -- Primitive opaque tokens. `World` is the real-world token (the GHC
 -- `State# RealWorld` analog), `STState` the per-region state token threaded by
@@ -345,8 +351,15 @@ data STRef s a;
 -- The state-threading monad: a state token in, the advanced token AND the
 -- result out. `runST` supplies the initial token and discards the final one.
 data ST s a = { unST: STState -> Pair STState a };
--- The IO monad (phantom until the IO runner lands).
-data IO a = { unIO: a };
+-- The state-threading IO monad: `IO a` is an action from the real-world token
+-- to the advanced token AND the result. The runner supplies `realWorld`; the
+-- `World` token itself is an opaque value only the runtime holds.
+data IO a = { unIO: World -> Pair World a };
+-- Opaque stream handles: only runtime effects create them, so no program text
+-- can construct, project, or match one (`fromList`/`stdout` are values/effects
+-- that yield a handle).
+data InputStream  a;
+data OutputStream a;
 
 instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
 instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
@@ -372,18 +385,9 @@ instance Monad (ST s) where {
 };
 
 instance Monad IO where {
-    return x = IO { unIO: x };
-    bind m f = IO { unIO: (f m.unIO).unIO };
+    return x = IO { unIO: \w -> Pair { first: w, second: x } };
+    bind m f = IO { unIO: \w -> let io_state = m.unIO w in let io_next = f io_state.second in io_next.unIO io_state.first };
 };
-
-data InputStream  a = { unInputStream: a };
-data OutputStream a = { unOutputStream: a };
--- General stream value: the `runStream` boundary type. Streams are only ever
--- created by `mkStream` inside the program, never constructed in source, so
--- the payload is empty.
-data Stream a = { };
--- A backend spec: identifies a backend in the runtime registry by name.
-data BackendSpec = { name: String };
 
 main = ();
 "#;
@@ -548,6 +552,14 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         }
     }
     env.register_decls(&defs);
+    // Remember which instances the prelude itself declared: their bodies are
+    // compiler machinery and are not re-validated against the user's (possibly
+    // shadowing) data declarations — see [`TypeEnv::prelude_instances`].
+    for def in &defs {
+        if let Def::Instance { class, ty, .. } = def {
+            env.prelude_instances.insert((class.clone(), ty.clone()));
+        }
+    }
     // Plain function definitions in a prelude (`seq = \ f -> \ g -> …`)
     // become top-level defs visible to inference — see
     // [`TypeEnv::prelude_defs`]. `Def::Foreign`/`Typeclass`/`Instance`/`Data`
@@ -659,7 +671,7 @@ impl TypeEnv {
         // Standard-library prelude: the primitive opaque tokens
         // (`World`/`STState`/`STRef`), the `ST`/`IO` monads with their
         // instances, and the stream contract types (`InputStream`/
-        // `OutputStream`/`Stream`/`BackendSpec`) the boundary operations below
+        // `OutputStream`) the boundary operations below
         // are typed against.
         register_prelude(&mut env, STD_PRELUDE);
         // The moved `Monad` instances (`ST`, `Maybe`, `List`, `IO`) derive their
@@ -741,181 +753,66 @@ impl TypeEnv {
                 Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
             ),
         );
-        // IO primitives: `readInput : Int -> IO Buffer` and
-        // `writeOutput : Int -> Buffer -> IO ()`. `IO` is the monad declared in
-        // `STD_PRELUDE`; `()` is `ValueTy::Void` (`TName "()"` resolves to it
-        // in `type_expr_to_vty`).
+        // IO / io-streams primitives. `IO` is the state-threading monad
+        // declared in `STD_PRELUDE` (`IO a = { unIO: World -> Pair World a }`);
+        // `()` is `ValueTy::Void` (`TName "()"` resolves to it in
+        // `type_expr_to_vty`). The element type of a memory stream is generic,
+        // so each polymorphic signature is a `TForall`: the ordinary
+        // builtin-sig path instantiates the binder once per call site (Task 1),
+        // keeping the input/output element types linked.
+        //
+        //   fromList   :: List a -> IO (InputStream a)
+        //   toList     :: InputStream a -> IO (List a)
+        //   write      :: Maybe a -> OutputStream a -> IO ()
+        //   stdout     :: OutputStream String
+        //   show_float :: Float -> String
+        let forall_a = |inner: crate::ast::TypeExpr| {
+            crate::ast::TypeExpr::TForall(vec!["a".to_string()], Box::new(inner))
+        };
+        let io =
+            |inner: crate::ast::TypeExpr| crate::ast::TypeExpr::TApp("IO".to_string(), vec![inner]);
+        let stream = |name: &str, arg: crate::ast::TypeExpr| {
+            crate::ast::TypeExpr::TApp(name.to_string(), vec![arg])
+        };
         env.builtin_sigs.insert(
-            "readInput".to_string(),
-            crate::ast::TypeExpr::TFunc(
-                vec![],
-                Box::new(crate::ast::TypeExpr::TApp(
-                    "List".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                )),
-            ),
-        );
-        env.builtin_sigs.insert(
-            "writeOutput".to_string(),
-            crate::ast::TypeExpr::TFunc(
+            "fromList".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
                 vec![crate::ast::TypeExpr::TApp(
                     "List".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                    vec![tv("a")],
                 )],
-                Box::new(crate::ast::TypeExpr::TApp(
-                    "IO".to_string(),
-                    vec![crate::ast::TypeExpr::TName("()".into())],
-                )),
-            ),
+                Box::new(io(stream("InputStream", tv("a")))),
+            )),
         );
-        // Stream boundary operations (`STD_PRELUDE`): `read`/`write`/`channel`/
-        // `runStream` work over the `InputStream`/`OutputStream` handles.
-        // `read ins` yields the whole input frame as a `List Buffer` (empty =
-        // closed/EOF); `write outs buf` pushes a frame out; `channel k bs`
-        // extracts the `k`-th channel of a frame; `runStream handler` runs a
-        // per-block handler between an input stream and an output stream. The
-        // overlapping names `read`/`write` are scoped as builtin sig precedents
-        // like `readInput`/`writeOutput`; there is no record-field or FFI
-        // collision today.
         env.builtin_sigs.insert(
-            "read".to_string(),
-            crate::ast::TypeExpr::TFunc(
-                vec![crate::ast::TypeExpr::TApp(
-                    "InputStream".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                )],
-                Box::new(crate::ast::TypeExpr::TApp(
+            "toList".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
+                vec![stream("InputStream", tv("a"))],
+                Box::new(io(crate::ast::TypeExpr::TApp(
                     "List".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                )),
-            ),
+                    vec![tv("a")],
+                ))),
+            )),
         );
         env.builtin_sigs.insert(
             "write".to_string(),
-            crate::ast::TypeExpr::TFunc(
+            forall_a(crate::ast::TypeExpr::TFunc(
                 vec![
-                    crate::ast::TypeExpr::TApp(
-                        "OutputStream".to_string(),
-                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                    ),
-                    crate::ast::TypeExpr::TApp(
-                        "List".to_string(),
-                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                    ),
+                    crate::ast::TypeExpr::TApp("Maybe".to_string(), vec![tv("a")]),
+                    stream("OutputStream", tv("a")),
                 ],
-                Box::new(crate::ast::TypeExpr::TApp(
-                    "IO".to_string(),
-                    vec![crate::ast::TypeExpr::TName("()".into())],
-                )),
-            ),
+                Box::new(io(tv("()"))),
+            )),
         );
         env.builtin_sigs.insert(
-            "channel".to_string(),
-            crate::ast::TypeExpr::TFunc(
-                vec![
-                    crate::ast::TypeExpr::TName("Int".into()),
-                    crate::ast::TypeExpr::TApp(
-                        "List".to_string(),
-                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                    ),
-                ],
-                Box::new(crate::ast::TypeExpr::TName("Buffer".into())),
-            ),
+            "stdout".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![], Box::new(stream("OutputStream", tv("String")))),
         );
         env.builtin_sigs.insert(
-            "runStream".to_string(),
-            // The handler parameter is a function value. The language's unary
-            // value model represents a multi-parameter function as a nest of
-            // single-argument thunks (`\master -> \slave -> …`), so the
-            // signature must be declared NESTED (`Thunk([master], [Thunk([slave],
-            // [IO])])`): a flat `Thunk([a, b], [IO])` would not unify with a
-            // curried lambda/definition (see `nest_thunk` in infer.rs).
-            // Master-slave: the FIRST handler parameter is the master stream
-            // (the active side whose backend drives the tick), the second is the
-            // slave (passive, serviced within the master's tick). Both are the
-            // general `Stream`; the body reaches the concrete
-            // `InputStream`/`OutputStream` views via `asInput`/`asOutput`.
-            crate::ast::TypeExpr::TFunc(
-                vec![crate::ast::TypeExpr::TFunc(
-                    vec![crate::ast::TypeExpr::TApp(
-                        "Stream".to_string(),
-                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                    )],
-                    Box::new(crate::ast::TypeExpr::TFunc(
-                        vec![crate::ast::TypeExpr::TApp(
-                            "Stream".to_string(),
-                            vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                        )],
-                        Box::new(crate::ast::TypeExpr::TApp(
-                            "IO".to_string(),
-                            vec![crate::ast::TypeExpr::TName("()".into())],
-                        )),
-                    )),
-                )],
-                Box::new(crate::ast::TypeExpr::TApp(
-                    "IO".to_string(),
-                    vec![crate::ast::TypeExpr::TName("()".into())],
-                )),
-            ),
+            "show_float".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![tv("Float")], Box::new(tv("String"))),
         );
-        // `asInput`/`asOutput`: project a general `Stream Buffer` to the
-        // concrete `InputStream Buffer` / `OutputStream Buffer` view the
-        // boundary operations (`read`/`write`/`channel`) operate on. The
-        // projection must match the stream's actual direction at runtime (Task 3).
-        env.builtin_sigs.insert(
-            "asInput".to_string(),
-            crate::ast::TypeExpr::TFunc(
-                vec![crate::ast::TypeExpr::TApp(
-                    "Stream".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                )],
-                Box::new(crate::ast::TypeExpr::TApp(
-                    "InputStream".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                )),
-            ),
-        );
-        env.builtin_sigs.insert(
-            "asOutput".to_string(),
-            crate::ast::TypeExpr::TFunc(
-                vec![crate::ast::TypeExpr::TApp(
-                    "Stream".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                )],
-                Box::new(crate::ast::TypeExpr::TApp(
-                    "OutputStream".to_string(),
-                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                )),
-            ),
-        );
-        // `mkStream`: create a backend (resolved by name against the runtime
-        // backend registry in the program's `State`) together with its stream
-        // pair, inside the program. Returns `IO (Stream Buffer, Stream Buffer)`
-        // — the input-side and output-side streams (`Pair` via the binary-tuple
-        // type sugar). Backends are created together with their streams; the
-        // runner exposes no external I/O.
-        env.builtin_sigs.insert(
-            "mkStream".to_string(),
-            crate::ast::TypeExpr::TFunc(
-                vec![crate::ast::TypeExpr::TName("BackendSpec".into())],
-                Box::new(crate::ast::TypeExpr::TApp(
-                    "IO".to_string(),
-                    vec![crate::ast::TypeExpr::TApp(
-                        "Pair".to_string(),
-                        vec![
-                            crate::ast::TypeExpr::TApp(
-                                "Stream".to_string(),
-                                vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                            ),
-                            crate::ast::TypeExpr::TApp(
-                                "Stream".to_string(),
-                                vec![crate::ast::TypeExpr::TName("Buffer".into())],
-                            ),
-                        ],
-                    )],
-                )),
-            ),
-        );
+
         env
     }
 
@@ -1033,6 +930,13 @@ impl TypeEnv {
                             &head_args,
                         ),
                     );
+                if self
+                    .prelude_instances
+                    .contains(&("Monad".to_string(), t.clone()))
+                {
+                    self.prelude_instances
+                        .insert(("Applicative".to_string(), t.clone()));
+                }
             }
             if !self
                 .instances
@@ -1052,6 +956,13 @@ impl TypeEnv {
                             &head_args,
                         ),
                     );
+                if self
+                    .prelude_instances
+                    .contains(&("Monad".to_string(), t.clone()))
+                {
+                    self.prelude_instances
+                        .insert(("Functor".to_string(), t.clone()));
+                }
             }
         }
         let applicative_insts = self
@@ -1087,6 +998,13 @@ impl TypeEnv {
                             &head_args,
                         ),
                     );
+                if self
+                    .prelude_instances
+                    .contains(&("Applicative".to_string(), t.clone()))
+                {
+                    self.prelude_instances
+                        .insert(("Functor".to_string(), t.clone()));
+                }
             }
         }
     }
@@ -1533,7 +1451,7 @@ mod hkt_value_ty_tests {
     fn vty_of_name_resolves_primitive_bool_string() {
         // Regression: `vty_of_name` must resolve `Bool`/`String` to the
         // primitive value types, not to `Data("Bool"/"String", [])`. Before
-        // the fix, a `data` field of type `String` (e.g. `BackendSpec.name`)
+        // the fix, a `data` field of type `String`
         // became `Data("String", [])`, which failed to unify with string
         // literals (`ValueTy::String`).
         let env = TypeEnv::with_builtins();

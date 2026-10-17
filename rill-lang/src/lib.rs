@@ -19,7 +19,7 @@ pub mod builtins;
 pub mod error;
 /// FFI factory registry: foreign-declared builtins' Rust implementations.
 pub mod ffi;
-/// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → [`CompiledStream`](graph::CompiledStream).
+/// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → the graph engine.
 #[cfg(feature = "graph")]
 pub mod graph;
 pub mod ir;
@@ -36,10 +36,6 @@ pub mod register;
 pub mod render;
 pub mod runtime;
 pub mod serde_def;
-/// Stream backends: the single-threaded runtime contract behind `mkStream`
-/// (channel methods mirroring `rill_core::io`), the in-memory test backend,
-/// and the registry.
-pub mod stream_backend;
 pub mod types;
 
 #[cfg(feature = "debug")]
@@ -53,6 +49,7 @@ pub use arena::{Arena, ArenaError, ArenaRef, ThunkState, Value, ValueKind};
 pub use error::{CompileError, Span};
 pub use ir::{Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::RillProgram;
+pub use program_runner::ProgramRunner;
 pub use serde_def::{compile_def, RillLangDef};
 
 pub use builtin::{BuiltinKind, Registry};
@@ -72,10 +69,13 @@ use crate::mode::Mode;
 /// use rill_lang::compile;
 /// use rill_core::traits::Algorithm;
 ///
-/// let mut prog = compile::<f32>("main g = g * 0.5").unwrap();
-/// let mut out = [0.0f32; 2];
-/// prog.process(Some(&[2.0, 4.0]), &mut out).unwrap();
-/// assert_eq!(out, [1.0, 2.0]);
+/// // A value-typed `main` is the program's single value output.
+/// let mut prog = compile::<f32>("main = 1.0 + 2.0").unwrap();
+/// prog.process(None, &mut [0.0f32; 2]).unwrap();
+/// assert_eq!(
+///     prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+///     &rill_lang::arena::Value::Float(3.0)
+/// );
 /// ```
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
     compile_with_mode::<T>(src, Mode::Strict)
@@ -145,9 +145,9 @@ pub fn compile_with_ffi_mode<T: Transcendental>(
 }
 
 /// Like [`compile_with_ffi`], with explicit input/output channel counts known
-/// before launch (the external I/O layer wires a backend with exactly these
-/// channels). `readInput` returns a `List Buffer` of `input_channels` entries;
-/// `writeOutput` writes `output_channels` channels from its `List Buffer`.
+/// before launch (the retained multichannel signal path wires a backend with
+/// exactly these channels). `input_channels` sizes the program's input table;
+/// `output_channels` sizes the external output table.
 pub fn compile_with_ffi_channels<T: Transcendental>(
     src: &str,
     ffi: &crate::ffi::ForeignRegistry<T>,
@@ -164,6 +164,76 @@ pub fn compile_with_ffi_channels<T: Transcendental>(
     )?;
     let registry = Registry::<T>::new();
     RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
+}
+
+/// Compile rill-lang source into a [`ProgramRunner`] — the executor of
+/// `main : (String…) -> IO ()`.
+///
+/// The runner's program is compiled in `Complete` (lazy) mode unless the source
+/// carries its own `{-# MODE … #-}` pragma: the runner executes a
+/// Turing-complete program, including recursive stream helpers that `Strict`
+/// mode rejects.
+///
+/// The block size `BUF` bounds the buffer table; it does not affect the
+/// program's value semantics. The runner takes no external I/O handles: the
+/// program's streams are created by the program itself.
+///
+/// ```
+/// use rill_lang::{compile_runner, Registry};
+///
+/// let mut runner = compile_runner::<f32, 256>(
+///     r#"main = do { write (Just "hi") stdout; return () };"#,
+///     &Registry::new(),
+///     44_100.0,
+/// )
+/// .unwrap();
+/// runner.run().unwrap();
+/// assert_eq!(runner.stdout(), ["hi"]);
+/// ```
+pub fn compile_runner<T: Transcendental, const BUF: usize>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+) -> Result<ProgramRunner<T, BUF>, CompileError> {
+    let program = compile_source_to_program::<T, BUF>(src, registry, sample_rate, Mode::Complete)?;
+    Ok(ProgramRunner::new(program))
+}
+
+/// The source-to-program pipeline shared by the executable (runner) entry
+/// points: tokenize → parse → resource extraction → mode resolution → infer →
+/// reduce → lower → program assembly.
+fn compile_source_to_program<T: Transcendental, const BUF: usize>(
+    src: &str,
+    registry: &Registry<T>,
+    sample_rate: f32,
+    mode: Mode,
+) -> Result<RillProgram<T, BUF>, CompileError> {
+    let tokens = lexer::tokenize(src)?;
+    let program = parser::parse(&tokens, src.as_bytes())?;
+    let (mut program, tape_decls) = extract_resources(&program)?;
+    apply_api_mode(&mut program, mode);
+    let mut typed = types::infer::infer_program_with(&program, program.mode)?;
+    typed.tape_decls = tape_decls
+        .iter()
+        .map(|d| (d.name.clone(), d.capacity))
+        .collect();
+    typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
+    let ir =
+        lower::lower_program_with_channels(&typed, sample_rate, &typed.cafs, typed.mode, 0, None)?;
+    // No external resource registry is supplied: every resource-backed built-in
+    // must resolve to a `tape_loop` declaration in the source.
+    for bi in &ir.builtins {
+        if let Some(res) = &bi.resource {
+            if !tape_decls.iter().any(|d| &d.name == res) {
+                return Err(CompileError::Unsupported(format!(
+                    "built-in '{}' references undeclared resource '{}' \
+                     (declare it with `tape = tape_loop <capacity>`)",
+                    bi.name, res
+                )));
+            }
+        }
+    }
+    RillProgram::<T, BUF>::new_with(ir, registry, sample_rate, None)
 }
 
 /// Resolve the effective evaluation mode for a parsed program: the file's
@@ -458,7 +528,7 @@ mod ir_tests {
         // the value track lowers each reference to its own instance.
         let registry = sine_registry();
         let prog = compile_with::<f32>(
-            "osc = sine 440.0 1.0 0.0; main = do { writeOutput [osc]; return () }",
+            "osc = sine 440.0 1.0 0.0; main = osc * 1.0;",
             &registry,
             44100.0,
         )
@@ -474,7 +544,7 @@ mod ir_tests {
         // lofi: 1 signal in (from pipeline :), 1 out, 7 params
         registry.register_block("lofi", |_, _, _alloc| panic!("not instantiated"));
 
-        let src = r"main = do { writeOutput [lofi 8 44100 0.75 1.0 1 0 1 (ay38910 1750000.0 1.0)]; return () }";
+        let src = r"main = lofi 8 44100 0.75 1.0 1 0 1 (ay38910 1750000.0 1.0);";
         let tokens = lexer::tokenize(src).unwrap();
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
         let mut typed = types::infer::infer_program_with(&program, program.mode).unwrap();
@@ -482,12 +552,27 @@ mod ir_tests {
         let ir = lower::lower_with(&typed, 44100.0).unwrap();
         assert!(
             ir.num_outputs > 0,
-            "IO program must write at least one output"
+            "the signal program must produce an output channel"
         );
-        assert!(ir.value_blocks[0]
-            .instrs
-            .iter()
-            .any(|i| matches!(i, ir::ValueInstr::ValueWriteOutputList { .. })));
+        // Each block call is instantiated in a callable fragment of the value
+        // track (the block arguments are curried closures), so the foreign
+        // call lives in one of the program's fragments rather than the main
+        // value block.
+        assert!(
+            ir.value_blocks
+                .iter()
+                .chain(ir.fragments.iter().flat_map(|f| &f.value_blocks))
+                .flat_map(|b| &b.instrs)
+                .any(|i| matches!(i, ir::ValueInstr::ValueCallForeign { .. })),
+            "the block calls must instantiate their foreign builtins"
+        );
+        assert_eq!(
+            ir.builtins
+                .iter()
+                .map(|b| b.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ay38910", "lofi"]
+        );
     }
 
     #[test]

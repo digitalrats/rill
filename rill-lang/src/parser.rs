@@ -1863,7 +1863,7 @@ mod tests {
     fn parses_do_block_with_layout() {
         // Offside rule: a `do` block without braces — statements delimited by
         // the layout context's indentation column.
-        let b = body("main = do\n    writeOutput [1.0]\n    return ()\n");
+        let b = body("main = do\n    write (Just 1.0) stdout\n    return ()\n");
         assert_eq!(
             curry_head(&b).map(|(name, _)| name),
             Some("bind"),
@@ -1874,7 +1874,7 @@ mod tests {
     #[test]
     fn parses_do_block_layout_bind_statement() {
         // `x <- e` in layout form (no `;`): the block's first statement binds.
-        let b = body("main = do\n    x <- readInput\n    writeOutput x\n");
+        let b = body("main = do\n    x <- fromList list\n    toList x\n");
         assert_eq!(
             curry_head(&b).map(|(name, _)| name),
             Some("bind"),
@@ -1903,7 +1903,7 @@ mod tests {
 
     #[test]
     fn parses_do_layout_then_top_level_def() {
-        let p = prog("main = do\n    writeOutput [1.0]\n    return ()\nother = 1.0\n");
+        let p = prog("main = do\n    write (Just 1.0) stdout\n    return ()\nother = 1.0\n");
         assert_eq!(p.defs.len(), 2);
         assert_eq!(p.defs[1].name(), "other");
     }
@@ -1925,7 +1925,8 @@ mod tests {
     #[test]
     fn parses_do_inside_layout_where() {
         // Nested layout contexts: a `do` block indented inside a `where` def.
-        let src = "main = run where\n    run = do\n        writeOutput [1.0]\n        return ()\n";
+        let src =
+            "main = run where\n    run = do\n        write (Just 1.0) stdout\n        return ()\n";
         let p = prog(src);
         let main = p.main_def().unwrap();
         let where_defs = main.where_defs();
@@ -1945,7 +1946,7 @@ mod tests {
     #[test]
     fn parses_do_block_layout_case_body() {
         // Layout `case` whose arms' bodies are layout `do` blocks.
-        let src = "main = case x of\n    Just v -> do\n        writeOutput [v]\n        return ()\n    Nothing -> do\n        return ()\n";
+        let src = "main = case x of\n    Just v -> do\n        write (Just v) stdout\n        return ()\n    Nothing -> do\n        return ()\n";
         let b = body(src);
         let Expr::Match { arms, .. } = b else {
             panic!("expected Match, got {b:?}");

@@ -1,5 +1,11 @@
 //! Runtime — launches backends wired to a [`ProgramRunner`].
 //!
+//! Retained until the signal-transform orchestration is removed: it still wires
+//! the **pure-value** program path
+//! ([`MultichannelAlgorithm`](rill_core::traits::MultichannelAlgorithm)) to an
+//! I/O driver. The executor entry point is
+//! [`ProgramRunner::run`](crate::program_runner::ProgramRunner::run).
+//!
 //! Thin glue that registers a process callback on a driver, connecting
 //! an [`IoCapture`] (optional) and [`IoPlayback`] (optional) to a program or a
 //! compiled stream.
@@ -9,8 +15,6 @@ use std::sync::Arc;
 
 use rill_core::buffer::FixedBuffer;
 use rill_core::io::{IoCapture, IoDriver, IoPlayback};
-
-#[cfg(feature = "graph")]
 use rill_core::traits::MultichannelAlgorithm;
 
 use crate::program_runner::ProgramRunner;
@@ -34,28 +38,31 @@ impl Runtime {
     /// Every backend channel is driven: each tick reads `num_input_channels()`
     /// from `capture` and writes `num_output_channels()` from `playback`. The
     /// backend channel counts must match the program's arity
-    /// ([`ProgramRunner::num_inputs`]/[`num_outputs`]) — a mismatch is
-    /// rejected before the driver starts.
+    /// ([`MultichannelAlgorithm::num_inputs`]/[`num_outputs`] of the wrapped
+    /// program) — a mismatch is rejected before the driver starts.
     ///
     /// `capture` and `playback` are optional — use [`NullBackend`](rill_core::io::NullBackend)
     /// to fill the unused direction. Channel buffers are pre-allocated before
     /// [`IoDriver::run`]; the callback performs no heap allocation.
+    ///
+    /// This is the retained pure-value signal path; the runner's own executor is
+    /// [`ProgramRunner::run`](crate::program_runner::ProgramRunner::run).
     pub fn launch<const BUF: usize>(
         driver: Arc<dyn IoDriver>,
         capture: Option<Arc<dyn IoCapture>>,
         playback: Option<Arc<dyn IoPlayback>>,
-        mut program: ProgramRunner<BUF>,
+        mut program: ProgramRunner<f32, BUF>,
         running: Arc<AtomicBool>,
     ) -> Result<(), String> {
         let (cap, pb) = (capture.clone(), playback.clone());
         let n_in = cap.as_ref().map(|c| c.num_input_channels()).unwrap_or(0);
         let n_out = pb.as_ref().map(|p| p.num_output_channels()).unwrap_or(0);
-        if n_in != program.num_inputs() || n_out != program.num_outputs() {
+        if n_in != program.program().num_inputs() || n_out != program.program().num_outputs() {
             return Err(format!(
                 "channel count mismatch: capture exposes {n_in} input(s), program expects {}; \
                  playback exposes {n_out} output(s), program expects {}",
-                program.num_inputs(),
-                program.num_outputs(),
+                program.program().num_inputs(),
+                program.program().num_outputs(),
             ));
         }
         if n_in > MAX_CHANNELS || n_out > MAX_CHANNELS {
@@ -83,7 +90,11 @@ impl Runtime {
             let mut out_iter = out_bufs.iter_mut().map(|b| &mut b[..n]);
             let mut output_slices: [&mut [f32]; MAX_CHANNELS] =
                 std::array::from_fn(|_| out_iter.next().unwrap());
-            program.apply(&input_slices[..n_in], &mut output_slices[..n_out], tick);
+            let _ = crate::backend::interp::run_block_mimo(
+                program.program_mut(),
+                &input_slices[..n_in],
+                &mut output_slices[..n_out],
+            );
             if let Some(ref p) = pb {
                 for (c, buf) in out_bufs.iter().take(n_out).enumerate() {
                     p.write_output(c, &buf[..n]);
@@ -112,7 +123,7 @@ impl Runtime {
         let (cap, pb) = (capture, playback);
         match stream {
             CompiledStream::Single(engine) => {
-                let runner = ProgramRunner::<BUF>::new(engine, None);
+                let runner = ProgramRunner::<f32, BUF>::new(engine.into_program());
                 Self::launch::<BUF>(driver, cap, pb, runner, running)
             }
             CompiledStream::Duplex {

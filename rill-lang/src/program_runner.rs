@@ -1,119 +1,86 @@
-//! ProgramRunner — pure signal transform for DSL-compiled programs.
+//! `ProgramRunner` — the executor of a compiled program.
 //!
-//! Thin wrapper around a compiled graph engine. It has no I/O knowledge —
-//! the caller feeds input buffers and receives output buffers.
+//! Where the old runner was a pure signal transform (`&[&[f32]]` →
+//! `&mut [&mut [f32]]`), this one **executes the program**: it runs
+//! `main : (String…) -> IO ()` to completion against the realized `World`,
+//! performing whatever memory-stream and stdio effects the program requests.
+//! The runner takes no input/output buffers or backend handles from outside —
+//! streams are created inside the program.
 //!
-//! # Safety
-//!
-//! `!Send + !Sync` (via `PhantomData<*const ()>`) — must stay on the I/O
-//! callback thread.
+//! The executable is built with [`compile_runner`](crate::compile_runner), which
+//! compiles in `Complete` (lazy) mode unless the source carries its own
+//! `{-# MODE … #-}` pragma.
 
-use std::marker::PhantomData;
+use rill_core::math::Transcendental;
+use rill_core::traits::ProcessError;
 
-use rill_core::queues::CommandEnum;
-use rill_core::time::ClockTick;
-use rill_core::traits::MultichannelAlgorithm;
-use rill_core_actor::ActorRef;
+use crate::program::RillProgram;
 
-use crate::program_engine::ProgramEngine;
-
-/// Pure signal transform: `&[&[f32]]` → `&mut [&mut [f32]]`.
+/// The executor of a compiled rill-lang program.
 ///
-/// The caller is responsible for wiring I/O backends and managing the
-/// driver lifecycle. Use [`apply`](ProgramRunner::apply) inside the
-/// process callback set on the driver.
-pub struct ProgramRunner<const BUF: usize> {
-    engine: ProgramEngine<f32, BUF>,
-    parent_ref: Option<ActorRef<CommandEnum>>,
-    _not_send_sync: PhantomData<*const ()>,
+/// Bind launch arguments with [`set_args`](Self::set_args), then
+/// [`run`](Self::run) the program's `main : IO ()` to completion. The captured
+/// console is available through [`stdout`](Self::stdout) and
+/// [`stderr`](Self::stderr).
+pub struct ProgramRunner<T: Transcendental, const BUF: usize> {
+    program: RillProgram<T, BUF>,
+    stdout: Vec<String>,
+    stderr: Vec<String>,
 }
 
-impl<const BUF: usize> ProgramRunner<BUF> {
-    /// Create a new runner wrapping a compiled program engine.
-    pub fn new(engine: ProgramEngine<f32, BUF>, parent_ref: Option<ActorRef<CommandEnum>>) -> Self {
+impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
+    /// Wrap an already-compiled program in a runner.
+    pub fn new(program: RillProgram<T, BUF>) -> Self {
         Self {
-            engine,
-            parent_ref,
-            _not_send_sync: PhantomData,
+            program,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
         }
     }
 
-    /// Handle for sending `SetParameter` commands from control threads.
-    pub fn handle(&self) -> ActorRef<CommandEnum> {
-        self.engine.handle()
-    }
-
-    /// Reference to the underlying program engine.
-    pub fn engine(&self) -> &ProgramEngine<f32, BUF> {
-        &self.engine
-    }
-
-    /// Number of signal input channels the program expects.
-    pub fn num_inputs(&self) -> usize {
-        self.engine.num_inputs()
-    }
-
-    /// Number of signal output channels the program produces.
-    pub fn num_outputs(&self) -> usize {
-        self.engine.num_outputs()
-    }
-
-    /// Process one tick: transform `inputs` into `outputs`.
+    /// Bind `main`'s String λ-parameters.
     ///
-    /// Called from the driver's process callback. The caller provides
-    /// the input data (from `IoCapture`) and receives the output
-    /// (destined for `IoPlayback`). Clock events are forwarded to the
-    /// engine's mailbox and the optional parent actor.
-    pub fn apply(&mut self, inputs: &[&[f32]], outputs: &mut [&mut [f32]], tick: &ClockTick) {
-        let chunk_end = tick.sample_pos + tick.samples_since_last as u64;
-        let _ = self.engine.process_tick(inputs, outputs, chunk_end);
-        if tick.is_final {
-            self.engine
-                .handle()
-                .send(CommandEnum::ClockTick(tick.clone()));
-            if let Some(ref parent) = self.parent_ref {
-                parent.send(CommandEnum::ClockTick(tick.clone()));
-            }
+    /// The `n`-th argument binds `main`'s `n`-th λ-parameter. Parameters with
+    /// no corresponding argument default to the empty string. Extra arguments
+    /// are ignored (the source has no such parameter).
+    pub fn set_args(&mut self, args: &[String]) {
+        for cell in 0..self.program.num_main_args() {
+            let value = args.get(cell).map_or("", String::as_str);
+            self.program.set_main_arg(cell, value);
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rill_core::time::ClockTick;
+    /// Run `main : IO ()` to completion against the realized `World`.
+    ///
+    /// The captured console is refreshed even when the run fails, so a caller
+    /// can inspect what the program wrote before the error. A program whose
+    /// `main` is not an executable `IO ()` action, or whose evaluation exhausts
+    /// the fixed arena, yields a [`ProcessError`] rather than panicking.
+    pub fn run(&mut self) -> Result<(), ProcessError> {
+        let result = crate::backend::interp::run_main_io(&mut self.program);
+        let world = self.program.world.borrow();
+        self.stdout.clone_from(&world.stdout);
+        self.stderr.clone_from(&world.stderr);
+        result
+    }
 
-    #[test]
-    fn apply_produces_finite_output() {
-        use crate::builtin::Registry;
-        use crate::compile_graph;
+    /// Lines written to `stdout` by the last [`run`](Self::run), in order.
+    pub fn stdout(&self) -> &[String] {
+        &self.stdout
+    }
 
-        let engine = compile_graph::<f32, 256>(
-            r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }",
-            &Registry::new(),
-            44100.0,
-        )
-        .unwrap();
-        let mut runner = ProgramRunner::new(engine, None);
+    /// Lines written to `stderr` by the last [`run`](Self::run), in order.
+    pub fn stderr(&self) -> &[String] {
+        &self.stderr
+    }
 
-        let tick = ClockTick {
-            sample_pos: 0,
-            samples_since_last: 4,
-            sample_rate: 44100.0,
-            speed_ratio: 1.0,
-            io_quantum: 4,
-            source: "test".into(),
-            is_new_block: true,
-            is_final: true,
-            tempo: None,
-        };
+    /// The underlying compiled program, for inspection (parameters, IR).
+    pub fn program(&self) -> &RillProgram<T, BUF> {
+        &self.program
+    }
 
-        let input = [0.5f32; 4];
-        let mut output = [0.0f32; 4];
-        runner.apply(&[&input[..]], &mut [&mut output[..]], &tick);
-
-        for v in &output {
-            assert!(v.is_finite());
-        }
+    /// Mutable access to the underlying compiled program (parameter control).
+    pub fn program_mut(&mut self) -> &mut RillProgram<T, BUF> {
+        &mut self.program
     }
 }

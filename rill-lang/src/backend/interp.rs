@@ -10,7 +10,9 @@ use crate::arena::{Arena, ArenaRef, ThunkState, Value};
 use crate::ir::{
     BinArith, CmpOp, FragmentIr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr, ValueTerm,
 };
-use crate::program::{RillProgram, MAX_BUILTIN_CHANNELS};
+use crate::program::{
+    RillProgram, StreamHandle, MAX_BUILTIN_CHANNELS, STREAM_HANDLE_TAG, WORLD_TOKEN,
+};
 
 pub(crate) fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     match pv {
@@ -118,10 +120,11 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     }
     prog.ir.value_output_regs = output_regs;
 
-    // Drain the outputs written by `ValueWriteOutput` this tick: each pending
-    // (output index → buffer handle) copies its buffer's slice into the
-    // external `outputs[index]` slice. This is the IO-monad output path
-    // (`writeOutput k buf`).
+    // Drain the outputs written by `ValueWriteOutputList` this tick: each
+    // pending (output index → buffer handle) copies its buffer's slice into the
+    // external `outputs[index]` slice. The instruction is retained for the
+    // multichannel signal path only (no lowering site emits it since the IO
+    // surface moved to streams).
     let pending = std::mem::take(&mut prog.pending_outputs);
     for (idx, buf) in pending {
         if let Some(out) = outputs.get_mut(idx) {
@@ -250,6 +253,76 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
         return Err(err);
     }
     Ok(())
+}
+
+/// Run a program's `main : IO ()` to completion against the realized
+/// [`WorldState`](crate::program::WorldState).
+///
+/// Evaluates `main`'s value through the value track (this is where the `IO`
+/// action — a `{ unIO: World -> Pair World () }` record — is built), projects
+/// `unIO`, applies it to the realized `World` token, and forces the resulting
+/// pair so every effect the action requests actually runs. The final token is
+/// discarded; the effects' observable state stays in the program's world
+/// (`stdout`/`stderr` and the stream table).
+///
+/// A program whose `main` is not an executable `IO` value, or whose effects
+/// exhaust the fixed arena, yields a clean [`ProcessError`].
+pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+) -> Result<(), ProcessError> {
+    // Run one value-track pass with no signal outputs: `main`'s value (the IO
+    // action) lands in `value_outputs[0]`.
+    let mut no_outputs: [&mut [T]; 0] = [];
+    run_block_mimo(prog, &[], &mut no_outputs)?;
+
+    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let mark = drops.len();
+    let mut applied = false;
+    if let Some(action) = prog.value_outputs.first().copied().flatten() {
+        let action = force(prog, action, &mut drops);
+        // `IO a = { unIO: World -> Pair World a }`: field 0 is the computation.
+        let un_io = match prog.arena.get(action) {
+            Some(Value::Record(fields)) => fields.first().copied(),
+            _ => None,
+        };
+        if let Some(un_io) = un_io {
+            if let Some(world) = alloc_owned(prog, Value::Opaque(WORLD_TOKEN)) {
+                let pair = apply_callable(prog, un_io, world, &mut drops);
+                // The action only borrowed the token.
+                prog.arena.drop_ref(world);
+                if let Some(pair) = pair.and_then(|p| force_owned(prog, p, &mut drops)) {
+                    // Force the action's result while its parts are still
+                    // alive: leaving the run is a strict boundary, so the
+                    // final effect must be materialized before the pair (and
+                    // the closure environment it pins) is released.
+                    let payload = match prog.arena.get(pair) {
+                        Some(Value::Record(fields)) => fields.get(1).copied(),
+                        _ => None,
+                    };
+                    applied = payload.is_some();
+                    if let Some(payload) = payload {
+                        let _ = force(prog, payload, &mut drops);
+                    }
+                    prog.arena.drop_ref(pair);
+                }
+            }
+        }
+    }
+    for r in drops.drain(mark..) {
+        prog.arena.drop_ref(r);
+    }
+    prog.drops_scratch = drops;
+
+    if let Some(err) = prog.value_error.take() {
+        return Err(err);
+    }
+    if applied {
+        Ok(())
+    } else {
+        Err(ProcessError::processing(
+            "`main` is not an executable `IO ()` action",
+        ))
+    }
 }
 
 /// Latch a value-track resource exhaustion as a user-facing `ProcessError`
@@ -1382,6 +1455,9 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueConstVoid { dst } => {
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
         }
+        ValueInstr::ValueConstOpaque { dst, handle } => {
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Opaque(*handle));
+        }
         ValueInstr::ValueReadParam { dst, idx } => {
             let v = param_to_f64(&prog.params[*idx]);
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Float(v));
@@ -1490,7 +1566,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 let mut fields: Vec<crate::arena::ArenaRef> = Vec::with_capacity(args.len());
                 for a in args {
                     let Some(r) = prog.value_regs.get(*a + base).copied().flatten() else {
-                        // `exec_st_effect` reads the captured operands
+                        // `exec_effect` reads the captured operands
                         // POSITIONALLY, so skipping an unbound one would
                         // silently re-index the rest — a missing FIRST operand
                         // would turn the stored value into the cell handle.
@@ -1698,8 +1774,9 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueReadInputs { dst } => {
-            // `readInput : () -> List Buffer` — collect the first
-            // `cur_num_inputs` input-channel buffers into a first-class List.
+            // Collect the first `cur_num_inputs` input-channel buffers into a
+            // first-class List. The instruction is retained for the multichannel
+            // signal path; no lowering site emits it.
             // The channel count is latched at the first tick (the backend's
             // channel count is immutable), so the List's length is stable.
             let bufs: Vec<usize> = prog
@@ -1726,9 +1803,9 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             };
         }
         ValueInstr::ValueReadInput { dst, index } => {
-            // `main`'s λ-parameter is the program input: `readInput k`
-            // materializes `buffers[input_buffers[k]]` (the input's buffer
-            // register) as the value's handle.
+            // Materialize `buffers[input_buffers[k]]` (the k-th input's
+            // buffer register) as the value's handle. Retained for the
+            // multichannel signal path; no lowering site emits it.
             let buf = prog.input_buffers.get(*index).copied().unwrap_or(*dst);
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(buf));
         }
@@ -2412,6 +2489,17 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 _ => None,
             };
         }
+        ShowFloat => {
+            let v = prog
+                .value_regs
+                .get(base + args[0])
+                .copied()
+                .flatten()
+                .and_then(|r| prog.arena.get(r))
+                .and_then(value_to_f64);
+            prog.value_regs[dst] =
+                v.and_then(|x| alloc_owned(prog, Value::String(format!("{x:?}"))));
+        }
     }
 }
 
@@ -2575,7 +2663,7 @@ fn apply_callable<T: Transcendental, const BUF: usize>(
         _ => return None,
     };
     match kind {
-        CallableKind::Effect(op, env) => exec_st_effect(prog, op, env, arg, drops),
+        CallableKind::Effect(op, env) => exec_effect(prog, op, env, arg, drops),
         CallableKind::Func(fragment, env) => {
             let frag = prog.ir.fragments.get(fragment as usize).cloned()?;
             // Park the borrowed argument in its own scratch slot, claiming it
@@ -2627,27 +2715,34 @@ fn force_owned<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Execute one STRef effect in the region identified by the `state` token and
-/// return the region-threading result `Pair STState a` as a fresh owner.
+/// Execute one primitive effect against the threading `state` token and return
+/// `Pair token result` as a fresh owner.
 ///
 /// `env` is the effect closure's captured argument record (in application
-/// order); `state` is the current `STState` token (`Value::Opaque(region id)`).
-/// The returned `Pair` holds a FRESH state token and the operation's result:
+/// order); `state` is the current token (`Value::Opaque`): the region id for the
+/// `STRef` operations, the realized `World` token for the io-streams
+/// operations. The returned `Pair` holds a FRESH token and the operation's
+/// result:
 /// - `NewStRef` → the new cell handle,
 /// - `ReadStRef` → the cell's value,
-/// - `WriteStRef`/`ModifyStRef` → `Void`.
-fn exec_st_effect<T: Transcendental, const BUF: usize>(
+/// - `WriteStRef`/`ModifyStRef` → `Void`,
+/// - `StreamFromList` → the stream handle,
+/// - `StreamToList` → the drained `List`,
+/// - `StreamWrite` → `Void`.
+fn exec_effect<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     op: crate::ir::ValueEffectOp,
     env: crate::arena::ArenaRef,
     state: crate::arena::ArenaRef,
     drops: &mut Vec<crate::arena::ArenaRef>,
 ) -> Option<crate::arena::ArenaRef> {
-    // The state token is an opaque region id; anything else is a bug upstream.
+    // The threading token: an opaque region id (ST) or the realized World
+    // token (IO). Anything else is a bug upstream.
     let Some(Value::Opaque(id)) = prog.arena.get(state) else {
         return None;
     };
-    let region_id = *id as usize;
+    let token = *id;
+    let region_id = token as usize;
     // The captured operands, borrowed from the env record.
     let args: Vec<crate::arena::ArenaRef> = match prog.arena.get(env) {
         Some(Value::Record(fields)) => fields.clone(),
@@ -2720,12 +2815,245 @@ fn exec_st_effect<T: Transcendental, const BUF: usize>(
         // `RunST` is emitted directly as an instruction, never as an effect
         // closure.
         crate::ir::ValueEffectOp::RunST => None,
+        // ---- io-streams effects (the World token threads them) ----
+        crate::ir::ValueEffectOp::StreamFromList => exec_stream_from_list(prog, &args, drops),
+        crate::ir::ValueEffectOp::StreamToList => exec_stream_to_list(prog, &args, drops),
+        crate::ir::ValueEffectOp::StreamWrite => exec_stream_write(prog, &args, drops),
     };
     let result = result?;
-    // Thread a FRESH state token alongside the result. The region id is the
-    // token's payload, so the successor is the same region.
-    let next_state = alloc_owned(prog, Value::Opaque(region_id as u32))?;
-    alloc_owned(prog, Value::Record(vec![next_state, result]))
+    // Thread a FRESH state token alongside the result. The payload identifies
+    // the same region / the same realized world, so the successor is identical.
+    let Some(next_state) = alloc_owned(prog, Value::Opaque(token)) else {
+        latch_exhaustion(prog, "value arena (effect token)");
+        return None;
+    };
+    let pair = alloc_owned(prog, Value::Record(vec![next_state, result]));
+    if pair.is_none() {
+        latch_exhaustion(prog, "value arena (effect result)");
+    }
+    pair
+}
+
+/// Collect a (possibly lazy) list value into the stream table as a memory input
+/// stream, returning its opaque handle.
+///
+/// The list's spine is forced element by element, so an infinite `cons` chain
+/// drains until the fixed arena budget is exhausted — that exhaustion is
+/// latched as a user-facing capacity error rather than looping forever.
+fn exec_stream_from_list<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let src = *args.first()?;
+    let mut elems: Vec<ArenaRef> = Vec::new();
+    let mut cur = force(prog, src, drops);
+    loop {
+        // Snapshot the spine node before copying its elements: the copy borrows
+        // the arena mutably, so the node's refs must outlive that borrow.
+        let node = match prog.arena.get(cur) {
+            Some(Value::List { elems: items }) => Some(Ok(items.clone())),
+            Some(Value::Cons(head, tail)) => Some(Err((*head, *tail))),
+            _ => None,
+        };
+        match node {
+            Some(Ok(items)) => {
+                for e in items {
+                    match copy_owned(prog, e) {
+                        Some(c) => elems.push(c),
+                        None => {
+                            for r in elems.drain(..) {
+                                prog.arena.drop_ref(r);
+                            }
+                            latch_exhaustion(prog, "value arena (io stream)");
+                            return None;
+                        }
+                    }
+                }
+                break;
+            }
+            Some(Err((head, tail))) => {
+                match copy_owned(prog, head) {
+                    Some(c) => elems.push(c),
+                    None => {
+                        for r in elems.drain(..) {
+                            prog.arena.drop_ref(r);
+                        }
+                        latch_exhaustion(prog, "value arena (io stream)");
+                        return None;
+                    }
+                }
+                let next = force(prog, tail, drops);
+                if next == cur {
+                    // A self-referential tail: treat it as the end of the list
+                    // rather than spinning (the arena bound would eventually
+                    // stop it, but this keeps the failure immediate).
+                    break;
+                }
+                cur = next;
+            }
+            // An empty/unbound stream source reads as an empty stream.
+            _ => break,
+        }
+    }
+    let idx = prog.world.borrow().streams.len();
+    if idx > (STREAM_HANDLE_TAG - 1) as usize {
+        latch_exhaustion(prog, "stream table");
+        for r in elems.drain(..) {
+            prog.arena.drop_ref(r);
+        }
+        return None;
+    }
+    prog.world
+        .borrow_mut()
+        .streams
+        .push(StreamHandle::Input { elems, pos: 0 });
+    alloc_owned(prog, Value::Opaque(STREAM_HANDLE_TAG | idx as u32))
+}
+
+/// Drain a memory input stream into a `List` value.
+fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    // The stream operand may arrive as an unforced thunk (a `do`-bound
+    // `xs <- fromList …` is bound lazily): force it before reading its payload.
+    let handle_ref = force(prog, *args.first()?, drops);
+    let h = stream_handle_index(prog, handle_ref)?;
+    let taken = {
+        let mut world = prog.world.borrow_mut();
+        match world.streams.get_mut(h) {
+            Some(StreamHandle::Input { elems, pos }) => {
+                let rest = elems.split_off(*pos);
+                // The consumed prefix is no longer reachable: release it.
+                for r in elems.drain(..) {
+                    prog.arena.drop_ref(r);
+                }
+                *pos = 0;
+                Some(rest)
+            }
+            _ => None,
+        }
+    };
+    let Some(items) = taken else {
+        latch_fault(prog, "`toList` applied to a non-input stream");
+        return None;
+    };
+    let n = items.len();
+    let mut buf = match prog.arena.take_buf(n) {
+        Ok(b) => b,
+        Err(_) => {
+            for r in items {
+                prog.arena.drop_ref(r);
+            }
+            latch_exhaustion(prog, "value buffer pool (io stream)");
+            return None;
+        }
+    };
+    buf.extend(items);
+    alloc_owned(prog, Value::List { elems: buf })
+}
+
+/// Perform `write mb out`: push `Just x` into an output stream, or close it on
+/// `Nothing`. The stdio targets append the string to the captured console.
+fn exec_stream_write<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let mb = force(prog, *args.first()?, drops);
+    // `Maybe a`: constructor 0 is `Just`, constructor 1 is `Nothing`.
+    let item = match prog.arena.get(mb) {
+        Some(Value::Sum(0, payload)) => payload.first().copied(),
+        Some(Value::Sum(_, _)) => None,
+        _ => {
+            latch_fault(prog, "`write` expects a Maybe");
+            return None;
+        }
+    };
+    let handle_ref = force(prog, *args.get(1)?, drops);
+    let h = stream_handle_index(prog, handle_ref)?;
+    // Read the written item before touching the stream table so an allocation
+    // failure cannot leave the table half-updated.
+    let item_ref = match item {
+        Some(r) => {
+            let r = force(prog, r, drops);
+            match copy_owned(prog, r) {
+                Some(c) => Some(c),
+                None => {
+                    latch_exhaustion(prog, "value arena (io stream)");
+                    return None;
+                }
+            }
+        }
+        None => None,
+    };
+    let mut world = prog.world.borrow_mut();
+    match world.streams.get_mut(h) {
+        Some(StreamHandle::Stdout) => {
+            if let Some(r) = item_ref {
+                match prog.arena.get(r) {
+                    Some(Value::String(s)) => world.stdout.push(s.clone()),
+                    _ => {
+                        prog.arena.drop_ref(r);
+                        drop(world);
+                        latch_fault(prog, "`stdout` expects a String element");
+                        return None;
+                    }
+                }
+                prog.arena.drop_ref(r);
+            }
+        }
+        Some(StreamHandle::Stderr) => {
+            if let Some(r) = item_ref {
+                match prog.arena.get(r) {
+                    Some(Value::String(s)) => world.stderr.push(s.clone()),
+                    _ => {
+                        prog.arena.drop_ref(r);
+                        drop(world);
+                        latch_fault(prog, "`stderr` expects a String element");
+                        return None;
+                    }
+                }
+                prog.arena.drop_ref(r);
+            }
+        }
+        Some(StreamHandle::Input { .. }) => {
+            if let Some(r) = item_ref {
+                prog.arena.drop_ref(r);
+            }
+            drop(world);
+            latch_fault(prog, "`write` applied to an input stream");
+            return None;
+        }
+        None => {
+            if let Some(r) = item_ref {
+                prog.arena.drop_ref(r);
+            }
+            drop(world);
+            latch_fault(prog, "invalid stream handle");
+            return None;
+        }
+    }
+    drop(world);
+    alloc_owned(prog, Value::Void)
+}
+
+/// Resolve an opaque stream-handle value to its stream-table index.
+fn stream_handle_index<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    value: ArenaRef,
+) -> Option<usize> {
+    match prog.arena.get(value) {
+        Some(Value::Opaque(payload)) if *payload >= STREAM_HANDLE_TAG => {
+            Some((payload & !STREAM_HANDLE_TAG) as usize)
+        }
+        _ => {
+            latch_fault(prog, "expected a stream handle");
+            None
+        }
+    }
 }
 
 /// Run one `runST`: enter a fresh region, apply the `ST` value's `unST`
@@ -3563,7 +3891,7 @@ mod value_track_tests {
     #[test]
     fn effect_closure_with_unbound_operand_is_a_latched_fault() {
         // Neither operand register is bound. The effect closure must NOT be
-        // built from the remaining operands: `exec_st_effect` reads the
+        // built from the remaining operands: `exec_effect` reads the
         // captured fields positionally, so a shortened record would turn the
         // stored value into the cell handle. The op yields no value and latches
         // a (user-facing) fault instead.

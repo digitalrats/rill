@@ -996,6 +996,18 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
         .flat_map(|(class, by_ty)| by_ty.keys().map(|ty_name| (class.clone(), ty_name.clone())))
         .collect();
     for (class, ty_name) in keys {
+        // A prelude-declared instance is trusted compiler machinery; validating
+        // it here would type its body against the USER's data environment,
+        // where a legal shadowing declaration (`data Pair = { x, y }`) can make
+        // a prelude body's field names unresolvable. Its bodies are still typed
+        // at every call site (do-notation binds through `Monad IO`).
+        if ctx
+            .env
+            .prelude_instances
+            .contains(&(class.clone(), ty_name.clone()))
+        {
+            continue;
+        }
         let info = ctx
             .env
             .instances
@@ -1459,12 +1471,12 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     let saved_bodies = ctx.def_bodies.clone();
     ctx.locals.clear();
     for p in def.params() {
-        // IO-model `main`: λ-parameters are the program's BUFFER inputs
-        // (`main i1 i2 = do { … }` → `i1, i2 : Buffer`). Other definitions'
-        // λ-parameters keep their scalar/control default.
+        // `main`: λ-parameters are the program's String launch arguments
+        // (`main a = …` → `a : String`), bound by `ProgramRunner::set_args`.
+        // Other definitions' λ-parameters keep their scalar/control default.
         if def.name() == "main" {
             ctx.locals
-                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Buffer));
+                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
         } else {
             ctx.locals
                 .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Float));
@@ -1473,16 +1485,16 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     let result = match infer_expr(ctx, def.body()) {
         Ok(t) => Ok(t),
         Err(_) => {
-            ctx.subst = saved_subst;
+            ctx.subst = saved_subst.clone();
             ctx.next = saved_next;
-            ctx.defs = saved_defs;
-            ctx.def_bodies = saved_bodies;
+            ctx.defs = saved_defs.clone();
+            ctx.def_bodies = saved_bodies.clone();
             ctx.locals.clear();
             for p in def.params() {
                 if def.name() == "main" {
-                    // IO-model `main`: λ-parameters are BUFFER inputs.
+                    // `main`: λ-parameters are String launch arguments.
                     ctx.locals
-                        .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Buffer));
+                        .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
                 } else {
                     let v = ctx.next;
                     ctx.next += 1;
@@ -1523,6 +1535,30 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 }
             }
             let retry = infer_expr(ctx, def.body());
+            // `main` is the program's entry point, typed `(String…) -> IO ()`.
+            // A body that is a bare result-directed monad action (`main =
+            // return ()`) carries no constraint fixing the monad, so the plain
+            // inference cannot resolve it. Re-infer against the program's
+            // declared result type `IO ()`; a value `main` (the retained
+            // pure-value test path) already succeeded above and is untouched.
+            let retry = if retry.is_err() && def.name() == "main" {
+                ctx.subst = saved_subst.clone();
+                ctx.next = saved_next;
+                ctx.defs = saved_defs.clone();
+                ctx.def_bodies = saved_bodies.clone();
+                ctx.locals.clear();
+                for p in def.params() {
+                    ctx.locals
+                        .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
+                }
+                let io_unit = ValueTy::Data("IO".into(), vec![ValueTy::Void]);
+                match infer_expr_expected(ctx, def.body(), Some(io_unit)) {
+                    Ok(t) => Ok(t),
+                    Err(_) => retry,
+                }
+            } else {
+                retry
+            };
             // Record the VALUE-track retry's resolved λ-parameter types: the
             // body's value demands (`tail xs` → xs : List, `k - 1.0` → k :
             // Float) resolve the fresh param vars here, and the final scheme
@@ -1694,9 +1730,9 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         let lam_count = def.params().len();
         let mut param_tys = Vec::with_capacity(lam_count);
         for _ in 0..lam_count {
-            // IO-model `main`: λ-parameters are the program's BUFFER inputs.
+            // `main`: λ-parameters are the program's String launch arguments.
             param_tys.push(if def.name() == "main" {
-                ValueTy::Buffer
+                ValueTy::String
             } else {
                 ValueTy::Float
             });
@@ -1728,9 +1764,9 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         let lam_count = def.params().len();
         let mut param_tys = Vec::with_capacity(lam_count);
         for _ in 0..lam_count {
-            // IO-model `main`: λ-parameters are the program's BUFFER inputs.
+            // `main`: λ-parameters are the program's String launch arguments.
             param_tys.push(if def.name() == "main" {
-                ValueTy::Buffer
+                ValueTy::String
             } else {
                 ValueTy::Float
             });
@@ -2708,7 +2744,7 @@ fn infer_expr_expected(
             // When the lambda's expected type is a `Func`, bind each parameter
             // to the corresponding ARGUMENT type (not a fresh Var). This lets a
             // caller thread a concrete element type through: `map (fn x -> x *
-            // 0.5) (readInput)` unifies `x : Buffer` BEFORE the body infers, so
+            // 0.5) (sine 440.0 0.5 0.0)` unifies `x : Buffer` BEFORE the body infers, so
             // the arithmetic sees a Buffer (not a Var that later conflicts).
             let expected_args = match &expected {
                 Some(ValueTy::Thunk(es, _)) => Some(es.clone()),
@@ -2904,7 +2940,7 @@ fn infer_ref_expected(
         }
     }
     // A reference to a compile-time NUMERIC constant (`c = 440.0`) in a
-    // Buffer-expected position is a SIGNAL constant: `writeOutput 0 c` types
+    // Buffer-expected position is a SIGNAL constant: a foreign signal slot
     // `c : Buffer`. Otherwise the constant stays a Float value.
     if matches!(expected, Some(ValueTy::Buffer))
         && is_const_value_ref(ctx, &Expr::Ref(name.into(), span))
@@ -3064,7 +3100,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 // A bare FFI ref is a Buffer ARROW (`Buffer -> … -> Buffer`),
                 // not a signal arrow: signals are Buffer values, so a bare
                 // `integrator` is a first-class function value (HOF: `map
-                // (fn x -> integrator x) (readInput)`). Mirrors the partial
+                // (fn x -> integrator x) (sine 440.0 0.5 0.0)`). Mirrors the partial
                 // application typing in the FFI apply arm.
                 let n_sig = sig.params.len();
                 return Ok(ArrowTy::value_channel(ValueTy::Thunk(
@@ -3074,9 +3110,9 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
             }
         }
     }
-    // A NULLARY builtin signature (`readInput : () -> ST s (List Buffer)`):
+    // A NULLARY builtin signature (`stdout : () -> OutputStream String`):
     // a bare reference is a zero-argument call, returning the signature's
-    // result. (`writeOutput` takes an argument, so it only appears as Apply.)
+    // result. (`write` takes arguments, so it only appears as Apply.)
     if let Some(crate::ast::TypeExpr::TFunc(params, ret)) = ctx.env.builtin_sigs.get(name).cloned()
     {
         if params.is_empty() {
@@ -3138,7 +3174,7 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
 
 /// Convert a builtin-signature type expression to a concrete `ValueTy`.
 /// `TName` resolves through the env; `TApp` builds `App(head, args)`; a `TFunc`
-/// becomes `ValueTy::Thunk`. Used by `readInput`/`writeOutput` builtin-sig
+/// becomes `ValueTy::Thunk`. Used by the builtin-sig
 /// application (their types are ordinary, unlike `runST`'s forall).
 fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, CompileError> {
     match te {
@@ -3651,14 +3687,24 @@ fn infer_apply_impl(
         }
         return Ok(bt);
     }
-    // Builtin functions with an ordinary (non-forall) signature registered in
-    // `TypeEnv::builtin_sigs`: `readInput : Int -> IO Buffer`,
-    // `writeOutput : Int -> Buffer -> IO ()`. Type each argument against the
-    // signature's parameter type and return the signature's result type. This
-    // runs AFTER the `runST` special case (its forall signature is handled
-    // above) and BEFORE user definitions/typeclass methods.
-    if let Some(crate::ast::TypeExpr::TFunc(params, ret)) = ctx.env.builtin_sigs.get(name).cloned()
-    {
+    // Builtin functions with an ordinary signature registered in
+    // `TypeEnv::builtin_sigs`: `write : Maybe a -> OutputStream a -> IO ()`,
+    // `stdout : OutputStream String`. A leading `forall` quantifies the whole
+    // signature (the polymorphic io-streams operations), so it is stripped here
+    // and its binders instantiated once for the call, sharing the element type
+    // between arguments and result. This runs AFTER the `runST` special case
+    // (its rank-2 signature is handled above) and BEFORE user
+    // definitions/typeclass methods.
+    let builtin_sig = ctx.env.builtin_sigs.get(name).cloned().map(|sig| {
+        let mut binders = Vec::new();
+        collect_forall_binders(&sig, &mut binders);
+        let inner = match sig {
+            crate::ast::TypeExpr::TForall(_, inner) => *inner,
+            other => other,
+        };
+        (inner, binders)
+    });
+    if let Some((crate::ast::TypeExpr::TFunc(params, ret), binders)) = builtin_sig {
         if params.len() != args.len() {
             return Err(CompileError::Type {
                 msg: format!(
@@ -3677,6 +3723,9 @@ fn infer_apply_impl(
         // while instantiating the result would leave the already-instantiated
         // parameter's `s` unrelated — severing the region phantom.
         let mut sig_vars: HashMap<String, ValueTy> = HashMap::new();
+        for n in binders {
+            sig_vars.entry(n).or_insert_with(|| ctx.fresh_vty());
+        }
         hoist_forall_binders(ctx, &params, &ret, &mut sig_vars);
         let param_tys: Vec<ValueTy> = params
             .iter()
@@ -3685,11 +3734,11 @@ fn infer_apply_impl(
         let ret_ty = instantiate_builtin_sig_vty(ctx, &ret, &mut sig_vars)?;
         for (pt, a) in param_tys.into_iter().zip(args.iter()) {
             let at0 = infer_expr(ctx, a)?;
-            // A Buffer param (`writeOutput`'s second arg) accepts a signal
+            // A Buffer param (a foreign builtin's signal slot) accepts a signal
             // computation (a `Buffer -> … -> Buffer` arrow applied to the
-            // program's inputs), a Buffer value, OR a numeric signal constant
+            // program's buffers), a Buffer value, OR a numeric signal constant
             // (a literal or a reference to a compile-time constant — `c = 440.0`
-            // used as `writeOutput 0 c`). Re-infer a numeric constant with
+            // used as `lowpass 1000.0 0.7 1.0`). Re-infer a numeric constant with
             // `Buffer` expected so it unifies as a buffer channel.
             let numeric_const = at0.arity_out() == 1
                 && matches!(at0.vty, ValueTy::Float | ValueTy::Int)
@@ -3699,9 +3748,9 @@ fn infer_apply_impl(
             } else {
                 at0
             };
-            // A Buffer param (`writeOutput`'s second arg) accepts a signal
-            // computation (a `Buffer -> … -> Buffer` arrow applied to the
-            // program's inputs) OR a plain Buffer value — either way its first
+            // A Buffer param (a foreign builtin's signal slot) accepts a signal
+            // computation (a `Buffer -> … -> Buffer` arrow) OR a plain Buffer
+            // value — either way its first
             // output is a Buffer. Non-Buffer params must be 0→1 values.
             let buffer_param = pt == ValueTy::Buffer;
             if !buffer_param && (at.arity_in() != 0 || at.arity_out() != 1) {
@@ -4672,24 +4721,20 @@ fn infer_apply_impl(
                             pos += 1;
                             continue;
                         }
-                        // A foreign signal slot holds a signal-channel expression
-                        // (a wire or a 0-in generator like `sine 440.0`) — a
-                        // VALUE-rate channel (a string, a record, a lambda) is a
-                        // type error. A bare Float/Int literal IS a signal
-                        // constant (`Buffer`), so it legitimately passes.
-                        let at = infer_expr(ctx, &args[pos])?;
-                        let is_sig_const =
-                            matches!(&args[pos], Expr::Int(_, _) | Expr::Float(_, _))
-                                && at.arity_in() == 0
-                                && at.arity_out() == 1;
-                        if is_sig_const {
-                            unify_value(
-                                &at.vty,
-                                &ValueTy::Buffer,
-                                &mut ctx.subst,
-                                args[pos].span(),
-                            )?;
-                        } else if matches!(at.vty, ValueTy::Var(_)) {
+                        // A foreign signal slot holds a Buffer expression (a
+                        // 0-in generator like `sine 440.0`, another foreign
+                        // call, or a buffer value); a VALUE-rate channel (a
+                        // string, a record, a lambda) is a type error. A bare
+                        // Float/Int literal IS a signal constant: infer it
+                        // with `Buffer` expected, exactly as the buffer
+                        // arithmetic path does (`lowering` broadcasts a scalar
+                        // to a buffer constant).
+                        let at = if matches!(&args[pos], Expr::Int(_, _) | Expr::Float(_, _)) {
+                            infer_expr_expected(ctx, &args[pos], Some(ValueTy::Buffer))?
+                        } else {
+                            infer_expr(ctx, &args[pos])?
+                        };
+                        if matches!(at.vty, ValueTy::Var(_)) {
                             // An unresolved λ-parameter used in a signal slot is
                             // a signal parameter: bind it to `Buffer`. (Curried
                             // definitions bind their λ-parameters as values, so a
@@ -5206,7 +5251,7 @@ fn infer_collection_call(
             // Infer the source list FIRST so its element type is known, then
             // infer the closure with the element threaded as its parameter
             // type (`map : (a -> b) -> List a -> List b`). Without this, a
-            // lambda over a `List Buffer` (`fn x -> x * 0.5` on readInput)
+            // lambda over a `List Buffer` (`fn x -> x * 0.5` over a Buffer)
             // types `x` as a bare Var and the body's Buffer ops conflict.
             let src_ty = arg_vty(ctx, 1)?;
             let elem_ty = match &src_ty {
@@ -5503,10 +5548,9 @@ mod tests {
 
     #[test]
     fn io_main_writes_io_void() {
-        // The IO form (`main = do { … }`) pulls every input channel through
-        // `readInput` and writes the output list back through `writeOutput`;
-        // the process result is `IO ()`.
-        let t = ty_of("main = do { writeOutput (readInput); return () }").unwrap();
+        // The IO form (`main = do { … }`) is the program's `IO ()` action; the
+        // runner applies it to the realized `World`.
+        let t = ty_of("main = do { write Nothing stdout; return () }").unwrap();
         assert_eq!(
             t.process_ty.vty,
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
@@ -5515,19 +5559,16 @@ mod tests {
 
     #[test]
     fn gain_is_1_to_1() {
-        let t = ty_of(r"main = do { writeOutput (map (\x -> x * 0.5) (readInput)); return () }")
-            .unwrap();
-        assert_eq!(
-            t.process_ty.vty,
-            ValueTy::Data("IO".into(), vec![ValueTy::Void])
-        );
+        // A buffer-valued signal expression over a literal generator.
+        let t = ty_of(r"main = sine 440.0 0.5 0.0 * 0.5;").unwrap();
+        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
     }
 
     #[test]
     fn integrator_is_1_to_1() {
-        // A bare FFI builtin applied to a signal λ-param is a 1→1 Buffer arrow.
-        let t = ty_of("main g = integrator g").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        // A foreign 1→1 builtin applied to a buffer value.
+        let t = ty_of("main = integrator (sine 440.0 0.5 0.0)").unwrap();
+        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
     }
 
     #[test]
@@ -5562,8 +5603,8 @@ mod tests {
 
     #[test]
     fn let_expression_scoping() {
-        let t = ty_of("main x = let g = 0.5 in g * x").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        let t = ty_of("main = let g = 0.5 in g * 0.5").unwrap();
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -5580,8 +5621,8 @@ mod tests {
 
     #[test]
     fn builtin_call_is_1_to_1() {
-        let t = ty_with("main x = lowpass 1000.0 0.7 x").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        let t = ty_with("main = lowpass 1000.0 0.7 (sine 440.0 0.5 0.0)").unwrap();
+        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
     }
 
     #[test]
@@ -5593,12 +5634,12 @@ mod tests {
 
     #[test]
     fn builtin_ref_param_ok() {
-        assert!(ty_with("main f x = lowpass f 0.7 x").is_ok());
+        assert!(ty_with("lp f = lowpass f 0.7 (sine 440.0 0.5 0.0); main = lp 1000.0").is_ok());
     }
 
     #[test]
     fn sample_builtin_applies_in_value_position() {
-        assert!(ty_with("main x = onepole 200.0 0.5 x").is_ok());
+        assert!(ty_with("main = onepole 200.0 0.5 (sine 440.0 0.5 0.0)").is_ok());
     }
 
     #[test]
@@ -5609,12 +5650,9 @@ mod tests {
 
     #[test]
     fn scalar_param_broadcasts_to_buffer() {
-        let t = ty_of("main g = g * 0.5").unwrap();
-        // A signal λ-param is a Buffer: `main` is a `Buffer -> Buffer` function.
-        assert_eq!(
-            t.process_ty.vty,
-            ValueTy::Thunk(vec![ValueTy::Buffer], vec![ValueTy::Buffer])
-        );
+        let t = ty_of("main = sine 440.0 0.5 0.0 * 0.5").unwrap();
+        // A buffer-valued main is the program's single signal output.
+        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
     }
 
     #[test]
@@ -5625,36 +5663,29 @@ mod tests {
 
     #[test]
     fn actor_param_no_default_typechecks() {
-        let t = ty_of(r"main = do { writeOutput (map (\x -> x * ?gain) (readInput)); return () }")
-            .unwrap();
-        assert_eq!(
-            t.process_ty.vty,
-            ValueTy::Data("IO".into(), vec![ValueTy::Void])
-        );
+        let t = ty_of(r"main = if ?gain > 0.5 then 1.0 else 2.0").unwrap();
+        assert_eq!(t.process_ty.vty, ValueTy::Float);
     }
 
     #[test]
     fn actor_param_with_default_typechecks() {
-        let t =
-            ty_of(r"main = do { writeOutput (map (\x -> x * ?gain=0.5) (readInput)); return () }")
-                .unwrap();
-        assert_eq!(
-            t.process_ty.vty,
-            ValueTy::Data("IO".into(), vec![ValueTy::Void])
-        );
+        // A `?name=default` actor param in a Buffer position keeps the
+        // program's single signal output.
+        let t = ty_of(r"main = sine 440.0 ?gain=0.5 0.0").unwrap();
+        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
     }
 
     #[test]
     fn closed_top_level_local_is_caf() {
         // osc = sine 440 0.5 0  (0 input channels, 0 λ-params) -> CAF
-        let typed = ty_with("osc = sine 440 0.5 0; main x = x * 0.5").unwrap();
+        let typed = ty_with("osc = sine 440 0.5 0; main = 0.5 * 0.5").unwrap();
         assert!(typed.cafs.contains("osc"));
     }
 
     #[test]
     fn open_block_is_not_caf() {
         // gain x = x * 0.5  (has a λ-param) -> macro, not CAF
-        let typed = ty_with("gain x = x * 0.5; main x = x * 0.5").unwrap();
+        let typed = ty_with("gain x = x * 0.5; main = gain 0.5").unwrap();
         assert!(!typed.cafs.contains("gain"));
     }
 
