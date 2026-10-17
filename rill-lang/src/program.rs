@@ -33,6 +33,12 @@ pub(crate) const WORLD_TOKEN: u32 = 0;
 /// The realized standard-output handle (`stdout`). Stream-table slot 0.
 pub(crate) const STDOUT_HANDLE: u32 = STREAM_HANDLE_TAG;
 
+/// The realized standard-error handle (`stderr`). Stream-table slot 1.
+pub(crate) const STDERR_HANDLE: u32 = STREAM_HANDLE_TAG | 1;
+
+/// The realized standard-input handle (`stdin`). Stream-table slot 2.
+pub(crate) const STDIN_HANDLE: u32 = STREAM_HANDLE_TAG | 2;
+
 /// One entry of the runtime stream table — what an opaque stream handle
 /// resolves to inside the interpreter.
 pub(crate) enum StreamHandle {
@@ -67,9 +73,27 @@ pub(crate) enum StreamHandle {
         closed: bool,
     },
     /// The realized `stdout` sink: line-oriented text captured by the runner.
+    ///
+    /// `write Nothing` to the console is accepted but inert: the console is the
+    /// runner's process-lifetime output handle (the program does not own it),
+    /// so it is never closed. Program-owned sinks ([`StreamHandle::Sink`]) do
+    /// close on `write Nothing`.
     Stdout,
-    /// The realized `stderr` sink: line-oriented text captured by the runner.
+    /// The realized `stderr` sink: line-oriented text captured by the runner
+    /// (close semantics as for [`StreamHandle::Stdout`]).
     Stderr,
+    /// The realized `stdin` source: line-oriented console text injected by the
+    /// runner, read by a cursor. rill has no `ByteString`, so the element type
+    /// is `String` and each line is one element.
+    Stdin {
+        /// The injected console lines, in order (reset by
+        /// [`RillProgram::inject_stdin`](crate::program::RillProgram)).
+        lines: Vec<String>,
+        /// Number of lines already consumed.
+        pos: usize,
+        /// Pushed-back elements, most recent last: `read` pops from here first.
+        pushback: Vec<crate::arena::ArenaRef>,
+    },
 }
 
 impl StreamHandle {
@@ -93,6 +117,11 @@ impl StreamHandle {
                 }
             }
             StreamHandle::Sink { handler, .. } => arena.drop_ref(*handler),
+            StreamHandle::Stdin { pushback, .. } => {
+                for r in pushback {
+                    arena.drop_ref(*r);
+                }
+            }
             StreamHandle::Stdout | StreamHandle::Stderr => {}
         }
     }
@@ -103,10 +132,12 @@ impl StreamHandle {
 ///
 /// `main : IO ()` threads the opaque `World` token for ordering only; the state
 /// the effects actually mutate lives here, on the program. The runner captures
-/// the console (`stdout`/`stderr`) so tests can assert on it.
+/// the console (`stdout`/`stderr`) so tests and drivers can assert on it, and
+/// injects the console input (`stdin`).
 pub struct WorldState {
     /// The memory-stream table. A stream handle's payload indexes this table
-    /// (offset by [`STREAM_HANDLE_TAG`]); slots 0 and 1 are `stdout`/`stderr`.
+    /// (offset by [`STREAM_HANDLE_TAG`]); slots 0, 1 and 2 are
+    /// `stdout`/`stderr`/`stdin`.
     pub(crate) streams: Vec<StreamHandle>,
     /// Lines written to `stdout`, in program order.
     pub stdout: Vec<String>,
@@ -115,10 +146,23 @@ pub struct WorldState {
 }
 
 impl WorldState {
-    /// A fresh world: an empty memory-stream table plus the two stdio sinks.
+    /// A fresh world: an empty memory-stream table, the two stdio sinks, and an
+    /// empty console input.
+    ///
+    /// The table order fixes the stdio handle slots: 0 = `stdout`
+    /// ([`STDOUT_HANDLE`]), 1 = `stderr` ([`STDERR_HANDLE`]), 2 = `stdin`
+    /// ([`STDIN_HANDLE`]).
     pub(crate) fn new() -> Self {
         Self {
-            streams: vec![StreamHandle::Stdout, StreamHandle::Stderr],
+            streams: vec![
+                StreamHandle::Stdout,
+                StreamHandle::Stderr,
+                StreamHandle::Stdin {
+                    lines: Vec::new(),
+                    pos: 0,
+                    pushback: Vec::new(),
+                },
+            ],
             stdout: Vec::new(),
             stderr: Vec::new(),
         }
@@ -862,6 +906,35 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// Number of `main` λ-parameters (the String launch arguments).
     pub fn num_main_args(&self) -> usize {
         self.main_cells.len()
+    }
+
+    /// Replace the console input (`stdin`) lines and rewind the stream cursor.
+    ///
+    /// The runner's captured console realizes the program's stdio, so the
+    /// caller supplies the finite, line-oriented input that `read stdin`
+    /// yields; after the lines are drained the stream reports EOF. Pushback
+    /// entries left over from an earlier run are released (the stream keeps its
+    /// `unread` stack across runs otherwise).
+    pub(crate) fn inject_stdin(&mut self, lines: &[String]) {
+        let mut stale = Vec::new();
+        {
+            let mut world = self.world.borrow_mut();
+            let slot = (STDIN_HANDLE & !STREAM_HANDLE_TAG) as usize;
+            if let Some(StreamHandle::Stdin {
+                lines: injected,
+                pos,
+                pushback,
+            }) = world.streams.get_mut(slot)
+            {
+                injected.clear();
+                injected.extend(lines.iter().cloned());
+                *pos = 0;
+                stale.append(pushback);
+            }
+        }
+        for r in stale {
+            self.arena.drop_ref(r);
+        }
     }
 
     /// Current value of a parameter by index.

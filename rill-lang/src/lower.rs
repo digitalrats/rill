@@ -2999,6 +2999,8 @@ impl<'a> Lowerer<'a> {
             "append_list",
             "concat_string",
             "show_float",
+            "show_int",
+            "show_bool",
             "not",
             "and",
             "or",
@@ -3019,7 +3021,7 @@ impl<'a> Lowerer<'a> {
             // captured as free variables by a lambda. The io-streams operations
             // (`fromList`/`toList`/`write`/`read`/`atEnd`/`unread`/`connect`/
             // `makeInputStream`/`makeOutputStream`) and the stdio handles
-            // (`stdout`) are likewise resolved at lowering.
+            // (`stdin`/`stdout`/`stderr`) are likewise resolved at lowering.
             || matches!(
                 name,
                 "fromList"
@@ -3031,7 +3033,9 @@ impl<'a> Lowerer<'a> {
                     | "connect"
                     | "makeInputStream"
                     | "makeOutputStream"
+                    | "stdin"
                     | "stdout"
+                    | "stderr"
                     | "smooth"
                     | "atan2"
                     | "min"
@@ -3069,6 +3073,8 @@ impl<'a> Lowerer<'a> {
             ("append_list", 2) => AppendList,
             ("concat_string", 2) => ConcatString,
             ("show_float", 1) => ShowFloat,
+            ("show_int", 1) => ShowInt,
+            ("show_bool", 1) => ShowBool,
             _ => return None,
         })
     }
@@ -3173,6 +3179,8 @@ impl<'a> Lowerer<'a> {
             },
             "concat_string" => Ok(ValueTy::String),
             "show_float" => Ok(ValueTy::String),
+            "show_int" => Ok(ValueTy::String),
+            "show_bool" => Ok(ValueTy::String),
             "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Float])),
             "insert" => match args.len() {
                 3 => {
@@ -3444,19 +3452,29 @@ impl<'a> Lowerer<'a> {
             self.note_container(&ret);
             return Ok((dst, ret));
         }
-        if name == "stdout" {
-            // The realized standard-output handle: an opaque stream handle the
-            // runner's World owns. Programs cannot construct opaque values, so
-            // the handle is a lowering-time constant.
-            let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueConstOpaque {
-                dst,
-                handle: crate::program::STDOUT_HANDLE,
-            });
-            return Ok((
-                dst,
+        // The realized stdio handles: opaque stream handles the runner's World
+        // owns. Programs cannot construct opaque values, so each handle is a
+        // lowering-time constant (`stdout`/`stderr` are output sinks, `stdin`
+        // the line-oriented console source).
+        let stdio = match name {
+            "stdout" => Some((
+                crate::program::STDOUT_HANDLE,
                 ValueTy::Data("OutputStream".into(), vec![ValueTy::String]),
-            ));
+            )),
+            "stderr" => Some((
+                crate::program::STDERR_HANDLE,
+                ValueTy::Data("OutputStream".into(), vec![ValueTy::String]),
+            )),
+            "stdin" => Some((
+                crate::program::STDIN_HANDLE,
+                ValueTy::Data("InputStream".into(), vec![ValueTy::String]),
+            )),
+            _ => None,
+        };
+        if let Some((handle, ty)) = stdio {
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueConstOpaque { dst, handle });
+            return Ok((dst, ty));
         }
         if let Some(idx) = self.fragment_captures.iter().position(|(f, _)| f == name) {
             // A free variable of the enclosing lambda: read it from the call's

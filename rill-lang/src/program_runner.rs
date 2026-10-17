@@ -50,6 +50,18 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
         }
     }
 
+    /// Inject the console input lines that `read stdin` yields.
+    ///
+    /// The runner owns the program's realized stdio: `stdout`/`stderr` are
+    /// captured into the runner's console, and `stdin` is a finite,
+    /// line-oriented input the caller supplies (rill has no `ByteString`, so
+    /// each line is one `String` element). Injecting rewinds the stream, so the
+    /// next [`run`](Self::run) reads the lines from the start and reports EOF
+    /// after them.
+    pub fn set_stdin(&mut self, lines: &[String]) {
+        self.program.inject_stdin(lines);
+    }
+
     /// Run `main : IO ()` to completion against the realized `World`.
     ///
     /// The captured console is refreshed even when the run fails, so a caller

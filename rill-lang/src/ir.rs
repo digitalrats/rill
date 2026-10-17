@@ -113,6 +113,11 @@ pub enum ValueBuiltinOp {
     ConcatString,
     /// Render a Float as a String (`show_float`).
     ShowFloat,
+    /// Render an Int as a String (`show_int`).
+    ShowInt,
+    /// Render a Bool as a String (`show_bool`): `true` → `"True"`,
+    /// `false` → `"False"` (the Haskell constructor spelling).
+    ShowBool,
 }
 
 /// A value-track effect operation (the ST/region and IO-stream primitives).
@@ -963,7 +968,9 @@ mod value_builtin_tests {
             ValueBuiltinOp::AppendList,
             ValueBuiltinOp::ConcatString,
             ValueBuiltinOp::ShowFloat,
+            ValueBuiltinOp::ShowInt,
+            ValueBuiltinOp::ShowBool,
         ];
-        assert_eq!(ops.len(), 20);
+        assert_eq!(ops.len(), 22);
     }
 }

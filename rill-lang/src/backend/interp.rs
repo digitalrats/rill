@@ -2500,6 +2500,43 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             prog.value_regs[dst] =
                 v.and_then(|x| alloc_owned(prog, Value::String(format!("{x:?}"))));
         }
+        ShowInt => {
+            // `show_int 3` renders `3` (decimal, no fractional part). A Float
+            // operand is truncated defensively; typing makes it unreachable.
+            let v = prog
+                .value_regs
+                .get(base + args[0])
+                .copied()
+                .flatten()
+                .and_then(|r| prog.arena.get(r))
+                .and_then(|v| match v {
+                    Value::Int(i) => Some(*i),
+                    Value::Float(f) => Some(*f as i64),
+                    _ => None,
+                });
+            prog.value_regs[dst] = v.and_then(|i| alloc_owned(prog, Value::String(i.to_string())));
+        }
+        ShowBool => {
+            // Booleans are the `true`/`false` keywords in source, but they
+            // render with the Haskell constructor spelling (per the spec's
+            // `show`), matching `show_float`'s `{:?}` conventions.
+            let v = prog
+                .value_regs
+                .get(base + args[0])
+                .copied()
+                .flatten()
+                .and_then(|r| prog.arena.get(r))
+                .and_then(|v| match v {
+                    Value::Bool(b) => Some(*b),
+                    _ => None,
+                });
+            prog.value_regs[dst] = v.and_then(|b| {
+                alloc_owned(
+                    prog,
+                    Value::String(if b { "True" } else { "False" }.to_string()),
+                )
+            });
+        }
     }
 }
 
@@ -3075,6 +3112,11 @@ fn exec_stream_at_end<T: Transcendental, const BUF: usize>(
                 Check::Source
             }
         }
+        Some(StreamHandle::Stdin {
+            lines,
+            pos,
+            pushback,
+        }) => Check::Known(!pushback.is_empty() || *pos >= lines.len()),
         _ => Check::Fault,
     };
     let at_end = match check {
@@ -3212,6 +3254,8 @@ fn stream_read<T: Transcendental, const BUF: usize>(
         Borrowed(ArenaRef),
         /// An element popped from the pushback stack: the pull owns it.
         Owned(ArenaRef),
+        /// A console-input line: the pull allocates it as a `String` value.
+        Line(String),
         /// A wrapped source: run this `IO (Maybe a)` action.
         Action(ArenaRef),
         Eof,
@@ -3248,12 +3292,31 @@ fn stream_read<T: Transcendental, const BUF: usize>(
                     Step::Action(*action)
                 }
             }
+            Some(StreamHandle::Stdin {
+                lines,
+                pos,
+                pushback,
+            }) => {
+                if let Some(r) = pushback.pop() {
+                    Step::Owned(r)
+                } else if let Some(line) = lines.get(*pos) {
+                    *pos += 1;
+                    Step::Line(line.clone())
+                } else {
+                    Step::Eof
+                }
+            }
             _ => Step::Fault,
         }
     };
     match step {
         // The popped pushback ref already transfers ownership to the caller.
         Step::Owned(r) => ReadOutcome::Elem(r),
+        // A console line: the interpreter allocates the `String` element.
+        Step::Line(line) => match alloc_owned(prog, Value::String(line)) {
+            Some(r) => ReadOutcome::Elem(r),
+            None => ReadOutcome::Fault,
+        },
         Step::Borrowed(r) => match copy_owned(prog, r) {
             Some(c) => ReadOutcome::Elem(c),
             None => ReadOutcome::Fault,
@@ -3318,7 +3381,8 @@ fn push_back<T: Transcendental, const BUF: usize>(
 ) -> bool {
     let pushed = match prog.world.borrow_mut().streams.get_mut(idx) {
         Some(StreamHandle::Input { pushback, .. })
-        | Some(StreamHandle::Source { pushback, .. }) => {
+        | Some(StreamHandle::Source { pushback, .. })
+        | Some(StreamHandle::Stdin { pushback, .. }) => {
             pushback.push(value);
             true
         }
@@ -3357,6 +3421,7 @@ fn stream_write<T: Transcendental, const BUF: usize>(
             closed: *closed,
         },
         Some(StreamHandle::Input { .. }) | Some(StreamHandle::Source { .. }) => Target::Input,
+        Some(StreamHandle::Stdin { .. }) => Target::Input,
         None => Target::Invalid,
     };
     match target {
@@ -3426,8 +3491,12 @@ fn stream_write<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Append a `String` element to the captured console. The console streams are
-/// not closeable, so the closing `Nothing` is inert.
+/// Append a `String` element to the captured console.
+///
+/// The console streams are output handles of the runner's `realWorld`, not
+/// program-owned streams: writing `Nothing` to one is accepted as the (inert)
+/// io-streams close signal but never closes the process console, so later
+/// writes still appear. Program-owned sinks (`makeOutputStream`) do close.
 fn write_console<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     item: Option<ArenaRef>,

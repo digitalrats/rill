@@ -799,7 +799,11 @@ impl TypeEnv {
         //   makeInputStream :: IO (Maybe a) -> IO (InputStream a)
         //   makeOutputStream:: (Maybe a -> IO ()) -> IO (OutputStream a)
         //   stdout          :: OutputStream String
+        //   stderr          :: OutputStream String
+        //   stdin           :: InputStream String
         //   show_float      :: Float -> String
+        //   show_int        :: Int -> String
+        //   show_bool       :: Bool -> String
         let forall_a = |inner: crate::ast::TypeExpr| {
             crate::ast::TypeExpr::TForall(vec!["a".to_string()], Box::new(inner))
         };
@@ -841,6 +845,16 @@ impl TypeEnv {
         env.builtin_sigs.insert(
             "stdout".to_string(),
             crate::ast::TypeExpr::TFunc(vec![], Box::new(stream("OutputStream", tv("String")))),
+        );
+        env.builtin_sigs.insert(
+            "stderr".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![], Box::new(stream("OutputStream", tv("String")))),
+        );
+        // The console input: line-oriented `String` text (rill has no
+        // `ByteString`), realized against the runner's injected console lines.
+        env.builtin_sigs.insert(
+            "stdin".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![], Box::new(stream("InputStream", tv("String")))),
         );
         env.builtin_sigs.insert(
             "read".to_string(),
@@ -902,6 +916,14 @@ impl TypeEnv {
         env.builtin_sigs.insert(
             "show_float".to_string(),
             crate::ast::TypeExpr::TFunc(vec![tv("Float")], Box::new(tv("String"))),
+        );
+        env.builtin_sigs.insert(
+            "show_int".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![tv("Int")], Box::new(tv("String"))),
+        );
+        env.builtin_sigs.insert(
+            "show_bool".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![tv("Bool")], Box::new(tv("String"))),
         );
 
         env
