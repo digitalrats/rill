@@ -259,6 +259,42 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
+/// The type arguments of an `Array i e` value type (`[index, elem]`), if `t`
+/// is one.
+fn array_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
+    match t {
+        ValueTy::App(name, inner) if name == "Array" => Some(inner),
+        _ => None,
+    }
+}
+
+/// The index type `i` of an `Array i e` value type; `Int` when unknown.
+fn array_index_ty(t: Option<&ValueTy>) -> ValueTy {
+    t.and_then(array_type_args)
+        .and_then(|inner| inner.first().cloned())
+        .unwrap_or(ValueTy::Int)
+}
+
+/// The element type `e` of an `Array i e` value type; `Float` when unknown.
+fn array_elem_ty(t: Option<&ValueTy>) -> ValueTy {
+    concrete_or_float(
+        t.and_then(array_type_args)
+            .and_then(|inner| inner.get(1).cloned())
+            .unwrap_or(ValueTy::Float),
+    )
+}
+
+/// The index type `i` of a `Pair i i` value type (`arrayFromList`'s bounds);
+/// `Int` when the argument is not a pair.
+fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
+    match t {
+        Some(ValueTy::App(name, inner)) if name == "Pair" => {
+            concrete_or_float(inner.first().cloned().unwrap_or(ValueTy::Int))
+        }
+        _ => ValueTy::Int,
+    }
+}
+
 /// Re-associate a right-nested `ApplyExpr` chain whose innermost callee is a
 /// name into the equivalent `Expr::Apply` argument list.
 ///
@@ -785,7 +821,7 @@ impl<'a> Lowerer<'a> {
     fn note_container(&mut self, vty: &ValueTy) {
         if matches!(
             vty,
-            ValueTy::App(name, _) if matches!(name.as_str(), "List" | "Map" | "Set")
+            ValueTy::App(name, _) if matches!(name.as_str(), "List" | "Map" | "Set" | "Array")
         ) {
             self.container_tys.push(vty.clone());
         }
@@ -796,6 +832,10 @@ impl<'a> Lowerer<'a> {
     /// this is a conservative per-op estimate; the runtime safety net is pool
     /// exhaustion (default mode) or pool growth (`growable-arena`).
     const ELEM_EST: usize = 16;
+    /// Element estimate for an immutable `Array`: larger than [`Self::ELEM_EST`]
+    /// because `arrayFromBuffer` copies a whole signal block (the default `BUF`
+    /// of the public compile entry points) into per-element arena slots.
+    const ARRAY_ELEM_EST: usize = 256;
     /// Multiplier on the estimated slot/buffer budgets for the default RT mode
     /// so legitimate open-collection programs do not trip the exhaustion error.
     /// Tuned against the collection stress tests (Task 8).
@@ -3307,6 +3347,18 @@ impl<'a> Lowerer<'a> {
             ("show_float", 1) => ShowFloat,
             ("show_int", 1) => ShowInt,
             ("show_bool", 1) => ShowBool,
+            // Immutable array storage (flat, type-agnostic). The arity is part
+            // of the key: `arrayUpdate`'s assoc list is a distinct operand from
+            // `arrayAccum`'s accumulator closure, so each name has exactly one
+            // shape.
+            ("arrayFromList", 2) => ArrayFromList,
+            ("arrayBounds", 1) => ArrayBounds,
+            ("arrayElems", 1) => ArrayElems,
+            ("arrayIndexFlat", 2) => ArrayIndexFlat,
+            ("arrayUpdate", 2) => ArrayUpdate,
+            ("arrayAccum", 3) => ArrayAccum,
+            ("arrayFromBuffer", 1) => ArrayFromBuffer,
+            ("bufferFromArray", 1) => BufferFromArray,
             _ => return None,
         })
     }
@@ -3452,6 +3504,41 @@ impl<'a> Lowerer<'a> {
                 vec![ValueTy::String, ValueTy::Float],
             )),
             "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Float])),
+            // Immutable array storage (flat, type-agnostic): the static types
+            // mirror the builtin signatures. An unresolved index/element type
+            // falls back to the runtime's numeric value type.
+            "arrayFromList" => {
+                let index = pair_index_ty(args.first());
+                let elem = args
+                    .get(1)
+                    .and_then(list_type_args)
+                    .and_then(|i| i.first().cloned());
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
+            "arrayBounds" => {
+                let index = array_index_ty(args.first());
+                Ok(ValueTy::App("Pair".into(), vec![index.clone(), index]))
+            }
+            "arrayElems" => Ok(ValueTy::App(
+                "List".into(),
+                vec![array_elem_ty(args.first())],
+            )),
+            "arrayIndexFlat" => Ok(array_elem_ty(args.first())),
+            "arrayUpdate" | "arrayAccum" => match args.first() {
+                Some(ty @ ValueTy::App(name, _)) if name == "Array" => Ok(ty.clone()),
+                other => Err(CompileError::Type {
+                    msg: format!("{name} expects an Array, got {other:?}"),
+                    span,
+                }),
+            },
+            "arrayFromBuffer" => Ok(ValueTy::App(
+                "Array".into(),
+                vec![ValueTy::Int, ValueTy::Float],
+            )),
+            "bufferFromArray" => Ok(ValueTy::Buffer),
             _ => Err(CompileError::Unsupported(format!(
                 "unknown collection op {name}"
             ))),
@@ -5764,6 +5851,19 @@ impl<'a> Lowerer<'a> {
                     let elem = &args[0];
                     1 + Self::ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
+                "Array" => {
+                    // An immutable array holds a flat element Vec plus its
+                    // stored bounds (a `Pair i i`). Unlike an open List —
+                    // bounded by the ELEM_EST heuristic — an array can
+                    // materialize a WHOLE signal block through the buffer
+                    // bridge (`arrayFromBuffer` copies every live sample into
+                    // its own arena slot). Lowering does not know the block
+                    // size (`Ir` is block-size agnostic), but every entry point
+                    // that can construct a `FixedBuffer` value (`compile_with_ffi`
+                    // and friends) fixes `BUF` at 256, so that is the bound.
+                    let elem = args.last().unwrap_or(&ValueTy::Float);
+                    1 + Self::ARRAY_ELEM_EST * self.subtree_size_impl(elem, visiting)
+                }
                 "Map" => {
                     let k = &args[0];
                     let v = &args[1];
@@ -5865,6 +5965,26 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // A value-track builtin applied in a signal position
+                // (`main = bufferFromArray (arrayFromBuffer buf)`): the body is
+                // `Expr::Apply` because a ONE-argument application is not
+                // rewritten by the currying pass, and the signal track never
+                // consults `value_builtin`. Lower the whole application on the
+                // value track and require the single output to be a Buffer.
+                // `bufferFromArray` is the array bridge's buffer producer; every
+                // other value builtin yields a value and is a type error here.
+                if self.value_builtin(name, call_args.len()).is_some() {
+                    let (reg, ty) = self.lower_value(e)?;
+                    if matches!(ty, ValueTy::Buffer) {
+                        return Ok(vec![reg]);
+                    }
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "`{name}` produces {ty:?}; a signal position requires a Buffer"
+                        ),
+                        span: *span,
+                    });
+                }
                 if name == "smooth" {
                     let x_regs = self.lower(&call_args[0], args)?;
                     let x = x_regs[0];

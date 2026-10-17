@@ -82,7 +82,8 @@ pub enum ValueBuiltinOp {
     Head,
     /// Drop the first element of a list.
     Tail,
-    /// Count the elements of a list/set/map.
+    /// Count the elements of a list/set/map (an immutable array reports its
+    /// flat element count — see `arrayElems`).
     Length,
     /// Map a function over a list.
     Map,
@@ -118,6 +119,31 @@ pub enum ValueBuiltinOp {
     /// Render a Bool as a String (`show_bool`): `true` → `"True"`,
     /// `false` → `"False"` (the Haskell constructor spelling).
     ShowBool,
+    // ---- Immutable array storage (flat, type-agnostic primitives) ----
+    // Every index computation lives in the language (`Ix`); the interpreter
+    // only ever sees a stored `Pair i i`, flat element lists and flat offsets.
+    /// Build an immutable array from its bounds and flat element list:
+    /// `arrayFromList bounds elems`.
+    ArrayFromList,
+    /// Read the stored bounds (`Pair i i`) back out: `arrayBounds arr`.
+    ArrayBounds,
+    /// Read the flat elements back out as a `List e`: `arrayElems arr`.
+    ArrayElems,
+    /// Read the element at a FLAT offset (bounds-checked; an out-of-range
+    /// offset latches a clean runtime fault): `arrayIndexFlat arr i`.
+    ArrayIndexFlat,
+    /// Return a NEW array with the given flat `(offset, value)` pairs applied:
+    /// `arrayUpdate arr assocs`. The source array is never mutated.
+    ArrayUpdate,
+    /// Return a NEW array with a binary accumulator applied to the given flat
+    /// `(offset, value)` pairs: `arrayAccum arr f assocs`.
+    ArrayAccum,
+    /// Copy a signal buffer into an immutable array of `Int`-indexed `Float`s
+    /// (`lo = 0`, `hi = len - 1`): `arrayFromBuffer buf`.
+    ArrayFromBuffer,
+    /// Copy an immutable `Int`-indexed `Float` array into a signal buffer:
+    /// `bufferFromArray arr`.
+    BufferFromArray,
 }
 
 /// A value-track effect operation (the ST/region and IO-stream primitives).
@@ -945,7 +971,15 @@ mod value_builtin_tests {
             ValueBuiltinOp::ShowFloat,
             ValueBuiltinOp::ShowInt,
             ValueBuiltinOp::ShowBool,
+            ValueBuiltinOp::ArrayFromList,
+            ValueBuiltinOp::ArrayBounds,
+            ValueBuiltinOp::ArrayElems,
+            ValueBuiltinOp::ArrayIndexFlat,
+            ValueBuiltinOp::ArrayUpdate,
+            ValueBuiltinOp::ArrayAccum,
+            ValueBuiltinOp::ArrayFromBuffer,
+            ValueBuiltinOp::BufferFromArray,
         ];
-        assert_eq!(ops.len(), 22);
+        assert_eq!(ops.len(), 30);
     }
 }

@@ -1053,6 +1053,110 @@ impl TypeEnv {
             "show_bool".to_string(),
             crate::ast::TypeExpr::TFunc(vec![tv("Bool")], Box::new(tv("String"))),
         );
+        // Immutable array storage primitives: the flat, type-agnostic surface
+        // (design §Storage primitives, immutable list). Every INDEX computation
+        // lives in the language's `Ix` instances (a later task), so these
+        // signatures are deliberately UNCONSTRAINED — no `Ix i =>` context and
+        // no range math in the interpreter. They are polymorphic over the index
+        // type `i` and the element type `e`, bound with an explicit `TForall` so
+        // the ordinary builtin-sig path instantiates one fresh variable per
+        // call site (keeping the argument and result types linked).
+        //
+        //   arrayFromList  :: Pair i i -> List e -> Array i e
+        //   arrayBounds    :: Array i e -> Pair i i
+        //   arrayElems     :: Array i e -> List e
+        //   arrayIndexFlat :: Array i e -> Int -> e
+        //   arrayUpdate    :: Array i e -> List (Pair Int e) -> Array i e
+        //   arrayAccum     :: Array i e -> (e -> e -> e) -> List (Pair Int e)
+        //                     -> Array i e
+        //
+        // The accumulator of `arrayAccum` is written CURRIED (`e -> e -> e`
+        // right-associates to `e -> (e -> e)`), matching the language's
+        // representation of a binary closure as a nest of unary lambdas.
+        let forall_ie = |inner: crate::ast::TypeExpr| {
+            crate::ast::TypeExpr::TForall(vec!["i".to_string(), "e".to_string()], Box::new(inner))
+        };
+        let array =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("Array".to_string(), args);
+        let pair =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("Pair".to_string(), args);
+        let list =
+            |arg: crate::ast::TypeExpr| crate::ast::TypeExpr::TApp("List".to_string(), vec![arg]);
+        let arr_ie = || array(vec![tv("i"), tv("e")]);
+        // `List (Pair Int e)`: the flat (offset, value) association list.
+        let flat_assocs = || list(pair(vec![tv("Int"), tv("e")]));
+        env.builtin_sigs.insert(
+            "arrayFromList".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("i"), tv("i")]), list(tv("e"))],
+                Box::new(arr_ie()),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayBounds".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie()],
+                Box::new(pair(vec![tv("i"), tv("i")])),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayElems".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie()],
+                Box::new(list(tv("e"))),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayIndexFlat".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie(), tv("Int")],
+                Box::new(tv("e")),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayUpdate".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie(), flat_assocs()],
+                Box::new(arr_ie()),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayAccum".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![
+                    arr_ie(),
+                    crate::ast::TypeExpr::TFunc(
+                        vec![tv("e")],
+                        Box::new(crate::ast::TypeExpr::TFunc(
+                            vec![tv("e")],
+                            Box::new(tv("e")),
+                        )),
+                    ),
+                    flat_assocs(),
+                ],
+                Box::new(arr_ie()),
+            )),
+        );
+        // Buffer bridge: concrete over the `Int`-indexed `Float` array the
+        // `FixedBuffer f32` maps to. The value-level type of a signal buffer is
+        // `Buffer` (that is what the FFI apply path produces for a fully applied
+        // generator and what a buffer-returning `main` yields), so these are
+        // written against `Buffer` rather than the `FixedBuffer f32` spelling
+        // used inside `foreign` declarations.
+        env.builtin_sigs.insert(
+            "arrayFromBuffer".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![tv("Buffer")],
+                Box::new(array(vec![tv("Int"), tv("Float")])),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "bufferFromArray".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![array(vec![tv("Int"), tv("Float")])],
+                Box::new(tv("Buffer")),
+            ),
+        );
 
         env
     }

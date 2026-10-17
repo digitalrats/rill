@@ -1869,6 +1869,122 @@ fn pooled_elems_of_ref<T: Transcendental, const BUF: usize>(
     Some(out)
 }
 
+/// Copy an immutable ARRAY's element refs into a freshly pooled buffer.
+///
+/// The destination value register holds an `Array i e`; the refs are copied
+/// WITHOUT recounting (the source array keeps its own claims) — the caller
+/// `copy`s the ones its result claims, the same discipline as
+/// [`pooled_elems_of`]. Returns `None` (latching exhaustion, or for a
+/// non-array register) when there is nothing usable.
+fn pooled_array_elems_of<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    reg: usize,
+) -> Option<Vec<ArenaRef>> {
+    let r = prog.value_regs[reg]?;
+    let len = match prog.arena.get(r) {
+        Some(Value::Array { elems, .. }) => elems.len(),
+        _ => return None,
+    };
+    let mut out = match prog.arena.take_buf(len) {
+        Ok(b) => b,
+        Err(_) => {
+            latch_exhaustion(prog, "value buffer pool");
+            return None;
+        }
+    };
+    if let Some(elems) = match prog.arena.get(r) {
+        Some(Value::Array { elems, .. }) => Some(elems),
+        _ => None,
+    } {
+        out.extend_from_slice(elems);
+    }
+    Some(out)
+}
+
+/// Copy an array's element refs into a fresh pooled buffer, RECOUNTED (RC++)
+/// for a new array that owns them independently of the source.
+///
+/// Every ref in the returned buffer therefore carries exactly one claim owned
+/// by the caller (released with `drop_ref` on unwind, or transferred into a new
+/// `Value::Array`).
+fn copy_array_elems<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    reg: usize,
+) -> Option<Vec<ArenaRef>> {
+    let out = pooled_array_elems_of(prog, reg)?;
+    for e in &out {
+        // `copy` shares the same ref with a fresh claim (RC++).
+        _ = prog.arena.copy(*e);
+    }
+    Some(out)
+}
+
+/// Read a flat `Pair Int e` association: the flat offset and the value ref.
+///
+/// The offset is an `Int`; the pair is a `Pair` record (`first` = offset,
+/// `second` = value) — the shape the type checker enforces. A malformed pair
+/// (or a non-`Int` offset) reads as `None`, which the callers treat as an
+/// out-of-range fault rather than a panic.
+fn flat_assoc<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    pair: ArenaRef,
+) -> Option<(i64, ArenaRef)> {
+    let fields = match prog.arena.get(pair) {
+        Some(Value::Record(fields)) if fields.len() == 2 => fields,
+        _ => return None,
+    };
+    let offset = match prog.arena.get(fields[0]) {
+        Some(Value::Int(i)) => *i,
+        _ => return None,
+    };
+    Some((offset, fields[1]))
+}
+
+/// Whether `offset` is a valid flat index into an array of `len` elements.
+fn flat_index_in_range(offset: i64, len: usize) -> Option<usize> {
+    usize::try_from(offset).ok().filter(|i| *i < len)
+}
+
+/// Allocate a `Pair Int Int` bounds record holding `(lo, hi)`.
+///
+/// The array records its bounds as an ordinary value (design §Value-level
+/// design), so the buffer bridge builds the `Int`-indexed pair `(0, len - 1)`
+/// here. Returns `None` (after releasing the partial allocations) on arena or
+/// pool exhaustion.
+fn alloc_int_bounds<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    lo: i64,
+    hi: i64,
+) -> Option<ArenaRef> {
+    let lo_ref = alloc_owned(prog, Value::Int(lo));
+    let hi_ref = alloc_owned(prog, Value::Int(hi));
+    match (lo_ref, hi_ref) {
+        (Some(l), Some(h)) => {
+            let mut fields = match prog.arena.take_buf(2) {
+                Ok(b) => b,
+                Err(_) => {
+                    latch_exhaustion(prog, "value buffer pool");
+                    prog.arena.drop_ref(l);
+                    prog.arena.drop_ref(h);
+                    return None;
+                }
+            };
+            fields.push(l);
+            fields.push(h);
+            alloc_owned(prog, Value::Record(fields))
+        }
+        (l, h) => {
+            if let Some(l) = l {
+                prog.arena.drop_ref(l);
+            }
+            if let Some(h) = h {
+                prog.arena.drop_ref(h);
+            }
+            None
+        }
+    }
+}
+
 /// Dispatch a collection operation (`ValueCallBuiltin`).
 ///
 /// Container reads copy (RC++) any child refs the result claims so both the
@@ -1974,13 +2090,19 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         LazyCons | Nil => unreachable!("LazyCons/Nil handled before the demand loop"),
         Length => {
             // The IR doc says Length covers list/set/map: each container
-            // reports its entry count.
+            // reports its entry count. An immutable array reports its FLAT
+            // element count — the least-surprise reading of "direct primitive
+            // reads" (`arrayElems` returns exactly that many elements), and the
+            // only count an array has that does not require `Ix` math. Falling
+            // through to the `_ => 0` arm would silently report an empty
+            // non-empty array.
             let n = prog.value_regs[base + args[0]]
                 .and_then(|r| prog.arena.get(r))
                 .map(|v| match v {
                     Value::List { elems } => elems.len() as i64,
                     Value::Map { pairs, .. } => pairs.len() as i64,
                     Value::Set { elems } => elems.len() as i64,
+                    Value::Array { elems, .. } => elems.len() as i64,
                     _ => 0,
                 })
                 .unwrap_or(0);
@@ -2487,6 +2609,251 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     Value::String(if b { "True" } else { "False" }.to_string()),
                 )
             });
+        }
+        // ---- Immutable array storage (flat, type-agnostic) ----
+        ArrayFromList => {
+            // arrayFromList bounds xs: store the bounds value verbatim (an
+            // ordinary `Pair i i`) together with the flat elements. Both the
+            // bounds ref and every element ref are recounted, so the new array
+            // owns them independently of the source registers.
+            let Some(elems) = pooled_elems_of(prog, base + args[1]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(bounds) =
+                prog.value_regs[base + args[0]].and_then(|r| prog.arena.copy(r).ok())
+            else {
+                prog.arena.put_buf(elems);
+                prog.value_regs[dst] = None;
+                return;
+            };
+            for e in &elems {
+                _ = prog.arena.copy(*e);
+            }
+            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
+        }
+        ArrayBounds => {
+            // arrayBounds arr: a direct primitive read of the stored bounds
+            // value. The result claims its own ref.
+            let bounds = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
+                Some(Value::Array { bounds, .. }) => Some(*bounds),
+                _ => None,
+            };
+            prog.value_regs[dst] = bounds.and_then(|b| copy_owned(prog, b));
+        }
+        ArrayElems => {
+            // arrayElems arr: a direct primitive read of the flat elements as
+            // a List. Every element is recounted for the new list.
+            let Some(elems) = copy_array_elems(prog, base + args[0]) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems });
+        }
+        ArrayIndexFlat => {
+            // arrayIndexFlat arr i: read a FLAT offset (the language computed
+            // it via `Ix`). An out-of-range offset is a clean runtime fault
+            // through the latched channel — never a panic and never an index
+            // into the element Vec (design §Fault policy).
+            let offset = prog
+                .value_regs
+                .get(base + args[1])
+                .copied()
+                .flatten()
+                .and_then(|r| prog.arena.get(r))
+                .and_then(|v| match v {
+                    Value::Int(i) => Some(*i),
+                    _ => None,
+                });
+            let picked = offset.and_then(|i| {
+                let r = prog.value_regs[base + args[0]]?;
+                match prog.arena.get(r) {
+                    Some(Value::Array { elems, .. }) => {
+                        flat_index_in_range(i, elems.len()).map(|pos| elems[pos])
+                    }
+                    _ => None,
+                }
+            });
+            match picked {
+                Some(e) => prog.value_regs[dst] = copy_owned(prog, e),
+                None => {
+                    latch_fault(prog, "arrayIndexFlat: index out of range");
+                    prog.value_regs[dst] = None;
+                }
+            }
+        }
+        ArrayUpdate | ArrayAccum => {
+            // arrayUpdate arr assocs / arrayAccum arr f assocs: build a NEW
+            // array (the source is never mutated). The source elements are
+            // recounted into the result payload, then each flat (offset, value)
+            // association replaces one element (update) or folds the old value
+            // with the new one through `f` (accum). Out-of-range offsets latch
+            // the clean fault channel.
+            let assoc_reg = if matches!(op, ArrayUpdate) {
+                base + args[1]
+            } else {
+                base + args[2]
+            };
+            let Some(assocs) = pooled_elems_of(prog, assoc_reg) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(mut out) = copy_array_elems(prog, base + args[0]) else {
+                prog.arena.put_buf(assocs);
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let mut faulted = false;
+            for pair in &assocs {
+                // Read the association in a short borrow, then mutate the
+                // payload (an `accum` closure call may dispatch a fragment).
+                let (offset, val) = match flat_assoc(prog, *pair) {
+                    Some(a) => a,
+                    None => {
+                        faulted = true;
+                        break;
+                    }
+                };
+                let Some(pos) = flat_index_in_range(offset, out.len()) else {
+                    faulted = true;
+                    break;
+                };
+                let fresh = if matches!(op, ArrayUpdate) {
+                    // Update: the result claims the new value directly.
+                    prog.arena.copy(val).ok()
+                } else {
+                    // Accum: `f old new`, applied through the closure register
+                    // (a curried nest handles the two-argument application).
+                    let closure = args[1];
+                    call_closure_args(prog, base + closure, &[out[pos], val], dst, drops)
+                };
+                match fresh {
+                    Some(f) => {
+                        // Replace the result's claim on the old element; the
+                        // source array keeps its own claim, so nothing is freed
+                        // mid-tick and the original stays intact.
+                        let old = out[pos];
+                        out[pos] = f;
+                        prog.arena.drop_ref(old);
+                    }
+                    None => {
+                        faulted = true;
+                        break;
+                    }
+                }
+            }
+            prog.arena.put_buf(assocs);
+            if faulted {
+                // Release exactly the claims the result payload holds (the
+                // source array's claims are untouched).
+                for r in &out {
+                    prog.arena.drop_ref(*r);
+                }
+                prog.arena.put_buf(out);
+                latch_fault(prog, "arrayUpdate/arrayAccum: index out of range");
+                prog.value_regs[dst] = None;
+                return;
+            }
+            let bounds = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
+                Some(Value::Array { bounds, .. }) => Some(*bounds),
+                _ => None,
+            };
+            let Some(bounds) = bounds.and_then(|b| prog.arena.copy(b).ok()) else {
+                for r in &out {
+                    prog.arena.drop_ref(*r);
+                }
+                prog.arena.put_buf(out);
+                prog.value_regs[dst] = None;
+                return;
+            };
+            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems: out });
+        }
+        ArrayFromBuffer => {
+            // arrayFromBuffer buf: copy the live block (`block_len` samples)
+            // into an immutable `Int`-indexed `Float` array with bounds
+            // `(0, len - 1)`. The samples are read out first (a short buffer
+            // borrow) so the per-element arena allocations happen afterwards.
+            let si = buffer_index(prog, args[0], base);
+            let n = prog.block_len.min(prog.buffers[si].len());
+            let mut scratch = [T::ZERO; BUF];
+            prog.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            let mut elems = match prog.arena.take_buf(n) {
+                Ok(b) => b,
+                Err(_) => {
+                    latch_exhaustion(prog, "value buffer pool");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            for sample in &scratch[..n] {
+                match prog.arena.alloc(Value::Float(sample.to_f64())) {
+                    Ok(r) => elems.push(r),
+                    Err(_) => {
+                        for r in &elems {
+                            prog.arena.drop_ref(*r);
+                        }
+                        prog.arena.put_buf(elems);
+                        latch_exhaustion(prog, "value arena capacity");
+                        prog.value_regs[dst] = None;
+                        return;
+                    }
+                }
+            }
+            // `lo = 0`, `hi = len - 1` (an empty buffer yields `(0, -1)`, the
+            // conventional empty range).
+            let Some(bounds) = alloc_int_bounds(prog, 0, n as i64 - 1) else {
+                for r in &elems {
+                    prog.arena.drop_ref(*r);
+                }
+                prog.arena.put_buf(elems);
+                prog.value_regs[dst] = None;
+                return;
+            };
+            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
+        }
+        BufferFromArray => {
+            // bufferFromArray arr: copy the array's samples into a program
+            // buffer. The destination is the destination register's 1:1 buffer
+            // (the whole-buffer value convention), so the result is a
+            // `Value::Buffer` usable anywhere a signal buffer is.
+            //
+            // Buffers are allocated 1:1 with value registers
+            // (`Ir::num_buffers == Ir::next_value_reg`) and `dst` arrives
+            // ABSOLUTE (the caller already added `base`), so the destination
+            // buffer index is `dst` itself. `buffer_index` must not be used
+            // here: it would add `base` a second time.
+            let di = dst;
+            let elems = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
+                Some(Value::Array { elems, .. }) => Some(elems),
+                _ => None,
+            };
+            let Some(elems) = elems else {
+                latch_fault(prog, "bufferFromArray: operand is not an array");
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let len = elems.len();
+            if len > BUF {
+                latch_fault(prog, "bufferFromArray: array exceeds the buffer capacity");
+                prog.value_regs[dst] = None;
+                return;
+            }
+            let mut scratch = [T::ZERO; BUF];
+            for (i, r) in elems.iter().enumerate() {
+                if let Some(Value::Float(f)) = prog.arena.get(*r) {
+                    scratch[i] = T::from_f64(*f);
+                }
+            }
+            let n = prog.block_len.min(prog.buffers[di].len());
+            prog.buffers[di].with_data_mut(|b| {
+                let copy = len.min(n);
+                b[..copy].copy_from_slice(&scratch[..copy]);
+                // Zero-pad a shorter array so the live block is deterministic.
+                if copy < n {
+                    b[copy..n].fill(T::ZERO);
+                }
+            });
+            prog.value_regs[dst] = alloc_owned(prog, Value::Buffer(di));
         }
     }
 }
@@ -4515,6 +4882,43 @@ mod value_track_tests {
         assert_eq!(get(2), crate::arena::Value::Float(5.0), "3 + 2.0");
         assert_eq!(get(3), crate::arena::Value::Float(10.0), "2.0 * 5.0");
         assert_eq!(get(4), crate::arena::Value::Float(5.0), "10.0 / 2.0");
+    }
+
+    #[test]
+    fn array_alloc_copy_recounts_bounds_and_elems() {
+        // RC round-trip for the `Value::Array` arms: a copied array slot must
+        // own an independent claim on its bounds ref AND on every element ref.
+        // Dropping that slot must release exactly those claims — the original
+        // array's own ownership is untouched.
+        let mut prog = prog_with(vec![], 0, 0, 0);
+        let lo = prog.arena.alloc(Value::Int(0)).unwrap();
+        let hi = prog.arena.alloc(Value::Int(2)).unwrap();
+        let bounds = prog.arena.alloc(Value::Record(vec![lo, hi])).unwrap();
+        let e0 = prog.arena.alloc(Value::Int(10)).unwrap();
+        let e1 = prog.arena.alloc(Value::Int(20)).unwrap();
+        let arr = prog
+            .arena
+            .alloc(Value::Array {
+                bounds,
+                elems: vec![e0, e1],
+            })
+            .unwrap();
+
+        // Baseline: each child is owned exactly once, by the array.
+        assert_eq!(prog.arena.rc(bounds), 1);
+        assert_eq!(prog.arena.rc(e0), 1);
+        assert_eq!(prog.arena.rc(e1), 1);
+
+        let value = prog.arena.get(arr).unwrap().clone();
+        let copy = alloc_copy(&mut prog, &value).unwrap();
+        assert_eq!(prog.arena.rc(bounds), 2, "the copy claims the bounds ref");
+        assert_eq!(prog.arena.rc(e0), 2, "the copy claims element 0");
+        assert_eq!(prog.arena.rc(e1), 2, "the copy claims element 1");
+
+        prog.arena.drop_ref(copy);
+        assert_eq!(prog.arena.rc(bounds), 1, "the bounds claim is released");
+        assert_eq!(prog.arena.rc(e0), 1, "element 0's claim is released");
+        assert_eq!(prog.arena.rc(e1), 1, "element 1's claim is released");
     }
 
     #[test]
