@@ -14,8 +14,18 @@ const DIVERGENT_DEF: &str = "countdown n = if n == 0.0 then 0.0 else countdown (
 
 /// Compile and run `src` in complete (lazy) mode, returning the `main` value.
 fn run(src: &str) -> Result<f64, String> {
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, Mode::Complete).map_err(|e| e.to_string())?;
+    run_with(src, Mode::Complete)
+}
+
+/// Compile and run `src` in strict mode (the default), returning the `main`
+/// value. Strict mode lowers a bang `let` through the inlined-def path, a
+/// different code path from the complete-mode thunk.
+fn run_strict(src: &str) -> Result<f64, String> {
+    run_with(src, Mode::Strict)
+}
+
+fn run_with(src: &str, mode: Mode) -> Result<f64, String> {
+    let mut prog = rill_lang::compile_with_mode::<f32>(src, mode).map_err(|e| e.to_string())?;
     prog.run_value().map_err(|e| e.to_string())?;
     let v = prog.value_outputs()[0].ok_or("no value output")?;
     match prog.arena().get(v) {
@@ -65,6 +75,71 @@ fn bang_let_binding_forces_rhs() {
     assert_eq!(run(&lazy).unwrap(), 1.0);
     let bang = complete("main = let !bad = countdown 2000.0 in 1.0");
     assert_forces_argument(&bang);
+}
+
+#[test]
+fn strict_bang_let_binding_forces_rhs() {
+    // Strict mode lowers `let` through the inlined-def branch of
+    // `lower::Expr::Let`, not the complete-mode thunk: the binding-point force
+    // must be emitted there too.
+    assert_eq!(run_strict("main = let x = 2.0 in x + 1.0").unwrap(), 3.0);
+    assert_eq!(run_strict("main = let !x = 2.0 in x + 1.0").unwrap(), 3.0);
+    // The strict path emits exactly one force for the bang form (recursion is
+    // rejected in strict mode, so divergence is not the observable here).
+    assert_eq!(
+        force_count("{-# MODE strict #-}\nmain = let !x = 2.0 in x + 1.0"),
+        1
+    );
+    assert_eq!(
+        force_count("{-# MODE strict #-}\nmain = let x = 2.0 in x + 1.0"),
+        0
+    );
+}
+
+#[test]
+fn bang_let_rhs_is_forced_once_and_shared() {
+    // The force is emitted ONCE at the binding point, and every use reads the
+    // same forced register: `x + x` and `x + x + x` evaluate the right-hand side
+    // exactly once. Pure code makes an evaluation COUNT unobservable at runtime,
+    // so sharing is pinned two ways — the lowered IR holds exactly one force no
+    // matter how many uses there are, and the runtime reads the shared value.
+    assert_eq!(force_count("main = let !x = 2.0 in x + x"), 1);
+    assert_eq!(
+        force_count("main = let !x = 2.0 in x + x + x"),
+        1,
+        "an extra use must not add a force"
+    );
+    assert_eq!(run(&complete("main = let !x = 2.0 in x + x")).unwrap(), 4.0);
+    assert_eq!(
+        run(&complete("main = let !x = 2.0 in x + x + x")).unwrap(),
+        6.0
+    );
+    // A shared, divergent right-hand side is forced once at the binding point:
+    // the latched error surfaces even though the body never reads the name.
+    assert_forces_argument(&complete("main = let !x = countdown 2000.0 in 1.0"));
+    // The non-bang form stays lazy: neither use forces it.
+    assert_eq!(
+        run(&complete("main = let x = countdown 2000.0 in 1.0")).unwrap(),
+        1.0
+    );
+}
+
+#[test]
+fn recursive_bang_binding_is_rejected() {
+    // A bang binding forces its right-hand side at the binding point, so the
+    // right-hand side cannot be the binding itself. Rejected with a
+    // bang-specific diagnostic instead of a confusing "unknown `x`" (complete)
+    // or "recursive value definition" (strict) error.
+    for mode in [Mode::Complete, Mode::Strict] {
+        let err = run_with("main = let !x = x in 1.0", mode)
+            .expect_err("a recursive bang binding must be rejected");
+        assert!(
+            err.contains("bang binding cannot be recursive"),
+            "expected a recursive-bang diagnostic in {mode:?}, got: {err}"
+        );
+    }
+    // The lazy (non-bang) recursive binding is still accepted.
+    assert_eq!(run(&complete("main = let x = x in 1.0")).unwrap(), 1.0);
 }
 
 #[test]

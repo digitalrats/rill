@@ -2903,6 +2903,25 @@ impl<'a> Lowerer<'a> {
                 Ok((dst, ValueTy::Bool))
             }
             Expr::Let { defs, body, span } => {
+                // A bang binding forces its right-hand side AT the binding
+                // point, so the RHS must be a value distinct from the binding
+                // itself: `let !x = x` has nothing to force (the RHS is the
+                // binding), and the thunk fragment cannot reference its own
+                // name. Reject it with a bang-specific diagnostic instead of a
+                // confusing "unknown `x`" (complete) or "recursive value
+                // definition" (strict) error.
+                if let Some(d) = defs
+                    .iter()
+                    .find(|d| d.is_bang() && bang_binding_refers_to_itself(d))
+                {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "a bang binding cannot be recursive: `!{}` refers to itself",
+                            d.name()
+                        ),
+                        span: *span,
+                    });
+                }
                 if self.mode == Mode::Strict {
                     // Expression-level `let x = e in body` in value position:
                     // the defs are plain inlined bindings (v1 value defs are
@@ -3624,6 +3643,21 @@ impl<'a> Lowerer<'a> {
                         .get(name)
                         .cloned()
                         .unwrap_or(ValueTy::Float);
+                    // A bang binding (`where !x = e`) forces its shared thunk
+                    // here, per reference (the same binding-point force the
+                    // inline path below emits). Dropping it would leave a
+                    // recursive bang binding silently unforced. Forcing a
+                    // self-cycle yields the memoized bottom, not a hang.
+                    let reg = if bang {
+                        let forced = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueForce {
+                            dst: forced,
+                            src: reg,
+                        });
+                        forced
+                    } else {
+                        reg
+                    };
                     return Ok((reg, ty));
                 }
                 // v1 value bindings are per-tick re-evaluated expressions (no
@@ -6337,6 +6371,15 @@ impl<'a> Lowerer<'a> {
         self.emit_value(ValueInstr::ValueBufferFill { dst, src: reg });
         Ok(dst)
     }
+}
+
+/// Whether a bang binding's right-hand side mentions the bound name (a
+/// self-recursive strict binding — `!x = x`, `!x = f x`). Such a binding has no
+/// value to force at the binding point, so it is rejected rather than lowered.
+fn bang_binding_refers_to_itself(d: &Def) -> bool {
+    let mut refs = HashSet::new();
+    collect_def_ref_names(d.body(), &mut refs);
+    refs.contains(d.name())
 }
 
 /// Collect every user-definition name referenced by `e` (a `Ref` or an applied

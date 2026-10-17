@@ -503,8 +503,9 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
 /// cannot swallow its sibling arguments on re-parse: the unparenthesized
 /// `Just Left y 1` would re-parse as `Just (Left y 1)`, silently changing the
 /// match. A bang marker in front of such a constructor is parenthesized with
-/// it (`Just (!Left y 1)`), since `Just !Left y 1` would attach the bang to
-/// the whole constructor application.
+/// the constructor application, marker inside the parens (`Just (!(Left y)) 1`),
+/// because an unparenthesized `Just !Left y` would attach the bang to the whole
+/// `Left` application at re-parse.
 fn render_pattern_nested(p: &Pattern, buf: &mut String) {
     if let Pattern::Ctor(_, args) = p.strip_bang() {
         if !args.is_empty() {

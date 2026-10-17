@@ -262,6 +262,17 @@ impl<'a> Parser<'a> {
         self.pos
     }
 
+    /// Index of the next non-newline token — the token [`Self::peek`] reports.
+    /// Span-adjacency checks must use this index, not the raw `pos`, or a bang
+    /// marker that begins a line (after a layout newline) looks separated.
+    fn cur(&self) -> usize {
+        let mut i = self.pos;
+        while i < self.toks.len() && self.toks[i].tok == Tok::Newline {
+            i += 1;
+        }
+        i.min(self.toks.len().saturating_sub(1))
+    }
+
     fn seek(&mut self, pos: usize) {
         self.pos = pos;
     }
@@ -301,7 +312,7 @@ impl<'a> Parser<'a> {
             }
             Tok::Bang => {
                 // A bang pattern is always written attached: `!x`, `!Just y`.
-                if !is_attached_bang(self.toks, self.pos) {
+                if !is_attached_bang(self.toks, self.cur()) {
                     return Err(
                         self.error("a bang pattern must be written `!pat` (no space after `!`)")
                     );
@@ -344,7 +355,7 @@ impl<'a> Parser<'a> {
     fn at_param_start(&self) -> bool {
         match self.peek().tok {
             Tok::Ident(_) => true,
-            Tok::Bang => is_attached_bang(self.toks, self.pos),
+            Tok::Bang => is_attached_bang(self.toks, self.cur()),
             _ => false,
         }
     }
@@ -352,7 +363,7 @@ impl<'a> Parser<'a> {
     /// Parse one parameter: `x` or a bang parameter `!x`. The argument of a
     /// bang parameter is forced to WHNF on application entry.
     fn parse_param(&mut self) -> Result<Param, CompileError> {
-        if self.peek().tok == Tok::Bang && !is_attached_bang(self.toks, self.pos) {
+        if self.peek().tok == Tok::Bang && !is_attached_bang(self.toks, self.cur()) {
             return Err(self.error("a bang parameter must be written `!name` (no space after `!`)"));
         }
         let bang_span = if self.peek().tok == Tok::Bang {
@@ -486,7 +497,7 @@ impl<'a> Parser<'a> {
         // A leading bang marker (`let !x = e`) marks the binding itself: the
         // right-hand side is forced to WHNF at the binding point.
         let bang = if self.peek().tok == Tok::Bang {
-            if !is_attached_bang(self.toks, self.pos) {
+            if !is_attached_bang(self.toks, self.cur()) {
                 return Err(
                     self.error("a bang binding must be written `!name` (no space after `!`)")
                 );
@@ -516,6 +527,23 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         while self.at_param_start() {
             params.push(self.parse_param()?);
+        }
+        // A separated `!` cannot appear in a definition head (the head is a
+        // name plus parameters, never an operator expression), so it is always
+        // a mistyped bang parameter.
+        if self.peek().tok == Tok::Bang {
+            return Err(self.error("a bang parameter must be written `!name` (no space after `!`)"));
+        }
+        // A bang binding marks a single variable, not a function: the force
+        // applies to the bound VALUE, and a curried `\x -> …` RHS has none to
+        // force at the binding point (GHC rejects `!f x = e` for the same
+        // reason).
+        if bang && !params.is_empty() {
+            return Err(CompileError::Parse {
+                msg: "a bang binding must bind a single variable (`!x = e`), not a function (`!f x = e`)"
+                    .into(),
+                span: Span::new(start, params.last().map(|p| p.span.end).unwrap_or(start)),
+            });
         }
         // Optional `:: TypeExpr` signature annotation (Haskell 2010). Typing is
         // still inferred (HM); the signature is a hint/constraint checked by a
@@ -937,7 +965,7 @@ impl<'a> Parser<'a> {
             // infix index operator. It begins no expression, so it is an error
             // in expression/operator position (`a!i`, `a !i`); only a separated
             // `!` (`a ! i`) reaches the operator arm below.
-            if op == InfixOp::Index && is_attached_bang(self.toks, self.pos) {
+            if op == InfixOp::Index && is_attached_bang(self.toks, self.cur()) {
                 return Err(CompileError::Parse {
                     msg: "a bang pattern `!x` is not an expression: index with `a ! i` (spaces around `!`)"
                         .into(),
@@ -2764,15 +2792,37 @@ mod tests {
     }
 
     #[test]
+    fn bang_on_function_binding_is_rejected() {
+        // A bang binding marks a single variable. `!f x = e` has nothing to
+        // force at the binding point (the RHS is a curried function), so it is
+        // rejected instead of silently dropping the parameter binding.
+        for src in ["main = let !f x = x in 1.0", "main = 1.0 where !f x = x"] {
+            let msg = parse_err(src);
+            assert!(
+                msg.contains("single variable"),
+                "expected a single-variable diagnostic for `{src}`, got: {msg}"
+            );
+        }
+        // The variable-only forms still parse.
+        assert!(matches!(body("main = let !x = 1.0 in x"), Expr::Let { .. }));
+        assert!(matches!(body("main = \\ !x -> x"), Expr::Lambda { .. }));
+    }
+
+    #[test]
     fn spaced_bang_pattern_is_rejected() {
         // Bang is always attached: `! x` is not a bang pattern.
         let msg = parse_err("main = case 1.0 of { ! x -> x }");
         assert!(
-            msg.contains("bang"),
+            msg.contains("bang pattern must be written"),
             "expected a bang-attachment diagnostic, got: {msg}"
         );
-        // Nor is a spaced bang a parameter marker.
-        assert!(parse_err("main ! x = 1.0").contains("expected"));
+        // Nor is a spaced bang a parameter marker: the head rejects it with the
+        // bang-specific message, not a generic `expected Eq`.
+        let msg = parse_err("main ! x = 1.0");
+        assert!(
+            msg.contains("bang parameter must be written"),
+            "expected a bang-parameter diagnostic, got: {msg}"
+        );
     }
 
     #[test]
