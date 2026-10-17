@@ -266,11 +266,7 @@ impl<'a> Parser<'a> {
     /// Span-adjacency checks must use this index, not the raw `pos`, or a bang
     /// marker that begins a line (after a layout newline) looks separated.
     fn cur(&self) -> usize {
-        let mut i = self.pos;
-        while i < self.toks.len() && self.toks[i].tok == Tok::Newline {
-            i += 1;
-        }
-        i.min(self.toks.len().saturating_sub(1))
+        self.skip_newlines(self.pos)
     }
 
     fn seek(&mut self, pos: usize) {
@@ -749,6 +745,12 @@ impl<'a> Parser<'a> {
     /// generic over the class name (`Ix` is not special).
     fn parse_sig_constraints(&mut self) -> Result<Option<Vec<(String, String)>>, CompileError> {
         if !self.at_sig_constraints() {
+            // `C v, C w => T` would otherwise parse `C v` as a type application
+            // and fail later on the comma with an unrelated message.
+            if self.at_unparenthesized_multi_constraints() {
+                return Err(self
+                    .error("a multi-constraint context must be parenthesized: `(C v, C w) => T`"));
+            }
             return Ok(None);
         }
         let parenthesized = self.peek().tok == Tok::LParen;
@@ -816,9 +818,28 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether the next tokens spell the INVALID unparenthesized form of a
+    /// multi-constraint context: `C v, C w => T`. Used only to report a
+    /// deliberate diagnostic; a valid context is always parenthesized.
+    fn at_unparenthesized_multi_constraints(&self) -> bool {
+        let mut i = self.skip_newlines(self.pos);
+        if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+            return false;
+        }
+        i = self.skip_newlines(i + 1);
+        if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+            return false;
+        }
+        matches!(
+            self.toks.get(self.skip_newlines(i + 1)).map(|t| &t.tok),
+            Some(Tok::Comma)
+        )
+    }
+
     /// The first non-newline token index at or after `i`, clamped to the last
     /// token. [`Self::peek`]/[`Self::bump`] skip layout newlines, so lookahead
-    /// must skip them too.
+    /// must skip them too. Also backs [`Self::cur`], so the newline-skipping
+    /// rule lives in exactly one place.
     fn skip_newlines(&self, mut i: usize) -> usize {
         while i < self.toks.len() && self.toks[i].tok == Tok::Newline {
             i += 1;
@@ -2558,6 +2579,35 @@ mod tests {
         // Backward-compatible shape: no `=>` means no `TConstrained` wrapper.
         let sig = eval_sig("f :: Float -> Float = f; main = 1.0");
         assert!(matches!(sig, TypeExpr::TFunc(ref args, _) if args.len() == 1));
+    }
+
+    #[test]
+    fn constraint_class_name_is_not_hardcoded() {
+        // The context is generic over the class: nothing may assume `Ix`.
+        let sig = eval_sig("f :: Monad m => m a -> m a = f; main = 1.0");
+        match &sig {
+            TypeExpr::TConstrained(constraints, body) => {
+                assert_eq!(constraints, &vec![("Monad".to_string(), "m".to_string())]);
+                assert_eq!(body.arg_count(), 1);
+            }
+            other => panic!("expected a constrained signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparenthesized_multi_constraint_is_rejected_with_a_diagnostic() {
+        // `C v, C w => T` is not valid Haskell 2010; without the guard it fails
+        // later on the comma with an unrelated "expected Eq" message.
+        let src = "f :: Ix i, Ix j => Float = f; main = 1.0";
+        let err = parse(&tokenize(src).unwrap(), src.as_bytes())
+            .expect_err("an unparenthesized multi-constraint context must fail");
+        match err {
+            CompileError::Parse { msg, .. } => assert!(
+                msg.contains("multi-constraint context must be parenthesized"),
+                "expected the parenthesization diagnostic, got: {msg}"
+            ),
+            other => panic!("expected a Parse error, got {other:?}"),
+        }
     }
 
     #[test]

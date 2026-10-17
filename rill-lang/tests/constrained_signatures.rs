@@ -54,3 +54,45 @@ fn constrained_signature_does_not_break_typechecking() {
         &rill_lang::arena::Value::Float(1.0)
     );
 }
+
+#[test]
+fn class_name_is_not_hardcoded() {
+    // Nothing may assume the context names `Ix`: any class name round-trips.
+    let src = "same x y :: Eq a => a -> a -> Bool = true;\nmain = 1.0;";
+    let first = render(&program(src)).unwrap();
+    assert!(
+        first.contains("same :: Eq a => (a -> a -> Bool) = "),
+        "a non-`Ix` class context renders the same way: {first}"
+    );
+    assert_eq!(render(&program(&first)).unwrap(), first);
+}
+
+#[test]
+fn constrained_signature_survives_typing() {
+    // Pins the T5 contract: typing must NOT strip the context from
+    // `Def::Eval.sig` — constrained-def dispatch reads it from there.
+    let src = "f x :: Ix i => Float -> Float = x;\nmain = f 1.0;";
+    let prog = program(src);
+    let typed = rill_lang::types::infer::infer_program(&prog, prog.mode)
+        .expect("a constrained signature must typecheck");
+    let def = typed
+        .program
+        .defs
+        .iter()
+        .find(|d| d.name() == "f")
+        .expect("the typed program keeps def `f`");
+    match def {
+        rill_lang::ast::Def::Eval {
+            sig: Some(rill_lang::ast::TypeExpr::TConstrained(constraints, body)),
+            ..
+        } => {
+            assert_eq!(
+                constraints,
+                &vec![("Ix".to_string(), "i".to_string())],
+                "typing must preserve the constraint list verbatim"
+            );
+            assert_eq!(body.arg_count(), 1, "the body is still `Float -> Float`");
+        }
+        other => panic!("the typed program lost the constrained signature: {other:?}"),
+    }
+}

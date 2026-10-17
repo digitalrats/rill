@@ -239,6 +239,11 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
 /// Render a type expression in argument position: a `forall` binder must be
 /// parenthesized so it does not absorb a following arrow chain on re-parse
 /// (`(forall b. a) -> a` must not re-read as `forall b. (a -> a)`).
+///
+/// A `TConstrained` context is unreachable here today: the parser only builds
+/// one at the ROOT of a `::` signature, never inside an argument. Should a later
+/// task admit one, it needs its own parenthesization here (a bare `C v => T`
+/// would otherwise absorb the enclosing arrow chain and not re-parse).
 fn render_type_arg(t: &TypeExpr, buf: &mut String) {
     if matches!(t, TypeExpr::TForall(..)) {
         write!(buf, "(").ok();
