@@ -112,10 +112,32 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// [`run_block_mimo`](crate::backend::interp::run_block_mimo) from the
     /// backend's actual channel count. Immutable after the first tick.
     pub(crate) cur_num_inputs: usize,
+    /// Runtime ST regions, one per `runST` currently executing. `runST` pushes
+    /// a region on entry and pops it on exit (regions nest LIFO); the region
+    /// token threaded through the region's `ST` computation is
+    /// `Value::Opaque(region id)`.
+    pub(crate) regions: Vec<RegionState>,
+    /// The ST cell table. An `STRef` handle is a `Value::Opaque` whose payload
+    /// is an index into this table; a region owns the ids it allocated and
+    /// releases them on exit, so the table is truncated back after each region
+    /// and never grows across ticks.
+    pub(crate) st_cells: Vec<Option<crate::arena::ArenaRef>>,
+}
+
+/// One running `runST` region: the STRef cells it allocated.
+#[derive(Debug, Default)]
+pub(crate) struct RegionState {
+    /// Global cell-table ids allocated in this region, in allocation order.
+    /// The cells themselves live in `RillProgram::st_cells`
+    /// (`STRef` handles are plain global ids); the region releases them on
+    /// exit.
+    pub(crate) cells: Vec<u32>,
+    /// `st_cells.len()` when the region was entered. Cells are always appended,
+    /// and regions nest LIFO, so the table truncates back to this mark on exit.
+    pub(crate) cell_base: usize,
 }
 
 /// A region-backed `@` delay site: a [`TapeRing`] over a [`RegionHandle`].
-///
 /// The ring's usable length equals the site's compile-time delay length; the
 /// backing memory is carved from the program's [`BufferAllocator`] at build.
 pub(crate) struct RegionDelay<T: Transcendental>(TapeRing<T, RegionHandle<T>>);
@@ -413,6 +435,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             pending_outputs: Vec::new(),
             input_buffers,
             cur_num_inputs: 0,
+            regions: Vec::new(),
+            st_cells: Vec::new(),
         }
     }
 
@@ -546,6 +570,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             pending_outputs: Vec::new(),
             input_buffers,
             cur_num_inputs: 0,
+            regions: Vec::new(),
+            st_cells: Vec::new(),
         })
     }
 

@@ -113,6 +113,30 @@ pub enum ValueBuiltinOp {
     ConcatString,
 }
 
+/// A value-track effect operation (the ST/region primitives).
+///
+/// The four STRef operations are first-class: lowered to
+/// [`Value::BuiltinCallable`](crate::arena::Value::BuiltinCallable), captured
+/// with their arguments and applied to the region's STState token by the
+/// enclosing `ST` record's `unST` closure. `RunST` is emitted directly as a
+/// [`ValueInstr::ValueEffectOp`] — it consumes an `ST` value and runs its
+/// region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueEffectOp {
+    /// `runST st`: enter a fresh, isolated region; apply the `ST` value's
+    /// `unST` closure to a fresh STState token, discard the final state, and
+    /// release every cell the region allocated.
+    RunST,
+    /// `newSTRef v`: allocate a cell holding `v` in the current region.
+    NewStRef,
+    /// `readSTRef r`: read the current cell value.
+    ReadStRef,
+    /// `writeSTRef r v`: overwrite the cell value.
+    WriteStRef,
+    /// `modifySTRef r f`: overwrite the cell value with `f` applied to it.
+    ModifyStRef,
+}
+
 /// Value-track comparison operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CmpOp {
@@ -490,6 +514,23 @@ pub enum ValueInstr {
         /// Collection operation.
         op: ValueBuiltinOp,
         /// Argument value registers.
+        args: Vec<usize>,
+    },
+    /// Dispatch an effect operation.
+    ///
+    /// For [`ValueEffectOp::RunST`] the single argument register holds the `ST`
+    /// value; the interpreter runs the whole region and writes the region's
+    /// result to `dst`. For the STRef operations the arguments are the
+    /// operation's operands; the interpreter builds a
+    /// [`Value::BuiltinCallable`](crate::arena::Value::BuiltinCallable) capturing
+    /// them and writes that to `dst` (the `unST` field of the `ST` record the
+    /// lowering wraps around it).
+    ValueEffectOp {
+        /// Destination value register.
+        dst: usize,
+        /// Effect operation.
+        op: ValueEffectOp,
+        /// Operand value registers.
         args: Vec<usize>,
     },
     /// Create a lazy binding: allocate a lazy [`Value::Callable`] (a thunk with

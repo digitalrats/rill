@@ -152,7 +152,7 @@ pub fn foreign_param_names(name: &str) -> Vec<String> {
 pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSchema> {
     let fields = match env.data_types.get(type_name)? {
         DataInfo::Record(fields) => fields,
-        DataInfo::Sum(_) => return None,
+        DataInfo::Sum(_) | DataInfo::Opaque => return None,
     };
     let mut out = Vec::new();
     for (name, vty) in fields {

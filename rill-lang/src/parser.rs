@@ -487,6 +487,15 @@ impl<'a> Parser<'a> {
             let (tv, _) = self.expect_ident()?;
             tyvars.push(tv);
         }
+        // An abstract (opaque) type declaration has no `= …` body:
+        // `data World;` / `data STRef s a;`.
+        if self.peek().tok == Tok::Semi {
+            return Ok(Def::Abstract {
+                name,
+                tyvars,
+                span: self.span_from(start),
+            });
+        }
         self.eat(&Tok::Eq)?;
         if self.peek().tok == Tok::LBrace {
             // product: { f1: T1, f2: T2 }

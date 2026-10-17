@@ -102,6 +102,14 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             }
             Ok(())
         }
+        Def::Abstract { name, tyvars, .. } => {
+            write!(buf, "{pad}data {name}").ok();
+            for tv in tyvars {
+                write!(buf, " {tv}").ok();
+            }
+            write!(buf, ";").ok();
+            Ok(())
+        }
         Def::TypeAlias { name, target, .. } => {
             write!(buf, "{pad}type {name} = {target}").ok();
             Ok(())

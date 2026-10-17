@@ -365,6 +365,9 @@ fn recount_children<T: Transcendental, const BUF: usize>(
                 _ = prog.arena.copy(*c);
             }
         }
+        Value::BuiltinCallable { env, .. } => {
+            _ = prog.arena.copy(*env);
+        }
         Value::List { elems } => {
             for e in elems {
                 _ = prog.arena.copy(*e);
@@ -557,6 +560,7 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
                 prog.arena.drop_ref(*c);
             }
         }
+        Value::BuiltinCallable { env, .. } => prog.arena.drop_ref(*env),
         Value::List { elems, .. } => {
             for e in elems {
                 prog.arena.drop_ref(*e);
@@ -685,6 +689,8 @@ fn kind_rank(v: &Value) -> i8 {
         Cons(..) => 14,
         Nil => 15,
         Buffer(_) => 16,
+        Opaque(_) => 17,
+        BuiltinCallable { .. } => 10,
     }
 }
 
@@ -1082,6 +1088,20 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // result into `dst`. An unbound slot or a non-eager callable value
             // (a lazy thunk) yields a detectable `None`.
             let slot = prog.value_regs.get(*closure_slot + base).copied().flatten();
+            // A primitive effect closure (`Value::BuiltinCallable`) is applied
+            // to its STState token and run eagerly — effects never suspend.
+            if let Some(callee) = slot {
+                if matches!(prog.arena.get(callee), Some(Value::BuiltinCallable { .. })) {
+                    let arg = args
+                        .first()
+                        .and_then(|a| prog.value_regs.get(*a + base).copied().flatten());
+                    prog.value_regs[*dst + base] = match arg {
+                        Some(a) => apply_callable(prog, callee, a, drops),
+                        None => None,
+                    };
+                    return;
+                }
+            }
             match slot.and_then(|s| prog.arena.get(s)) {
                 Some(Value::Callable {
                     fragment: fragment_id,
@@ -1123,6 +1143,20 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 prog.value_regs[*dst + base] = None;
                 return;
             };
+            // Only an EAGER function closure is suspended into a thunk. A
+            // primitive effect closure must run (effects are strict), and a
+            // thunk callee is forced before application — both go through
+            // `apply_callable`.
+            if !matches!(prog.arena.get(cr), Some(Value::Callable { cell: None, .. })) {
+                let arg = args
+                    .first()
+                    .and_then(|a| prog.value_regs.get(*a + base).copied().flatten());
+                prog.value_regs[*dst + base] = match arg {
+                    Some(a) => apply_callable(prog, cr, a, drops),
+                    None => None,
+                };
+                return;
+            }
             let (env_ref, fid) = match prog.arena.get(cr) {
                 Some(Value::Callable {
                     fragment,
@@ -1416,6 +1450,43 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
             exec_value_call_builtin(prog, *op, args, *dst + base, base, drops);
         }
+        ValueInstr::ValueEffectOp { dst, op, args } => match op {
+            crate::ir::ValueEffectOp::RunST => {
+                // The argument register holds the `ST s a` value; run its region.
+                let st_value = args
+                    .first()
+                    .and_then(|a| prog.value_regs.get(*a + base).copied().flatten());
+                prog.value_regs[*dst + base] = match st_value {
+                    Some(st) => exec_runst(prog, st, drops),
+                    None => None,
+                };
+            }
+            _ => {
+                // Build the effect closure: an argument record owning copies of
+                // the operand refs (the operand registers keep their own).
+                let mut fields: Vec<crate::arena::ArenaRef> = Vec::with_capacity(args.len());
+                for a in args {
+                    let Some(r) = prog.value_regs.get(*a + base).copied().flatten() else {
+                        continue;
+                    };
+                    match copy_owned(prog, r) {
+                        Some(c) => fields.push(c),
+                        None => {
+                            for f in &fields {
+                                prog.arena.drop_ref(*f);
+                            }
+                            prog.value_regs[*dst + base] = None;
+                            return;
+                        }
+                    }
+                }
+                let env = alloc_owned(prog, Value::Record(fields));
+                prog.value_regs[*dst + base] = match env {
+                    Some(env) => alloc_owned(prog, Value::BuiltinCallable { op: *op, env }),
+                    None => None,
+                };
+            }
+        },
         ValueInstr::ValueLazy { dst, env, fragment } => {
             // Create a lazy binding: a fresh memo cell plus a callable value
             // referencing it and the captured env (a thunk). The env register
@@ -2430,6 +2501,264 @@ enum ArgsSource<'a> {
     /// Value args come from the env-record tail split by the fragment's
     /// `value_ins` (lazy thunk).
     EnvTail,
+}
+
+/// What an [`apply_callable`] callee resolves to after forcing.
+enum CallableKind {
+    /// A primitive effect closure with its captured argument record.
+    Effect(crate::ir::ValueEffectOp, crate::arena::ArenaRef),
+    /// An ordinary function closure: fragment id + captured env record.
+    Func(u32, crate::arena::ArenaRef),
+}
+
+/// Apply a first-class callable to ONE argument and return the result as a
+/// fresh owner.
+///
+/// Two callable kinds are handled uniformly:
+/// - [`Value::Callable`]: dispatch to its fragment, binding the argument as the
+///   fragment's single value parameter (the ordinary curried-call path).
+/// - [`Value::BuiltinCallable`]: run the primitive effect it names, applied to
+///   the argument (the STState token threading an ST region).
+///
+/// The argument ref is only BORROWED: the fragment call copies it into its
+/// frame, and the effect handler copies whatever it stores. The caller keeps
+/// its own ownership.
+fn apply_callable<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    callee: crate::arena::ArenaRef,
+    arg: crate::arena::ArenaRef,
+    drops: &mut Vec<crate::arena::ArenaRef>,
+) -> Option<crate::arena::ArenaRef> {
+    // A complete-mode `let` may hold the callee as a lazy thunk: force to WHNF
+    // first (a no-op for an eager closure/effect).
+    let head = force(prog, callee, drops);
+    let kind = match prog.arena.get(head) {
+        Some(Value::BuiltinCallable { op, env }) => CallableKind::Effect(*op, *env),
+        Some(Value::Callable {
+            fragment,
+            env,
+            cell: None,
+        }) => CallableKind::Func(*fragment, *env),
+        _ => return None,
+    };
+    match kind {
+        CallableKind::Effect(op, env) => exec_st_effect(prog, op, env, arg, drops),
+        CallableKind::Func(fragment, env) => {
+            let frag = prog.ir.fragments.get(fragment as usize).cloned()?;
+            // Park the borrowed argument in its own scratch slot, claiming it
+            // so `run_call`'s frame starts ABOVE it. `run_call` copies the
+            // argument into the fragment frame, so the slot never owns it.
+            let slot = prog.value_regs_top;
+            if slot >= prog.value_regs.len() {
+                latch_exhaustion(prog, "call scratch (max_call_regs)");
+                return None;
+            }
+            prog.value_regs[slot] = Some(arg);
+            prog.value_regs_top = slot + 1;
+            let out = run_call(
+                prog,
+                &frag,
+                env,
+                ArgsSource::Registers {
+                    regs: &[0],
+                    base: slot,
+                },
+                None,
+                drops,
+            );
+            prog.value_regs_top = slot;
+            prog.value_regs[slot] = None;
+            out
+        }
+    }
+}
+
+/// Force a call result to WHNF and return it as a fresh OWNER.
+///
+/// The applied result of a complete-mode computation may be a suspended call
+/// (`Value::Callable` with a memo cell). Comparing the forced ref against the
+/// input tells whether the caller's own reference is already the WHNF value
+/// (then it stays the owner) or a borrowed memoized value (then it is copied).
+fn force_owned<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    r: crate::arena::ArenaRef,
+    drops: &mut Vec<crate::arena::ArenaRef>,
+) -> Option<crate::arena::ArenaRef> {
+    let head = force(prog, r, drops);
+    if head == r {
+        Some(r)
+    } else {
+        let owned = copy_owned(prog, head);
+        prog.arena.drop_ref(r);
+        owned
+    }
+}
+
+/// Execute one STRef effect in the region identified by the `state` token and
+/// return the region-threading result `Pair STState a` as a fresh owner.
+///
+/// `env` is the effect closure's captured argument record (in application
+/// order); `state` is the current `STState` token (`Value::Opaque(region id)`).
+/// The returned `Pair` holds a FRESH state token and the operation's result:
+/// - `NewStRef` → the new cell handle,
+/// - `ReadStRef` → the cell's value,
+/// - `WriteStRef`/`ModifyStRef` → `Void`.
+fn exec_st_effect<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    op: crate::ir::ValueEffectOp,
+    env: crate::arena::ArenaRef,
+    state: crate::arena::ArenaRef,
+    drops: &mut Vec<crate::arena::ArenaRef>,
+) -> Option<crate::arena::ArenaRef> {
+    // The state token is an opaque region id; anything else is a bug upstream.
+    let Some(Value::Opaque(id)) = prog.arena.get(state) else {
+        return None;
+    };
+    let region_id = *id as usize;
+    // The captured operands, borrowed from the env record.
+    let args: Vec<crate::arena::ArenaRef> = match prog.arena.get(env) {
+        Some(Value::Record(fields)) => fields.clone(),
+        _ => Vec::new(),
+    };
+    // The cell handle is the first captured operand of the ref operations. A
+    // `do`-bound `r <- newSTRef …` is bound lazily, so the captured operand may
+    // still be an unforced thunk: force it to WHNF before reading its payload.
+    let handle = |prog: &mut RillProgram<T, BUF>, drops: &mut Vec<ArenaRef>| -> Option<usize> {
+        let r = force(prog, *args.first()?, drops);
+        match prog.arena.get(r) {
+            Some(Value::Opaque(h)) => Some(*h as usize),
+            _ => None,
+        }
+    };
+    let result: Option<crate::arena::ArenaRef> = match op {
+        crate::ir::ValueEffectOp::NewStRef => {
+            let init = *args.first()?;
+            // The cell owns its own ref; the operand's owner keeps its.
+            let stored = copy_owned(prog, init)?;
+            let id = prog.st_cells.len() as u32;
+            prog.st_cells.push(Some(stored));
+            let region = prog.regions.get_mut(region_id)?;
+            region.cells.push(id);
+            alloc_owned(prog, Value::Opaque(id))
+        }
+        crate::ir::ValueEffectOp::ReadStRef => {
+            let h = handle(prog, drops)?;
+            match prog.st_cells.get(h).copied().flatten() {
+                Some(v) => copy_owned(prog, v),
+                // An uninitialized cell reads as unit (defensive; typing makes
+                // it unreachable).
+                None => alloc_owned(prog, Value::Void),
+            }
+        }
+        crate::ir::ValueEffectOp::WriteStRef => {
+            let h = handle(prog, drops)?;
+            let src = *args.get(1)?;
+            let stored = copy_owned(prog, src)?;
+            if let Some(slot) = prog.st_cells.get_mut(h) {
+                if let Some(old) = slot.replace(stored) {
+                    prog.arena.drop_ref(old);
+                }
+            }
+            alloc_owned(prog, Value::Void)
+        }
+        crate::ir::ValueEffectOp::ModifyStRef => {
+            let h = handle(prog, drops)?;
+            let f = *args.get(1)?;
+            let old = prog.st_cells.get(h).copied().flatten()?;
+            // The stored value may be an unforced thunk: the modifier function
+            // receives its WHNF form.
+            let old = force(prog, old, drops);
+            // Apply the function to a copy of the current value (the cell keeps
+            // its own ref while the call runs).
+            let arg = copy_owned(prog, old)?;
+            let new_value = apply_callable(prog, f, arg, drops);
+            prog.arena.drop_ref(arg);
+            let new_value = new_value?;
+            let stored = copy_owned(prog, new_value);
+            prog.arena.drop_ref(new_value);
+            let stored = stored?;
+            if let Some(slot) = prog.st_cells.get_mut(h) {
+                if let Some(prev) = slot.replace(stored) {
+                    prog.arena.drop_ref(prev);
+                }
+            }
+            alloc_owned(prog, Value::Void)
+        }
+        // `RunST` is emitted directly as an instruction, never as an effect
+        // closure.
+        crate::ir::ValueEffectOp::RunST => None,
+    };
+    let result = result?;
+    // Thread a FRESH state token alongside the result. The region id is the
+    // token's payload, so the successor is the same region.
+    let next_state = alloc_owned(prog, Value::Opaque(region_id as u32))?;
+    alloc_owned(prog, Value::Record(vec![next_state, result]))
+}
+
+/// Run one `runST`: enter a fresh region, apply the `ST` value's `unST`
+/// closure to the region token, discard the final state, and release every cell
+/// the region allocated. Returns the region's result as a fresh owner.
+fn exec_runst<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    st_value: crate::arena::ArenaRef,
+    drops: &mut Vec<crate::arena::ArenaRef>,
+) -> Option<crate::arena::ArenaRef> {
+    // `ST s a` is `{ unST: STState -> Pair STState a }`: field 0 is the region
+    // computation.
+    let un_st = match prog.arena.get(st_value) {
+        Some(Value::Record(fields)) => fields.first().copied(),
+        _ => None,
+    };
+    let region_id = prog.regions.len() as u32;
+    let cell_base = prog.st_cells.len();
+    prog.regions.push(crate::program::RegionState {
+        cells: Vec::new(),
+        cell_base,
+    });
+    let state = alloc_owned(prog, Value::Opaque(region_id));
+    let result = match (un_st, state) {
+        (Some(un_st), Some(state)) => {
+            // `unST` is a complete-mode computation: the applied result may be
+            // a suspended call, so force it to WHNF before reading the Pair.
+            let pair =
+                apply_callable(prog, un_st, state, drops).and_then(|p| force_owned(prog, p, drops));
+            // The effect closure only borrowed the token.
+            prog.arena.drop_ref(state);
+            // The region result is the pair's `second` field; the final state
+            // (`first`) is discarded with the pair.
+            let out = match pair {
+                Some(pair) => {
+                    // Force the region result: leaving the region is a strict
+                    // boundary, so the payload must be materialized while its
+                    // cells are still alive.
+                    let forced = match prog.arena.get(pair) {
+                        Some(Value::Record(fields)) => fields.get(1).copied(),
+                        _ => None,
+                    };
+                    let forced = forced.map(|r| force(prog, r, drops));
+                    let out = forced.and_then(|r| copy_owned(prog, r));
+                    prog.arena.drop_ref(pair);
+                    out
+                }
+                None => None,
+            };
+            out
+        }
+        _ => None,
+    };
+    // Leave the region: release the cells it allocated and truncate the table
+    // back to the region's mark (regions nest LIFO, so no outer cell is lost).
+    if let Some(region) = prog.regions.pop() {
+        for id in region.cells {
+            if let Some(slot) = prog.st_cells.get_mut(id as usize) {
+                if let Some(r) = slot.take() {
+                    prog.arena.drop_ref(r);
+                }
+            }
+        }
+        prog.st_cells.truncate(region.cell_base);
+    }
+    result
 }
 
 /// Execute a fragment body for a callable value: binds the captured env fields

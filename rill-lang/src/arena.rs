@@ -58,6 +58,9 @@ pub enum ValueKind {
     Cons,
     /// The empty lazy list.
     Nil,
+    /// An opaque primitive handle (`World`, `STState`, `STRef`). Source code
+    /// can neither construct nor inspect one; only compiler primitives do.
+    Opaque,
 }
 
 /// A heap value stored in an [`Arena`] slot.
@@ -123,6 +126,24 @@ pub enum Value {
     Cons(ArenaRef, ArenaRef),
     /// The empty lazy list.
     Nil,
+    /// An opaque primitive handle: a runtime token whose payload is meaningful
+    /// only to the compiler-provided primitive that produced it. `World` is
+    /// the real-world token (id `0`), `STState` a region token (the region id),
+    /// and `STRef` a cell handle (a global cell-table index). Source programs
+    /// can name opaque types but never construct, project, or match a value of
+    /// one — so an `Opaque` payload never escapes into user-visible structure.
+    Opaque(u32),
+    /// A first-class EFFECT closure: a primitive effect (`newSTRef`, …) applied
+    /// to its captured arguments. `env` is the arena record holding those
+    /// arguments in application order (like [`Value::Callable`]'s env, the
+    /// value owns its env ref). Applying it to its final argument — the STState
+    /// token threading the region — runs the effect in the interpreter.
+    BuiltinCallable {
+        /// The primitive effect to run when applied.
+        op: crate::ir::ValueEffectOp,
+        /// Captured argument record (owns its field refs).
+        env: ArenaRef,
+    },
 }
 
 impl Value {
@@ -146,6 +167,8 @@ impl Value {
             Value::Bottom => ValueKind::Bottom,
             Value::Cons(_, _) => ValueKind::Cons,
             Value::Nil => ValueKind::Nil,
+            Value::Opaque(_) => ValueKind::Opaque,
+            Value::BuiltinCallable { .. } => ValueKind::Callable,
         }
     }
 }
@@ -165,6 +188,7 @@ impl ArenaValue for Value {
                     f(*c);
                 }
             }
+            Value::BuiltinCallable { env, .. } => f(*env),
             Value::List { elems } => {
                 for &e in elems {
                     f(e);

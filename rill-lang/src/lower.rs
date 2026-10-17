@@ -6,7 +6,7 @@ use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::error::{CompileError, Span};
 use crate::ir::{
     BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Ir, LogicOp, ParamDef, StateLayout,
-    UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueLayout, ValueTerm,
+    UnOp, ValueBlock, ValueBuiltinOp, ValueEffectOp, ValueInstr, ValueLayout, ValueTerm,
 };
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
@@ -129,8 +129,11 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueLogic { .. }
             | ValueInstr::ValueNot { .. }
             | ValueInstr::ValueCallBuiltin { .. }
-| ValueInstr::ValueLazy { .. }
+            | ValueInstr::ValueLazy { .. }
             | ValueInstr::ValueForce { .. }
+            // Primitive effects allocate the effect closure and (for `RunST`)
+            // the region's token, pair, and result.
+            | ValueInstr::ValueEffectOp { .. }
             // Whole-buffer value ops allocate the `Value::Buffer` marker slot.
             | ValueInstr::ValueBufferConst { .. }
             | ValueInstr::ValueBufferLoadInput { .. }
@@ -144,6 +147,18 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueBufferParamRead { .. }
             | ValueInstr::ValueBufferMainCellRead { .. }
     )
+}
+
+/// Resolve a leftover inference variable to the runtime's default numeric type.
+///
+/// Lowering has no unification substitution: an effect payload whose static type
+/// was still an inference variable (`Var`/`TyConVar`/`TyConApp`) types as
+/// `Float`, the runtime representation of every scalar the effects manipulate.
+fn concrete_or_float(t: ValueTy) -> ValueTy {
+    match t {
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) => ValueTy::Float,
+        other => other,
+    }
 }
 
 /// The type arguments of a `List` value type (`[elem]`), if `t` is one.
@@ -464,6 +479,11 @@ struct Lowerer<'a> {
     /// assign a tape index; a `Ref` NOT present stays a name-based resource
     /// binding (the graph duplex path's externally-shared registry).
     tape_decls: HashMap<String, usize>,
+    /// Span (`start`, `end`) of every real-`ST` `runST` application → the
+    /// region's payload type `a`, from inference. Lowering has no substitution,
+    /// so this is the only source of the payload type (the lowered `ST` record
+    /// type carries no argument).
+    runst_payload_tys: HashMap<(usize, usize), ValueTy>,
     /// Program input → value-register mapping: input `k` materializes into
     /// `buffers[input_buffers[k]]` (the value register holding the input's
     /// `Value::Buffer`). Filled by the `LoadInput` emission at program entry.
@@ -521,6 +541,24 @@ impl<'a> Lowerer<'a> {
 
     fn emit_value(&mut self, i: ValueInstr) {
         self.value_blocks[self.cur_value_block].instrs.push(i);
+    }
+
+    /// Wrap an already-emitted primitive effect closure in the `ST s a` record
+    /// (its `unST` field) and return the record's register with its `ST` type.
+    ///
+    /// The region phantom `s` has no runtime representation, so it is typed
+    /// `Void` here; the payload `a` is what `runST` extracts after running the
+    /// region.
+    fn finish_st_effect(&mut self, effect: usize, payload: ValueTy) -> (usize, ValueTy) {
+        let rec = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueConstructRecord {
+            dst: rec,
+            fields: vec![effect],
+        });
+        (
+            rec,
+            ValueTy::Data("ST".into(), vec![ValueTy::Void, payload]),
+        )
     }
 
     /// Lower `e` as a LAZY argument: in complete mode, wrap it in a
@@ -1112,10 +1150,12 @@ impl<'a> Lowerer<'a> {
                 // `runST (fn s -> body)`: `runST` is a built-in function whose
                 // signature `(forall s. ST s a) -> a` carries a type-level-only
                 // phantom — inference (the rank-2 application in `infer_apply`)
-                // rejected any body whose result mentions `s`, so the lambda is
-                // a pure computation with the phantom erased. Lower the lambda
-                // BODY directly (the phantom has no runtime representation); a
-                // future JIT sees the body's computation with no special IR.
+                // rejected any body whose result mentions `s`, so the phantom
+                // cannot escape the region. Lower the lambda BODY directly (the
+                // phantom has no runtime representation): a body that is an
+                // `ST s a` computation becomes a `RunST` effect instruction; a
+                // legacy body that is not `ST`-headed is the erased region
+                // result itself.
                 if name == "runST" {
                     if call_args.len() != 1 {
                         return Err(CompileError::Type {
@@ -1129,7 +1169,105 @@ impl<'a> Lowerer<'a> {
                             span: *span,
                         });
                     };
-                    return self.lower_value_expected(lam, expected);
+                    let payload = self.runst_payload_tys.get(&(span.start, span.end)).cloned();
+                    // Legacy shape (`runST (fn s -> 1.0)`): no ST computation
+                    // was inferred, so the lambda body IS the region result —
+                    // the phantom has no runtime representation. Downstream
+                    // inference already rejected an escaping phantom.
+                    let (body_reg, body_ty) = self.lower_value_expected(lam, expected)?;
+                    let Some(payload) = payload else {
+                        return Ok((body_reg, body_ty));
+                    };
+                    // Real ST: the region body is an `ST s a` value — a record
+                    // whose `unST` field is the region computation. Running it
+                    // allocates a FRESH region, applies `unST` to the new state
+                    // token, discards the final state, and returns the payload.
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueEffectOp {
+                        dst,
+                        op: ValueEffectOp::RunST,
+                        args: vec![body_reg],
+                    });
+                    return Ok((dst, concrete_or_float(payload)));
+                }
+                // ST cell primitives (`STD_PRELUDE`): `newSTRef`/`readSTRef`/
+                // `writeSTRef`/`modifySTRef` lower to a primitive effect
+                // closure wrapped in the `ST s a` record (the `unST` field).
+                // `runST` supplies the region's state token; `Monad (ST s)`'s
+                // `bind` threads the successor token between effects.
+                if let Some(op) = match name.as_str() {
+                    "newSTRef" => Some(ValueEffectOp::NewStRef),
+                    "readSTRef" => Some(ValueEffectOp::ReadStRef),
+                    "writeSTRef" => Some(ValueEffectOp::WriteStRef),
+                    "modifySTRef" => Some(ValueEffectOp::ModifyStRef),
+                    _ => None,
+                } {
+                    let arity = if matches!(op, ValueEffectOp::NewStRef | ValueEffectOp::ReadStRef)
+                    {
+                        1
+                    } else {
+                        2
+                    };
+                    if call_args.len() != arity {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{name}` expects {arity} argument(s), got {}",
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    // The payload `a` of the resulting `ST s a`: the new cell
+                    // for `newSTRef`, the cell's element for `readSTRef`, and
+                    // unit for the writes. Unresolved element types fall back
+                    // to the runtime's numeric value type.
+                    let payload = match op {
+                        ValueEffectOp::NewStRef => {
+                            let (r, ty) = self.lower_value(&call_args[0])?;
+                            let init = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueEffectOp {
+                                dst: init,
+                                op,
+                                args: vec![r],
+                            });
+                            return Ok(self.finish_st_effect(
+                                init,
+                                ValueTy::Data(
+                                    "STRef".into(),
+                                    vec![ValueTy::Void, concrete_or_float(ty)],
+                                ),
+                            ));
+                        }
+                        ValueEffectOp::ReadStRef => {
+                            let (r, ty) = self.lower_value(&call_args[0])?;
+                            let elem = match &ty {
+                                ValueTy::Data(n, args) if n == "STRef" && args.len() == 2 => {
+                                    concrete_or_float(args[1].clone())
+                                }
+                                _ => ValueTy::Float,
+                            };
+                            let read = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueEffectOp {
+                                dst: read,
+                                op,
+                                args: vec![r],
+                            });
+                            return Ok(self.finish_st_effect(read, elem));
+                        }
+                        _ => ValueTy::Void,
+                    };
+                    let mut regs = Vec::with_capacity(arity);
+                    for a in call_args {
+                        let (r, _) = self.lower_value(a)?;
+                        regs.push(r);
+                    }
+                    let effect = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueEffectOp {
+                        dst: effect,
+                        op,
+                        args: regs,
+                    });
+                    return Ok(self.finish_st_effect(effect, payload));
                 }
                 // IO primitives. `writeOutput k buf` emits the buffer-drain
                 // instruction; `readInput k` materializes the k-th input as a
@@ -1473,6 +1611,12 @@ impl<'a> Lowerer<'a> {
                         DataInfo::Sum(_) => {
                             return Err(CompileError::Type {
                                 msg: format!("`{name}` is a sum type; use one of its constructors"),
+                                span: *span,
+                            });
+                        }
+                        DataInfo::Opaque => {
+                            return Err(CompileError::Type {
+                                msg: format!("opaque type `{name}` has no constructors"),
                                 span: *span,
                             });
                         }
@@ -2618,12 +2762,14 @@ impl<'a> Lowerer<'a> {
                     // result. The binding is shared: two uses of `x` force
                     // `e` once. A def that references the OTHER let names is
                     // not supported in v1 (an unknown-name error surfaces).
+                    //
+                    // The thunk's fragment starts with an EMPTY frame, so every
+                    // enclosing binding its body mentions must be CAPTURED —
+                    // including this fragment's own parameters (`\s -> let p =
+                    // … in …` captures `s`). Only the let names themselves are
+                    // bound here; naming a sibling def is the v1 limitation
+                    // above (it is not captured and surfaces as unknown).
                     let mut bound = HashSet::new();
-                    for scope in self.value_locals.iter() {
-                        for k in scope.keys() {
-                            bound.insert(k.clone());
-                        }
-                    }
                     for d in defs {
                         bound.insert(d.name().to_string());
                     }
@@ -2719,6 +2865,12 @@ impl<'a> Lowerer<'a> {
         collection
             || self.env.foreign_sigs.contains_key(name)
             || name == "runST"
+            // The ST cell primitives are lowered to `ValueEffectOp`s in
+            // `Expr::Apply` — never captured as free variables by a lambda.
+            || matches!(
+                name,
+                "newSTRef" | "readSTRef" | "writeSTRef" | "modifySTRef"
+            )
             // Value-track builtins lowered in `Expr::Apply` (IO primitives,
             // one-pole smoothing, buffer elementwise ops): compile-time
             // primitives, never captured as free variables by a lambda.
@@ -4937,7 +5089,7 @@ impl<'a> Lowerer<'a> {
                             .max()
                             .unwrap_or(0)
                     }
-                    None => 1,
+                    Some(DataInfo::Opaque) | None => 1,
                 };
                 visiting.remove(name);
                 s
@@ -6149,6 +6301,7 @@ pub fn lower_program_with_channels(
         anchor_compiling: HashSet::new(),
         recursive_locals,
         tape_decls: tp.tape_decls.iter().cloned().collect(),
+        runst_payload_tys: tp.runst_payload_tys.clone(),
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
         input_buffers: Vec::new(),
@@ -6399,6 +6552,7 @@ mod tests {
             anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
+            runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
         lower_with_cafs(&tp, 44_100.0, &tp.cafs).unwrap()
@@ -6449,6 +6603,7 @@ mod tests {
             anchor_compiling: HashSet::new(),
             recursive_locals: HashSet::new(),
             tape_decls: HashMap::new(),
+            runst_payload_tys: HashMap::new(),
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
             input_buffers: Vec::new(),
@@ -6638,6 +6793,7 @@ mod tests {
             anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
+            runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
@@ -6665,6 +6821,7 @@ mod tests {
             anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
+            runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
@@ -6697,6 +6854,7 @@ mod tests {
             anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
+            runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
@@ -6732,6 +6890,7 @@ mod tests {
             anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
+            runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
         let res = lower_with_cafs(&tp, 44100.0, &cafs);
@@ -6948,5 +7107,49 @@ mod tests {
             )),
             2
         );
+    }
+
+    #[test]
+    fn runst_lowers_to_runst_effect_op() {
+        // A real `ST s a` body lowers to the region-running effect op: the
+        // phantom `s` has no runtime representation, so `runST` consumes the
+        // `ST` value and runs its region.
+        let ir = ir_of(
+            "{-# MODE complete #-} main = runST (\\s -> ST { unST: \\t -> Pair { first: t, second: 1.0 } });",
+        );
+        assert!(
+            has_instr(&ir, |i| matches!(
+                i,
+                ValueInstr::ValueEffectOp {
+                    op: ValueEffectOp::RunST,
+                    ..
+                }
+            )),
+            "expected a RunST effect instruction"
+        );
+    }
+
+    #[test]
+    fn stref_ops_lower_to_effect_closures() {
+        // `newSTRef`/`writeSTRef`/`readSTRef` inside a `runST` region lower to
+        // the STRef effect ops: a `BuiltinCallable` applied to the region's
+        // STState token by the `Monad (ST s)` bind chain.
+        let ir = ir_of(
+            "{-# MODE complete #-} main = runST (\\s -> do { r <- newSTRef 0.0; writeSTRef r 42.0; readSTRef r });",
+        );
+        for op in [
+            ValueEffectOp::NewStRef,
+            ValueEffectOp::WriteStRef,
+            ValueEffectOp::ReadStRef,
+            ValueEffectOp::RunST,
+        ] {
+            assert!(
+                has_instr(&ir, |i| matches!(
+                    i,
+                    ValueInstr::ValueEffectOp { op: o, .. } if *o == op
+                )),
+                "expected a {op:?} effect instruction"
+            );
+        }
     }
 }

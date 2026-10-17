@@ -53,6 +53,11 @@ pub struct TypedProgram {
     /// tape INDEX; a `Ref` absent from the map stays a name-based resource
     /// binding (the graph duplex path's externally-shared registry).
     pub tape_decls: Vec<(String, usize)>,
+    /// Span (`start`, `end`) of every `runST` application whose body is a real
+    /// `ST s a` computation → the region's payload type `a`. Lowering emits the
+    /// `RunST` effect and returns this type; the lowered `ST` record type alone
+    /// does not carry the payload (it appears only in the `unST` field's type).
+    pub runst_payload_tys: HashMap<(usize, usize), ValueTy>,
     /// The evaluation mode this program was compiled under (the file pragma,
     /// or the API-supplied mode when the file carries none).
     pub mode: Mode,
@@ -94,6 +99,12 @@ struct Ctx {
     /// retry re-registers a recursive def's scheme with value-rate channels
     /// (§: recursion is the lazy value track).
     mode: Mode,
+    /// Span (`start`, `end`) of every `runST` application whose body is a real
+    /// `ST s a` computation → the region's payload type `a`. Lowering has no
+    /// unification substitution, so this is the only record of the payload
+    /// type: the `ST` record's own lowered type carries no argument (its `a`
+    /// lives only inside the `unST` field type).
+    runst_payload_tys: HashMap<(usize, usize), ValueTy>,
 }
 
 impl Ctx {
@@ -1136,6 +1147,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
             type_var_bindings: HashMap::new(),
             anchor_param_tys: HashMap::new(),
             mode,
+            runst_payload_tys: HashMap::new(),
         };
         infer_def_group(&mut pc, &prelude_defs)?;
         prelude_ctx = Some(pc);
@@ -1173,6 +1185,16 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
                     .collect();
                 env.data_types
                     .insert(name.clone(), DataInfo::Record(fields_ty));
+                if !tyvars.is_empty() {
+                    env.data_arities.insert(name.clone(), tyvars.len());
+                }
+            }
+            Def::Abstract { name, tyvars, .. } => {
+                // Opaque types register exactly like records for NAME
+                // resolution (so signatures may mention them), but carry no
+                // constructors or fields — inference rejects constructing,
+                // projecting, updating, and matching one.
+                env.data_types.insert(name.clone(), DataInfo::Opaque);
                 if !tyvars.is_empty() {
                     env.data_arities.insert(name.clone(), tyvars.len());
                 }
@@ -1239,6 +1261,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         type_var_bindings: HashMap::new(),
         anchor_param_tys: HashMap::new(),
         mode,
+        runst_payload_tys: HashMap::new(),
     };
 
     // The prelude combinators were already typed above (against the builtin
@@ -1386,6 +1409,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         anchor_param_tys: ctx.anchor_param_tys.clone(),
         shared_cell_result_tys,
         tape_decls: Vec::new(),
+        runst_payload_tys: ctx.runst_payload_tys.clone(),
         mode,
     })
 }
@@ -2267,6 +2291,10 @@ fn infer_expr_expected(
                             }),
                         }
                     }
+                    Some(DataInfo::Opaque) => Err(CompileError::Type {
+                        msg: format!("opaque type `{name}` has no fields"),
+                        span: *span,
+                    }),
                     _ => Err(CompileError::Type {
                         msg: format!("`{name}` is not a record type"),
                         span: *span,
@@ -2363,6 +2391,15 @@ fn infer_expr_expected(
             }
             match &rt.vty {
                 ValueTy::Data(name, _) => {
+                    if matches!(
+                        ctx.env.data_types.get(name.as_str()),
+                        Some(DataInfo::Opaque)
+                    ) {
+                        return Err(CompileError::Type {
+                            msg: format!("opaque type `{name}` has no fields"),
+                            span: *span,
+                        });
+                    }
                     let fty = ctx
                         .env
                         .data_types
@@ -2522,6 +2559,19 @@ fn infer_expr_expected(
             // scrutinee's sum name is the `App` head (when it is a builtin Sum)
             // or the `Data` name.
             let resolved = ctx.subst.resolve_value(&scrutinee_vty);
+            // An opaque value has no constructors or fields to inspect: it
+            // cannot be pattern-matched (`data W; f w = case w of { … }`).
+            if let ValueTy::Data(name, _) = &resolved {
+                if matches!(
+                    ctx.env.data_types.get(name.as_str()),
+                    Some(DataInfo::Opaque)
+                ) {
+                    return Err(CompileError::Type {
+                        msg: format!("opaque type `{name}` cannot be matched"),
+                        span: *span,
+                    });
+                }
+            }
             let scrutinee_sum = match &resolved {
                 ValueTy::Data(name, _) => Some(name.clone()),
                 ValueTy::App(name, _)
@@ -2903,6 +2953,12 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                     span,
                 });
             }
+            DataInfo::Opaque => {
+                return Err(CompileError::Type {
+                    msg: format!("opaque type `{name}` cannot be used as a value"),
+                    span,
+                });
+            }
         }
     }
     if ctx.env.newtypes.contains_key(name) {
@@ -3121,6 +3177,86 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
             msg: "a forall-typed signature cannot be applied as a plain builtin".into(),
             span: Span::new(0, 0),
         }),
+    }
+}
+
+/// Whether a name in a builtin signature is a type VARIABLE rather than a
+/// declared type: a lowercase placeholder (`a`, `b`, `s`) that no declaration
+/// or primitive resolves.
+fn is_builtin_sig_var(ctx: &Ctx, name: &str) -> bool {
+    !matches!(name, "Float" | "Int" | "Bool" | "String" | "Buffer" | "()")
+        && !ctx.env.data_types.contains_key(name)
+        && !ctx.env.newtypes.contains_key(name)
+        && !ctx.env.type_aliases.contains_key(name)
+        && ctx.env.ctor_arity(name).is_none()
+        && !ctx.env.data_arities.contains_key(name)
+}
+
+/// Convert a builtin signature to a `ValueTy`, INSTANTIATING its type
+/// variables.
+///
+/// A `TForall` binder is stripped and each bound name — like each remaining
+/// free type-variable name (`a`, `b`, …) — is replaced by one fresh inference
+/// variable, consistently within the signature, so `a -> ST s (STRef s a)`
+/// keeps `s`/`a` linked. The call site then unifies the instantiation with the
+/// argument and result types; inside `runST (\s -> …)` the instantiated region
+/// variable unifies with the enclosing region's `TyConVar`, which is exactly
+/// what makes an escaping `STRef s a` a compile-time error.
+///
+/// A name that resolves through the caller's locals to a region phantom is
+/// left as that phantom (mirroring [`type_expr_to_vty`]); declared type names
+/// and primitives resolve through the environment as usual.
+fn instantiate_builtin_sig_vty(
+    ctx: &mut Ctx,
+    te: &crate::ast::TypeExpr,
+    vars: &mut HashMap<String, ValueTy>,
+) -> Result<ValueTy, CompileError> {
+    use crate::ast::TypeExpr;
+    match te {
+        TypeExpr::TName(n) => {
+            if let Some(t) = vars.get(n) {
+                return Ok(t.clone());
+            }
+            if let Some(t) = ctx.locals.get(n) {
+                if matches!(t.vty, ValueTy::TyConVar(_)) {
+                    return Ok(t.vty.clone());
+                }
+            }
+            if is_builtin_sig_var(ctx, n) {
+                let v = ctx.fresh_vty();
+                vars.insert(n.clone(), v.clone());
+                return Ok(v);
+            }
+            Ok(ctx.env.vty_of_name(n))
+        }
+        TypeExpr::TApp(head, args) => {
+            let mut targs = Vec::with_capacity(args.len());
+            for a in args {
+                targs.push(instantiate_builtin_sig_vty(ctx, a, vars)?);
+            }
+            if ctx.env.data_arities.contains_key(head.as_str()) {
+                Ok(ValueTy::Data(head.clone(), targs))
+            } else {
+                Ok(ValueTy::App(head.clone(), targs))
+            }
+        }
+        TypeExpr::TFunc(args, ret) => {
+            let mut targs = Vec::with_capacity(args.len());
+            for a in args {
+                targs.push(instantiate_builtin_sig_vty(ctx, a, vars)?);
+            }
+            Ok(ValueTy::Thunk(
+                targs,
+                vec![instantiate_builtin_sig_vty(ctx, ret, vars)?],
+            ))
+        }
+        TypeExpr::TForall(bound, inner) => {
+            for n in bound {
+                let v = ctx.fresh_vty();
+                vars.insert(n.clone(), v);
+            }
+            instantiate_builtin_sig_vty(ctx, inner, vars)
+        }
     }
 }
 
@@ -3392,7 +3528,12 @@ fn infer_apply_impl(
             params[0].name.clone(),
             ArrowTy::value_channel(ValueTy::TyConVar(s_id)),
         );
-        let bt = infer_expr_expected(ctx, body, expected);
+        // The body of a real `runST` is an `ST s a` computation, not the
+        // region's result: infer it WITHOUT threading the call's expected type
+        // (which is the payload type `a`, a different shape). A legacy body
+        // that is not `ST`-headed is the erased region value itself; its
+        // expected type is threaded below.
+        let bt = infer_expr_expected(ctx, body, None);
         ctx.locals = saved;
         ctx.method_lifting = saved_lifting;
         let bt = bt?;
@@ -3402,6 +3543,21 @@ fn infer_apply_impl(
                 span,
             });
         }
+        // Real ST (`data ST s a = { unST: STState -> Pair STState a }`): the
+        // body's type is `ST s a`, so its state parameter must be THIS region's
+        // phantom and the region's result is the payload `a`. Unifying the
+        // parameter with `TyConVar(s_id)` links every `STRef` the body created
+        // (their `s` was instantiated fresh and unified with the same phantom
+        // through the `monad` chain) to this region.
+        let body_vty = bt.vty.clone();
+        let resolved_body = ctx.subst.resolve_value(&body_vty);
+        let (ret_vty, is_st) = match &resolved_body {
+            ValueTy::Data(n, st_args) if n == "ST" && st_args.len() == 2 => {
+                unify_value(&st_args[0], &ValueTy::TyConVar(s_id), &mut ctx.subst, span)?;
+                (st_args[1].clone(), true)
+            }
+            _ => (body_vty, false),
+        };
         // Check-escaping: the region result must not mention the phantom. A
         // signal-rate channel carries no value type variables (its `vty` is a
         // placeholder), so only value-rate results can escape — `resolve_value`
@@ -3409,7 +3565,6 @@ fn infer_apply_impl(
         // `value_map.contains_key(s_id)` catches the case where a cross-kind
         // unification bound the phantom itself away into an outer variable
         // (the phantom leaked even though `s_id` no longer appears).
-        let ret_vty = bt.vty.clone();
         let resolved = ctx.subst.resolve_value(&ret_vty);
         if vty_mentions_tyvar(&resolved, s_id) || ctx.subst.value_map.contains_key(&s_id) {
             return Err(CompileError::Type {
@@ -3417,10 +3572,27 @@ fn infer_apply_impl(
                 span,
             });
         }
-        // The phantom is erased and the region's computation is the lambda
-        // body's: return the body's arrow type (a bare literal body is a
-        // constant signal; a value body a value channel — both runST-idiomatic
-        // in rill, where literals are value-compatible constant signals).
+        if is_st {
+            // The region computes an `a`: the phantom and the state token are
+            // erased from the static type, leaving a plain value channel.
+            // Record the payload type for lowering, which has no substitution
+            // of its own (`body_ty` alone is a bare `ST` head).
+            ctx.runst_payload_tys
+                .insert((span.start, span.end), resolved.clone());
+            return Ok(ArrowTy::value_channel(resolved));
+        }
+        // Legacy erasure (a body that is not an `ST` computation, e.g. the
+        // literal `runST (fn s -> 1.0)`): the phantom has no representation and
+        // the region types as its body. Honor the call site's expected type.
+        if let Some(exp) = &expected {
+            let exp = ctx.subst.resolve_value(exp);
+            if matches!(
+                exp,
+                ValueTy::Data(..) | ValueTy::App(..) | ValueTy::Newtype(..) | ValueTy::Thunk(..)
+            ) {
+                unify_value(&resolved, &exp, &mut ctx.subst, span)?;
+            }
+        }
         return Ok(bt);
     }
     // Builtin functions with an ordinary (non-forall) signature registered in
@@ -3441,8 +3613,16 @@ fn infer_apply_impl(
                 span,
             });
         }
-        for (p, a) in params.iter().zip(args.iter()) {
-            let pt = type_expr_to_vty(ctx, p)?;
+        // Instantiate the signature's type variables ONCE for the whole call,
+        // so the arguments and the result share them (a `forall`-bound region
+        // variable in the STRef signatures, plus the free element variable).
+        let mut sig_vars: HashMap<String, ValueTy> = HashMap::new();
+        let param_tys: Vec<ValueTy> = params
+            .iter()
+            .map(|p| instantiate_builtin_sig_vty(ctx, p, &mut sig_vars))
+            .collect::<Result<_, _>>()?;
+        let ret_ty = instantiate_builtin_sig_vty(ctx, &ret, &mut sig_vars)?;
+        for (pt, a) in param_tys.into_iter().zip(args.iter()) {
             let at0 = infer_expr(ctx, a)?;
             // A Buffer param (`writeOutput`'s second arg) accepts a signal
             // computation (a `Buffer -> … -> Buffer` arrow applied to the
@@ -3486,7 +3666,7 @@ fn infer_apply_impl(
         }
         // A builtin-sig result is a VALUE channel (`IO Buffer` is a
         // record value; `IO ()` a Void value).
-        return Ok(ArrowTy::value_channel(type_expr_to_vty(ctx, &ret)?));
+        return Ok(ArrowTy::value_channel(ret_ty));
     }
     if name == "not" {
         if args.len() != 1 {
@@ -3764,15 +3944,23 @@ fn infer_apply_impl(
                         let arg_tys: Vec<ValueTy> = (0..*arity)
                             .map(|k| {
                                 let pid = (k + 1) as u32;
-                                let pty = match placeholder_bindings.get(&pid) {
-                                    // A bare `Var(k)` field was freshened;
-                                    // resolve its fresh var.
+                                match placeholder_bindings.get(&pid) {
+                                    // A field mentioned this parameter, so its
+                                    // placeholder was freshened to a LIVE var.
+                                    // Return it as-is — even while still
+                                    // unbound — so the constructor's type
+                                    // argument stays LINKED to the field
+                                    // values (`return r` must keep the
+                                    // payload chained to `r`'s type).
                                     Some(fresh) => ctx.subst.resolve_value(fresh),
-                                    None => ctx.subst.resolve_value(&ValueTy::Var(pid)),
-                                };
-                                match pty {
-                                    ValueTy::Var(_) => ctx.fresh_vty(), // unconstrained param
-                                    t => t,
+                                    // No field mentions it: the raw placeholder
+                                    // id shares the live counter space, so
+                                    // freshen an unbound one instead of
+                                    // handing out a colliding id.
+                                    None => match ctx.subst.resolve_value(&ValueTy::Var(pid)) {
+                                        ValueTy::Var(_) => ctx.fresh_vty(),
+                                        t => t,
+                                    },
                                 }
                             })
                             .collect();
@@ -3785,6 +3973,13 @@ fn infer_apply_impl(
                 // Applying the sum type name itself is not a constructor call.
                 return Err(CompileError::Type {
                     msg: format!("`{name}` is a sum type; use one of its constructors"),
+                    span,
+                });
+            }
+            DataInfo::Opaque => {
+                // An opaque type is nameable but has no constructor to apply.
+                return Err(CompileError::Type {
+                    msg: format!("opaque type `{name}` has no constructors"),
                     span,
                 });
             }
@@ -5669,6 +5864,59 @@ mod tests {
         // Func([Float], [Float]).
         let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
         assert_eq!(t.process_ty.vty, ValueTy::Float);
+    }
+
+    #[test]
+    fn opaque_type_is_nameable_but_not_constructible() {
+        // `data World;` declares a nameable type: a field/type-alias may
+        // mention it — but nothing in source can CONSTRUCT one. `World {}` is
+        // a compile-time error ("no constructors").
+        let err = match ty_with("data World; main = World {}") {
+            Ok(_) => panic!("constructing an opaque type must be rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("opaque type `World` has no constructors"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            ty_with("data World; data Box = { w: World }; main = 1.0").is_ok(),
+            "an opaque type must be nameable in a type position"
+        );
+        assert!(
+            ty_with("data World; type Alias = World; main = 1.0").is_ok(),
+            "an opaque type must be usable through a type alias"
+        );
+    }
+
+    #[test]
+    fn opaque_type_has_no_projection_or_patterns() {
+        // An opaque value has no fields to project and no constructors to
+        // match against: both are compile-time errors. The record wrapper
+        // pins the binder's type so the projection/match is not deferred.
+        let err = match ty_with(
+            "data World; data Box = { w: World }; name b = let v = b.w in v.name; main = 1.0",
+        ) {
+            Ok(_) => panic!("projecting a field of an opaque type must be rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("opaque type `World` has no fields"),
+            "unexpected error: {err}"
+        );
+        let err = match ty_with(
+            "data W; data Box = { w: W }; first b = let v = b.w in case v of { W => 1.0 }; main = 1.0",
+        ) {
+            Ok(_) => panic!("matching an opaque type's nonexistent constructor must be rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("opaque type `W` cannot be matched"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

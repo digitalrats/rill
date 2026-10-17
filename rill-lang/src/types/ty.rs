@@ -163,6 +163,11 @@ pub enum DataInfo {
     Record(Vec<(String, ValueTy)>),
     /// A sum type: constructor name → payload value types.
     Sum(Vec<(String, Vec<ValueTy>)>),
+    /// An ABSTRACT (opaque) type: nameable in signatures, but with no
+    /// constructors and no fields. Source programs cannot build, project, or
+    /// pattern-match one — only compiler-provided primitives produce values of
+    /// these types (`World`, `STState`, `STRef s a`).
+    Opaque,
 }
 
 /// A `typeclass` declaration: its type variable and method dictionary.
@@ -259,37 +264,7 @@ typeclass Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
 typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
 
-instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
-instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
-instance Monoid List where { mempty = list; mappend a b = append_list a b; }
-
-instance Functor List where { fmap g xs = map g xs; }
-instance Functor Maybe where {
-    fmap g m = case m of { Nothing => Nothing; Just x => Just (g x); };
-}
-
-instance Monad Maybe where {
-    return x = Just x;
-    bind m f = case m of { Nothing => Nothing; Just x => f x; };
-}
-instance Monad List where {
-    return x = cons x (list);
-    bind xs f = concat_map f xs;
-}
-
 data Kleisli m a b = { unKleisli: a -> m b };
-data ST s a = { unST: a };
-data IO a = { unIO: a };
-
-instance Monad (ST s) where {
-    return x = ST { unST: x };
-    bind m f = ST { unST: (f m.unST).unST };
-};
-
-instance Monad IO where {
-    return x = IO { unIO: x };
-    bind m f = IO { unIO: (f m.unIO).unIO };
-};
 
 typeclass Arrow a where {
     arr: (b -> c) -> a b c;
@@ -348,8 +323,9 @@ merge = \ f -> \ g -> \ p -> f p.first + g p.second;
 main = ();
 "#;
 
-/// Standard-library prelude: the common standard-library layer (streams now;
-/// threads/channels/actors later). This is deliberately distinct from
+/// Standard-library prelude: the common standard-library layer — the primitive
+/// opaque tokens (`World`/`STState`/`STRef`), the `ST`/`IO` monads and their
+/// instances, and the stream contract types. This is deliberately distinct from
 /// [`CATEGORY_PRELUDE`] (pure category theory) and [`SIGNAL_PRELUDE`]
 /// (first-class buffer types). The stream contract types are higher-kinded
 /// record types (`InputStream Buffer`, `OutputStream Buffer`, the general
@@ -357,6 +333,49 @@ main = ();
 /// `mkStream` resolves against the runtime registry), declared in rill-lang
 /// itself like the other preludes. Registered by [`TypeEnv::with_builtins`].
 pub(crate) const STD_PRELUDE: &str = r#"
+-- Primitive opaque tokens. `World` is the real-world token (the GHC
+-- `State# RealWorld` analog), `STState` the per-region state token threaded by
+-- the ST monad. Neither has constructors or fields: only the runtime creates
+-- them.
+data World;
+data STState;
+-- An opaque cell handle. Only `newSTRef` creates one; the region phantom `s`
+-- keeps it from escaping its `runST` region.
+data STRef s a;
+-- The state-threading monad: a state token in, the advanced token AND the
+-- result out. `runST` supplies the initial token and discards the final one.
+data ST s a = { unST: STState -> Pair STState a };
+-- The IO monad (phantom until the IO runner lands).
+data IO a = { unIO: a };
+
+instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
+instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
+instance Monoid List where { mempty = list; mappend a b = append_list a b; }
+
+instance Functor List where { fmap g xs = map g xs; }
+instance Functor Maybe where {
+    fmap g m = case m of { Nothing => Nothing; Just x => Just (g x); };
+}
+
+instance Monad Maybe where {
+    return x = Just x;
+    bind m f = case m of { Nothing => Nothing; Just x => f x; };
+}
+instance Monad List where {
+    return x = cons x (list);
+    bind xs f = concat_map f xs;
+}
+
+instance Monad (ST s) where {
+    return x = ST { unST: \s -> Pair { first: s, second: x } };
+    bind m f = ST { unST: \s -> let p = m.unST s in let q = f p.second in q.unST p.first };
+};
+
+instance Monad IO where {
+    return x = IO { unIO: x };
+    bind m f = IO { unIO: (f m.unIO).unIO };
+};
+
 data InputStream  a = { unInputStream: a };
 data OutputStream a = { unOutputStream: a };
 -- General stream value: the `runStream` boundary type. Streams are only ever
@@ -488,12 +507,17 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
     let toks = crate::lexer::tokenize(src);
     debug_assert!(toks.is_ok(), "prelude must lex");
     let program = crate::parser::parse(&toks.ok().unwrap(), src.as_bytes());
-    debug_assert!(program.is_ok(), "prelude must parse");
+    debug_assert!(
+        program.is_ok(),
+        "prelude must parse: {:?}",
+        program.as_ref().err()
+    );
     let defs = program.ok().unwrap().defs;
     // Prelude `data` declarations (`data Kleisli m a b = …`, the catalog's
-    // record types) register here. User `data` declarations register in
-    // infer phase 2 (`infer_program_with`) — `register_decls` deliberately
-    // does NOT handle `Def::Data`, so a declaration reaches exactly one
+    // record types) and ABSTRACT declarations (`data World;` — the primitive
+    // opaque tokens) register here. User `data` declarations register in infer
+    // phase 2 (`infer_program_with`) — `register_decls` deliberately does NOT
+    // handle `Def::Data`/`Def::Abstract`, so a declaration reaches exactly one
     // registration path (no double-register).
     for def in &defs {
         if let Def::Data {
@@ -512,6 +536,12 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
                 .collect();
             env.data_types
                 .insert(name.clone(), DataInfo::Record(fields_ty));
+            if !tyvars.is_empty() {
+                env.data_arities.insert(name.clone(), tyvars.len());
+            }
+        }
+        if let Def::Abstract { name, tyvars, .. } = def {
+            env.data_types.insert(name.clone(), DataInfo::Opaque);
             if !tyvars.is_empty() {
                 env.data_arities.insert(name.clone(), tyvars.len());
             }
@@ -626,9 +656,16 @@ impl TypeEnv {
         // Signal-track prelude: the `Buffer` typeclass + `FixedBuffer` type.
         register_prelude(&mut env, SIGNAL_PRELUDE);
         env.derive_superclass_instances();
-        // Standard-library prelude: the stream contract types (`InputStream`/
-        // `OutputStream`) the boundary operations below are typed against.
+        // Standard-library prelude: the primitive opaque tokens
+        // (`World`/`STState`/`STRef`), the `ST`/`IO` monads with their
+        // instances, and the stream contract types (`InputStream`/
+        // `OutputStream`/`Stream`/`BackendSpec`) the boundary operations below
+        // are typed against.
         register_prelude(&mut env, STD_PRELUDE);
+        // The moved `Monad` instances (`ST`, `Maybe`, `List`, `IO`) derive their
+        // `Applicative`/`Functor` superclasses exactly as they did while they
+        // lived in `CATEGORY_PRELUDE`.
+        env.derive_superclass_instances();
         // Builtin foreign catalog: the migrated legacy builtins' declarations
         // plus the record types their params need. Parsed the same way as the
         // preludes — a parse failure here is a compiler bug.
@@ -636,8 +673,8 @@ impl TypeEnv {
         // Builtin polymorphic functions: `runST : (forall s. ST s a) -> a` is a
         // forall-typed ordinary function (NOT a foreign decl — FFI conversion
         // hits its `other` arm on `forall`, and it is not instance-dispatched).
-        // The `ST s a` type is declared in `CATEGORY_PRELUDE`; rank-N
-        // application of the signature lives in `infer_apply_impl`.
+        // The `ST s a` type is declared in `STD_PRELUDE`; rank-N application
+        // of the signature lives in `infer_apply_impl`.
         env.builtin_sigs.insert(
             "runST".to_string(),
             crate::ast::TypeExpr::TFunc(
@@ -654,10 +691,60 @@ impl TypeEnv {
                 Box::new(crate::ast::TypeExpr::TName("a".into())),
             ),
         );
+        // The ST cell primitives. Their signatures are `TForall`-bound over the
+        // region phantom `s` (and the element type `a`): the ordinary
+        // builtin-sig path instantiates each bound var to a fresh inference
+        // variable, so a call inside `runST (\s -> …)` unifies that variable
+        // with the enclosing region's `TyConVar` — that is what makes an
+        // escaping `STRef s a` a compile-time error.
+        //
+        //   newSTRef    :: a -> ST s (STRef s a)
+        //   readSTRef   :: STRef s a -> ST s a
+        //   writeSTRef  :: STRef s a -> a -> ST s ()
+        //   modifySTRef :: STRef s a -> (a -> a) -> ST s ()
+        let st =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("ST".to_string(), args);
+        let stref =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("STRef".to_string(), args);
+        let tv = |n: &str| crate::ast::TypeExpr::TName(n.to_string());
+        let forall_s = |inner: crate::ast::TypeExpr| {
+            crate::ast::TypeExpr::TForall(vec!["s".to_string()], Box::new(inner))
+        };
+        env.builtin_sigs.insert(
+            "newSTRef".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![tv("a")],
+                Box::new(forall_s(st(vec![tv("s"), stref(vec![tv("s"), tv("a")])]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "readSTRef".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![stref(vec![tv("s"), tv("a")])],
+                Box::new(forall_s(st(vec![tv("s"), tv("a")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "writeSTRef".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![stref(vec![tv("s"), tv("a")]), tv("a")],
+                Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "modifySTRef".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![
+                    stref(vec![tv("s"), tv("a")]),
+                    crate::ast::TypeExpr::TFunc(vec![tv("a")], Box::new(tv("a"))),
+                ],
+                Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
+            ),
+        );
         // IO primitives: `readInput : Int -> IO Buffer` and
         // `writeOutput : Int -> Buffer -> IO ()`. `IO` is the monad declared in
-        // `CATEGORY_PRELUDE`; `()` is `ValueTy::Void` (`TName "()"` resolves to
-        // it in `type_expr_to_vty`).
+        // `STD_PRELUDE`; `()` is `ValueTy::Void` (`TName "()"` resolves to it
+        // in `type_expr_to_vty`).
         env.builtin_sigs.insert(
             "readInput".to_string(),
             crate::ast::TypeExpr::TFunc(
@@ -1265,7 +1352,7 @@ impl TypeEnv {
                     }
                 }
             }
-            None => {}
+            Some(DataInfo::Opaque) | None => {}
         }
         visiting.remove(name);
         Ok(())

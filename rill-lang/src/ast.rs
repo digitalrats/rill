@@ -369,6 +369,18 @@ pub enum Def {
         /// Span.
         span: Span,
     },
+    /// `data Name tv1 tv2;` — an ABSTRACT (opaque) type: nameable in
+    /// signatures and usable as a value type, but with no constructors and no
+    /// fields, so no program text can build, project, or pattern-match one. The
+    /// compiler (not the surface language) produces values of these types.
+    Abstract {
+        /// Type name.
+        name: String,
+        /// Type parameters (e.g. `a` in `data STRef s a`).
+        tyvars: Vec<String>,
+        /// Span.
+        span: Span,
+    },
     /// `type Name = T` — synonym (pure substitution).
     TypeAlias {
         /// Alias name.
@@ -441,6 +453,7 @@ impl Def {
             Def::Eval { name, .. } => name,
             Def::Data { name, .. } => name,
             Def::Sum { name, .. } => name,
+            Def::Abstract { name, .. } => name,
             Def::TypeAlias { name, .. } => name,
             Def::Newtype { name, .. } => name,
             Def::Typeclass { name, .. } => name,
@@ -485,6 +498,7 @@ impl Def {
             self,
             Def::Data { .. }
                 | Def::Sum { .. }
+                | Def::Abstract { .. }
                 | Def::TypeAlias { .. }
                 | Def::Newtype { .. }
                 | Def::Typeclass { .. }
