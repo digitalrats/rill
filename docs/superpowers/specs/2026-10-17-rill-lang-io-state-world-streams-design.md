@@ -1,123 +1,120 @@
-# rill-lang: IO as Reader over State + World, Streams as Values (Stage C refinement)
+# rill-lang: Real IO (State + RealWorld), Full Haskell ST, io-streams-style Streams (memory + stdio) — Design
 
-> **Stage:** C refinement — builds on and supersedes
-> `2026-10-11-rill-lang-io-state-streams-design.md` (Stage C).
-> **Prerequisites:** Stage A (lazy value track), Stage B (ST-style `Buffer`,
-> `runST` phantom `s`, IO monad, mono-kernel), the existing `ProgramEngine`,
-> `RegionHandle`/`BufferPool` memory layer.
-> **Scope:** Finalize the I/O architecture of rill-lang: **no signal-path vs
-> data-path dichotomy anywhere**; the program is `(arg₁…argₙ) -> IO` with scalar
-> args; `IO` is a reader over `State + World` (memory-manager and backend
-> references flow through `State`); `readInput`/`writeOutput` are replaced by
-> **operations over stream values** (`InputStream`/`OutputStream`) with a
-> backend-independent contract exchanging `List Buffer` chunks; streams are
-> **passive or active** in both directions; the **active backend drives only the
-> hot signal loop**; RT-safety is a **type-level guarantee**; console and file
-> I/O are ordinary stream backends.
->
-> The graph feature's reconstruction (`GraphSpec → Program`) is **deferred**
-> until this I/O architecture lands, because its target program form depends on
-> it (see §5).
+> **Stage:** C refinement — re-scoped. Supersedes the passive/active + backend +
+> hot-loop framing of the earlier revision of this same document; that framing
+> (audio backends, per-block real-time processing, threads/actors) is deferred
+> to follow-on plans (§6).
+> **Prerequisites:** Stage A (lazy value track), the `Monad`/`IO`/`ST` typeclass
+> machinery, the rank-2 `runST` special case in inference, the `STD_PRELUDE`
+> registration point.
+> **Scope:** The core execution foundation, nothing more:
+> 1. **Real IO as State + RealWorld** — `IO a` threads a linear `World` token
+>    (`State# RealWorld` analog), ordering effects by data dependency exactly as
+>    GHC does; the runtime realizes `realWorld` (stdio handles + the memory-
+>    stream table).
+> 2. **Full Haskell ST with isolated state** — `ST s a` threads an opaque,
+>    isolated state token; `runST` supplies a **fresh** state per region; the
+>    rank-2 `forall s` prevents mutable state from escaping; `STRef` provides
+>    mutable cells inside a region.
+> 3. **io-streams-style streams** — `InputStream a` / `OutputStream a`, generic
+>    over the element type `a`, with the io-streams operation surface, backed
+>    only by **memory** (`fromList`/`toList`/`makeInputStream`/
+>    `makeOutputStream`) and **stdio/stderr** (`stdin`/`stdout`/`stderr` over
+>    `String`).
+> 4. **Program form and full replacement** — `main : (String…) -> IO ()`,
+>    executed to completion by a new `ProgramRunner` against `realWorld`; the old
+>    signal-transform execution system (`readInput`/`writeOutput`, `ProgramEngine`,
+>    the `Algorithm`-transform `RillProgram`, buffer-λ `main`) is removed and all
+>    programs migrate.
 
-## North-star requirement
+## North-star requirement (unchanged, foundation edition)
 
-**A `lang_chiptune`-class program must be expressible entirely in rill-lang.**
-That means the program itself **creates backends, threads, and actors inside
-the language** — not behind it:
+**A `lang_chiptune`-class program must eventually be expressible entirely in
+rill-lang** — backends, threads, and actors created *inside* the language, not
+behind it. This plan does not deliver that; it delivers the **execution core**
+that program is written on:
 
-- **Backends** — audio capture/playback, tape, file, console — created inside
-  the program via `mkStream`-class constructors, behind the one stream
-  contract (§4.2).
-- **Threads** — a program spawns its own work loops (control/scheduler-style
-  green threads) via `spawn` (§4.7).
-- **Actors** — asynchronous entities with mailboxes (Erlang-style send/
-  receive/spawn loops) created inside the program (§4.7).
+- A **real IO monad** (State + RealWorld) that orders effects and can realize
+  arbitrary runtime I/O (here: memory and stdio; audio later).
+- A **real, sound ST** (full Haskell semantics) that the language and the future
+  real-time layers can rely on for isolated mutable state.
+- **io-streams-style streams** as ordinary values — the one I/O contract that
+  memory, stdio, and (later) audio backends all share.
 
-The flagship control layer (STC player stepping from a file, an automaton
-emitting `SetParameter`, receiving `ClockTick`) is therefore *in-language*:
-it is ordinary rill-lang actors, threads, and streams. The runtime provides
-the scheduler/channel mechanics; the program composes them.
-
-**The transition this design enacts:** `ProgramRunner` stops being a *signal
+**The transition this plan enacts:** `ProgramRunner` stops being a *signal
 processor* (a fixed `&[&[f32]] → &mut [&mut [f32]]` transform) and becomes the
-**executor of a fully Turing-complete program, tied to no specific domain**.
-Signal processing is just one domain the program can express (functions over
-`Buffer` values via the DSP FFI); the runner's identity is *executing the
-program*, not transforming signals. Backward compatibility with the old forms
-is deliberately **not required** — existing programs migrate to the stream
-form.
+**executor of a fully Turing-complete program**: it runs `main : (String…) -> IO
+()` to completion. Signal processing is just one domain the program can express
+later; the runner's identity is *executing the program*, not transforming
+signals. Backward compatibility with the old forms is deliberately **not
+required** — existing programs migrate to the new form (no transition period).
 
 ---
 
 ## 0. Executive summary
 
-The recurring failure of the graph-reconstruction work traced to a single
-root: the representation kept reverting to a **signal path vs data path**
-split (a Faust-era inheritance). This design eliminates that split **everywhere**,
-including at the I/O boundary, by making every entity a value:
+The design is deliberately small. Three faithful-to-Haskell mechanisms, nothing
+more:
 
-- **Program = `(arg₁…argₙ) -> IO`** — the arguments are **scalars**, not
-  buffers. External usage is "pass scalars, get an action".
-- **`IO` is a reader over `State + World`**, following GHC's model
-  (`IO a ≅ State# RealWorld -> (# State# RealWorld, a #)`): a linear opaque
-  `World` token orders effects; `State` carries the references that matter
-  (memory manager, backend registry/factory).
-- **Streams are values.** `InputStream`/`OutputStream` expose a
-  **backend-independent contract** exchanging chunks of `List Buffer`
-  (multi-channel frames) inside the existing `ST`-style effect model. The
-  global `readInput`/`writeOutput` primitives are replaced by **operations
-  over these stream values**; backends are created **inside the program**
-  via a `mkStream`-class constructor.
-- **Passive and active, both directions.** A stream is passive (the program
-  drives it) or active (it drives the program). Which one it is is decided by
-  the **threading context: on which thread the backend's callback was
-  created**. Every running program has ≥1 active backend and ≥1 passive
-  backend; the passive is symmetric to the active and is serviced within the
-  active's tick.
-- **The active backend drives only the hot signal-processing loop**, not the
-  whole program. The warm setup (creating streams, wiring) runs once. The hot
-  loop is a **distinct, RT-safe-by-construction type** (ST-like, phantom `s`,
-  rank-2 confined) that cannot leak warm effects and cannot allocate (rill's
-  pre-allocated `BufferPool`/`RegionHandle` is exactly the mechanism that
-  makes a GHC-RTS-style hard-RT hazard avoidable).
-- **Console and file I/O are ordinary stream backends** — trivially expressible
-  behind the same contract.
+- **`IO a = World -> (a, World)`** — the reader-over-State shape GHC uses
+  (`IO a ≅ State# RealWorld -> (# State# RealWorld, a #)`). The linear `World`
+  token orders effects; because each bind threads the *same* token, reordering
+  is inexpressible. The runtime provides `realWorld` (the actual stdio handles
+  and memory-stream table).
+- **`ST s a = STState -> (a, STState)`** — the full Haskell ST state monad:
+  state is threaded through `bind`, `runST` opens a **fresh, isolated** state
+  per region, and the rank-2 `forall s` (already special-cased in inference)
+  makes mutable state inexpressible outside the region. `STRef s a` gives
+  mutable cells inside the region.
+- **Streams are io-streams values.** `InputStream a`/`OutputStream a` with
+  `read :: InputStream a -> IO (Maybe a)` and `write :: Maybe a -> OutputStream
+  a -> IO ()` (`Nothing` = EOF/close), plus the io-streams operation surface.
+  The concrete backends in scope are **memory** and **stdio/stderr**; the stream
+  element is a plain, generic `a` — there is no audio block, no `List Buffer`,
+  no backpressure, no active/passive distinction in this plan.
+
+The program is `main : (String…) -> IO ()`. The `ProgramRunner` executes it to
+completion. The old execution system is removed.
 
 ---
 
 ## 1. Intent and why
 
-### 1.1 The dichotomy is the bug
+### 1.1 A sound foundation before a wide surface
 
-The graph reconstruction kept failing because both the subagent and the
-representation kept splitting the world into a "signal path" and a "data
-path". In the unified model there is no such split: a signal is a value
-(`FixedBuffer a`), a stream is a value, composition is function application.
-The I/O boundary was the last place the dichotomy survived — `readInput`/
-`writeOutput` as global, special-cased instructions. This design closes that
-last gap.
+The earlier revision of this design reached for the full audio/real-time surface
+(backends, active/passive streams, master-slave `runStream`, per-block hot
+loops) before the underlying semantics were real. That made everything
+conditional on machinery that did not exist yet. This revision inverts the
+order: **the IO/ST semantics become real first**, and the stream layer is built
+on them — small, correct, and testable — before any real-time concern is
+touched.
 
-### 1.2 Hard-RT is solved by memory management, not by a second language
-
-GHC's RTS makes hard realtime on the Haskell heap notoriously hard (allocation,
-GC). rill's memory layer — the size-classed `BufferPool`, pre-allocated
-`FixedBuffer` blocks, `RegionHandle` zero-copy sharing — was designed exactly
-to avoid that. The design consequence: the **hot loop must be allocation-free
-by construction**, and that must be a type-level guarantee, not a runtime
-convention.
-
-### 1.3 GHC provides validated shapes
+### 1.2 GHC provides validated shapes (we take the shapes, not the dependencies)
 
 - `IO a = State# RealWorld -> (# State# RealWorld, a #)` — the reader-over-
   State+World idea, with a linear opaque token ordering effects.
 - `ST s a` with `runST :: (forall s. ST s a) -> a` — the canonical way to
-  confine effects to a region (the analog of the RT-hot-loop boundary).
+  confine mutable state to a region; `STRef` for cells inside the region.
 - `io-streams` — `InputStream a` (pull: `IO (Maybe a)`) and `OutputStream a`
   (push: `Maybe a -> IO ()`) as backend-independent values; `Nothing` = EOF /
-  close; a push side expressed as a `Generator` over an `OutputStream`.
-- Pull-based composition (`conduit`/`pipes`) gives backpressure for free.
+  close; memory streams via `fromList`/`toList`; stream construction via
+  `makeInputStream`/`makeOutputStream`; stdio via `stdin`/`stdout`/`stderr`.
 
-We take the shapes, not the dependencies.
+### 1.3 "Real" is an interpreter-semantics change, not just types
+
+Today `ST s a = { unST: a }` and `IO a = { unIO: a }` are pure record wrappers:
+`bind` just unwraps and re-wraps a value, no state exists, `runST` is a
+one-point rank-2 type check with no runtime isolation. Making them real means:
+
+- the **declarations** become functions over opaque tokens
+  (`STState -> Pair STState a`, `World -> Pair World a`);
+- the **`Monad` instances** thread the token through `bind`;
+- **`runST`** applies its computation to a fresh, isolated state token and
+  discards the final one;
+- **`STRef`** cells live in that isolated state;
+- the **runner** applies `main` to `realWorld` and performs the effects the
+  program's IO actions request (memory-stream and stdio operations).
 
 ---
 
@@ -125,323 +122,380 @@ We take the shapes, not the dependencies.
 
 ### Goals
 
-1. **`(arg₁…argₙ) -> IO` scalar program form** — no buffer λ-parameters on
-   `main`; simpler external usage.
-2. **Streams replace global `readInput`/`writeOutput`** — I/O is operations
-   over `InputStream`/`OutputStream` values.
-3. **Backend-independent stream contract** over `List Buffer` chunks, usable
-   in the existing `ST`-style effect model.
-4. **Passive and active streams, both directions**, unified by one contract
-   with backpressure (active = the producer may push, but honors the consumer's
-   requested quantum `request(n)`; passive = the consumer always pulls).
-5. **`IO` as a reader over `State + World`**: a linear `World` token orders
-   effects; `State` carries memory-manager and backend references; backends
-   are created **inside the program** (`mkStream`).
-6. **The active backend drives only the hot signal loop**; the passive side is
-   symmetric and serviced within the active's tick.
-7. **RT-safety at the type level**: the hot loop is a distinct ST-like type
-   that cannot leak warm effects and cannot allocate.
-8. **Console (`stdin`/`stdout`) and file I/O as ordinary stream backends.**
-9. Preserve Turing completeness (effects are first-class values).
-10. **`lang_chiptune` fully in rill-lang**: backends, threads, and actors are
-    created inside the program (see North-star requirement and §4.7).
+1. **Real IO**: `IO a` threads a linear `World` token; effects are ordered by
+   token data-dependency; `realWorld` is realized by the runner.
+2. **Full Haskell ST**: `ST s a` threads isolated state; `runST` opens a fresh
+   region; the rank-2 `forall s` prevents escape; `STRef` provides mutable
+   cells (`newSTRef`/`readSTRef`/`writeSTRef`/`modifySTRef`).
+3. **io-streams streams, generic over `a`**: `InputStream a`/`OutputStream a`;
+   `read`/`write` (`Maybe`), `atEnd`, `unread`, `connect`, `fromList`, `toList`,
+   `makeInputStream`, `makeOutputStream`; `stdin`/`stdout`/`stderr`.
+4. **Memory and stdio backends only**: no audio, no `List Buffer` element, no
+   backpressure, no active/passive distinction in this plan.
+5. **`main : (String…) -> IO ()`**: String launch args via `set_args(&[String])`;
+   the `ProgramRunner` executes `main`'s IO to completion against `realWorld`.
+6. **Full replacement**: `readInput`/`writeOutput`, `ProgramEngine`, the
+   signal-transform `RillProgram`, buffer-λ `main`, and the audio-scoped
+   `Stream`/`asInput`/`asOutput`/`mkStream`/`BackendSpec`/`runStream` surface are
+   removed; all programs migrate.
+7. **Correct prelude placement**: ST, STRef, IO, and the concrete data-type
+   instances (Functor/Monad/Monoid for `Maybe`/`List`, `Monoid Float`/`String`)
+   move from `CATEGORY_PRELUDE` to `STD_PRELUDE` — they are monads and instances,
+   not category theory. `CATEGORY_PRELUDE` keeps only the foundational
+   category-theory machinery: the typeclass declarations
+   (Functor/Applicative/Monad/Monoid/Arrow) and the Kleisli construction.
+   `SIGNAL_PRELUDE` is untouched.
 
-### Non-goals (this stage)
+### Non-goals (this plan)
 
-- OTP-style fault tolerance / supervision trees / links (cross-process error
-  handling) — deferred.
-- Modules/import (`Program` feature) — deferred.
-- The graph feature's reconstruction and its SADT/R-schema rendering
-  (deferred until the I/O model is stable; see §5).
+- Audio capture/playback, tape, file, console-stream backends.
+- Real-time signal processing, per-block hot loops, RT-safety typing, audio
+  element types (`List Buffer`), backpressure, active/passive streams.
+- The buffer/region memory model (`Buffer` = reference to persistent region),
+  backend-owned buffers, the global memory manager for program resources
+  (TapeLoop).
+- Threads, channels, actors, schedulers.
+- OTP-style fault tolerance; modules/import; the graph feature's reconstruction.
 
 ### Anti-goals (a failure even if it technically works)
 
-- Re-introducing a signal-path/data-path separation anywhere in the model.
-- Keeping `readInput`/`writeOutput` as the primary I/O.
-- Buffer λ-parameters on `main` as the program's I/O contract.
-- Any allocation, lock, or syscall on the hot RT path.
-- Requiring the caller to know or configure which backend is active at the
-  type level of a general stream (activity is a property of the concrete
-  stream/backend pairing, expressed at the boundary where the callback lives).
-- A `lang_chiptune`-class program that needs anything significant *outside*
-  rill-lang to be written (control logic, backend wiring, actor loops).
+- Keeping `readInput`/`writeOutput` as the primary I/O, or keeping the old
+  signal-transform execution system alongside the new one.
+- A stream model that is audio-shaped (block elements, backpressure, master-
+  slave binding) before memory/stdio io-streams work.
+- ST that is only a type-level phantom with no runtime state (the current
+  state).
+- Re-introducing a signal-path/data-path separation in the I/O model.
 
 ---
 
 ## 3. Constraints (binding)
 
-- **RT rules** (AGENTS.md): no heap allocation, no locks, no `thread::sleep`,
-  no file/socket I/O, no `log`/`println`/`format!` on the RT path. The hot
-  loop's type must make violating these inexpressible.
-- **Memory model**: size-classed `BufferPool` (rill-core `memory/pool.rs`),
-  `FixedBuffer` pre-allocation, `RegionHandle`/`Arena` zero-copy sharing.
-  Zero-copy across stream boundaries where the current boundary already does
-  it (channel handles = `Value::Buffer`).
+- **No backward compatibility (directive).** Buffer-λ `main`, `readInput`/
+  `writeOutput` and their indexed variants, and the signal-transform
+  `ProgramRunner`/`ProgramEngine` framing are removed. Existing programs and
+  tests migrate to `main : (String…) -> IO ()` with stream I/O. No sugar layer
+  is kept. No transition period.
+- **ProgramRunner is an executor of a Turing-complete program**, domain-
+  agnostic; it takes **no input/output buffers or backend handles from
+  outside**. Streams (memory, stdio) are the program's I/O, created inside the
+  program.
+- **Prelude placement:** `CATEGORY_PRELUDE` — the foundational category-theory
+  machinery only: the typeclass declarations (Functor/Applicative/Monad/Monoid/
+  Arrow) and the Kleisli construction. `STD_PRELUDE` — the common standard-
+  library layer: the concrete data types and their instances moved here from
+  `CATEGORY_PRELUDE` (**ST + STRef + IO** and the `Maybe`/`List`/
+  `Float`/`String` instances — they are monads and instances, not category
+  theory), the stream types and operations, and stdio. `SIGNAL_PRELUDE` —
+  untouched.
 - **No new third-party dependencies** without explicit confirmation. All
-  mechanisms come from the existing `ST`/`runST` phantom pattern, the `Buffer`
-  typeclass, `RegionHandle`, and the IO-monad machinery.
-- `rill-lang` denies `unsafe_code`, warns on `missing_docs`. Docs in English.
-- **No backward compatibility (decision):** the transition breaks the old
-  forms deliberately. The buffer-λ-parameter `main`, the global `readInput`/
-  `writeOutput` primitives, and their indexed variants are removed; existing
-  programs and tests are migrated to the stream form (`main : (arg₁…argₙ) ->
-  IO ()` + `runStream`). No sugar layer is kept.
+  mechanisms come from the existing value track, the `Monad` machinery, the
+  rank-2 `runST` special case, and the `STD_PRELUDE` registration point.
+- `rill-lang` denies `unsafe_code`, warns on `missing_docs`. Docs in English,
+  `max_width=100`.
+- **RT rules** (AGENTS.md) apply to the *future* audio hot loop, not to this
+  plan — this plan's program runs to completion on the program thread; there is
+  no RT path yet.
+- **Workspace baseline:** verification runs against `cargo test -p rill-lang
+  --features dsp`; **graph compilation is not required** — the `graph` feature
+  and its known-broken `reconstruct.rs` baseline are out of scope and may stop
+  compiling; `rill-adrift` drops its `graph` feature dependency on `rill-lang`.
+  `rill-adrift` **migrates** with this plan (its program strings and the call
+  sites that used `ProgramRunner::apply`/`ProgramEngine` are updated to the new
+  entry points).
 
 ---
 
 ## 4. The "how" decided
 
-### 4.1 `IO` as a reader over `State + World`
+### 4.1 IO as State + RealWorld
 
 ```
 data World;                              -- primitive opaque token (GHC State# RealWorld analog)
-IO a  ≅  World -> (a, World)             -- State step over the token (orders effects)
+data IO a = { unIO: World -> Pair World a }   -- State step over the token (orders effects)
 ```
-plus a **reader environment `State`** threaded alongside, carrying the
-references that a program needs without being re-orderable state:
-memory manager / buffer pool, and the backend registry (the factory for
-`mkStream`, plus which backend is the active clock). Concretely the composite
-is a Reader-over-State: `IO a` reads `State` and threads the linear `World`.
 
 - `World` has no constructors and cannot be observed or duplicated — only the
-  runtime creates `realWorld` and discards the final one (existing Stage C
-  decision).
-- **State** holds references (not buffers): the memory manager and the
-  backend registry. Resources/streams themselves are created inside the
-  program and flow as ordinary values (`(stream, World')`), as in Stage C.
+  runtime creates `realWorld` and discards the final token (existing Stage C
+  decision). Its runtime value is an opaque handle to the runner's mutable
+  runtime state (the memory-stream table and the stdio handles); the token is
+  threaded for ordering, the handle is stable — exactly GHC's `RealWorld`.
+- **Opaque primitive types:** `World` (and `STState`/`STRef s a` in §4.2) are a
+  new **opaque primitive** kind: the program can *name* them in signatures but
+  cannot construct, project, or observe them — the prelude declares them, only
+  runtime builtins create their values. The compiler has no constructor-less
+  form today; this plan introduces the facility (mechanism in §6).
+- **Effect ordering (decision):** evaluation mode is per-program — **Strict**
+  (eager, no thunks, recursion banned, `!` inert) or **Complete** (lazy /
+  call-by-need, recursion allowed). Inside Complete the value track is lazy by
+  default; a **bang annotation** (`!`) is a *force of eager evaluation up to a
+  set boundary*: it emits `ValueForce` at the annotated site, evaluating the
+  suspended thunk to its head (WHNF) — not deeper. The linear `World` token
+  orders effects by data dependency in both modes — in Complete the
+  continuation forces the new token (call-by-need), in Strict evaluation is
+  eager so dependency order holds trivially:
+  `bind m f = IO { unIO: \w -> let p = m.unIO w in (f p.second).unIO p.first }`
+  — the continuation needs the new token (`p.first`), so reordering is
+  inexpressible in either case. There is **no compiler-enforced linear-type
+  subsystem**; the token threading is the runtime ordering mechanism
+  (unchanged from the earlier revision of this design).
+- The `Monad IO` instance (in `STD_PRELUDE`) is re-expressed in this form;
+  `return x = IO { unIO: \w -> Pair { first: w, second: x } }`.
 
-### 4.2 Streams replace `readInput`/`writeOutput`
-
-```
-data InputStream  a;    -- pull:  read  :: InputStream a  -> Maybe (List a)   -- Nothing = EOF/closed
-data OutputStream a;    -- push:  write :: OutputStream a -> List a -> ()     -- write Nothing closes
-```
-
-- **Chunk = `List Buffer`** (a multi-channel frame), matching today's
-  `readInput : () -> List Buffer` / `writeOutput : List Buffer -> IO ()`
-  contracts — but as **operations over stream values**, not global
-  instructions.
-- **Backend-independent**: the program sees only `read`/`write`/`close`
-  (+ `request` for backpressure); the concrete backend (audio capture/
-  playback, tape, file, console) is behind an instance.
-- **Expressed with the language's full HOF/HKT machinery** (not special-cased):
-  `InputStream`/`OutputStream` are higher-kinded type constructors
-  (`* -> *`, kind-checked like `IO a`/`List a`), and the `runStream` handler
-  is a first-class higher-order function. The stream types and the 
-  domain-agnostic standard surface live in a general **`STD_PRELUDE`** — the
-  common standard-library layer, registered alongside the strictly-category-
-  theory `CATEGORY_PRELUDE` and the signal-domain `SIGNAL_PRELUDE`. Streams
-  never go in `CATEGORY_PRELUDE`. `STD_PRELUDE` is also the home of the later
-  threads/channels/actors surface and other general utilities.
-- Backends are created **inside the program**:
-  ```
-  mkStream :: BackendSpec -> IO (InputStream Buffer, OutputStream Buffer)  -- e.g.
-  openInput  :: Int -> IO (InputStream Buffer)
-  openOutput :: Int -> IO (OutputStream Buffer)
-  openFile   :: FilePath -> IO Stream        -- file backend
-  consoleIn  / consoleOut                    -- stdin/stdout backends
-  ```
-  All of these are instances of the same stream contract — this is why
-  console and file I/O are trivial additions.
-
-### 4.3 Passive and active — a single contract with backpressure
-
-- A stream is **passive** when the program drives it (pull read / on-demand
-  write) from its own execution step.
-- A stream is **active** when the backend drives the program: its callback —
-  created on the backend's serving thread — pushes chunks in (active input)
-  or requests chunks out (active output).
-- Both are **one contract**: the consumer declares a requested quantum
-  (`request(n)`), the producer honors it. An active stream is exactly a
-  passive one where the producer may initiate, but still within the requested
-  quantum. This is the Reactive-Streams style, folded into the stream value.
-- **Which one a stream is is decided by the threading context: on which
-  thread its backend callback was created.** The type of a stream does not
-  need to brand it active/passive for ordinary use; the boundary where the
-  callback lives (the active backend's tick) is where activity enters.
-
-### 4.4 Active/passive pairing; the hot loop
-
-- Every running program has **≥1 active backend and ≥1 passive backend**. The
-  active backend is physically an input or an output stream; the passive is
-  **symmetric** to it (complementary direction) and is **serviced within the
-  active backend's tick** — this matches today's model where passive tape
-  heads / files are serviced inside the signal callback.
-- **The active backend drives only the hot signal-processing loop**, not the
-  whole program. The **program-facing per-block contract is `runStream
-  handler`** (decision):
-  ```
-  runStream :: (InputStream Buffer -> OutputStream Buffer -> IO ()) -> IO ()
-  ```
-  The handler is a rill-lang function over the active input/output stream
-  values, invoked per block on the RT thread. The pure `hotLoop` below is an
-  **internal** of that contract — what the runtime extracts from the handler
-  and calls per tick — not a separate public form.
-  ```
-  hotLoop :: (forall s. List Buffer -> ST s (List Buffer))   -- internal, per-tick, RT-safe by type
-  ```
-  Warm setup (create streams, wire, `mkStream`, open files/console, `spawn`
-  actors) runs once in `IO`, before the RT thread starts.
-- **Allocation guarantee (decision):** "no allocation" on the hot path means
-  **bounded bump-allocation into the pre-allocated pool counts as not
-  allocating** — i.e. the existing RT discipline (no heap alloc, no locks, no
-  syscalls) plus the type boundary that confines the hot loop. No separate
-  non-allocating interpreter is introduced, and no affine/linear types are
-  required for this guarantee.
-- The hot-loop type is **ST-like with a phantom `s`** (the existing `runST`
-  one-point rank-2 pattern): it cannot perform warm effects (no `IO` escape),
-  and the RT rules ban heap allocation, locks, syscalls, and logging in it.
-  This is where RT-safety is a **type-level guarantee** (plus the runtime
-  convention; see §4.5).
-
-### 4.5 Effect ordering, resources, Turing completeness
-
-- The linear `World` token orders effects under call-by-need (the laziness-
-  soundness gap identified in Stage C is closed by the token, exactly as in
-  GHC).
-- **Linearity guarantee (decision):** for now the `World` token is a
-  **runtime convention with strict bind ordering** — `IO`-bind threads the
-  token strictly and in order; there is no compiler-enforced linear-type
-  subsystem yet. A compiler-checked linearity system is a possible later
-  stage, not part of this design.
-- Global resources live in the runtime, addressed by handles that flow as
-  values (`newTape`, `openInput`, `openOutput`, `share`, `newTable`, …) —
-  unchanged from Stage C.
-- Effects are first-class values (functions of the token): they can be stored,
-  passed, recursed over — the basis of the control layer of
-  `lang_chiptune`-class programs.
-
-### 4.6 Console and file I/O
-
-- `stdin`/`stdout` and files are just **more backend instances** behind the
-  same `InputStream`/`OutputStream` contract. Console line/raw and file
-  read/write share the chunk model (`List Buffer`, or textual chunks where
-  applicable). Nothing about the stream model needs to change to admit them.
-
-### 4.7 In-language concurrency: threads and actors
-
-To make a `lang_chiptune`-class program fully in rill-lang, the language
-provides threads and actors as **ordinary effects on stream/channel values**
-(Erlang-style, building on Stage C §2.5b):
+### 4.2 Full Haskell ST with isolated state and STRef
 
 ```
-data Channel a                 -- mailbox / message-queue handle
-newChannel :: IO (Channel a)
-send       :: Channel a -> a -> IO ()
-receive    :: Channel a -> IO a     -- blocks the green thread until a message
-spawn      :: IO () -> IO (Thread)  -- fork a green thread inside the program
+data STState;                                   -- primitive opaque token (GHC State# s analog)
+data ST s a = { unST: STState -> Pair STState a }   -- state-threading monad
+data STRef s a;                                 -- opaque handle to a cell in the region's state
+runST :: (forall s. ST s a) -> a                -- fresh, isolated region; discard final state
+newSTRef     :: a -> ST s (STRef s a)
+readSTRef    :: STRef s a -> ST s a
+writeSTRef   :: STRef s a -> a -> ST s ()
+modifySTRef  :: STRef s a -> (a -> a) -> ST s ()
 ```
 
-- An **actor** is a recursive green-thread loop reading its mailbox and
-  issuing effects (`receive` → `match` → handle → recurse), exactly as in
-  Stage C.
-- **Threads** are multiplexed by the runtime **scheduler** over the sequential
-  State threads; `receive` suspends the green thread on a queue. The scheduler
-  is therefore a **required** runtime mechanism (it is how "threads and actors
-  inside the program" execute), no longer a deferred afterthought.
-- **Backends as actors, serviced in the tick:** a passive stream is serviced
-  **synchronously inside the active backend's tick** — the `read_mic`/`play_wav`
-  style needs no queue at all (the operation is a cheap, in-memory buffer
-  exchange). A **warm helper thread + SPSC queue is only introduced where a
-  backend genuinely blocks** (disk file read, console input, an STC-player
-  stepping a file) — it is a per-backend need, not a blanket requirement for
-  passive streams. Either way, blocking I/O never touches the RT thread: it
-  runs on a warm helper and reaches the hot loop through the lock-free queue
-  only when that backend actually needs it.
-- The control layer of the reference program (`stc.step`, automaton clocks,
-  `SetParameter` for the audio-tone params) is expressed as such in-language
-  actors/threads; the runtime's `?name`/parameter mechanism becomes a low-level
-  effect the program's own actor issues, not a separate external surface.
+- **State threading:** the `Monad (ST s)` instance threads the token:
+  `bind m f = ST { unST: \s -> let p = m.unST s in (f p.second).unST p.first }`.
+- **Isolation:** `runST` creates a **fresh** `STState` (a new cell table) per
+  invocation, runs the computation against it, and discards the final state —
+  two `runST` regions never share mutable state.
+- **No escape:** the rank-2 `forall s` and the existing inference escape-check
+  (result type must not mention `s`) make an `STRef` inexpressible outside its
+  `runST` — already implemented for the phantom form, retained for the real one.
+- **STRef:** a cell handle (`newSTRef` allocates, `readSTRef`/`writeSTRef`/
+  `modifySTRef` operate). Cells live in the region's isolated cell table; a
+  handle cannot outlive the region (escape-check). Like `World`, `STRef s a` is
+  an opaque primitive type — nameable, never constructible in source (only
+  `newSTRef` creates one).
+
+### 4.3 Prelude placement
+
+```
+CATEGORY_PRELUDE  -- foundational category theory ONLY: the typeclass
+                  -- declarations (Functor/Applicative/Monad/Monoid/Arrow) and
+                  -- the Kleisli construction (Kleisli m a b + its Arrow
+                  -- instance). No concrete data types and no instances over
+                  -- them live here.
+STD_PRELUDE       -- common standard library: the concrete data types and their
+                  -- instances MOVED here from CATEGORY_PRELUDE — ST + STRef +
+                  -- IO (+ Monad instances), the Maybe/List instances
+                  -- (Functor/Monad/Monoid; the type constructors are builtin
+                  -- machinery, not prelude text), Monoid Float/String;
+                  -- InputStream a / OutputStream a + the io-streams operations;
+                  -- stdin / stdout / stderr.
+SIGNAL_PRELUDE    -- untouched: Buffer typeclass, FixedBuffer, Tape.
+```
+
+The `runST` builtin signature and its rank-2 inference special case stay in the
+type-system machinery (they are not prelude text).
+
+### 4.4 Streams are io-streams values (memory + stdio)
+
+```
+data InputStream  a;    -- opaque handle (created by IO effects)
+data OutputStream a;    -- opaque handle (created by IO effects)
+
+read            :: InputStream a -> IO (Maybe a)        -- Nothing = EOF/closed
+write           :: Maybe a -> OutputStream a -> IO ()   -- write Nothing closes
+atEnd           :: InputStream a -> IO Bool
+unread          :: a -> InputStream a -> IO ()
+connect         :: InputStream a -> OutputStream a -> IO ()
+fromList        :: List a -> IO (InputStream a)         -- memory
+toList          :: InputStream a -> IO (List a)         -- memory (consumer)
+makeInputStream :: IO (Maybe a) -> IO (InputStream a)   -- memory (source)
+makeOutputStream:: (Maybe a -> IO ()) -> IO (OutputStream a)  -- memory (sink)
+stdin           :: InputStream String                   -- stdio
+stdout          :: OutputStream String                  -- stdio
+stderr          :: OutputStream String                  -- stdio
+```
+
+- **Faithful to io-streams.** The operation surface and semantics follow
+  Haskell's io-streams exactly: `read` pulls and returns `Nothing` at EOF;
+  `write Nothing` closes the stream; `atEnd` reports EOF without consuming;
+  `unread` pushes a value back; `connect` pipes an input into an output.
+- **Generic element.** The element type `a` is a plain generic type. There is
+  no audio block, no `List Buffer` element, no `ST (List Buffer)` wrapping, no
+  backpressure, no active/passive distinction — all of that is deferred to the
+  audio plan.
+- **Streams are values, not global instructions.** `read`/`write`/… are
+  operations over stream values; streams are created inside the program
+  (`fromList`, `makeInputStream`, …) and realized against the runner's
+  runtime state. `InputStream`/`OutputStream` are opaque handles — the payload
+  is a runtime stream-table index, invisible to the program.
+- **Backends in scope:** memory (`fromList`/`toList`/`makeInputStream`/
+  `makeOutputStream`) and stdio/stderr (`stdin`/`stdout`/`stderr` over `String`
+  — rill has no `ByteString`; line-oriented text). The stdio console is the
+  runner's realized `realWorld`; tests inject a capture console.
+
+### 4.5 Program form and the new `ProgramRunner`
+
+- The program is `main : (String…) -> IO ()` — String launch args, no
+  buffers, no buffer-λ. Args are bound at launch via `set_args(&[String])`;
+  defaults are empty strings. They are **not** control params (`?name`/
+  `SetParameter` remains for dynamic builtin params, unchanged).
+- The new `ProgramRunner` (in `program_runner.rs`) is the executor:
+  ```rust
+  impl ProgramRunner<f32, BUF> {
+      pub fn set_args(&mut self, args: &[String]);      // bind main's String λ-params
+      pub fn run(&mut self) -> Result<(), Error>;       // run main's IO to completion vs realWorld
+      pub fn stdout(&self) -> &[String];                // captured stdout (test access)
+      pub fn stderr(&self) -> &[String];                // captured stderr (test access)
+  }
+  ```
+  It takes **no input/output buffers or backend handles from outside**. It
+  realizes `realWorld` (the memory-stream table + the stdio console), binds the
+  String args, applies `main`'s `IO` to `realWorld`, and performs the effects
+  the program requests until `main` completes. There is **no per-tick loop, no
+  hot loop, no warm/hot split** in this plan — the program runs to completion.
+- The `ProgramRunner` owns the runtime state that `World` realizes; `stdin`/
+  `stdout`/`stderr` are wired to the runner's console (real stdio by default,
+  injectable capture console for tests).
+- **Runner evaluation mode:** the runner compiles and runs `main : IO ()` in
+  **Complete mode** (`{-# MODE complete #-}` is applied when the source has no
+  pragma). Recursive stream loops (a self-referential `makeOutputStream`
+  handle) and recursive helpers are rejected by Strict's `check_recursion`, so
+  Complete is required — and it is the GHC-faithful lazy model. Bang
+  annotations (`!`) remain available inside Complete for per-site eager forcing
+  to a boundary (§4.1).
+
+### 4.6 Full replacement: removal and migration
+
+- **Removed:** the `readInput`/`writeOutput` builtins and their lowering; the
+  `ProgramEngine` signal wrapper; the signal-transform `Algorithm`/
+  `MultichannelAlgorithm` impls of `RillProgram`; the program-fixed signal
+  `num_inputs`/`num_outputs`; buffer-λ `main`; and the audio-scoped surface from
+  the earlier revision of this design (`Stream a`, `asInput`/`asOutput`,
+  `mkStream`, `BackendSpec`, the master-slave `runStream` handler, the stream
+  registry / `stream_backend.rs`).
+- **Migration rule:** an old signal program's *computation* is preserved; its
+  I/O boundary becomes memory-stream operations, because streams are generic.
+  A 1→1 processor
+  `main = do { writeOutput (map f (readInput)); return () }`
+  becomes a program that builds its blocks with `fromList`, processes them, and
+  rounds them back with `toList`:
+  `main = do { xs <- fromList (map f (fromList [0.5, 1.0])); _ <- toList xs; return () }`
+  (concretely: create a memory stream of blocks, read/process/write). Generator
+  programs (`writeOutput [sine …]`) become `fromList (map …)`; control params
+  (`?name`) stay as-is. The signal ARITY semantics (per-block processing) are
+  dropped with the signal-transform engine — the deferred audio plan restores
+  block processing over the stream contract.
+- **Retained:** the mono-kernel value-track interpreter and its IR; the
+  `SIGNAL_PRELUDE` and the DSP/buffer builtins (pure functions still work);
+  `?name`/`SetParameter` for builtin dynamic params.
 
 ---
 
-## 5. Relationship to the deferred graph reconstruction
+## 5. Relationship to deferred work
 
-The graph feature's `reconstruct` (`GraphSpec → Program`) is deferred until
-the I/O model lands. Once `main = (scalars) -> IO`, streams are values, and
-I/O is operations over streams, the reconstruction becomes a straightforward
-value composition (no channels, no signal path): a graph node is a function
-over buffer values; sinks/sources become stream operations. That plan is
-written after this one; this document is its prerequisite.
+- **Audio/real-time plan (I/O-2+):** backends created via `mkStream`, `List
+  Buffer` block elements, per-tick hot loops, RT-safety typing, passive/active
+  streams, the buffer/region memory model and backend-owned buffers, and the
+  global memory manager for program resources (TapeLoop). It builds on this
+  plan's real IO/ST and stream contract.
+- **Threads/actors:** `spawn`/`Channel`/`receive` in-language concurrency
+  (deferred; uses real IO and, later, streams).
+- **Graph reconstruction:** deferred until the I/O model is stable (unchanged).
 
 ---
 
 ## 6. Left to the builder (decisions the implementer/plan may settle)
 
-- The exact reactive-streams typeclass signature: which operations the class
-  exposes (`read`, `write`, `close`, `request`/backpressure), how the `ST`
-  boundary sits in the method types, and whether activity is a constructor
-  argument or a separate marker.
-- How `State` and `World` are represented and lowered (reuse the Stage C
-  `World`/`IO`-as-State machinery vs new representation), and how `State` is
-  introduced at launch.
-- `mkStream`/backend-registry mechanics: the shape of `BackendSpec`, how the
-  registry is populated, how the active backend is designated at launch.
-- How the hot-loop type is defined and connected to the active backend's
-  callback (concrete type name, `runST`-style escape guard, how per-block
-  `List Buffer` chunks are passed).
-- Migration of existing programs: sugar (indexed `readInput`/`writeOutput`,
-  buffer-λ `main`) retained vs migrated; the plan decides, the new form is
-  primary.
-- Console/file chunk encoding (textual vs raw `Buffer`).
+- The exact runtime representation of the `World`/`STState` tokens and of the
+  stream-table/cell-table state the runner realizes (handle values, indexes, or
+  distinct `Value` variants).
+- Whether `InputStream`/`OutputStream` are empty-payload records (`{ }`, the
+  `a` phantom) or carry a handle field; only the runtime constructs them.
+- How the stdio console is injected for tests (a console source/sink on the
+  runner vs a captured-by-default mode).
+- `makeInputStream`/`makeOutputStream` closure representation in the value
+  track (callable values over the token).
+- `modifySTRef` via `readSTRef`+`writeSTRef` or as a fused primitive.
+- **Mechanism of "real" IO/ST** (not user-visible): where the mutable runtime
+  state the effects act on lives and how effect builtins reach it mid-
+  interpretation — extend the program/runner struct vs a new runner-level
+  executor owning program + runtime separately.
+- **Registration of the polymorphic operation signatures** (`read`, `write`,
+  `atEnd`, `unread`, `connect`, `fromList`, `toList`, `makeInputStream`,
+  `makeOutputStream`, the `newSTRef` family): extend the rank-2 per-name
+  special-case pattern (like `runST`), or generalize `builtin_sigs` to
+  forall-quantified signatures, or express the ops as polymorphic `STD_PRELUDE`
+  text functions over a small set of monomorphic primitives. The user-facing
+  signatures are fixed in §4.2/§4.4; only the mechanism is open.
+- **`runST`'s operational shape:** fresh isolated state per region, apply the
+  ST closure, discard the final state — via new lowering/IR or an
+  interpreter-recognized builtin. The semantics are fixed in §4.2; the mechanism
+  is the builder's call. In-region ST is lazy by default with `!`-forced
+  boundaries to WHNF, consistent with the runner's Complete mode (§4.1/§4.5).
+- **Opaque primitive facility:** the mechanism for `World`/`STState`/`STRef`
+  (a new opaque/primitive type kind vs builtin-only constructors) — required
+  for the isolation and effect-ordering soundness claims.
+- **Run-to-completion memory:** programs are assumed **bounded** for this plan —
+  the existing fixed-capacity arena budget is kept, its limit documented, tests
+  sized within it. Growing/collecting the arena is deferred to the memory-
+  management follow-on.
 
 ---
 
 ## 7. Reference program (target)
 
-A `lang_chiptune`-class program expressed purely in rill-lang:
-
 ```rill
+-- io-streams core: read lines from stdin, transform, echo to stdout
+handle = makeOutputStream (\ mb -> case mb of
+    Nothing => return ()
+    Just x  => do { write (Just x) stdout; handle });
+
 main = do
-    tape    <- newTape 44100 * 2
-    stc     <- openStcPlayer "song.stc"        -- control-side stream (a backend + actor)
-    regsCh  <- newChannel                      -- actor mailbox: ClockTick -> regs
-    spawn (actorLoop regsCh stc)               -- in-language control thread
-    input   <- openInput 0                     -- active capture
-    output  <- openOutput 0                    -- active playback
-    runStream (fn ins outs -> do
-        regs <- receive regsCh                 -- next register block from the actor
-        let fx = lofi 8 44100 0.75 1.0 1 0 1 (ay38910 1750000.0 regs)
-        write outs fx
-        return ())
+    xs   <- fromList (map (\x -> x * 2.0) [1.0, 2.0, 3.0])   -- memory source
+    ys   <- toList xs                                         -- memory sink
+    ref  <- runST (fn s -> do
+        r <- newSTRef 0.0
+        writeSTRef r 42.0
+        readSTRef r)
+    write (Just ("sum-ish: " ++ show ys)) stdout              -- stdio out
     return ()
 ```
 
-The hot loop (per-block signal processing) is the RT-safe, allocation-free
-fragment; backends, threads, and actors — everything else — are ordinary
-rill-lang values and effects created inside the program.
+(Exact surface — `++`, `show`/string rendering — is settled in the plan; the
+shape is the target: memory streams, STRef inside a `runST`, stdio.)
 
 ---
 
 ## 8. Verification outline
 
-- `cargo test --workspace`, `cargo clippy --all-features --workspace`,
-  `cargo fmt` — green, zero warnings.
-- Stream round-trips: pull and push, passive and active, EOF/close.
-- Effect ordering under `complete` (lazy) mode: a test proving the linear
-  token orders effects.
-- Hot-loop type: a test proving warm effects cannot escape the hot loop
-  (compile-time), and that the hot path allocates nothing (existing
-  RT-discipline checks).
-- Console/file stream tests: stdin/stdout and file backends behind the same
-  contract.
-- In-language concurrency: `spawn` green threads, `Channel` send/receive,
-  an actor loop that drives a stream (the reference program's control layer)
-  — all inside rill-lang.
-- The `lang_chiptune` reference program compiles and runs with no external
-  control wiring (backends, threads, actors created in the program).
+- `cargo test -p rill-lang --features dsp`, `cargo clippy -p rill-lang
+  --features dsp`, `cargo fmt` — green, zero warnings.
+- **IO/ST semantics:** STRef read/write/modify inside `runST`; two `runST`
+  regions do not share state (isolation); an `STRef`/ST result escaping its
+  region is a **compile-time** error; IO effects ordered by World threading by
+  data dependency — call-by-need in Complete, eager in Strict, with `!` forcing
+  to a boundary at annotated sites.
+- **Streams (memory):** `fromList`→`read` round-trip incl. `Nothing` at EOF;
+  `atEnd`; `unread`; `connect` input→output; `makeInputStream`/`
+  makeOutputStream` sources/sinks; `toList` consumer.
+- **Streams (stdio):** `stdin`/`stdout`/`stderr` round-trips against an injected
+  capture console; `write Nothing` closes.
+- **Program form:** `main : (String…) -> IO ()` with `set_args` String binding;
+  a program with no I/O (`main = return ()`) runs to completion cleanly.
+- **Bounded memory:** a `main` that accumulates beyond the fixed arena budget
+  reports a clean capacity error (documented limit), not a crash.
+- **Full replacement:** the `-p rill-lang` suite contains zero `readInput`/
+  `writeOutput`/buffer-λ `main` program strings after migration; grep confirms;
+  `rill-adrift`'s program strings are migrated, leaving only the known
+  `graph`/`reconstruct.rs` baseline.
 
 ---
 
 ## 9. Prior art and supersession
 
-- Supersedes the program-form and I/O-primary decisions of
-  `2026-10-11-rill-lang-io-state-streams-design.md` where they conflict
-  (buffer-λ `main` → scalar-arg `main`; streams primary over
-  `readInput`/`writeOutput`; adds passive/active-by-threading, the RT-safe
-  hot-loop type, console/file backends, and — per the north-star — **in-language
-  backends, threads, and actors with a required scheduler** instead of a
-  deferred one).
+- **Supersedes** the passive/active + backend + hot-loop + master-slave framing
+  of the earlier revision of this same document, and the additive Task 1/2
+  products built under it (`Stream a`, `asInput`/`asOutput`, `mkStream`,
+  `BackendSpec`, `stream_backend.rs`, the master-slave `runStream`), where they
+  conflict with the re-scoped core above.
+- **Retains from it:** the scalar-arg `main`, `IO` as a reader over
+  State+World, streams-as-values, `STD_PRELUDE`, the rank-2 `runST` escape
+  check, the "no transition period" replacement directive.
 - Builds on `2026-10-10-rill-lang-io-monad-design.md` (Stage B IO monad) and
   `2026-10-10-rill-lang-value-signal-unification-st-design.md` (the `ST`/
-  `runST`/`Buffer` machinery this design's hot loop reuses).
+  `runST`/`Buffer` machinery this design's ST reuses and makes real).
