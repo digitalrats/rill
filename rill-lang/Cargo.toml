@@ -39,10 +39,6 @@ rill-fft = { workspace = true, features = ["lang"] }
 rill-lofi = { workspace = true, features = ["lang"] }
 
 [[test]]
-name = "graph_reconstruct"
-required-features = ["dsp", "graph"]
-
-[[test]]
 name = "graph_partition"
 required-features = ["dsp", "graph"]
 
