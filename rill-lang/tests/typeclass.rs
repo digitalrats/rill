@@ -100,7 +100,7 @@ fn recursive_constructor_class_method_is_compile_error() {
     let src = r"
         typeclass A a where { f: a b c -> a b c; }
         data K m a b = { unK: a -> m b };
-        instance (Monad m) -> A (K m) where { f k = f k; }
+        instance (Monad m) => A (K m) where { f k = f k; }
         apply k x = let u = k.unK in u x;
         main = case (apply (f (K { unK: \x -> Just x })) 3.0) of { Just v -> v; Nothing -> 0.0; };
     ";

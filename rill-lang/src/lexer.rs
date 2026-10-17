@@ -77,7 +77,9 @@ pub enum Tok {
     KwThen,
     /// `else` keyword — `if` branch separator.
     KwElse,
-    /// `=>` fat arrow — match arm separator.
+    /// `->` thin arrow — function-type, lambda, and case-alternative arrow.
+    ThinArrow,
+    /// `=>` fat arrow — class-constraint arrow (`instance C a => T`).
     FatArrow,
     /// `|` — sum-type constructor separator.
     Pipe,
@@ -275,7 +277,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
         if c == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
             i += 2;
             out.push(Token {
-                tok: Tok::FatArrow,
+                tok: Tok::ThinArrow,
                 span: Span::new(start, i),
             });
             continue;
@@ -702,6 +704,30 @@ mod tests {
     }
 
     #[test]
+    fn distinguishes_thin_and_fat_arrow() {
+        // Haskell 2010: `->` is the function-type/lambda/case arrow; `=>` is
+        // reserved for class constraints.
+        assert_eq!(
+            kinds("a -> b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::ThinArrow,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+        assert_eq!(
+            kinds("a => b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::FatArrow,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
     fn paren_following_keyword_is_not_a_call_for_other_keywords() {
         // Keywords stay paren-guarded (`data(y)` is a call-style identifier).
         // `match` is no longer a keyword — it lexes as a plain identifier.
@@ -728,7 +754,7 @@ mod tests {
             vec![
                 Tok::Backslash,
                 Tok::Ident("x".into()),
-                Tok::FatArrow,
+                Tok::ThinArrow,
                 Tok::Ident("x".into()),
                 Tok::Eof,
             ]
@@ -811,7 +837,7 @@ mod tests {
             vec![
                 Tok::Backslash,
                 Tok::Ident("x".into()),
-                Tok::FatArrow,
+                Tok::ThinArrow,
                 Tok::Ident("x".into()),
                 Tok::Plus,
                 Tok::Float(1.0),

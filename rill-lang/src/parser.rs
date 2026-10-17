@@ -630,9 +630,9 @@ impl<'a> Parser<'a> {
     /// variables, `(T -> U -> V)` curried function types, and capacity ints.
     fn parse_type_expr(&mut self) -> Result<TypeExpr, CompileError> {
         let first = self.parse_type_atom()?;
-        if self.peek().tok == Tok::FatArrow {
+        if self.peek().tok == Tok::ThinArrow {
             let mut args = vec![first];
-            while self.peek().tok == Tok::FatArrow {
+            while self.peek().tok == Tok::ThinArrow {
                 self.bump();
                 args.push(self.parse_type_atom()?);
             }
@@ -967,25 +967,25 @@ impl<'a> Parser<'a> {
                     let pattern = self.parse_pattern()?;
                     let mut guards = Vec::new();
                     if self.peek().tok == Tok::Pipe {
-                        // Guarded arm: `pat | g1 => b1 | g2 => b2` — the first
+                        // Guarded arm: `pat | g1 -> b1 | g2 -> b2` — the first
                         // alternative's guard is written explicitly.
                         while self.peek().tok == Tok::Pipe {
                             self.bump();
                             let g = self.parse_expr(0, true)?;
-                            self.eat(&Tok::FatArrow)?;
+                            self.eat(&Tok::ThinArrow)?;
                             let b = self.parse_expr(0, true)?;
                             guards.push((g, b));
                         }
                     } else {
-                        // Bare arm: `pat => body | g1 => b1 | ...` — the first
+                        // Bare arm: `pat -> body | g1 -> b1 | ...` — the first
                         // alternative is unconditional (guard `true`).
-                        self.eat(&Tok::FatArrow)?;
+                        self.eat(&Tok::ThinArrow)?;
                         let first = self.parse_expr(0, true)?;
                         guards.push((Expr::Bool(true, pat_span), first));
                         while self.peek().tok == Tok::Pipe {
                             self.bump();
                             let g = self.parse_expr(0, true)?;
-                            self.eat(&Tok::FatArrow)?;
+                            self.eat(&Tok::ThinArrow)?;
                             let b = self.parse_expr(0, true)?;
                             guards.push((g, b));
                         }
@@ -1019,7 +1019,7 @@ impl<'a> Parser<'a> {
                 // `foo = \x -> \y -> body`) and applications (`f a b` ≡
                 // `((f a) b)`), never in a single lambda literal.
                 let (pname, pspan) = self.expect_ident()?;
-                self.eat(&Tok::FatArrow)?;
+                self.eat(&Tok::ThinArrow)?;
                 let body = self.parse_expr(0, true)?;
                 let span = t.span.merge(body.span());
                 Ok(Expr::Lambda {
@@ -2378,7 +2378,7 @@ mod tests {
         ));
         assert!(
             matches!(arms[0].guards[0].0, Expr::Bool(true, _)),
-            "a bare `Circle r => r` arm's first guard is `true`"
+            "a bare `Circle r -> r` arm's first guard is `true`"
         );
         assert!(matches!(arms[1].pattern, Pattern::LitInt(0)));
         assert!(matches!(arms[2].pattern, Pattern::Wild));

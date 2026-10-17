@@ -758,7 +758,7 @@ main = 1.0;";
     fn render_roundtrip_match_written_true_guard() {
         // A written `true` guard in a non-first position must not be conflated
         // with the bare arm's synthetic first-alternative `true` sentinel
-        // (regression: it previously rendered as `n => 1.0 => 2.0`).
+        // (regression: it previously rendered as `n -> 1.0 -> 2.0`).
         let dsl = roundtrip_main(r"main = case n of { n -> 1.0 | true -> 2.0; _ -> 0.0; };");
         assert_eq!(
             dsl,

@@ -73,7 +73,7 @@ fn constraint_instance_container_arg_discharges() {
     let src = r"
         typeclass Unwrap a where { unwrap: a b c -> c; }
         data Kleisli m a b = { unKleisli: a -> m b };
-        instance (Monad m) -> Unwrap (Kleisli m) where {
+        instance (Monad m) => Unwrap (Kleisli m) where {
             unwrap k = k.unKleisli;
         }
         main = case ((unwrap (Kleisli { unKleisli: \x -> Just x })) 3.0)
@@ -189,7 +189,7 @@ fn constraint_instance_resolves() {
     let src = r"
         typeclass Arrow a where { arr: (b -> c) -> a b c; }
         data Kleisli m a b = { unKleisli: a -> m b };
-        instance (Monad m) -> Arrow (Kleisli m) where {
+        instance (Monad m) => Arrow (Kleisli m) where {
             arr f = Kleisli { unKleisli: \x -> Just (f x) };
         }
         apply k x = k.unKleisli x;

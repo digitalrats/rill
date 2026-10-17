@@ -59,7 +59,7 @@ fn stdin_feeds_lines() {
     // `read stdin` yields the injected console lines in order, then `Nothing`
     // (EOF) once they are drained.
     let src = r#"
-show_mb m = case m of { Nothing => "eof"; Just x => x };
+show_mb m = case m of { Nothing -> "eof"; Just x -> x };
 main = do {
     a <- read stdin;
     b <- read stdin;
@@ -80,7 +80,7 @@ fn to_list_drains_stdin() {
     // input: it pulls every line through the normal read path, then reports
     // EOF. `stdin` is spent afterwards (a subsequent read yields `Nothing`).
     let src = r#"
-show_mb m = case m of { Nothing => "eof"; Just x => x };
+show_mb m = case m of { Nothing -> "eof"; Just x -> x };
 main = do {
     ys <- toList stdin;
     write (Just (fold (\acc -> \x -> concat_string acc x) "" ys)) stdout;
@@ -105,7 +105,7 @@ fn reference_program_runs() {
     //   (the spec's statement is ill-typed in Haskell too). The binding moves
     //   to a top-level definition — the idiomatic `let ref = runST (…)`.
     // - The spec's `handle = makeOutputStream (…)` binding is omitted: its
-    //   `Nothing => return ()` arm cannot resolve a monad (a self-referential
+    //   `Nothing -> return ()` arm cannot resolve a monad (a self-referential
     //   definition gives inference no expected type), and `handle` is dead
     //   code — it is not referenced by `main`. The `makeOutputStream` wrapper
     //   itself is covered by `io_streams_memory.rs`.

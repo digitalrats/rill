@@ -5749,7 +5749,7 @@ mod tests {
 
     #[test]
     fn match_arms_must_be_value_expressions() {
-        // A bare literal arm body is value-compatible (`Circle r => 1.0`);
+        // A bare literal arm body is value-compatible (`Circle r -> 1.0`);
         // arms are value channels, so a bare literal is accepted.
         assert!(
             ty_of(r"data Shape = Circle Float; main = case Circle 1.0 of { Circle r -> 1.0 }")
@@ -6026,7 +6026,7 @@ mod tests {
             "unexpected error: {err}"
         );
         let err = match ty_with(
-            "data W; data Box = { w: W }; first b = let v = b.w in case v of { W => 1.0 }; main = 1.0",
+            "data W; data Box = { w: W }; first b = let v = b.w in case v of { W -> 1.0 }; main = 1.0",
         ) {
             Ok(_) => panic!("matching an opaque type's nonexistent constructor must be rejected"),
             Err(e) => e,

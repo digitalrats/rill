@@ -52,7 +52,7 @@ fn run_many(src: &str, runs: usize) -> (Vec<String>, usize, usize) {
 }
 
 /// Shared program prefix: renders a `Maybe Float` as text (`Nothing` = EOF).
-const SHOW_MAYBE: &str = r#"show_mb m = case m of { Nothing => "eof"; Just x => show_float x };"#;
+const SHOW_MAYBE: &str = r#"show_mb m = case m of { Nothing -> "eof"; Just x -> show_float x };"#;
 
 /// Wrap a stream-producing expression in `fromList` → `toList` → `stdout`,
 /// rendering the drained list with `fold`/`concat_string`/`show_float`.
@@ -146,8 +146,8 @@ fn write_nothing_closes_the_stream() {
     let src = r#"
 main = do {
     out <- makeOutputStream (\mb -> case mb of {
-        Nothing => write (Just "closed") stdout;
-        Just x => write (Just (show_float x)) stdout
+        Nothing -> write (Just "closed") stdout;
+        Just x -> write (Just (show_float x)) stdout
     });
     write (Just 1.0) out;
     write Nothing out;
@@ -170,9 +170,9 @@ main = do {{
     v <- read xs;
     after <- atEnd xs;
     w <- read xs;
-    write (Just (case before of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (case before of {{ true -> "at-end"; false -> "open" }})) stdout;
     write (Just (show_mb v)) stdout;
-    write (Just (case after of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (case after of {{ true -> "at-end"; false -> "open" }})) stdout;
     write (Just (show_mb w)) stdout;
     return ()
 }};
@@ -211,8 +211,8 @@ fn connect_pipes_input_to_output() {
 main = do {
     xs <- fromList [1.0, 2.0, 3.0];
     out <- makeOutputStream (\mb -> case mb of {
-        Nothing => write (Just "|") stdout;
-        Just x => write (Just (show_float x)) stdout
+        Nothing -> write (Just "|") stdout;
+        Just x -> write (Just (show_float x)) stdout
     });
     connect xs out;
     return ()
@@ -232,7 +232,7 @@ main = do {{
     src <- makeInputStream (return (Just 7.0));
     e <- atEnd src;
     a <- read src;
-    write (Just (case e of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (case e of {{ true -> "at-end"; false -> "open" }})) stdout;
     write (Just (show_mb a)) stdout;
     return ()
 }};
@@ -246,7 +246,7 @@ main = do {{
     src <- makeInputStream (return Nothing);
     e <- atEnd src;
     a <- read src;
-    write (Just (case e of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (case e of {{ true -> "at-end"; false -> "open" }})) stdout;
     write (Just (show_mb a)) stdout;
     return ()
 }};
@@ -264,8 +264,8 @@ fn connect_unequal_lengths_ends_cleanly() {
 main = do {
     xs <- fromList [1.0, 2.0, 3.0, 4.0];
     out <- makeOutputStream (\mb -> case mb of {
-        Nothing => write (Just "closed") stdout;
-        Just x => if x < 3.0 then write (Just (show_float x)) stdout else write Nothing stdout
+        Nothing -> write (Just "closed") stdout;
+        Just x -> if x < 3.0 then write (Just (show_float x)) stdout else write Nothing stdout
     });
     connect xs out;
     return ()
@@ -288,8 +288,8 @@ fn long_sink_write_sequence_does_not_exhaust_the_arena() {
     let src = format!(
         r#"main = do {{
     out <- makeOutputStream (\mb -> case mb of {{
-        Nothing => write (Just "closed") stdout;
-        Just x => write Nothing stdout
+        Nothing -> write (Just "closed") stdout;
+        Just x -> write Nothing stdout
     }});
 {writes}    write Nothing out;
     return ()

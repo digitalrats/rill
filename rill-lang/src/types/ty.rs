@@ -379,12 +379,12 @@ instance Monoid List where { mempty = list; mappend a b = append_list a b; }
 
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
-    fmap g m = case m of { Nothing => Nothing; Just x => Just (g x); };
+    fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); };
 }
 
 instance Monad Maybe where {
     return x = Just x;
-    bind m f = case m of { Nothing => Nothing; Just x => f x; };
+    bind m f = case m of { Nothing -> Nothing; Just x -> f x; };
 }
 instance Monad List where {
     return x = cons x (list);

@@ -26,9 +26,9 @@ pub(crate) fn pattern_vars(p: &Pattern) -> Vec<String> {
     out
 }
 
-/// The body of a match arm that is usable as a plain `pattern => body` arm.
+/// The body of a match arm that is usable as a plain `pattern -> body` arm.
 /// Returns `Some(body)` when the arm is bare (its single alternative carries the
-/// trivial `true` guard), and `None` when the arm is guarded (`pattern | g =>
+/// trivial `true` guard), and `None` when the arm is guarded (`pattern | g ->
 /// body`) — a guarded body runs only when its guard succeeds at runtime, so it
 /// has no statically-usable unguarded form.
 pub(crate) fn unguarded_arm_body(arm: &MatchArm) -> Option<&Expr> {
