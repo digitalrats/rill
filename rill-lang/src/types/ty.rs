@@ -192,12 +192,18 @@ pub struct TypeclassInfo {
 pub struct InstanceInfo {
     /// The class this instance implements.
     pub class: String,
-    /// The concrete type name bound to the class variable.
+    /// The instance head as parsed (`List`, `Kleisli m`, `Pair Int Int`). Used
+    /// to derive the class variable's concrete value type (the instance head's
+    /// full type) for method-body validation.
+    pub head: crate::ast::TypeExpr,
+    /// The registry key. A partial head (`Kleisli m`) keys by its constructor;
+    /// a fully concrete head keys by its FULL applied type (`Pair Int Int`).
     pub ty: String,
     /// Constraint list: (class, type var), e.g. `(Monad, "m")`.
     pub constraints: Vec<(String, String)>,
-    /// Type-constructor args bound by the instance head (partial application):
-    /// `Kleisli m` → `["m"]` (arity 3 total, 1 bound ⇒ 2 remaining).
+    /// Type-constructor args bound by a PARTIAL instance head: `Kleisli m` →
+    /// `["m"]` (arity 3 total, 1 bound ⇒ 2 remaining). Empty for a bare or
+    /// fully concrete head.
     pub head_args: Vec<String>,
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
@@ -216,6 +222,15 @@ pub struct InstanceInfo {
     /// fresh `InstanceInfo` with `from_prelude: false`, so it is validated like
     /// any other user instance.
     pub from_prelude: bool,
+}
+
+impl InstanceInfo {
+    /// The value type an instance head binds to the class variable, in the
+    /// signature converter's spelling (a bare head resolves through the type
+    /// environment, an applied one becomes a constructor application).
+    pub(crate) fn class_var_ty(&self, env: &TypeEnv) -> ValueTy {
+        crate::types::infer::data_field_vty(env, &[], &self.head)
+    }
 }
 
 /// The compile-time type environment: aliases, newtypes, data-type shapes, and
@@ -503,7 +518,14 @@ fn instance_from_template(
         .find(|d| matches!(d, Def::Instance { .. }))
         .cloned()
         .unwrap();
-    let Def::Instance { method_bodies, .. } = inst else {
+    let Def::Instance {
+        head,
+        ty,
+        head_args,
+        method_bodies,
+        ..
+    } = inst
+    else {
         unreachable!("derived instance template produced an instance")
     };
     let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
@@ -513,9 +535,10 @@ fn instance_from_template(
     }
     InstanceInfo {
         class: class.to_string(),
-        ty: ty.to_string(),
+        head,
+        ty,
         constraints: vec![],
-        head_args: head_args.to_vec(),
+        head_args,
         methods,
         from_prelude,
     }
@@ -967,6 +990,7 @@ impl TypeEnv {
                 }
                 Def::Instance {
                     class,
+                    head,
                     ty,
                     constraints,
                     head_args,
@@ -982,6 +1006,7 @@ impl TypeEnv {
                         ty.clone(),
                         InstanceInfo {
                             class: class.clone(),
+                            head: head.clone(),
                             ty: ty.clone(),
                             constraints: constraints.clone(),
                             head_args: head_args.clone(),
@@ -1161,6 +1186,56 @@ impl TypeEnv {
         }
     }
 
+    /// Solve an arity-0 class variable from a method call's selector argument:
+    /// unify the method's class-var parameter pattern (`Pair i i`) against the
+    /// selector's concrete value type (`Pair Int Int` → `i := Int`).
+    ///
+    /// This is what makes `Ix Int` and `Ix (Pair Int Int)` dispatch distinctly:
+    /// the selector's head constructor (`Pair`) cannot tell them apart, but the
+    /// SOLVED class variable's full type can (render it with
+    /// [`value_type_key`]). `class_var_var` must be a fresh id the caller's
+    /// `fresh` supply will not reissue.
+    pub(crate) fn class_var_solved_ty(
+        &self,
+        sig: &crate::ast::TypeExpr,
+        class_var: &str,
+        selector_ty: &ValueTy,
+        class_var_var: TypeVarId,
+        fresh: impl FnMut() -> ValueTy,
+    ) -> Option<ValueTy> {
+        let idx = class_var_param_pattern(sig, class_var)?;
+        let sig = match sig {
+            crate::ast::TypeExpr::TConstrained(_, inner)
+            | crate::ast::TypeExpr::TForall(_, inner) => inner.as_ref(),
+            other => other,
+        };
+        let arg = match sig {
+            crate::ast::TypeExpr::TFunc(args, _) => args.get(idx)?,
+            _ => return None,
+        };
+        let pattern =
+            crate::types::infer::class_var_pattern_vty(self, class_var, class_var_var, arg, fresh);
+        let mut subst = Subst::default();
+        // The value side spells a concrete constructor application `App`
+        // (builtin ctor) or `Data`/`Newtype` (declared shape), while an instance
+        // head's pattern is always an application: an `App`-vs-`Data` pair with
+        // the same head is the same type to the registry, but the unifier
+        // compares variants strictly. Normalize both sides before unifying.
+        unify_value(
+            &normalize_ctor_app(&pattern),
+            &normalize_ctor_app(selector_ty),
+            &mut subst,
+            Span::new(0, 0),
+        )
+        .ok()?;
+        let solved = subst.resolve_value(&ValueTy::Var(class_var_var));
+        // Still an unresolved variable: no concrete class variable.
+        match solved {
+            ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) => None,
+            other => Some(other),
+        }
+    }
+
     /// Register a derived (structural) `Eq`/`Ord` instance for every concrete
     /// data type currently in the env — user data types, the builtin shapes
     /// (`Maybe`/`Pair`/`Either`) and the builtin ctor kinds (`List`/`Set`/`Map`,
@@ -1183,6 +1258,7 @@ impl TypeEnv {
             for n in &names {
                 by_ty.entry(n.clone()).or_insert_with(|| InstanceInfo {
                     class: class.to_string(),
+                    head: crate::ast::TypeExpr::TName(n.clone()),
                     ty: n.clone(),
                     constraints: vec![], // derived marker — no constraint list
                     head_args: vec![],   // derived marker — full application
@@ -1445,6 +1521,96 @@ impl TypeEnv {
             .get(class)
             .and_then(|c| c.defaults.get(method).cloned())
     }
+}
+
+/// The index of the first argument in a method signature whose type MENTIONS
+/// the class variable (`Pair i i` in `index: Pair i i -> i -> Int`), i.e. the
+/// argument whose pattern is unified against the call site's concrete selector
+/// type to solve the class variable. `None` when no argument mentions it (a
+/// nullary method such as `mempty: m`).
+pub(crate) fn class_var_param_pattern(
+    sig: &crate::ast::TypeExpr,
+    class_var: &str,
+) -> Option<usize> {
+    match sig {
+        crate::ast::TypeExpr::TConstrained(_, inner) | crate::ast::TypeExpr::TForall(_, inner) => {
+            class_var_param_pattern(inner, class_var)
+        }
+        crate::ast::TypeExpr::TFunc(args, _) => args
+            .iter()
+            .position(|a| crate::types::infer::type_expr_mentions(a, class_var)),
+        _ => None,
+    }
+}
+
+/// Normalize a value type for instance-head matching: every concrete
+/// constructor application becomes an `App` (`Data`/`Newtype` → `App`), with the
+/// arguments normalized too. The value side distinguishes a builtin ctor
+/// application (`App`) from a declared shape (`Data`/`Newtype`), but the
+/// registry treats `Pair Int Int` as one type; [`unify_value`] compares variants
+/// strictly, so both sides of an instance-head match are normalized first.
+fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
+    match v {
+        ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+            ValueTy::App(n.clone(), args.iter().map(normalize_ctor_app).collect())
+        }
+        ValueTy::TyConApp(f, args) => {
+            ValueTy::TyConApp(*f, args.iter().map(normalize_ctor_app).collect())
+        }
+        ValueTy::Thunk(args, rets) => ValueTy::Thunk(
+            args.iter().map(normalize_ctor_app).collect(),
+            rets.iter().map(normalize_ctor_app).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Canonical registry-key spelling of a concrete value type: `Int`,
+/// `Pair Int Int`, `Pair Int (Pair Int Int)`. A nested application is
+/// parenthesized so the spelling matches the parser's instance-head rendering
+/// ([`crate::render::render_type_key`]).
+///
+/// `None` when the type is not concrete (an unresolved variable, a
+/// type-constructor variable, a function type): such a selector cannot name an
+/// instance, and the caller falls back to the head-constructor lookup.
+pub(crate) fn value_type_key(v: &ValueTy) -> Option<String> {
+    fn key(v: &ValueTy) -> Option<String> {
+        Some(match v {
+            ValueTy::Int => "Int".to_string(),
+            ValueTy::Float => "Float".to_string(),
+            ValueTy::Bool => "Bool".to_string(),
+            ValueTy::String => "String".to_string(),
+            ValueTy::Buffer => "Buffer".to_string(),
+            ValueTy::Void => "()".to_string(),
+            ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+                if args.is_empty() {
+                    n.clone()
+                } else {
+                    let mut out = n.clone();
+                    for a in args {
+                        out.push(' ');
+                        let nested = matches!(
+                            a,
+                            ValueTy::Data(_, inner)
+                                | ValueTy::Newtype(_, inner)
+                                | ValueTy::App(_, inner)
+                                if !inner.is_empty()
+                        );
+                        if nested {
+                            out.push('(');
+                        }
+                        out.push_str(&key(a)?);
+                        if nested {
+                            out.push(')');
+                        }
+                    }
+                    out
+                }
+            }
+            _ => return None,
+        })
+    }
+    key(v)
 }
 
 impl Subst {

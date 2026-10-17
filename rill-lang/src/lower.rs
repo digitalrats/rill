@@ -90,6 +90,73 @@ fn match_field_expected(
     }
 }
 
+/// The highest type-parameter placeholder id appearing in a declared field type:
+/// `Pair`'s `first: Var(1)` → 1, `Kleisli m a b`'s `unKleisli` → 3. Used to size
+/// a record's type-argument vector ([`record_args_from_fields`]).
+fn param_placeholder_max(ty: &ValueTy) -> u32 {
+    match ty {
+        ValueTy::Var(k) | ValueTy::TyConVar(k) => *k,
+        ValueTy::TyConApp(f, args) => args.iter().fold(*f, |m, a| m.max(param_placeholder_max(a))),
+        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+            args.iter().fold(0, |m, a| m.max(param_placeholder_max(a)))
+        }
+        ValueTy::Thunk(args, rets) => args
+            .iter()
+            .chain(rets.iter())
+            .fold(0, |m, a| m.max(param_placeholder_max(a))),
+        _ => 0,
+    }
+}
+
+/// Whether a value type is fully concrete — no unresolved type variable, no
+/// type-constructor variable, no function type. Exactly the types
+/// [`crate::types::ty::value_type_key`] can spell as an instance-registry key.
+fn is_concrete_ty(v: &ValueTy) -> bool {
+    match v {
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) | ValueTy::Thunk(..) => {
+            false
+        }
+        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+            args.iter().all(is_concrete_ty)
+        }
+        _ => true,
+    }
+}
+
+/// Derive a record's concrete type ARGUMENTS from its lowered field types when
+/// no expected type supplied them: a record literal `(0,9)` (`Pair { first: 0,
+/// second: 9 }`) in an ordinary argument position has no expected type, so
+/// without this it would lower to a bare `Data("Pair", [])` and a head-arg-aware
+/// class dispatch could not tell `C Int` from `C (Pair Int Int)`.
+///
+/// Each type-parameter placeholder in a declared field type (`Pair`'s
+/// `first: Var(1)`) is bound to the matching part of the field's actual type.
+/// Returns an EMPTY vector unless every argument is concrete: an unresolved
+/// placeholder keeps the parameterized type opaque (`Data("Kleisli", [])`),
+/// exactly as before, rather than handing out half-solved arguments.
+fn record_args_from_fields(fields: &[(String, ValueTy)], field_tys: &[ValueTy]) -> Vec<ValueTy> {
+    let mut bindings: Vec<(u32, ValueTy)> = Vec::new();
+    let mut arity = 0;
+    for ((_, fty), aty) in fields.iter().zip(field_tys.iter()) {
+        arity = arity.max(param_placeholder_max(fty));
+        match_field_expected(fty, aty, &mut bindings);
+    }
+    let args: Vec<ValueTy> = (1..=arity)
+        .map(|k| {
+            bindings
+                .iter()
+                .find(|(v, _)| *v == k)
+                .map(|(_, t)| t.clone())
+                .unwrap_or(ValueTy::Var(k))
+        })
+        .collect();
+    if args.iter().all(is_concrete_ty) {
+        args
+    } else {
+        vec![]
+    }
+}
+
 /// Whether a value instruction allocates a fresh arena slot when executed.
 ///
 /// Drives the v1 `ValueLayout::capacity` heuristic: value registers are per-tick
@@ -1725,6 +1792,7 @@ impl<'a> Lowerer<'a> {
                                 _ => None,
                             };
                             let mut field_regs = Vec::with_capacity(fields.len());
+                            let mut field_tys: Vec<ValueTy> = Vec::with_capacity(fields.len());
                             for (fname, _) in &fields {
                                 let fexpr = fields_expr
                                     .iter()
@@ -1747,11 +1815,12 @@ impl<'a> Lowerer<'a> {
                                     (Some(_), Some(ft)) => Some(ft),
                                     _ => None,
                                 };
-                                let (fr, _) = match field_expected {
+                                let (fr, ft) = match field_expected {
                                     Some(fe) => self.lower_value_expected(fexpr, Some(&fe))?,
                                     None => self.lower_value(fexpr)?,
                                 };
                                 field_regs.push(fr);
+                                field_tys.push(ft);
                             }
                             let dst = self.fresh_value_reg();
                             self.emit_value(ValueInstr::ValueConstructRecord {
@@ -1762,10 +1831,16 @@ impl<'a> Lowerer<'a> {
                             // outer expected carries them, so a projection /
                             // subsequent method call sees the parameterized type
                             // (`k1.unKleisli` of a `Kleisli Maybe Float Float`
-                            // parameter is `Float -> Maybe Float`).
+                            // parameter is `Float -> Maybe Float`). Without an
+                            // expected type, derive them from the fields so a
+                            // head-arg-aware dispatch sees `Pair Int Int` rather
+                            // than a bare `Pair`.
                             let ret = match rec_args {
                                 Some(a) if !a.is_empty() => ValueTy::Data(name.clone(), a),
-                                _ => ValueTy::Data(name.clone(), vec![]),
+                                _ => ValueTy::Data(
+                                    name.clone(),
+                                    record_args_from_fields(&fields, &field_tys),
+                                ),
                             };
                             return Ok((dst, ret));
                         }
@@ -1884,16 +1959,29 @@ impl<'a> Lowerer<'a> {
                                     });
                                 }
                             };
-                            let ty_name = match self.env.type_name_of_vty(exp) {
-                                Some(t) => t,
-                                None => {
-                                    return Err(CompileError::Type {
-                                        msg: format!(
-                                            "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
-                                        ),
-                                        span: *span,
-                                    });
-                                }
+                            let cv_var = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            let Some((ty_name, cv_subst)) =
+                                crate::types::infer::method_dispatch_key(
+                                    self.env,
+                                    &class_name,
+                                    &class_var,
+                                    sig,
+                                    exp,
+                                    cv_var,
+                                    || {
+                                        let v = self.next_tyvar;
+                                        self.next_tyvar += 1;
+                                        ValueTy::Var(v)
+                                    },
+                                )
+                            else {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                                    ),
+                                    span: *span,
+                                });
                             };
                             // Constraint instance: bind head args from the
                             // expected container's leading args and discharge
@@ -1937,7 +2025,7 @@ impl<'a> Lowerer<'a> {
                             let arg_param_tys = crate::types::infer::signature_param_tys_conv(
                                 self.env,
                                 &class_var,
-                                &ty_name,
+                                &cv_subst,
                                 sig,
                                 || {
                                     let v = self.next_tyvar;
@@ -1980,16 +2068,29 @@ impl<'a> Lowerer<'a> {
                                 .position(|a| !self.is_bare_nullary_method_ref(a, &class_name))
                                 .unwrap_or(0);
                             let (arg_reg, arg_vty) = self.lower_value(&call_args[selector_idx])?;
-                            let ty_name = match self.env.type_name_of_vty(&arg_vty) {
-                                Some(t) => t,
-                                None => {
-                                    return Err(CompileError::Type {
+                            let cv_var = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            let Some((ty_name, cv_subst)) =
+                                crate::types::infer::method_dispatch_key(
+                                    self.env,
+                                    &class_name,
+                                    &class_var,
+                                    sig,
+                                    &arg_vty,
+                                    cv_var,
+                                    || {
+                                        let v = self.next_tyvar;
+                                        self.next_tyvar += 1;
+                                        ValueTy::Var(v)
+                                    },
+                                )
+                            else {
+                                return Err(CompileError::Type {
                                     msg: format!(
                                         "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
                                     ),
                                     span: call_args[selector_idx].span(),
                                 });
-                                }
                             };
                             let (_, params, body) = match self
                                 .env
@@ -2021,7 +2122,7 @@ impl<'a> Lowerer<'a> {
                             let param_tys = crate::types::infer::signature_param_tys_conv(
                                 self.env,
                                 &class_var,
-                                &ty_name,
+                                &cv_subst,
                                 sig,
                                 || {
                                     let v = self.next_tyvar;
@@ -2188,7 +2289,7 @@ impl<'a> Lowerer<'a> {
                         let mut param_tys = crate::types::infer::signature_param_tys_conv(
                             self.env,
                             &class_var,
-                            &ctor,
+                            &crate::types::infer::ClassVarSubst::Ctor(ctor.clone()),
                             sig,
                             || {
                                 let v = self.next_tyvar;

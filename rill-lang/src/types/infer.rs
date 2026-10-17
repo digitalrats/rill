@@ -827,20 +827,132 @@ fn bind_constraint_instance(
     Ok((head_args, constraints))
 }
 
+/// How a method signature's class variable is substituted while the signature
+/// is converted to concrete value types.
+#[derive(Debug, Clone)]
+pub(crate) enum ClassVarSubst {
+    /// A type-constructor NAME the caller resolved by the selector's head
+    /// constructor (`List`, `Kleisli`, `Int`).
+    Ctor(String),
+    /// The class variable's fully resolved TYPE (`Int`, `Pair Int Int`) — an
+    /// arity-0 dispatch recovered it by unification, or an instance head binds
+    /// it directly.
+    Ty(ValueTy),
+    /// Keep the class variable LIVE as the given unification variable so a
+    /// later `unify_value` can solve it from a call site's concrete argument
+    /// (used by [`class_var_pattern_vty`]).
+    Var(TypeVarId),
+}
+
+/// Convert one method-signature argument type into a unification PATTERN in
+/// which the class variable is the live variable `class_var_var` and every
+/// other type variable is fresh, so unifying the pattern against a call site's
+/// concrete argument type solves the class variable (`Pair i i` vs
+/// `Pair Int Int` → `i := Int`).
+pub(crate) fn class_var_pattern_vty(
+    env: &TypeEnv,
+    class_var: &str,
+    class_var_var: TypeVarId,
+    te: &crate::ast::TypeExpr,
+    mut fresh: impl FnMut() -> ValueTy,
+) -> ValueTy {
+    let mut vars: HashMap<String, ValueTy> = HashMap::new();
+    conv(
+        env,
+        class_var,
+        &ClassVarSubst::Var(class_var_var),
+        &mut vars,
+        &mut fresh,
+        te,
+    )
+}
+
+/// The instance-registry key and class-variable substitution for a class-method
+/// dispatch, given the method's resolved CONTAINER type `selector_ty` (the
+/// expected result type for a result-directed method, the selector argument's
+/// type otherwise).
+///
+/// For an ARITY-0 class (`C i`) the selector's head constructor cannot identify
+/// the instance: `C Int` and `C (Pair Int Int)` share the head `Pair`. The class
+/// variable is therefore recovered by UNIFYING the method's class-var parameter
+/// pattern (`Pair i i` in `index: Pair i i -> ...`) against the selector's
+/// concrete type (`Pair Int Int` -> `i := Int`) and rendered canonically
+/// ([`crate::types::ty::value_type_key`]: `Int`, `Pair Int Int`) -- exactly the
+/// spelling a fully concrete instance head registers under
+/// ([`crate::render::render_type_key`]). A signature with no class-var
+/// parameter (`mempty: m`) takes the class variable to BE the selector type.
+///
+/// Falls back to the selector's head-constructor name when the solved type has
+/// no registered instance (a bare-constructor head such as `Monoid List`
+/// answers a `List Float` selector) or when the class variable stays unsolved
+/// (an open selector type) -- that is the pre-unification behaviour and keeps
+/// `Eq`/`Ord`/`Monoid` dispatch unchanged. A constructor class (arity >= 1) is
+/// always keyed by the head name; its partial head args are restored separately
+/// ([`prepend_instance_head_args`]).
+///
+/// Requires a concrete selector type: `None` when neither the solved type nor
+/// the head constructor is known.
+pub(crate) fn method_dispatch_key(
+    env: &TypeEnv,
+    class_name: &str,
+    class_var: &str,
+    sig: &crate::ast::TypeExpr,
+    selector_ty: &ValueTy,
+    class_var_var: TypeVarId,
+    fresh: impl FnMut() -> ValueTy,
+) -> Option<(String, ClassVarSubst)> {
+    let class_arity = env
+        .typeclasses
+        .get(class_name)
+        .map(|c| c.arity)
+        .unwrap_or(0);
+    if class_arity == 0 {
+        let solved = env
+            .class_var_solved_ty(sig, class_var, selector_ty, class_var_var, fresh)
+            .or_else(|| {
+                // No parameter mentions the class variable, so the method's
+                // RESULT is the class variable itself (`mempty: m`) and the
+                // caller's container type is its value.
+                let in_params = crate::types::ty::class_var_param_pattern(sig, class_var).is_some();
+                if in_params || !type_expr_mentions(sig, class_var) {
+                    None
+                } else {
+                    Some(selector_ty.clone())
+                }
+            });
+        if let Some(solved) = solved {
+            if let Some(key) = crate::types::ty::value_type_key(&solved) {
+                let registered = env
+                    .instances
+                    .get(class_name)
+                    .map(|by_ty| by_ty.contains_key(key.as_str()))
+                    .unwrap_or(false);
+                if registered {
+                    return Some((key, ClassVarSubst::Ty(solved)));
+                }
+                // No instance under the full type: fall through to the head
+                // constructor, which is how a bare or partial head is keyed.
+            }
+        }
+    }
+    let head = env.type_name_of_vty(selector_ty)?;
+    Some((head.clone(), ClassVarSubst::Ctor(head)))
+}
+
 /// Convert a typeclass method signature's curried argument types into concrete
-/// parameter `ValueTy`s, substituting the class variable with the concrete
-/// constructor (or concrete type name for arity-0 classes). Type variables in
-/// the signature (`a`, `b`) map to fresh unification vars, shared by name so
-/// `g : a -> b` and `xs : f a` agree on `a`. Used to validate instance method
-/// bodies against the class contract.
+/// parameter `ValueTy`s, substituting the class variable per `subst` (a
+/// constructor name for constructor classes, the solved full type for an
+/// arity-0 class). Type variables in the signature (`a`, `b`) map to fresh
+/// unification vars, shared by name so `g : a -> b` and `xs : f a` agree on
+/// `a`. Used to validate instance method bodies against the class contract.
 fn signature_param_tys(
     ctx: &mut Ctx,
     class_var: &str,
-    ctor: &str,
+    subst: &ClassVarSubst,
     sig: &crate::ast::TypeExpr,
 ) -> Vec<ValueTy> {
     let env = ctx.env.clone();
-    signature_param_tys_conv(&env, class_var, ctor, sig, || ctx.fresh_vty())
+    signature_param_tys_conv(&env, class_var, subst, sig, || ctx.fresh_vty())
 }
 
 /// [`signature_param_tys`] usable from lowering (no `Ctx`): `fresh` supplies
@@ -849,11 +961,11 @@ fn signature_param_tys(
 pub(crate) fn signature_param_tys_conv(
     env: &TypeEnv,
     class_var: &str,
-    ctor: &str,
+    subst: &ClassVarSubst,
     sig: &crate::ast::TypeExpr,
     fresh: impl FnMut() -> ValueTy,
 ) -> Vec<ValueTy> {
-    signature_param_and_result_tys_conv(env, class_var, ctor, sig, fresh).0
+    signature_param_and_result_tys_conv(env, class_var, subst, sig, fresh).0
 }
 
 /// [`signature_param_tys_conv`] plus the method's RESULT type, computed in the
@@ -867,79 +979,107 @@ pub(crate) fn signature_param_tys_conv(
 pub(crate) fn signature_param_and_result_tys_conv(
     env: &TypeEnv,
     class_var: &str,
-    ctor: &str,
+    subst: &ClassVarSubst,
     sig: &crate::ast::TypeExpr,
     mut fresh: impl FnMut() -> ValueTy,
 ) -> (Vec<ValueTy>, Option<ValueTy>) {
     let mut vars: HashMap<String, ValueTy> = HashMap::new();
-    fn conv(
-        env: &TypeEnv,
-        class_var: &str,
-        ctor: &str,
-        vars: &mut HashMap<String, ValueTy>,
-        fresh: &mut impl FnMut() -> ValueTy,
-        te: &crate::ast::TypeExpr,
-    ) -> ValueTy {
-        match te {
-            crate::ast::TypeExpr::TName(n) if n == class_var => env.vty_of_name(ctor),
-            crate::ast::TypeExpr::TName(n) => {
-                if matches!(n.as_str(), "Float" | "Int" | "Bool" | "String")
-                    || env.data_types.contains_key(n)
-                    || env.newtypes.contains_key(n)
-                    || env.ctor_kinds.contains_key(n)
-                    || env.type_aliases.contains_key(n)
-                {
-                    env.vty_of_name(n)
-                } else {
-                    vars.entry(n.clone()).or_insert_with(fresh).clone()
-                }
-            }
-            crate::ast::TypeExpr::TApp(head, args) if head == class_var => {
-                let vargs: Vec<ValueTy> = args
-                    .iter()
-                    .map(|a| conv(env, class_var, ctor, vars, fresh, a))
-                    .collect();
-                if env.ctor_arity(ctor).is_some() {
-                    ValueTy::App(ctor.to_string(), vargs)
-                } else if env.data_arities.contains_key(ctor) {
-                    ValueTy::Data(ctor.to_string(), vargs)
-                } else {
-                    env.vty_of_name(ctor)
-                }
-            }
-            crate::ast::TypeExpr::TApp(head, args) => ValueTy::App(
-                head.clone(),
-                args.iter()
-                    .map(|a| conv(env, class_var, ctor, vars, fresh, a))
-                    .collect(),
-            ),
-            crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
-                args.iter()
-                    .map(|a| conv(env, class_var, ctor, vars, fresh, a))
-                    .collect(),
-                vec![conv(env, class_var, ctor, vars, fresh, ret)],
-            ),
-            crate::ast::TypeExpr::TForall(_, inner) => {
-                conv(env, class_var, ctor, vars, fresh, inner)
-            }
-            crate::ast::TypeExpr::TConstrained(_, inner) => {
-                conv(env, class_var, ctor, vars, fresh, inner)
-            }
-        }
-    }
     match sig {
         crate::ast::TypeExpr::TFunc(args, ret) if !args.is_empty() => {
             let params: Vec<ValueTy> = args
                 .iter()
-                .map(|a| conv(env, class_var, ctor, &mut vars, &mut fresh, a))
+                .map(|a| conv(env, class_var, subst, &mut vars, &mut fresh, a))
                 .collect();
-            let result = conv(env, class_var, ctor, &mut vars, &mut fresh, ret);
+            let result = conv(env, class_var, subst, &mut vars, &mut fresh, ret);
             (params, Some(result))
         }
         other => (
-            vec![conv(env, class_var, ctor, &mut vars, &mut fresh, other)],
+            vec![conv(env, class_var, subst, &mut vars, &mut fresh, other)],
             None,
         ),
+    }
+}
+
+/// Convert a type expression to a value type, substituting the class variable
+/// per `subst` and mapping each other type variable to a fresh unification
+/// variable shared by name (`g : a -> b` and `xs : f a` agree on `a`).
+fn conv(
+    env: &TypeEnv,
+    class_var: &str,
+    class_var_subst: &ClassVarSubst,
+    vars: &mut HashMap<String, ValueTy>,
+    fresh: &mut impl FnMut() -> ValueTy,
+    te: &crate::ast::TypeExpr,
+) -> ValueTy {
+    match te {
+        crate::ast::TypeExpr::TName(n) if n == class_var => match class_var_subst {
+            ClassVarSubst::Ctor(c) => env.vty_of_name(c),
+            ClassVarSubst::Ty(t) => t.clone(),
+            ClassVarSubst::Var(id) => ValueTy::Var(*id),
+        },
+        crate::ast::TypeExpr::TName(n) => {
+            if matches!(n.as_str(), "Float" | "Int" | "Bool" | "String")
+                || env.data_types.contains_key(n)
+                || env.newtypes.contains_key(n)
+                || env.ctor_kinds.contains_key(n)
+                || env.type_aliases.contains_key(n)
+            {
+                env.vty_of_name(n)
+            } else {
+                vars.entry(n.clone()).or_insert_with(fresh).clone()
+            }
+        }
+        crate::ast::TypeExpr::TApp(head, args) if head == class_var => {
+            let vargs: Vec<ValueTy> = args
+                .iter()
+                .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
+                .collect();
+            match class_var_subst {
+                ClassVarSubst::Ctor(ctor) => {
+                    if env.ctor_arity(ctor).is_some() {
+                        ValueTy::App(ctor.to_string(), vargs)
+                    } else if env.data_arities.contains_key(ctor) {
+                        ValueTy::Data(ctor.to_string(), vargs)
+                    } else {
+                        env.vty_of_name(ctor)
+                    }
+                }
+                // The class variable is a fully applied type used as a
+                // constructor: splice its own arguments ahead of the new ones
+                // (arity-0 classes never reach this).
+                ClassVarSubst::Ty(t) => match t {
+                    ValueTy::App(n, pre) => {
+                        ValueTy::App(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                    }
+                    ValueTy::Data(n, pre) => {
+                        ValueTy::Data(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                    }
+                    ValueTy::Newtype(n, pre) => {
+                        ValueTy::Newtype(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                    }
+                    other => other.clone(),
+                },
+                ClassVarSubst::Var(id) => ValueTy::TyConApp(*id, vargs),
+            }
+        }
+        crate::ast::TypeExpr::TApp(head, args) => ValueTy::App(
+            head.clone(),
+            args.iter()
+                .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
+                .collect(),
+        ),
+        crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
+            args.iter()
+                .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
+                .collect(),
+            vec![conv(env, class_var, class_var_subst, vars, fresh, ret)],
+        ),
+        crate::ast::TypeExpr::TForall(_, inner) => {
+            conv(env, class_var, class_var_subst, vars, fresh, inner)
+        }
+        crate::ast::TypeExpr::TConstrained(_, inner) => {
+            conv(env, class_var, class_var_subst, vars, fresh, inner)
+        }
     }
 }
 
@@ -1067,6 +1207,22 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
         if !info.head_args.is_empty() || !info.constraints.is_empty() {
             continue;
         }
+        // How the class variable is spelled in the signature conversion: an
+        // arity-0 class binds it to the WHOLE instance type (`C (Pair Int Int)`
+        // → `Pair Int Int`, an application), a constructor class to the head
+        // constructor name (`Functor Maybe` → `Maybe`, so that `f a` becomes
+        // `App("Maybe", [a])` rather than the environment's placeholder shape).
+        let class_arity = ctx
+            .env
+            .typeclasses
+            .get(&class)
+            .map(|c| c.arity)
+            .unwrap_or(0);
+        let cv_subst = if class_arity == 0 {
+            ClassVarSubst::Ty(info.class_var_ty(&ctx.env))
+        } else {
+            ClassVarSubst::Ctor(ty_name.clone())
+        };
         for (mname, (params, body)) in &info.methods {
             let key = (class.clone(), ty_name.clone(), mname.clone());
             if ctx.method_lifting.contains(&key) {
@@ -1088,7 +1244,7 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
                 }
             };
             let param_tys = match (class_var.clone(), method_sig.clone()) {
-                (Some(cv), Some(sig)) => signature_param_tys(ctx, &cv, &ty_name, &sig),
+                (Some(cv), Some(sig)) => signature_param_tys(ctx, &cv, &cv_subst, &sig),
                 _ => params
                     .iter()
                     .map(|_| ctx.env.vty_of_name(&ty_name))
@@ -1101,7 +1257,7 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
                 (Some(cv), Some(crate::ast::TypeExpr::TFunc(_, ret))) => {
                     let env = ctx.env.clone();
                     Some(
-                        signature_param_tys_conv(&env, &cv, &ty_name, ret.as_ref(), || {
+                        signature_param_tys_conv(&env, &cv, &cv_subst, ret.as_ref(), || {
                             ctx.fresh_vty()
                         })
                         .first()
@@ -2906,16 +3062,20 @@ fn infer_ref_expected(
                         span,
                     });
                 };
-                let ty_name = match ctx.env.type_name_of_vty(&exp) {
-                    Some(t) => t,
-                    None => {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
-                            ),
-                            span,
-                        });
-                    }
+                let sig = sig.as_ref().expect("result-directed sig");
+                let env = ctx.env.clone();
+                let cv_var = ctx.fresh_id();
+                let Some((ty_name, cv_subst)) =
+                    method_dispatch_key(&env, &class_name, &class_var, sig, &exp, cv_var, || {
+                        ctx.fresh_vty()
+                    })
+                else {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                        ),
+                        span,
+                    });
                 };
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -2935,12 +3095,10 @@ fn infer_ref_expected(
                 }
                 ctx.method_lifting.insert(key.clone());
                 let saved = ctx.locals.clone();
-                for (p, pt) in params.iter().zip(signature_param_tys(
-                    ctx,
-                    &class_var,
-                    &ty_name,
-                    sig.as_ref().unwrap(),
-                )) {
+                for (p, pt) in params
+                    .iter()
+                    .zip(signature_param_tys(ctx, &class_var, &cv_subst, sig))
+                {
                     ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
                 }
                 // Nested result-directed methods in the body (`pure x = return x`)
@@ -4273,16 +4431,19 @@ fn infer_apply_impl(
                         span,
                     });
                 };
-                let ty_name = match ctx.env.type_name_of_vty(&exp) {
-                    Some(t) => t,
-                    None => {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
-                            ),
-                            span,
-                        });
-                    }
+                let env = ctx.env.clone();
+                let cv_var = ctx.fresh_id();
+                let Some((ty_name, cv_subst)) =
+                    method_dispatch_key(&env, &class_name, &class_var, sig, &exp, cv_var, || {
+                        ctx.fresh_vty()
+                    })
+                else {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                        ),
+                        span,
+                    });
                 };
                 // Constraint instance: bind head args from the expected
                 // container's leading args (`Kleisli Maybe Float Float` + head
@@ -4311,7 +4472,7 @@ fn infer_apply_impl(
                 }
                 ctx.method_lifting.insert(key.clone());
                 let saved = ctx.locals.clone();
-                let param_tys = signature_param_tys(ctx, &class_var, &ty_name, sig);
+                let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
                 // Infer the arguments BEFORE binding the method's params into
                 // `ctx.locals`: a param that shares a name with a caller-local
                 // (`return x` in `\x -> return (f x)` — the `arr` instance
@@ -4363,16 +4524,23 @@ fn infer_apply_impl(
                     .position(|a| !is_bare_nullary_method_ref(ctx, a, &class_name))
                     .unwrap_or(0);
                 let arg_vty = infer_method_value_vty(ctx, &args[selector_idx], "argument")?;
-                let ty_name = match ctx.env.type_name_of_vty(&arg_vty) {
-                    Some(t) => t,
-                    None => {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
-                            ),
-                            span: args[selector_idx].span(),
-                        });
-                    }
+                let env = ctx.env.clone();
+                let cv_var = ctx.fresh_id();
+                let Some((ty_name, cv_subst)) = method_dispatch_key(
+                    &env,
+                    &class_name,
+                    &class_var,
+                    sig,
+                    &arg_vty,
+                    cv_var,
+                    || ctx.fresh_vty(),
+                ) else {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
+                        ),
+                        span: args[selector_idx].span(),
+                    });
                 };
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -4397,7 +4565,7 @@ fn infer_apply_impl(
                 }
                 ctx.method_lifting.insert(key.clone());
                 let saved = ctx.locals.clone();
-                let param_tys = signature_param_tys(ctx, &class_var, &ty_name, sig);
+                let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
                 // Infer every argument BEFORE binding the method's params into
                 // `ctx.locals`: an argument is a caller expression, so a param
                 // that shares a name with a caller-local must not capture it.
@@ -4577,7 +4745,7 @@ fn infer_apply_impl(
             let (mut param_tys, result_ty) = signature_param_and_result_tys_conv(
                 &ctx.env.clone(),
                 &class_var,
-                &ctor,
+                &ClassVarSubst::Ctor(ctor.clone()),
                 sig,
                 || ctx.fresh_vty(),
             );

@@ -193,6 +193,36 @@ fn is_pattern_start(tok: &Tok) -> bool {
     )
 }
 
+/// Whether a type expression is a bare type VARIABLE (Haskell 2010: a lowercase
+/// name). Used to tell a partial instance head (`(Kleisli m)`) from a fully
+/// concrete one (`(Pair Int Int)`).
+fn is_type_var(te: &TypeExpr) -> bool {
+    matches!(te, TypeExpr::TName(n) if n.chars().next().is_some_and(char::is_lowercase))
+}
+
+/// The registry key and bound type arguments of an instance head.
+///
+/// A head that binds type variables is a PARTIAL instance: it keys by its
+/// constructor (`(Kleisli m)` → `Kleisli`) and lists the bound slots in
+/// `head_args`. A head whose arguments are all concrete types is keyed by the
+/// FULL applied type (`(Pair Int Int)` → `Pair Int Int`), which is what lets
+/// `Ix Int`, `Ix (Pair Int Int)` and `Ix (Pair Int (Pair Int Int))` coexist
+/// without colliding on the `Pair` constructor.
+fn instance_head_key(head: &TypeExpr) -> (String, Vec<String>) {
+    let ctor = match head {
+        TypeExpr::TName(n) => n.clone(),
+        TypeExpr::TApp(h, _) => h.clone(),
+        _ => crate::render::render_type_key(head),
+    };
+    match head {
+        TypeExpr::TApp(_, args) if args.iter().any(is_type_var) => (
+            ctor,
+            args.iter().map(crate::render::render_type_key).collect(),
+        ),
+        _ => (crate::render::render_type_key(head), Vec::new()),
+    }
+}
+
 /// One statement inside a `do { … }` block.
 enum DoStmt {
     /// `x <- e` — monadic bind: `bind e (fn x -> rest)`.
@@ -968,22 +998,18 @@ impl<'a> Parser<'a> {
             self.eat(&Tok::FatArrow)?;
         }
         let (class, _) = self.expect_ident()?;
-        // Head: either a bare type (`List`) or a parenthesized partial application
-        // (`(Kleisli m)`).
-        let (ty, head_args) = if self.peek().tok == Tok::LParen {
+        // Head: either a bare type (`List`, `Int`) or a parenthesized applied
+        // type (`(Kleisli m)`, `(Pair Int Int)`, `(Pair Int (Pair Int Int))`).
+        let head = if self.peek().tok == Tok::LParen {
             self.bump();
-            let (h, _) = self.expect_ident()?;
-            let mut args = Vec::new();
-            while matches!(self.peek().tok, Tok::Ident(_)) {
-                let (a, _) = self.expect_ident()?;
-                args.push(a);
-            }
+            let h = self.parse_type_atom()?;
             self.eat(&Tok::RParen)?;
-            (h, args)
+            h
         } else {
             let (t, _) = self.expect_ident()?;
-            (t, Vec::new())
+            TypeExpr::TName(t)
         };
+        let (ty, head_args) = instance_head_key(&head);
         self.eat(&Tok::KwWhere)?;
         self.eat(&Tok::LBrace)?;
         let mut method_bodies = Vec::new();
@@ -1008,6 +1034,7 @@ impl<'a> Parser<'a> {
         self.eat(&Tok::RBrace)?;
         Ok(Def::Instance {
             class,
+            head,
             ty,
             constraints,
             head_args,

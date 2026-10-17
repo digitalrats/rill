@@ -451,13 +451,20 @@ pub enum Def {
     Instance {
         /// Class name.
         class: String,
-        /// Concrete type the instance is for.
+        /// The instance head as parsed: a bare type (`List`, `Int`) or an
+        /// applied one (`(Kleisli m)`, `(Pair Int Int)`).
+        head: TypeExpr,
+        /// Instance registry key, derived from `head`. A head that binds type
+        /// variables is a PARTIAL instance and keys by its constructor
+        /// (`Kleisli m` → `Kleisli`); a head whose arguments are all concrete
+        /// types is keyed by the FULL applied type (`Pair Int Int` → `Pair Int
+        /// Int`) so `Ix Int` and `Ix (Pair Int Int)` do not collide.
         ty: TypeName,
         /// Optional constraint list: (class, type variable) before `=>`,
         /// e.g. `Monad m` in `instance Monad m => Arrow (Kleisli m)`.
         constraints: Vec<(String, String)>,
-        /// Head type-constructor args (partial application). `Kleisli m` →
-        /// head `Kleisli`, `head_args = ["m"]`; a plain `List` → `head_args = []`.
+        /// Bound type variables of a partial head, in order (`Kleisli m` →
+        /// `["m"]`); empty for a bare or fully concrete head.
         head_args: Vec<String>,
         /// Method bodies: (method name, parameter bindings, body expr).
         method_bodies: Vec<(String, Vec<Param>, Expr)>,

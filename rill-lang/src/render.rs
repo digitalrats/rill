@@ -133,11 +133,21 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
         }
         Def::Instance {
             class,
-            ty,
+            head,
             method_bodies,
             ..
         } => {
-            write!(buf, "{pad}instance {class} {ty} where {{ ").ok();
+            write!(buf, "{pad}instance {class} ").ok();
+            // An applied head (`Kleisli m`, `Pair Int Int`) must be
+            // parenthesized to re-parse; a bare head is written as-is.
+            if matches!(head, TypeExpr::TApp(..)) {
+                write!(buf, "(").ok();
+                render_type_key_into(head, buf);
+                write!(buf, ")").ok();
+            } else {
+                render_type_key_into(head, buf);
+            }
+            write!(buf, " where {{ ").ok();
             for (mname, params, body) in method_bodies {
                 write!(buf, "{mname}").ok();
                 for p in params {
@@ -251,6 +261,37 @@ fn render_type_arg(t: &TypeExpr, buf: &mut String) {
         write!(buf, ")").ok();
     } else {
         render_type_expr(t, buf);
+    }
+}
+
+/// Canonical single-line spelling of a type, used as an instance-registry key:
+/// `Pair Int (Pair Int Int)`. Unlike [`render_type_expr`], a nested
+/// application is parenthesized so the spelling is unambiguous (a flat
+/// `Pair Int Pair Int Int` would not re-parse to the same tree).
+pub(crate) fn render_type_key(t: &TypeExpr) -> String {
+    let mut buf = String::new();
+    render_type_key_into(t, &mut buf);
+    buf
+}
+
+fn render_type_key_into(t: &TypeExpr, buf: &mut String) {
+    match t {
+        TypeExpr::TName(n) => buf.push_str(n),
+        TypeExpr::TApp(head, args) => {
+            buf.push_str(head);
+            for a in args {
+                buf.push(' ');
+                let nested = !matches!(a, TypeExpr::TName(_));
+                if nested {
+                    buf.push('(');
+                }
+                render_type_key_into(a, buf);
+                if nested {
+                    buf.push(')');
+                }
+            }
+        }
+        other => render_type_expr(other, buf),
     }
 }
 
