@@ -41,6 +41,10 @@ pub mod types;
 #[cfg(feature = "debug")]
 pub mod debug;
 
+/// `Program` ↔ JSON serialization contract.
+#[cfg(feature = "serialization")]
+pub mod program_serde;
+
 pub use arena::{Arena, ArenaError, ArenaRef, ThunkState, Value, ValueKind};
 pub use error::{CompileError, Span};
 pub use ir::{Ir, ValueFunc, ValueInstr, ValueLayout};

@@ -25,7 +25,7 @@ default = []
 dsp = ["dep:rill-digital-effects", "dep:rill-core-dsp"]
 model = ["dep:rill-core-model"]
 graph = []
-serialization = ["dep:serde", "dep:serde_json", "dep:serde_cbor", "graph"]
+serialization = ["serde", "dep:serde_json", "dep:serde_cbor", "graph"]
 serde = ["dep:serde"]
 debug = []
 growable-arena = []
@@ -49,6 +49,10 @@ required-features = ["dsp", "graph"]
 [[test]]
 name = "caf_free_variables"
 required-features = ["dsp"]
+
+[[test]]
+name = "program_json"
+required-features = ["serialization", "dsp"]
 
 [[bench]]
 name = "lang_bench"
