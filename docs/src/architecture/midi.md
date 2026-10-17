@@ -3,7 +3,7 @@
 MIDI is handled through a layered architecture with **separate input and
 output paths**, both flowing through the actor model:
 
-- **Input:** hardware → `MidiInput::poll()` → `parse_midi()` → `ControlEvent` → `ActorRef<CommandEnum>` → Servo → `SetParameter` → Graph.
+- **Input:** hardware → `MidiInput::poll()` → `parse_midi()` → `ControlEvent` → `ActorRef<CommandEnum>` → Servo → `SetParameter` → parameter surface (no graph transport in this branch — see the status note below).
 - **Output:** `ClockTick` → `MidiClockGenerator` → `ControlEvent` → `serialize_to_midi()` → `MidiOutput::send()` → hardware.
 
 ## Status: the automatic clock/control plane is not wired
@@ -50,6 +50,8 @@ tested; it is the source of those ticks that is missing.
                                                      │
                                                      ▼
                                               Graph command queue
+                                          (reserved — no graph host
+                                           in the current branch)
 
 ┌── OUTPUT PATH (Rack actor thread, non‑RT) ─────────────────────────────┐
 │  (reserved design — no ClockTick source is wired in the current host)   │

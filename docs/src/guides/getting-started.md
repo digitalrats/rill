@@ -51,50 +51,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Using rill-lang instead of programmatic graphs
 
-rill-lang provides a Faust-style functional DSL for signal processing.
-Use it to define algorithms declaratively instead of wiring Rust node types:
+rill-lang provides a Faust-style functional DSL. A program is either an IO
+program — `main : (String…) -> IO ()` executed to completion by `ProgramRunner`
+— or a pure-value program evaluated one tick at a time:
 
-```rust
-use rill_lang::{compile, compile_with, compile_graph};
-use rill_core::builtin::Registry;
+```rust,no_run
+use rill_lang::{compile, compile_runner, Registry};
 use rill_core::traits::ParamValue;
 
-// Simple compilation to an Algorithm<T>
-let mut prog = compile::<f32>("main = _ * 0.5").unwrap();
-let mut out = [0.0f32; 64];
-prog.process(Some(&[1.0f32; 64]), &mut out).unwrap();
+// An IO program: streams and console, no buffers handed in from outside.
+let stdout = rill_lang::run_on_stack(16 << 20, || {
+    let mut runner = compile_runner::<f32, 256>(
+        r#"main = do { write (Just "hi") stdout; return () };"#,
+        &Registry::new(),
+        44_100.0,
+    )
+    .unwrap();
+    runner.run().unwrap();
+    runner.stdout().to_vec()
+});
+assert_eq!(stdout, ["hi"]);
 
-// Compile with a built-in registry (for DSP primitives)
-let registry = rill_adrift::lang_builtins::full_registry::<f32>();
-let mut prog2 = compile_with::<f32>(
-    "main = sine(?freq) * ?gain",
-    &registry,
-    44100.0,
-).unwrap();
-let freq_idx = prog2.param_index("freq").unwrap();
-prog2.set_param(freq_idx, ParamValue::Float(440.0));
-let gain_idx = prog2.param_index("gain").unwrap();
-prog2.set_param(gain_idx, ParamValue::Float(0.5));
-
-// Whole-graph compilation with runtime ?name parameters
-const BUF_SIZE: usize = 256;
-let mut engine = compile_graph::<f32, BUF_SIZE>(
-    "main = sine ?freq=440.0 * ?gain=0.5",
-    &registry,
-    44100.0,
-).unwrap();
-engine.handle().send(rill_core::queues::CommandEnum::SetParameter(
-    rill_core::queues::SetParameter {
-        anchor: "main".into(),
-        parameter: "freq".into(),
-        value: ParamValue::Float(440.0),
-        port: String::new(),
-        source: rill_core::queues::SignalOrigin::Manual,
-        timestamp: 0,
-        sample_pos: None,
-    }
-)).unwrap();
+// A pure-value program: one value tick, read from value_outputs().
+let mut prog = compile::<f32>("main = 1.0 + 2.0;").unwrap();
+prog.run_value().unwrap();
 ```
+
+Named parameter slots are still available by index
+(`param_index` / `set_param`):
+
+```rust,no_run
+use rill_lang::compile_with;
+use rill_core::traits::ParamValue;
+
+let registry = rill_adrift::lang_builtins::full_registry::<f32>();
+let mut prog = compile_with::<f32>(r#"main = _ * param("gain", 0.5);"#, &registry, 44_100.0).unwrap();
+if let Some(idx) = prog.param_index("gain") {
+    prog.set_param(idx, ParamValue::Float(0.5));
+}
+```
+
+> **Not in this branch:** `compile_graph()`, `CompiledGraphEngine`, the
+> `rill/lang` graph node, and the `MultichannelAlgorithm` transform dispatch are
+> removed with the old signal-transform executor. Programs own their I/O as
+> streams; a graph host that drives a program per block is follow-on work.
 
 ## Per-crate registration without rill-adrift
 

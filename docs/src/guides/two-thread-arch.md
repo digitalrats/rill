@@ -1,5 +1,13 @@
 # Two-Thread Architecture
 
+> **Branch note:** the *control* thread described here (Patchbay automatons,
+> servos, sensors) is shipped and tested. The *signal* thread it talks to —
+> a `CompiledGraphEngine` driven by a graph actor mailbox — is **not part of the
+> current branch**: the IO/streams-core change removed the signal-transform
+> engine, and `rill-lang` programs now own their I/O as streams (see the
+> [rill-lang guide](rill-lang.md)). This page describes the two-thread contract
+> that a future graph host must honour; it is not an API available today.
+
 Rill separates processing into two independent threads communicating through lock-free SPSC queues:
 
 ## Signal Thread (hard or soft RT)

@@ -23,7 +23,7 @@ actor.drain(); // processes "hello"
 ```
 
 - Handler is `Box<dyn FnMut(M)>` — created and drained on the same thread, no `Send` requirement.
-- Used by **Graph** (handler captures `Rc<UnsafeCell<...>>` → `!Send`, drained inline in I/O callback).
+- Used for inline-drained actors: a host's processing thread owns the `Actor` and calls `drain()` at a safe point (the pattern the removed graph engine used, and that a future graph host will use again).
 - Used by **Rack actor** — drained in a dedicated OS thread.
 
 ### `ActorRef<M>`
@@ -37,7 +37,7 @@ Registry of named actors. Three spawn methods:
 
 | Method | Handler location | Drain | Returns | Use case |
 |--------|-----------------|-------|---------|----------|
-| `spawn(name, handler)` | Caller's thread | Caller (`actor.drain()`) | `Actor<M>` | Graph, inline drain |
+| `spawn(name, handler)` | Caller's thread | Caller (`actor.drain()`) | `Actor<M>` | Inline drain in a host's processing thread |
 | `spawn_detached(name, make_handler, ms)` | Inside new OS thread | Auto (`std::thread::spawn` + sleep) | `ActorRef<M>` | Rack, Servo (handler `!Send`) |
 | `spawn_detached_tokio(name, make_handler, ms)` | Inside new tokio task | Auto (`tokio::spawn` + interval) | `ActorRef<M>` | Servo (handler `Send`, many actors) |
 
@@ -58,10 +58,16 @@ Soft-RT (control thread)                    Hard-RT (signal thread)
 └──────────────────────────┘               └──────────────────────────┘
 ```
 
+> **Branch note:** the hard-RT side of this diagram — the graph actor, its
+> mailbox, and `graph.handle()` — is **not present in the current branch**. The
+> IO/streams-core change removed the signal-transform engine; `rill-core-actor`
+> and the soft-RT control side are unchanged, and the actor contract below
+> describes what a future graph host must provide.
+
 | Direction | Message | Mailbox owner | Sender |
 |-----------|---------|---------------|--------|
-| Control → Signal | `SetParameter` | Graph actor | Servo actors via `graph.handle()` |
-| Signal → Control | `ClockTick` | Rack actor | Graph via `parent_ref.send()` |
+| Control → Signal | `SetParameter` | Graph actor (future host) | Servo actors via the host's `ActorRef` |
+| Signal → Control | `ClockTick` | Rack actor | Host via `parent_ref.send()` |
 
 | Method | RT-safe? | Notes |
 |--------|----------|-------|

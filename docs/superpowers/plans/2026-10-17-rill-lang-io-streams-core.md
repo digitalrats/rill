@@ -407,7 +407,7 @@ Expected: FAIL (ops/renderers unknown).
 
 - [ ] **Step 3: Implement**
 
-Register the stdio sigs (monomorphic `String`; no forall needed) and the scalar renderers (value builtins returning `String`, like `concat_string`). Lower the stdio ops to `Value::BuiltinCallable`; handlers resolve `stdin`/`stderr` against `world` (real stdio by default; the runner injects a capture console; `stdout` resolution is already in place from Task 2). Implement `write Nothing` = close for stdio streams.
+Register the stdio sigs (monomorphic `String`; no forall needed) and the scalar renderers (value builtins returning `String`, like `concat_string`). Lower the stdio ops to `Value::BuiltinCallable`; handlers resolve `stdin`/`stderr` against `world` (real stdio by default; the runner injects a capture console; `stdout` resolution is already in place from Task 2). Implement `write Nothing` = EOF/close for **program-owned** output streams (`makeOutputStream` sinks); on the console handles `stdout`/`stderr` it is **inert** — those are runtime-owned and not program-closeable (spec §4.4).
 
 - [ ] **Step 4: Wire the reference program and console injection**
 

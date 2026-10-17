@@ -161,7 +161,9 @@ If the target ends with `.json`, it's treated as a serialized graph and launched
 
 `ModularSystem::launch()` logs its lifecycle through the `log` crate. `log` is an
 unconditional dependency of `rill-adrift` and these calls are not feature-gated,
-so they are emitted in every build — a host only needs a `log` implementation to
+so they are emitted in every build **of the modular host** — the host itself is
+`#[cfg(feature = "serialization")]`, so a `--no-default-features` build has
+neither the host nor these calls. A host only needs a `log` implementation to
 see them:
 
 ```

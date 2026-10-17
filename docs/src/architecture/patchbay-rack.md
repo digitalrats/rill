@@ -206,6 +206,15 @@ direction and should be documented as a future evolution.
 
 ## Runtime::launch() — two racks, one command
 
+> **Status in the current branch:** this two-rack runtime is a *design target*,
+> not shipped code. The IO/streams-core change removed the signal-transform
+> executor: there is no `CompiledGraphEngine`, no `graph.handle()`/`graph.run()`
+> over a `GraphBuilder`, and no `rill/lang` graph node that consumes
+> `SetParameter`. The control rack (`rill-patchbay`: automatons, servos,
+> sensors, MIDI) is intact and tested on its own; the signal rack it drives is
+> follow-on work. Read the snippet below as the intended shape of the wiring,
+> not as an API you can call today.
+
 ```rust
 pub fn launch(config: LaunchConfig) -> Result<Runtime, Error> {
     // ── Create tokio runtime for control rack ──

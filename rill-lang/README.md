@@ -1,45 +1,185 @@
 # rill-lang
 
-A Faust-style functional streaming DSL that compiles to a
-[`rill_core::Algorithm`]. Programs describe the internal mathematical structure
-of a signal-graph node as a compact block diagram; `rill-lang` compiles that
-source at runtime into a value you can drop straight into the rill graph.
+A Faust-style functional DSL for rill: a Hindley–Milner core with algebraic data
+types, typeclasses, first-class closures, an arena-backed value track, and
+Haskell-faithful `IO`/`ST` monads. Source is compiled at runtime and executed by
+one of two paths:
 
-The first backend is a **safe, allocation-free interpreter**. A Cranelift JIT
-backend is planned behind a future `jit` feature; both share the same linear IR,
-so the language front-end is unaffected when the JIT lands.
+| Path | Entry point | What runs |
+|---|---|---|
+| **Program executor** | `compile_runner` → `ProgramRunner` | `main : (String…) -> IO ()`, run to completion against a realized `World` (memory streams + stdio) |
+| **Pure-value tick** | `compile` / `compile_with` / `compile_with_ffi` → `RillProgram::run_value` | One value-track tick; the result is read from `RillProgram::value_outputs()` |
 
-## Example
+The interpreter is safe and allocation-free after warm-up: values live in a
+fixed, page-based arena, and a program that exceeds the budget reports a clean
+error instead of touching the heap. A Cranelift JIT backend is planned behind a
+future `jit` feature; both share the same linear IR, so the front-end is
+unaffected when the JIT lands.
+
+> **Removed in the IO/streams core change (this branch).** `rill-lang` no longer
+> implements `Algorithm<T>`/`MultichannelAlgorithm<T>` for `RillProgram`; there
+> is no `process()`, no `ProgramEngine`, no `readInput`/`writeOutput`, and no
+> buffer-λ `main`. The old `compile_graph()` graph-execution entry point is gone
+> as well — graph compilation now lives behind the off-by-default `graph`
+> feature as `rill_lang::graph` (`GraphSpec` → `CompiledStream`), which the
+> workspace gates do not build. Programs express their I/O as streams inside the
+> program, not as buffers handed in from outside. See *Migrating* below.
+
+## Quick start: an IO program
 
 ```rust
-use rill_lang::compile;
-use rill_core::traits::Algorithm;
+use rill_lang::{compile_runner, Registry};
 
-// A half-gain: y[n] = x[n] * 0.5
-let mut prog = compile::<f32>("main = _ * 0.5").unwrap();
+let mut runner = compile_runner::<f32, 256>(
+    r#"main = do { write (Just "hi") stdout; return () };"#,
+    &Registry::new(),
+    44_100.0,
+)
+.unwrap();
 
-let mut out = [0.0f32; 4];
-prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
+runner.run().unwrap();
+assert_eq!(runner.stdout(), ["hi"]);
 ```
 
-Three entry points:
+`main` takes String launch arguments, bound with `set_args(&[String])`, and
+returns `IO ()`. The runner owns the program's `World`: `stdout`/`stderr` are
+captured into the runner (not echoed to the process console) and read back with
+`stdout()` / `stderr()`, which report the console built up by **all runs since
+construction**. `set_stdin(&[String])` injects the line-oriented input that
+`read stdin` yields, rewinding the stream for the next run.
 
-- **`compile(src)`** — no built-ins, no sample rate. Pure block-diagram math.
-- **`compile_with(src, &registry, sample_rate)`** — with a built-in registry for
-  stateful DSP (filters, oscillators, effects).
-- **`compile_graph(src, &registry, sample_rate)`** — compiles into a
-  `CompiledGraphEngine` with actor mailbox support for `SetParameter` commands.
+A program whose `main` reaches `return ()` runs to completion cleanly, even when
+it performs no I/O; a `main` whose final action's result is not `()` is a clean
+`ProcessError` (`` `main` must have type `IO ()` ``) rather than a silently
+discarded value — `return 0.0` in a `do` block is rejected as well. Because the
+`Monad` method is resolved from the expected type, a bare `main = return ()`
+does not type-check: fix the monad with a preceding effect (as above) or with a
+`bind` whose result type is known.
+
+### Entry points
+
+| Function | Produces | Use |
+|---|---|---|
+| `compile_runner(src, &registry, sample_rate)` | `ProgramRunner<T, BUF>` | The executor for `main : IO ()` programs; compiles in `Complete` (lazy) mode unless the source has a mode pragma |
+| `compile(src)` | `RillProgram<T, 256>` | Pure-value tick, strict mode, no built-in registry |
+| `compile_with(src, &registry, sample_rate)` | `RillProgram<T, 256>` | Pure-value tick with the DSP built-in registry |
+| `compile_with_ffi(src, &ffi, sample_rate)` | `RillProgram<T, 256>` | Pure-value tick with a foreign-function registry |
+| `RillProgram::run_value()` | `Result<(), ProcessError>` | Run one value tick; read outputs from `value_outputs()` |
+
+### The pure-value path
+
+`compile` builds a program whose `main` is evaluated as a single value-track
+tick. This is the path for pure computation — collections, records, closures,
+typeclass methods — without I/O:
+
+```rust
+use rill_lang::{arena::Value, compile};
+
+let mut prog = compile::<f32>("main = 1.0 + 2.0").unwrap();
+prog.run_value().unwrap();
+assert_eq!(
+    prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+    &Value::Float(3.0),
+);
+```
+
+A value-typed `main` is the program's single value output; `run_value` may be
+called repeatedly. Signal-block built-ins (filters, oscillators, effects; see
+*Built-in functions*) still parse, type-check and lower, and their Rust
+implementations are still registered, but there is no signal-transform executor
+wired to them in this branch.
+
+## Streams
+
+Streams are ordinary values: `InputStream a` and `OutputStream a`, generic in the
+element type, with the io-streams operation surface. `Nothing` means EOF on a
+read and close on a write.
+
+```faust
+fromList        :: List a -> IO (InputStream a)
+toList          :: InputStream a -> IO (List a)
+read            :: InputStream a -> IO (Maybe a)
+write           :: Maybe a -> OutputStream a -> IO ()
+atEnd           :: InputStream a -> IO Bool
+unread          :: a -> InputStream a -> IO ()
+connect         :: InputStream a -> OutputStream a -> IO ()
+makeInputStream :: IO (Maybe a) -> IO (InputStream a)
+makeOutputStream:: (Maybe a -> IO ()) -> IO (OutputStream a)
+
+stdout, stderr  :: OutputStream String
+stdin           :: InputStream String
+```
+
+A complete program — drain a memory stream and render each element:
+
+```faust
+show_all acc x = concat_string acc (show_float x);
+main = do {
+    xs <- fromList [1.0, 2.0, 3.0];
+    ys <- toList xs;
+    write (Just (fold show_all "" ys)) stdout;
+    return ()
+};
+```
+
+- **Memory streams** — `fromList`/`toList` round-trip, `unread` pushes an element
+  back, `connect` pipes an input into an output, and `makeInputStream`/
+  `makeOutputStream` wrap program closures as sources/sinks.
+- **`toList` drains** any input stream to EOF: a pushed-back prefix first, then
+  the source action, which is re-run per element until it reports `Nothing`.
+- **Console** — `stdout`/`stderr`/`stdin` are runtime-owned. `write Nothing`
+  closes a **program-owned** sink (`makeOutputStream`); on the console handles it
+  is inert — a program cannot close the runtime's console.
+- **Rendering** — there is no `Show` typeclass in the IO surface: use
+  `show_float`, `show_int`, `show_bool`, and `concat_string`.
+
+## Stack depth
+
+The lazy `IO` interpreter evaluates one nested `bind` per statement in a `do`
+block, so running `main` to completion recurses once per statement — roughly
+**300 KiB of native stack per statement in a debug build**. A multi-statement
+stream program therefore overflows a default 2 MiB thread stack (an abort, not a
+clean error). Run such programs on a grown-stack thread:
+
+```rust
+use rill_lang::{compile_runner, run_on_stack, Registry};
+
+let stdout = run_on_stack(16 << 20, || {
+    let mut runner = compile_runner::<f32, 256>(
+        r#"main = do { write (Just "hi") stdout; return () };"#,
+        &Registry::new(),
+        44_100.0,
+    )
+    .unwrap();
+    runner.run().unwrap();
+    runner.stdout().to_vec()
+});
+assert_eq!(stdout, ["hi"]);
+```
+
+`ProgramRunner` is **not `Send`** (it owns `Rc<RefCell<…>>` state), so compile
+*inside* the closure, not before it. `run_on_stack` resumes a panic on the
+calling thread, and a failed spawn panics (a host-resource failure, not a program
+error). Trampolining the `bind` chain to remove the limit is a planned follow-up.
+
+## Migrating from the signal-transform API
+
+| Removed | Replacement |
+|---|---|
+| `compile(...)` then `prog.process(inputs, outputs)` | `compile_runner(...)` then `runner.run()`; describe the work as stream reads/writes inside `main` |
+| `impl Algorithm<T> for RillProgram`, `BlockBuiltin` driving `RillProgram` | Built-ins remain callable *inside* a program; there is no transform wrapper around a whole program |
+| `readInput` / `writeOutput` and indexed variants | `fromList` / `toList`, `read` / `write`, `connect`, `makeInputStream` / `makeOutputStream` |
+| Buffer-λ `main` (`main = _ * 0.5`) | `main : (String…) -> IO ()`; a value `main` remains valid for the pure-value tick |
+| `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Not available here: the `graph` feature is off by default and the multichannel transform executor is gone. Graph compilation, when enabled, is `rill_lang::graph::compile` producing a `CompiledStream` |
+| Actor `?name=default` slots wired to a graph's `SetParameter` mailbox | `?name` slots still type-check and lower as dynamic built-in parameters; the graph-side mailbox wiring is not part of this branch |
 
 ## The language in one screen
 
 A program is a list of definitions ending in `;`. One must be named `main`.
-The entry point can be **SISO** (1→1) or **multi-IO** (N→M) when the `router`
-feature is enabled, supporting multi-channel nodes like mixers and EQs.
 
 ```faust
 gain x = x * 0.5;            // a one-argument function (juxtaposed args — no parens)
-main    = gain _;             // apply it to the input wire
+main = 1.0 + gain 1.0;       // a pure value: Float(1.5)
 ```
 
 ### Application syntax
@@ -48,8 +188,8 @@ Function calls use **bracket-free juxtaposition** — space-separated arguments,
 no parentheses:
 
 ```faust
-main = _ : lowpass 1000.0 0.7;   // juxtaposed
-main = lowpass _ 1000.0 0.7;     // signal as first-class argument
+f g x = g (g x);             // juxtaposed
+main = f (fn x -> x * 2.0) 3.0;
 ```
 
 Parenthesized form `name(arg, ...)` is also supported (for compatibility),
@@ -57,101 +197,65 @@ but juxtaposed is canonical.
 
 ### Records
 
-Built-ins are configured with **record literals** `{ key: val }`:
+Records are written with **record literals** `{ key: val }`:
 
 ```faust
-main = mixer _1 _2 { buses: 2, master_vol: 0.8 };
-main = eq_parametric _ { bands: [{ freq: 1000.0, q: 0.7, gain_db: 3.0 }] };
+data Point = { x: Float, y: Float };
+p = Point { x: 2.0, y: 3.0 };
+main = p.x;                  // field projection -> Float(2.0)
 ```
 
-Records can be nested — the EQ `bands` field is a list of
-`{ freq, q, gain_db, band_type }` records.
-
-### Actor parameters (`?name=default`)
-
-Late-binding parameter slots resolved at runtime via the engine mailbox:
-
-```faust
-main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;
-```
-
-The `?name=default` syntax creates a named parameter slot that receives
-`SetParameter` commands from the actor system. Names are stable — servos, LFOs,
-and MIDI maps target them directly. Within `where` blocks, dot-notation
-namespacing applies: `?osc.freq=440.0`.
-
-### Multi-IO
-
-Multi-channel programs implement `MultichannelAlgorithm<T>` when compiled with
-the `router` feature:
-
-```faust
-main = mixer _1 _2 { buses: 0, master_vol: 1.0 };  // 2→2
-main = dry_wet _ _effected { mix: 0.5 };        // 2→1 (interleaved)
-```
-
-The graph engine dispatches to `MultichannelAlgorithm::process()` for multi-IO
-nodes; SISO programs (0 or 1 input → 1 output) use the single-channel fast path.
+Records can be nested, and a **single-field record** can be constructed
+newtype-style by passing the field value directly (`Box 3.0` ≡
+`Box { value: 3.0 }`).
 
 ### Primitives
 
-| Syntax | Meaning | Arity |
-|---|---|---|
-| `_` | identity wire | 1 → 1 |
-| `!` | cut (discard a wire) | 1 → 0 |
-| `3`, `3.5` | int / float literal | 0 → 1 |
-| `+ - * / %` | arithmetic (as a block) | 2 → 1 |
-| `sin cos tan sqrt exp ln tanh abs` | math builtins | 1 → 1 |
-| `min max` | selection | 2 → 1 |
+| Syntax | Meaning |
+|---|---|
+| `3`, `3.5` | int / float literal |
+| `+ - * / %` | arithmetic |
+| `== /= < <= > >=` | comparison |
+| `&& \|\| not` | boolean logic |
+| `sin cos tan sqrt exp ln tanh abs` | math builtins |
+| `min max` | selection |
+| `show_float` / `show_int` / `show_bool` | scalar to `String` |
+| `concat_string`, `length` | string/list helpers |
 
 **Complex arithmetic** (builtins, always available):
 
-| Syntax | Meaning | Channels |
-|---|---|---|
-| `complex(re, im)` | complex constant generator | 0 → 2 |
-| `conj x` | conjugate: `re + i·im → re − i·im` | 2 → 2 |
-| `re x`, `im x` | real / imaginary part | 2 → 1 |
-| `norm x` | magnitude: `√(re² + im²)` | 2 → 1 |
-| `arg x` | phase: `atan2(im, re)` | 2 → 1 |
-| `cmul a b` | complex multiply | 4 → 2 |
-| `cadd a b` | complex add | 4 → 2 |
+| Syntax | Meaning |
+|---|---|
+| `complex(re, im)` | complex pair (re, im) |
+| `conj x` | conjugate |
+| `re x`, `im x` | real / imaginary part |
+| `norm x` | magnitude: `√(re² + im²)` |
+| `arg x` | phase: `atan2(im, re)` |
+| `cmul a b` | complex multiply |
+| `cadd a b` | complex add |
 
-Complex signals are pairs of wires (re + im). Use the parallel combinator `,` to
-combine two complex sources into a 4-wire input for `cmul`/`cadd`:
+Complex values are pairs of values; the parallel combinator `,` builds them and
+`.first`/`.second` take them apart:
 
 ```faust
-main = complex 3.0 4.0 , complex 2.0 0.0 : cmul () : re ();  // → 6.0
-main = complex 1.0 2.0 , complex 3.0 4.0 : cadd () : norm (); // → ≈7.21
+z = (complex 3.0 4.0, complex 2.0 0.0);
+main = norm (cmul z.first z.second);   // 6.0
 ```
 
 ### Combinators (block-diagram algebra)
 
-| Operator | Name | Constraint | Result arity |
-|---|---|---|---|
-| `A : B` | sequential | `out(A) = in(B)` | `(in A, out B)` |
-| `A , B` | parallel | — | `(in A + in B, out A + out B)` |
-| `A <: B` | split / fan-out | `in(B)` multiple of `out(A)` | `(in A, out B)` |
-| `A :> B` | merge / fan-in (sums) | `out(A)` multiple of `in(B)` | `(in A, out B)` |
-| `A ~ B` | feedback tap (1-tick delay) | `out(B) ≤ in(A)` | `(in A − out B, out A)` |
-| `A @ n` | integer delay (`n` const) | `A` is `_ → 1` | same as `A` |
-
-Precedence, loosest → tightest: `~` < `:` < `:>` < `<:` < `,` < `+ -` < `* / %` < `@` < unary `-` < atoms.
-
-### Idioms
-
-```faust
-main = integrator;           // integrator:         y[n] = x[n] + y[n-1]
-main = leaky_integrator 0.5; // leaky integrator:  y[n] = x[n] + 0.5·y[n-1]
-main = + ~ _;               // short form for `integrator`
-main = + ~ (_ * 0.5);       // short form for `leaky_integrator 0.5`
-main = _ @ 1;              // one-sample delay
-main = _ <: (_ , _) :> +;  // fan-out then sum = 2·x
-```
+The signal-block algebra is still part of the language: `A : B` (sequential),
+`A , B` (parallel), `A <: B` (split), `A :> B` (merge), `A ~ B` (feedback tap,
+one-tick delay), and `A @ n` (integer delay). Precedence, loosest → tightest:
+`~` < `:` < `:>` < `<:` < `,` < `+ -` < `* / %` < `@` < unary `-` < atoms.
+These construct signal blocks; executing them requires a signal-transform host,
+which this branch does not provide.
 
 ## Built-in functions
 
 rill-lang supports calling stateful DSP/model built-ins from
-`rill-core-dsp`/`rill-core-model`/`rill-fft` via `compile_with(src, &registry, sample_rate)`.
+`rill-core-dsp`/`rill-core-model`/`rill-fft` via `compile_with(src, &registry,
+sample_rate)`.
 
 | Category | Builtins | Feature |
 |---|---|---|
@@ -178,13 +282,26 @@ main = dry_wet _ wet { mix: 0.7 };
 main = eq_parametric _ { bands: [{ freq: 500.0, q: 2.0, gain_db: -3.0 }] };
 ```
 
-All built-ins are whole-buffer `BlockBuiltin`s — opaque block steps implementing
-`Algorithm<T>`. Per-sample state (filters, integrators) lives inside the built-in,
-so the engine stays block-only and SIMD-friendly. Bindings and registries live in
-`rill-adrift`
-(`lang_builtins::full_registry`), with per-crate `register_lang_builtins()`
-functions for selective registration. For declaring Rust-implemented built-ins in
-the language, see *FFI (foreign functions)* below.
+All built-ins are whole-buffer `BlockBuiltin`s. Per-sample state (filters,
+integrators) lives inside the built-in. Bindings and registries live in
+`rill-adrift` (`lang_builtins::full_registry`), with per-crate
+`register_lang_builtins()` functions for selective registration. For declaring
+Rust-implemented built-ins in the language, see *FFI (foreign functions)* below.
+
+### Dynamic parameters (`?name=default`)
+
+`?name=default` creates a named parameter slot for a built-in's scalar argument:
+
+```faust
+main = lowpass _ ?cutoff=1000.0 0.7;
+```
+
+Names are stable and may be namespaced by a `where` block with dot notation
+(`?osc.freq=440.0` → `"osc.freq"`). `param("name", default)` is the older inline
+form for the same idea; both coexist. Parameter slots are addressable
+programmatically through `RillProgram::params_meta()` / `set_param()`; the
+graph-side `SetParameter` mailbox that consumed these names is not part of this
+branch.
 
 ## FFI (foreign functions)
 
@@ -292,116 +409,50 @@ Each inline `tape_loop <capacity>` call allocates a **fresh** tape; to share a
 tape between a write head and its read heads, bind it to a name as above. The
 legacy `TapeLoop <capacity>` declaration spelling is still accepted.
 
-## Two parameter models
-
-rill-lang supports **two** parameter mechanisms:
-
-### `?name=default` — actor parameters (canonical)
-
-Late-binding slots resolved at runtime via the engine mailbox. When compiled
-with `compile_graph()`, each `?name=default` becomes a named parameter
-addressable by `SetParameter` commands:
-
-```faust
-main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;
-```
-
-Where-block definitions create namespaced parameters with dot notation:
-
-```faust
-main = osc : filt where
-    osc  = sine ?freq=440.0 0.5 0.0
-    filt = _ : lowpass ?cutoff=1200.0 0.7
--- Exposes: "osc.freq", "filt.cutoff"
-```
-
-Parameters are addressed by `"anchor.param"` format (e.g. `"osc.freq"`) —
-stable names across sessions, targetable by servos, LFOs, and MIDI maps.
-
-### `param("name", default)` — legacy DSL parameter
-
-The older `param()` built-in creates an inline parameter slot, useful when
-compiling directly to `RillProgram` without the graph engine:
-
-```faust
-main = _ * param("gain", 0.5);
-```
-
-Both mechanisms coexist. `?name` is the canonical form for graph nodes;
-`param()` is available for standalone `RillProgram` use. The native
-`smooth(x, ms)` one-pole provides zipper-free interpolation when parameters
-change at block boundaries.
-
 ## Type system
 
 Types are inferred with a Hindley-Milner core: scalar types (`int`, `float`,
 type variables) are unified with an occurs check and let-generalized for named
 functions; wire arities are synthesized bottom-up and checked against the
 combinator algebra. Any mismatch is a compile error with a source span, and code
-generation is blocked — so an ill-formed diagram never reaches the runtime.
+generation is blocked — so an ill-formed program never reaches the runtime.
 
 ## Serialization
 
-With the `serde` feature, [`RillLangDef`] carries a program as its **source
-string** (the canonical, human-editable form) and [`compile_def`] turns it back
-into a runnable program:
+With the `serialization` feature, [`RillLangDef`] carries a program as its
+**source string** (the canonical, human-editable form) and [`compile_def`] turns
+it back into a runnable program:
 
-```rust,ignore
+```rust,no_run
 use rill_lang::{RillLangDef, compile_def};
 
-let def = RillLangDef::new("gain", "main = _ * 0.5;");
+let def = RillLangDef::new("gain", "main = return ();");
 let prog = compile_def::<f32>(&def).unwrap();
 ```
 
-## Graph integration
-
-The `rill-adrift` umbrella crate exposes `rill-lang` behind its `lang` feature.
-Three paths to runtime:
-
-1. **`compile_graph()`** — compiles source into a `CompiledGraphEngine` with actor
-   mailbox support, ready to wire into a graph's processing pipeline.
-2. **`GraphBuilder::build_ir()`** (from `rill-graph`) — builds a multi-node
-   `GraphIr` from a programmatic topology, then calls the same
-   `graph_compiler::compile()` to produce a `CompiledGraphEngine`.
-3. **`rill/lang` factory node** — serialized graph nodes of type `rill/lang`
-   embed their source as a `source` parameter:
-
-```json
-{ "id": 0, "type_name": "rill/lang", "parameters": { "source": "main = _ * 0.5;" } }
-```
-
-Setting the `source` parameter at runtime recompiles and hot-swaps the program.
-
-## Execution model
-
-The interpreter compiles the linear IR into a block-only schedule via SCC analysis:
-every instruction runs whole-buffer through the `rill_core::math::vector` SIMD
-eDSL, and `BlockBuiltin`s are opaque whole-buffer `Algorithm` calls. Feedback (`~`)
-uses a double-buffered block state with a one-tick shadow copy; delay (`@`) uses a
-block-level ring buffer. No instruction runs sample-by-sample. The block path
-computes in `T` with zero heap allocation on the hot path. A Cranelift JIT backend
-is still planned and will reuse the same IR.
+The `serialization` feature no longer implies `graph`: `RillLangDef` and
+`compile_def` are the source-level contract; graph serialization (`GraphDef`) is
+gated behind `graph` + `serialization` and is not built by the workspace gates.
 
 ## Debug infrastructure (`debug` feature)
 
-When the `debug` Cargo feature is enabled, the IR gains a `ProbePoint` instruction
-for signal-level diagnostics. Each graph node compiled via `rill-graph`'s `build_ir()`
-automatically gets a probe at its output:
+When the `debug` Cargo feature is enabled, the IR gains a `ProbePoint`
+instruction for signal-level diagnostics:
 
-- **`ProbePoint { id, src, dst }`** — pass-through IR instruction that copies a register
-  value and simultaneously captures it to a lock-free probe slot
+- **`ProbePoint { id, src, dst }`** — pass-through IR instruction that copies a
+  register value and simultaneously captures it to a lock-free probe slot
 - **`ProbeSlot`** — atomic flags (`enabled`, `break_flag`, `paused_flag`) plus an
   SPSC queue for frame transport to a non-RT collector thread
 - **`DebugControl`** — shared atomics (`global_pause`, `global_resume`) for
   pause/resume execution control without syscalls
 
-Probe data flows through `rill-telemetry`'s `CollectorThread` and can be inspected
-via `rill-analyzer`. Zero overhead when the feature is disabled.
+Probe data flows through `rill-telemetry`'s `CollectorThread` and can be
+inspected via `rill-analyzer`. Zero overhead when the feature is disabled.
 
 ## First-class data (`data`/`type`/`newtype`/`typeclass`)
 
-Beyond signals, a program can carry **value channels** — one arena value per
-tick, typed and processed in a per-tick value-track phase:
+Beyond signals, a program can carry **values** — arena-paced, typed, and
+processed in the value-track phase:
 
 ```faust
 data Point = { x: Float, y: Float };          // record type
@@ -434,12 +485,15 @@ applied by juxtaposition (`List Float`):
 
 | Type | Kind | Meaning |
 |---|---|---|
-| `Bool`, `String` | `*` | scalar value types (value track only) |
+| `Bool`, `String`, `()` | `*` | scalar value types (value track only) |
 | `List a`, `Set a` | `* → *` | ordered list / unordered set (**open** — grow up to the pool) |
 | `Map k v` | `* → * → *` | key→value map (**open**) |
 | `Maybe a` | `* → *` | optional `a` (`Just a` / `Nothing`) |
 | `Pair a b` | `* → * → *` | pair (`{ first, second }`) |
 | `Either a b` | `* → * → *` | sum (`Left a` / `Right b`) |
+| `IO a`, `ST s a` | `* → *`, `* → * → *` | state-threading monads (`World` / isolated state) |
+| `InputStream a`, `OutputStream a` | `* → *` | io-streams handles |
+| `STRef s a` | `* → * → *` | mutable cell inside an `ST` region |
 
 ### First-class collections
 
@@ -508,8 +562,23 @@ typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b
 typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
 ```
 
-Builtin instances: `Functor`/`Monad` for `List`, `Maybe`, `Either a`;
-`Monoid` for `List` (`append_list`), `String` (`concat_string`), `Float`, `Int`.
+Builtin instances: `Functor`/`Monad` for `List`, `Maybe`, `Either a`, `IO`, `ST
+s`; `Monoid` for `List` (`append_list`), `String` (`concat_string`), `Float`,
+`Int`. The partial-application forms `IO`, `ST s` are the monads the runner and
+`runST` execute.
+
+**Monad/IO interfaces:**
+
+```faust
+return :: a -> m a            // via Monad
+bind   :: m a -> (a -> m b) -> m b
+pure   :: a -> f a            // via Applicative
+```
+
+`runST` has type `runST :: (forall s. ST s a) -> a` — it opens a fresh, isolated
+state region for its argument; an `STRef` or `ST s` result that would escape the
+region is a compile-time error. Inside the region, `newSTRef`, `readSTRef`,
+`writeSTRef` and `modifySTRef` operate on `STRef s a` cells.
 
 **Result-directed dispatch (`mempty`).** A nullary method has no selector
 argument, so it resolves by its *expected result type* — `mappend xs mempty`
@@ -534,7 +603,9 @@ main = match (do { x <- mx; y <- my; pure (x + y); }) of { Nothing => 0.0; Just 
 `do { x <- mx; let y = e; stmt; expr; }` supports `<-` binds, `let` bindings,
 and bare monadic statements (each desugars to `bind`); the final statement is
 the block's result. Note that `a < -b` is a comparison followed by negation —
-parenthesize: `a < (-b)`.
+parenthesize: `a < (-b)`. In an IO program the final statement is `return ()`;
+the monad is fixed by the preceding effects, so a bare `main = return ()` needs
+the `IO` type to be known from context.
 
 #### `Arrow` and `Kleisli`
 
@@ -598,9 +669,8 @@ runtime yet.
 
 #### Channel tuples, tuple types, and projections
 
-The `,` combinator now doubles as a **channel tuple** — it unifies on the
-track of its operands. `signal,signal` stays the block-diagram parallel
-composition; `value,value` builds a `Pair { first, second }`; a **mixed**
+The `,` combinator doubles as a **channel tuple** — it unifies on the track of
+its operands. `value,value` builds a `Pair { first, second }`; a **mixed**
 `value , signal` is a compile error (one channel cannot live on both tracks):
 
 ```faust
@@ -622,11 +692,6 @@ main = (b.f) 3.0;         // parenthesized projection applied: Float(6.0)
 main = b.f 3.0;           // bare projection applied too
 ```
 
-A **single-field record** can be constructed newtype-style, passing the field
-value directly instead of a record literal — `Kleisli (fn x -> …)` is exactly
-`Kleisli { unKleisli: fn x -> … }`. The prelude instance bodies above use this
-shorthand (`arr f = Kleisli (fn x -> return (f x));`).
-
 Reserved method/builtin names from the prelude: `fmap`, `pure`, `ap`,
 `return`, `bind`, `mempty`, `mappend`, `concat_map`, `append_list`,
 `concat_string`, plus the Arrow methods and the Kleisli data type: `arr`,
@@ -647,27 +712,28 @@ main  = add2 3.0;                // -> Float(5.0)
 twice  = fn f x -> f (f x);      // a higher-order combinator
 double = fn x -> x * 2.0;
 main   = twice double 3.0;       // -> Float(12.0)
-
-amp = fn g x -> x * g;           // trailing `_` is a signal-wire argument
-main = amp 2.0 _;                // input block scaled by 2.0
 ```
 
 - Lambda parameters can themselves be functions (HOF), flow through records
   and projections, and are typed structurally (`ValueTy::Func(arg_tys, ret_tys)`).
-- **Recursion is forbidden**: a definition that transitively calls itself is
-  rejected at compile time. Because calls cannot recur, the runtime call depth
-  is a static bound and the interpreter pre-allocates the dispatch register
-  frames — `ValueCallFunc` performs **no heap allocation** on the RT path.
+- **Recursion is forbidden** in the value track: a definition that transitively
+  calls itself is rejected at compile time. Because calls cannot recur, the
+  runtime call depth is a static bound and the interpreter pre-allocates the
+  dispatch register frames — `ValueCallFunc` performs **no heap allocation** on
+  the RT path. (Recursive *stream* helpers are the exception: the runner
+  compiles in `Complete` mode, which admits guarded recursion.)
 
 ## Branching and pattern matching
 
-`if cond then a else b` and `match` are pure expressions on the value track,
-re-evaluated every tick. A runtime `Bool` — e.g. a main λ-parameter compared to
-a threshold and written via `SetParameter` — switches the active branch on
-each tick:
+`if cond then a else b` and `match` are expressions on the value track. In an
+`IO` program they may choose between effects as well as values:
 
 ```faust
-main g = if g > 0.5 then 1.0 else 0.0;
+main = do {
+    n <- read stdin;
+    if (length n) > 0 then write (Just n) stdout else write (Just "empty") stdout;
+    return ()
+};
 ```
 
 `match` supports constructor, literal (`0`, `1.5`, `true`, `"s"`), wildcard
@@ -679,16 +745,18 @@ runtime `ProcessError::Processing`.
 
 ## Status
 
-MVP. The value track ships first-class Haskell-style collections
-(`List`/`Map`/`Set` with strict type-carried capacities, `Maybe`/`Pair`/
-`Either`, `Bool`/`String` value types) and higher-kinded types (parameterized
-`data`, kind polymorphism over type constructors, compile-time inline
-resolution), with runtime control flow on the value track (`if`/`match`).
-Deferred to follow-on work: the Cranelift `jit` feature, migrating the
-existing rill DSP primitives onto the FFI layer (the `foreign fn` mechanism
-itself is live — see *FFI*), a SIMD-aware IR, runtime typeclass dispatch,
-user-written `Eq`/`Ord` instances and hash-based containers, and `strict`/
-`complete` compiler modes.
+The IO/streams core is in place: `main : (String…) -> IO ()` executed by
+`ProgramRunner`, a Haskell-faithful `ST` with isolated state, io-streams-style
+memory/stdio streams, and the retained pure-value tick. The value track ships
+first-class collections (`List`/`Map`/`Set`, `Maybe`/`Pair`/`Either`,
+`Bool`/`String`), higher-kinded types, and `if`/`match`.
+
+Deferred to follow-on work: the Cranelift `jit` feature, trampolining the `bind`
+chain (removing the stack-depth limit), signal-transform execution over streams
+(the future audio plan), graph compilation repair, migrating the remaining rill
+DSP primitives onto the FFI layer (the `foreign fn` mechanism itself is live —
+see *FFI*), a SIMD-aware IR, runtime typeclass dispatch, user-written `Eq`/`Ord`
+instances and hash-based containers, and `strict`/`complete` compiler modes.
 
 ## License
 

@@ -196,6 +196,16 @@ one-point rank-2 type check with no runtime isolation. Making them real means:
 - **RT rules** (AGENTS.md) apply to the *future* audio hot loop, not to this
   plan — this plan's program runs to completion on the program thread; there is
   no RT path yet.
+- **Stack depth (documented limit, not a clean error).** The lazy `IO`
+  interpreter nests one `bind` per statement in a `do` block: running `main` to
+  completion recurses once per statement, at roughly **300 KiB of native stack
+  per statement in a debug build**. A handful of statements therefore exhausts
+  a default 2 MiB thread stack and aborts with a stack overflow. This plan
+  *documents* the limit and *mitigates* it with `run_on_stack(stack_size, f)`
+  (a helper that runs a closure on a grown-stack thread; see
+  `program_runner.rs`), which hosts must use for multi-statement programs.
+  Removing the limit by trampolining the `bind` chain (an iterative
+  action-stepper) is an explicit **follow-up**, not part of this plan.
 - **Workspace baseline:** verification runs against `cargo test -p rill-lang
   --features dsp`; **graph compilation is not required** — the `graph` feature
   and its known-broken `reconstruct.rs` baseline are out of scope and may stop
@@ -298,11 +308,12 @@ data OutputStream a;    -- opaque handle (created by IO effects)
 
 read            :: InputStream a -> IO (Maybe a)        -- Nothing = EOF/closed
 write           :: Maybe a -> OutputStream a -> IO ()   -- write Nothing closes
+                                                        -- PROGRAM-OWNED streams
 atEnd           :: InputStream a -> IO Bool
 unread          :: a -> InputStream a -> IO ()
 connect         :: InputStream a -> OutputStream a -> IO ()
 fromList        :: List a -> IO (InputStream a)         -- memory
-toList          :: InputStream a -> IO (List a)         -- memory (consumer)
+toList          :: InputStream a -> IO (List a)         -- drains any input
 makeInputStream :: IO (Maybe a) -> IO (InputStream a)   -- memory (source)
 makeOutputStream:: (Maybe a -> IO ()) -> IO (OutputStream a)  -- memory (sink)
 stdin           :: InputStream String                   -- stdio
@@ -312,8 +323,20 @@ stderr          :: OutputStream String                  -- stdio
 
 - **Faithful to io-streams.** The operation surface and semantics follow
   Haskell's io-streams exactly: `read` pulls and returns `Nothing` at EOF;
-  `write Nothing` closes the stream; `atEnd` reports EOF without consuming;
-  `unread` pushes a value back; `connect` pipes an input into an output.
+  `atEnd` reports EOF without consuming; `unread` pushes a value back;
+  `connect` pipes an input into an output.
+- **`write Nothing` scope.** `write Nothing` is the io-streams close signal and
+  closes **program-owned** output streams (`makeOutputStream` sinks). The
+  console handles `stdout`/`stderr` are the runner's realized `realWorld`, not
+  owned by the program: writing `Nothing` to them is accepted and **inert**
+  (the console is never closed, so later writes still appear). This is the
+  merged, test-pinned semantics; it is a deliberate scoping of the io-streams
+  close, not a semantic change to program-owned streams.
+- **`toList` drains any input stream.** On a memory stream (`fromList`) it
+  takes the remaining elements; on a cursor/closure-backed stream (`stdin`, a
+  `makeInputStream` source) it pulls through the ordinary read path until EOF,
+  exactly like io-streams' `toList`. The stream is spent afterwards.
+
 - **Generic element.** The element type `a` is a plain generic type. There is
   no audio block, no `List Buffer` element, no `ST (List Buffer)` wrapping, no
   backpressure, no active/passive distinction — all of that is deferred to the
@@ -338,10 +361,14 @@ stderr          :: OutputStream String                  -- stdio
   ```rust
   impl ProgramRunner<f32, BUF> {
       pub fn set_args(&mut self, args: &[String]);      // bind main's String λ-params
+      pub fn set_stdin(&mut self, lines: &[String]);    // injected console input lines
       pub fn run(&mut self) -> Result<(), Error>;       // run main's IO to completion vs realWorld
       pub fn stdout(&self) -> &[String];                // captured stdout (test access)
       pub fn stderr(&self) -> &[String];                // captured stderr (test access)
   }
+
+  // Grown-stack helper for the documented stack-depth limit (§3):
+  pub fn run_on_stack<R: Send + 'static>(stack_size: usize, f: impl FnOnce() -> R + Send + 'static) -> R;
   ```
   It takes **no input/output buffers or backend handles from outside**. It
   realizes `realWorld` (the memory-stream table + the stdio console), binds the
@@ -474,11 +501,22 @@ shape is the target: memory streams, STRef inside a `runST`, stdio.)
   `atEnd`; `unread`; `connect` input→output; `makeInputStream`/`
   makeOutputStream` sources/sinks; `toList` consumer.
 - **Streams (stdio):** `stdin`/`stdout`/`stderr` round-trips against an injected
-  capture console; `write Nothing` closes.
+  capture console; `write Nothing` on `stdout`/`stderr` is **inert** (the
+  console handles are not program-closeable); `write Nothing` closes
+  program-owned `makeOutputStream` sinks.
 - **Program form:** `main : (String…) -> IO ()` with `set_args` String binding;
-  a program with no I/O (`main = return ()`) runs to completion cleanly.
+  a program whose `main` reaches `return ()` runs to completion cleanly, and a
+  `main` whose final action's result is not `()` (including `return 0.0`) is a
+  clean error. A bare `main = return ()` needs its monad fixed by context (the
+  `Monad` method is resolved from the expected type), so tests precede it with
+  an effect or a typed `bind`.
 - **Bounded memory:** a `main` that accumulates beyond the fixed arena budget
   reports a clean capacity error (documented limit), not a crash.
+- **Stack depth:** the limit is documented (§3) and mitigated by `run_on_stack`
+  — the runner tests and the `rill-adrift` harness run their multi-statement
+  programs on a 16 MiB grown-stack thread, and a small program runs on the
+  default stack. Deep-`do` programs overflowing a default stack is a known,
+  documented limitation, not a clean error; trampolining is a follow-up.
 - **Full replacement:** the `-p rill-lang` suite contains zero `readInput`/
   `writeOutput`/buffer-λ `main` program strings after migration; grep confirms;
   `rill-adrift`'s program strings are migrated, leaving only the known

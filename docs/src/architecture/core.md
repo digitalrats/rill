@@ -235,14 +235,19 @@ pub struct SetParameter {
 }
 ```
 
-When `anchor` is non-empty, the engine uses the schedule's `program_names`
-map for O(1) lookup into the correct `RillProgram`. When empty, the engine
-scans all program param maps (backward compat).
+When `anchor` is non-empty, a graph engine used to resolve the target
+`RillProgram` through its schedule's `program_names` map (O(1) by anchor);
+with an empty anchor it scanned program param maps. **That graph schedule is not
+part of the current IO/streams branch** — the signal-transform engine and the
+`rill/lang` graph node are removed — so `SetParameter` now only describes the
+control-plane contract: `rill-core` keeps the type, and a future graph host is
+expected to restore the anchor → program lookup.
 
-- `None` — applied immediately when the graph actor drains it (legacy; used by
-  live UI/MIDI writes so there is no added latency).
-- `Some(pos)` — queued and applied by the graph during the 256-sample block
-  whose range `[block_start, block_start + block)` contains `pos`.
+- `None` — applied as soon as the consumer drains it (used by live UI/MIDI
+  writes so there is no added latency).
+- `Some(pos)` — queued for the consumer to apply at an absolute sample position,
+  i.e. inside the block whose range `[block_start, block_start + block)`
+  contains `pos`.
 
 Because an async control module reacting to a tick in I/O callback *N* is only
 rendered in callback *N+1*, producers look ahead by one quantum:

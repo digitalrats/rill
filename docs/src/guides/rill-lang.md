@@ -1,10 +1,24 @@
 # rill-lang: the Signal DSL
 
-`rill-lang` is a small, Faust-style functional streaming language for describing
-the internal math of a signal-graph node. You write a block diagram as source
-text; `rill-lang` compiles it — lexer, parser, Hindley-Milner type checker,
-linear IR, β-reduction, and an execution scheduler — into a value implementing
-[`rill_core::Algorithm`](../architecture/core.md), ready to run in the graph.
+`rill-lang` is a small, Faust-style functional streaming language. You write
+source text; `rill-lang` compiles it — lexer, parser, Hindley-Milner type
+checker, linear IR, β-reduction, and an execution backend — into a runnable
+program. There are two execution paths:
+
+- **IO programs** — `main : (String…) -> IO ()`, executed to completion by
+  [`ProgramRunner`](#io-programs-streams-and-the-runner).
+- **Pure-value programs** — one value-track tick, run by
+  `RillProgram::run_value()` and read from `value_outputs()`.
+
+> **Changed in the IO/streams core branch.** `RillProgram` no longer implements
+> `Algorithm<T>`/`MultichannelAlgorithm<T>`: the signal-transform executor
+> (`process()`, `ProgramEngine`, `readInput`/`writeOutput`, buffer-λ `main`) is
+> removed, and so is the old `compile_graph()` graph-execution entry point.
+> Programs now express their I/O as streams *inside* the program. The block-arrow
+> algebra below is still the language's signal-block layer, but this branch has
+> no host that runs a whole program as a transform. Graph compilation lives
+> behind the off-by-default `graph` feature (`rill_lang::graph::compile` →
+> `CompiledStream`) and is not built by the workspace gates.
 
 The current backend is a safe, allocation-free **interpreter**. A Cranelift JIT
 backend is planned behind a future `jit` feature; it will consume the same
@@ -16,22 +30,22 @@ arrives.
 
 ## Overview
 
-rill-lang exists so that a node's DSP can be **authored — and, in time,
+rill-lang exists so that a program can be **authored — and, in time,
 machine-synthesised — at runtime** rather than hand-written in Rust and compiled
 ahead of time. A program is compiled on the fly (no `rustc`, no external
-toolchain) to a `rill_core::Algorithm<T>` that plugs straight into the signal
-graph. The compiler is tiny and self-contained, and the compiled program obeys
-rill's real-time rules: no heap allocation, no locks, and no syscalls on the hot
-path.
+toolchain) to a runnable `RillProgram` — an `IO ()` program for the executor, or
+a value tick for the retained pure-value path. The compiler is tiny and
+self-contained, and the compiled program obeys rill's rules: no heap allocation
+after warm-up, no locks, and no syscalls on the processing path.
 
 Five properties define the language:
 
-- **Block-arrow algebra.** A program is an **arrow** — a block transform over
-  channels, `(I₁:Block<Scalar>…Iₙ) → (O₁:Block<Scalar>…Oₘ)` — executed by the
-  backend on each hardware tick. Programs are compositions of signal processors
-  via geometric combinators (`:` `,` `<:` `:>` `~` `@`), which are arrow laws,
-  not imperative statements. There are no runtime variables — only signal blocks
-  flowing through wires.
+- **Block-arrow algebra.** A signal-block program is an **arrow** — a block
+  transform over channels, `(I₁:Block<Scalar>…Iₙ) → (O₁:Block<Scalar>…Oₘ)` —
+  built from geometric combinators (`:` `,` `<:` `:>` `~` `@`), which are arrow
+  laws, not imperative statements. There are no runtime variables — only signal
+  blocks flowing through wires. `IO` programs add streams and effect sequencing
+  on top of the same core.
 - **Haskell-style definitions.** Functions and constants use a unified syntax
   (`name args = body`). A **closed** top-level definition — no λ-parameters and
   zero input channels — is a single shared CAF instance, evaluated once; every
@@ -40,34 +54,58 @@ Five properties define the language:
 - **β-reduction.** User-defined function calls are fully inlined before lowering;
   references to closed CAFs are lifted once and shared instead. The final IR is
   flat — only Wire, constants, built-ins, and combinators remain.
-- **Block-only execution.** The engine runs every instruction whole-buffer
-  (SIMD-friendly); per-sample state (filters, integrators, delay lines) lives
-  exclusively inside whole-block `BlockBuiltin` implementations.
+- **Block-only execution.** The signal-block backend runs every instruction
+  whole-buffer (SIMD-friendly); per-sample state (filters, integrators, delay
+  lines) lives exclusively inside whole-block `BlockBuiltin` implementations.
 - **RT-safe control.** Named parameters and smoothing give control-rate
   automation without recompilation or locks.
 
 ## A first program
 
-```rust,no_run
-use rill_lang::compile;
-use rill_core::traits::Algorithm;
+The canonical form is an `IO` program run to completion by the
+`ProgramRunner`:
 
-let mut prog = compile::<f32>("main = _ * 0.5;").unwrap();
-let mut out = [0.0f32; 4];
-prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
+```rust,no_run
+use rill_lang::{compile_runner, run_on_stack, Registry};
+
+let stdout = run_on_stack(16 << 20, || {
+    let mut runner = compile_runner::<f32, 256>(
+        r#"main = do { write (Just "hi") stdout; return () };"#,
+        &Registry::new(),
+        44_100.0,
+    )
+    .unwrap();
+    runner.run().unwrap();
+    runner.stdout().to_vec()
+});
+assert_eq!(stdout, ["hi"]);
+```
+
+A pure-value program uses `compile()` and runs one value tick:
+
+```rust,no_run
+use rill_lang::{arena::Value, compile};
+
+let mut prog = compile::<f32>("main = 1.0 + 2.0;").unwrap();
+prog.run_value().unwrap();
+assert_eq!(
+    prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+    &Value::Float(3.0),
+);
 ```
 
 A program is a list of mutually-recursive definitions, each terminated by `;`.
-Exactly one must be named `main` — the entry point. `main` may be any `n → m`
-arrow; the example above is the common 1 → 1 case. `compile()` accepts general
-arrows — its SISO `process()` drives the **first** output channel, while
-multi-channel programs use the `MultichannelAlgorithm` trait (see
-[Multi-IO and graph compilation](#multi-io-and-graph-compilation)).
+Exactly one must be named `main` — the entry point.
+
+> **Signal blocks are not executed in this branch.** A `main` such as
+> `_ * 0.5` still parses, type-checks, and lowers (the block-arrow algebra below
+> is intact), but `RillProgram` no longer implements `Algorithm`/
+> `MultichannelAlgorithm` and there is no `process()`: a signal-transform host is
+> follow-on work. See [Execution model and performance](#execution-model-and-performance).
 
 ### A program is an arrow
 
-Every program is an **arrow** `(I₁:Block<Scalar>…Iₙ) → (O₁:Block<Scalar>…Oₘ)` — a
+A **signal-block** program is an **arrow** `(I₁:Block<Scalar>…Iₙ) → (O₁:Block<Scalar>…Oₘ)` — a
 block transform over channels, in Hughes' sense of *Arrows*. It is *not* a
 monad: parallel composition (`,`), for instance, cannot be expressed as monadic
 bind. The type system has three levels:
@@ -78,9 +116,135 @@ bind. The type system has three levels:
 | channel | `Block<Scalar>` | one signal channel — a fixed-size buffer of samples (`BUF_SIZE`), mutated in place each tick |
 | arrow | `ArrowTy` | a block transform `(I₁:Block…Iₙ) → (O₁:Block…Oₘ)` |
 
-On each hardware tick the backend feeds n input blocks through the program and
-receives m output blocks. Stateful DSP (oscillators, filters, delay lines)
+A signal-transform host feeds n input blocks through the program and receives m
+output blocks per tick. Stateful DSP (oscillators, filters, delay lines)
 lives *inside* the arrow and persists between ticks.
+
+## IO programs, streams, and the runner
+
+The executor is `ProgramRunner<T, BUF>`: it runs a program's
+`main : (String…) -> IO ()` to completion against a realized `World`. It takes
+**no buffers or backend handles from outside** — the program's I/O is the
+streams it creates.
+
+```rust,no_run
+use rill_lang::{compile_runner, Registry};
+
+let mut runner = compile_runner::<f32, 256>(
+    r#"main = do { write (Just "hi") stdout; return () };"#,
+    &Registry::new(),
+    44_100.0,
+)
+.unwrap();
+
+runner.set_args(&["launch".to_string()]);   // bind main's String λ-params
+runner.set_stdin(&["input line".to_string()]); // injected `read stdin` lines
+runner.run().unwrap();
+
+assert_eq!(runner.stdout(), ["hi"]);
+assert_eq!(runner.stderr(), Vec::<String>::new());
+```
+
+- **`set_args(&[String])`** binds `main`'s String λ-parameters positionally;
+  missing arguments default to the empty string. They are *not* control
+  parameters.
+- **`set_stdin(&[String])`** injects the line-oriented input `read stdin` yields
+  (rill has no `ByteString`), rewinding the stream for the next run.
+- **`run()`** executes `main`'s `IO` action to completion. The captured console
+  is refreshed even on failure, so a caller can inspect what was written before
+  the error.
+- **`stdout()` / `stderr()`** return the captured lines from **all runs since
+  construction** — the console is captured, not echoed, and cumulative.
+- **`program()` / `program_mut()`** expose the compiled `RillProgram` for
+  parameter control and inspection.
+
+`compile_runner` compiles in **Complete** (lazy) mode unless the source carries
+its own `{-# MODE … #-}` pragma: the runner executes a Turing-complete program,
+including guarded recursive stream helpers that Strict rejects.
+
+### Streams
+
+Streams are ordinary values — io-streams' `InputStream`/`OutputStream`,
+generic over the element type. `Nothing` means EOF on a read and close on a
+write.
+
+```
+fromList        :: List a -> IO (InputStream a)
+toList          :: InputStream a -> IO (List a)
+read            :: InputStream a -> IO (Maybe a)
+write           :: Maybe a -> OutputStream a -> IO ()
+atEnd           :: InputStream a -> IO Bool
+unread          :: a -> InputStream a -> IO ()
+connect         :: InputStream a -> OutputStream a -> IO ()
+makeInputStream :: IO (Maybe a) -> IO (InputStream a)
+makeOutputStream:: (Maybe a -> IO ()) -> IO (OutputStream a)
+
+stdout, stderr  :: OutputStream String
+stdin           :: InputStream String
+```
+
+A complete program — build a memory stream, drain it, render the elements:
+
+```faust
+show_all acc x = concat_string acc (show_float x);
+
+main = do {
+    xs <- fromList [1.0, 2.0, 3.0];
+    ys <- toList xs;
+    write (Just (fold show_all "" ys)) stdout;
+    write (Just (show_int (length ys))) stderr;
+    return ()
+};
+```
+
+- **Memory streams** — `fromList`/`toList` round-trip, `unread` pushes an
+  element back, `connect` pipes an input into an output, and
+  `makeInputStream`/`makeOutputStream` wrap program closures as sources/sinks.
+- **`toList` drains to EOF** — any input stream, not only memory ones: the
+  pushed-back prefix first, then the source action, re-run per element until it
+  reports `Nothing`.
+- **Console ownership** — `stdin`/`stdout`/`stderr` are runtime-owned:
+  `write Nothing` is inert on them. It closes **program-owned** sinks created by
+  `makeOutputStream`.
+- **Rendering** — the IO surface has no `Show` typeclass: use `show_float`,
+  `show_int`, `show_bool`, and `concat_string`.
+
+### ST and IO values
+
+`runST` opens a fresh, isolated state region (`ST s a`; the rank-2 `forall s`
+keeps state from escaping), and `newSTRef`/`readSTRef`/`writeSTRef`/
+`modifySTRef` operate inside it. `IO a` is the `World`-threading monad the runner
+executes; the linear `World` token orders effects by data dependency, so
+reordering them is inexpressible.
+
+### Stack depth (documented limit)
+
+The lazy `IO` interpreter nests one `bind` per `do` statement, so running `main`
+to completion recurses once per statement — roughly **300 KiB of native stack per
+statement in a debug build**. A multi-statement program therefore overflows a
+default 2 MiB thread stack (an abort, not a clean error). Run such programs on a
+grown-stack thread with `run_on_stack`:
+
+```rust,no_run
+use rill_lang::{compile_runner, run_on_stack, Registry};
+
+let stdout = run_on_stack(16 << 20, || {
+    let mut runner = compile_runner::<f32, 256>(
+        r#"main = do { write (Just "hi") stdout; return () };"#,
+        &Registry::new(),
+        44_100.0,
+    )
+    .unwrap();
+    runner.run().unwrap();
+    runner.stdout().to_vec()
+});
+assert_eq!(stdout, ["hi"]);
+```
+
+`ProgramRunner` is not `Send` (it owns `Rc<RefCell<…>>` state), so the
+compile-then-run sequence must happen **inside** the closure. A panic in the
+closure is resumed on the calling thread. Trampolining the `bind` chain to remove
+the limit is a planned follow-up.
 
 ## Definitions and functions
 
@@ -250,10 +414,12 @@ Three consequences of the CAF model:
 main cutoff res = _ : lowpass cutoff res;
 ```
 
-When compiled via `compile_graph()`, each `main` parameter and each function
-parameter in the `where` block becomes a named parameter in the resulting
-graph node. Use the `?name=default` syntax for late-binding actor parameters
-(see [Actor Parameters](#actor-parameters) below).
+Each `main` parameter and each function parameter in a `where` block becomes a
+named slot in the compiled program, readable via `params_meta()` /
+`param_index()` and writable via `set_param()`. Use the `?name=default` syntax
+for late-binding parameter slots (see [Actor parameters](#actor-parameters)
+below). The graph-side wiring that exposed these slots on a `rill/lang` node is
+not part of this branch.
 
 ### Records and config
 
@@ -513,32 +679,26 @@ rill_lang::register::register_foreign_filters(&mut ffi);
 rill_router::register::register_foreign_router(&mut ffi);
 
 let mut prog = compile_with_ffi::<f32>(
-    "main = _ : lowpass 1000.0 0.7;",
+    "main = fromList [0.5, 1.0];",
     &ffi,
     48_000.0,
 ).unwrap();
-let mut out = [0.0f32; 4];
-prog.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
+prog.run_value().unwrap();
 ```
 
-For the graph path, `rill_adrift::lang_builtins::full_registry` still builds a
-factory-only `rill_lang::builtin::Registry<T>` (the legacy graph-compile path
-uses it to resolve factories by name; signatures come from the catalog).
+Built-ins are resolved against the factory registry at compile time; the
+program then runs on the pure-value path (or inside an `IO` program compiled
+with the same registry via `compile_runner`).
 
-Or to compile directly into a graph engine with actor mailbox support:
+`rill_adrift::lang_builtins::full_registry` builds a factory-only
+`rill_lang::builtin::Registry<T>` for the common case: signatures come from the
+language catalog, implementations from the FFI factories.
 
-```rust,no_run
-use rill_lang::compile_graph;
-use rill_adrift::lang_builtins::full_registry;
-
-let reg = full_registry::<f32>();
-let mut engine = compile_graph::<f32, BUF_SIZE>(
-    "main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;",
-    &reg,
-    48_000.0,
-).unwrap();
-// engine.handle() returns ActorRef<CommandEnum> for sending SetParameter
-```
+A whole program is not compiled into a graph engine in this branch: there is no
+`compile_graph()` and no mailbox-owning `CompiledGraphEngine`. Graph compilation,
+when the off-by-default `graph` feature is enabled, is
+`rill_lang::graph::compile` (`GraphSpec` → `CompiledStream`); it is not part of
+the workspace gates.
 
 ## Parameters
 
@@ -603,27 +763,22 @@ let idx = prog.param_index("gain").unwrap();
 prog.set_param(idx, 0.8);
 ```
 
-### Setting parameters on a `rill/lang` graph node
+### Parameters on a graph node
 
-When the program runs inside a `rill/lang` factory node (via `rill-adrift`'s
-`lang` feature), parameters are also accessible by **name** from the control
-side — the node's `NodeMetadata` advertises them, and you can write a value
-with `Node::set_parameter(name, value)`. Because the parameter name is
-stable (the same string you wrote in the DSL), servos, LFOs, envelopes, and
-MIDI mappings can target it directly (target by `NodeId` + parameter name).
-
-```rust,no_run
-// conceptual: a servo targets the "cutoff" parameter of node 0
-node_ref.set_parameter("cutoff", 2000.0);
-```
+The `rill/lang` factory node and its `Node::set_parameter(name, value)` path are
+**not available in this branch**: graph-node wiring was part of the removed
+graph-execution engine. Parameter slots are still named (the same string you
+wrote in the DSL) and are controlled through `RillProgram::param_index()` /
+`set_param()`; a host that wants name-addressed control can read the names from
+`params_meta()`.
 
 ### Control-rate semantics
 
 Parameters and `smooth` are control-rate constructs. The compiled program
-stores one scalar per parameter slot; `process()` reads the current value once
-per call and re-uses it for the entire block. The control thread (`set_param` /
-`set_parameter`) writes a new value, and the read is observed at the next
-`process()` call — i.e. at the next block boundary. This model is efficient
+stores one scalar per parameter slot; each tick reads the current value once
+and re-uses it for the entire block. The control thread (`set_param` /
+`set_parameter`) writes a new value, and the read is observed on the next
+`run_value()` call — i.e. at the next block boundary. This model is efficient
 (the hot path is a simple load + multiply / load + onepole) and safe (no locks,
 no atomics).
 
@@ -631,41 +786,21 @@ For more on the automation plumbing, see the [Automaton guide](world-of-automato
 
 ## Actor parameters
 
-rill-lang supports **late-binding actor parameters** with the `?name=default`
-syntax — a concise alternative to `param()` designed for `compile_graph()`:
+rill-lang supports **late-binding parameter slots** with the `?name=default`
+syntax — a concise alternative to `param()`:
 
 ```faust
 main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;
 main = sine ?freq=440.0 0.5 0.0;
 ```
 
-Each `?name=default` creates a named parameter slot. When compiled via
-`compile_graph()`, parameters are addressable by the engine's `handle()`:
-
-```rust,no_run
-use rill_lang::compile_graph;
-use rill_adrift::lang_builtins::full_registry;
-use rill_core::queues::CommandEnum;
-use rill_core::traits::ParamValue;
-
-let reg = full_registry::<f32>();
-let mut engine = compile_graph::<f32, BUF_SIZE>(
-    "main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;",
-    &reg,
-    48_000.0,
-).unwrap();
-engine.handle().send(CommandEnum::SetParameter(
-    rill_core::queues::SetParameter {
-        anchor: "main".into(),
-        parameter: "cutoff".into(),
-        value: ParamValue::Float(2000.0),
-        port: String::new(),
-        source: SignalOrigin::Manual,
-        timestamp: 0,
-        sample_pos: None,
-    }
-)).ok();
-```
+Each `?name=default` creates a named slot in the compiled program. Slots are
+enumerated by `RillProgram::params_meta()` and written by index with
+`set_param()`. The actor-mailbox path — a program compiled into a graph engine
+whose `handle()` receives `CommandEnum::SetParameter` by name — is **not part of
+this branch**; it belonged to the removed graph-execution engine. A host that
+wants name-addressed control reads the names from `params_meta()` and sends the
+values itself.
 
 ### Where-block namespacing
 
@@ -678,67 +813,50 @@ main = osc : filt where
 -- Parameters: "osc.freq", "filt.cutoff"
 ```
 
-The `anchor` field in `SetParameter` is the definition name when inside a
-`where` block (e.g. `"osc"` for `osc.freq`). Top-level `main` parameters
-use `"main"` as their anchor.
+The name of the enclosing definition is the slot's anchor when inside a `where`
+block (e.g. `"osc"` for `osc.freq`); top-level `main` parameters use `"main"`
+as their anchor. Full slot names are reported by `params_meta()`.
 
 ### `?name` vs `param()`
 
 | Feature | `?name=default` | `param("name", default)` |
 |---|---|---|
 | Syntax cost | 3 extra chars | 9+ extra chars |
-| Intent | Late-binding for actor system | Inline parameter slot |
-| Works with | `compile_graph()` | `compile()` / `compile_with()` |
-| Use case | Graph nodes with external control | Standalone programs |
+| Intent | Late-binding named slot | Inline parameter slot |
+| Works with | `compile_runner()`, `compile_with()` | `compile()`, `compile_with()` |
+| Use case | Programs driven from outside | Standalone programs |
 
 Both are RT-safe: one scalar per slot, read once per block, no locks.
 
 ## Multi-IO and graph compilation
 
-rill-lang programs can be **multi-channel** — N inputs, M outputs. Multi-IO
-programs implement `MultichannelAlgorithm<T>` when compiled with the `router`
-feature:
+rill-lang programs can be **multi-channel** — N inputs, M outputs:
 
 ```faust
 main = mixer _1 _2 _3 { buses: 2, master_vol: 1.0 };  // 3→2 (bus + master)
 main = dry_wet _ wet_signals { mix: 0.5 };          // 2→2
 ```
 
+These lower to multi-channel `MultichannelBlockBuiltin` calls. The executor that
+ran a whole program as an N→M transform (`MultichannelAlgorithm` dispatch,
+`CompiledGraphEngine`, actor mailbox draining) is removed in this branch, so
+multi-IO signal programs are not executable here; the multichannel *built-ins*
+themselves remain registered and callable from a future transform host.
+
 ### Graph compilation
 
-`compile_graph(src, &registry, sample_rate)` compiles a rill-lang program into
-a `CompiledGraphEngine<T, BUF_SIZE>` — a self-contained engine that:
+Graph compilation lives in the off-by-default `graph` feature:
 
-`compile_graph()` and `rill-graph::GraphBuilder::build_ir()` share the same
-compilation backend. Both produce a `GraphIr` (multi-node intermediate
-representation), which `graph_compiler::compile()` transforms into a
-`CompiledGraphEngine<T, BUF_SIZE>`. The difference is the source:
-`compile_graph()` takes a single DSL source string; `build_ir()` takes a
-programmatically-built topology with typed parameter signatures.
+- `rill_lang::graph::GraphBuilder` accumulates nodes and edges into a
+  `GraphSpec`; `rill_lang::graph::compile` turns a spec into a
+  `CompiledStream`.
+- `rill_lang::graph::compile_spec` reconstructs a spec into rill-lang AST.
+- A graph with passive tape backends partitions into a recording and a playback
+  subgraph joined by a plain-data `TapeSpec`.
 
-- Runs a flat vector of `NodeClosure`s over a pool of pre-allocated `FixedBuffer`s
-- Drains the actor mailbox for `SetParameter` commands each tick
-- Dispatches to `MultichannelAlgorithm::process()` for multi-IO programs
-- Uses SISO fast path for 0/1 input → 1 output programs
-
-```rust,no_run
-use rill_lang::compile_graph;
-use rill_core::traits::Algorithm;
-
-let reg = rill_lang::builtin::Registry::<f32>::new();
-let mut engine = compile_graph::<f32, BUF_SIZE>(
-    "main = _ * 0.5;",
-    &reg,
-    48_000.0,
-).unwrap();
-let mut out = [0.0f32; 4];
-engine.process(Some(&[1.0, 2.0, 4.0, 8.0]), &mut out).unwrap();
-assert_eq!(out, [0.5, 1.0, 2.0, 4.0]);
-```
-
-`CompiledGraphEngine` supports bridge/feedback configurations via `GraphNode`
-annotations (`is_bridge`, `feedback_read`, `feedback_write`), used for tape delay
-and send/return topologies where left-side outputs feed right-side inputs.
+This module is **not built by the workspace gates** (it is known-broken at its
+`reconstruct.rs` baseline; `rill-analyzer`, its only in-tree consumer, is
+excluded from the workspace members). Do not depend on it from a default build.
 
 ## Scoping
 
@@ -764,50 +882,29 @@ let def = RillLangDef::new("gain", "main = _ * 0.5;");
 let mut prog = compile_def::<f32>(&def).unwrap();
 ```
 
-## Using it in a graph
+## Using it in an application
 
-Two paths to runtime:
+A host application has two paths to runtime:
 
-### `compile_graph()` — direct engine
+### The program runner
 
-`compile_graph()` compiles source directly into a `CompiledGraphEngine<T>` with
-actor mailbox support:
+`rill_lang::compile_runner` gives a `ProgramRunner` you drive directly — bind
+arguments, inject stdin, run, and read the captured console (see
+[IO programs, streams, and the runner](#io-programs-streams-and-the-runner)).
+This is the recommended embedding for a program that owns its I/O.
 
-```rust,no_run
-use rill_lang::compile_graph;
-use rill_adrift::lang_builtins::full_registry;
+### The pure-value tick
 
-let reg = full_registry::<f32>();
-let mut engine = compile_graph::<f32, BUF_SIZE>(
-    "main = _ * 0.5;",
-    &reg,
-    48_000.0,
-).unwrap();
-```
+`rill_lang::compile` / `compile_with` / `compile_with_ffi` give a `RillProgram`
+whose `main` is evaluated by `run_value()`, one value tick at a time. This is the
+embedding for pure computation (collections, records, closures, typeclasses) with
+no I/O.
 
-The engine provides `handle()` → `ActorRef<CommandEnum>` for sending
-`SetParameter` commands, and implements `Algorithm<T>` directly.
-
-### `rill/lang` factory node
-
-The umbrella crate `rill-adrift` registers a `rill/lang` node type. A
-serialized graph can embed a rill-lang block by giving it a `source` parameter:
-
-```json
-{
-  "id": 0,
-  "type_name": "rill/lang",
-  "name": "MyBlock",
-  "parameters": { "source": "main = _ * 0.5;" }
-}
-```
-
-Setting the node's `source` parameter at runtime recompiles the program and
-hot-swaps it — the seed of the runtime code-synthesis loop described in the
-project's architecture notes. Note that compilation allocates, so a `source`
-swap applied through the graph's `SetParameter` path runs inside the I/O
-callback; treat it as a control-time operation to be performed when the graph is
-not under hard real-time load, not as an every-block action.
+The `rill/lang` graph factory node and the whole-program graph engine it drove
+are **not available in this branch**: `rill-adrift`'s `lang` feature exposes the
+language and its built-in registry, not a graph node that owns a
+`CompiledGraphEngine`. Embedding a program in a signal graph again is follow-on
+work (see the deferred audio plan).
 
 ## Execution model and performance
 
@@ -838,10 +935,10 @@ single expression.
 
 ### Scheduling
 
-On each hardware tick the arrow runs: the backend feeds n input blocks in, the
-schedule executes, m output blocks come out. The interpreter compiles the linear
-IR into an **execution schedule** via SCC (strongly-connected component) analysis
-of the data-dependency graph. Every step is a whole-buffer operation:
+The signal-block backend compiles the linear IR into an **execution schedule**
+via SCC (strongly-connected component) analysis of the data-dependency graph,
+and a signal-transform host feeds n input blocks in and takes m output blocks
+out per tick. Every step is a whole-buffer operation:
 
 - **Block steps** — all instructions (arithmetic, math builtins, fan-out/fan-in,
   block-state read/write, delay read/write) run **whole-buffer** through the
@@ -854,14 +951,22 @@ of the data-dependency graph. Every step is a whole-buffer operation:
 
 The whole-buffer register store is a `Vec<FixedBuffer<T, BUF>>` — fixed buffers
 of the program's `BUF_SIZE`, pre-allocated at construction and mutated in place,
-reused across calls. The hot `process()` path performs no heap allocation, no
-locks, and no syscalls, honoring rill's real-time rules.
+reused across calls. The hot tick path performs no heap allocation, no locks, and
+no syscalls, honoring rill's real-time rules.
 
 Feedback (`~`) and delay (`@`) are block-level: feedback uses a double-buffered
 block state with a one-tick shadow copy (swapped at tick end), and delay uses a
 block-level ring buffer. No instruction runs sample-by-sample, so the whole
 engine is SIMD-friendly. A Cranelift JIT backend is still planned and will reuse
 the same IR.
+
+### The IO executor
+
+An `IO` program is not scheduled: the interpreter evaluates `main`'s action
+chain to completion, one `bind` at a time, threading the `World` token. Effects
+are therefore ordered by data dependency (exactly like GHC's `State# RealWorld`),
+and the program's cost is its own recursion depth — see
+[Stack depth](#stack-depth-documented-limit).
 
 ## Benchmarks
 
@@ -1018,19 +1123,17 @@ value-track comparisons `==` `!=` `<` `>` `<=` `>=`, and logic `&&` `||`
 (`not` is a prefix builtin — `!` stays the wire-cut combinator) are available
 in value position only; the signal track is untouched.
 
-Collections are compiled and processed through the same `RillProgram` API as
+Collections are compiled and evaluated through the same `RillProgram` API as
 any value-track program:
 
 ```rust,no_run
 use rill_lang::compile;
-use rill_core::traits::MultichannelAlgorithm;
 
 // fold (acc, elem) over map (x * 2) of [1.0, 2.0, 3.0] -> 12.0
 let mut prog = compile::<f32>(
     "main = fold (fn a b -> a + b) 0.0 (map (fn x -> x * 2.0) [1.0, 2.0, 3.0]);",
 ).unwrap();
-let mut out = [0.0f32; 4];
-MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+prog.run_value().unwrap();
 assert_eq!(
     prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
     &rill_lang::arena::Value::Float(12.0)
@@ -1308,32 +1411,36 @@ Deferred:
 
 ## Status
 
-The language is feature-complete for signal authoring: a block-arrow model
-(`Scalar` / `Block` / `ArrowTy`) with block-diagram combinators as arrow laws,
-feedback and delay, Hindley-Milner types, Haskell-style definitions with
-β-reduction, CAF free variables (shared closed instances) with binding-level
-laziness, `let` and `where` binding groups with mutual visibility, block-only
-execution, a 27-built-in registry (DSP, effects, oscillators,
-mixer/EQ, analog, spectral, complex, lofi), RT-safe named parameters (`param()`
-and `?name`), records for built-in configuration, multi-IO via
-`MultichannelAlgorithm`, graph compilation (`compile_graph()` →
-`CompiledGraphEngine`), and first-class data (`data`/`type`/`newtype`/
-`typeclass`, value channels, arena+RC+COW memory, runtime-stack cells,
-element-wise value arithmetic, first-class functions with closures and
-runtime dispatch, currying, higher-order combinators, and signal-wire
-arguments). The value track also supports **higher-kinded types**
-(parameterized `data`/`typeclass`/`instance`, kinds `*` / `* → *` /
-`* → * → *`, compile-time inline typeclass resolution over constructors) and
-**first-class Haskell-style collections** (`List`/`Map`/`Set` with strict
-type-carried capacities and a runtime `ProcessError` on overflow, `Maybe`/
-`Pair`/`Either`, `Bool`/`String` value types, derived `Eq`/`Ord` for Map/Set
-keys, list/map literals, value-track comparisons and logic).
+The language ships the IO/streams core: `main : (String…) -> IO ()` executed to
+completion by `ProgramRunner`, a Haskell-faithful `ST` with isolated state,
+io-streams-style memory and stdio streams (`fromList`/`toList`/`read`/`write`/
+`atEnd`/`unread`/`connect`/`makeInputStream`/`makeOutputStream`), and a retained
+pure-value tick. The signal layer keeps its block-arrow model (`Scalar` /
+`Block` / `ArrowTy`) with block-diagram combinators as arrow laws, feedback and
+delay, Hindley-Milner types, Haskell-style definitions with β-reduction, CAF
+free variables with binding-level laziness, `let`/`where` binding groups, a
+27-built-in registry (DSP, effects, oscillators, mixer/EQ, analog, spectral,
+complex, lofi), RT-safe named parameters (`param()` and `?name`), and records
+for built-in configuration. The value track supports first-class data
+(`data`/`type`/`newtype`/`typeclass`, arena+RC+COW memory, runtime-stack cells,
+element-wise value arithmetic, first-class functions with closures and runtime
+dispatch, currying, higher-order combinators), **higher-kinded types**, and
+**first-class Haskell-style collections** (`List`/`Map`/`Set`, `Maybe`/`Pair`/
+`Either`, `Bool`/`String`, derived `Eq`/`Ord`, list/map literals).
+
+> **Removed in this branch:** `Algorithm`/`MultichannelAlgorithm` impls for
+> `RillProgram` (no `process()`), `ProgramEngine`, `readInput`/`writeOutput`,
+> buffer-λ `main`, `compile_graph()`/`CompiledGraphEngine`, and the graph-node
+> mailbox. Graph compilation exists only behind the off-by-default `graph`
+> feature.
 
 Deferred to follow-on work:
 
 - the **Cranelift `jit`** backend (the linear IR is the shared lowering target);
-- **whole-graph-as-one-program** lowering (fusing a multi-node graph into one
-  schedule);
+- **trampolining the `bind` chain** to remove the documented stack-depth limit;
+- a **signal-transform host over streams** (the deferred audio plan: per-block
+  processing of `InputStream`/`OutputStream float` inside a program);
+- **graph compilation repair** and re-embedding a program in a signal graph;
 - **signal-rate** (per-sample) modulation of imported built-in parameters
   (current parameter modulation is control-rate/per-block);
 - composed expressions as built-in arguments;
