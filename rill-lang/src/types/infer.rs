@@ -1179,6 +1179,272 @@ pub(crate) fn prepend_instance_head_args(
     }
 }
 
+/// The class context of a definition's signature, when it carries one
+/// (`mk :: Ix i => …`). A `forall` wrapper is transparent: the class context
+/// is the outermost `TConstrained` node in practice, and a `forall`-headed
+/// constrained signature still defers the same way.
+fn constrained_def_sig(def: &Def) -> Option<&crate::ast::TypeExpr> {
+    match def.sig() {
+        Some(sig @ crate::ast::TypeExpr::TConstrained(..)) => Some(sig),
+        _ => None,
+    }
+}
+
+/// The `(class, type variable)` constraints of a signature, looking through a
+/// `forall` wrapper. Empty for an unconstrained signature.
+fn sig_constraints(sig: &crate::ast::TypeExpr) -> &[(String, String)] {
+    match sig {
+        crate::ast::TypeExpr::TConstrained(cs, _) => cs,
+        crate::ast::TypeExpr::TForall(_, inner) => sig_constraints(inner),
+        _ => &[],
+    }
+}
+
+/// The function-shaped body of a signature: `forall` binders and a class
+/// context wrappers are transparent, so `C v => a -> b` and `forall v. a -> b`
+/// both answer their `(argument types, result type)`. A signature that is not a
+/// function type (a nullary definition) has no arguments and is its own result.
+pub(crate) fn sig_func_parts(
+    sig: &crate::ast::TypeExpr,
+) -> (&[crate::ast::TypeExpr], &crate::ast::TypeExpr) {
+    match sig {
+        crate::ast::TypeExpr::TForall(_, inner) | crate::ast::TypeExpr::TConstrained(_, inner) => {
+            sig_func_parts(inner)
+        }
+        crate::ast::TypeExpr::TFunc(args, ret) => (args, ret),
+        other => (&[], other),
+    }
+}
+
+/// Convert a definition signature (`mk :: Ix i => Pair i i -> Float -> Float`)
+/// into its parameter and RESULT value types. Every signature type variable —
+/// the class variables of the context included — becomes a fresh unification
+/// variable shared by name, so a call site solves them by unifying its
+/// arguments (`Pair Var(i) Var(i)` vs `Pair Int Int` → `i := Int`).
+///
+/// Returns the variable map too: it is where the constraint discharge reads the
+/// solved class variable (`i → Int`).
+fn def_sig_tys(
+    ctx: &mut Ctx,
+    sig: &crate::ast::TypeExpr,
+) -> (Vec<ValueTy>, ValueTy, HashMap<String, ValueTy>) {
+    let env = ctx.env.clone();
+    def_sig_tys_conv(&env, sig, || ctx.fresh_vty())
+}
+
+/// [`def_sig_tys`] without a `Ctx`: `fresh` supplies fresh variables.
+fn def_sig_tys_conv(
+    env: &TypeEnv,
+    sig: &crate::ast::TypeExpr,
+    mut fresh: impl FnMut() -> ValueTy,
+) -> (Vec<ValueTy>, ValueTy, HashMap<String, ValueTy>) {
+    let (arg_tes, ret_te) = sig_func_parts(sig);
+    let mut vars: HashMap<String, ValueTy> = HashMap::new();
+    // No class variable is special here: a context's class variables are
+    // ordinary type variables until a call site solves them, so the empty
+    // class-var name never matches a signature name.
+    let subst = ClassVarSubst::Ctor(String::new());
+    let params: Vec<ValueTy> = arg_tes
+        .iter()
+        .map(|a| conv(env, "", &subst, &mut vars, &mut fresh, a))
+        .collect();
+    let ret = conv(env, "", &subst, &mut vars, &mut fresh, ret_te);
+    (params, ret, vars)
+}
+
+/// Whether `name` is a DECLARED type rather than a signature type variable
+/// (`Float`, `Pair`, a user `data` type).
+pub(crate) fn is_declared_type_name(env: &TypeEnv, name: &str) -> bool {
+    matches!(name, "Float" | "Int" | "Bool" | "String" | "Buffer" | "()")
+        || env.data_types.contains_key(name)
+        || env.newtypes.contains_key(name)
+        || env.type_aliases.contains_key(name)
+        || env.ctor_kinds.contains_key(name)
+        || env.data_arities.contains_key(name)
+}
+
+/// Discharge a constrained definition's class context against the types a call
+/// site solved.
+///
+/// A class variable that is still UNRESOLVED defers: the call may sit inside
+/// another constrained body whose own call site eventually pins it. A concrete
+/// type with no registered instance is a COMPILE ERROR — there is no runtime
+/// dictionary to fall back to, so the error must not be postponed.
+pub(crate) fn discharge_def_constraints(
+    env: &TypeEnv,
+    def_name: &str,
+    sig: &crate::ast::TypeExpr,
+    bindings: &HashMap<String, ValueTy>,
+    span: Span,
+) -> Result<(), CompileError> {
+    for (class, var) in sig_constraints(sig) {
+        let Some(bound) = bindings.get(var) else {
+            continue;
+        };
+        // Not concrete at this call site: defer to the enclosing context.
+        if matches!(
+            bound,
+            ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..)
+        ) {
+            continue;
+        }
+        // An arity-0 class (`Ix i`) keys its instances by the FULL applied type
+        // (`Pair Int Int`); a constructor class (`Monad m`) by the constructor
+        // name (`Maybe`). Mirrors `method_dispatch_key`.
+        let arity = env.typeclasses.get(class).map(|c| c.arity).unwrap_or(0);
+        let key = if arity == 0 {
+            crate::types::ty::value_type_key(bound)
+        } else {
+            env.type_name_of_vty(bound)
+        };
+        let Some(key) = key else {
+            continue;
+        };
+        let registered = env
+            .instances
+            .get(class.as_str())
+            .map(|m| m.contains_key(key.as_str()))
+            .unwrap_or(false);
+        if !registered {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "no instance of `{class}` for type `{key}` (constraint of `{def_name}`)"
+                ),
+                span,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Bind the type variables of a signature pattern (`Pair i i`) to the concrete
+/// call-site types they stand for (`Pair Int Int` → `i := Int`).
+///
+/// Lowering has no unification substitution, so this structural match is how it
+/// recovers a constrained definition's class variable from the already-lowered
+/// argument types. A variable bound by an earlier parameter keeps its first
+/// binding (inference has already checked that the call is consistent).
+pub(crate) fn bind_sig_type_vars(
+    env: &TypeEnv,
+    pat: &crate::ast::TypeExpr,
+    actual: &ValueTy,
+    out: &mut HashMap<String, ValueTy>,
+) {
+    match pat {
+        crate::ast::TypeExpr::TName(n) => {
+            if !is_declared_type_name(env, n) {
+                out.entry(n.clone()).or_insert_with(|| actual.clone());
+            }
+        }
+        crate::ast::TypeExpr::TApp(head, args) => {
+            let actual_args: &[ValueTy] = match actual {
+                ValueTy::App(_, a) | ValueTy::Data(_, a) | ValueTy::Newtype(_, a) => a,
+                _ => &[],
+            };
+            if !is_declared_type_name(env, head) {
+                // A type-constructor variable used as a head (`m a`): bind it
+                // to the bare constructor (`m := Maybe`), the value-type form
+                // the instance registry is keyed by.
+                if let Some(c) = env.type_name_of_vty(actual) {
+                    out.entry(head.clone())
+                        .or_insert_with(|| ValueTy::App(c, vec![]));
+                }
+            }
+            for (a, av) in args.iter().zip(actual_args.iter()) {
+                bind_sig_type_vars(env, a, av, out);
+            }
+        }
+        crate::ast::TypeExpr::TFunc(args, ret) => {
+            if let ValueTy::Thunk(aa, rr) = actual {
+                for (a, av) in args.iter().zip(aa.iter()) {
+                    bind_sig_type_vars(env, a, av, out);
+                }
+                if let Some(r) = rr.first() {
+                    bind_sig_type_vars(env, ret, r, out);
+                }
+            }
+        }
+        crate::ast::TypeExpr::TForall(_, inner) | crate::ast::TypeExpr::TConstrained(_, inner) => {
+            bind_sig_type_vars(env, inner, actual, out);
+        }
+    }
+}
+
+/// Convert a signature type expression into a value type with the call-site
+/// class-variable bindings substituted (`Pair i i` + `i := Int` → `App("Pair",
+/// [Int, Int])`). Variables the call site did not solve become fresh
+/// unification variables, shared by name through `vars`.
+pub(crate) fn sig_ty_to_vty(
+    env: &TypeEnv,
+    te: &crate::ast::TypeExpr,
+    bindings: &HashMap<String, ValueTy>,
+    vars: &mut HashMap<String, ValueTy>,
+    fresh: &mut dyn FnMut() -> ValueTy,
+) -> ValueTy {
+    match te {
+        crate::ast::TypeExpr::TName(n) => match bindings.get(n) {
+            Some(t) => t.clone(),
+            None if is_declared_type_name(env, n) => env.vty_of_name(n),
+            None => vars.entry(n.clone()).or_insert_with(fresh).clone(),
+        },
+        crate::ast::TypeExpr::TApp(head, args) => {
+            let vargs: Vec<ValueTy> = args
+                .iter()
+                .map(|a| sig_ty_to_vty(env, a, bindings, vars, &mut *fresh))
+                .collect();
+            match bindings.get(head) {
+                // A bound type-constructor variable is applied: splice its own
+                // arguments ahead of the new ones (`m := Maybe`, `m a` →
+                // `Maybe a`).
+                Some(ValueTy::App(n, pre)) => {
+                    ValueTy::App(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                }
+                Some(ValueTy::Data(n, pre)) => {
+                    ValueTy::Data(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                }
+                Some(ValueTy::Newtype(n, pre)) => {
+                    ValueTy::Newtype(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                }
+                Some(other) => other.clone(),
+                None => {
+                    let head_ty = vars
+                        .entry(head.clone())
+                        .or_insert_with(|| {
+                            if is_declared_type_name(env, head) {
+                                env.vty_of_name(head)
+                            } else {
+                                fresh()
+                            }
+                        })
+                        .clone();
+                    match head_ty {
+                        ValueTy::Var(v) | ValueTy::TyConVar(v) => ValueTy::TyConApp(v, vargs),
+                        ValueTy::App(n, pre) => {
+                            ValueTy::App(n, pre.into_iter().chain(vargs).collect())
+                        }
+                        ValueTy::Data(n, pre) => {
+                            ValueTy::Data(n, pre.into_iter().chain(vargs).collect())
+                        }
+                        other => match vargs.len() {
+                            0 => other,
+                            _ => ValueTy::App(head.clone(), vargs),
+                        },
+                    }
+                }
+            }
+        }
+        crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
+            args.iter()
+                .map(|a| sig_ty_to_vty(env, a, bindings, vars, &mut *fresh))
+                .collect(),
+            vec![sig_ty_to_vty(env, ret, bindings, vars, &mut *fresh)],
+        ),
+        crate::ast::TypeExpr::TForall(_, inner) | crate::ast::TypeExpr::TConstrained(_, inner) => {
+            sig_ty_to_vty(env, inner, bindings, vars, &mut *fresh)
+        }
+    }
+}
+
 /// Validate every instance's method bodies at compile time, even when the
 /// instance is never called. Each body must infer to a single value channel
 /// (or a bare literal) with its parameters bound to values of the class
@@ -1651,6 +1917,16 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
 /// counter are rolled back so the retry starts from a clean context. A def
 /// with no λ-parameters that fails is genuinely broken and errors.
 fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
+    // A class-constrained definition (`mk p v :: Ix i => Pair i i -> …`) is
+    // DEFERRED: its body mentions methods of the constrained class, whose
+    // instance is unknown until a call site solves the class variable. Typing
+    // it here would dispatch `rangeSize p` against the scalar default for `p`
+    // and fail. The definition's real scheme comes from its signature (see
+    // `def_scheme_vty`); the body is specialized per call site in lowering.
+    if let Some(sig) = constrained_def_sig(def) {
+        let (_, ret, _) = def_sig_tys(ctx, sig);
+        return Ok(ArrowTy::value_channel(ret));
+    }
     let saved_locals = ctx.locals.clone();
     if def.params().is_empty() {
         let r = infer_expr(ctx, def.body());
@@ -1688,16 +1964,30 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     let saved_defs = ctx.defs.clone();
     let saved_bodies = ctx.def_bodies.clone();
     ctx.locals.clear();
-    for p in def.params() {
+    // Signature-driven parameter typing: a definition annotated `:: Float ->
+    // List a -> …` binds its λ-parameters to the signature's argument types
+    // (shared type variables become fresh unification vars), instead of the
+    // scalar `Float` default. A signature whose arity disagrees with the
+    // parameter list is ignored here — the mismatch is reported elsewhere.
+    let sig_param_tys: Option<Vec<ValueTy>> = def
+        .sig()
+        .map(|sig| def_sig_tys(ctx, sig).0)
+        .filter(|tys| tys.len() == def.params().len());
+    for (i, p) in def.params().iter().enumerate() {
         // `main`: λ-parameters are the program's String launch arguments
         // (`main a = …` → `a : String`), bound by `ProgramRunner::set_args`.
-        // Other definitions' λ-parameters keep their scalar/control default.
+        // Other definitions' λ-parameters take the signature's declared type
+        // when annotated, and keep their scalar default otherwise.
         if def.name() == "main" {
             ctx.locals
                 .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
         } else {
+            let ty = sig_param_tys
+                .as_ref()
+                .and_then(|tys| tys.get(i).cloned())
+                .unwrap_or(ValueTy::Float);
             ctx.locals
-                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::Float));
+                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
         }
     }
     let result = match infer_expr(ctx, def.body()) {
@@ -1946,20 +2236,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         }
         let body_ty = infer_def_body(ctx, def)?;
         let lam_count = def.params().len();
-        let mut param_tys = Vec::with_capacity(lam_count);
-        for _ in 0..lam_count {
-            // `main`: λ-parameters are the program's String launch arguments.
-            param_tys.push(if def.name() == "main" {
-                ValueTy::String
-            } else {
-                ValueTy::Float
-            });
-        }
-        let vty = if lam_count == 0 {
-            body_ty.vty
-        } else {
-            ValueTy::Thunk(param_tys, vec![body_ty.vty])
-        };
+        let vty = def_scheme_vty(ctx, def, &body_ty, lam_count);
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
@@ -1980,20 +2257,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
         }
         let body_ty = infer_def_body(ctx, def)?;
         let lam_count = def.params().len();
-        let mut param_tys = Vec::with_capacity(lam_count);
-        for _ in 0..lam_count {
-            // `main`: λ-parameters are the program's String launch arguments.
-            param_tys.push(if def.name() == "main" {
-                ValueTy::String
-            } else {
-                ValueTy::Float
-            });
-        }
-        let vty = if lam_count == 0 {
-            body_ty.vty
-        } else {
-            ValueTy::Thunk(param_tys, vec![body_ty.vty])
-        };
+        let vty = def_scheme_vty(ctx, def, &body_ty, lam_count);
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
@@ -2008,6 +2272,40 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
     }
 
     Ok(())
+}
+
+/// The definition's scheme value type.
+///
+/// A class-constrained definition takes its scheme from the SIGNATURE: its body
+/// was deferred (it has no inferred type of its own), and the signature's
+/// argument/result types are exactly the call-site contract. The signature's
+/// arity — not `lam_count` — decides the shape, because a multi-parameter
+/// definition is stored curried (`Def::Eval::params` empty, body a λ-chain).
+/// Every other definition keeps the v1 shape — the inferred body type with the
+/// scalar λ-parameter default (`main`'s λ-params are the String launch
+/// arguments).
+fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &ArrowTy, lam_count: usize) -> ValueTy {
+    if let Some(sig) = constrained_def_sig(def) {
+        let (sig_params, sig_ret, _) = def_sig_tys(ctx, sig);
+        return if sig_params.is_empty() {
+            sig_ret
+        } else {
+            ValueTy::Thunk(sig_params, vec![sig_ret])
+        };
+    }
+    if lam_count == 0 {
+        return body_ty.vty.clone();
+    }
+    let param_tys: Vec<ValueTy> = (0..lam_count)
+        .map(|_| {
+            if def.name() == "main" {
+                ValueTy::String
+            } else {
+                ValueTy::Float
+            }
+        })
+        .collect();
+    ValueTy::Thunk(param_tys, vec![body_ty.vty.clone()])
 }
 
 /// Resolve an arm/branch body's result value type: a value channel directly,
@@ -3781,6 +4079,69 @@ fn pin_result_to_expected(
     Ok(())
 }
 
+/// Type a call to a class-constrained definition WITHOUT inlining its body.
+///
+/// The signature's parameter patterns are unified against the call's arguments,
+/// which solves the class variables (`Pair i i` vs `Pair Int Int` → `i := Int`).
+/// Each constraint is then discharged against the solved type: a concrete type
+/// with no instance is a compile error, an unresolved variable defers. The
+/// call's result is the signature's result type, so a caller learns the
+/// concrete `Array i e`-style result the signature promises.
+fn infer_constrained_apply(
+    ctx: &mut Ctx,
+    name: &str,
+    cd: &crate::types::ty::ConstrainedDef,
+    args: &[Expr],
+    span: Span,
+    expected: Option<ValueTy>,
+) -> Result<ArrowTy, CompileError> {
+    let (param_tys, ret_ty, vars) = def_sig_tys(ctx, &cd.sig);
+    if param_tys.len() != cd.params.len() {
+        return Err(CompileError::Type {
+            msg: format!(
+                "signature of `{name}` declares {} argument(s), but the definition binds {}",
+                param_tys.len(),
+                cd.params.len()
+            ),
+            span,
+        });
+    }
+    if args.len() > param_tys.len() {
+        return Err(CompileError::Type {
+            msg: format!(
+                "`{name}` expects {} argument(s), got {}",
+                param_tys.len(),
+                args.len()
+            ),
+            span,
+        });
+    }
+    // Pin the result to the caller's expected type BEFORE the arguments infer,
+    // so a result-directed method inside an argument resolves by the container
+    // this call must produce (mirrors the plain function path).
+    pin_result_to_expected(ctx, &ret_ty, expected.as_ref(), span)?;
+    for (a, pt) in args.iter().zip(param_tys.iter()) {
+        let vt = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
+        unify_value(&vt, pt, &mut ctx.subst, a.span())?;
+    }
+    // The class variables as the call site solved them.
+    let bindings: HashMap<String, ValueTy> = vars
+        .iter()
+        .map(|(k, v)| (k.clone(), ctx.subst.resolve_value(v)))
+        .collect();
+    discharge_def_constraints(&ctx.env, name, &cd.sig, &bindings, span)?;
+    let ret = ctx.subst.resolve_value(&ret_ty);
+    if args.len() < param_tys.len() {
+        // Partial application: the remaining parameters stay a function value.
+        let remaining: Vec<ValueTy> = param_tys[args.len()..]
+            .iter()
+            .map(|t| ctx.subst.resolve_value(t))
+            .collect();
+        return Ok(ArrowTy::value_channel(nest_thunk(&remaining, vec![ret])));
+    }
+    Ok(ArrowTy::value_channel(ret))
+}
+
 fn infer_apply_impl(
     ctx: &mut Ctx,
     name: &str,
@@ -5183,6 +5544,16 @@ fn infer_apply_impl(
             }
             let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
             return Ok(ArrowTy::value_channel(ret_ty));
+        }
+    }
+    // Class-constrained definition (`mk :: Ix i => Pair i i -> …`): the body is
+    // NOT inlined at typing time — it is deferred and specialized per call site
+    // in lowering. Typing the call means unifying the signature's parameter
+    // patterns against the arguments (solving the class variables) and
+    // discharging the class context against the solved types.
+    if !ctx.locals.contains_key(name) {
+        if let Some(cd) = ctx.env.constrained_defs.get(name).cloned() {
+            return infer_constrained_apply(ctx, name, &cd, args, span, expected);
         }
     }
     // User-defined function: λ-params are consumed, signal ports remain open

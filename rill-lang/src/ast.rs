@@ -533,6 +533,15 @@ impl Def {
         }
     }
 
+    /// Returns the optional `::` signature of this definition (`None` for a
+    /// declaration variant or an unannotated binding).
+    pub fn sig(&self) -> Option<&TypeExpr> {
+        match self {
+            Def::Eval { sig, .. } => sig.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Whether this definition is a type declaration (`data`, `type`,
     /// `newtype`, `typeclass`, `instance`, `foreign`) rather than a signal
     /// expression definition. Declaration variants carry no inferable body —

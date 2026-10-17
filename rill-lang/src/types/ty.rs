@@ -233,6 +233,76 @@ impl InstanceInfo {
     }
 }
 
+/// A class-constrained function definition (`mk p v :: Ix i => Pair i i -> …`).
+///
+/// Such a definition is NOT a plain function: its body mentions methods of the
+/// constrained class (`rangeSize` in `rangeSize p`), which cannot be resolved
+/// until a call site fixes the class variable to a concrete type. The body is
+/// therefore never inferred in isolation — each call site specializes it with
+/// the concrete class-variable type and the bound instance (compile-time
+/// β-substitution, never a runtime dictionary). See
+/// [`TypeEnv::constrained_defs`] and `lower::lower_constrained_apply`.
+#[derive(Debug, Clone)]
+pub struct ConstrainedDef {
+    /// The declared signature, a [`crate::ast::TypeExpr::TConstrained`] node
+    /// carrying the class context.
+    pub sig: crate::ast::TypeExpr,
+    /// The definition's formal parameters, recovered from the parser's curried
+    /// body (see `split_curried_params`): multi-parameter definitions are
+    /// stored as nested lambdas with an empty `Def::Eval::params` list.
+    pub params: Vec<crate::ast::Param>,
+    /// The definition body with the formal parameters peeled off (it is the
+    /// body captured at registration, i.e. before `reduce`; references inside
+    /// it still resolve through the program's reduced definition map at
+    /// lowering time).
+    pub body: Expr,
+    /// The definition's `where`-block definitions.
+    pub where_defs: Vec<Def>,
+}
+
+/// Recover a definition's formal parameters from its curried body.
+///
+/// The parser turns `f a b = e` into a bare binding whose body is
+/// `\a -> \b -> e` and clears the definition's `params` (see
+/// `parser::curry_defs_in`), so the formal parameters of a multi-parameter
+/// definition live in the body's leading lambdas. `arity` is the definition
+/// signature's argument count — it says exactly how many lambdas belong to the
+/// definition head rather than to a function-valued body — and the returned
+/// body has them peeled off.
+fn split_curried_params(
+    arity: usize,
+    params: &[crate::ast::Param],
+    body: &Expr,
+) -> (Vec<crate::ast::Param>, Expr) {
+    let mut params = params.to_vec();
+    let mut body = body.clone();
+    while params.len() < arity {
+        let (first, rest) = match &body {
+            Expr::Lambda {
+                params: lam,
+                body: inner,
+                span,
+            } if !lam.is_empty() => {
+                let first = lam[0].clone();
+                let rest = if lam.len() == 1 {
+                    (**inner).clone()
+                } else {
+                    Expr::Lambda {
+                        params: lam[1..].to_vec(),
+                        body: inner.clone(),
+                        span: *span,
+                    }
+                };
+                (first, rest)
+            }
+            _ => break,
+        };
+        params.push(first);
+        body = rest;
+    }
+    (params, body)
+}
+
 /// The compile-time type environment: aliases, newtypes, data-type shapes, and
 /// the typeclass/instance dictionary.
 ///
@@ -287,6 +357,14 @@ pub struct TypeEnv {
     /// [`infer_program_with`](crate::types::infer::infer_program_with) threads
     /// them into the program's defs before typing.
     pub prelude_defs: Vec<crate::ast::Def>,
+    /// Class-constrained definitions (`mk :: Ix i => …`), keyed by name.
+    ///
+    /// Their bodies are deferred: the constrained class variable is abstract
+    /// until a call site solves it, so typing the body at load would dispatch
+    /// the body's method calls against an unresolved type. Inference types the
+    /// parameters from the signature and lowering specializes the body per call
+    /// site (see [`ConstrainedDef`]).
+    pub constrained_defs: HashMap<String, ConstrainedDef>,
 }
 
 /// Built-in category-theory typeclasses, declared in rill-lang itself and
@@ -1020,6 +1098,34 @@ impl TypeEnv {
                 }
                 Def::Foreign { name, sig, .. } => {
                     self.foreign_sigs.insert(name.clone(), sig.clone());
+                }
+                // A class-constrained definition (`mk :: Ix i => …`): register
+                // it for per-call-site specialization. Its body is NOT typed
+                // here (nor by the eager body pass) — the class variable is
+                // abstract until a call site solves it.
+                Def::Eval {
+                    name,
+                    sig: Some(sig @ crate::ast::TypeExpr::TConstrained(..)),
+                    params,
+                    body,
+                    where_defs,
+                    ..
+                } => {
+                    // The parser curries a multi-parameter definition into
+                    // nested lambdas and clears `params` (`curry_defs_in`), so
+                    // the formal parameters of `f a b :: …` live in the body's
+                    // leading lambdas. The signature's arity says exactly how
+                    // many to recover.
+                    let (params, body) = split_curried_params(sig.arg_count(), params, body);
+                    self.constrained_defs.insert(
+                        name.clone(),
+                        ConstrainedDef {
+                            sig: sig.clone(),
+                            params,
+                            body,
+                            where_defs: where_defs.clone(),
+                        },
+                    );
                 }
                 _ => {}
             }

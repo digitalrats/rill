@@ -503,6 +503,11 @@ struct Lowerer<'a> {
     /// Recursion guard for typeclass method inlining: resolved (class, type,
     /// method) calls currently on the expansion path.
     method_lifting: HashSet<(String, String, String)>,
+    /// Recursion guard for class-constrained definition specialization: the
+    /// `=>`-definitions currently being inlined at a call site. Their bodies
+    /// mention the constrained class, so a self- or mutually-recursive call
+    /// cannot be specialized eagerly (there is no dictionary to thread).
+    constrained_lifting: HashSet<String>,
     /// Head-argument bindings of a constraint instance (`instance (Monad m) =>
     /// Arrow (Kleisli m)`): head arg name → concrete type taken from the
     /// call-site concrete container's LEADING args. The instance body's own
@@ -1262,6 +1267,17 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // Class-constrained definition (`mk :: Ix i => Pair i i -> …`):
+                // the call site is the specialization point. See
+                // [`Self::lower_constrained_apply_site`]. Kept out of line so
+                // this arm's stack frame stays unchanged for the common
+                // (non-constrained) case — the typeclass-default expansion
+                // below is deep enough to be stack-sensitive.
+                if let Some(out) =
+                    self.lower_constrained_apply_site(name, call_args, expected, *span)
+                {
+                    return out;
+                }
                 // `runST (fn s -> body)`: `runST` is a built-in function whose
                 // signature `(forall s. ST s a) -> a` carries a type-level-only
                 // phantom — inference (the rank-2 application in `infer_apply`)
@@ -3498,6 +3514,204 @@ impl<'a> Lowerer<'a> {
             // where the head arg becomes concrete (the body's own resolution).
         }
         Ok((head_args, constraints))
+    }
+
+    /// Lower a call to a class-constrained definition (`mk :: Ix i => Pair i i
+    /// -> Float`), if `name` names one.
+    ///
+    /// Returns `None` for every other callee — the common case — so the caller's
+    /// arm can fall through to the ordinary application paths. A value local of
+    /// the same name shadows the definition (and the call is not a
+    /// specialization).
+    ///
+    /// The call site is where such a definition becomes a concrete function:
+    ///
+    /// 1. every argument is lowered to get its static type,
+    /// 2. those types are matched against the signature's parameter patterns,
+    ///    solving the class variables (`Pair Int Int` vs `Pair i i` → `i := Int`),
+    /// 3. the class context is discharged against the registered instances (a
+    ///    concrete type with no instance is a compile error — there is no
+    ///    runtime dictionary to fall back to),
+    /// 4. the body is inlined with the parameters bound to the argument
+    ///    registers, so its method calls dispatch by the concrete
+    ///    class-variable type.
+    ///
+    /// This is compile-time β-substitution: one specialization per call site,
+    /// never a runtime dispatch. A call applied to FEWER arguments than the
+    /// definition binds returns a closure over the applied ones (the remaining
+    /// λ-chain is lowered as a lambda whose parameters the signature types).
+    #[inline(never)]
+    fn lower_constrained_apply_site(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Option<Result<(usize, ValueTy), CompileError>> {
+        let env = self.env;
+        let cd = env.constrained_defs.get(name)?.clone();
+        if self.value_locals.iter().any(|s| s.contains_key(name)) {
+            return None;
+        }
+        Some(self.lower_constrained_apply(name, &cd, call_args, expected, span))
+    }
+
+    /// [`Self::lower_constrained_apply_site`] for a known constrained
+    /// definition.
+    fn lower_constrained_apply(
+        &mut self,
+        name: &str,
+        cd: &crate::types::ty::ConstrainedDef,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let (arg_tes, _) = crate::types::infer::sig_func_parts(&cd.sig);
+        if arg_tes.len() != cd.params.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "signature of `{name}` declares {} argument(s), but the definition binds {}",
+                    arg_tes.len(),
+                    cd.params.len()
+                ),
+                span,
+            });
+        }
+        if call_args.len() > cd.params.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "`{name}` expects {} argument(s), got {}",
+                    cd.params.len(),
+                    call_args.len()
+                ),
+                span,
+            });
+        }
+        // A constrained body cannot specialize itself eagerly: the recursive
+        // call's class variable is only solved by the enclosing call site,
+        // which is exactly the expansion in flight.
+        if self.constrained_lifting.contains(name) {
+            return Err(CompileError::Type {
+                msg: format!("recursive class-constrained definition `{name}`"),
+                span,
+            });
+        }
+        self.constrained_lifting.insert(name.to_string());
+        let result = self.lower_constrained_apply_inner(name, cd, call_args, expected, span);
+        self.constrained_lifting.remove(name);
+        result
+    }
+
+    /// The body of [`Self::lower_constrained_apply`], run under its recursion
+    /// guard.
+    fn lower_constrained_apply_inner(
+        &mut self,
+        name: &str,
+        cd: &crate::types::ty::ConstrainedDef,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let env = self.env;
+        let (arg_tes, ret_te) = crate::types::infer::sig_func_parts(&cd.sig);
+        // Pass 1: lower the arguments and solve the signature's type variables
+        // from their static types. The expectation is deliberately NOT threaded
+        // here — the parameter types it would come from are what this pass
+        // computes.
+        let mut bindings: HashMap<String, ValueTy> = HashMap::new();
+        let mut lowered: Vec<(usize, ValueTy)> = Vec::with_capacity(call_args.len());
+        for (i, a) in call_args.iter().enumerate() {
+            let (r, t) = self.lower_value(a)?;
+            if let Some(pat) = arg_tes.get(i) {
+                crate::types::infer::bind_sig_type_vars(env, pat, &t, &mut bindings);
+            }
+            lowered.push((r, t));
+        }
+        crate::types::infer::discharge_def_constraints(env, name, &cd.sig, &bindings, span)?;
+        // The signature's RESULT type with the solved class variables
+        // substituted. Variables the call site left unsolved (a genuinely
+        // polymorphic result) become fresh lowerer type variables.
+        let mut vars: HashMap<String, ValueTy> = HashMap::new();
+        let ret =
+            crate::types::infer::sig_ty_to_vty(env, ret_te, &bindings, &mut vars, &mut || {
+                self.fresh_sig_var()
+            });
+        let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+        let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+        for (i, (r, t)) in lowered.iter().enumerate() {
+            scope.insert(cd.params[i].name.clone(), (*r, t.clone()));
+            ctor_scope.insert(
+                cd.params[i].name.clone(),
+                self.static_scrutinee_ctor(&call_args[i]),
+            );
+        }
+        if call_args.len() < cd.params.len() {
+            // Partial application: the remaining λ-parameters stay a function
+            // value. The applied arguments are captured by value (they are in
+            // scope as locals), and the remaining parameters are typed from the
+            // signature, whose class variables are already solved — so method
+            // dispatch inside the returned closure stays concrete.
+            let remaining_tys: Vec<ValueTy> = arg_tes[call_args.len()..]
+                .iter()
+                .map(|te| {
+                    crate::types::infer::sig_ty_to_vty(env, te, &bindings, &mut vars, &mut || {
+                        self.fresh_sig_var()
+                    })
+                })
+                .collect();
+            self.value_locals.push(scope);
+            self.value_local_ctors.push(ctor_scope);
+            let remaining = Expr::Lambda {
+                params: cd.params[call_args.len()..].to_vec(),
+                body: Box::new(cd.body.clone()),
+                span,
+            };
+            let saved_pending = self.pending_param_tys.take();
+            self.pending_param_tys = Some(remaining_tys);
+            let res = self.lower_with_where_defs(&cd.where_defs, &remaining, expected);
+            self.pending_param_tys = saved_pending;
+            self.value_locals.pop();
+            self.value_local_ctors.pop();
+            return res;
+        }
+        // Full application: the definition body becomes the call's value,
+        // typed by the signature's result. A concrete caller expectation wins
+        // (inference pinned the signature result to it).
+        let body_expected = expected.cloned().unwrap_or(ret);
+        self.value_locals.push(scope);
+        self.value_local_ctors.push(ctor_scope);
+        let res = self.lower_with_where_defs(&cd.where_defs, &cd.body, Some(&body_expected));
+        self.value_locals.pop();
+        self.value_local_ctors.pop();
+        res
+    }
+
+    /// A fresh unification variable for signature-type conversion at a
+    /// constrained definition's call site.
+    fn fresh_sig_var(&mut self) -> ValueTy {
+        let v = self.next_tyvar;
+        self.next_tyvar += 1;
+        ValueTy::Var(v)
+    }
+
+    /// Lower `e` with a definition's `where`-block definitions in scope,
+    /// restoring the previous definition map afterwards.
+    fn lower_with_where_defs(
+        &mut self,
+        where_defs: &[Def],
+        e: &Expr,
+        expected: Option<&ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if where_defs.is_empty() {
+            return self.lower_value_expected(e, expected);
+        }
+        let saved = self.defs.clone();
+        for d in where_defs {
+            self.defs.insert(d.name().to_string(), d.clone());
+        }
+        let res = self.lower_value_expected(e, expected);
+        self.defs = saved;
+        res
     }
 
     /// Resolve a `Ref` in value position: a value local (match-arm binding) or a
@@ -6721,6 +6935,7 @@ pub fn lower_program_with_channels(
         mode,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
+        constrained_lifting: HashSet::new(),
         head_arg_bindings: HashMap::new(),
         fragments: Vec::new(),
         fragment_captures: Vec::new(),
@@ -7013,6 +7228,7 @@ mod tests {
             mode: Mode::Strict,
             value_inline: HashSet::new(),
             method_lifting: HashSet::new(),
+            constrained_lifting: HashSet::new(),
             head_arg_bindings: HashMap::new(),
             fragments: Vec::new(),
             fragment_captures: Vec::new(),

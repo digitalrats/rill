@@ -1,0 +1,159 @@
+//! Constrained (`C v => T`) definitions: the signature drives parameter typing,
+//! the body is NOT inferred eagerly, and each call site specializes the body
+//! with the concrete class-variable type and the bound instance — β-substitution
+//! at compile time, never a runtime dictionary.
+//!
+//! The probe class `Ix` is a throwaway stand-in for the real Haskell `Ix` (the
+//! real class lands with the array surface). Its method takes a `Pair`-shaped
+//! index, so the class variable is only recoverable by unifying the method's
+//! parameter pattern (`Pair i i`) against the concrete index type.
+
+use rill_lang::ast::TypeExpr;
+use rill_lang::mode::Mode;
+use rill_lang::types::infer::infer_program;
+use rill_lang::types::ty::TypeEnv;
+
+/// Probe index class: `Int` (1-D) and `Pair Int Int` (2-D) instances. Each
+/// instance's `rangeSize` returns a distinct marker so the test can tell which
+/// one a call site specialized to.
+const PROBE_IX: &str = r#"
+    typeclass Ix i where { rangeSize: Pair i i -> Float; }
+    instance Ix Int where { rangeSize b = 1.0; }
+    instance Ix (Pair Int Int) where { rangeSize b = 2.0; }
+"#;
+
+/// A constrained definition whose body calls the `Ix` method: it can only be
+/// typed AFTER a call site solves `i`.
+const PROBE_DEF: &str = "mk p v :: Ix i => Pair i i -> Float -> Float = rangeSize p;\n";
+
+/// Infer `src` and return its type environment.
+fn env_of(src: &str) -> TypeEnv {
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    infer_program(&prog, Mode::Strict).unwrap().type_env
+}
+
+/// Compile and run `src`, returning `main`'s Float value.
+fn run(src: &str) -> f64 {
+    let mut prog = rill_lang::compile::<f32>(src).unwrap();
+    prog.run_value().unwrap();
+    let v = prog.value_outputs()[0].unwrap();
+    match prog.arena().get(v) {
+        Some(rill_lang::arena::Value::Float(x)) => *x,
+        other => panic!("expected Float, got {other:?}"),
+    }
+}
+
+#[test]
+fn constrained_def_registers_without_eager_body_inference() {
+    // The body `rangeSize p` is only dispatchable once a call site pins the
+    // class variable: eagerly typing it would bind `p` to `Float` and fail
+    // (`no instance of Ix for Float`). A successful load therefore proves the
+    // body was DEFERRED, not inferred.
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0;");
+    let env = env_of(&src);
+    let cd = env
+        .constrained_defs
+        .get("mk")
+        .expect("a `=>` definition must register in `constrained_defs`");
+    assert!(
+        matches!(cd.sig, TypeExpr::TConstrained(_, _)),
+        "the registered signature keeps its class context: {:?}",
+        cd.sig
+    );
+    assert_eq!(cd.params.len(), 2, "both λ-parameters are registered");
+}
+
+#[test]
+fn unconstrained_defs_do_not_register_as_constrained() {
+    let src = "g x = x + 1.0;\nmain = g 1.0;";
+    let env = env_of(src);
+    assert!(
+        env.constrained_defs.is_empty(),
+        "only `C v => T` signatures are deferred; present: {:?}",
+        env.constrained_defs.keys().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn call_site_specializes_the_body_to_the_index_instance() {
+    let one_d = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0;");
+    assert_eq!(
+        run(&one_d),
+        1.0,
+        "`Pair Int Int` must solve `i := Int` and take the `Ix Int` body"
+    );
+
+    let two_d = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk ((0,0),(2,2)) 0.0;");
+    assert_eq!(
+        run(&two_d),
+        2.0,
+        "a nested `Pair` index must solve `i := Pair Int Int` and take its body"
+    );
+}
+
+#[test]
+fn every_call_site_specializes_independently() {
+    // The SAME definition applied at the two index types in one program: a
+    // compile-time dispatch is per call site, never a shared (first-call) body.
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0 + mk ((0,0),(2,2)) 0.0;");
+    assert_eq!(run(&src), 3.0);
+}
+
+#[test]
+fn non_instanced_index_type_is_a_compile_error() {
+    // `Bool` is a legal index TYPE, but no `Ix Bool` instance is registered:
+    // the constraint cannot be discharged and must fail at COMPILE time
+    // (never fall back to a runtime dictionary).
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (true,false) 0.0;");
+    let err = match rill_lang::compile::<f32>(&src) {
+        Ok(_) => panic!("`Ix Bool` has no instance, so the program must not compile"),
+        Err(e) => e,
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no instance of `Ix` for type `Bool`"),
+        "expected a missing-instance error, got: {msg}"
+    );
+}
+
+#[test]
+fn unconstrained_defs_are_still_inferred_eagerly() {
+    // Deferral is only for constrained signatures: an ordinary def with a
+    // garbage body must still fail at load, not silently compile.
+    let err = match rill_lang::compile::<f32>("g x = missing x;\nmain = 1.0;") {
+        Ok(_) => panic!("an unconstrained body is still type-checked eagerly"),
+        Err(e) => e,
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("unknown identifier `missing`"),
+        "expected the eager body error, got: {msg}"
+    );
+}
+
+#[test]
+fn partial_application_specializes_and_applies_later() {
+    // `mk` applied to one of its two arguments must still specialize `i` from
+    // that argument, and the returned closure must dispatch the body against
+    // the same instance when the second argument arrives (the class variable is
+    // solved at the FIRST call site, not at the closure's invocation).
+    //
+    // Partial application is bound at top level: a `let`-bound function value
+    // is not yet supported by the v1 lowering (same for plain definitions).
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\np1 = mk (0,9);\nmain = p1 0.0;");
+    assert_eq!(run(&src), 1.0);
+
+    let src_2d = format!("{PROBE_IX}\n{PROBE_DEF}\np1 = mk ((0,0),(2,2));\nmain = p1 0.0;");
+    assert_eq!(run(&src_2d), 2.0);
+}
+
+#[test]
+fn where_block_of_a_constrained_def_is_in_scope() {
+    // A `where`-binding of the definition is visible in the (deferred) body and
+    // is inlined at its use site — the same scoping plain definitions have.
+    let src = format!(
+        "{PROBE_IX}\nmk p v :: Ix i => Pair i i -> Float -> Float = rangeSize p + off where {{ off = 0.5; }};\nmain = mk (0,9) 0.0;"
+    );
+    assert_eq!(run(&src), 1.5);
+}
