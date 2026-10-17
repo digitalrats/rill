@@ -43,19 +43,19 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Run one tick: materialize the program inputs into the buffer table, execute
-/// the per-tick value track (whole-buffer `Value::Buffer` ops + value ops), and
-/// drain the outputs. Returns a `ProcessError` when the value track latched one
-/// (a collection capacity overflow — a user error, not a build bug).
-pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
+/// Run one whole-buffer value tick: execute the per-tick value track
+/// (whole-buffer `Value::Buffer` ops + value ops) and publish its outputs.
+/// Returns a `ProcessError` when the value track latched one (a collection
+/// capacity overflow — a user error, not a build bug).
+///
+/// The tick length is [`BUF`]: the whole-buffer value operations fill a full
+/// block, and the value state reads (`smooth`, delay lines) read `block_len`,
+/// so it must equal the length the block was written with.
+pub(crate) fn run_value_tick<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
-    inputs: &[&[T]],
-    outputs: &mut [&mut [T]],
 ) -> Result<(), ProcessError> {
     push_builtin_params(prog);
-    let n = outputs.first().map(|o| o.len()).unwrap_or(0);
-    debug_assert!(n <= BUF, "block length {n} exceeds BUF {BUF}");
-    prog.block_len = n;
+    prog.block_len = BUF;
 
     // Release the previous tick's value outputs BEFORE this tick allocates.
     // A value output pins its whole subtree across ticks (the output keeps the
@@ -69,24 +69,6 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
         }
     }
 
-    // Materialize the program inputs into the buffer table: input `k` lands in
-    // `buffers[input_buffers[k]]` (the value register `ValueReadInputs` builds
-    // its List from). The channel count is a runtime property — the number of
-    // inputs the backend actually drives this tick — and is immutable across
-    // ticks, so `cur_num_inputs` is latched on the first tick. Zero-pads to
-    // the tick length.
-    let n_in = inputs.len().min(prog.input_buffers.len());
-    prog.cur_num_inputs = n_in;
-    for (k, &buf) in prog.input_buffers.iter().take(n_in).enumerate() {
-        prog.buffers[buf].with_data_mut(|b| {
-            b[..n].fill(T::ZERO);
-            if let Some(inp) = inputs.get(k) {
-                let m = inp.len().min(n);
-                b[..m].copy_from_slice(&inp[..m]);
-            }
-        });
-    }
-
     // Value-track phase (per-tick): allocate/free the program's values. A
     // latched value error (a collection capacity overflow) is propagated only
     // AFTER the tick-end cleanup below — the registers, block-state swap and
@@ -96,44 +78,6 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
 
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
-
-    // Drain the whole-buffer signal outputs from the value-output registers:
-    // each holds a `Value::Buffer` whose handle's slice is copied into the
-    // external output slice.
-    let output_regs = std::mem::take(&mut prog.ir.value_output_regs);
-    for (i, &r) in output_regs.iter().enumerate() {
-        let buffer = match prog.value_regs.get(r).copied().flatten() {
-            Some(rr) => match prog.arena.get(rr) {
-                Some(Value::Buffer(idx)) => Some(*idx),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(idx) = buffer {
-            if let Some(out) = outputs.get_mut(i) {
-                let m = out.len().min(n);
-                prog.buffers[idx].with_data(|b| {
-                    out[..m].copy_from_slice(&b[..m]);
-                });
-            }
-        }
-    }
-    prog.ir.value_output_regs = output_regs;
-
-    // Drain the outputs written by `ValueWriteOutputList` this tick: each
-    // pending (output index → buffer handle) copies its buffer's slice into the
-    // external `outputs[index]` slice. The instruction is retained for the
-    // multichannel signal path only (no lowering site emits it since the IO
-    // surface moved to streams).
-    let pending = std::mem::take(&mut prog.pending_outputs);
-    for (idx, buf) in pending {
-        if let Some(out) = outputs.get_mut(idx) {
-            let m = out.len().min(n);
-            prog.buffers[buf].with_data(|b| {
-                out[..m].copy_from_slice(&b[..m]);
-            });
-        }
-    }
 
     // Copy the value outputs (one per value output channel) into the program's
     // stable `value_outputs` store. Each output is forced to WHNF first (a
@@ -172,10 +116,9 @@ pub fn run_block_mimo<T: Transcendental, const BUF: usize>(
     };
 
     // Release this tick's per-tick value registers now that the value outputs
-    // have been read (value outputs are copied after the block outputs above).
-    // The value-state is NOT cleared: it is the 1-tick delay
-    // store, and `ValueStateWrite` already drops the previous ref when
-    // overwriting a slot.
+    // have been read (they were copied above). The value-state is NOT cleared:
+    // it is the 1-tick delay store, and `ValueStateWrite` already drops the
+    // previous ref when overwriting a slot.
     prog.clear_value_regs();
     match latched {
         Some(Err(err)) => Err(err),
@@ -272,8 +215,7 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
 ) -> Result<(), ProcessError> {
     // Run one value-track pass with no signal outputs: `main`'s value (the IO
     // action) lands in `value_outputs[0]`.
-    let mut no_outputs: [&mut [T]; 0] = [];
-    run_block_mimo(prog, &[], &mut no_outputs)?;
+    run_value_tick(prog)?;
 
     let mut drops = std::mem::take(&mut prog.drops_scratch);
     let mark = drops.len();
@@ -1666,12 +1608,13 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
         }
         ValueInstr::ValueBufferLoadInput { dst, index } => {
-            // The input slice was already materialized by `process()` into
-            // `buffers[input_buffers[*index]]` (see `RillProgram::input_buffers`);
-            // this instruction only allocates the marker for the k-th input
-            // channel's buffer.
-            let buf = prog.input_buffers.get(*index).copied().unwrap_or(*dst);
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(buf));
+            // Allocate the `Value::Buffer` marker for the k-th program input
+            // channel. Program inputs are not driven on the retained value
+            // path (only the removed signal-transform surface materialized
+            // them), so the marker is never read; the buffer index is the
+            // destination register (the 1:1 signal lowering).
+            let _ = index;
+            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
         }
         ValueInstr::ValueBufferStateRead { dst, slot } => {
             let n = prog.block_len;
@@ -1772,66 +1715,6 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             let di = buffer_index(prog, *dst, base);
             prog.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
-        }
-        ValueInstr::ValueReadInputs { dst } => {
-            // Collect the first `cur_num_inputs` input-channel buffers into a
-            // first-class List. The instruction is retained for the multichannel
-            // signal path; no lowering site emits it.
-            // The channel count is latched at the first tick (the backend's
-            // channel count is immutable), so the List's length is stable.
-            let bufs: Vec<usize> = prog
-                .input_buffers
-                .iter()
-                .take(prog.cur_num_inputs)
-                .copied()
-                .collect();
-            let mut elems: Vec<ArenaRef> = Vec::with_capacity(bufs.len());
-            let mut ok = true;
-            for buf in bufs {
-                match alloc_owned(prog, Value::Buffer(buf)) {
-                    Some(r) => elems.push(r),
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            prog.value_regs[*dst + base] = if ok {
-                alloc_owned(prog, Value::List { elems })
-            } else {
-                None
-            };
-        }
-        ValueInstr::ValueReadInput { dst, index } => {
-            // Materialize `buffers[input_buffers[k]]` (the k-th input's
-            // buffer register) as the value's handle. Retained for the
-            // multichannel signal path; no lowering site emits it.
-            let buf = prog.input_buffers.get(*index).copied().unwrap_or(*dst);
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(buf));
-        }
-        ValueInstr::ValueWriteOutput { index, src } => {
-            // Record the (output index → buffer handle) pair for the tick-end
-            // drain. The source register holds a `Value::Buffer` whose handle's
-            // slice is copied into the external `outputs[index]` slice.
-            if let Some(r) = prog.value_regs.get(*src + base).copied().flatten() {
-                if let Some(Value::Buffer(idx)) = prog.arena.get(r) {
-                    prog.pending_outputs.push((*index, *idx));
-                }
-            }
-        }
-        ValueInstr::ValueWriteOutputList { src } => {
-            // Push: drain a List of Buffers into the outputs, one channel per
-            // element. Each list element is a `Value::Buffer`; record
-            // (channel, buffer) pairs for the tick-end drain.
-            if let Some(r) = prog.value_regs.get(*src + base).copied().flatten() {
-                if let Some(Value::List { elems }) = prog.arena.get(r).cloned() {
-                    for (ch, &e) in elems.iter().enumerate() {
-                        if let Some(Value::Buffer(idx)) = prog.arena.get(e) {
-                            prog.pending_outputs.push((ch, *idx));
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -4158,7 +4041,6 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
 mod closure_dispatch_tests {
     use crate::ir::{FragmentIr, FuncSig, Ir, ValueBlock, ValueInstr, ValueLayout, ValueTerm};
     use crate::program::RillProgram;
-    use rill_core::traits::MultichannelAlgorithm;
 
     #[test]
     fn call_dispatch_runs_fragment() {
@@ -4220,8 +4102,7 @@ mod closure_dispatch_tests {
             })],
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);
-        let mut out = [0.0f32; 2];
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(7));
     }
@@ -4316,8 +4197,7 @@ mod closure_dispatch_tests {
             ],
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);
-        let mut out = [0.0f32; 2];
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].expect("the lazy call must produce a value");
         assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(9));
     }
@@ -4327,7 +4207,6 @@ mod closure_dispatch_tests {
 mod value_track_tests {
     use super::*;
     use crate::ir::{Ir, StateLayout, ValueBlock, ValueInstr, ValueLayout, ValueTerm};
-    use rill_core::traits::MultichannelAlgorithm;
 
     fn prog_with(
         value_blocks: Vec<ValueBlock>,
@@ -4461,8 +4340,7 @@ mod value_track_tests {
             2,
             2,
         );
-        let mut out = [0.0f32; 2];
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         // Tick 1: the read saw the empty state (0.0); slot 0 was then written 7
         // and must survive until the next tick.
         assert_eq!(
@@ -4473,7 +4351,7 @@ mod value_track_tests {
             prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
             &crate::arena::Value::Float(0.0)
         );
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         // Tick 2: the read saw tick 1's 7 (the 1-tick delay) and latched it
         // into slot 1.
         assert_eq!(
@@ -4499,12 +4377,11 @@ mod value_track_tests {
             2,
             0,
         );
-        let mut out = [0.0f32; 4];
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         assert_eq!(prog.value_regs[0], None);
         assert_eq!(prog.value_regs[1], None);
         assert_eq!(prog.arena.live(), 0);
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         assert_eq!(prog.arena.live(), 0, "second tick leaks nothing");
     }
 
@@ -4897,7 +4774,6 @@ mod lazy_track_tests {
     use crate::ir::{
         FragmentIr, FuncSig, Ir, StateLayout, ValueBlock, ValueInstr, ValueLayout, ValueTerm,
     };
-    use rill_core::traits::MultichannelAlgorithm;
     use std::sync::Arc;
 
     /// The shared thunk-body fragment: computes `ValueConstInt { value: 7 }`.
@@ -5181,8 +5057,7 @@ mod lazy_track_tests {
         );
         let env = empty_env(&mut prog);
         prog.value_regs[0] = Some(env);
-        let mut out = [0.0f32; 1];
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert_eq!(
             prog.arena().get(v).unwrap(),

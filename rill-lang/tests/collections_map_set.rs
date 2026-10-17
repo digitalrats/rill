@@ -1,6 +1,5 @@
 //! End-to-end Map/Set tests: insert/lookup/member with structural ordering.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -9,8 +8,7 @@ fn map_insert_lookup_member() {
         r#"m = { "a": 1.0, "b": 2.0 }; main = case (lookup "a" m) of { Nothing -> 0.0; Just x -> x; };"#,
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -21,8 +19,7 @@ fn map_insert_lookup_member() {
 #[test]
 fn set_member_after_insert() {
     let mut prog = compile::<f32>("s = insert 5 (empty_set); main = member 5 s;").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -37,8 +34,7 @@ fn tail_and_filter_preserve_capacity() {
     // that tail/filter work end-to-end and preserve the source capacity.
     let mut prog =
         compile::<f32>(r"main = length (filter (\x -> x > 1.0) (tail [1.0, 2.0, 3.0]));").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -52,8 +48,7 @@ fn map_insert_new_key_grows_past_literal_entries() {
     // no longer a runtime error — the map grows.
     let mut prog =
         compile::<f32>("m = { \"a\": 1.0 }; main = length (insert \"b\" 2.0 m);").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -67,8 +62,7 @@ fn map_replace_on_duplicate_does_not_overflow() {
     // NOT error (only a NEW key past capacity overflows).
     let mut prog =
         compile::<f32>("m = insert \"a\" 2.0 { \"a\": 1.0 }; main = member \"a\" m;").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -82,8 +76,7 @@ fn set_insert_duplicate_does_not_overflow() {
     // no-op, not an overflow.
     let mut prog =
         compile::<f32>("s = insert 5 (insert 5 (empty_set)); main = member 5 s;").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -99,9 +92,8 @@ fn tail_shared_source_elements_survive_across_ticks() {
     // freed the head mid-tick would recycle its slot for 9.0 and dangle the
     // still-live source list, corrupting the pinned output on the next tick.
     let mut prog = compile::<f32>("l = [1.0, 2.0]; main = cons 9.0 (tail l);").unwrap();
-    let mut out = [0.0f32; 4];
     for tick in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         match prog.arena().get(v).unwrap() {
             rill_lang::arena::Value::List { elems, .. } => {
@@ -126,8 +118,7 @@ fn map_literal_entries_are_sorted_regardless_of_write_order() {
     // Out-of-order multi-key literals must be normalised to sorted order so the
     // binary-search invariant of insert/lookup/member holds.
     let mut prog = compile::<f32>("main = member \"a\" { \"b\": 1.0, \"a\": 2.0 };").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -156,8 +147,7 @@ fn compound_data_key_is_accepted() {
     let mut prog =
         compile::<f32>("k = [1, 2]; m = insert k 1.0 (empty_map); main = length [1.0, 2.0];")
             .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -173,8 +163,7 @@ fn newtype_key_has_derived_ord() {
         "newtype Hz = Float; k = Hz 440.0; m = insert k 1.0 (empty_map); main = length [1.0];",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -187,8 +176,7 @@ fn length_of_map_and_set() {
     // The IR doc says Length covers list/set/map — Map and Set must report
     // their entry counts, not silently return 0.
     let mut prog = compile::<f32>("main = length { \"a\": 1.0, \"b\": 2.0 };").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -196,8 +184,7 @@ fn length_of_map_and_set() {
     );
 
     let mut prog = compile::<f32>("main = length (insert 1.0 (insert 2.0 (empty_set)));").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -213,8 +200,7 @@ fn map_literal_value_type_matches_lookup() {
         r#"main = case (lookup "a" { "a": 1.0, "b": 2.0 }) of { Nothing -> 0.0; Just x -> x; };"#,
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -230,8 +216,7 @@ fn map_literal_value_type_is_actual_entry_type() {
         r#"data P = { x: Float, y: Float }; main = case (lookup "a" { "a": P { x: 1.0, y: 2.0 } }) of { Nothing -> 0.0; Just p -> p.x; };"#,
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),

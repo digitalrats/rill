@@ -2,7 +2,6 @@
 //! pipeline (infer → reduce → lower → executor) and the program's value
 //! outputs are exposed via `RillProgram::value_outputs`.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -14,8 +13,7 @@ fn record_flow_through_process() {
         "data Point = { x: Float, y: Float }; p = Point { x: 2.0, y: 3.0 }; main = p.x",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -33,9 +31,8 @@ fn value_output_survives_across_ticks() {
         "data Point = { x: Float, y: Float }; p = Point { x: 2.0, y: 3.0 }; main = p.x",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..2 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert_eq!(
             prog.arena().get(v).unwrap(),
@@ -53,9 +50,8 @@ fn compound_value_output_survives_ticks() {
     let mut prog =
         compile::<f32>("data Point = { x: Float, y: Float }; main = Point { x: 2.0, y: 3.0 }")
             .unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert!(
             matches!(
@@ -75,9 +71,8 @@ fn nested_record_output_survives_ticks() {
         "data Point = { x: Float, y: Float }; data Line = { a: Point, b: Point }; main = Line { a: Point { x: 1.0, y: 2.0 }, b: Point { x: 3.0, y: 4.0 } }",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert!(
             matches!(
@@ -95,9 +90,8 @@ fn sum_value_output_survives_ticks() {
     let mut prog =
         compile::<f32>("data Shape = Circle Float | Rect Float Float; main = Rect 1.0 2.0")
             .unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert!(
             matches!(
@@ -113,9 +107,8 @@ fn sum_value_output_survives_ticks() {
 fn newtype_value_output_survives_ticks() {
     // A Newtype output pins its inner value across ticks (1 + inner subtree).
     let mut prog = compile::<f32>("newtype Hz = Float; main = Hz 440.0").unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert!(
             matches!(

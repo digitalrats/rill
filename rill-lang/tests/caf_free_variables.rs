@@ -8,7 +8,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use rill_core::traits::{Algorithm, MultichannelAlgorithm, ProcessResult};
+use rill_core::traits::{Algorithm, ProcessResult};
 use rill_lang::builtin::BlockBuiltin;
 use rill_lang::builtin::Registry;
 use rill_lang::{compile, compile_with};
@@ -88,14 +88,12 @@ fn shared_oscillator_runs_one_instance_per_tick() {
     let mut prog = compile_with::<f32>("osc = sine 440.0 0.5 0.0; main = osc", &registry, 44100.0)
         .expect("program with a shared CAF compiles");
 
-    assert_eq!(prog.num_inputs(), 0);
     // Value model: a program has ONE value output. The old two-channel
     // `osc , osc` merge reduced to the single generator output.
-    assert_eq!(prog.num_outputs(), 1);
-
     let mut ch0 = [0.0f32; 8];
-    let mut outs = [&mut ch0[..]];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut outs).expect("first tick");
+    prog.run_value().expect("first tick");
+    assert_eq!(prog.value_outputs().len(), 1);
+    assert!(prog.copy_output_samples(0, &mut ch0));
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
@@ -107,8 +105,8 @@ fn shared_oscillator_runs_one_instance_per_tick() {
     // the first block (proving the accumulator advances) while still running
     // exactly one instance.
     let mut ch0b = [0.0f32; 8];
-    let mut outs = [&mut ch0b[..]];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut outs).expect("second tick");
+    prog.run_value().expect("second tick");
+    assert!(prog.copy_output_samples(0, &mut ch0b));
 
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_ne!(
@@ -138,11 +136,10 @@ fn user_function_captures_shared_free_variable() {
         .expect("user function capturing a CAF compiles");
 
     // Value model: one value output.
-    assert_eq!(prog.num_outputs(), 1);
-
     let mut out = [0.0f32; 8];
-    let mut outs = [&mut out[..]];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut outs).expect("tick");
+    prog.run_value().expect("tick");
+    assert_eq!(prog.value_outputs().len(), 1);
+    assert!(prog.copy_output_samples(0, &mut out));
 
     assert_eq!(
         calls.load(Ordering::SeqCst),

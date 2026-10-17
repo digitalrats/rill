@@ -1,6 +1,5 @@
 //! Arena capacity accounting for container-typed value subexpressions.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -8,9 +7,8 @@ fn container_outputs_pin_subtrees_across_ticks() {
     // A List output pins its full subtree across ticks; the arena bound must
     // include cap * elem slots or tick 2 exhausts the arena.
     let mut prog = compile::<f32>("main = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];").unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert!(matches!(
             prog.arena().get(v).unwrap(),
@@ -28,9 +26,8 @@ fn map_result_capacity_is_accounted() {
         r"xs = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0]; main = length (map (\x -> x * 2.0) xs);",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..2 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert_eq!(
             prog.arena().get(v).unwrap(),
@@ -48,9 +45,8 @@ fn map_build_and_pin_across_ticks() {
         "m = insert \"a\" 1.0 (insert \"x\" 2.0 (empty_map)); main = member \"x\" m;",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         let v = prog.value_outputs()[0].unwrap();
         assert_eq!(
             prog.arena().get(v).unwrap(),

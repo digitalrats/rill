@@ -3,7 +3,6 @@
 //! by value into an env `Record`, and `ValueCallFunc` dispatches a call with a
 //! temporary cell frame.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -11,8 +10,7 @@ fn lambda_captures_parent_param_by_value() {
     // adder = fn n -> fn x -> x + n;  add2 = adder 2.0;  main = add2 3.0 -> 5.0
     let mut prog =
         compile::<f32>(r"adder = \n -> \x -> x + n; add2 = adder 2.0; main = add2 3.0").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     let v = vo[0].unwrap();
     assert_eq!(
@@ -25,8 +23,7 @@ fn lambda_captures_parent_param_by_value() {
 fn lambda_captures_top_level_def() {
     // k = 2.0;  double = fn x -> x * k;  main = double 21.0 -> 42.0
     let mut prog = compile::<f32>(r"k = 2.0; double = \x -> x * k; main = double 21.0").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -40,9 +37,8 @@ fn closure_output_survives_ticks() {
     // must not exhaust the fixed arena (the previous tick's env is released at
     // the start of the next tick).
     let mut prog = compile::<f32>(r"k = 2.0; double = \x -> x * k; main = double").unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
             &rill_lang::arena::Value::Callable { cell: None, .. } => {}
             other => panic!("expected eager Callable value, got {other:?}"),
@@ -56,8 +52,7 @@ fn nested_capture_produces_constant_output() {
     // `addn 3.0 4.0` fully applies the curried definition: unary β-reduction
     // substitutes both λ-parameters and folds to the constant `4.0 + 3.0`.
     let mut prog = compile::<f32>(r"addn = \n -> \x -> x + n; main = addn 3.0 4.0").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -74,9 +69,8 @@ fn closure_call_does_not_leak_across_ticks() {
     // program panics with "value arena capacity exhausted". Run 20+ ticks.
     let mut prog =
         compile::<f32>(r"adder = \n -> \x -> x + n; add2 = adder 2.0; main = add2 3.0").unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..20 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
     }
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(

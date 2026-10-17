@@ -1,7 +1,7 @@
 //! Serialization for modular system documents.
 //!
 //! A [`ModularSystemDef`] describes a modular processing system — one or more
-//! racks, each with a signal graph and control modules — in a single
+//! racks, each with a rill-lang program and control modules — in a single
 //! self-contained JSON document.
 
 use std::collections::HashMap;
@@ -9,20 +9,19 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use rill_core::traits::ParamValue;
-use rill_lang::graph::serialization::GraphDef;
 use rill_patchbay::serialization::{AutomatonDef, ClockDef, MappingDef, SensorDef, ServoDef};
 
 // ============================================================================
 // ModuleDef
 // ============================================================================
 
-/// A rack module — Servo (automaton → parameter), Sensor, Custom (factory),
-/// or Graph (signal graph with its own I/O loop).
+/// A rack module — Servo (automaton → parameter), Sensor, Clock, or Custom
+/// (factory).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModuleDef {
     /// MIDI clock output module.
     Clock(ClockDef),
-    /// Servo — bridges an automaton (LFO, envelope, etc.) to a graph parameter.
+    /// Servo — bridges an automaton (LFO, envelope, etc.) to a program parameter.
     Servo(ServoDef),
     /// Sensor — external input source (MIDI, OSC, etc.).
     Sensor(SensorDef),
@@ -34,28 +33,29 @@ pub enum ModuleDef {
         #[serde(default)]
         params: HashMap<String, ParamValue>,
     },
-    /// Signal graph — owns the I/O loop.
-    Graph {
-        /// The embedded signal graph definition.
-        graph: GraphDef,
-    },
 }
 
 // ============================================================================
 // RackDef
 // ============================================================================
 
-/// A modular processing rack — one signal graph + its control modules.
+/// A modular processing rack — one rill-lang program + its control modules.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RackDef {
     /// Human-readable rack identifier.
     pub name: String,
-    /// Signal graph topology.
-    pub graph: GraphDef,
+    /// rill-lang program source: `main : (String…) -> IO ()`.
+    ///
+    /// The program is compiled and executed to completion by the IO runner on
+    /// the rack's own thread.
+    pub program: String,
+    /// Arguments bound to `main`'s String λ-parameters, in order.
+    #[serde(default)]
+    pub args: Vec<String>,
     /// Control automatons (LFO, envelope, sequencer) powering servos.
     #[serde(default)]
     pub automatons: Vec<AutomatonDef>,
-    /// Rack modules — servos, sensors, and custom modules.
+    /// Rack modules — servos, sensors, clocks, and custom modules.
     #[serde(default)]
     pub modules: Vec<ModuleDef>,
     /// Parameter-to-UI/controller mappings.
@@ -66,11 +66,12 @@ pub struct RackDef {
 }
 
 impl RackDef {
-    /// Create a new rack definition with the given name and signal graph.
-    pub fn new(name: impl Into<String>, graph: GraphDef) -> Self {
+    /// Create a new rack definition with the given name and program source.
+    pub fn new(name: impl Into<String>, program: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            graph,
+            program: program.into(),
+            args: Vec::new(),
             automatons: Vec::new(),
             modules: Vec::new(),
             mappings: Vec::new(),
@@ -92,7 +93,7 @@ pub struct ModularSystemDef {
     pub sample_rate: f32,
     /// Signal block size in samples.
     pub block_size: usize,
-    /// Processing racks, each with its own signal graph and control modules.
+    /// Processing racks, each with its own program and control modules.
     pub racks: Vec<RackDef>,
     /// Optional human-readable description of the system.
     #[serde(default, skip_serializing_if = "Option::is_none")]

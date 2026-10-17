@@ -1,7 +1,6 @@
 //! Higher-order function combinators: functions applied to functions,
 //! static call-depth rejection of recursion, and fixed-shape container mapping.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -11,8 +10,7 @@ fn twice_applies_twice() {
         r"twice = \f -> \x -> f (f x); double = \x -> x * 2.0; main = twice double 3.0",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -56,8 +54,7 @@ fn map_combinator_over_fixed_shape() {
          main = pair_map double (Pair { x: 1.0, y: 2.0 })",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Record(fields) => {
@@ -78,9 +75,8 @@ fn compose_three_times_does_not_exhaust_arena() {
         r"apply3 = \f -> \x -> f (f (f x)); inc = \x -> x + 1.0; main = apply3 inc 0.0",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..10 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
     }
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(

@@ -4,7 +4,6 @@
 //! These tests exercise the whole pipeline (infer → reduce → lower → executor)
 //! through `compile`, asserting the resulting value outputs.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::arena::Value;
 use rill_lang::compile;
 
@@ -12,8 +11,7 @@ use rill_lang::compile;
 /// value (cloned out of the program's arena).
 fn run_value_output(src: &str) -> Value {
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let outputs = prog.value_outputs();
     assert_eq!(outputs.len(), 1, "expected exactly one value output");
     let v = outputs[0].expect("the value output must be bound");
@@ -38,8 +36,7 @@ fn two_runst_regions_are_isolated() {
         "{-# MODE complete #-}\nmain = Pair { first: runST (\\s -> do { r <- newSTRef 1.0; readSTRef r }), second: runST (\\s -> do { r <- newSTRef 2.0; readSTRef r }) };",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].expect("the value output must be bound");
     let fields = match prog.arena().get(v).unwrap() {
         Value::Record(fields) => fields.clone(),

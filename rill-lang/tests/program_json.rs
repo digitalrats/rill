@@ -1,5 +1,5 @@
 //! `Program` ↔ JSON round-trip contract: the AST must survive serialization
-//! and deserialization unchanged, and a deserialized AST must still compile.
+//! and deserialization unchanged.
 
 use rill_lang::ast::Program;
 use rill_lang::program_serde::{program_from_json, program_to_json};
@@ -64,18 +64,4 @@ fn roundtrips_io_do_form() {
 fn roundtrips_mode_pragma() {
     // Mode pragma values are lowercase (`strict` / `complete`).
     roundtrip("{-# MODE complete #-} main = 1.0");
-}
-
-#[test]
-fn roundtripped_ast_compiles() {
-    let src = "main = 1.0 * 0.5";
-    let program = parse(src);
-    let json = program_to_json(&program).unwrap();
-    let back: Program = program_from_json(&json).unwrap();
-
-    let registry = rill_lang::builtin::Registry::<f32>::new();
-    rill_lang::compile_program::<f32, 256>(&program, &registry, 44_100.0)
-        .expect("the original AST must compile");
-    rill_lang::compile_program::<f32, 256>(&back, &registry, 44_100.0)
-        .expect("the round-tripped AST must compile");
 }

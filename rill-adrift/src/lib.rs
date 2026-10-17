@@ -36,7 +36,7 @@ pub mod lang_builtins;
 /// Centralised node type registration for the Rill ecosystem.
 pub mod registration;
 
-/// Constructor registry for I/O backends (used by [`modular`]).
+/// Constructor registry for I/O backends (used by I/O applications).
 pub mod backend_factory;
 
 pub mod modular;

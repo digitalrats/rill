@@ -1,4 +1,3 @@
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::mode::Mode;
 use rill_lang::{compile, compile_with_mode};
 
@@ -61,8 +60,7 @@ fn complete_recursive_countup_runtime() {
     let src = "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0)\nmain = countup 0.0";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 3.0, "countup 0 should yield 3.0"),
@@ -80,8 +78,7 @@ headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = headv (tail (tail (tail (from 10.0))));";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
@@ -125,8 +122,7 @@ fn complete_from_produce_cons() {
     let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nmain = from 10.0;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
@@ -144,8 +140,7 @@ fn complete_lazy_cons_finite() {
     let src = "{-# MODE complete #-}\nmain = cons 10.0 (list);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
@@ -163,8 +158,7 @@ fn complete_from_head() {
     let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nmain = head (from 10.0);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Sum(0, payload) => {
@@ -182,8 +176,7 @@ fn complete_def_cons_no_recursion() {
     let src = "{-# MODE complete #-}\ngen n = cons n (list);\nmain = gen 10.0;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
@@ -206,8 +199,7 @@ sub n = cons (n - 1.0) (list);
 main = case (head (sub -2.0)) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, -3.0, "-2.0 - 1.0 = -3.0"),
@@ -221,8 +213,7 @@ fn complete_countdown_with_minus() {
     let src = "{-# MODE complete #-}\ncountdown n = if n == 0.0 then 0.0 else countdown (n - 1.0);\nmain = countdown 3.0;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "countdown 3 -> 0.0"),
@@ -238,8 +229,7 @@ fn complete_mutual_recursion_runtime() {
     let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 4.0;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "even 4 -> 1.0"),
@@ -258,8 +248,7 @@ nth xs k = if k == 0.0 then case (head xs) of { Nothing -> 0.0; Just x -> x } el
 main = nth (from 10.0) 2.0;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
@@ -279,8 +268,7 @@ take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0;
 main = take 2.0 (from 10.0);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
@@ -303,8 +291,7 @@ headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = let xs = from 10.0 in headv (tail (tail xs));";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
@@ -322,8 +309,7 @@ fn complete_fibs_self_referential_local() {
     let src = "{-# MODE complete #-}\nfibs = cons 0.0 (cons 1.0 fibs);\nmain = fibs;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
@@ -347,8 +333,7 @@ fibs = cons 0.0 (cons 1.0 (zipWith (\a -> \b -> a + b) fibs (tail fibs)));
 main = case (head (tail (tail (tail (tail fibs))))) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
@@ -366,8 +351,7 @@ take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0;
 main = take 3.0 (repeat 42.0);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
@@ -388,8 +372,7 @@ take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0;
 main = take 4.0 (iterate (\x -> x + 1.0) 0.0);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
@@ -410,8 +393,7 @@ a = a;
 main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Bottom => {}
@@ -424,8 +406,7 @@ fn complete_mutual_recursion_evens_odd() {
     let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 5.0;";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "even 5 -> 0.0"),
@@ -443,8 +424,7 @@ headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = headv (let x = from 10.0 in x);";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 10.0, "shared let thunk -> 10.0"),
@@ -463,8 +443,7 @@ odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
 main = if 1.0 == 2.0 then even 4.0 else even 3.0;"#;
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "false arm: even 3 -> 0.0"),
@@ -480,8 +459,7 @@ odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
 main = if 1.0 == 1.0 then even 4.0 else even 3.0;"#;
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "true arm: even 4 -> 1.0"),
@@ -499,8 +477,7 @@ b = a;
 main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x }";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Bottom => {}
@@ -516,8 +493,7 @@ fn deep_recursion_is_latched_error_not_panic() {
     let src = "{-# MODE complete #-}\ncountdown n = if n == 0.0 then 0.0 else countdown (n - 1.0)\nmain = countdown 2000.0";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let r = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let r = prog.run_value();
     match r {
         Ok(()) => panic!("deep recursion must exhaust the pre-allocated budget and latch an error"),
         Err(e) => {

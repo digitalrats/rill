@@ -1,7 +1,6 @@
 //! Built-in category typeclasses: `Functor`, `Applicative`, `Monad`, `Monoid`
 //! registered via the language prelude, with compile-time inline resolution.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
@@ -25,8 +24,7 @@ fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 
 #[test]
 fn functor_fmap_over_list() {
     let mut prog = run(r"main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0]);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 3);
 }
 
@@ -34,24 +32,21 @@ fn functor_fmap_over_list() {
 fn functor_fmap_over_maybe() {
     let mut prog =
         run(r"main = case (fmap (\x -> x + 1.0) (Just 1.0)) of { Nothing -> 0.0; Just x -> x; };");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 2.0);
 }
 
 #[test]
 fn concat_map_splices_lists() {
     let mut prog = run(r"main = length (concat_map (\x -> [x, x]) [1.0, 2.0]);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 4);
 }
 
 #[test]
 fn append_list_and_concat_string() {
     let mut prog = run("main = length (append_list [1.0, 2.0] [3.0, 4.0, 5.0]);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 5);
 }
 
@@ -61,8 +56,7 @@ fn monad_bind_maybe_short_circuits_nothing() {
     let mut prog = run(
         r"main = case (bind (Nothing) (\x -> Just (x + 1.0))) of { Nothing -> 0.0; Just x -> x; };",
     );
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 0.0);
 }
 
@@ -71,32 +65,28 @@ fn monad_bind_maybe_chains() {
     let mut prog = run(
         r"main = case (bind (Just 1.0) (\x -> Just (x + 2.0))) of { Nothing -> 0.0; Just x -> x; };",
     );
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 3.0);
 }
 
 #[test]
 fn monad_bind_list_concat() {
     let mut prog = run(r"main = length (bind [1.0, 2.0] (\x -> [x, x]));");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 4);
 }
 
 #[test]
 fn monoid_mappend_float() {
     let mut prog = run("main = mappend 1.5 2.5;");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 4.0);
 }
 
 #[test]
 fn monoid_mappend_list() {
     let mut prog = run("main = length (mappend [1.0] [2.0, 3.0]);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 3);
 }
 
@@ -104,24 +94,21 @@ fn monoid_mappend_list() {
 fn monoid_mempty_right_identity() {
     // mempty is nullary: the selector argument's type picks the instance.
     let mut prog = run("main = length (mappend [1.0, 2.0] mempty);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 2);
 }
 
 #[test]
 fn monoid_mempty_left_identity() {
     let mut prog = run("main = length (mappend mempty [1.0, 2.0]);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 2);
 }
 
 #[test]
 fn monoid_mempty_float() {
     let mut prog = run("main = mappend mempty 3.5;");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 3.5);
 }
 
@@ -134,8 +121,7 @@ fn applicative_pure_auto_derived_from_monad() {
         main = case (bind (Just 1.0) (\x -> pure x)) of { Nothing -> 0.0; Just z -> z; };
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 1.0);
 }
 
@@ -145,8 +131,7 @@ fn functor_fmap_auto_derived_from_monad() {
     // explicit; verify a Monad-derived Functor path works for a user check.
     let mut prog =
         run(r"main = case (fmap (\x -> x * 10.0) (Just 2.0)) of { Nothing -> 0.0; Just x -> x; };");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 20.0);
 }
 
@@ -155,8 +140,7 @@ fn explicit_instance_wins_over_derived() {
     // The prelude's explicit `instance Functor List` (fmap = map) must win over
     // any derived Functor — verify the list fmap still works.
     let mut prog = run(r"main = length (fmap (\x -> x) [1.0, 2.0, 3.0]);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_int(&prog, 0), 3);
 }
 
@@ -168,8 +152,7 @@ fn do_notation_binds_and_returns() {
         main = case (do { x <- mx; y <- my; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 3.0);
 }
 
@@ -180,7 +163,6 @@ fn do_notation_let_and_bare_statement() {
         main = case (do { x <- mx; let y = 2.0; Just 0.0; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 3.0);
 }

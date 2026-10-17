@@ -1,6 +1,5 @@
 //! SP-3a: FFI layer — foreign fn declarations + FixedBuffer/Buffer types.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 use rill_lang::types::ty::TypeEnv;
 
@@ -31,8 +30,7 @@ fn buffer_typeclass_registers_from_signal_prelude() {
         main = 1.0;
     "#;
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
 }
 
 #[test]
@@ -371,9 +369,10 @@ fn foreign_fn_runs_end_to_end() {
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert_eq!(out, [0.5, 0.5, 0.5, 0.5]);
 }
 
@@ -386,7 +385,7 @@ fn foreign_fn_not_registered_is_compile_error() {
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
-    let err = match rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1) {
+    let err = match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
         Err(e) => e,
         Ok(_) => panic!("expected a compile error for an unregistered foreign builtin"),
     };
@@ -841,9 +840,10 @@ fn analog_moog_ffi_end_to_end() {
     register_foreign_model(&mut ffi);
 
     let src = r#"main = analog_moog 500.0 0.7 (square 0.0 1.0 0.0)"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "analog_moog output must be finite, got {out:?}"
@@ -869,9 +869,10 @@ fn eq_parametric_ffi_end_to_end() {
     let src = r#"
         main = eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] } (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 4]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "eq_parametric output must be finite, got {out:?}"
@@ -938,9 +939,10 @@ fn digital_effects_ffi_end_to_end() {
     let src = r#"
         main = delay 0.1 0.3 0.5 (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     // Fresh delay line: wet = 0, so the first block is the dry path at mix 0.5.
     assert!(
         (out[0] - 0.5).abs() < 1e-6,
@@ -962,9 +964,10 @@ fn digital_effects_distortion_runs() {
     let src = r#"
         main = distortion 2.0 1.0 (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     // Soft-clip: tanh(2.0) with output gain 1.0.
     let expected = 2.0f32.tanh();
     assert!(
@@ -994,7 +997,7 @@ fn digital_effects_delay_live_param_reaches_algorithm() {
     let src = r#"
         main = delay ?t 0.0 1.0 (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
 
     // Default t = 0.0 clamps to 0.01 s → 441 samples at 44.1 kHz.
     let t_idx = prog.param_index("t").expect("param `t`");
@@ -1002,9 +1005,9 @@ fn digital_effects_delay_live_param_reaches_algorithm() {
 
     // Fill the delay line (3 blocks of 256 = 768 samples > 441).
     let mut out = [0.0f32; 256];
-    let ones = [1.0f32; 256];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[&ones], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
+        assert!(prog.copy_output_samples(0, &mut out));
     }
     // The wet tap 441 samples back reads a written region: pure wet output.
     assert!(
@@ -1016,7 +1019,8 @@ fn digital_effects_delay_live_param_reaches_algorithm() {
     // Lengthen the delay via SetParameter → the tap moves to a never-written
     // region of the delay line → the pure-wet output drops to 0.0.
     prog.set_param(t_idx, ParamValue::Float(0.3));
-    MultichannelAlgorithm::process(&mut prog, &[&ones], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out[0].abs() < 1e-6,
         "after SetParameter(t, 0.3) the tap must move: out[0]={}",
@@ -1037,9 +1041,10 @@ fn digital_effects_limiter_runs() {
     let src = r#"
         main = limiter (-6.0) 0.1 (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     // Lookahead warm-up: the limiter passes the first `lookahead_samples` (220)
     // unchanged, so the 4-sample block is a passthrough.
     assert_eq!(out, [1.0, 1.0, 1.0, 1.0]);
@@ -1059,9 +1064,10 @@ fn generators_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = sine 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     // Sine at t=0, amp 1.0, phase 0.0: starts at 0.0 and rises.
     assert_eq!(out[0], 0.0);
     // Sample 1 must follow sin(2π·f·n/sr + phase) — the oscillator's actual
@@ -1087,9 +1093,10 @@ fn saw_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = saw 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         (out[0] + 1.0).abs() < 1e-6,
         "saw at phase 0 must be -amp: out[0]={}",
@@ -1110,9 +1117,10 @@ fn square_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = square 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         (out[0] - 1.0).abs() < 1e-6,
         "square at phase 0 must be +amp: out[0]={}",
@@ -1132,9 +1140,10 @@ fn triangle_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = triangle 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         (out[0] - 1.0).abs() < 1e-6,
         "triangle at phase 0 must be +amp: out[0]={}",
@@ -1156,9 +1165,10 @@ fn noise_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = noise 1.0 0.5;"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 0, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 64];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out.iter().any(|&s| s != 0.0),
         "noise must produce non-zero samples, got all zeros"
@@ -1178,9 +1188,10 @@ fn leaky_integrator_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = leaky_integrator 0.5 (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     let expected = [1.0, 1.5, 1.75, 1.875];
     assert!(
         out.iter()
@@ -1207,9 +1218,10 @@ fn lowpass_ffi_end_to_end() {
     rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"main = lowpass 1000.0 0.7 (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 64];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out.iter().all(|s| s.is_finite()),
         "lowpass output must be finite, got {out:?}"
@@ -1234,9 +1246,10 @@ fn biquad_ffi_end_to_end() {
     rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"main = biquad 0.0 1000.0 0.7 0.0 (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 64];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out.iter().all(|s| s.is_finite()),
         "biquad output must be finite, got {out:?}"
@@ -1260,9 +1273,10 @@ fn integrator_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = integrator (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0, 1.0, 1.0, 1.0]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
 }
 
@@ -1284,7 +1298,8 @@ fn tape_loop_read_head_compiles_and_runs() {
     let src = r#"main = read_head (tape_loop 1024) 0.1;"#;
     let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 64];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "read_head on a fresh tape must be finite, got {out:?}"
@@ -1311,7 +1326,9 @@ fn inline_tape_loop_calls_are_distinct_tapes() {
     let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut o1 = [0.0f32; 8];
     let mut o2 = [1.0f32; 8];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut o1, &mut o2]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut o1));
+    assert!(prog.copy_output_samples(1, &mut o2));
     assert!(
         o1.iter().all(|v| *v == 0.0) && o2.iter().all(|v| *v == 0.0),
         "fresh inline tapes must read zeros, got {o1:?} and {o2:?}"
@@ -1419,9 +1436,10 @@ fn eq_parametric_ffi_two_bands() {
             { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
         ] } (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi, 44100.0, 1, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 4]], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "2-band eq_parametric output must be finite, got {out:?}"

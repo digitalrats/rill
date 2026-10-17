@@ -2,8 +2,7 @@
 //!
 //! The AST ([`Program`]) is the canonical serialized form of a rill-lang
 //! program: [`program_to_json`] emits pretty-printed JSON and
-//! [`program_from_json`] restores an identical [`Program`], which can then be
-//! compiled directly (e.g. via `crate::compile_program`).
+//! [`program_from_json`] restores an identical [`Program`].
 
 use crate::ast::Program;
 

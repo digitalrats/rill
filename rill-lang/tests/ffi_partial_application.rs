@@ -1,7 +1,6 @@
 //! FFI partial application (currying): `onepole 200.0 0.7 : Buffer -> Buffer`
 //! is a first-class `Func` value; scalars fold at build, the Buffer stays open.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
 
@@ -18,10 +17,10 @@ fn partial_application_is_first_class() {
     // input list compiles and runs (a signal-arrow typing would have arity
     // 1->1 and fail the value-track map application).
     let src = r#"fp = onepole 200.0 0.7; main = fp (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi_channels::<f32>(src, &ffi(), 44100.0, 1, 1).unwrap();
-    let ones = [1.0f32; 64];
+    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi(), 44100.0).unwrap();
     let mut out = [0.0f32; 64];
-    MultichannelAlgorithm::process(&mut prog, &[&ones], &mut [&mut out[..]]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert!(out.iter().all(|v| v.is_finite()));
 }
 
@@ -31,10 +30,10 @@ fn partial_application_matches_direct_call() {
     let direct = r#"main = onepole 200.0 0.7 (square 0.0 1.0 0.0);"#;
     let via_fp = r#"fp = onepole 200.0 0.7; main = fp (square 0.0 1.0 0.0);"#;
     let run = |src: &str| -> Vec<f32> {
-        let mut prog =
-            rill_lang::compile_with_ffi_channels::<f32>(src, &ffi(), 44100.0, 1, 1).unwrap();
+        let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi(), 44100.0).unwrap();
         let mut out = [0.0f32; 64];
-        MultichannelAlgorithm::process(&mut prog, &[&[1.0f32; 64]], &mut [&mut out[..]]).unwrap();
+        prog.run_value().unwrap();
+        assert!(prog.copy_output_samples(0, &mut out));
         out.to_vec()
     };
     let a = run(direct);

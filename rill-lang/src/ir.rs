@@ -618,17 +618,6 @@ pub enum ValueInstr {
         /// Program input index.
         index: usize,
     },
-    /// Collect ALL program input channels into a first-class `List Buffer`
-    /// value (the retired input-materialization instruction). The number of
-    /// channels is a
-    /// runtime property — fixed at the first tick by the backend, then
-    /// immutable — so the List's length is determined at run time, not at
-    /// compile time. Buffers for the channels are lazily materialized on the
-    /// first tick (see `RillProgram::input_buffers`).
-    ValueReadInputs {
-        /// Destination value register (holds `Value::List` of `Value::Buffer`).
-        dst: usize,
-    },
     /// Read the previous tick's block-state slot into the destination buffer.
     ValueBufferStateRead {
         /// Destination value register (holds `Value::Buffer(dst)`).
@@ -723,30 +712,6 @@ pub enum ValueInstr {
         dst: usize,
         /// Index into the persistent main-cell store.
         cell: usize,
-    },
-    /// Materialize the k-th program input buffer as a `Value::Buffer` value
-    /// (the input slice is copied into the buffer table by `process()` before
-    /// the value track runs).
-    ValueReadInput {
-        /// Destination value register (holds `Value::Buffer(dst)`).
-        dst: usize,
-        /// Program input index.
-        index: usize,
-    },
-    /// Write a `Value::Buffer` into the k-th program output (the runtime
-    /// drains it into the external `outputs[k]` slice at tick end).
-    ValueWriteOutput {
-        /// Program output index.
-        index: usize,
-        /// Source value register (holds `Value::Buffer`).
-        src: usize,
-    },
-    /// Write a List of Buffers into the program outputs (push): the runtime
-    /// drains each list element (a `Value::Buffer`) into `outputs[k]` at tick
-    /// end, one channel per element.
-    ValueWriteOutputList {
-        /// Source value register (holds `Value::List` of `Value::Buffer`).
-        src: usize,
     },
 }
 

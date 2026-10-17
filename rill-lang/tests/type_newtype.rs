@@ -2,7 +2,6 @@
 //! types, and newtype wrappers construct and flow through the value track to
 //! `RillProgram::value_outputs` as `Value::Newtype`.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -10,8 +9,7 @@ fn newtype_construct_runs() {
     // `h = Hz 440.0` is a newtype constructor; the value output holds a
     // `Newtype` wrapping the inner `Float(440.0)`.
     let mut prog = compile::<f32>("newtype Hz = Float; h = Hz 440.0; main = h").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -36,8 +34,7 @@ fn type_synonym_substitutes() {
         "type Angles = Float; data Point = { x: Angles, y: Angles }; p = Point { x: 1.0, y: 2.0 }; main = p.x",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -53,8 +50,7 @@ fn type_declaration_order_does_not_matter() {
         "data Volt = { v: Scale }; type Scale = Float; v = Volt { v: 12.0 }; main = v.v",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();

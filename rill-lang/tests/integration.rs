@@ -1,4 +1,3 @@
-use rill_core::traits::{Algorithm, MultichannelAlgorithm};
 use rill_lang::compile;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
@@ -7,8 +6,7 @@ use rill_lang::register;
 /// as a list of floats.
 fn run_values(src: &str) -> Vec<f64> {
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 0];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out[..]]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::List { elems } => elems
@@ -40,7 +38,8 @@ fn math_builtin_abs() {
         rill_lang::compile_with_ffi::<f32>("main = abs (square 0.0 (-1.0) 0.0)", &ffi, 44100.0)
             .unwrap();
     let mut out = [0.0f32; 4];
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert_eq!(out, [1.0, 1.0, 1.0, 1.0]);
 }
 

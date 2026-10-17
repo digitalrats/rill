@@ -1,13 +1,11 @@
 //! Runtime `match`: dispatch on non-static scrutinees, literal/wildcard/var
 //! patterns, nested patterns, and guards.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 fn run_float(src: &str) -> f64 {
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(f) => *f,
@@ -111,8 +109,7 @@ fn match_over_sum_param_switches_with_setparameter() {
         r"main = case (if ?g > 0.5 then Just 1.0 else Nothing) of { Just x -> x; Nothing -> 0.0; };",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -120,7 +117,7 @@ fn match_over_sum_param_switches_with_setparameter() {
     );
     let idx = prog.param_index("g").unwrap();
     prog.set_param(idx, rill_core::traits::ParamValue::Float(1.0));
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),

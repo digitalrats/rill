@@ -6360,9 +6360,10 @@ pub fn lower_with_cafs_mode(
     lower_program_with_channels(tp, sample_rate, cafs, mode, 0, None)
 }
 
-/// Like [`lower_with_cafs_mode`], with an explicit program input-channel count
-/// known before launch (the retained `MultichannelAlgorithm::process` path
-/// materializes that many input channels).
+/// Like [`lower_with_cafs_mode`], with an explicit program input- and
+/// output-channel count known before lowering. `input_channels` sizes the
+/// program's input table in the IR; nothing drives those channels on the
+/// retained value path.
 pub fn lower_program_with_channels(
     tp: &TypedProgram,
     sample_rate: f32,
@@ -6391,10 +6392,9 @@ pub fn lower_program_with_channels(
     // into persistent main cells. They are NOT control parameters: `?name` /
     // `SetParameter` remains for dynamic builtin params only.
     //
-    // An explicit `input_channels` still sizes the program's input table (the
-    // retained `MultichannelAlgorithm::process` path materializes that many
-    // channels); the value-track body reaches them only through the legacy
-    // signal surface, which this task removes.
+    // An explicit `input_channels` still sizes the program's input table in
+    // the IR; the value-track body no longer reaches those channels (the
+    // signal-transform surface is gone).
     let num_inputs = input_channels;
     let mut lw = Lowerer {
         defs,

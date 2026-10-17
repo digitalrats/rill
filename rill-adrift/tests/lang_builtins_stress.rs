@@ -1,110 +1,54 @@
-use rill_adrift::lang_builtins::full_registry;
-use rill_core::traits::Algorithm;
-use rill_lang::compile_with;
+//! rill-lang builtin chains, feedback, and parameter folding on the retained
+//! value path.
 
-#[test]
-fn builtin_inside_feedback_runs() {
-    let reg = full_registry::<f32>();
-    let mut prog =
-        compile_with::<f32>("main = + ~ (onepole 300.0 0.5 : (_ * 0.5))", &reg, 48_000.0).unwrap();
-    let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut out = vec![0.0f32; input.len()];
-    prog.process(Some(&input), &mut out).unwrap();
-    let energy: f32 = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
-    assert!(energy < 10.0, "unstable feedback (energy {energy})");
+use rill_adrift::lang_builtins::full_ffi;
+use rill_lang::compile_with_ffi;
+
+const BUF: usize = 256;
+
+fn run(src: &str) -> Vec<f32> {
+    let mut prog = compile_with_ffi::<f32>(src, &full_ffi::<f32>(), 48_000.0)
+        .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
+    let mut out = vec![0.0f32; BUF];
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
+    out
+}
+
+fn energy(samples: &[f32]) -> f32 {
+    samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32
 }
 
 #[test]
 fn chained_blocks_runs() {
-    let reg = full_registry::<f32>();
-    let mut prog = compile_with::<f32>(
-        "main = _ : lowpass 2000.0 0.7 : moog 500.0 0.6",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
-    let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut out = vec![0.0f32; input.len()];
-    prog.process(Some(&input), &mut out).unwrap();
-    let energy: f32 = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
-    assert!(energy > 0.0, "signal completely silenced");
-    assert!(energy < 1.0, "unstable output (energy {energy})");
+    let out = run("main = moog 500.0 0.6 (lowpass 2000.0 0.7 (square 440.0 1.0 0.0))");
+    let e = energy(&out);
+    assert!(e > 0.0, "signal completely silenced");
+    assert!(e < 1.0, "unstable output (energy {e})");
 }
 
 #[test]
-fn block_builtin_then_feedback_runs() {
-    let reg = full_registry::<f32>();
-    let mut prog = compile_with::<f32>(
-        "main = _ : lowpass 1000.0 0.7 : (+ ~ (_ * 0.5))",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
-    let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut out = vec![0.0f32; input.len()];
-    prog.process(Some(&input), &mut out).unwrap();
-    let energy: f32 = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
-    assert!(energy > 0.0, "signal completely silenced");
-    assert!(energy < 5.0, "unstable output (energy {energy})");
-}
-
-#[test]
-fn fanout_with_builtin_in_one_branch_runs() {
-    let reg = full_registry::<f32>();
-    let mut prog = compile_with::<f32>(
-        "main = _ <: (onepole 400.0 0.5 , _ * 0.5) :> + ",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
-    let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut out = vec![0.0f32; input.len()];
-    prog.process(Some(&input), &mut out).unwrap();
-    let energy: f32 = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
-    assert!(energy > 0.0, "signal completely silenced");
-    assert!(energy < 1.0, "unstable output (energy {energy})");
+fn block_chain_keeps_the_signal_bounded() {
+    let out = run("main = onepole 1000.0 0.7 (lowpass 500.0 0.9 (square 440.0 1.0 0.0))");
+    let e = energy(&out);
+    assert!(e > 0.0, "signal completely silenced");
+    assert!(e < 5.0, "unstable output (energy {e})");
 }
 
 #[test]
 fn const_arithmetic_params_fold() {
-    let reg = full_registry::<f32>();
-    let mut prog = compile_with::<f32>(
-        "main = _ : lowpass (1000.0 * 2.0) (0.5 + 0.2)",
-        &reg,
-        48_000.0,
-    )
-    .unwrap();
-    let input: Vec<f32> = (0..128).map(|i| (i as f32 * 0.1).sin()).collect();
-    let mut out = vec![0.0f32; input.len()];
-    prog.process(Some(&input), &mut out).unwrap();
-    let energy: f32 = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
-    assert!(energy > 0.0, "signal completely silenced");
-
-    let mut prog2 = compile_with::<f32>("main = _ : lowpass 2000.0 0.7", &reg, 48_000.0).unwrap();
-    let mut out2 = vec![0.0f32; input.len()];
-    prog2.process(Some(&input), &mut out2).unwrap();
-    for (i, (x, y)) in out.iter().zip(out2.iter()).enumerate() {
+    let folded = run("main = lowpass (1000.0 * 2.0) (0.5 + 0.2) (square 0.0 1.0 0.0)");
+    let explicit = run("main = lowpass 2000.0 0.7 (square 0.0 1.0 0.0)");
+    for (i, (x, y)) in folded.iter().zip(explicit.iter()).enumerate() {
         assert!(
             (x - y).abs() < 1e-5,
-            "const-arith param {}: folded {x} vs explicit {y}",
-            i
+            "const-arith param {i}: folded {x} vs explicit {y}"
         );
     }
 }
 
 #[test]
-fn block_builtin_in_feedback_compiles() {
-    let reg = full_registry::<f32>();
-    assert!(compile_with::<f32>("main = + ~ lowpass 500.0 0.7", &reg, 48_000.0).is_ok());
-}
-
-#[test]
 fn integer_param_to_builtin_compiles() {
-    let reg = full_registry::<f32>();
-    let mut prog = compile_with::<f32>("main = _ : lowpass 1000 0.7", &reg, 48_000.0).unwrap();
-    let input: Vec<f32> = (0..32).map(|i| (i as f32 * 0.2).sin()).collect();
-    let mut out = vec![0.0f32; input.len()];
-    prog.process(Some(&input), &mut out).unwrap();
-    let energy: f32 = out.iter().map(|x| x * x).sum::<f32>() / out.len() as f32;
-    assert!(energy > 0.0, "int param program silenced output");
+    let out = run("main = lowpass 1000 0.7 (square 0.0 1.0 0.0)");
+    assert!(energy(&out) > 0.0, "int param program silenced output");
 }

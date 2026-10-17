@@ -3,7 +3,6 @@
 //! `match` on a sum value selects its arm statically, exposing the arm's
 //! payload through `RillProgram::value_outputs`.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -15,8 +14,7 @@ fn sum_match_runs() {
         r"data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = case s of { Circle r -> r; Rect w h -> w; }",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -33,8 +31,7 @@ fn sum_match_selects_second_arm() {
         r"data Shape = Circle Float | Rect Float Float; s = Rect 2.0 3.0; main = case s of { Circle r -> r; Rect w h -> w; }",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -51,8 +48,7 @@ fn parameterized_user_sum_still_constructs_and_matches() {
         r"data Opt a = Some a | None; s = Some 1.5; main = case s of { Some x -> x; None -> 0.0; }",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();

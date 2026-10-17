@@ -1,79 +1,48 @@
+//! Modular system documents: a rack carries a rill-lang program plus its
+//! control modules, and round-trips through JSON.
+
 #[cfg(feature = "serialization")]
-use rill_adrift::registration;
+use rill_adrift::modular::serialization::{from_json, to_json, ModularSystemDef, RackDef};
 
 #[cfg(feature = "serialization")]
 #[test]
-fn test_deserialize_input_biquad_output() {
-    let json = r#"{
-        "format_version": "rill/1",
-        "sample_rate": 48000.0,
-        "block_size": 256,
-        "resources": [],
-        "nodes": [
-            {
-                "Source": {
-                    "id": 0,
-                    "type_name": "rill/input",
-                    "name": "input",
-                    "parameters": {}
-                }
-            },
-            {
-                "Processor": {
-                    "id": 1,
-                    "type_name": "rill/biquad",
-                    "name": "filter",
-                    "parameters": {
-                        "type": 1.0,
-                        "cutoff": 600.0,
-                        "q": 1.5
-                    }
-                }
-            },
-            {
-                "Sink": {
-                    "id": 2,
-                    "type_name": "rill/output",
-                    "name": "output",
-                    "parameters": {}
-                }
-            }
-        ],
-        "connections": [
-            {"kind": "Signal", "from_node": 0, "from_port": 0, "to_node": 1, "to_port": 0},
-            {"kind": "Signal", "from_node": 0, "from_port": 1, "to_node": 1, "to_port": 1},
-            {"kind": "Signal", "from_node": 1, "from_port": 0, "to_node": 2, "to_port": 0},
-            {"kind": "Signal", "from_node": 1, "from_port": 1, "to_node": 2, "to_port": 1}
-        ],
-        "description": null
-    }"#;
+fn rack_program_roundtrips_through_json() {
+    let program = "main = do { write (Just \"hi\") stdout; return () }";
+    let rack = RackDef::new("main", program);
+    let def = ModularSystemDef {
+        format_version: "1.0".to_string(),
+        sample_rate: 48_000.0,
+        block_size: 256,
+        racks: vec![rack],
+        description: None,
+    };
 
-    let def = registration::load_graph_json(json).expect("load_graph_json");
-    assert_eq!(def.nodes.len(), 3, "should have 3 nodes");
-    assert_eq!(def.connections.len(), 4, "should have 4 connections");
-    assert_eq!(def.sample_rate, 48000.0, "should preserve sample_rate");
+    let json = to_json(&def).expect("serialize");
+    let back = from_json(&json).expect("deserialize");
+
+    assert_eq!(back.racks.len(), 1);
+    assert_eq!(back.racks[0].name, "main");
+    assert_eq!(back.racks[0].program, program);
+    assert!(back.racks[0].args.is_empty());
+    assert_eq!(back.sample_rate, 48_000.0);
 }
 
 #[cfg(feature = "serialization")]
 #[test]
-fn test_sine_graph_deserialization() {
-    let json = r#"{
-        "format_version": "rill/1",
-        "sample_rate": 48000.0,
-        "block_size": 256,
-        "resources": [],
-        "nodes": [
-            {"Source": {"id": 0, "type_name": "rill/sine", "name": "osc", "parameters": {"freq": 440.0, "amp": 0.5, "phase": 0.0}}},
-            {"Sink": {"id": 1, "type_name": "rill/output", "name": "out", "parameters": {}}}
-        ],
-        "connections": [
-            {"kind": "Signal", "from_node": 0, "from_port": 0, "to_node": 1, "to_port": 0},
-            {"kind": "Signal", "from_node": 0, "from_port": 0, "to_node": 1, "to_port": 1}
-        ],
-        "description": null
-    }"#;
+fn rack_args_are_part_of_the_document() {
+    let mut rack = RackDef::new("greeter", "main name = write (Just name) stdout");
+    rack.args.push("world".to_string());
+    let def = ModularSystemDef {
+        format_version: "1.0".to_string(),
+        sample_rate: 44_100.0,
+        block_size: 256,
+        racks: vec![rack],
+        description: Some("one greeter".to_string()),
+    };
 
-    let def = registration::load_graph_json(json).expect("load_graph_json");
-    assert_eq!(def.nodes.len(), 2, "should have 2 nodes");
-    assert_eq!(def.connections.len(), 2, "should have 2 connections");
+    let json = to_json(&def).expect("serialize");
+    let back = from_json(&json).expect("deserialize");
+
+    assert_eq!(back.racks[0].args, ["world"]);
+    assert_eq!(back.description.as_deref(), Some("one greeter"));
 }

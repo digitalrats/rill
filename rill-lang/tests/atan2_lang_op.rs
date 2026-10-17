@@ -1,6 +1,5 @@
 //! `atan2` as a language operation (mono buffer algebra), not an FFI builtin.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
 
@@ -20,10 +19,10 @@ fn atan2_over_buffers_is_elementwise() {
     // `atan2 a b : Buffer` is a curried value function over buffers
     // (elementwise). Feeding a known constant pair: (1.0, 1.0) → π/4.
     let src = format!("main = atan2 ({DC_ONE}) ({DC_ONE});");
-    let mut prog =
-        rill_lang::compile_with_ffi_channels::<f32>(&src, &ffi(), 44100.0, 0, 1).unwrap();
+    let mut prog = rill_lang::compile_with_ffi::<f32>(&src, &ffi(), 44100.0).unwrap();
     let mut out = [0.0f32; 64];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out[..]]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     let expect = std::f32::consts::FRAC_PI_4;
     assert!(
         (out[0] - expect).abs() < 1e-4,

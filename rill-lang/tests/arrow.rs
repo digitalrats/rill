@@ -1,6 +1,5 @@
 //! SP-2: Kleisli + value-track Arrow. HKT data fields, channel tuples, arrow.
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
@@ -18,8 +17,7 @@ fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 
 fn value_tuple_is_pair() {
     // `(1.0, 2.0)` in value position is a `Pair { first, second }`.
     let mut prog = run("main = (1.0, 2.0);");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
         rill_lang::arena::Value::Record(fields) => {
             assert_eq!(fields.len(), 2);
@@ -41,8 +39,7 @@ fn value_tuple_field_projection_is_first() {
     // `.first` on a value tuple forces the Pair into a value-consuming
     // position: `(1.0, 2.0).first` yields `Float(1.0)`.
     let mut prog = run("main = (1.0, 2.0).first;");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 1.0);
 }
 
@@ -63,8 +60,7 @@ fn tuple_type_desugars_to_pair() {
         main = 1.0;
     "#;
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
 }
 
 #[test]
@@ -84,8 +80,7 @@ fn constraint_instance_container_arg_discharges() {
                 of { Just v -> v; Nothing -> 0.0; };
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 3.0);
 }
 
@@ -98,8 +93,7 @@ fn field_projection_applies_as_function() {
         main = (b.f) 3.0;
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);
 }
 
@@ -114,8 +108,7 @@ fn let_bound_projected_closure_applies() {
         main = apply 3.0;
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);
 }
 
@@ -129,8 +122,7 @@ fn bare_field_projection_applies_as_function() {
         main = b.f 3.0;
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);
 }
 
@@ -153,8 +145,7 @@ fn hkt_data_field_applies_type_parameter() {
         main = case (apply_f k.f 3.0) of { Just v -> v; Nothing -> 0.0; };
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 3.0);
 }
 
@@ -185,8 +176,7 @@ fn apply_expr_non_function_callee_is_error() {
 fn apply_expr_lambda_callee() {
     // `(fn x -> x) 1.0` applies a lambda literal directly.
     let mut prog = run(r"main = (\x -> x * 2.0) 3.0;");
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);
 }
 
@@ -207,8 +197,7 @@ fn constraint_instance_resolves() {
         main = case lifted of { Just v -> v; Nothing -> 0.0; };
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 6.0);
 }
 
@@ -222,8 +211,7 @@ fn single_field_record_newtype_style() {
         main = b.f 21.0;
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 42.0);
 }
 
@@ -241,8 +229,7 @@ fn kleisli_arrow_end_to_end() {
         };
     ";
     let mut prog = run(src);
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(out_float(&prog, 0), 8.0); // (3+1)*2
 }
 

@@ -3,8 +3,6 @@
 //! (`ValueMakeClosure`, `ValueCallFunc`) and lazy thunk (`ValueLazy`,
 //! `ValueCallLazy`) — still compute the same values after the merge.
 
-use rill_core::traits::MultichannelAlgorithm;
-
 #[test]
 fn eager_and_lazy_calls_still_work() {
     // eager: a named function applied to args; lazy: a thunk over a closure.
@@ -13,8 +11,7 @@ id2 = \x -> x;
 main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0),
@@ -32,8 +29,7 @@ id2 = \x -> x;
 main = case (head (let y = id2 [1.0, 2.0] in y)) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0),
@@ -50,8 +46,7 @@ mk = \x -> Pair { first: x, second: x };
 main = case (head ((mk [1.0, 2.0]).first)) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let mut out = [0.0f32; 1];
-    let _ = rill_core::traits::MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]);
+    let _ = prog.run_value();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0),

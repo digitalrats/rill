@@ -1,8 +1,8 @@
 //! # RackCase — Eurorack case implementation
 //!
 //! A `RackCase` is a single Eurorack processing case — one row of
-//! modules (signal nodes + control modules) with a shared backplane.
-//! Each case holds its own signal graph and a map of control modules.
+//! modules with a shared backplane. Each case owns its program thread and a
+//! map of control modules.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -18,15 +18,16 @@ pub struct RackCase<const BUF: usize> {
     actor_ref: ActorRef<CommandEnum>,
     tasks: Vec<std::thread::JoinHandle<()>>,
 
-    /// Signal thread handle — the graph runs here (Graph is !Send).
+    /// Program thread handle — the rack's rill-lang program runs here.
     signal_thread: Option<std::thread::JoinHandle<()>>,
 
-    /// Stop flag for the signal thread's run loop.
+    /// Stop flag for the program thread's run loop.
     running: Option<Arc<AtomicBool>>,
 }
 
 impl<const BUF: usize> RackCase<BUF> {
     /// Create a new case.
+    #[cfg(feature = "serialization")]
     pub(crate) fn new(
         name: String,
         sample_rate: f32,
@@ -48,7 +49,8 @@ impl<const BUF: usize> RackCase<BUF> {
         self.actor_ref.clone()
     }
 
-    /// Start the signal thread for this case.
+    /// Start the program thread for this case.
+    #[cfg(feature = "serialization")]
     pub(crate) fn start<F>(&mut self, build: F)
     where
         F: FnOnce(Arc<AtomicBool>) + Send + 'static,
@@ -60,7 +62,7 @@ impl<const BUF: usize> RackCase<BUF> {
         self.signal_thread = Some(handle);
     }
 
-    /// Stop the signal thread and all module tasks.
+    /// Stop the program thread and all module tasks.
     pub fn stop(&mut self) {
         for _task in self.tasks.drain(..) {
             // Drain threads are dropped — they'll be terminated at process exit

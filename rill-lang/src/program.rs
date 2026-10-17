@@ -1,17 +1,19 @@
-//! `RillProgram<T, BUF>` — a compiled rill-lang program that implements
-//! [`rill_core::Algorithm`]. Owns its IR, schedule, and pre-allocated state;
-//! `process()` performs no heap allocation after warm-up.
+//! `RillProgram<T, BUF>` — a compiled rill-lang program.
+//!
+//! It owns its IR, schedule, and pre-allocated state. The program is executed
+//! either by [`run_value`](RillProgram::run_value) (one whole-buffer value
+//! tick, the retained pure-value path) or by the
+//! [`ProgramRunner`](crate::program_runner::ProgramRunner) (which runs
+//! `main : IO ()` to completion). Neither path allocates after warm-up.
 
-use crate::builtin::{BuiltinFactoryKind, MultichannelBlockBuiltin};
+use crate::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::buffer::TapeRing;
 use rill_core::buffer::{FixedBuffer, SharedCell};
 use rill_core::math::Transcendental;
 use rill_core::memory::{BufferAllocator, RegionHandle};
-use rill_core::traits::MultichannelAlgorithm;
-use rill_core::traits::{Algorithm, ParamValue, ProcessError, ProcessResult};
+use rill_core::traits::{Algorithm, ParamValue, ProcessError};
 
 use crate::arena::{Arena, BufferPool, Value};
-use crate::builtin::BlockBuiltin;
 use crate::error::CompileError;
 use crate::ir::{BuiltinInstance, Ir, ParamDef, ValueBlock};
 
@@ -177,7 +179,7 @@ pub(crate) enum BuiltinInst<T: Transcendental> {
     MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
 }
 
-/// A compiled program ready to run inside the rill graph.
+/// A compiled program ready to run.
 pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) ir: Ir,
     /// Block-level feedback state (previous tick's whole block per slot).
@@ -248,21 +250,6 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// Runtime value-track error (capacity overflow), set by a collection op
     /// and consumed at the end of the value phase. Cleared each tick.
     pub(crate) value_error: Option<ProcessError>,
-    /// Outputs written to the external `outputs[]` slices by a legacy
-    /// write-output instruction this tick: (output index, buffer handle
-    /// index). Drained at tick end; the IO surface that produced these is gone,
-    /// so the vector stays empty on every current path.
-    pub(crate) pending_outputs: Vec<(usize, usize)>,
-    /// Buffer-table indices of the program input channels (the retained
-    /// `MultichannelAlgorithm::process` input table). Pre-allocated at build
-    /// (one per channel, capped at [`MAX_BUILTIN_CHANNELS`]); the channel count
-    /// is a runtime property (fixed by the backend at the first tick), so only
-    /// the first [`Self::cur_num_inputs`] are materialized each tick.
-    pub(crate) input_buffers: Vec<usize>,
-    /// Number of input channels on the current tick — set by
-    /// [`run_block_mimo`](crate::backend::interp::run_block_mimo) from the
-    /// backend's actual channel count. Immutable after the first tick.
-    pub(crate) cur_num_inputs: usize,
     /// Runtime ST regions, one per `runST` currently executing. `runST` pushes
     /// a region on entry and pops it on exit (regions nest LIFO); the region
     /// token threaded through the region's `ST` computation is
@@ -470,7 +457,7 @@ fn build_builtin<T: Transcendental>(
                     bi.name
                 )));
             };
-            MultichannelAlgorithm::reset(b.as_mut());
+            b.reset();
             Ok(BuiltinInst::MultichannelBlock(b))
         }
         Some(BuiltinFactoryKind::Block | BuiltinFactoryKind::ResourceBlock) | None => {
@@ -541,8 +528,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let (delays, _allocator) = Self::alloc_delays(&ir);
         let buffers = Self::alloc_buffers(&ir);
-        let input_buffers: Vec<usize> =
-            (ir.num_buffers..ir.num_buffers + MAX_BUILTIN_CHANNELS).collect();
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
@@ -587,9 +572,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             drops_scratch,
             value_outputs,
             value_error: None,
-            pending_outputs: Vec::new(),
-            input_buffers,
-            cur_num_inputs: 0,
             regions: Vec::new(),
             st_cells: Vec::new(),
             world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
@@ -672,13 +654,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let buffers = Self::alloc_buffers(&ir);
-        // The retained signal-input table: pre-allocate the buffer-table slots
-        // the program inputs materialize into. The channel count is a runtime
-        // property (fixed by the backend at the first tick), so we reserve the
-        // maximum possible here; only the first `cur_num_inputs` are actually
-        // written each tick.
-        let input_buffers: Vec<usize> =
-            (ir.num_buffers..ir.num_buffers + MAX_BUILTIN_CHANNELS).collect();
         let params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
@@ -723,9 +698,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             drops_scratch,
             value_outputs,
             value_error: None,
-            pending_outputs: Vec::new(),
-            input_buffers,
-            cur_num_inputs: 0,
             regions: Vec::new(),
             st_cells: Vec::new(),
             world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
@@ -761,15 +733,14 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .collect()
     }
 
-    /// Carve the program-level signal buffer table out of a fresh region
-    /// allocator: one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers`
-    /// (each `Value::Buffer` index), plus the [`MAX_BUILTIN_CHANNELS`] signal
-    /// input slots. Chunk capacity is `BUF`
+    /// Carve the program-level buffer table out of a fresh region allocator:
+    /// one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers` (each
+    /// `Value::Buffer` index). Chunk capacity is `BUF`
     /// rounded up to a power of two, so every handle fits within a single chunk
     /// (non-spanning). Memory is static with program lifetime (SP-4 Tier-1);
-    /// `process()` never touches the allocator.
+    /// a tick never touches the allocator.
     fn alloc_buffers(ir: &Ir) -> Vec<RegionHandle<T>> {
-        let n = ir.num_buffers + MAX_BUILTIN_CHANNELS;
+        let n = ir.num_buffers;
         if n == 0 {
             return Vec::new();
         }
@@ -973,16 +944,52 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             }
         }
     }
-}
 
-impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
-    fn process(&mut self, input: Option<&[T]>, output: &mut [T]) -> ProcessResult<()> {
-        let inputs: &[&[T]] = if let Some(inp) = input { &[inp] } else { &[] };
-        let mut outs: [&mut [T]; 1] = [output];
-        crate::backend::interp::run_block_mimo(self, inputs, &mut outs)
+    /// Run one whole-buffer value tick.
+    ///
+    /// This is the retained pure-value execution path: it evaluates the
+    /// program's value track for a full [`BUF`]-sample tick, applies the
+    /// block-feedback swap, and republishes [`value_outputs`](Self::value_outputs).
+    /// No external signal buffers are read or written — a whole-buffer
+    /// (`Value::Buffer`) output is inspected with
+    /// [`copy_output_samples`](Self::copy_output_samples).
+    ///
+    /// A latched value-track error (a collection/arena capacity overflow, a
+    /// stream fault) is returned as a [`ProcessError`] after the tick-end
+    /// cleanup, so a repeatedly failing program cannot leak the arena.
+    pub fn run_value(&mut self) -> Result<(), ProcessError> {
+        crate::backend::interp::run_value_tick(self)
     }
 
-    fn reset(&mut self) {
+    /// Copy the samples of value output `i` into `dst` when that output is a
+    /// whole-buffer value.
+    ///
+    /// Returns `true` when `dst` was filled (up to `dst.len()` or the tick
+    /// length, whichever is smaller); `false` when the output is not a buffer
+    /// (a scalar/list/record value) or `i` is out of range. Intended for tests
+    /// and tooling that inspect the retained buffer path.
+    pub fn copy_output_samples(&self, i: usize, dst: &mut [T]) -> bool {
+        let Some(Some(r)) = self.value_outputs.get(i).copied() else {
+            return false;
+        };
+        let Some(Value::Buffer(idx)) = self.arena.get(r) else {
+            return false;
+        };
+        let Some(buf) = self.buffers.get(*idx) else {
+            return false;
+        };
+        let n = dst.len().min(self.block_len);
+        buf.with_data(|b| dst[..n].copy_from_slice(&b[..n]));
+        true
+    }
+
+    /// Reset the program to its initial state.
+    ///
+    /// Clears the signal state (feedback slots, delay lines), re-initialises
+    /// every built-in instance, and releases the value-track state (value
+    /// state slots, per-tick registers, outputs, capture cells, deferred
+    /// drops) so a mid-lifetime reset cannot exhaust the fixed arena.
+    pub fn reset(&mut self) {
         for b in &mut self.block_state {
             b.fill(T::ZERO);
         }
@@ -1001,9 +1008,7 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
         // Release value-track state. Each occupied slot holds a counted arena
         // ref; dropping it (rather than just clearing the `Option`) keeps the
         // arena's fixed capacity consistent across mid-lifetime resets, so a
-        // reset cannot exhaust the arena on a later tick. Slots are set to
-        // `None` afterwards; the per-tick value-track executor (next task)
-        // allocates fresh values on the next tick.
+        // reset cannot exhaust the arena on a later tick.
         for v in &mut self.value_state {
             if let Some(r) = v {
                 self.arena.drop_ref(*r);
@@ -1031,9 +1036,9 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
         self.value_regs_top = self.ir.num_value_regs;
         // The shared fragment-capture cells and deferred-drop scratch are
         // drained by every dispatch, but reset must still empty them (a reset
-        // may be issued mid-dispatch is impossible — the signal thread is the
-        // only dispatcher — yet a defensive clear keeps the RC accounting
-        // sound if a future control-path dispatch ever appears).
+        // mid-dispatch is impossible — a single dispatcher runs the track — yet
+        // a defensive clear keeps the RC accounting sound if a future
+        // control-path dispatch ever appears).
         for c in self.frag_cells.drain(..) {
             self.arena.drop_ref(c);
         }
@@ -1041,30 +1046,6 @@ impl<T: Transcendental, const BUF: usize> Algorithm<T> for RillProgram<T, BUF> {
         for r in self.drops_scratch.drain(..) {
             self.arena.drop_ref(r);
         }
-    }
-}
-
-impl<T: Transcendental, const BUF: usize> MultichannelAlgorithm<T> for RillProgram<T, BUF> {
-    fn num_inputs(&self) -> usize {
-        self.ir.num_inputs
-    }
-
-    fn num_outputs(&self) -> usize {
-        self.ir.num_outputs
-    }
-
-    fn process(&mut self, inputs: &[&[T]], outputs: &mut [&mut [T]]) -> ProcessResult<()> {
-        crate::backend::interp::run_block_mimo(self, inputs, outputs)
-    }
-
-    fn reset(&mut self) {
-        Algorithm::reset(self);
-    }
-}
-
-impl<T: Transcendental, const BUF: usize> BlockBuiltin<T> for RillProgram<T, BUF> {
-    fn set_param(&mut self, index: usize, value: &ParamValue) {
-        self.set_param(index, value.clone());
     }
 }
 
@@ -1095,9 +1076,7 @@ mod program_value_tests {
                 value_state_slots: 2,
             },
             num_buffers: 0,
-
             input_buffers: Vec::new(),
-
             tapes: Vec::new(),
         };
         let prog = RillProgram::<f32, 256>::new(ir);
@@ -1127,9 +1106,7 @@ mod program_value_tests {
                 value_state_slots: 1,
             },
             num_buffers: 0,
-
             input_buffers: Vec::new(),
-
             tapes: Vec::new(),
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);
@@ -1141,7 +1118,7 @@ mod program_value_tests {
         prog.value_regs.push(Some(r2));
         let r3 = prog.arena.copy(r).unwrap();
         prog.cell_stack.push(vec![(0, r3)]);
-        Algorithm::reset(&mut prog);
+        prog.reset();
         assert_eq!(prog.value_state[0], None);
         assert_eq!(prog.value_regs[0], None);
         assert_eq!(prog.cell_stack.len(), 0);

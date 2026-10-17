@@ -7,11 +7,11 @@
 //!
 //! The runtime dispatches by [`crate::program::BuiltinInst`] variant: a `Block`
 //! builtin runs through `Algorithm::process`, a multichannel builtin through
-//! `MultichannelAlgorithm::process`. Variant selection is by factory kind, not
-//! signal arity — a `Block` factory is a whole-buffer block builtin that may
-//! serve multi-channel signal arity via the interpreter's interleaved path, so
-//! it stays a [`BlockBuiltin`] regardless of arity and is never wrapped into a
-//! multichannel adapter.
+//! the multi-channel algorithm trait's `process`. Variant selection is by
+//! factory kind, not signal arity — a `Block` factory is a whole-buffer block
+//! builtin that may serve multi-channel signal arity via the interpreter's
+//! interleaved path, so it stays a [`BlockBuiltin`] regardless of arity and is
+//! never wrapped into a multichannel adapter.
 
 use std::collections::HashMap;
 

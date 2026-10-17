@@ -39,7 +39,6 @@ pub fn compile_def<T: Transcendental>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rill_core::traits::Algorithm;
 
     #[test]
     fn compile_def_runs() {
@@ -47,8 +46,7 @@ mod tests {
 
         let def = RillLangDef::new("sum", "main = 1.0 + 2.0");
         let mut prog = compile_def::<f32>(&def).unwrap();
-        let mut out = [0.0f32; 2];
-        prog.process(None, &mut out).unwrap();
+        prog.run_value().unwrap();
         assert_eq!(
             prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
             &Value::Float(3.0)

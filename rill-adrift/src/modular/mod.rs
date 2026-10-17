@@ -1,48 +1,33 @@
-//! # ModularSystem — modular signal processing host
+//! # ModularSystem — modular program host
 //!
-//! * GraphDef — signal topology
-//! * RackDef — control system (LFO, envelope, sequencer)
+//! A [`ModularSystemDef`] describes one or more racks. Each rack owns a
+//! rill-lang program (`main : (String…) -> IO ()`) that the IO runner executes
+//! to completion on the rack's own thread, plus optional control modules
+//! (servos, sensors, clocks) registered through the patchbay module factory.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(feature = "serialization")]
+use std::sync::Mutex;
 
-use rill_core::traits::ParamValue;
+#[cfg(feature = "serialization")]
+use rill_core::queues::CommandEnum;
+#[cfg(feature = "serialization")]
+use rill_core_actor::ActorRef;
 use rill_core_actor::ActorSystem;
-use rill_lang::graph::GraphBuilder;
 use rill_patchbay::module_factory::ModuleFactory;
 
 #[cfg(feature = "serialization")]
 use crate::modular::serialization::ModularSystemDef;
 #[cfg(feature = "serialization")]
 use crate::modular::serialization::ModuleDef;
-#[cfg(feature = "serialization")]
-use rill_lang::graph::serialization::GraphDef;
-
-#[cfg(feature = "serialization")]
-use rill_core::queues::CommandEnum;
-#[cfg(feature = "serialization")]
-use rill_core_actor::ActorRef;
-
-#[cfg(feature = "debug")]
-use dashmap::DashMap;
-#[cfg(feature = "debug")]
-use rill_patchbay::debug::PatchbayInspector;
-#[cfg(feature = "debug")]
-use rill_telemetry::debug::{
-    collector_thread::CollectorThread,
-    protocol::{AnalyzerCommand, AnalyzerConfig, AnalyzerResponse},
-    state::ProbeState,
-};
 
 mod case;
 mod config;
 #[cfg(feature = "serialization")]
 pub mod serialization;
 pub use case::RackCase;
-#[cfg(feature = "serialization")]
-pub use config::LaunchConfig;
 pub use config::ModularConfig;
-// Re-exports.
 
 // ============================================================================
 // Error type
@@ -51,8 +36,8 @@ pub use config::ModularConfig;
 #[derive(Debug)]
 /// Errors that can occur during modular system setup and operation.
 pub enum ModularError {
-    /// Error during signal graph construction or processing.
-    Graph(String),
+    /// Error during program compilation or execution.
+    Program(String),
     /// Error during rack initialization or operation.
     Rack(String),
 }
@@ -61,26 +46,17 @@ pub enum ModularError {
 // ModularSystem struct
 // ============================================================================
 
-#[cfg(feature = "debug")]
-struct DebugState {
-    probe_slots: Vec<Arc<rill_lang::debug::ProbeSlot>>,
-    debug_control: rill_lang::debug::DebugControl,
-    command_queue: Arc<rill_core::queues::spsc::SpscQueue<rill_lang::debug::CommandFrame, 256>>,
-    node_names: Vec<String>,
-}
-
-/// A modular signal processing host that manages one or more [`RackCase`] instances.
+/// A modular program host that manages one or more [`RackCase`] instances.
 ///
-/// Each rack has its own signal graph and control modules (automatons, servos, sensors).
-/// The system provides shared infrastructure: actor system, backend factory,
-/// and a module factory for custom rack modules.
+/// Each rack runs its own rill-lang program and owns its control modules
+/// (automatons, servos, sensors). The system provides shared infrastructure:
+/// the actor system and a module factory for custom rack modules.
 pub struct ModularSystem<const BUF: usize = 64> {
+    #[cfg_attr(not(feature = "serialization"), allow(dead_code))]
     actor_system: Arc<ActorSystem>,
     module_factory: ModuleFactory,
     cases: HashMap<String, RackCase<BUF>>,
-    default_backend: Option<(String, HashMap<String, ParamValue>)>,
-    #[cfg(feature = "serialization")]
-    tokio_rt: Option<tokio::runtime::Runtime>,
+    config: ModularConfig,
 }
 
 impl<const BUF: usize> ModularSystem<BUF> {
@@ -88,75 +64,17 @@ impl<const BUF: usize> ModularSystem<BUF> {
     pub fn new(config: ModularConfig) -> Self {
         let mut module_factory = ModuleFactory::new();
         crate::registration::register_modules(&mut module_factory);
-        let default_backend = config.backend_name.clone().map(|n| {
-            let params = config
-                .backend_params
-                .iter()
-                .map(|(k, v)| (k.clone(), str_to_param(v)))
-                .collect();
-            (n, params)
-        });
         Self {
             module_factory,
-            default_backend,
             actor_system: Arc::new(ActorSystem::new()),
             cases: HashMap::new(),
-            #[cfg(feature = "serialization")]
-            tokio_rt: None,
+            config,
         }
     }
 
-    /// Set the default I/O backend name and parameters for all graphs.
-    pub fn set_default_backend(&mut self, name: &str, params: HashMap<String, ParamValue>) {
-        self.default_backend = Some((name.to_string(), params));
-    }
-
-    pub(crate) fn create_builder(&self) -> GraphBuilder<f32, BUF> {
-        GraphBuilder::new()
-    }
-
-    /// Build a `ProgramEngine` from a `GraphDef` using the rill-lang compilation pipeline.
-    pub fn build_engine(
-        &self,
-        def: &GraphDef,
-    ) -> Result<rill_lang::program_engine::ProgramEngine<f32, BUF>, Box<dyn std::error::Error>>
-    {
-        let mut builder = self.create_builder();
-        def.populate(&mut builder)
-            .map_err(|e| format!("populate: {e}"))?;
-
-        #[cfg(not(feature = "lofi"))]
-        let registry = crate::lang_builtins::full_registry::<f32>();
-        #[cfg(feature = "lofi")]
-        let registry = crate::lang_builtins::full_registry_f32();
-
-        builder
-            .compile_def(&registry, def.sample_rate)
-            .map_err(|e| e.to_string().into())
-    }
-
-    /// Build a [`CompiledStream`](rill_lang::graph::CompiledStream) from a
-    /// `GraphDef` — a single program for a plain graph, or a duplex stream
-    /// (recording + playback over the shared tape) for a tape echo.
-    pub fn build_stream(
-        &self,
-        def: &GraphDef,
-    ) -> Result<rill_lang::graph::CompiledStream<f32, BUF>, Box<dyn std::error::Error>> {
-        let mut builder = self.create_builder();
-        def.populate(&mut builder)
-            .map_err(|e| format!("populate: {e}"))?;
-        let mut spec = builder.to_graph_spec();
-        if spec.backends.is_empty() {
-            spec.backends = builder.infer_backends(&spec);
-        }
-
-        #[cfg(not(feature = "lofi"))]
-        let registry = crate::lang_builtins::full_registry::<f32>();
-        #[cfg(feature = "lofi")]
-        let registry = crate::lang_builtins::full_registry_f32();
-
-        rill_lang::graph::compile::<f32, BUF>(&spec, &registry, def.sample_rate)
-            .map_err(|e| e.to_string().into())
+    /// The host-level configuration this system was created with.
+    pub fn config(&self) -> &ModularConfig {
+        &self.config
     }
 
     /// Access the module factory for registering custom rack module types before launch.
@@ -164,34 +82,22 @@ impl<const BUF: usize> ModularSystem<BUF> {
         &mut self.module_factory
     }
 
-    /// Launch — build graph engines, set up IO, register modules, start processing.
+    /// Launch — compile and run every rack's program, register rack modules.
     #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
-        let tokio_rt = tokio::runtime::Runtime::new()
-            .map_err(|e| ModularError::Graph(format!("tokio: {e}")))?;
-        let _guard = tokio_rt.enter();
-
         for rd in &def.racks {
             log::info!(
-                "rill-adrift: launching rack '{}' — {} nodes, {} modules",
+                "rill-adrift: launching rack '{}' — {} program bytes, {} modules",
                 rd.name,
-                rd.graph.nodes.len(),
+                rd.program.len(),
                 rd.modules.len()
             );
-            let sys = self.actor_system.clone();
-            let gd = rd.graph.clone();
 
+            let sys = self.actor_system.clone();
             let modules: Arc<Mutex<HashMap<String, ActorRef<CommandEnum>>>> =
                 Arc::new(Mutex::new(HashMap::new()));
-            let tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
 
-            #[cfg(not(feature = "debug"))]
-            let (graph_tx, graph_rx) = std::sync::mpsc::channel::<ActorRef<CommandEnum>>();
-            #[cfg(feature = "debug")]
-            let (graph_tx, graph_rx) =
-                std::sync::mpsc::channel::<(ActorRef<CommandEnum>, Option<DebugState>)>();
-
-            // 1. Rack actor — forwards messages to registered modules
+            // 1. Rack actor — forwards commands to the registered modules.
             let m = modules.clone();
             let actor_ref = sys.spawn_detached(
                 &format!("rack_{}", rd.name),
@@ -206,122 +112,78 @@ impl<const BUF: usize> ModularSystem<BUF> {
             );
 
             let parent_ref = actor_ref.clone();
-            let case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, tasks);
+            let case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, Vec::new());
             self.cases.insert(rd.name.clone(), case);
 
-            // 2. Build engine + ProgramRunner on signal thread
-            let backend_name = self.default_backend.clone();
+            // 2. Run the rack's program on its own thread. The thread compiles
+            //    the program itself (a `RillProgram` is not `Send`) and reports
+            //    the compile result back, so a bad program fails `launch`.
+            let program = rd.program.clone();
+            let args = rd.args.clone();
             let rack_name = rd.name.clone();
-            let _registry = crate::lang_builtins::full_registry::<f32>();
-            #[cfg(feature = "lofi")]
-            let registry = crate::lang_builtins::full_registry_f32();
+            let sample_rate = def.sample_rate;
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
 
             if let Some(case) = self.cases.get_mut(&rd.name) {
-                let graph_def = gd.clone();
-                let sr = def.sample_rate;
-                case.start(move |running| {
-                    let mut builder: GraphBuilder<f32, BUF> = GraphBuilder::new();
-                    if let Err(e) = graph_def.populate(&mut builder) {
-                        log::error!("graph populate: {e}");
-                        return;
-                    }
-                    let engine = match builder.compile_def(&registry, sr) {
-                        Ok(eng) => eng,
+                let rack_name = rack_name.clone();
+                case.start(move |_running| {
+                    #[cfg(feature = "lofi")]
+                    let registry = crate::lang_builtins::full_registry_f32();
+                    #[cfg(not(feature = "lofi"))]
+                    let registry = crate::lang_builtins::full_registry::<f32>();
+
+                    let mut runner = match rill_lang::compile_runner::<f32, BUF>(
+                        &program,
+                        &registry,
+                        sample_rate,
+                    ) {
+                        Ok(runner) => {
+                            let _ = ready_tx.send(Ok(()));
+                            runner
+                        }
                         Err(e) => {
-                            log::error!("graph compile: {e}");
+                            log::error!("rill-adrift: rack '{}' compile: {e}", rack_name);
+                            let _ = ready_tx.send(Err(e.to_string()));
                             return;
                         }
                     };
-                    #[cfg(feature = "debug")]
-                    let mut engine = engine;
-                    log::info!("rill-adrift: rack '{}' engine built", rack_name,);
-                    #[cfg(feature = "debug")]
-                    engine.allocate_probe_slots(1);
+                    log::info!("rill-adrift: rack '{}' program compiled", rack_name);
+                    runner.set_args(&args);
 
-                    #[cfg(feature = "debug")]
-                    let debug_state = {
-                        let (slots, ctrl, queue) = engine.clone_debug_state();
-                        Some(DebugState {
-                            probe_slots: slots,
-                            debug_control: ctrl,
-                            command_queue: queue,
-                            node_names: vec!["main".to_string()],
-                        })
-                    };
-                    #[cfg(feature = "debug")]
-                    {
-                        let _ = graph_tx.send((engine.handle(), debug_state));
+                    match runner.run() {
+                        Ok(()) => log::info!("rill-adrift: rack '{}' program finished", rack_name),
+                        Err(e) => log::error!("rill-adrift: rack '{}' run: {e}", rack_name),
                     }
-                    #[cfg(not(feature = "debug"))]
-                    {
-                        let _ = graph_tx.send(engine.handle());
+                    for line in runner.stdout() {
+                        log::info!("rill-adrift: rack '{}': {line}", rack_name);
                     }
-
-                    let runner =
-                        rill_lang::program_runner::ProgramRunner::new(engine, Some(parent_ref));
-
-                    if let Some((ref name, ref params)) = backend_name {
-                        let mut bf: crate::backend_factory::BackendFactory = Default::default();
-                        crate::registration::register_backends(&mut bf);
-                        match bf.create_any(name, params) {
-                            Ok((driver, capture, playback)) => {
-                                match rill_lang::runtime::Runtime::launch::<BUF>(
-                                    driver, capture, playback, runner, running,
-                                ) {
-                                    Ok(()) => {
-                                        log::info!(
-                                            "rill-adrift: rack '{}' backend '{}' started",
-                                            rack_name,
-                                            name
-                                        );
-                                    }
-                                    Err(e) => log::error!(
-                                        "rill-adrift: rack '{}' backend '{}': failed to launch signal stream: {e}",
-                                        rack_name,
-                                        name
-                                    ),
-                                }
-                            }
-                            Err(e) => log::error!(
-                                "rill-adrift: rack '{}' backend create '{}': {e}",
-                                rack_name,
-                                name
-                            ),
-                        }
+                    for line in runner.stderr() {
+                        log::warn!("rill-adrift: rack '{}': {line}", rack_name);
                     }
                 });
             }
 
-            // 3. Receive engine handle for module SetParameter routing
-            #[cfg(not(feature = "debug"))]
-            let graph_ref = graph_rx
-                .recv()
-                .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
-            #[cfg(feature = "debug")]
-            let (graph_ref, debug_state) = graph_rx
-                .recv()
-                .map_err(|e| ModularError::Graph(format!("graph handle: {e}")))?;
+            match ready_rx.recv() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(ModularError::Program(e)),
+                Err(e) => {
+                    return Err(ModularError::Program(format!(
+                        "rack '{}' program thread: {e}",
+                        rack_name
+                    )))
+                }
+            }
 
-            // 4. Build modules via ModuleFactory
-            let automaton_defs = &rd.automatons;
-
-            #[cfg(feature = "debug")]
-            let inspector = Arc::new(PatchbayInspector::new());
-
+            // 3. Build modules via ModuleFactory.
             for module_def in &rd.modules {
                 let pb_def = to_pb_module(module_def);
-                // Skip graph modules — they're handled by the signal thread above
-                if pb_def.type_name() == "Graph" {
-                    continue;
-                }
-                let graph_ref = graph_ref.clone();
                 match self.module_factory.construct(
                     &pb_def,
-                    automaton_defs,
+                    &rd.automatons,
                     &self.actor_system,
-                    &graph_ref,
+                    &parent_ref,
                     #[cfg(feature = "debug")]
-                    Some(&inspector),
+                    None,
                 ) {
                     Ok(actor_ref) => {
                         modules
@@ -336,80 +198,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
                     ),
                 }
             }
-
-            #[cfg(feature = "debug")]
-            if let Some(ds) = debug_state {
-                let shmem =
-                    crate::debug_init::init_shmem().or_else(crate::debug_init::init_shmem_from_env);
-                if shmem.is_some() {
-                    log::info!("rill-debug: shmem ready for rack '{}'", rd.name);
-                }
-
-                let inspector_clone = inspector.clone();
-                #[allow(clippy::type_complexity)]
-                let inspect_handler: Box<
-                    dyn Fn(&AnalyzerCommand) -> Option<AnalyzerResponse> + Send,
-                > = Box::new(move |cmd: &AnalyzerCommand| -> Option<AnalyzerResponse> {
-                    match cmd {
-                        AnalyzerCommand::ListAutomatons => Some(AnalyzerResponse::AutomatonsList(
-                            inspector_clone.list_automatons(),
-                        )),
-                        AnalyzerCommand::GetAutomatonState { name } => {
-                            inspector_clone.get_automaton_snapshot(name).map(|snap| {
-                                let json = format!("{:?}", snap);
-                                AnalyzerResponse::AutomatonState(json)
-                            })
-                        }
-                        AnalyzerCommand::ListSensors => {
-                            Some(AnalyzerResponse::SensorList(inspector_clone.list_sensors()))
-                        }
-                        AnalyzerCommand::GetSensorStatus { name } => {
-                            inspector_clone.get_sensor_snapshot(name).map(|snap| {
-                                let json = format!("{:?}", snap);
-                                AnalyzerResponse::SensorStatus(json)
-                            })
-                        }
-                        _ => None,
-                    }
-                });
-
-                let probe_states = Arc::new(DashMap::new());
-                for (i, name) in ds.node_names.iter().enumerate() {
-                    probe_states.insert(
-                        i as u32,
-                        ProbeState {
-                            name: name.clone(),
-                            node_name: name.clone(),
-                        },
-                    );
-                    // Auto-enable probe for each node
-                    if i < ds.probe_slots.len() {
-                        ds.probe_slots[i]
-                            .enabled
-                            .store(true, std::sync::atomic::Ordering::Release);
-                    }
-                }
-
-                let probe_queues: Vec<_> = ds.probe_slots.iter().map(|s| s.queue.clone()).collect();
-
-                let (resp_tx, _resp_rx) = std::sync::mpsc::channel();
-                let (_collector, _cmd_tx) = CollectorThread::spawn(
-                    AnalyzerConfig::default(),
-                    probe_states,
-                    probe_queues,
-                    ds.command_queue,
-                    ds.probe_slots,
-                    ds.debug_control,
-                    resp_tx,
-                    shmem,
-                    Some(inspect_handler),
-                );
-
-                log::info!(
-                    "rill-debug: collector thread started for rack '{}'",
-                    rd.name
-                );
-            }
         }
 
         log::info!(
@@ -417,27 +205,21 @@ impl<const BUF: usize> ModularSystem<BUF> {
             def.racks.len()
         );
 
-        self.tokio_rt = Some(tokio_rt);
         Ok(self)
     }
 
-    /// Stop all processing — terminates signal loops and drops the tokio runtime.
+    /// Stop all processing — joins every rack's program thread.
     pub fn stop(&mut self) {
         log::info!("rill-adrift: stopping system");
         for (name, case) in self.cases.iter_mut() {
             log::info!("rill-adrift: stopping rack '{}'", name);
             case.stop();
         }
-        #[cfg(feature = "serialization")]
-        {
-            self.tokio_rt = None;
-        }
         log::info!("rill-adrift: system stopped");
     }
 }
 
-/// Convert the adrift [`ModuleDef`] (which includes `Graph`) to the
-/// patchbay [`ModuleDef`] (which does not). Panics on `Graph` variant.
+/// Convert the adrift [`ModuleDef`] to the patchbay [`ModuleDef`].
 #[cfg(feature = "serialization")]
 fn to_pb_module(m: &ModuleDef) -> rill_patchbay::module_def::ModuleDef {
     match m {
@@ -448,23 +230,7 @@ fn to_pb_module(m: &ModuleDef) -> rill_patchbay::module_def::ModuleDef {
             type_name: type_name.clone(),
             params: params.clone(),
         },
-        ModuleDef::Graph { .. } => panic!("Graph modules are not handled by ModuleFactory"),
     }
-}
-
-fn str_to_param(s: &str) -> ParamValue {
-    if let Ok(i) = s.parse::<i32>() {
-        return ParamValue::Int(i);
-    }
-    if let Ok(f) = s.parse::<f32>() {
-        return ParamValue::Float(f);
-    }
-    match s {
-        "true" | "yes" | "1" => return ParamValue::Bool(true),
-        "false" | "no" | "0" => return ParamValue::Bool(false),
-        _ => {}
-    }
-    ParamValue::String(s.to_string())
 }
 
 impl<const BUF: usize> Drop for ModularSystem<BUF> {

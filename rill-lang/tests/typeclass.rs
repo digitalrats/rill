@@ -4,7 +4,6 @@
 //! compile time (zero runtime dispatch — typeclasses and instances produce no
 //! arena values).
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -19,8 +18,7 @@ fn typeclass_method_resolves_at_compile_time() {
         main = show 1.0;
     "#;
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -40,8 +38,7 @@ fn typeclass_selects_instance_by_argument_type() {
         main = show 1;
     "#;
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -196,8 +193,7 @@ fn user_def_shadows_builtin_eq_ord_method_names() {
         main = lt 2.0 3.0;
     ";
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),

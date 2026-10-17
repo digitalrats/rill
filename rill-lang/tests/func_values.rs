@@ -8,7 +8,6 @@
 //! closure-valued calls (lambdas, partial application, HOFs — see
 //! `tests/closures.rs`, `tests/currying_wires.rs`, `tests/hof.rs`).
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -21,7 +20,8 @@ fn function_reference_calls_signal_definition() {
     // a `Value::Callable`/value-channel output.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f 21.0").unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert_eq!(out, [42.0, 42.0, 42.0, 42.0]);
     assert_eq!(
         prog.value_outputs().len(),
@@ -39,8 +39,7 @@ fn function_reference_calls_value_definition() {
         "data Point = { x: Float, y: Float }; first p = p.x; f = first; main = f (Point { x: 5.0, y: 1.0 })",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -56,8 +55,7 @@ fn func_value_as_output() {
     // output: an eager `Value::Callable` referencing the named definition
     // `double`.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let vo = prog.value_outputs();
     assert_eq!(vo.len(), 1);
     let v = vo[0].unwrap();
@@ -73,9 +71,8 @@ fn func_value_as_output_survives_ticks() {
     // output must still survive across ticks without exhausting the fixed
     // arena.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
-    let mut out = [0.0f32; 4];
     for _ in 0..3 {
-        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        prog.run_value().unwrap();
         match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
             &rill_lang::arena::Value::Callable { cell: None, .. } => {}
             other => panic!("expected eager Callable value, got {other:?}"),
@@ -91,7 +88,8 @@ fn func_value_can_be_chained() {
     // chain to the referenced definition at inference time).
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; g = f; main = g 21.0").unwrap();
     let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert_eq!(out, [42.0, 42.0, 42.0, 42.0]);
 }
 
@@ -109,8 +107,7 @@ fn direct_bare_ref_produces_func_value() {
     // is itself a func value output — the binding `f = double` is sugar for
     // the same reference.
     let mut prog = compile::<f32>("double x = x * 2.0; main = double").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
         &rill_lang::arena::Value::Callable { cell: None, .. } => {}
         other => panic!("expected eager Callable value, got {other:?}"),
@@ -124,8 +121,7 @@ fn named_ref_closure_references_real_fragment() {
     // currying works). The closure must NOT reference the old
     // `usize::MAX` sentinel no-op fragment.
     let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v).unwrap() {
         &rill_lang::arena::Value::Callable {
@@ -153,8 +149,7 @@ fn value_function_with_match_body_calls_correct_arm() {
         r"data Shape = Circle Float | Rect Float Float; radius s = case s of { Circle r -> r; Rect w h -> w; }; f = radius; main = f (Circle 7.0)",
     )
     .unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),

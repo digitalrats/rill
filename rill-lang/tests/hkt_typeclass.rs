@@ -1,6 +1,5 @@
 //! Kind polymorphism: typeclasses over type constructors (Functor/Foldable).
 
-use rill_core::traits::MultichannelAlgorithm;
 use rill_lang::compile;
 
 #[test]
@@ -11,8 +10,7 @@ fn fmap_over_maybe_matches() {
         main = case (fmap (\x -> x + 1.0) (Just 1.0)) of { Nothing -> 0.0; Just x -> x; };
     ";
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -28,8 +26,7 @@ fn fmap_over_list_is_compile_time_inlined() {
         main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0, 4.0]);
     ";
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -95,8 +92,7 @@ fn foldable_over_list() {
         main = foldr (\a -> \b -> a + b) 0.0 [1.0, 2.0, 3.0];
     ";
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -113,8 +109,7 @@ fn fmap_over_user_parameterized_data() {
         main = (fmap (\x -> x * 10.0) (Box { value: 3.0 })).value;
     ";
     let mut prog = compile::<f32>(src).unwrap();
-    let mut out = [0.0f32; 4];
-    MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+    prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),

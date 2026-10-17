@@ -1,10 +1,9 @@
 //! ST monad: `runST` sugar. R3 keeps the check at the INFERENCE level — rank-N
 //! application rejects a region result that escapes the phantom. The runtime
-//! assertion (`compile_graph` + `MultichannelAlgorithm::process` writing the
-//! erased region's value into a signal buffer) is DEFERRED to Task B4, which
-//! unifies the Signal/Value tracks; today a value-typed `runST` body infers at
-//! `Rate::Signal` and the value-output path through the graph is not the R3
-//! concern.
+//! assertion (a value tick writing the erased region's value into a value
+//! output) is DEFERRED to Task B4, which unifies the Signal/Value tracks; today
+//! a value-typed `runST` body infers at `Rate::Signal` and the value-output
+//! path is not the R3 concern.
 
 use rill_lang::lexer::tokenize;
 use rill_lang::mode::Mode;

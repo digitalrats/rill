@@ -3,7 +3,7 @@
 //! block. The cell must survive across ticks (a per-tick rebind would reset it
 //! to `Void` and lose the set value).
 
-use rill_core::traits::{Algorithm, ParamValue};
+use rill_core::traits::ParamValue;
 use rill_lang::compile;
 use rill_lang::compile_with_ffi;
 use rill_lang::ffi::ForeignRegistry;
@@ -20,8 +20,7 @@ fn value_output(prog: &rill_lang::program::RillProgram<f32, 256>) -> rill_lang::
 fn actor_param_defaults_to_zero() {
     // `?gain` is a runtime-stack cell, not intern_param; its default is 0.
     let mut prog = compile::<f32>("main = ?gain").unwrap();
-    let mut out = [0.0f32; 1];
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(value_output(&prog), rill_lang::arena::Value::Float(0.0));
 }
 
@@ -31,11 +30,10 @@ fn set_param_writes_into_the_cell() {
     let mut prog = compile::<f32>("main = ?gain * 1.0").unwrap();
     let idx = prog.param_index("gain").unwrap();
     prog.set_param(idx, ParamValue::Float(2.0));
-    let mut out = [0.0f32; 1];
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(value_output(&prog), rill_lang::arena::Value::Float(2.0));
     // Second tick: the cell still holds 2.0 (persistence).
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(value_output(&prog), rill_lang::arena::Value::Float(2.0));
 }
 
@@ -49,11 +47,19 @@ fn param_reads_as_buffer_in_signal_context() {
         compile_with_ffi::<f32>("main = square 440.0 ?level 0.0", &ffi, 44100.0).unwrap();
     let idx = prog.param_index("level").unwrap();
     let mut out = [0.0f32; 4];
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
     assert_eq!(out, [0.0, 0.0, 0.0, 0.0], "level default is 0.0");
     prog.set_param(idx, ParamValue::Float(0.5));
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
-    assert_eq!(out, [0.5, 0.5, 0.5, 0.5], "the cell holds 0.5");
+    prog.run_value().unwrap();
+    assert!(prog.copy_output_samples(0, &mut out));
+    // A whole-buffer tick advances the square wave by a full block, so the
+    // second tick's first samples may be in either half-period; the amplitude
+    // is what proves the cell holds 0.5.
+    assert!(
+        out.iter().all(|v| (v.abs() - 0.5).abs() < 1e-6),
+        "the cell holds 0.5, got {out:?}"
+    );
 }
 
 #[test]
@@ -68,10 +74,9 @@ fn main_param_reads_as_value_in_value_context() {
         compile::<f32>(r"data Shape = Circle Float; main = case Circle ?g of { Circle r -> r; }")
             .unwrap();
     prog.set_param(prog.param_index("g").unwrap(), ParamValue::Float(2.5));
-    let mut out = [0.0f32; 4];
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(value_output(&prog), rill_lang::arena::Value::Float(2.5));
     // The cell survives into the next tick (persistence).
-    Algorithm::process(&mut prog, None, &mut out).unwrap();
+    prog.run_value().unwrap();
     assert_eq!(value_output(&prog), rill_lang::arena::Value::Float(2.5));
 }

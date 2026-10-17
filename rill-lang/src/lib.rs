@@ -1,7 +1,9 @@
 //! # rill-lang
 //!
-//! A Faust-style functional streaming DSL that compiles to a
-//! [`rill_core::Algorithm`]. See the crate guide for language details.
+//! A Faust-style functional streaming DSL that compiles to a runnable
+//! [`RillProgram`]: either the retained pure-value execution path
+//! ([`RillProgram::run_value`]) or the `main : IO ()` executor
+//! ([`ProgramRunner`]). See the crate guide for language details.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -29,12 +31,10 @@ pub mod mode;
 pub mod parser;
 pub mod prelude;
 pub mod program;
-pub mod program_engine;
 pub mod program_runner;
 pub mod reduce;
 pub mod register;
 pub mod render;
-pub mod runtime;
 pub mod serde_def;
 pub mod types;
 
@@ -55,23 +55,20 @@ pub use serde_def::{compile_def, RillLangDef};
 pub use builtin::{BuiltinKind, Registry};
 
 use rill_core::math::Transcendental;
-use rill_core_actor::Mailbox;
-use std::sync::Arc;
 
 use crate::mode::Mode;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
-/// Uses the runtime-safe default block size (`BUF = 256`); each block passed to
-/// `process` must be no longer than that.
+/// Uses the runtime-safe default block size (`BUF = 256`); a value tick runs
+/// one full block.
 ///
 /// ```
 /// use rill_lang::compile;
-/// use rill_core::traits::Algorithm;
 ///
 /// // A value-typed `main` is the program's single value output.
 /// let mut prog = compile::<f32>("main = 1.0 + 2.0").unwrap();
-/// prog.process(None, &mut [0.0f32; 2]).unwrap();
+/// prog.run_value().unwrap();
 /// assert_eq!(
 ///     prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
 ///     &rill_lang::arena::Value::Float(3.0)
@@ -140,28 +137,6 @@ pub fn compile_with_ffi_mode<T: Transcendental>(
     mode: Mode,
 ) -> Result<RillProgram<T, 256>, CompileError> {
     let ir = compile_to_ir(src, sample_rate, mode)?;
-    let registry = Registry::<T>::new();
-    RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
-}
-
-/// Like [`compile_with_ffi`], with explicit input/output channel counts known
-/// before launch (the retained multichannel signal path wires a backend with
-/// exactly these channels). `input_channels` sizes the program's input table;
-/// `output_channels` sizes the external output table.
-pub fn compile_with_ffi_channels<T: Transcendental>(
-    src: &str,
-    ffi: &crate::ffi::ForeignRegistry<T>,
-    sample_rate: f32,
-    input_channels: usize,
-    output_channels: usize,
-) -> Result<RillProgram<T, 256>, CompileError> {
-    let ir = compile_to_ir_channels(
-        src,
-        sample_rate,
-        Mode::Strict,
-        input_channels,
-        Some(output_channels),
-    )?;
     let registry = Registry::<T>::new();
     RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
 }
@@ -249,18 +224,6 @@ fn apply_api_mode(program: &mut crate::ast::Program, api_mode: Mode) {
 /// → mode resolution → infer → reduce → lower. The effective mode (pragma or
 /// API key) is threaded onto the [`TypedProgram`](types::infer::TypedProgram).
 fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileError> {
-    compile_to_ir_channels(src, sample_rate, mode, 0, None)
-}
-
-/// The shared source-compile pipeline with explicit I/O channels (see
-/// [`compile_with_ffi_channels`]).
-fn compile_to_ir_channels(
-    src: &str,
-    sample_rate: f32,
-    mode: Mode,
-    input_channels: usize,
-    output_channels: Option<usize>,
-) -> Result<Ir, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let (mut program, tape_decls) = extract_resources(&program)?;
@@ -271,144 +234,7 @@ fn compile_to_ir_channels(
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-    lower::lower_program_with_channels(
-        &typed,
-        sample_rate,
-        &typed.cafs,
-        typed.mode,
-        input_channels,
-        output_channels,
-    )
-}
-
-/// Compile an already-parsed AST `Program` into a graph engine that supports SetParameter.
-pub fn compile_program<T: Transcendental, const BUF: usize>(
-    program: &crate::ast::Program,
-    registry: &Registry<T>,
-    sample_rate: f32,
-) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    compile_program_mode(program, registry, sample_rate, Mode::Strict)
-}
-
-/// Like [`compile_program`], under an explicit evaluation mode (the file's
-/// `{-# MODE ... #-}` pragma overrides the API key).
-pub fn compile_program_mode<T: Transcendental, const BUF: usize>(
-    program: &crate::ast::Program,
-    registry: &Registry<T>,
-    sample_rate: f32,
-    mode: Mode,
-) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    compile_program_inner(program, registry, sample_rate, None, mode)
-}
-
-/// Compile an AST program against a pre-built resource registry.
-///
-/// The registry is shared (e.g. one tape across recording + playback engines);
-/// the caller owns it and must keep it alive while both engines run. The DSL's
-/// `TapeLoop <capacity>` declaration is only a declaration: when an external
-/// registry is supplied, its tape capacity is used. Every resource referenced
-/// by the program must exist in `resources`, otherwise the program fails with
-/// `Unsupported` rather than compiling to a silently dead engine (a write head
-/// without a writer, a read head without a reader).
-pub fn compile_program_with_resources<T: Transcendental, const BUF: usize>(
-    program: &crate::ast::Program,
-    registry: &Registry<T>,
-    sample_rate: f32,
-    resources: &mut rill_core::buffer::ResourceRegistry<T>,
-) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    compile_program_with_resources_mode(program, registry, sample_rate, resources, Mode::Strict)
-}
-
-/// Like [`compile_program_with_resources`], under an explicit evaluation mode
-/// (the file's `{-# MODE ... #-}` pragma overrides the API key).
-pub fn compile_program_with_resources_mode<T: Transcendental, const BUF: usize>(
-    program: &crate::ast::Program,
-    registry: &Registry<T>,
-    sample_rate: f32,
-    resources: &mut rill_core::buffer::ResourceRegistry<T>,
-    mode: Mode,
-) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    compile_program_inner(program, registry, sample_rate, Some(resources), mode)
-}
-
-fn compile_program_inner<T: Transcendental, const BUF: usize>(
-    program: &crate::ast::Program,
-    registry: &Registry<T>,
-    sample_rate: f32,
-    mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
-    api_mode: Mode,
-) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    let (mut program, resource_decls) = extract_resources(program)?;
-    apply_api_mode(&mut program, api_mode);
-
-    let mut typed = types::infer::infer_program_with(&program, program.mode)?;
-    typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-
-    // The DSL `tape_loop` path (no external registry) resolves a resource
-    // param's `Ref(name)` to a tape INDEX via the extracted declarations. The
-    // caller-supplied-registry path (graph duplex) keeps name-based bindings —
-    // its `Ref`s resolve against the shared external registry at build.
-    if resources.is_none() {
-        typed.tape_decls = resource_decls
-            .iter()
-            .map(|d| (d.name.clone(), d.capacity))
-            .collect();
-    }
-    let ir = lower::lower_with_cafs_mode(&typed, sample_rate, &typed.cafs, typed.mode)?;
-
-    if let Some(res) = &mut resources {
-        for bi in &ir.builtins {
-            if let Some(name) = &bi.resource {
-                if res.reader(name).is_none() {
-                    return Err(CompileError::Unsupported(format!(
-                        "resource '{}' not found in the provided registry",
-                        name
-                    )));
-                }
-            }
-        }
-        let rp = RillProgram::<T, BUF>::new_with_resources(ir, registry, sample_rate, res, None)?;
-        let mailbox = Arc::new(Mailbox::new(64));
-        return Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox));
-    }
-
-    // DSL path: every tape binding must resolve to a declared `tape_loop` cell.
-    for bi in &ir.builtins {
-        if let Some(res) = &bi.resource {
-            return Err(CompileError::Unsupported(format!(
-                "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>` or pass a registry)",
-                bi.name, res
-            )));
-        }
-    }
-    let rp = RillProgram::<T, BUF>::new_with(ir, registry, sample_rate, None)?;
-    let mailbox = Arc::new(Mailbox::new(64));
-    Ok(program_engine::ProgramEngine::<T, BUF>::new(rp, mailbox))
-}
-
-/// Compile rill-lang source into a graph engine that supports SetParameter.
-///
-/// `BUF` is the block size the caller will feed the engine each tick; all
-/// internal buffers are pre-allocated to this size at construction.
-pub fn compile_graph<T: Transcendental, const BUF: usize>(
-    src: &str,
-    registry: &Registry<T>,
-    sample_rate: f32,
-) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    compile_graph_mode(src, registry, sample_rate, Mode::Strict)
-}
-
-/// Like [`compile_graph`], under an explicit evaluation mode (the file's
-/// `{-# MODE ... #-}` pragma overrides the API key).
-pub fn compile_graph_mode<T: Transcendental, const BUF: usize>(
-    src: &str,
-    registry: &Registry<T>,
-    sample_rate: f32,
-    mode: Mode,
-) -> Result<program_engine::ProgramEngine<T, BUF>, CompileError> {
-    let tokens = lexer::tokenize(src)?;
-    let program = parser::parse(&tokens, src.as_bytes())?;
-    compile_program_mode::<T, BUF>(&program, registry, sample_rate, mode)
+    lower::lower_with_cafs_mode(&typed, sample_rate, &typed.cafs, typed.mode)
 }
 
 /// A named resource declaration (e.g. a tape loop) from the DSL.
