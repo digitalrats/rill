@@ -3,7 +3,9 @@
 //! `stdin :: InputStream String`, `stdout`/`stderr :: OutputStream String` are
 //! the runner's realized console (line-oriented text — rill has no
 //! `ByteString`); `show_float`/`show_int`/`show_bool` render scalars to
-//! `String`. The last test runs the spec's §7 reference program end-to-end.
+//! `String`. `reference_program_runs` runs the spec's §7 reference program
+//! end-to-end, and `write_nothing_does_not_close_the_console` pins the console
+//! close semantics the rest of this file relies on.
 
 use rill_lang::builtin::Registry;
 use rill_lang::compile_runner;
@@ -109,11 +111,38 @@ main = do {
     // `ys` is drained by `toList` for the memory-stream round-trip but not
     // rendered: the spec's `show ys` needs list rendering, which is out of
     // scope here, so the scalar `runST` result is the observable payload.
+    //
+    // The exact line pins the §7 payload: the region runs AND `writeSTRef`'s
+    // write is observed (`readSTRef` yields 42.0, not the 0.0 initial value).
+    // `show_float` renders an integral f64 via `{:?}` → `"42.0"`, which is
+    // deterministic (a fixed value, a fixed formatter — no locale or formatting
+    // state involved).
     let (stdout, _) = run(src, &[]);
-    assert!(
-        stdout.iter().any(|line| line.contains("sum-ish")),
-        "the reference program must report its STRef result: {stdout:?}"
-    );
+    assert_eq!(stdout, ["sum-ish: 42.0"]);
+}
+
+#[test]
+fn write_nothing_does_not_close_the_console() {
+    // Pins the console-close decision: `write Nothing` to a stdio handle is the
+    // io-streams close signal but is INERT for the runner's console, because
+    // `stdout`/`stderr` are output handles of the realized `World` (owned by the
+    // runner for its whole lifetime), not program-owned streams. A later `Just`
+    // write must therefore still arrive. Only program-owned `makeOutputStream`
+    // sinks close on `write Nothing` (see `io_streams_memory.rs`); a regression
+    // to latching-close here would also break the two Task 3 tests that use
+    // `write Nothing stdout` as a per-write stop signal.
+    let src = r#"
+main = do {
+    write Nothing stdout;
+    write (Just "after") stdout;
+    write Nothing stderr;
+    write (Just "err-after") stderr;
+    return ()
+};
+"#;
+    let (stdout, stderr) = run(src, &[]);
+    assert_eq!(stdout, ["after"]);
+    assert_eq!(stderr, ["err-after"]);
 }
 
 #[test]
