@@ -3192,8 +3192,56 @@ fn is_builtin_sig_var(ctx: &Ctx, name: &str) -> bool {
         && !ctx.env.data_arities.contains_key(name)
 }
 
-/// Convert a builtin signature to a `ValueTy`, INSTANTIATING its type
-/// variables.
+/// Collect every `forall`-bound name in a type expression, nested ones
+/// included, in source order (duplicates are harmless — the binder map is
+/// keyed by name).
+fn collect_forall_binders(te: &crate::ast::TypeExpr, out: &mut Vec<String>) {
+    use crate::ast::TypeExpr;
+    match te {
+        TypeExpr::TForall(bound, inner) => {
+            out.extend(bound.iter().cloned());
+            collect_forall_binders(inner, out);
+        }
+        TypeExpr::TApp(_, args) => {
+            for a in args {
+                collect_forall_binders(a, out);
+            }
+        }
+        TypeExpr::TFunc(args, ret) => {
+            for a in args {
+                collect_forall_binders(a, out);
+            }
+            collect_forall_binders(ret, out);
+        }
+        TypeExpr::TName(_) => {}
+    }
+}
+
+/// Pre-bind every `forall` binder of a builtin signature into `vars`.
+///
+/// A `TForall` quantifies over the WHOLE signature, not just the sub-expression
+/// it is written on, so the binder must exist before the parameter types are
+/// instantiated. Without this hoist, a signature whose binders appear in result
+/// position (`readSTRef :: STRef s a -> forall s. ST s a`) binds the result's
+/// `s` to a var unrelated to the argument's: the region phantom is then severed
+/// and a cell from one region can be written inside another region.
+fn hoist_forall_binders(
+    ctx: &mut Ctx,
+    params: &[crate::ast::TypeExpr],
+    ret: &crate::ast::TypeExpr,
+    vars: &mut HashMap<String, ValueTy>,
+) {
+    let mut binders: Vec<String> = Vec::new();
+    for p in params {
+        collect_forall_binders(p, &mut binders);
+    }
+    collect_forall_binders(ret, &mut binders);
+    for name in binders {
+        vars.entry(name).or_insert_with(|| ctx.fresh_vty());
+    }
+}
+
+/// Convert a builtin signature to a `ValueTy`, INSTANTIATING its type variables.
 ///
 /// A `TForall` binder is stripped and each bound name — like each remaining
 /// free type-variable name (`a`, `b`, …) — is replaced by one fresh inference
@@ -3202,6 +3250,10 @@ fn is_builtin_sig_var(ctx: &Ctx, name: &str) -> bool {
 /// argument and result types; inside `runST (\s -> …)` the instantiated region
 /// variable unifies with the enclosing region's `TyConVar`, which is exactly
 /// what makes an escaping `STRef s a` a compile-time error.
+///
+/// Binders are hoisted over the whole call by [`hoist_forall_binders`] before
+/// this runs, so a `TForall` in result position still shares its variable with
+/// the parameters.
 ///
 /// A name that resolves through the caller's locals to a region phantom is
 /// left as that phantom (mirroring [`type_expr_to_vty`]); declared type names
@@ -3251,9 +3303,13 @@ fn instantiate_builtin_sig_vty(
             ))
         }
         TypeExpr::TForall(bound, inner) => {
+            // REUSE the hoisted binder (see `hoist_forall_binders`): rebinding
+            // here would give the quantified variable a second, unrelated
+            // inference variable and silently sever it from the occurrences
+            // instantiated BEFORE this point — the region phantom would then
+            // not link `STRef s a ->` to `ST s a`.
             for n in bound {
-                let v = ctx.fresh_vty();
-                vars.insert(n.clone(), v);
+                vars.entry(n.clone()).or_insert_with(|| ctx.fresh_vty());
             }
             instantiate_builtin_sig_vty(ctx, inner, vars)
         }
@@ -3616,7 +3672,12 @@ fn infer_apply_impl(
         // Instantiate the signature's type variables ONCE for the whole call,
         // so the arguments and the result share them (a `forall`-bound region
         // variable in the STRef signatures, plus the free element variable).
+        // The binders are hoisted over the WHOLE signature first: those
+        // signatures quantify `s` in result position, so binding it lazily
+        // while instantiating the result would leave the already-instantiated
+        // parameter's `s` unrelated — severing the region phantom.
         let mut sig_vars: HashMap<String, ValueTy> = HashMap::new();
+        hoist_forall_binders(ctx, &params, &ret, &mut sig_vars);
         let param_tys: Vec<ValueTy> = params
             .iter()
             .map(|p| instantiate_builtin_sig_vty(ctx, p, &mut sig_vars))
@@ -4469,6 +4530,17 @@ fn infer_apply_impl(
             let mut arg_vtys = Vec::with_capacity(args.len());
             for (i, a) in args.iter().enumerate() {
                 if i == container_idx {
+                    // The container argument IS the method's container
+                    // parameter: unify the two so the payload/head args inside
+                    // it are shared with the remaining parameters. Without this
+                    // the type variable a caller binds from the container (the
+                    // element type in `x <- mx`) never meets the method's own
+                    // `a`, so a `do`-bound name keeps an unconstrained type
+                    // until its first use — enough to let a cell from one ST
+                    // region be used inside another.
+                    if let Some(exp) = param_tys.get(i) {
+                        unify_value(&container_vty, exp, &mut ctx.subst, a.span())?;
+                    }
                     arg_vtys.push(container_vty.clone());
                 } else {
                     let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);

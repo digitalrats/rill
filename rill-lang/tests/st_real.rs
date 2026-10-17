@@ -64,7 +64,44 @@ fn stref_escaping_region_is_compile_error() {
     };
     let msg = format!("{err}");
     assert!(
-        msg.contains("escape") || msg.contains("phantom"),
-        "expected an escaping-region type error, got: {msg}"
+        msg.contains("ST region result escapes the phantom type s"),
+        "expected the escaping-region type error, got: {msg}"
     );
+}
+
+#[test]
+fn nested_region_cannot_use_an_outer_region_cell() {
+    // Region isolation: a cell created in region A must not be reachable from a
+    // NESTED region B. `writeSTRef`'s `STRef s a` parameter and its `ST s ()`
+    // result must share ONE region phantom — that shared `s` is what links the
+    // operation to the region it runs in. If the signature's `s` were
+    // instantiated independently for the parameter and the result, the inner
+    // `writeSTRef r 99.0` would type-check against region B while mutating
+    // region A's cell (the cell table is global).
+    let err = match compile::<f32>(
+        "{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 1.0; c <- newSTRef (runST (\\s2 -> writeSTRef r 99.0)); v <- readSTRef r; return v });",
+    ) {
+        Ok(_) => panic!("a nested region must not be able to use an outer region's cell"),
+        Err(err) => err,
+    };
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("ST region result escapes the phantom type s"),
+        "expected the region-isolation type error, got: {msg}"
+    );
+}
+
+#[test]
+fn runst_forces_a_thunk_argument() {
+    // A typeclass instance body is re-inlined at LOWERING (`method_lifting`), so
+    // its `let` survives `reduce` and lowers to `Expr::Let` → a `ValueLazy`
+    // thunk. The register handed to `runST` therefore holds a THUNK, not the
+    // `ST` record. (`runST` must force it to WHNF before projecting `unST`;
+    // otherwise the region produces no result at all and the output stays
+    // unbound.) A top-level `let` would be inlined by `reduce` and never reach
+    // this path, which is why the body lives in an instance method.
+    let v = run_value_output(
+        "{-# MODE complete #-}\ntypeclass Hold a where { hold: a -> Float; }\ninstance Hold Float where { hold x = runST (\\s -> let act = ST { unST: \\t -> Pair { first: t, second: x } } in act); }\nmain = hold 5.0;",
+    );
+    assert_eq!(v, Value::Float(5.0));
 }

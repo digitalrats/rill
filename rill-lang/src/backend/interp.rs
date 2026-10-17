@@ -267,6 +267,20 @@ fn latch_exhaustion<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// Latch a value-track FAULT as a user-facing `ProcessError`: an internal
+/// invariant violation (a primitive effect with an unbound operand), as opposed
+/// to [`latch_exhaustion`]'s resource limits. First latch wins.
+fn latch_fault<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    what: &'static str,
+) {
+    if prog.value_error.is_none() {
+        prog.value_error = Some(ProcessError::processing(format!(
+            "value-track fault: {what}"
+        )));
+    }
+}
+
 /// Whether a value register holds `Bool(true)`. Non-Bool/`None` is `false`
 /// (defensive; static typing guarantees a Bool here).
 fn value_reg_is_true<T: Transcendental, const BUF: usize>(
@@ -1147,6 +1161,15 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // primitive effect closure must run (effects are strict), and a
             // thunk callee is forced before application — both go through
             // `apply_callable`.
+            //
+            // Trade-off: forcing a THUNK callee here applies it eagerly, i.e. it
+            // removes call deferral for that one shape. That is what makes an
+            // `ST` action reached through a `let` run at all (the `Monad (ST s)`
+            // instance body is inlined at lowering, so its callee can be a
+            // thunk), and it only ever upgrades a call that previously produced
+            // nothing — an infinite structure cannot be applied as a function,
+            // so no terminating program loses an answer that used to be
+            // returned.
             if !matches!(prog.arena.get(cr), Some(Value::Callable { cell: None, .. })) {
                 let arg = args
                     .first()
@@ -1467,7 +1490,17 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 let mut fields: Vec<crate::arena::ArenaRef> = Vec::with_capacity(args.len());
                 for a in args {
                     let Some(r) = prog.value_regs.get(*a + base).copied().flatten() else {
-                        continue;
+                        // `exec_st_effect` reads the captured operands
+                        // POSITIONALLY, so skipping an unbound one would
+                        // silently re-index the rest — a missing FIRST operand
+                        // would turn the stored value into the cell handle.
+                        // Typed code cannot reach this; fail loudly instead.
+                        for f in &fields {
+                            prog.arena.drop_ref(*f);
+                        }
+                        prog.value_regs[*dst + base] = None;
+                        latch_fault(prog, "primitive effect with an unbound operand");
+                        return;
                     };
                     match copy_owned(prog, r) {
                         Some(c) => fields.push(c),
@@ -2703,9 +2736,15 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
     st_value: crate::arena::ArenaRef,
     drops: &mut Vec<crate::arena::ArenaRef>,
 ) -> Option<crate::arena::ArenaRef> {
+    // The argument may arrive as a THUNK, not an eager record: lowering
+    // re-inlines typeclass instance bodies, so a `let`-bound `ST` value lowers
+    // to a `ValueLazy` thunk whose register is handed straight to `runST`.
+    // Force it to WHNF before projecting `unST`. (`force` memoizes in place and
+    // the caller keeps ownership of `st_value`, so no drop happens here.)
+    let st_ref = force(prog, st_value, drops);
     // `ST s a` is `{ unST: STState -> Pair STState a }`: field 0 is the region
     // computation.
-    let un_st = match prog.arena.get(st_value) {
+    let un_st = match prog.arena.get(st_ref) {
         Some(Value::Record(fields)) => fields.first().copied(),
         _ => None,
     };
@@ -2715,9 +2754,14 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
         cells: Vec::new(),
         cell_base,
     });
-    let state = alloc_owned(prog, Value::Opaque(region_id));
-    let result = match (un_st, state) {
-        (Some(un_st), Some(state)) => {
+    let result = match un_st {
+        Some(un_st) => {
+            // Allocate the region token only once there is computation to run;
+            // the `None` arm below then has nothing to release.
+            let Some(state) = alloc_owned(prog, Value::Opaque(region_id)) else {
+                finish_region(prog);
+                return None;
+            };
             // `unST` is a complete-mode computation: the applied result may be
             // a suspended call, so force it to WHNF before reading the Pair.
             let pair =
@@ -2726,7 +2770,7 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
             prog.arena.drop_ref(state);
             // The region result is the pair's `second` field; the final state
             // (`first`) is discarded with the pair.
-            let out = match pair {
+            match pair {
                 Some(pair) => {
                     // Force the region result: leaving the region is a strict
                     // boundary, so the payload must be materialized while its
@@ -2741,13 +2785,18 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
                     out
                 }
                 None => None,
-            };
-            out
+            }
         }
-        _ => None,
+        None => None,
     };
-    // Leave the region: release the cells it allocated and truncate the table
-    // back to the region's mark (regions nest LIFO, so no outer cell is lost).
+    finish_region(prog);
+    result
+}
+
+/// Leave the innermost `ST` region: release every cell it allocated and
+/// truncate the cell table back to the region's mark. Regions nest LIFO, so no
+/// outer cell is lost. The caller supplies `runST`'s result; this only unwinds.
+fn finish_region<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>) {
     if let Some(region) = prog.regions.pop() {
         for id in region.cells {
             if let Some(slot) = prog.st_cells.get_mut(id as usize) {
@@ -2758,7 +2807,6 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
         }
         prog.st_cells.truncate(region.cell_base);
     }
-    result
 }
 
 /// Execute a fragment body for a callable value: binds the captured env fields
@@ -3323,6 +3371,102 @@ mod closure_dispatch_tests {
         let v = prog.value_outputs()[0].unwrap();
         assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(7));
     }
+
+    #[test]
+    fn lazy_call_forces_a_thunk_callee() {
+        // A `ValueCallLazy` whose callee register holds a THUNK (a `ValueLazy`
+        // binding, as produced by a lowering-inlined `let` or a recursive CAF)
+        // must force the callee and apply it. The callee thunk's fragment 0
+        // returns an EAGER closure over fragment 1, which echoes its argument;
+        // register 3 is that argument (9).
+        let ir = Ir {
+            num_inputs: 0,
+            num_outputs: 0,
+            state: Default::default(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            num_main_cells: 0,
+            value_blocks: vec![ValueBlock {
+                instrs: vec![
+                    // Dummy `Void` cell as the thunk's capture environment (the
+                    // same shape `emit_env_snapshot` uses when nothing is
+                    // captured).
+                    ValueInstr::ValueBindCell { dst: 0 },
+                    ValueInstr::ValueLazy {
+                        dst: 1,
+                        env: 0,
+                        fragment: 0,
+                    },
+                    ValueInstr::ValueConstInt { dst: 3, value: 9 },
+                    ValueInstr::ValueCallLazy {
+                        dst: 2,
+                        closure_slot: 1,
+                        args: vec![3],
+                    },
+                ],
+                term: ValueTerm::Halt,
+            }],
+            value_entry: 0,
+            num_value_regs: 4,
+            value_output_regs: vec![2],
+            value_funcs: Vec::new(),
+            max_call_regs: 2,
+            value_state: ValueLayout {
+                capacity: 16,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+            fragments: vec![
+                // Thunk body: return an eager closure over fragment 1.
+                std::sync::Arc::new(FragmentIr {
+                    value_blocks: vec![ValueBlock {
+                        instrs: vec![
+                            ValueInstr::ValueBindCell { dst: 0 },
+                            ValueInstr::ValueMakeClosure {
+                                dst: 1,
+                                env: 0,
+                                fragment: 1,
+                            },
+                        ],
+                        term: ValueTerm::Halt,
+                    }],
+                    entry: 0,
+                    num_value_regs: 2,
+                    output_value_regs: vec![1],
+                    num_capture_cells: 0,
+                    sig: FuncSig {
+                        value_ins: 0,
+                        value_outs: 1,
+                        signal_ins: 0,
+                    },
+                }),
+                // Applied body: echo the single argument.
+                std::sync::Arc::new(FragmentIr {
+                    value_blocks: vec![ValueBlock {
+                        instrs: vec![],
+                        term: ValueTerm::Halt,
+                    }],
+                    entry: 0,
+                    num_value_regs: 1,
+                    output_value_regs: vec![0],
+                    num_capture_cells: 0,
+                    sig: FuncSig {
+                        value_ins: 1,
+                        value_outs: 1,
+                        signal_ins: 0,
+                    },
+                }),
+            ],
+        };
+        let mut prog = RillProgram::<f32, 256>::new(ir);
+        let mut out = [0.0f32; 2];
+        MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
+        let v = prog.value_outputs()[0].expect("the lazy call must produce a value");
+        assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(9));
+    }
 }
 
 #[cfg(test)]
@@ -3414,6 +3558,34 @@ mod value_track_tests {
         assert_eq!(val, &crate::arena::Value::Int(7));
         let read = prog.value_regs[2].unwrap();
         assert_eq!(prog.arena.get(read).unwrap(), &crate::arena::Value::Int(7));
+    }
+
+    #[test]
+    fn effect_closure_with_unbound_operand_is_a_latched_fault() {
+        // Neither operand register is bound. The effect closure must NOT be
+        // built from the remaining operands: `exec_st_effect` reads the
+        // captured fields positionally, so a shortened record would turn the
+        // stored value into the cell handle. The op yields no value and latches
+        // a (user-facing) fault instead.
+        let mut prog = prog_with(
+            vec![ValueBlock {
+                instrs: vec![ValueInstr::ValueEffectOp {
+                    dst: 1,
+                    op: crate::ir::ValueEffectOp::WriteStRef,
+                    args: vec![0, 0],
+                }],
+                term: ValueTerm::Halt,
+            }],
+            0,
+            2,
+            0,
+        );
+        let err = run_value_track(&mut prog).expect_err("an unbound operand must latch a fault");
+        assert!(
+            format!("{err}").contains("unbound operand"),
+            "expected the effect-fault message, got: {err}"
+        );
+        assert_eq!(prog.value_regs[1], None, "the effect must yield no value");
     }
 
     #[test]
