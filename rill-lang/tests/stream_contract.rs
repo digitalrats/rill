@@ -27,10 +27,11 @@ fn assert_io_void(t: &rill_lang::types::infer::TypedProgram) {
 fn run_stream_identity_types_io_void() {
     // `handler ins outs = do { write outs (read ins); return () }; main = runStream handler`
     // is the stream form of the 1→1 identity: read all inputs, write them back.
-    // The handler is a multi-parameter definition (flat `Thunk`, matching
-    // `runStream`'s `(InputStream Buffer -> OutputStream Buffer -> IO ())`);
-    // literal lambdas are strictly unary and curry (nested `Thunk`), so a
-    // handler is written as a named definition.
+    // The handler is a multi-parameter definition; the parser curries it into
+    // nested single-argument lambdas (`\ins -> \outs -> …`), producing a
+    // NESTED `Thunk` that matches `runStream`'s declared (also nested)
+    // `InputStream Buffer -> OutputStream Buffer -> IO ()`. Literal lambdas
+    // are strictly unary, so a handler is written as a named definition.
     let t = ty_of(
         "handler ins outs = do { write outs (read ins); return () }; main = runStream handler",
     );
