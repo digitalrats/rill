@@ -103,6 +103,49 @@ fn dispatch_solves_class_var_from_pair_shaped_index() {
 }
 
 #[test]
+fn dispatch_nullary_method_ref_with_applied_head() {
+    // A bare reference to a result-directed method (`empty: a`) carries no
+    // argument to select on: the expected result type does. For an applied-head
+    // instance that type is `Pair Int Int`, so lowering must key by the FULL
+    // type — keying by the head name alone (`Pair`) names no instance.
+    //
+    // The record field pins the expected type (a plain user signature of a
+    // record type reaches lowering as a bare `Pair`, and an unused parameter is
+    // never lowered, so both would hide the dispatch).
+    let src = r#"
+        typeclass C a where { empty: a; }
+        instance C (Pair Int Int) where { empty = (0,9); }
+        data Holder = { h: Pair Int Int };
+        sum2 p = p.first + p.second;
+        main = sum2 (Holder { h: empty }).h;
+    "#;
+    assert_eq!(run(src), 9.0, "`empty` must resolve `C (Pair Int Int)`");
+}
+
+#[test]
+fn dispatch_selects_the_class_var_argument_when_it_is_not_first() {
+    // `pick`'s class-var argument is the SECOND one (`Pair a a`); the `Float`
+    // at 0 says nothing about the instance. Selecting on the first argument
+    // would unify `Pair a a` against `Float`, fail, and fall back to the wrong
+    // head — the Haskell-2010-natural `index: Array a -> i -> a` shape.
+    let src = r#"
+        typeclass Pick a where { pick: Float -> Pair a a -> Float; }
+        instance Pick Int where { pick b p = 1.0; }
+        instance Pick (Pair Int Int) where { pick b p = 2.0; }
+    "#;
+    assert_eq!(
+        run(&format!("{src}\n main = pick 1.0 (0,9);")),
+        1.0,
+        "`Pair Int Int` must solve the class variable to `Int`"
+    );
+    assert_eq!(
+        run(&format!("{src}\n main = pick 1.0 ((0,0),(2,2));")),
+        2.0,
+        "the nested index must select `Pick (Pair Int Int)`"
+    );
+}
+
+#[test]
 fn dispatch_still_uses_the_head_name_for_bare_constructor_instances() {
     // Backward compatibility: a class whose instance head is a bare constructor
     // (`Monoid List` / a probe `C2 List`) is keyed by that head name, while the

@@ -867,6 +867,55 @@ pub(crate) fn class_var_pattern_vty(
     )
 }
 
+/// Whether a method signature's RESULT is the bare class variable itself
+/// (`mempty: m`, `empty: a`) — the only shape for which a call site's expected
+/// type IS the class variable's value. A signature that merely MENTIONS the
+/// class variable in its result (`wrap: Float -> Pair a a`) does not qualify:
+/// its expected type is an application of the class variable, not the variable
+/// itself, so taking it as the solved value would dispatch on the wrong key.
+/// `forall`/constraint wrappers are transparent (mirrors [`sig_result_directed`]).
+fn sig_result_is_bare_class_var(sig: &crate::ast::TypeExpr, class_var: &str) -> bool {
+    match sig {
+        crate::ast::TypeExpr::TConstrained(_, inner) | crate::ast::TypeExpr::TForall(_, inner) => {
+            sig_result_is_bare_class_var(inner, class_var)
+        }
+        crate::ast::TypeExpr::TName(n) => n == class_var,
+        crate::ast::TypeExpr::TFunc(_, ret) => sig_result_is_bare_class_var(ret, class_var),
+        _ => false,
+    }
+}
+
+/// The argument an ARITY-0 method dispatch solves the class variable from.
+///
+/// Two criteria must agree, because the concrete type that solves the variable
+/// must come from an argument whose signature type CONSTRAINS it:
+///
+/// 1. the argument's signature type MENTIONS the class variable — otherwise its
+///    value says nothing about the instance (`pick: Bool -> Pair a a -> Float`
+///    must select on argument 1, not on the `Bool` at 0), and
+/// 2. the argument is not a bare nullary method reference — `mappend mempty xs`
+///    must select on `xs`, even though `mappend: m -> m -> m` mentions the class
+///    variable at both positions.
+///
+/// A signature with no class-var argument at all (`show: a`, `empty: a`) has no
+/// mentioning index: the class variable IS the argument type, so the first
+/// argument that is not a nullary method reference selects. `None` when only
+/// nullary method references are available (the caller reports it).
+pub(crate) fn class_var_selector_index(
+    sig: &crate::ast::TypeExpr,
+    class_var: &str,
+    n_args: usize,
+    mut is_bare_nullary_method_ref: impl FnMut(usize) -> bool,
+) -> Option<usize> {
+    let indices = crate::types::ty::class_var_param_indices(sig, class_var);
+    if indices.is_empty() {
+        return (0..n_args).find(|i| !is_bare_nullary_method_ref(*i));
+    }
+    indices
+        .into_iter()
+        .find(|i| *i < n_args && !is_bare_nullary_method_ref(*i))
+}
+
 /// The instance-registry key and class-variable substitution for a class-method
 /// dispatch, given the method's resolved CONTAINER type `selector_ty` (the
 /// expected result type for a result-directed method, the selector argument's
@@ -910,11 +959,13 @@ pub(crate) fn method_dispatch_key(
         let solved = env
             .class_var_solved_ty(sig, class_var, selector_ty, class_var_var, fresh)
             .or_else(|| {
-                // No parameter mentions the class variable, so the method's
-                // RESULT is the class variable itself (`mempty: m`) and the
-                // caller's container type is its value.
+                // No parameter mentions the class variable, so the variable can
+                // only be the method's RESULT — and only when the result IS the
+                // bare class variable (`mempty: m`). A result that merely
+                // MENTIONS it (`wrap: Float -> Pair a a`) says nothing about the
+                // instance, so the head-name fallback below handles it.
                 let in_params = crate::types::ty::class_var_param_pattern(sig, class_var).is_some();
-                if in_params || !type_expr_mentions(sig, class_var) {
+                if in_params || !sig_result_is_bare_class_var(sig, class_var) {
                     None
                 } else {
                     Some(selector_ty.clone())
@@ -4516,13 +4567,23 @@ fn infer_apply_impl(
                         span,
                     });
                 }
-                // Selector: the first argument that is not a bare nullary method
-                // ref (`mappend xs mempty` — `xs` selects; `mempty` resolves by
-                // that type name).
-                let selector_idx = args
-                    .iter()
-                    .position(|a| !is_bare_nullary_method_ref(ctx, a, &class_name))
-                    .unwrap_or(0);
+                // Selector: the argument whose signature type mentions the class
+                // variable AND which is not a bare nullary method ref — both
+                // criteria must agree, because the same argument's concrete type
+                // solves the class variable (`pick: Bool -> Pair a a -> Float`
+                // selects on the `Pair`, `mappend mempty xs` on `xs`).
+                let Some(selector_idx) =
+                    class_var_selector_index(sig, &class_var, args.len(), |i| {
+                        is_bare_nullary_method_ref(ctx, &args[i], &class_name)
+                    })
+                else {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "cannot resolve method `{name}` of `{class_name}`: no argument can select the instance (every class-var argument is a nullary method reference)"
+                        ),
+                        span,
+                    });
+                };
                 let arg_vty = infer_method_value_vty(ctx, &args[selector_idx], "argument")?;
                 let env = ctx.env.clone();
                 let cv_var = ctx.fresh_id();
@@ -5742,6 +5803,7 @@ fn reject_value_channels(t: &ArrowTy, span: Span) -> Result<(), CompileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::TypeExpr;
     use crate::lexer::tokenize;
     use crate::parser::parse;
 
@@ -5750,6 +5812,53 @@ mod tests {
             &parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap(),
             Mode::default(),
         )
+    }
+
+    #[test]
+    fn only_a_bare_class_var_result_is_selected_by_expected_type() {
+        // A `mempty: m`-shaped result IS the class variable, so a call site's
+        // expected type is its value — the "result-directed" solve. A result
+        // that merely MENTIONS the variable (`wrap: Float -> Pair a a`) is an
+        // APPLICATION of it: taking the expected type as the solved value would
+        // dispatch on the wrong key, so that shape must not qualify.
+        let expected_shape =
+            |ret: TypeExpr| TypeExpr::TFunc(vec![TypeExpr::TName("Float".into())], Box::new(ret));
+        let pair_of_var = TypeExpr::TApp(
+            "Pair".into(),
+            vec![TypeExpr::TName("a".into()), TypeExpr::TName("a".into())],
+        );
+        assert!(
+            sig_result_is_bare_class_var(&TypeExpr::TName("a".into()), "a"),
+            "a bare `a` signature is the class variable itself"
+        );
+        assert!(
+            sig_result_is_bare_class_var(&expected_shape(TypeExpr::TName("a".into())), "a"),
+            "a function returning the bare class variable is result-directed too"
+        );
+        assert!(
+            !sig_result_is_bare_class_var(&expected_shape(pair_of_var), "a"),
+            "`Float -> Pair a a` only MENTIONS the class variable"
+        );
+        assert!(
+            !sig_result_is_bare_class_var(
+                &TypeExpr::TFunc(
+                    vec![TypeExpr::TName("Float".into())],
+                    Box::new(TypeExpr::TName("b".into())),
+                ),
+                "a"
+            ),
+            "a different type variable is not the class variable"
+        );
+        assert!(
+            sig_result_is_bare_class_var(
+                &TypeExpr::TConstrained(
+                    vec![("Eq".into(), "a".into())],
+                    Box::new(TypeExpr::TName("a".into())),
+                ),
+                "a"
+            ),
+            "a constraint wrapper is transparent"
+        );
     }
 
     #[test]

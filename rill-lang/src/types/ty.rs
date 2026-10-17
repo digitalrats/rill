@@ -1523,6 +1523,29 @@ impl TypeEnv {
     }
 }
 
+/// Every argument index in a method signature whose type MENTIONS the class
+/// variable (`[0, 1]` for `mappend: m -> m -> m`, `[1]` for
+/// `pick: Bool -> Pair a a -> Float`). Empty when no argument mentions it (a
+/// nullary method such as `mempty: m`).
+///
+/// Callers select the dispatch selector from these indices: the class variable
+/// must be solved from an argument whose signature type constrains it, not just
+/// from whichever argument happens to come first.
+pub(crate) fn class_var_param_indices(sig: &crate::ast::TypeExpr, class_var: &str) -> Vec<usize> {
+    match sig {
+        crate::ast::TypeExpr::TConstrained(_, inner) | crate::ast::TypeExpr::TForall(_, inner) => {
+            class_var_param_indices(inner, class_var)
+        }
+        crate::ast::TypeExpr::TFunc(args, _) => args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| crate::types::infer::type_expr_mentions(a, class_var))
+            .map(|(i, _)| i)
+            .collect(),
+        _ => vec![],
+    }
+}
+
 /// The index of the first argument in a method signature whose type MENTIONS
 /// the class variable (`Pair i i` in `index: Pair i i -> i -> Int`), i.e. the
 /// argument whose pattern is unified against the call site's concrete selector
@@ -1532,15 +1555,7 @@ pub(crate) fn class_var_param_pattern(
     sig: &crate::ast::TypeExpr,
     class_var: &str,
 ) -> Option<usize> {
-    match sig {
-        crate::ast::TypeExpr::TConstrained(_, inner) | crate::ast::TypeExpr::TForall(_, inner) => {
-            class_var_param_pattern(inner, class_var)
-        }
-        crate::ast::TypeExpr::TFunc(args, _) => args
-            .iter()
-            .position(|a| crate::types::infer::type_expr_mentions(a, class_var)),
-        _ => None,
-    }
+    class_var_param_indices(sig, class_var).into_iter().next()
 }
 
 /// Normalize a value type for instance-head matching: every concrete

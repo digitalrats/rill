@@ -131,15 +131,19 @@ fn is_concrete_ty(v: &ValueTy) -> bool {
 ///
 /// Each type-parameter placeholder in a declared field type (`Pair`'s
 /// `first: Var(1)`) is bound to the matching part of the field's actual type.
-/// Returns an EMPTY vector unless every argument is concrete: an unresolved
-/// placeholder keeps the parameterized type opaque (`Data("Kleisli", [])`),
-/// exactly as before, rather than handing out half-solved arguments.
+/// Returns an EMPTY vector unless the WHOLE record matches: a field that does
+/// not match contributes no binding at all (a partial binding from it could
+/// pin the wrong parameter — e.g. `first: m a` matching `List Int` binds `m`
+/// before discovering `a` disagrees), and an unresolved placeholder keeps the
+/// parameterized type opaque (`Data("Kleisli", [])`), exactly as before.
 fn record_args_from_fields(fields: &[(String, ValueTy)], field_tys: &[ValueTy]) -> Vec<ValueTy> {
     let mut bindings: Vec<(u32, ValueTy)> = Vec::new();
     let mut arity = 0;
     for ((_, fty), aty) in fields.iter().zip(field_tys.iter()) {
         arity = arity.max(param_placeholder_max(fty));
-        match_field_expected(fty, aty, &mut bindings);
+        if !match_field_expected(fty, aty, &mut bindings) {
+            return vec![];
+        }
     }
     let args: Vec<ValueTy> = (1..=arity)
         .map(|k| {
@@ -2060,13 +2064,25 @@ impl<'a> Lowerer<'a> {
                                     span: *span,
                                 });
                             }
-                            // Selector: the first argument that is not a bare
-                            // nullary method ref (`mappend xs mempty` — `xs`
-                            // selects; `mempty` resolves by that type name).
-                            let selector_idx = call_args
-                                .iter()
-                                .position(|a| !self.is_bare_nullary_method_ref(a, &class_name))
-                                .unwrap_or(0);
+                            // Selector: the argument whose signature type mentions
+                            // the class variable AND which is not a bare nullary
+                            // method ref — both criteria must agree, because the
+                            // same argument's concrete type solves the class
+                            // variable (`pick: Bool -> Pair a a -> Float` selects
+                            // on the `Pair`, `mappend mempty xs` on `xs`).
+                            let Some(selector_idx) = crate::types::infer::class_var_selector_index(
+                                sig,
+                                &class_var,
+                                call_args.len(),
+                                |i| self.is_bare_nullary_method_ref(&call_args[i], &class_name),
+                            ) else {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: no argument can select the instance (every class-var argument is a nullary method reference)"
+                                    ),
+                                    span: *span,
+                                });
+                            };
                             let (arg_reg, arg_vty) = self.lower_value(&call_args[selector_idx])?;
                             let cv_var = self.next_tyvar;
                             self.next_tyvar += 1;
@@ -3517,7 +3533,7 @@ impl<'a> Lowerer<'a> {
                     Some(s) => crate::types::infer::sig_result_directed(s, &class_var),
                     None => false,
                 };
-                if result_directed {
+                if let Some(sig) = sig.as_ref().filter(|_| result_directed) {
                     let exp = match expected {
                         Some(t) => t,
                         None => {
@@ -3529,16 +3545,31 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                     };
-                    let ty_name = match self.env.type_name_of_vty(exp) {
-                        Some(t) => t,
-                        None => {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
-                                ),
-                                span,
-                            });
-                        }
+                    // The full-type dispatch key: an arity-0 class with an
+                    // applied-head instance (`C (Pair Int Int)`) must resolve by
+                    // THAT key here too — the expected type's head name (`Pair`)
+                    // names no instance.
+                    let cv_var = self.next_tyvar;
+                    self.next_tyvar += 1;
+                    let Some((ty_name, cv_subst)) = crate::types::infer::method_dispatch_key(
+                        self.env,
+                        &class_name,
+                        &class_var,
+                        sig,
+                        exp,
+                        cv_var,
+                        || {
+                            let v = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            ValueTy::Var(v)
+                        },
+                    ) else {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                            ),
+                            span,
+                        });
                     };
                     let (_, params, body) = match self.env.resolve_method(name, ty_name.as_str()) {
                         Some(r) => r,
@@ -3563,10 +3594,25 @@ impl<'a> Lowerer<'a> {
                     let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
                     // Result-directed methods take no arguments (`mempty`) or a
                     // single element argument (`pure x`/`return x`) — bind any
-                    // params to fresh registers.
+                    // params to fresh registers typed from the signature (class
+                    // var substituted by the dispatch key), so a body that uses
+                    // a param sees the contract's type rather than a blanket
+                    // `Float` slot.
                     let arg_reg = self.fresh_value_reg();
-                    for p in params.iter() {
-                        scope.insert(p.clone(), (arg_reg, ValueTy::Float));
+                    let param_tys = crate::types::infer::signature_param_tys_conv(
+                        self.env,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || {
+                            let v = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            ValueTy::Var(v)
+                        },
+                    );
+                    for (i, p) in params.iter().enumerate() {
+                        let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                        scope.insert(p.clone(), (arg_reg, ty));
                         ctor_scope.insert(p.clone(), None);
                     }
                     self.value_locals.push(scope);
@@ -6907,6 +6953,32 @@ mod tests {
             mode: typed.mode,
         };
         lower_with_cafs(&tp, 44_100.0, &tp.cafs).unwrap()
+    }
+
+    #[test]
+    fn record_args_discard_a_partial_field_binding() {
+        // Declared fields `first: Var(1)`, `second: Var(1)` — a homogeneous
+        // record such as `Pair`. When a LATER field contradicts an earlier
+        // binding (`first: Int` then `second: Bool`), the record contributes NO
+        // type arguments: a leaked `first` binding would hand out `[Int]` and
+        // let the dispatch key claim the record is a `Pair Int …`.
+        let fields = [
+            ("first".to_string(), ValueTy::Var(1)),
+            ("second".to_string(), ValueTy::Var(1)),
+        ];
+        assert_eq!(
+            record_args_from_fields(&fields, &[ValueTy::Int, ValueTy::Int]),
+            vec![ValueTy::Int]
+        );
+        assert!(
+            record_args_from_fields(&fields, &[ValueTy::Int, ValueTy::Bool]).is_empty(),
+            "a contradictory field must void the whole record's type arguments"
+        );
+        // An unresolved field type keeps the parameterized type opaque.
+        assert!(
+            record_args_from_fields(&fields, &[ValueTy::Var(7), ValueTy::Var(7)]).is_empty(),
+            "an unresolved field type must not be pinned as a type argument"
+        );
     }
 
     /// Build a `Lowerer` for testing lowering helpers (`free_vars`) directly on

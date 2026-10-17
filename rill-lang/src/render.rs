@@ -749,6 +749,42 @@ mod tests {
     }
 
     #[test]
+    fn type_key_spelling_matches_value_type_key() {
+        // The instance registry spells an instance head with `render_type_key`
+        // and dispatch spells the selector's value type with `value_type_key`.
+        // The two must agree byte for byte, or an instance that registers fine
+        // silently stops resolving.
+        let env = crate::types::ty::TypeEnv::with_builtins();
+        let nested_in_arg = TypeExpr::TApp(
+            "Pair".into(),
+            vec![
+                TypeExpr::TApp("List".into(), vec![TypeExpr::TName("Int".into())]),
+                TypeExpr::TName("Int".into()),
+            ],
+        );
+        let nested_in_arg2 = TypeExpr::TApp(
+            "Pair".into(),
+            vec![
+                TypeExpr::TName("Int".into()),
+                TypeExpr::TApp(
+                    "Pair".into(),
+                    vec![TypeExpr::TName("Int".into()), TypeExpr::TName("Int".into())],
+                ),
+            ],
+        );
+        for te in [&nested_in_arg, &nested_in_arg2] {
+            let vty = crate::types::infer::data_field_vty(&env, &[], te);
+            assert_eq!(
+                render_type_key(te),
+                crate::types::ty::value_type_key(&vty).expect("concrete type spells a key"),
+                "registry and dispatch must spell {te:?} identically"
+            );
+        }
+        assert_eq!(render_type_key(&nested_in_arg), "Pair (List Int) Int");
+        assert_eq!(render_type_key(&nested_in_arg2), "Pair Int (Pair Int Int)");
+    }
+
+    #[test]
     fn render_roundtrip_def_signature() {
         let dsl = roundtrip_main("main :: Float = 1.0;");
         assert_eq!(dsl, "main :: Float = 1.0");
