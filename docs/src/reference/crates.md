@@ -1,5 +1,11 @@
 # Crates
 
+> **Status in the current branch:** graph compilation and `CompiledGraphEngine`
+> are **not part of this branch** — the IO/streams-core change removed the
+> signal-transform executor, and `rill-lang` programs now own their I/O as
+> streams (`compile_runner` → `ProgramRunner`). `rill-analyzer` is likewise
+> excluded from the workspace; both return with the graph-execution follow-on.
+
 The Rill workspace consists of 17 crates, all versioned synchronously.
 (`rill-digital-filters`, `rill-analog-filters`, `rill-analog-effects` were
 deleted in SP-3b; their algorithms were folded into `rill-core-dsp` /
@@ -23,7 +29,7 @@ deleted in SP-3b; their algorithms were folded into `rill-core-dsp` /
 | **rill-analyzer** | 0.6.0-M2 | **[CLI]** Interactive gdb-style debugger — signal probes, breakpoints, shmem IPC | — |
 | **rill-osc** | 0.6.0-M2 | OSC — UDP server, encode/decode, pattern dispatch | [docs.rs](https://docs.rs/rill-osc) |
 | **rill-sampler** | 0.6.0-M2 | Sample playback + time-series reader + WAV loading + tape write/read heads | [docs.rs](https://docs.rs/rill-sampler) |
-| **rill-lang** | 0.6.0-M2 | Faust-style functional signal DSL; builtin signatures in the language (FFI catalog), factories via `ForeignRegistry`; compiles via `compile()`/`compile_with_ffi()`, or to a full `CompiledGraphEngine` via `compile_graph()` with runtime `?name` parameter support | [docs.rs](https://docs.rs/rill-lang) |
+| **rill-lang** | 0.6.0-M2 | Faust-style functional signal DSL; builtin signatures in the language (FFI catalog), factories via `ForeignRegistry`; IO programs run via `compile_runner()` → `ProgramRunner`, pure values via `compile()`/`compile_with_ffi()` + `run_value()` (graph compilation and `compile_graph()` are deferred — see the status note above) | [docs.rs](https://docs.rs/rill-lang) |
 
 ## Feature flags
 

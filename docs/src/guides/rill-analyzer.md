@@ -1,5 +1,11 @@
 # rill-analyzer — Interactive Debugger
 
+> **Status in the current branch:** `rill-analyzer` is excluded from the
+> workspace members and does not build — it depends on the graph-serialization
+> and `CompiledGraphEngine` surface removed with the signal-transform executor.
+> The analyzer and its graph mode below return with the graph-execution
+> follow-on.
+
 `rill-analyzer` is a gdb-style interactive debugger for Rill signal processing applications. It connects to running processes via shared memory, inspects signal values at probe points, traces parameter changes, and controls execution (pause, step, continue).
 
 ## Installation
@@ -24,7 +30,7 @@ The binary supports three operating modes:
 rill-analyzer run graph.json
 ```
 
-Loads a serialized graph, creates a `CompiledGraphEngine`, and opens an interactive REPL. The debugger runs in the same process — signals, commands, and probe data all flow through inter-thread channels.
+Loads a serialized graph, creates a `CompiledGraphEngine` (deferred with the graph follow-on — see the status note above), and opens an interactive REPL. The debugger runs in the same process — signals, commands, and probe data all flow through inter-thread channels.
 
 Options:
 - `--no-repl` — only log telemetry, no interactive prompt

@@ -16,6 +16,13 @@ use rill_adrift::rill_core_dsp::generators::SineOscillator;
 
 ## What is Rill?
 
+> **Status in the current branch:** graph compilation and `CompiledGraphEngine`
+> are **not part of this branch** — the IO/streams-core change removed the
+> signal-transform executor, and `rill-lang` programs now own their I/O as
+> streams (see the [IO runner](guides/rill-lang.md#io-programs-streams-and-the-runner)
+> and `compile_runner`). The graph layer (`GraphBuilder`, `build_ir()`) and the
+> engine it fed return with the graph-execution follow-on.
+
 Rill is not a monolith. It is a collection of specialized crates, each solving one problem well:
 
 | Layer | Crates |
@@ -23,11 +30,11 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 | **Core** | `rill-core` — traits, math, buffers, queues, time, macros |
 | **Actor** | `rill-core-actor` — lock-free actor model (ActorRef, ActorSystem) |
 | **DSP** | `rill-core-dsp` — algorithms, filters, generators, delay, vector ops |
-| **Graph** | `rill-graph` — static DAG signal graph, `GraphBuilder`; `build_ir()` produces `GraphIr` compiled by `rill-lang` into a `CompiledGraphEngine` |
+| **Graph** | `rill-graph` — static DAG signal graph, `GraphBuilder` (the `build_ir()` → `CompiledGraphEngine` path is deferred — see the status note above) |
 | **Effects** | `rill-digital-effects`, `rill-router` |
 | **FFT** | `rill-fft` — radix-2 FFT, frequency-domain convolution, spectral effects |
 | **Automation** | `rill-patchbay` — LFO, envelopes, sensors, servos, mappings |
-| **Language** | `rill-lang` — Faust-style functional signal DSL, compiles to `Algorithm<T>` or `MultichannelAlgorithm<T>`, or to `CompiledGraphEngine` for whole-graph compilation |
+| **Language** | `rill-lang` — Faust-style functional signal DSL; IO programs (`main : (String…) -> IO ()`) run to completion by `ProgramRunner`, pure values by `compile()` + `run_value()` (graph compilation is deferred — see the status note above) |
 | **Analog** | `rill-core-model` — WDF circuit modeling (analog filters + physical models) |
 | **I/O** | `rill-io` — ALSA, PortAudio, PipeWire, JACK backends (pure I/O, no engine) |
 | **Network** | `rill-osc` — OSC server and networking; powers `rill-patchbay` OSC sensors for graph control |
@@ -35,7 +42,7 @@ Rill is not a monolith. It is a collection of specialized crates, each solving o
 | **Sampler** | `rill-sampler` — sample playback, time-series reader, WAV loading |
 | **Lo-Fi** | `rill-lofi` — vintage DAC, tape effects, chip emulation (NES, AY-3-8910, Akai S900) |
 | **Umbrella** | `rill-adrift` — re-exports all workspace crates |
-| **Devtools** | `rill-analyzer` — interactive gdb-style debugger for signal graph inspection |
+| **Devtools** | `rill-analyzer` — interactive gdb-style debugger for signal graph inspection (excluded from the workspace pending the graph follow-on — see the status note above) |
 
 ## Domain-Agnostic
 

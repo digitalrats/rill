@@ -9,6 +9,14 @@ members = [
     # IO/streams work — `src/graph/**` does not build at this revision — so the
     # analyzer (which imports `rill_lang::graph`) is built only once the graph
     # execution model returns. Do not add it back before that.
+    #
+    # Consequence: `rill-analyzer/Cargo.toml` inherits from `workspace.package`
+    # (`version.workspace = true` etc.), so it only resolves *as a member*. Any
+    # `cargo` invocation on it — `cargo build -p rill-analyzer`,
+    # `cargo metadata --manifest-path rill-analyzer/Cargo.toml` — fails until the
+    # package is re-added to this `members` list. `workspace.exclude` is NOT a
+    # substitute: an excluded package loses workspace inheritance and fails to
+    # parse. Restore the member entry first, then run cargo.
     # "rill-analyzer",
     "rill-patchbay",
     "rill-digital-effects",

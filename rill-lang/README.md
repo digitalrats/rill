@@ -20,9 +20,10 @@ unaffected when the JIT lands.
 > implements `Algorithm<T>`/`MultichannelAlgorithm<T>` for `RillProgram`; there
 > is no `process()`, no `ProgramEngine`, no `readInput`/`writeOutput`, and no
 > buffer-λ `main`. The old `compile_graph()` graph-execution entry point is gone
-> as well — graph compilation now lives behind the off-by-default `graph`
-> feature as `rill_lang::graph` (`GraphSpec` → `CompiledStream`), which the
-> workspace gates do not build. Programs express their I/O as streams inside the
+> as well: what remains of graph compilation sits behind the off-by-default
+> `graph` feature (`rill_lang::graph`), does not build at this revision (its
+> `reconstruct.rs` still targets the removed `Par`/`Split`/`Cut` AST), and is not
+> built by the workspace gates. Programs express their I/O as streams inside the
 > program, not as buffers handed in from outside. See *Migrating* below.
 
 ## Quick start: an IO program
@@ -170,7 +171,7 @@ error). Trampolining the `bind` chain to remove the limit is a planned follow-up
 | `impl Algorithm<T> for RillProgram`, `BlockBuiltin` driving `RillProgram` | Built-ins remain callable *inside* a program; there is no transform wrapper around a whole program |
 | `readInput` / `writeOutput` and indexed variants | `fromList` / `toList`, `read` / `write`, `connect`, `makeInputStream` / `makeOutputStream` |
 | Buffer-λ `main` (`main = _ * 0.5`) | `main : (String…) -> IO ()`; a value `main` remains valid for the pure-value tick |
-| `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Not available here: the `graph` feature is off by default and the multichannel transform executor is gone. Graph compilation, when enabled, is `rill_lang::graph::compile` producing a `CompiledStream` |
+| `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Not available here: the `graph` feature is off by default, the transform executor is gone, and the module does not build at this revision. Graph compilation is **deferred** with the graph follow-on |
 | Actor `?name=default` slots wired to a graph's `SetParameter` mailbox | `?name` slots still type-check and lower as dynamic built-in parameters; the graph-side mailbox wiring is not part of this branch |
 
 ## The language in one screen

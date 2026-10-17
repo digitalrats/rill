@@ -16,9 +16,10 @@ program. There are two execution paths:
 > removed, and so is the old `compile_graph()` graph-execution entry point.
 > Programs now express their I/O as streams *inside* the program. The block-arrow
 > algebra below is still the language's signal-block layer, but this branch has
-> no host that runs a whole program as a transform. Graph compilation lives
-> behind the off-by-default `graph` feature (`rill_lang::graph::compile` →
-> `CompiledStream`) and is not built by the workspace gates.
+> no host that runs a whole program as a transform. Graph compilation is
+> **deferred**: what remains sits behind the off-by-default `graph` feature
+> (`rill_lang::graph`), does not build at this revision, and is not built by the
+> workspace gates.
 
 The current backend is a safe, allocation-free **interpreter**. A Cranelift JIT
 backend is planned behind a future `jit` feature; it will consume the same
@@ -695,10 +696,9 @@ with the same registry via `compile_runner`).
 language catalog, implementations from the FFI factories.
 
 A whole program is not compiled into a graph engine in this branch: there is no
-`compile_graph()` and no mailbox-owning `CompiledGraphEngine`. Graph compilation,
-when the off-by-default `graph` feature is enabled, is
-`rill_lang::graph::compile` (`GraphSpec` → `CompiledStream`); it is not part of
-the workspace gates.
+`compile_graph()` and no mailbox-owning `CompiledGraphEngine`. Graph compilation
+is **deferred** — it is not buildable at this revision, so it is not part of the
+workspace gates.
 
 ## Parameters
 
@@ -845,18 +845,21 @@ themselves remain registered and callable from a future transform host.
 
 ### Graph compilation
 
-Graph compilation lives in the off-by-default `graph` feature:
+Graph compilation is **deferred** with the graph follow-on. What still exists in
+the source sits behind the off-by-default `graph` feature:
 
 - `rill_lang::graph::GraphBuilder` accumulates nodes and edges into a
-  `GraphSpec`; `rill_lang::graph::compile` turns a spec into a
-  `CompiledStream`.
-- `rill_lang::graph::compile_spec` reconstructs a spec into rill-lang AST.
+  `GraphSpec`; `rill_lang::graph::compile` (intended to turn a spec into a
+  `CompiledStream`) does not compile at this revision.
+- `rill_lang::graph::compile_spec` reconstructs a spec into rill-lang AST — also
+  stale against the current AST.
 - A graph with passive tape backends partitions into a recording and a playback
   subgraph joined by a plain-data `TapeSpec`.
 
-This module is **not built by the workspace gates** (it is known-broken at its
-`reconstruct.rs` baseline; `rill-analyzer`, its only in-tree consumer, is
-excluded from the workspace members). Do not depend on it from a default build.
+`cargo check -p rill-lang --features graph` fails (the module targets the
+removed `Par`/`Split`/`Cut` AST), so it is **not built by the workspace gates**;
+`rill-analyzer`, its only in-tree consumer, is excluded from the workspace
+members for the same reason. Do not depend on any of it from a default build.
 
 ## Scoping
 
