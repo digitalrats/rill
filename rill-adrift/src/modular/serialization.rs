@@ -24,7 +24,8 @@ use rill_patchbay::serialization::{AutomatonDef, ClockDef, MappingDef, SensorDef
 /// (factory).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModuleDef {
-    /// MIDI clock output module.
+    /// MIDI clock output module. Constructed, but not driven: the current host
+    /// wires no clock source, so no ticks reach it after construction.
     Clock(ClockDef),
     /// Servo — an automaton → parameter bridge. Constructed, but not driven:
     /// no clock ticks reach it in the current inert module host.

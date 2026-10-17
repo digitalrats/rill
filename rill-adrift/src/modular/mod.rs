@@ -112,12 +112,18 @@ impl<const BUF: usize> ModularSystem<BUF> {
     ///
     /// Returns [`ModularError::Program`] when a rack's program does not
     /// compile, and [`ModularError::Rack`] when a rack's control module cannot
-    /// be constructed. A module is only constructed (never driven): the
-    /// control plane is inert (see the module docs). A program that fails at
-    /// run time does not fail `launch` — it finishes on the rack thread and is
-    /// reported by [`rack_run_error`](Self::rack_run_error).
+    /// be constructed. Both are decided **before** the rack's program is let
+    /// run, so a failed launch never has a running program to join. A module is
+    /// only constructed (never driven): the control plane is inert (see the
+    /// module docs). A program that fails at run time does not fail `launch` —
+    /// it finishes on the rack thread and is reported by
+    /// [`rack_run_error`](Self::rack_run_error).
     #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
+        // Program threads stay parked after compiling until every rack is fully
+        // built; a failure anywhere drops these senders, which aborts the parked
+        // threads, so a failed launch never has a running program to join.
+        let mut go_senders: Vec<std::sync::mpsc::Sender<()>> = Vec::new();
         for rd in &def.racks {
             log::info!(
                 "rill-adrift: launching rack '{}' — {} program bytes, {} modules",
@@ -148,14 +154,18 @@ impl<const BUF: usize> ModularSystem<BUF> {
             let case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, Vec::new());
             self.cases.insert(rd.name.clone(), case);
 
-            // 2. Run the rack's program on its own thread. The thread compiles
-            //    the program itself (a `RillProgram` is not `Send`) and reports
-            //    the compile result back, so a bad program fails `launch`.
+            // 2. Compile the rack's program on its own thread (a `RillProgram`
+            //    is not `Send`) and report the compile result back, so a bad
+            //    program fails `launch`. The thread then PARKS: the go-ahead is
+            //    sent only once every rack is built, so a compile or construct
+            //    failure aborts the parked thread instead of leaving a running
+            //    (possibly non-terminating) program for `stop()` to join.
             let program = rd.program.clone();
             let args = rd.args.clone();
             let rack_name = rd.name.clone();
             let sample_rate = def.sample_rate;
             let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+            let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
 
             if let Some(case) = self.cases.get_mut(&rd.name) {
                 let rack_name = rack_name.clone();
@@ -181,6 +191,18 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         }
                     };
                     log::info!("rill-adrift: rack '{}' program compiled", rack_name);
+
+                    // Wait for the launch's go-ahead. The sender is dropped on
+                    // an aborted launch (a later rack's compile or module
+                    // failure), which ends this thread without running the
+                    // program.
+                    if go_rx.recv().is_err() {
+                        log::info!(
+                            "rill-adrift: rack '{}' program aborted before running",
+                            rack_name
+                        );
+                        return;
+                    }
                     runner.set_args(&args);
 
                     match runner.run() {
@@ -212,7 +234,9 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 }
             }
 
-            // 3. Build modules via ModuleFactory.
+            // 3. Build modules via ModuleFactory, BEFORE the program runs. A
+            //    construct failure aborts the waiting program thread (dropping
+            //    `go_tx`), so this `Err` costs no join of a running program.
             for module_def in &rd.modules {
                 let pb_def = to_pb_module(module_def);
                 match self.module_factory.construct(
@@ -230,14 +254,24 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             .insert(pb_def.type_name().to_string(), actor_ref);
                     }
                     Err(e) => {
+                        drop(go_tx);
                         return Err(ModularError::Rack(format!(
                             "rack '{}' module '{}': {e}",
                             rd.name,
                             pb_def.type_name()
-                        )))
+                        )));
                     }
                 }
             }
+
+            // 4. The rack is fully built — park it until every rack is built.
+            go_senders.push(go_tx);
+        }
+
+        // Every rack compiled and every module was constructed: let the
+        // programs run.
+        for tx in go_senders {
+            let _ = tx.send(());
         }
 
         log::info!(

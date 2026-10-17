@@ -89,6 +89,26 @@ fn launch_reports_a_module_construct_error() {
     );
 }
 
+/// Compilation is checked before modules are constructed, so a program that does
+/// not compile is reported even when a module is also unconstructible.
+#[cfg(feature = "serialization")]
+#[test]
+fn launch_reports_a_compile_error_before_a_module_error() {
+    let mut rack = RackDef::new("broken", "main = (");
+    rack.modules.push(ModuleDef::Custom {
+        type_name: "no_such_module".to_string(),
+        params: Default::default(),
+    });
+    let err = match ModularSystem::<256>::new(ModularConfig::default()).launch(&system_def(rack)) {
+        Ok(_) => panic!("the launch must fail"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, ModularError::Program(_)),
+        "a compile failure takes precedence, got {err:?}"
+    );
+}
+
 /// `main = 5.0` compiles, but it is not an executable `IO ()` action, so the
 /// run fails *after* `launch` has already reported success (the rack thread is
 /// asynchronous). `stop()` joins the thread and the failure is then readable

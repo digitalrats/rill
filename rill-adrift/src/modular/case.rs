@@ -90,8 +90,7 @@ impl<const BUF: usize> RackCase<BUF> {
     {
         let running = Arc::new(AtomicBool::new(true));
         let r = running.clone();
-        let run_error = self.run_error.clone();
-        let error_slot = run_error.clone();
+        let error_slot = self.run_error.clone();
         let handle = std::thread::spawn(move || build(r, error_slot));
         self.running = Some(running);
         self.signal_thread = Some(handle);

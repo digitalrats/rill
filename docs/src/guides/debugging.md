@@ -159,7 +159,10 @@ If the target ends with `.json`, it's treated as a serialized graph and launched
 
 ## Lifecycle Logging
 
-When `debug` feature is enabled, `ModularSystem::launch()` adds lifecycle logging via the `log` crate:
+`ModularSystem::launch()` logs its lifecycle through the `log` crate. `log` is an
+unconditional dependency of `rill-adrift` and these calls are not feature-gated,
+so they are emitted in every build — a host only needs a `log` implementation to
+see them:
 
 ```
 rill-adrift: launching rack 'greeter' — 58 program bytes, 0 modules

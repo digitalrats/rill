@@ -29,6 +29,7 @@ crates for signal processing application development.
   `ModularSystem::launch` does not create it for you.
 - **Lifecycle logging** — `ModularSystem` logs rack creation, program
   compilation/execution, run-time failures, and shutdown via the `log` crate.
+  Logging is unconditional (`log` is a plain dependency), not gated by `debug`.
 - **Control modules are inert** — modules declared in a rack are constructed at
   launch, but no clock or parameter source is wired: servos, sensors, and clocks
   receive no `ClockTick` and drive nothing. The module path is reserved for a

@@ -4,7 +4,31 @@ MIDI is handled through a layered architecture with **separate input and
 output paths**, both flowing through the actor model:
 
 - **Input:** hardware → `MidiInput::poll()` → `parse_midi()` → `ControlEvent` → `ActorRef<CommandEnum>` → Servo → `SetParameter` → Graph.
-- **Output:** `ClockTick` (Rack broadcast) → `MidiClockGenerator` → `ControlEvent` → `serialize_to_midi()` → `MidiOutput::send()` → hardware.
+- **Output:** `ClockTick` → `MidiClockGenerator` → `ControlEvent` → `serialize_to_midi()` → `MidiOutput::send()` → hardware.
+
+## Status: the automatic clock/control plane is not wired
+
+The MIDI traits and the patchbay clock generator/actor below are live library
+APIs — including them in an application works, provided something in that
+application produces `CommandEnum::ClockTick`. What is **not** live is the
+automatic plumbing that used to feed them: no component broadcasts `ClockTick`
+to a rack, and no rack wires a sensor/servo/clock to a parameter surface.
+
+Concretely, in the current `rill-adrift` modular host:
+
+- the rack actor only forwards the commands it receives; nothing sends it a
+  `ClockTick`;
+- rack programs execute through the IO runner and expose no parameter plane;
+- `ModuleDef::Clock`, `ModuleDef::Sensor`, and `ModuleDef::Servo` modules are
+  constructed at launch but never driven, so a clock output emits nothing after
+  its initial transport message (see
+  [Patchbay & rack architecture](patchbay-rack.md)).
+
+Where the text below says "Rack broadcast" or "automatic", read it as the
+**reserved design** for the deferred control/audio plan, not as current
+behaviour. The internal mechanism (`MidiClockGenerator` advancing on
+`ClockTick.sample_pos`, `serialize_to_midi`, the actor loop) is implemented and
+tested; it is the source of those ticks that is missing.
 
 ## Architecture
 
@@ -28,8 +52,9 @@ output paths**, both flowing through the actor model:
                                               Graph command queue
 
 ┌── OUTPUT PATH (Rack actor thread, non‑RT) ─────────────────────────────┐
+│  (reserved design — no ClockTick source is wired in the current host)   │
 │                                                                         │
-│  Rack broadcast ClockTick  ──→  MidiOutputActor                        │
+│  ClockTick (from a host-supplied clock)  ──→  MidiOutputActor           │
 │                                       │                                 │
 │                                 MidiClockGenerator                      │
 │                                       │                                 │
@@ -49,7 +74,7 @@ output paths**, both flowing through the actor model:
 - **MIDI threads are NOT the signal RT thread** — blocking I/O is allowed
 - All communication uses `ActorRef<CommandEnum>` — lock‑free, no `Arc<Mutex>`
 - Input: sensors produce `ControlEvent`, dispatched through actor mailbox
-- Output: `ClockTick` arrives via Rack broadcast, clock generator produces events, serialized and sent through the backend
+- Output: a `ClockTick` source (not yet wired in the modular host) drives the clock generator, which produces events that are serialized and sent through the backend
 
 ## `MidiMessage` — raw MIDI bytes
 
@@ -195,7 +220,10 @@ let clock_ref = spawn_midi_clock_output(&system, backend);
 ```
 
 The actor receives:
-- `CommandEnum::ClockTick` — via Rack broadcast (automatic, no wiring)
+- `CommandEnum::ClockTick` — **from whatever clock the host supplies**. No
+  source is wired by the modular host today (its rack actor broadcasts nothing),
+  so a clock module only emits after construction-time transport control; feeding
+  it ticks is the reserved control-plane work.
 - `CommandEnum::Control(MidiTransport { .. })` — for transport control
   from API or user code
 
@@ -259,7 +287,9 @@ pub enum ControlEvent {
 ## Declarative config: `ClockDef` + `SensorDef::Midi`
 
 MIDI input and clock output can be declared in `ModularSystemDef` JSON
-documents without writing Rust code.
+documents without writing Rust code. The documents are accepted and the modules
+are constructed; the current host does not yet drive them (see the status note
+at the top of this page).
 
 ### SensorDef::Midi (input)
 
@@ -298,7 +328,7 @@ documents without writing Rust code.
 `auto_start` — when `true`, sends `MidiTransport::Start` to the clock output at
 construction. No clock ticks reach the clock output afterwards: the modular host
 wires no clock source, so the control-module plane is currently inert (see
-[Patchbay & rack architecture](../architecture/patchbay-rack.md)).
+[Patchbay & rack architecture](patchbay-rack.md)).
 
 Both variants use the existing `ModuleFactory` infrastructure:
 `MidiConstructor` (registered as `"midi"`) and `ClockConstructor`
@@ -399,9 +429,9 @@ hardware knobs, and acoustic analysis via [`Hearing`] follow the same pattern �
 multiple sensors feed one event mailbox with no locking.
 
 **MIDI output is NOT a `Sensor`** — it does not produce `ControlEvent` into
-the system. Instead, it consumes `ClockTick` (via Rack broadcast) and sends
-`ControlEvent` out to hardware. The `MidiOutputActor` is an output endpoint,
-not a sensor.
+the system. Instead, it consumes `ClockTick` (supplied by the host; the modular
+host wires no clock source yet) and sends `ControlEvent` out to hardware. The
+`MidiOutputActor` is an output endpoint, not a sensor.
 
 ## Hearing — signal analysis for acoustic sensors
 
