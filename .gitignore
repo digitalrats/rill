@@ -49,3 +49,6 @@ docs/src/src/
 
 # git worktrees
 .worktrees/
+
+# Superpowers session records
+.superpowers/
