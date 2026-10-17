@@ -172,12 +172,19 @@ fn frozen_array_is_usable_after_the_region_closes() {
 }
 
 #[test]
-fn freeze_transfers_the_region_cells_refs_without_copies() {
-    // The cell table lives in the shared arena: a freeze is a refcount
-    // TRANSFER (one fresh claim per element + bounds, then the region's own
-    // claims are released). After the tick every element and the bounds record
-    // is owned by the frozen array ALONE — rc == 1 — so neither a leaked cell
-    // (rc == 2) nor an element copy (a distinct slot) can hide here.
+fn freeze_keeps_the_element_claims_balanced() {
+    // The cell table lives in the shared arena: a freeze takes one fresh claim
+    // per element + bounds, then the region's own claims are released. After the
+    // tick every element and the bounds record is owned by the frozen array
+    // ALONE — rc == 1.
+    //
+    // What this pins is the CLAIM ACCOUNTING: a leaked cell claim would read 2,
+    // and a double-free would have taken the slot out from under the array. It
+    // canNOT distinguish a refcount transfer from a deep element copy — a copy
+    // is a FRESH slot, and a fresh slot also reads rc == 1. The no-copy property
+    // is guaranteed by construction (`freeze_starray` only calls `Arena::copy`,
+    // never `arena.clone` of a value) and is verified by reading the code, not
+    // by this assertion.
     let src = format!(
         "{{-# MODE complete #-}}\nmain = runSTArray (\\s -> do {{ \
            a <- {}; \
@@ -287,4 +294,72 @@ fn starray_negative_flat_size_is_a_clean_fault() {
         msg.contains("newArrayFlat") && msg.contains("negative"),
         "expected the negative-size fault, got: {msg}"
     );
+}
+
+#[test]
+fn starray_size_beyond_the_arena_capacity_is_a_clean_fault() {
+    // The flat size is computed by the LANGUAGE, so it is not part of the
+    // build-time arena budget: a size larger than the arena's FREE slots is a
+    // clean fault instead of a long futile allocation loop (or an OOM-ish
+    // failure part-way through).
+    let src = "{-# MODE complete #-}\nmain = runST (\\s -> do { \
+               a <- newArrayFlat (Pair { first: 0, second: 999999 }) 1000000 1.0; \
+               readArrayFlat a 0 \
+             });";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    let err = prog
+        .run_value()
+        .expect_err("an over-capacity flat size must be a clean runtime error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("newArrayFlat") && msg.contains("capacity"),
+        "expected the over-capacity fault, got: {msg}"
+    );
+}
+
+#[test]
+fn wrong_kind_handles_are_rejected_at_compile_time() {
+    // `STRef s a` and `STArray s i e` are distinct static types, so the
+    // interpreter's kind faults are DEFENSIVE: no program text can pass one
+    // where the other is expected (those paths are covered by the lib unit test
+    // `st_cell_kind_mismatch_faults_instead_of_silently_dropping`). This pins
+    // the type-level separation that makes them unreachable.
+    for src in [
+        // `getBounds` on an `STRef`.
+        "{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 0.0; b <- getBounds r; b.first });",
+        // `readSTRef` on an `STArray`.
+        "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 0.0; x <- readSTRef a; x });",
+    ] {
+        let err = match compile::<f32>(src) {
+            Ok(_) => panic!("a mis-kinded handle must be a compile error: {src}"),
+            Err(err) => err,
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("STRef") && msg.contains("STArray"),
+            "expected a kind mismatch naming both types, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn a_fractional_flat_offset_is_rejected_at_compile_time() {
+    // The flat size/offset parameters are `Int`. The interpreter accepts an
+    // integral `Float` too (a negated literal arrives on the Float track — the
+    // documented wart), but a FRACTIONAL one is refused there rather than
+    // truncated; the language already refuses it statically, so the interpreter
+    // check is defensive (unit-tested in `forced_i64_accepts_int_and_integral_float_only`).
+    for src in [
+        "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 0.0; readArrayFlat a 1.5 });",
+        "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3.0 0.0; readArrayFlat a 0 });",
+    ] {
+        let err = match compile::<f32>(src) {
+            Ok(_) => panic!("a Float flat size/offset must be a compile error: {src}"),
+            Err(err) => err,
+        };
+        assert!(
+            format!("{err}").contains("Float with Int"),
+            "expected a Float/Int mismatch, got: {err}"
+        );
+    }
 }

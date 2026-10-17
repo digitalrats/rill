@@ -3170,14 +3170,32 @@ fn st_ref_cell_value<T: Transcendental, const BUF: usize>(
 
 /// Store `stored` in an `STRef` cell, releasing the previous value's claim.
 ///
-/// `stored` is dropped instead when the handle does not name a live `STRef`
-/// cell, so the refcount stays balanced on the unreachable wrong-kind path.
+/// A handle that does not name a live `STRef` cell — a wrong-kind `STArray`
+/// handle, or a released cell — latches its own fault and drops `stored`, so the
+/// refcount stays balanced and the store is never a SILENT no-op. Typed code
+/// cannot produce either handle.
 fn st_ref_cell_store<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     h: usize,
     stored: ArenaRef,
 ) {
+    // Classify BEFORE mutating: `latch_fault` borrows the whole program, so the
+    // cell cannot stay borrowed across it.
+    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        Some(StCell::Ref(_)) => {}
+        Some(StCell::Array { .. }) => {
+            latch_fault(prog, "STRef operation on an STArray handle");
+            prog.arena.drop_ref(stored);
+            return;
+        }
+        None => {
+            latch_fault(prog, "STRef store on a released cell");
+            prog.arena.drop_ref(stored);
+            return;
+        }
+    }
     match prog.st_cells.get_mut(h) {
+        // The classification above guarantees this arm.
         Some(Some(StCell::Ref(slot))) => {
             let old = std::mem::replace(slot, stored);
             prog.arena.drop_ref(old);
@@ -3224,6 +3242,10 @@ fn st_array_bounds<T: Transcendental, const BUF: usize>(
 }
 
 /// The element ref at `pos` of an `STArray` cell (a borrow, no recount).
+///
+/// Both failure causes are named explicitly: a wrong-kind `STRef` handle must not
+/// be reported as a released cell (the callers' `st_array_len` guard happens to
+/// run first, but the message must not depend on that ordering).
 fn st_array_elem<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     h: usize,
@@ -3231,7 +3253,11 @@ fn st_array_elem<T: Transcendental, const BUF: usize>(
 ) -> Option<ArenaRef> {
     match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Array { elems, .. }) => elems.get(pos).copied(),
-        _ => {
+        Some(StCell::Ref(_)) => {
+            latch_fault(prog, "STArray operation on an STRef handle");
+            None
+        }
+        None => {
             latch_fault(prog, "STArray element read on a released cell");
             None
         }
@@ -3239,15 +3265,38 @@ fn st_array_elem<T: Transcendental, const BUF: usize>(
 }
 
 /// Store `stored` at `pos` of an `STArray` cell, releasing the previous
-/// element's claim. `stored` is dropped when the handle/position is invalid
-/// (unreachable through typed code), keeping the refcount balanced.
+/// element's claim.
+///
+/// A handle/position that does not name a live element latches its own fault and
+/// drops `stored`, so the refcount stays balanced and the store is never a
+/// SILENT no-op (unreachable through typed code).
 fn st_array_elem_store<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     h: usize,
     pos: usize,
     stored: ArenaRef,
 ) {
+    // Classify BEFORE mutating: `latch_fault` borrows the whole program.
+    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        Some(StCell::Array { elems, .. }) if pos < elems.len() => {}
+        Some(StCell::Array { .. }) => {
+            latch_fault(prog, "STArray element store: offset out of range");
+            prog.arena.drop_ref(stored);
+            return;
+        }
+        Some(StCell::Ref(_)) => {
+            latch_fault(prog, "STArray operation on an STRef handle");
+            prog.arena.drop_ref(stored);
+            return;
+        }
+        None => {
+            latch_fault(prog, "STArray element store on a released cell");
+            prog.arena.drop_ref(stored);
+            return;
+        }
+    }
     match prog.st_cells.get_mut(h) {
+        // The classification above guarantees this arm.
         Some(Some(StCell::Array { elems, .. })) if pos < elems.len() => {
             let old = std::mem::replace(&mut elems[pos], stored);
             prog.arena.drop_ref(old);
@@ -3266,7 +3315,11 @@ fn st_array_elems_of<T: Transcendental, const BUF: usize>(
 ) -> Option<Vec<ArenaRef>> {
     let len = match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Array { elems, .. }) => elems.len(),
-        _ => {
+        Some(StCell::Ref(_)) => {
+            latch_fault(prog, "STArray operation on an STRef handle");
+            return None;
+        }
+        None => {
             latch_fault(prog, "getElems on a released STArray cell");
             return None;
         }
@@ -3308,9 +3361,10 @@ fn release_st_cell<T: Transcendental, const BUF: usize>(
 ///
 /// The static type is `Int`, but the runtime payload of a NEGATED literal
 /// (`-1`) is a `Float`: value-track arithmetic (negation included) is
-/// Float-only, so an `Int`-typed slot can hold either kind. Both are accepted —
-/// an integral `Float` is truncated. Non-numeric operands yield `None`; the
-/// caller latches the operation-specific fault.
+/// Float-only, so an `Int`-typed slot can hold either kind. An accepted `Float`
+/// must be INTEGRAL (`fract() == 0.0`) — truncating `1.5` to `1` would silently
+/// address the wrong element. A non-numeric or fractional operand yields `None`;
+/// the caller latches the operation-specific fault.
 fn forced_i64<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     r: ArenaRef,
@@ -3319,7 +3373,7 @@ fn forced_i64<T: Transcendental, const BUF: usize>(
     let r = force(prog, r, drops);
     match prog.arena.get(r) {
         Some(Value::Int(i)) => Some(*i),
-        Some(Value::Float(f)) if f.is_finite() => Some(*f as i64),
+        Some(Value::Float(f)) if f.is_finite() && f.fract() == 0.0 => Some(*f as i64),
         _ => None,
     }
 }
@@ -3428,7 +3482,7 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
         crate::ir::ValueEffectOp::NewArrayFlat => {
             let bounds_src = *args.first()?;
             let Some(size) = forced_i64(prog, *args.get(1)?, drops) else {
-                latch_fault(prog, "newArrayFlat: flat size is not a number");
+                latch_fault(prog, "newArrayFlat: flat size is not an integral number");
                 return None;
             };
             let init = *args.get(2)?;
@@ -3480,7 +3534,7 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
         crate::ir::ValueEffectOp::ReadArrayFlat => {
             let h = handle(prog, drops)?;
             let Some(offset) = forced_i64(prog, *args.get(1)?, drops) else {
-                latch_fault(prog, "readArrayFlat: flat offset is not a number");
+                latch_fault(prog, "readArrayFlat: flat offset is not an integral number");
                 return None;
             };
             let len = st_array_len(prog, h)?;
@@ -3494,7 +3548,10 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
         crate::ir::ValueEffectOp::WriteArrayFlat => {
             let h = handle(prog, drops)?;
             let Some(offset) = forced_i64(prog, *args.get(1)?, drops) else {
-                latch_fault(prog, "writeArrayFlat: flat offset is not a number");
+                latch_fault(
+                    prog,
+                    "writeArrayFlat: flat offset is not an integral number",
+                );
                 return None;
             };
             let src = *args.get(2)?;
@@ -3514,7 +3571,10 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
         crate::ir::ValueEffectOp::ModifyArrayFlat => {
             let h = handle(prog, drops)?;
             let Some(offset) = forced_i64(prog, *args.get(1)?, drops) else {
-                latch_fault(prog, "modifyArrayFlat: flat offset is not a number");
+                latch_fault(
+                    prog,
+                    "modifyArrayFlat: flat offset is not an integral number",
+                );
                 return None;
             };
             let f = *args.get(2)?;
@@ -5354,6 +5414,130 @@ mod value_track_tests {
         assert_eq!(prog.arena.rc(bounds), 1, "the bounds claim is released");
         assert_eq!(prog.arena.rc(e0), 1, "element 0's claim is released");
         assert_eq!(prog.arena.rc(e1), 1, "element 1's claim is released");
+    }
+
+    #[test]
+    fn st_cell_kind_mismatch_faults_instead_of_silently_dropping() {
+        // Defensive paths: typed rill-lang code cannot pass an `STArray` handle
+        // to an `STRef` operation (or the reverse) — the static types differ —
+        // and a released cell is unreachable too. Both are still reachable from
+        // the interpreter (a handle is a plain `Value::Opaque` id), so each must
+        // LATCH a fault and keep the refcount balanced rather than quietly drop
+        // the operand.
+        let mut prog = prog_with(vec![], 0, 0, 0);
+        let bounds = prog.arena.alloc(Value::Int(0)).unwrap();
+        let e0 = prog.arena.alloc(Value::Int(10)).unwrap();
+        let e1 = prog.arena.alloc(Value::Int(20)).unwrap();
+        let e2 = prog.arena.alloc(Value::Int(30)).unwrap();
+        // Each cell owns one claim per ref it holds: the STArray owns `e0`/`e1`,
+        // the STRef cell owns `e2`. Every value also keeps the test's own claim,
+        // so the baseline rc is 2 throughout.
+        _ = prog.arena.copy(e0);
+        _ = prog.arena.copy(e1);
+        _ = prog.arena.copy(e2);
+        prog.st_cells.push(Some(StCell::Array {
+            bounds,
+            elems: vec![e0, e1],
+        }));
+        prog.st_cells.push(Some(StCell::Ref(e2)));
+        assert_eq!(prog.arena.rc(e0), 2);
+
+        // Hand the store a FRESH claim (`copy`), which is what a lowering-side
+        // operand owns: a rejected store must release exactly that claim.
+        let operand = prog.arena.copy(e0).unwrap();
+        st_ref_cell_store(&mut prog, 0, operand);
+        assert_eq!(
+            format!("{}", prog.value_error.as_ref().unwrap()),
+            "Processing error: value-track fault: STRef operation on an STArray handle"
+        );
+        assert_eq!(
+            prog.arena.rc(e0),
+            2,
+            "the rejected operand's own claim is released; the cell keeps its own"
+        );
+
+        // STArray operations onto an STRef cell: the KIND is named, not reported
+        // as a released cell.
+        prog.value_error = None;
+        assert!(st_array_len(&mut prog, 1).is_none());
+        assert_eq!(
+            format!("{}", prog.value_error.as_ref().unwrap()),
+            "Processing error: value-track fault: STArray operation on an STRef handle"
+        );
+        prog.value_error = None;
+        assert!(st_array_elem(&mut prog, 1, 0).is_none());
+        assert_eq!(
+            format!("{}", prog.value_error.as_ref().unwrap()),
+            "Processing error: value-track fault: STArray operation on an STRef handle"
+        );
+        prog.value_error = None;
+        let operand = prog.arena.copy(e0).unwrap();
+        st_array_elem_store(&mut prog, 1, 0, operand);
+        assert_eq!(
+            format!("{}", prog.value_error.as_ref().unwrap()),
+            "Processing error: value-track fault: STArray operation on an STRef handle"
+        );
+        assert_eq!(
+            prog.arena.rc(e0),
+            2,
+            "the rejected operand is released once"
+        );
+
+        // A live STArray cell with an out-of-range position is its own cause.
+        prog.value_error = None;
+        let operand = prog.arena.copy(e0).unwrap();
+        st_array_elem_store(&mut prog, 0, 5, operand);
+        assert_eq!(
+            format!("{}", prog.value_error.as_ref().unwrap()),
+            "Processing error: value-track fault: STArray element store: offset out of range"
+        );
+
+        // A RELEASED cell is reported distinctly, on both families.
+        prog.value_error = None;
+        let operand = prog.arena.copy(e0).unwrap();
+        st_ref_cell_store(&mut prog, 99, operand);
+        assert_eq!(
+            format!("{}", prog.value_error.as_ref().unwrap()),
+            "Processing error: value-track fault: STRef store on a released cell"
+        );
+        prog.value_error = None;
+        let operand = prog.arena.copy(e0).unwrap();
+        st_array_elem_store(&mut prog, 99, 0, operand);
+        assert_eq!(
+            format!("{}", prog.value_error.as_ref().unwrap()),
+            "Processing error: value-track fault: STArray element store on a released cell"
+        );
+        assert_eq!(
+            prog.arena.rc(e0),
+            2,
+            "every rejected store dropped its own operand claim"
+        );
+    }
+
+    #[test]
+    fn forced_i64_accepts_int_and_integral_float_only() {
+        // `forced_i64` is the flat-size/offset reader. An `Int` slot is the
+        // normal case; the documented wart is that a NEGATED literal arrives as
+        // a Float on the value track, so an INTEGRAL float is accepted. A
+        // fractional float must be REFUSED instead of truncating `1.5` to index
+        // 1 — silently addressing the wrong element.
+        let mut prog = prog_with(vec![], 0, 0, 0);
+        let int = prog.arena.alloc(Value::Int(3)).unwrap();
+        let integral = prog.arena.alloc(Value::Float(2.0)).unwrap();
+        let negative = prog.arena.alloc(Value::Float(-1.0)).unwrap();
+        let fractional = prog.arena.alloc(Value::Float(1.5)).unwrap();
+        let text = prog.arena.alloc(Value::String("nope".into())).unwrap();
+
+        let mut drops = Vec::new();
+        assert_eq!(forced_i64(&mut prog, int, &mut drops), Some(3));
+        assert_eq!(forced_i64(&mut prog, integral, &mut drops), Some(2));
+        assert_eq!(forced_i64(&mut prog, negative, &mut drops), Some(-1));
+        assert_eq!(
+            forced_i64(&mut prog, fractional, &mut drops),
+            None,
+            "a fractional flat offset must not be truncated"
+        );
+        assert_eq!(forced_i64(&mut prog, text, &mut drops), None);
     }
 
     #[test]

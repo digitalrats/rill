@@ -331,9 +331,14 @@ fn starray_handle_types(t: Option<&ValueTy>) -> (ValueTy, ValueTy) {
     (index, elem)
 }
 
-/// The operand count of an STArray effect op (`newArrayFlat` takes the bounds,
-/// the flat size, and the initial element; `readArrayFlat` the handle and the
-/// flat offset; the writers one more than that; the readers none).
+/// The operand count of an STArray effect op.
+///
+/// `newArrayFlat` takes the bounds, the flat size, and the initial element;
+/// `readArrayFlat` the handle and the flat offset; `writeArrayFlat` /
+/// `modifyArrayFlat` those plus the stored value / modifier. The whole-cell
+/// readers `getBounds` / `getElems` take the handle alone and land in the `_`
+/// fallback (which also absorbs the non-STArray variants — those never reach
+/// here).
 fn starray_op_arity(op: ValueEffectOp) -> usize {
     match op {
         ValueEffectOp::NewArrayFlat => 3,
@@ -1637,6 +1642,13 @@ impl<'a> Lowerer<'a> {
                 // Their INDEX math lives in the language (the `Ix` class lands
                 // in a later task): `newArrayFlat` takes an already-computed
                 // flat size and the offsets are plain `Int`s.
+                //
+                // These six names are PERMANENTLY RESERVED builtins (as are the
+                // `STRef` ones above): a user definition with one of these names
+                // is shadowed at every call site, in inference and here alike,
+                // so it can never be reached. The reservation is deliberately
+                // consistent across both passes — no silent disagreement about
+                // which `getBounds` a call means.
                 if let Some(op) = match name.as_str() {
                     "newArrayFlat" => Some(ValueEffectOp::NewArrayFlat),
                     "readArrayFlat" => Some(ValueEffectOp::ReadArrayFlat),

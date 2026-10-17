@@ -23,6 +23,10 @@ fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 
 /// codegen-sensitive: unrelated code added elsewhere in the crate can push the
 /// chain over the limit. The bar these tests assert is COMPILE success, so give
 /// the recursion room instead of letting the stack size decide.
+///
+/// Keep the bound GENEROUS. A stack overflow on a scoped thread is not a
+/// catchable panic — it ABORTS the whole test binary (every other test in
+/// `tests/arrow.rs` is lost and the failure reads as a signal, not a diagnostic).
 fn compiles_with_deep_stack(src: &str) -> bool {
     std::thread::scope(|scope| {
         std::thread::Builder::new()

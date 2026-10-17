@@ -1990,9 +1990,10 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         // `ctx.defs`, and the enclosing `let` only restores it on its success
         // path). Re-inferring on top of that leak reports a bogus
         // `duplicate definition` instead of the real error, so the retry starts
-        // from the same defs the first attempt saw.
-        let attempt_defs = ctx.defs.clone();
-        let attempt_bodies = ctx.def_bodies.clone();
+        // from the same defs the first attempt saw. Only the Complete-mode retry
+        // re-infers, so Strict mode skips the map clones entirely.
+        let attempt =
+            (ctx.mode == Mode::Complete).then(|| (ctx.defs.clone(), ctx.def_bodies.clone()));
         let r = infer_expr(ctx, &body);
         if r.is_err() && ctx.mode == Mode::Complete {
             // Complete mode, self-recursive local (`fibs = cons … fibs …`):
@@ -2002,8 +2003,10 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             // track is where recursion lives) and re-infer.
             let saved_subst = ctx.subst.clone();
             let saved_next = ctx.next;
-            ctx.defs = attempt_defs;
-            ctx.def_bodies = attempt_bodies;
+            if let Some((defs, bodies)) = attempt {
+                ctx.defs = defs;
+                ctx.def_bodies = bodies;
+            }
             rerate_value(ctx, def.name(), 0, leading_lambda_count(&body));
             let retry = infer_expr(ctx, &body);
             if retry.is_err() {
@@ -4264,7 +4267,7 @@ fn infer_apply_impl(
     if is_runst {
         if args.len() != 1 {
             return Err(CompileError::Type {
-                msg: format!("`runST` expects 1 argument, got {}", args.len()),
+                msg: format!("`{name}` expects 1 argument, got {}", args.len()),
                 span,
             });
         }
@@ -4275,13 +4278,13 @@ fn infer_apply_impl(
         } = &args[0]
         else {
             return Err(CompileError::Type {
-                msg: "runST expects a parenthesized lambda `fn s -> body`".into(),
+                msg: format!("{name} expects a parenthesized lambda `fn s -> body`"),
                 span,
             });
         };
         if params.len() != 1 {
             return Err(CompileError::Type {
-                msg: "runST lambda must bind exactly one phantom type parameter".into(),
+                msg: format!("{name} lambda must bind exactly one phantom type parameter"),
                 span: *lspan,
             });
         }
@@ -4307,7 +4310,7 @@ fn infer_apply_impl(
         let bt = bt?;
         if bt.arity_in() != 0 || bt.arity_out() != 1 {
             return Err(CompileError::Type {
-                msg: "runST body must produce one value".into(),
+                msg: format!("{name} body must produce one value"),
                 span,
             });
         }
@@ -4407,7 +4410,10 @@ fn infer_apply_impl(
     // and its binders instantiated once for the call, sharing the element type
     // between arguments and result. This runs AFTER the `runST` special case
     // (its rank-2 signature is handled above) and BEFORE user
-    // definitions/typeclass methods.
+    // definitions/typeclass methods — so every `builtin_sigs` name (the STRef
+    // and STArray effects included: `newSTRef`, `getBounds`, `getElems`, …) is a
+    // PERMANENTLY RESERVED identifier that shadows a user definition of the same
+    // name. Lowering reserves exactly the same set; the two must stay in step.
     let builtin_sig = ctx.env.builtin_sigs.get(name).cloned().map(|sig| {
         let mut binders = Vec::new();
         collect_forall_binders(&sig, &mut binders);
