@@ -309,10 +309,7 @@ fn latch_exhaustion<T: Transcendental, const BUF: usize>(
 /// Latch a value-track FAULT as a user-facing `ProcessError`: an internal
 /// invariant violation (a primitive effect with an unbound operand), as opposed
 /// to [`latch_exhaustion`]'s resource limits. First latch wins.
-fn latch_fault<T: Transcendental, const BUF: usize>(
-    prog: &mut RillProgram<T, BUF>,
-    what: &'static str,
-) {
+fn latch_fault<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>, what: &str) {
     if prog.value_error.is_none() {
         prog.value_error = Some(ProcessError::processing(format!(
             "value-track fault: {what}"
@@ -380,9 +377,21 @@ fn alloc_owned<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Resolve a value register's `Value::Buffer` handle index. Falls back to the
-/// register index itself (the 1:1 signal-lowering convention: register N holds
-/// buffer N) when the register is empty or not a Buffer marker.
+/// Resolve a value register's `Value::Buffer` handle index, falling back to the
+/// register-index convention when the register is empty or holds a non-Buffer
+/// value.
+///
+/// The fallback is the ABSOLUTE register index `reg + base` whenever the buffer
+/// table covers it (the normal program-level case: 1-to-1 signal lowering and
+/// `Ir::num_buffers == Ir::next_value_reg`), so a fragment-relative caller can
+/// no longer silently address a different program register's buffer.
+///
+/// `Ir::num_buffers` counts PROGRAM-level registers only: a fragment's scratch
+/// registers are numbered from 0 in the fragment IR and offset by `base` at run
+/// time, so `base + reg` can exceed the table. Signal-lowering buffer ops inside
+/// a fragment therefore keep addressing their fragment-relative index (the
+/// established convention); the guard keeps that from becoming an out-of-bounds
+/// table access.
 fn buffer_index<T: Transcendental, const BUF: usize>(
     prog: &RillProgram<T, BUF>,
     reg: usize,
@@ -391,9 +400,24 @@ fn buffer_index<T: Transcendental, const BUF: usize>(
     match prog.value_regs.get(reg + base).copied().flatten() {
         Some(r) => match prog.arena.get(r) {
             Some(Value::Buffer(idx)) => *idx,
-            _ => reg,
+            _ => buffer_index_fallback(prog, reg, base),
         },
-        _ => reg,
+        None => buffer_index_fallback(prog, reg, base),
+    }
+}
+
+/// The register-index fallback for [`buffer_index`]: absolute `reg + base` when
+/// the buffer table is large enough, else the fragment-relative `reg`.
+fn buffer_index_fallback<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    reg: usize,
+    base: usize,
+) -> usize {
+    let abs = reg + base;
+    if abs < prog.buffers.len() {
+        abs
+    } else {
+        reg
     }
 }
 
@@ -1923,21 +1947,21 @@ fn copy_array_elems<T: Transcendental, const BUF: usize>(
 ///
 /// The offset is an `Int`; the pair is a `Pair` record (`first` = offset,
 /// `second` = value) — the shape the type checker enforces. A malformed pair
-/// (or a non-`Int` offset) reads as `None`, which the callers treat as an
-/// out-of-range fault rather than a panic.
+/// (or a non-`Int` offset) is reported as a distinct fault reason rather than a
+/// panic, so the caller can name the actual cause.
 fn flat_assoc<T: Transcendental, const BUF: usize>(
     prog: &RillProgram<T, BUF>,
     pair: ArenaRef,
-) -> Option<(i64, ArenaRef)> {
+) -> Result<(i64, ArenaRef), &'static str> {
     let fields = match prog.arena.get(pair) {
         Some(Value::Record(fields)) if fields.len() == 2 => fields,
-        _ => return None,
+        _ => return Err("association is not a Pair"),
     };
     let offset = match prog.arena.get(fields[0]) {
         Some(Value::Int(i)) => *i,
-        _ => return None,
+        _ => return Err("association offset is not an Int"),
     };
-    Some((offset, fields[1]))
+    Ok((offset, fields[1]))
 }
 
 /// Whether `offset` is a valid flat index into an array of `len` elements.
@@ -2616,13 +2640,26 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // ordinary `Pair i i`) together with the flat elements. Both the
             // bounds ref and every element ref are recounted, so the new array
             // owns them independently of the source registers.
+            //
+            // The flat storage needs the ARRAY-BACKED list form. A cons-built
+            // list (`1.0 : 2.0 : []`, which Complete mode lowers to a lazy cons
+            // chain) has no flat element Vec, so it is a clean fault — leaving
+            // the destination silently unbound would be a wrong result on the
+            // canonical Haskell list syntax.
             let Some(elems) = pooled_elems_of(prog, base + args[1]) else {
+                // (Pool exhaustion, if that was the cause, already latched;
+                // first latch wins.)
+                latch_fault(prog, "arrayFromList: expected a list of elements");
                 prog.value_regs[dst] = None;
                 return;
             };
-            let Some(bounds) =
-                prog.value_regs[base + args[0]].and_then(|r| prog.arena.copy(r).ok())
-            else {
+            let Some(bounds) = prog.value_regs[base + args[0]] else {
+                prog.arena.put_buf(elems);
+                latch_fault(prog, "arrayFromList: bounds operand is unbound");
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(bounds) = copy_owned(prog, bounds) else {
                 prog.arena.put_buf(elems);
                 prog.value_regs[dst] = None;
                 return;
@@ -2639,12 +2676,21 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 Some(Value::Array { bounds, .. }) => Some(*bounds),
                 _ => None,
             };
-            prog.value_regs[dst] = bounds.and_then(|b| copy_owned(prog, b));
+            prog.value_regs[dst] = match bounds.and_then(|b| copy_owned(prog, b)) {
+                Some(b) => Some(b),
+                None => {
+                    // (Arena exhaustion, if that was the cause, already
+                    // latched; first latch wins.)
+                    latch_fault(prog, "arrayBounds: operand is not an array");
+                    None
+                }
+            };
         }
         ArrayElems => {
             // arrayElems arr: a direct primitive read of the flat elements as
             // a List. Every element is recounted for the new list.
             let Some(elems) = copy_array_elems(prog, base + args[0]) else {
+                latch_fault(prog, "arrayElems: operand is not an array");
                 prog.value_regs[dst] = None;
                 return;
             };
@@ -2652,75 +2698,98 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         }
         ArrayIndexFlat => {
             // arrayIndexFlat arr i: read a FLAT offset (the language computed
-            // it via `Ix`). An out-of-range offset is a clean runtime fault
-            // through the latched channel — never a panic and never an index
-            // into the element Vec (design §Fault policy).
-            let offset = prog
-                .value_regs
-                .get(base + args[1])
-                .copied()
-                .flatten()
-                .and_then(|r| prog.arena.get(r))
-                .and_then(|v| match v {
-                    Value::Int(i) => Some(*i),
-                    _ => None,
-                });
-            let picked = offset.and_then(|i| {
-                let r = prog.value_regs[base + args[0]]?;
-                match prog.arena.get(r) {
-                    Some(Value::Array { elems, .. }) => {
-                        flat_index_in_range(i, elems.len()).map(|pos| elems[pos])
-                    }
-                    _ => None,
-                }
-            });
-            match picked {
-                Some(e) => prog.value_regs[dst] = copy_owned(prog, e),
-                None => {
-                    latch_fault(prog, "arrayIndexFlat: index out of range");
+            // it via `Ix`). The three failure causes stay distinct — a
+            // non-array operand, a non-Int offset, and an out-of-range offset;
+            // the last is a clean runtime fault through the latched channel,
+            // never a panic and never an index into the element Vec (design
+            // §Fault policy).
+            let len = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
+                Some(Value::Array { elems, .. }) => elems.len(),
+                _ => {
+                    latch_fault(prog, "arrayIndexFlat: operand is not an array");
                     prog.value_regs[dst] = None;
+                    return;
                 }
-            }
+            };
+            let offset = match prog.value_regs[base + args[1]].and_then(|r| prog.arena.get(r)) {
+                Some(Value::Int(i)) => *i,
+                _ => {
+                    latch_fault(prog, "arrayIndexFlat: index is not an Int");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            let Some(pos) = flat_index_in_range(offset, len) else {
+                latch_fault(prog, "arrayIndexFlat: index out of range");
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let elem = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
+                Some(Value::Array { elems, .. }) => Some(elems[pos]),
+                _ => None,
+            };
+            prog.value_regs[dst] = match elem.and_then(|e| copy_owned(prog, e)) {
+                Some(e) => Some(e),
+                None => {
+                    latch_fault(prog, "arrayIndexFlat: element is unreadable");
+                    None
+                }
+            };
         }
         ArrayUpdate | ArrayAccum => {
             // arrayUpdate arr assocs / arrayAccum arr f assocs: build a NEW
             // array (the source is never mutated). The source elements are
             // recounted into the result payload, then each flat (offset, value)
             // association replaces one element (update) or folds the old value
-            // with the new one through `f` (accum). Out-of-range offsets latch
-            // the clean fault channel.
+            // with the new one through `f` (accum). Every failure keeps its own
+            // message (the op name plus the specific cause) — out-of-range
+            // offset, malformed association, non-Int offset, non-callable
+            // accumulator — all through the clean fault channel.
+            let op_name = if matches!(op, ArrayUpdate) {
+                "arrayUpdate"
+            } else {
+                "arrayAccum"
+            };
             let assoc_reg = if matches!(op, ArrayUpdate) {
                 base + args[1]
             } else {
                 base + args[2]
             };
             let Some(assocs) = pooled_elems_of(prog, assoc_reg) else {
+                latch_fault(prog, &format!("{op_name}: expected a list of associations"));
                 prog.value_regs[dst] = None;
                 return;
             };
             let Some(mut out) = copy_array_elems(prog, base + args[0]) else {
                 prog.arena.put_buf(assocs);
+                latch_fault(prog, &format!("{op_name}: operand is not an array"));
                 prog.value_regs[dst] = None;
                 return;
             };
-            let mut faulted = false;
+            // `Some` carries a cause; `None` while `aborted` means the failure
+            // was already latched (arena exhaustion).
+            let mut fault: Option<String> = None;
+            let mut aborted = false;
             for pair in &assocs {
                 // Read the association in a short borrow, then mutate the
                 // payload (an `accum` closure call may dispatch a fragment).
                 let (offset, val) = match flat_assoc(prog, *pair) {
-                    Some(a) => a,
-                    None => {
-                        faulted = true;
+                    Ok(a) => a,
+                    Err(why) => {
+                        fault = Some(format!("{op_name}: {why}"));
+                        aborted = true;
                         break;
                     }
                 };
                 let Some(pos) = flat_index_in_range(offset, out.len()) else {
-                    faulted = true;
+                    fault = Some(format!("{op_name}: index {offset} out of range"));
+                    aborted = true;
                     break;
                 };
                 let fresh = if matches!(op, ArrayUpdate) {
                     // Update: the result claims the new value directly.
-                    prog.arena.copy(val).ok()
+                    // (`copy_owned` latches exhaustion itself.)
+                    copy_owned(prog, val)
                 } else {
                     // Accum: `f old new`, applied through the closure register
                     // (a curried nest handles the two-argument application).
@@ -2737,20 +2806,27 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         prog.arena.drop_ref(old);
                     }
                     None => {
-                        faulted = true;
+                        // An update only fails on arena exhaustion (already
+                        // latched); an accum fails when `f` is not callable.
+                        if matches!(op, ArrayAccum) {
+                            fault = Some(format!("{op_name}: accumulator is not a function"));
+                        }
+                        aborted = true;
                         break;
                     }
                 }
             }
             prog.arena.put_buf(assocs);
-            if faulted {
+            if aborted {
                 // Release exactly the claims the result payload holds (the
                 // source array's claims are untouched).
                 for r in &out {
                     prog.arena.drop_ref(*r);
                 }
                 prog.arena.put_buf(out);
-                latch_fault(prog, "arrayUpdate/arrayAccum: index out of range");
+                if let Some(why) = fault {
+                    latch_fault(prog, &why);
+                }
                 prog.value_regs[dst] = None;
                 return;
             }

@@ -268,7 +268,13 @@ fn array_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     }
 }
 
-/// The index type `i` of an `Array i e` value type; `Int` when unknown.
+/// The index type `i` of an `Array i e` value type, or the builtin constant
+/// `Int` when the argument is not an array.
+///
+/// Deliberately NOT routed through `concrete_or_float`: an unresolved index
+/// type is not a `Float`. Arrays store their bounds verbatim as a `Pair i i`
+/// whose fields the buffer bridge always builds as `Int`, so a `Float`
+/// fallback would mistype the stored value the caller is about to read.
 fn array_index_ty(t: Option<&ValueTy>) -> ValueTy {
     t.and_then(array_type_args)
         .and_then(|inner| inner.first().cloned())
@@ -284,12 +290,17 @@ fn array_elem_ty(t: Option<&ValueTy>) -> ValueTy {
     )
 }
 
-/// The index type `i` of a `Pair i i` value type (`arrayFromList`'s bounds);
-/// `Int` when the argument is not a pair.
+/// The index type `i` of a `Pair i i` value type (`arrayFromList`'s bounds), or
+/// the builtin constant `Int` when the argument is not a pair.
+///
+/// As with [`array_index_ty`], the fallback is the builtin `Int`, not a
+/// `concrete_or_float` numeric fallback: the stored bounds are `Int` pairs on
+/// every path that the interpreter builds (`arrayFromBuffer`), so typing an
+/// unresolved parameter as `Float` would drift from the runtime value.
 fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
     match t {
         Some(ValueTy::App(name, inner)) if name == "Pair" => {
-            concrete_or_float(inner.first().cloned().unwrap_or(ValueTy::Int))
+            inner.first().cloned().unwrap_or(ValueTy::Int)
         }
         _ => ValueTy::Int,
     }
@@ -3505,8 +3516,9 @@ impl<'a> Lowerer<'a> {
             )),
             "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Float])),
             // Immutable array storage (flat, type-agnostic): the static types
-            // mirror the builtin signatures. An unresolved index/element type
-            // falls back to the runtime's numeric value type.
+            // mirror the builtin signatures. Index types fall back to the
+            // builtin `Int` (never a numeric `Float`), element types to the
+            // runtime's numeric value type.
             "arrayFromList" => {
                 let index = pair_index_ty(args.first());
                 let elem = args
@@ -3526,14 +3538,26 @@ impl<'a> Lowerer<'a> {
                 "List".into(),
                 vec![array_elem_ty(args.first())],
             )),
-            "arrayIndexFlat" => Ok(array_elem_ty(args.first())),
-            "arrayUpdate" | "arrayAccum" => match args.first() {
-                Some(ty @ ValueTy::App(name, _)) if name == "Array" => Ok(ty.clone()),
-                other => Err(CompileError::Type {
-                    msg: format!("{name} expects an Array, got {other:?}"),
-                    span,
-                }),
-            },
+            "arrayIndexFlat" | "arrayUpdate" | "arrayAccum" => {
+                // The three array-CONSUMING flat ops validate the first
+                // argument uniformly (defense-in-depth: inference already pins
+                // it). `arrayIndexFlat` then reads its element type from the
+                // same checked array type.
+                let arr = match args.first() {
+                    Some(ty @ ValueTy::App(name, _)) if name == "Array" => ty.clone(),
+                    other => {
+                        return Err(CompileError::Type {
+                            msg: format!("{name} expects an Array, got {other:?}"),
+                            span,
+                        })
+                    }
+                };
+                if name == "arrayIndexFlat" {
+                    Ok(array_elem_ty(Some(&arr)))
+                } else {
+                    Ok(arr)
+                }
+            }
             "arrayFromBuffer" => Ok(ValueTy::App(
                 "Array".into(),
                 vec![ValueTy::Int, ValueTy::Float],
@@ -5857,10 +5881,19 @@ impl<'a> Lowerer<'a> {
                     // bounded by the ELEM_EST heuristic — an array can
                     // materialize a WHOLE signal block through the buffer
                     // bridge (`arrayFromBuffer` copies every live sample into
-                    // its own arena slot). Lowering does not know the block
-                    // size (`Ir` is block-size agnostic), but every entry point
-                    // that can construct a `FixedBuffer` value (`compile_with_ffi`
-                    // and friends) fixes `BUF` at 256, so that is the bound.
+                    // its own arena slot).
+                    //
+                    // The bound below is the block size the DEFAULT entry
+                    // points use (`compile`, `compile_with_ffi` and friends fix
+                    // `BUF` at 256). It is not a hard invariant: `compile_runner`,
+                    // `graph::compile` and `compile_spec` are const-generic over
+                    // `BUF`, and `compile_to_ir` is block-size agnostic, so the
+                    // same IR run as `RillProgram<T, 1024>` would under-budget
+                    // the array 4x and `arrayFromBuffer` would latch a clean
+                    // exhaustion. Nothing breaks in-tree today (every caller
+                    // uses 256).
+                    // TODO: parameterise this estimate over `BUF` once lowering
+                    // is told the block size.
                     let elem = args.last().unwrap_or(&ValueTy::Float);
                     1 + Self::ARRAY_ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
