@@ -60,11 +60,10 @@ Build the value/runtime foundation of the new stream model. Everything here is *
   - `asInput : Stream Buffer -> InputStream Buffer`
   - `asOutput: Stream Buffer -> OutputStream Buffer`
   - `runStream : (Stream Buffer -> Stream Buffer -> IO ()) -> IO ()` (handler params are general `Stream`; first = master, second = slave)
-- Modify: `rill-lang/src/runtime.rs` — the runtime `State`: add a **backend registry** (`BackendRegistry`) that resolves a `BackendSpec` to a concrete stream backend instance, plus the stream table that maps a `Stream` value (a handle) to its backend side.
-- Create: `rill-lang/src/backend.rs` (or extend `runtime.rs`) — the stream-backend contract for this plan: an in-memory backend with an input side and an output side; a `testInput`/`testOutput`-style in-memory backend usable by tests (fill the input side, capture the output side).
 - Modify: `rill-lang/src/types/ty.rs` builtin-sig setup — add the `mkStream` sig:
-  - `mkStream : BackendSpec -> IO (Stream Buffer, Stream Buffer)` (creates the backend together with the stream pair; returns the input-side and output-side streams)
-  - `BackendSpec` — a value identifying a backend (for this plan: a name/record resolved against the runtime registry).
+  - `mkStream : BackendSpec -> IO (Pair (Stream Buffer) (Stream Buffer))` (creates the backend together with the stream pair; returns the input-side and output-side streams; `Pair` via the binary-tuple type sugar)
+  - `BackendSpec` — a value identifying a backend (for this plan: `data BackendSpec = { name: String }`, resolved against the runtime registry).
+- Create: `rill-lang/src/stream_backend.rs` — the stream-backend runtime contract, built on the existing `rill_core::io` traits (`IoDriver`/`IoCapture`/`IoPlayback`) so real `rill-io` backends (ALSA/PipeWire/JACK/PortAudio) fit the same registry in the follow-on plan. A stream backend = a clock driver + capture (input side) + playback (output side) + which side is the active clock (master). Contains `BackendSpec`, `ActiveSide`, `StreamValue`/`StreamDirection`, the `BackendRegistry` (name → backend; `open(spec)` = the runtime side of `mkStream`, creating the stream pair), and the in-memory test backend (`InMemoryBackend`) implementing the same three traits with fillable input / capturable output. Re-exported from `lib.rs`.
 - Test: amend `rill-lang/tests/stream_contract.rs` (Task 1 tests) for the amended `runStream` handler type; add type-level tests for `Stream`/`asInput`/`asOutput`/`mkStream`.
 
 **Interfaces:**
@@ -101,7 +100,7 @@ Expected: PASS — amended type tests pass, all existing tests still green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add rill-lang/src/types/ty.rs rill-lang/src/runtime.rs rill-lang/src/backend.rs rill-lang/tests/stream_contract.rs
+git add rill-lang/src/types/ty.rs rill-lang/src/stream_backend.rs rill-lang/src/lib.rs rill-lang/tests/stream_contract.rs
 git commit -m "feat(rill-lang): general Stream type, asInput/asOutput, mkStream backend registry"
 ```
 
