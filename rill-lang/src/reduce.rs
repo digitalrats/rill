@@ -254,13 +254,24 @@ fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<Str
     }
 }
 
+/// Whether `def` is a class-constrained definition (`mk :: Ix i => …`).
+///
+/// Such a definition has no standalone body: lowering specializes it per CALL
+/// SITE, where the argument types solve the class variable. Inlining or
+/// β-reducing it here would drop the class dispatch and lower the deferred body
+/// against an unsolved variable.
+fn is_constrained_def(def: &Def) -> bool {
+    def.sig().is_some_and(|s| s.is_constrained())
+}
+
 /// Resolve a unary β-reduct: the (definition name, parameter name, body) of a
 /// function-valued callee that can be reduced by substituting one argument.
 ///
 /// A syntactic lambda is reducible; so is a reference to a niladic definition
 /// whose body is a lambda — a curried definition (`twice = \f -> \x -> f (f x)`)
 /// after the parser's currying pass emptied its parameter list. CAFs (shared
-/// closed definitions) and non-lambda definitions are not reducible here.
+/// closed definitions), class-constrained definitions, and non-lambda
+/// definitions are not reducible here.
 fn unary_reduct<'a>(
     callee: &'a Expr,
     ctx: &'a HashMap<String, Def>,
@@ -272,7 +283,7 @@ fn unary_reduct<'a>(
         }
         Expr::Ref(name, _) if !cafs.contains(name) => {
             let def = ctx.get(name.as_str())?;
-            if def.params().is_empty() && !def.is_decl() {
+            if def.params().is_empty() && !def.is_decl() && !is_constrained_def(def) {
                 if let Expr::Lambda { params, body, .. } = def.body() {
                     if params.len() == 1 && !params[0].bang {
                         return Some((Some(name.as_str()), params[0].name.as_str(), body.as_ref()));
@@ -342,10 +353,17 @@ fn reduce_expr(
                 // lowering can lift it once instead of duplicating state here.
                 e.clone()
             } else if let Some(def) = ctx.get(name) {
-                if def.params().is_empty() && !def.is_decl() && !def.is_bang() {
+                if def.params().is_empty()
+                    && !def.is_decl()
+                    && !def.is_bang()
+                    && !is_constrained_def(def)
+                {
                     // Local binding with no params — inline the body. A bang
                     // binding (`let !x = e`) is NOT inlined: its force happens
-                    // at the binding point, which only lowering can emit.
+                    // at the binding point, which only lowering can emit. A
+                    // class-constrained definition is not inlined either: it is
+                    // specialized at its call sites, where the class variable is
+                    // solved (see `lower::lower_constrained_apply`).
                     reduce_expr(def.body(), ctx, cafs, reducing, mode)
                 } else {
                     // Has unapplied λ-params, or is a bang binding — leave as ref
@@ -360,6 +378,16 @@ fn reduce_expr(
                 .iter()
                 .map(|a| reduce_expr(a, ctx, cafs, reducing, mode))
                 .collect();
+            // A class-constrained definition keeps its call: the class variable
+            // is solved at this call site during lowering, which β-substitutes
+            // the body with the parameter bindings in scope.
+            if ctx.get(name).is_some_and(is_constrained_def) {
+                return Expr::Apply {
+                    name: name.clone(),
+                    args: reduced_args,
+                    span: *span,
+                };
+            }
             // Closure-valued applications (`add2 = adder 2.0`) are runtime
             // dispatches on closure values: leave the Apply in place so
             // lowering emits a `ValueCallFunc`. β-reducing a closure body would

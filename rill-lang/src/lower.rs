@@ -595,6 +595,40 @@ struct Lowerer<'a> {
     named_tapes: HashMap<String, usize>,
 }
 
+/// Reject a specialized constrained-definition body whose static type
+/// contradicts the signature's declared result.
+///
+/// Inference never types the deferred body (the class variable is abstract
+/// until a call site solves it), so this is the only place the body/result
+/// contract is checked. Lowering has no unification substitution, so the check
+/// is deliberately conservative: it fires only when BOTH types are concrete —
+/// [`value_type_key`] canonicalizes `Data`/`App` and returns `None` for
+/// anything involving a type variable or a function type.
+///
+/// [`value_type_key`]: crate::types::ty::value_type_key
+fn check_specialized_result(
+    name: &str,
+    actual: &ValueTy,
+    declared: &ValueTy,
+    span: Span,
+) -> Result<(), CompileError> {
+    let (Some(actual), Some(declared)) = (
+        crate::types::ty::value_type_key(actual),
+        crate::types::ty::value_type_key(declared),
+    ) else {
+        return Ok(());
+    };
+    if actual == declared {
+        return Ok(());
+    }
+    Err(CompileError::Type {
+        msg: format!(
+            "body of `{name}` has type `{actual}`, but its signature declares `{declared}`"
+        ),
+        span,
+    })
+}
+
 impl<'a> Lowerer<'a> {
     fn fresh_value_reg(&mut self) -> usize {
         let r = self.next_value_reg;
@@ -3677,13 +3711,16 @@ impl<'a> Lowerer<'a> {
         // Full application: the definition body becomes the call's value,
         // typed by the signature's result. A concrete caller expectation wins
         // (inference pinned the signature result to it).
-        let body_expected = expected.cloned().unwrap_or(ret);
+        let sig_ret = ret;
+        let body_expected = expected.cloned().unwrap_or_else(|| sig_ret.clone());
         self.value_locals.push(scope);
         self.value_local_ctors.push(ctor_scope);
         let res = self.lower_with_where_defs(&cd.where_defs, &cd.body, Some(&body_expected));
         self.value_locals.pop();
         self.value_local_ctors.pop();
-        res
+        let (r, t) = res?;
+        check_specialized_result(name, &t, &sig_ret, span)?;
+        Ok((r, t))
     }
 
     /// A fresh unification variable for signature-type conversion at a
@@ -3733,6 +3770,23 @@ impl<'a> Lowerer<'a> {
         span: Span,
         expected: Option<&ValueTy>,
     ) -> Result<(usize, ValueTy), CompileError> {
+        // A class-constrained definition has no standalone value: its body is
+        // specialized per CALL SITE, where the argument types solve the class
+        // variable. A bare reference (`f = mk`) has no such site, so report it
+        // here instead of lowering the deferred body against an unsolved
+        // variable — which would surface a misleading `no instance of … for
+        // Float`. A `where`-local of the same name shadows the definition.
+        if self.env.constrained_defs.contains_key(name)
+            && !self.value_locals.iter().any(|s| s.contains_key(name))
+        {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "cannot use class-constrained definition `{name}` without applying it: \
+                     its class variable is solved per call site"
+                ),
+                span,
+            });
+        }
         if !self.defs.contains_key(name) && !self.value_locals.iter().any(|s| s.contains_key(name))
         {
             if let Some(class_name) = self.env.class_of_method(name) {

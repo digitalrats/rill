@@ -1069,12 +1069,7 @@ fn conv(
             ClassVarSubst::Var(id) => ValueTy::Var(*id),
         },
         crate::ast::TypeExpr::TName(n) => {
-            if matches!(n.as_str(), "Float" | "Int" | "Bool" | "String")
-                || env.data_types.contains_key(n)
-                || env.newtypes.contains_key(n)
-                || env.ctor_kinds.contains_key(n)
-                || env.type_aliases.contains_key(n)
-            {
+            if is_declared_type_name(env, n) {
                 env.vty_of_name(n)
             } else {
                 vars.entry(n.clone()).or_insert_with(fresh).clone()
@@ -1179,15 +1174,29 @@ pub(crate) fn prepend_instance_head_args(
     }
 }
 
+/// Whether a signature carries a class context (`C v => T`), looking through an
+/// explicit `forall` binder (`forall v. C v => T`).
+///
+/// Haskell 2010 spells the quantified form `forall v. C v => T`, so the context
+/// can sit under the binder. Both definition sites (registration and the eager
+/// inference deferral) accept either spelling.
+pub(crate) fn is_constrained_sig(sig: &crate::ast::TypeExpr) -> bool {
+    sig.is_constrained()
+}
+
 /// The class context of a definition's signature, when it carries one
-/// (`mk :: Ix i => …`). A `forall` wrapper is transparent: the class context
-/// is the outermost `TConstrained` node in practice, and a `forall`-headed
-/// constrained signature still defers the same way.
+/// (`mk :: Ix i => …`, or `forall i. Ix i => …`). The returned node is the
+/// `TConstrained` itself — [`sig_constraints`] and [`sig_func_parts`] look
+/// through the `forall` binder from there.
 fn constrained_def_sig(def: &Def) -> Option<&crate::ast::TypeExpr> {
-    match def.sig() {
-        Some(sig @ crate::ast::TypeExpr::TConstrained(..)) => Some(sig),
-        _ => None,
+    fn constrained_node(te: &crate::ast::TypeExpr) -> Option<&crate::ast::TypeExpr> {
+        match te {
+            te @ crate::ast::TypeExpr::TConstrained(..) => Some(te),
+            crate::ast::TypeExpr::TForall(_, inner) => constrained_node(inner),
+            _ => None,
+        }
     }
+    def.sig().and_then(constrained_node)
 }
 
 /// The `(class, type variable)` constraints of a signature, looking through a
@@ -1909,6 +1918,42 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
         mode,
     })
 }
+
+/// The definition's effective formal parameters and its uncurried body.
+///
+/// `parser::curry_defs_in` turns every definition with more than one parameter
+/// into a nest of unary lambdas and clears `Def::Eval::params`, so
+/// `def.params()` is empty for `f a b = …`. A `::` signature names the
+/// definition's arity, and [`split_curried_params`] recovers the formal
+/// parameters from the λ-chain — the same recovery constrained-definition
+/// registration performs. An unannotated definition keeps its parser
+/// parameters: its λ-chain is a function VALUE typed by the `Expr::Lambda` arm.
+///
+/// [`split_curried_params`]: crate::types::ty::split_curried_params
+fn effective_def_params(def: &Def) -> (Vec<crate::ast::Param>, Expr) {
+    let parser_params = def.params();
+    if let Some(sig) = def.sig() {
+        let arity = sig.arg_count();
+        if arity > parser_params.len() {
+            return crate::types::ty::split_curried_params(arity, parser_params, def.body());
+        }
+    }
+    (parser_params.to_vec(), def.body().clone())
+}
+
+/// A definition body's inferred type, plus the signature argument types its
+/// λ-parameters were bound to (empty when the definition is unannotated).
+///
+/// [`def_scheme_vty`] reuses the EXACT types the body was checked against:
+/// re-converting the signature would allocate fresh variables and lose the
+/// sharing between a parameter and the result (`f x :: a -> a = x`).
+struct DefBodyTy {
+    /// The inferred body type.
+    ty: ArrowTy,
+    /// Signature argument types used for the λ-parameters, if any.
+    sig_params: Vec<ValueTy>,
+}
+
 /// λ-parameters are bound as signal channels first. When that fails and the
 /// definition has λ-parameters, retry with the parameters bound as VALUE
 /// channels (fresh unresolved value types): a value function's λ-parameter
@@ -1916,7 +1961,7 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
 /// the parameter is a value. The failed attempt's substitution and fresh-var
 /// counter are rolled back so the retry starts from a clean context. A def
 /// with no λ-parameters that fails is genuinely broken and errors.
-fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
+fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // A class-constrained definition (`mk p v :: Ix i => Pair i i -> …`) is
     // DEFERRED: its body mentions methods of the constrained class, whose
     // instance is unknown until a call site solves the class variable. Typing
@@ -1925,11 +1970,18 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     // `def_scheme_vty`); the body is specialized per call site in lowering.
     if let Some(sig) = constrained_def_sig(def) {
         let (_, ret, _) = def_sig_tys(ctx, sig);
-        return Ok(ArrowTy::value_channel(ret));
+        return Ok(DefBodyTy {
+            ty: ArrowTy::value_channel(ret),
+            sig_params: Vec::new(),
+        });
     }
+    // Effective parameters: the parser curries every multi-parameter definition
+    // into a λ-nest and clears `Def::Eval::params`, so an annotated
+    // `f a b :: …` keeps its formal parameters in the body's leading λs.
+    let (params, body) = effective_def_params(def);
     let saved_locals = ctx.locals.clone();
-    if def.params().is_empty() {
-        let r = infer_expr(ctx, def.body());
+    if params.is_empty() {
+        let r = infer_expr(ctx, &body);
         if r.is_err() && ctx.mode == Mode::Complete {
             // Complete mode, self-recursive local (`fibs = cons … fibs …`):
             // the placeholder scheme defaults to a signal scalar, so the
@@ -1940,8 +1992,8 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             let saved_next = ctx.next;
             let saved_defs = ctx.defs.clone();
             let saved_bodies = ctx.def_bodies.clone();
-            rerate_value(ctx, def.name(), 0, leading_lambda_count(def.body()));
-            let retry = infer_expr(ctx, def.body());
+            rerate_value(ctx, def.name(), 0, leading_lambda_count(&body));
+            let retry = infer_expr(ctx, &body);
             if retry.is_err() {
                 ctx.subst = saved_subst;
                 ctx.next = saved_next;
@@ -1949,10 +2001,16 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 ctx.def_bodies = saved_bodies;
             }
             ctx.locals = saved_locals;
-            return retry;
+            return retry.map(|ty| DefBodyTy {
+                ty,
+                sig_params: Vec::new(),
+            });
         }
         ctx.locals = saved_locals;
-        return r;
+        return r.map(|ty| DefBodyTy {
+            ty,
+            sig_params: Vec::new(),
+        });
     }
     let saved_subst = ctx.subst.clone();
     let saved_next = ctx.next;
@@ -1967,13 +2025,13 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
     // Signature-driven parameter typing: a definition annotated `:: Float ->
     // List a -> …` binds its λ-parameters to the signature's argument types
     // (shared type variables become fresh unification vars), instead of the
-    // scalar `Float` default. A signature whose arity disagrees with the
-    // parameter list is ignored here — the mismatch is reported elsewhere.
+    // scalar `Float` default. The effective parameter list is the signature's
+    // arity — `def.params()` is empty for a curried multi-parameter definition.
     let sig_param_tys: Option<Vec<ValueTy>> = def
         .sig()
         .map(|sig| def_sig_tys(ctx, sig).0)
-        .filter(|tys| tys.len() == def.params().len());
-    for (i, p) in def.params().iter().enumerate() {
+        .filter(|tys| tys.len() == params.len());
+    for (i, p) in params.iter().enumerate() {
         // `main`: λ-parameters are the program's String launch arguments
         // (`main a = …` → `a : String`), bound by `ProgramRunner::set_args`.
         // Other definitions' λ-parameters take the signature's declared type
@@ -1990,7 +2048,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
         }
     }
-    let result = match infer_expr(ctx, def.body()) {
+    let result = match infer_expr(ctx, &body) {
         Ok(t) => Ok(t),
         Err(_) => {
             ctx.subst = saved_subst.clone();
@@ -1998,7 +2056,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             ctx.defs = saved_defs.clone();
             ctx.def_bodies = saved_bodies.clone();
             ctx.locals.clear();
-            for p in def.params() {
+            for p in &params {
                 if def.name() == "main" {
                     // `main`: λ-parameters are String launch arguments.
                     ctx.locals
@@ -2018,18 +2076,13 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             // leak into the recursive call and fail any value-demanding site.
             if ctx.mode == Mode::Complete {
                 // Re-register the CURRENT def as value-rate (self-recursion).
-                rerate_value(
-                    ctx,
-                    def.name(),
-                    def.params().len(),
-                    leading_lambda_count(def.body()),
-                );
+                rerate_value(ctx, def.name(), params.len(), leading_lambda_count(&body));
                 // Also re-register the top-level defs this body REFERENCES —
                 // mutual recursion (`even` calls `odd`) would otherwise leave
                 // the partner on a signal placeholder and fail value-demanding
                 // sites inside this body.
                 let mut refs = HashSet::new();
-                collect_ref_names(def.body(), &mut refs);
+                collect_ref_names(&body, &mut refs);
                 for n in refs {
                     if let Some(s) = ctx.defs.get(n.as_str()) {
                         let lam_count = s.lam_count;
@@ -2042,7 +2095,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                     }
                 }
             }
-            let retry = infer_expr(ctx, def.body());
+            let retry = infer_expr(ctx, &body);
             // `main` is the program's entry point, typed `(String…) -> IO ()`.
             // A body that is a bare result-directed monad action (`main =
             // return ()`) carries no constraint fixing the monad, so the plain
@@ -2055,12 +2108,12 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
                 ctx.defs = saved_defs.clone();
                 ctx.def_bodies = saved_bodies.clone();
                 ctx.locals.clear();
-                for p in def.params() {
+                for p in &params {
                     ctx.locals
                         .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
                 }
                 let io_unit = ValueTy::Data("IO".into(), vec![ValueTy::Void]);
-                match infer_expr_expected(ctx, def.body(), Some(io_unit)) {
+                match infer_expr_expected(ctx, &body, Some(io_unit)) {
                     Ok(t) => Ok(t),
                     Err(_) => retry,
                 }
@@ -2073,8 +2126,8 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
             // discards them (λ-params are stored as signal scalars). Lowering
             // types the def's fragment-local parameter registers with these.
             if retry.is_ok() {
-                let mut param_tys = Vec::with_capacity(def.params().len());
-                for p in def.params() {
+                let mut param_tys = Vec::with_capacity(params.len());
+                for p in &params {
                     let lt = ctx.locals.get(p.name.as_str()).cloned();
                     let vty = match lt {
                         Some(t) => t.vty.clone(),
@@ -2096,7 +2149,10 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<ArrowTy, CompileError> {
         }
     };
     ctx.locals = saved_locals;
-    result
+    result.map(|ty| DefBodyTy {
+        ty,
+        sig_params: sig_param_tys.unwrap_or_default(),
+    })
 }
 
 /// Re-register a def's placeholder scheme with VALUE-rate channels (complete
@@ -2235,7 +2291,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
             infer_def_group(ctx, def.where_defs())?;
         }
         let body_ty = infer_def_body(ctx, def)?;
-        let lam_count = def.params().len();
+        let lam_count = effective_def_params(def).0.len();
         let vty = def_scheme_vty(ctx, def, &body_ty, lam_count);
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
@@ -2256,7 +2312,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
             continue;
         }
         let body_ty = infer_def_body(ctx, def)?;
-        let lam_count = def.params().len();
+        let lam_count = effective_def_params(def).0.len();
         let vty = def_scheme_vty(ctx, def, &body_ty, lam_count);
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
@@ -2281,10 +2337,13 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
 /// argument/result types are exactly the call-site contract. The signature's
 /// arity — not `lam_count` — decides the shape, because a multi-parameter
 /// definition is stored curried (`Def::Eval::params` empty, body a λ-chain).
-/// Every other definition keeps the v1 shape — the inferred body type with the
-/// scalar λ-parameter default (`main`'s λ-params are the String launch
-/// arguments).
-fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &ArrowTy, lam_count: usize) -> ValueTy {
+/// An annotated definition reuses the argument types its body was checked
+/// against (`body_ty.sig_params`), so the scheme and the lowered parameter
+/// registers agree — a `Float` scheme for an `Int`-typed parameter is exactly
+/// the divergence this avoids. Every other definition keeps the v1 shape — the
+/// inferred body type with the scalar λ-parameter default (`main`'s λ-params
+/// are the String launch arguments).
+fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usize) -> ValueTy {
     if let Some(sig) = constrained_def_sig(def) {
         let (sig_params, sig_ret, _) = def_sig_tys(ctx, sig);
         return if sig_params.is_empty() {
@@ -2294,7 +2353,13 @@ fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &ArrowTy, lam_count: usize)
         };
     }
     if lam_count == 0 {
-        return body_ty.vty.clone();
+        return body_ty.ty.vty.clone();
+    }
+    // Signature-driven scheme: the body was typed against these exact argument
+    // types, so call sites and lowering agree. `main` keeps its launch-argument
+    // (String) parameters regardless of its annotation.
+    if def.name() != "main" && body_ty.sig_params.len() == lam_count {
+        return ValueTy::Thunk(body_ty.sig_params.clone(), vec![body_ty.ty.vty.clone()]);
     }
     let param_tys: Vec<ValueTy> = (0..lam_count)
         .map(|_| {
@@ -2305,7 +2370,7 @@ fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &ArrowTy, lam_count: usize)
             }
         })
         .collect();
-    ValueTy::Thunk(param_tys, vec![body_ty.vty.clone()])
+    ValueTy::Thunk(param_tys, vec![body_ty.ty.vty.clone()])
 }
 
 /// Resolve an arm/branch body's result value type: a value channel directly,
@@ -6339,6 +6404,97 @@ mod tests {
         let t = ty_of("main = sine 440.0 0.5 0.0 * 0.5").unwrap();
         // A buffer-valued main is the program's single signal output.
         assert_eq!(t.process_ty.vty, ValueTy::Buffer);
+    }
+
+    #[test]
+    fn annotated_scheme_parameter_types_come_from_the_signature() {
+        // Direct scheme check (white-box): `Float`-based parameters in the
+        // scheme would make the definition's advertised type disagree with the
+        // body that was checked against the signature.
+        fn scheme_args(src: &str) -> Vec<ValueTy> {
+            let prog = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+            let mut ctx = Ctx {
+                next: 0,
+                subst: Subst::default(),
+                defs: HashMap::new(),
+                def_bodies: HashMap::new(),
+                locals: HashMap::new(),
+                env: TypeEnv::with_builtins(),
+                method_lifting: HashSet::new(),
+                type_var_bindings: HashMap::new(),
+                anchor_param_tys: HashMap::new(),
+                mode: Mode::Strict,
+                runst_payload_tys: HashMap::new(),
+            };
+            let def = &prog.defs[0];
+            let body = infer_def_body(&mut ctx, def).unwrap();
+            let lam_count = effective_def_params(def).0.len();
+            match def_scheme_vty(&mut ctx, def, &body, lam_count) {
+                ValueTy::Thunk(args, _) => args,
+                other => panic!("expected a function scheme, got {other:?}"),
+            }
+        }
+        // A single parameter: the scheme used to advertise `Float` while the
+        // body was typed with `x : Int`.
+        assert_eq!(
+            scheme_args("inc x :: Int -> Int = x + 1;\nmain = 0.0;"),
+            vec![ValueTy::Int]
+        );
+        // Multiple parameters: the parser curries them away, so the scheme used
+        // to carry no signature types at all.
+        assert_eq!(
+            scheme_args("f a b :: Int -> Int -> Int = a + b;\nmain = 0.0;"),
+            vec![ValueTy::Int, ValueTy::Int]
+        );
+    }
+
+    #[test]
+    fn forall_wrapped_constraint_context_defers_like_a_bare_one() {
+        // Haskell 2010 spells the quantified form `forall i. C i => T`, which
+        // puts the class context UNDER the binder. Both definition sites must
+        // look through it: registration (so the body is deferred and
+        // specialized at call sites) and the eager inference deferral.
+        let sig = TypeExpr::TForall(
+            vec!["i".into()],
+            Box::new(TypeExpr::TConstrained(
+                vec![("Ix".into(), "i".into())],
+                Box::new(TypeExpr::TFunc(
+                    vec![TypeExpr::TApp(
+                        "Pair".into(),
+                        vec![TypeExpr::TName("i".into()), TypeExpr::TName("i".into())],
+                    )],
+                    Box::new(TypeExpr::TName("Float".into())),
+                )),
+            )),
+        );
+        assert!(is_constrained_sig(&sig));
+        assert_eq!(sig_constraints(&sig), [("Ix".to_string(), "i".to_string())]);
+        // Registration recovers the formal parameters from the signature's
+        // arity, exactly as for a bare `C i => T` signature.
+        let def = Def::Eval {
+            name: "mk".into(),
+            params: vec![],
+            body: Expr::Lambda {
+                params: vec![crate::ast::Param {
+                    name: "p".into(),
+                    span: Span::new(0, 0),
+                    bang: false,
+                }],
+                body: Box::new(Expr::Ref("rangeSize".into(), Span::new(0, 0))),
+                span: Span::new(0, 0),
+            },
+            where_defs: vec![],
+            sig: Some(sig),
+            bang: false,
+            span: Span::new(0, 0),
+        };
+        let mut env = TypeEnv::with_builtins();
+        env.register_decls(std::slice::from_ref(&def));
+        let cd = env
+            .constrained_defs
+            .get("mk")
+            .expect("a forall-wrapped class context must register as constrained");
+        assert_eq!(cd.params.len(), 1, "the λ-parameter is recovered");
     }
 
     #[test]

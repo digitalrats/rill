@@ -242,6 +242,23 @@ impl InstanceInfo {
 /// the concrete class-variable type and the bound instance (compile-time
 /// β-substitution, never a runtime dictionary). See
 /// [`TypeEnv::constrained_defs`] and `lower::lower_constrained_apply`.
+///
+/// Limits of the per-call-site model (all deliberate, all diagnosed):
+///
+/// - A definition that references itself from its own body cannot be
+///   specialized: the recursive call's class variable is only solved by the
+///   enclosing call site, which is exactly the expansion in flight. Direct
+///   self-recursion is already rejected by the general fragment-recursion check
+///   (`recursive function call: …`); recursion that reaches lowering through an
+///   indirection (a `where` binding) is caught by the specialization guard
+///   (`recursive class-constrained definition …`) instead of looping.
+/// - The specialization is a VALUE-track construct. The signal-track `Apply`
+///   lowering has no intercept for these definitions; a signal-rate call is
+///   reported as an ordinary lowering failure rather than specialized.
+/// - A BARE reference (`f = mk`) has no call site at which to solve the class
+///   variable; lowering reports `cannot use class-constrained definition …
+///   without applying it`. The reducer likewise never inlines such a reference
+///   (β-reducing the deferred body would lower it against an unsolved variable).
 #[derive(Debug, Clone)]
 pub struct ConstrainedDef {
     /// The declared signature, a [`crate::ast::TypeExpr::TConstrained`] node
@@ -269,7 +286,11 @@ pub struct ConstrainedDef {
 /// signature's argument count — it says exactly how many lambdas belong to the
 /// definition head rather than to a function-valued body — and the returned
 /// body has them peeled off.
-fn split_curried_params(
+///
+/// Shared by constrained-definition registration and by the eager inference
+/// path, which types an annotated multi-parameter definition's λ-chain from its
+/// signature.
+pub(crate) fn split_curried_params(
     arity: usize,
     params: &[crate::ast::Param],
     body: &Expr,
@@ -1099,18 +1120,19 @@ impl TypeEnv {
                 Def::Foreign { name, sig, .. } => {
                     self.foreign_sigs.insert(name.clone(), sig.clone());
                 }
-                // A class-constrained definition (`mk :: Ix i => …`): register
-                // it for per-call-site specialization. Its body is NOT typed
-                // here (nor by the eager body pass) — the class variable is
-                // abstract until a call site solves it.
+                // A class-constrained definition (`mk :: Ix i => …`, also under
+                // a `forall` binder): register it for per-call-site
+                // specialization. Its body is NOT typed here (nor by the eager
+                // body pass) — the class variable is abstract until a call site
+                // solves it.
                 Def::Eval {
                     name,
-                    sig: Some(sig @ crate::ast::TypeExpr::TConstrained(..)),
+                    sig: Some(sig),
                     params,
                     body,
                     where_defs,
                     ..
-                } => {
+                } if crate::types::infer::is_constrained_sig(sig) => {
                     // The parser curries a multi-parameter definition into
                     // nested lambdas and clears `params` (`curry_defs_in`), so
                     // the formal parameters of `f a b :: …` live in the body's

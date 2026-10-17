@@ -157,3 +157,83 @@ fn where_block_of_a_constrained_def_is_in_scope() {
     );
     assert_eq!(run(&src), 1.5);
 }
+
+/// Compile `src`, expecting an error; return its rendered message.
+fn compile_err(src: &str) -> String {
+    match rill_lang::compile::<f32>(src) {
+        Ok(_) => panic!("expected a compile error, but the program compiled"),
+        Err(e) => format!("{e}"),
+    }
+}
+
+#[test]
+fn constrained_def_can_call_another_constrained_def() {
+    // The `listArray` → `Ix`-helper chain shape: an outer constrained
+    // definition delegates to an inner one. Each call site specializes BOTH,
+    // and the class variable solved by the outermost argument flows through the
+    // inner call (its argument is the outer definition's `Pair i i` parameter).
+    let src = format!(
+        "{PROBE_IX}\n\
+         inner p :: Ix i => Pair i i -> Float = rangeSize p;\n\
+         outer q :: Ix i => Pair i i -> Float = inner q;\n\
+         main = outer (0,9) + outer ((0,0),(2,2));"
+    );
+    assert_eq!(run(&src), 3.0);
+}
+
+#[test]
+fn specialized_body_result_must_match_the_signature() {
+    // The body is deferred, so the signature's declared result is the only
+    // contract it is held to. A specialization that produces another type is a
+    // compile error, not a silently mistyped call site.
+    let src =
+        format!("{PROBE_IX}\nmk p :: Ix i => Pair i i -> Float = \"nope\";\nmain = mk (0,9);");
+    let msg = compile_err(&src);
+    assert!(
+        msg.contains("body of `mk` has type `String`, but its signature declares `Float`"),
+        "expected a body/signature result mismatch, got: {msg}"
+    );
+}
+
+#[test]
+fn recursive_constrained_def_is_a_compile_error() {
+    // A recursive call's class variable is only solved by the enclosing call
+    // site — the very expansion in flight. Specializing it would not terminate,
+    // so it is diagnosed. Direct self-recursion is caught by the general
+    // fragment-recursion check, which runs before lowering.
+    let src = format!("{PROBE_IX}\nmk p :: Ix i => Pair i i -> Float = mk p;\nmain = mk (0,9);");
+    let msg = compile_err(&src);
+    assert!(
+        msg.contains("recursive function call: `mk` calls itself"),
+        "expected the recursion diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn self_recursion_through_a_where_binding_hits_the_specialization_guard() {
+    // The general recursion check only walks top-level bodies, so a `where`
+    // binding that calls back into the definition slips past it. The lowering
+    // specialization guard is the backstop: it refuses to expand a definition
+    // that is already being expanded.
+    let src = format!(
+        "{PROBE_IX}\nmk p :: Ix i => Pair i i -> Float = g p where {{ g x = mk x; }};\nmain = mk (0,9);"
+    );
+    let msg = compile_err(&src);
+    assert!(
+        msg.contains("recursive class-constrained definition `mk`"),
+        "expected the specialization-guard diagnostic, got: {msg}"
+    );
+}
+
+#[test]
+fn bare_reference_to_a_constrained_def_is_a_compile_error() {
+    // `f = mk` has no call site at which `i` could be solved. Reporting that
+    // directly beats lowering the deferred body against an unsolved variable
+    // and surfacing a misleading `no instance of Ix for Float`.
+    let src = format!("{PROBE_IX}\n{PROBE_DEF}\nf = mk;\nmain = f (0,9) 0.0;");
+    let msg = compile_err(&src);
+    assert!(
+        msg.contains("cannot use class-constrained definition `mk` without applying it"),
+        "expected the bare-reference diagnostic, got: {msg}"
+    );
+}

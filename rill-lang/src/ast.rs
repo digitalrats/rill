@@ -60,6 +60,17 @@ impl TypeExpr {
             _ => 1,
         }
     }
+    /// Whether this signature carries a class context (`C v => T`), looking
+    /// through an explicit `forall` binder (`forall v. C v => T`). A
+    /// class-constrained definition has no standalone body: its class variable
+    /// is abstract until a call site solves it.
+    pub fn is_constrained(&self) -> bool {
+        match self {
+            TypeExpr::TConstrained(..) => true,
+            TypeExpr::TForall(_, inner) => inner.is_constrained(),
+            _ => false,
+        }
+    }
 }
 
 /// Arithmetic operators (elementwise, 2→1).
