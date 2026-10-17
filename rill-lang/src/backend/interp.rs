@@ -437,6 +437,12 @@ fn recount_children<T: Transcendental, const BUF: usize>(
                 _ = prog.arena.copy(*e);
             }
         }
+        Value::Array { bounds, elems } => {
+            _ = prog.arena.copy(*bounds);
+            for e in elems {
+                _ = prog.arena.copy(*e);
+            }
+        }
         // A lazy callable owns its memo cell; a forced cell owns its result.
         // Mirroring `visit_refs` keeps the recount accounting balanced when a
         // callable/cell value is copied into a fresh slot.
@@ -548,6 +554,17 @@ fn pool_clone_value<T: Transcendental, const BUF: usize>(
             out.extend_from_slice(elems);
             Value::Set { elems: out }
         }
+        Value::Array { bounds, elems } => {
+            let mut out = match prog.arena.take_buf(elems.len()) {
+                Ok(b) => b,
+                Err(_) => return v.clone(),
+            };
+            out.extend_from_slice(elems);
+            Value::Array {
+                bounds: *bounds,
+                elems: out,
+            }
+        }
         _ => v.clone(),
     }
 }
@@ -630,6 +647,12 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
                 prog.arena.drop_ref(*e);
             }
         }
+        Value::Array { bounds, elems } => {
+            prog.arena.drop_ref(*bounds);
+            for e in elems {
+                prog.arena.drop_ref(*e);
+            }
+        }
         // A lazy callable releases its memo cell; a forced cell releases its
         // result. Mirroring `visit_refs` keeps the raw-value drop (an alloc
         // failure) balanced with the arena's own recursive drop.
@@ -651,8 +674,9 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
 ///
 /// Leaves compare by value; a `Sum` by constructor index then payload; a
 /// `Record` by field order; a `Newtype` by its inner value; `List`/`Set`
-/// lexicographically over elements; `Map` lexicographically over the sorted
-/// (key, value) pairs. Mixed kinds fall back to [`kind_rank`], so any two
+/// lexicographically over elements; `Array` by bounds then elements
+/// lexicographically; `Map` lexicographically over the sorted (key, value)
+/// pairs. Mixed kinds fall back to [`kind_rank`], so any two
 /// acyclic values are comparable — this total cross-kind order is what makes
 /// arbitrary-typed `Map` keys work.
 ///
@@ -688,6 +712,22 @@ fn value_cmp_ref(arena: &Arena<Value>, a: &Value, b: &Value) -> i8 {
         (Record(fx), Record(fy)) => cmp_ref_slices(arena, fx, fy),
         (List { elems: ex, .. }, List { elems: ey, .. }) => cmp_ref_slices(arena, ex, ey),
         (Set { elems: ex, .. }, Set { elems: ey, .. }) => cmp_ref_slices(arena, ex, ey),
+        (
+            Array {
+                bounds: bx,
+                elems: ex,
+            },
+            Array {
+                bounds: by,
+                elems: ey,
+            },
+        ) => {
+            let c = value_cmp(arena, *bx, *by);
+            if c != 0 {
+                return c;
+            }
+            cmp_ref_slices(arena, ex, ey)
+        }
         (Map { pairs: px, .. }, Map { pairs: py, .. }) => {
             for (i, (kx, vx)) in px.iter().enumerate() {
                 let Some((ky, vy)) = py.get(i) else {
@@ -743,6 +783,7 @@ fn kind_rank(v: &Value) -> i8 {
         Nil => 15,
         Buffer(_) => 16,
         Opaque(_) => 17,
+        Array { .. } => 18,
         BuiltinCallable { .. } => 10,
     }
 }

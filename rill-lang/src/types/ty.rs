@@ -474,6 +474,10 @@ data STState;
 -- An opaque cell handle. Only `newSTRef` creates one; the region phantom `s`
 -- keeps it from escaping its `runST` region.
 data STRef s a;
+-- An opaque mutable-array handle. Only the `newArray` effects create one; like
+-- `STRef`, the region phantom `s` keeps an `STArray` from escaping its `runST`/
+-- `runSTArray` region (frozen via `runSTArray`).
+data STArray s i e;
 -- The state-threading monad: a state token in, the advanced token AND the
 -- result out. `runST` supplies the initial token and discards the final one.
 data ST s a = { unST: STState -> Pair STState a };
@@ -739,6 +743,8 @@ impl TypeEnv {
             ("Map".to_string(), 2usize),
             ("Pair".to_string(), 2usize),
             ("Either".to_string(), 2usize),
+            ("Array".to_string(), 2usize),   // i e
+            ("STArray".to_string(), 3usize), // s i e
             ("FixedBuffer".to_string(), 1usize),
         ]
         .into_iter()
@@ -1954,6 +1960,8 @@ mod ctor_table_tests {
         assert!(env.ctor_arity("Map") == Some(2));
         assert!(env.ctor_arity("Pair") == Some(2));
         assert!(env.ctor_arity("Either") == Some(2));
+        assert!(env.ctor_arity("Array") == Some(2)); // i e
+        assert!(env.ctor_arity("STArray") == Some(3)); // s i e
         assert!(env.ctor_arity("Nope").is_none());
     }
 
