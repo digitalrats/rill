@@ -36,26 +36,47 @@ Optional (ask user): commit the design doc + this plan together:
 can be parsed without ambiguity (design §Constrained signatures, builder-check Q1).
 Today both map to one `Tok::FatArrow` (`lexer.rs` lines 267–282).
 
-**Files.** `src/lexer.rs`, `src/parser.rs`.
+**User directive (rules this task):** prioritize **Haskell 2010** syntax in all
+cases; **backward compatibility is not required**. So: `->` is the function type
+arrow, the lambda arrow, AND the case-alternative arrow; `=>` is reserved for
+class constraints (instance heads and the new `=>` signature contexts).
+
+**Files.** `src/lexer.rs`, `src/parser.rs`, `src/types/ty.rs`,
+`tests/io_streams_memory.rs`.
 
 **Interfaces.**
 - `lexer.rs`: add `Tok::ThinArrow`. The `->` branch (currently emitting
   `FatArrow` at lines 275–282) emits `Tok::ThinArrow`; the `=>` branch
   (lines 267–274) keeps emitting `Tok::FatArrow`.
 - `parser.rs` — switch these `FatArrow` sites to `ThinArrow` (all of them mean
-  `->`):
+  `->` under Haskell 2010):
   - `parse_type_expr` function-type arrows (lines ~633, 635).
   - the lambda arrow (`\x -> body`, line ~1022).
-  Keep `FatArrow` where `=>` is meant: match-arm separators (lines ~975, 982,
-  988) and the instance constraint context (`parse_instance_def`, line ~743).
-- Update the three lexer test vectors that mention `FatArrow` (lines ~700, 731,
-  814) to the correct arrow token.
+  - the match-arm and guard arrows (lines ~975, 982, 988) — the parser no
+    longer accepts `=>` in match-arm position.
+  Keep `FatArrow` ONLY for the class-constraint context:
+  `parse_instance_def` constraint list (line ~743) and (in later tasks) the
+  `=>` signature context.
+- **Backward-compat conversions** (user: not required — but the fixed preludes
+  must keep parsing, so do them): convert the legacy `=>` match-arm spellings to
+  `->`:
+  - `src/types/ty.rs` `STD_PRELUDE` instance bodies (lines ~382, 387):
+    `case m of { Nothing => Nothing; Just x => … }` → `->`.
+  - `tests/io_streams_memory.rs` (lines ~55, 148–150, 173–175, 213–215, 235,
+    249, 266–268, 290–292): match arms `=>` → `->`.
+  - Grep the whole crate for `=>` in match-arm position to catch any missed
+    site. Do NOT touch `instance … => …` constraint contexts (those stay `=>`).
+- Update the lexer test vectors that mention `FatArrow` (lines ~700, 731, 814)
+  to the correct arrow token.
+- The renderer already emits `->` for function types, lambdas and match arms
+  (`render.rs`) — no change needed there; round-trips confirm.
 
 **TDD.**
 1. Add a lexer unit test: `kinds("a -> b")` yields `Tok::ThinArrow` at the arrow
    position; `kinds("a => b")` yields `Tok::FatArrow`. Red (both are FatArrow).
-2. Implement the split; fix the parser sites; existing parser/integration tests
-   stay green (function types, lambdas, match arms, instances all still parse).
+2. Implement the split; fix the parser sites; run the `=>` → `->` conversions;
+   existing parser/integration tests stay green (function types, lambdas, match
+   arms, instances all still parse; the preludes still load).
 3. Gate + commit: `feat(rill-lang): split '->'/'=>' into ThinArrow/FatArrow tokens`
 
 ---

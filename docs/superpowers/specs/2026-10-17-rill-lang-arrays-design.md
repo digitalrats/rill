@@ -88,10 +88,13 @@ built on machinery that already exists:
 - **Lexer** (builder-check Q1) — today both `->` and `=>` map to one
   `Tok::FatArrow` (`lexer.rs` lines 267-282), so a signature `Ix i => T` is
   byte-identical to the function type `Ix i -> T`. The design **splits the
-  token**: `Tok::ThinArrow` (`->`) for function types and lambdas; `Tok::FatArrow`
-  (`=>`) reserved for constraints and match-arm separators. The split is
-  mechanical and behavior-preserving — every existing site already uses `->` for
-  types/lambdas and `=>` for match arms / instance heads.
+  token** per Haskell 2010 (user: prioritize Haskell 2010 syntax in all cases;
+  backward compatibility not required): `Tok::ThinArrow` (`->`) for function
+  types, lambdas AND case-alternative arrows; `Tok::FatArrow` (`=>`) reserved
+  for class constraints only (instance heads and the new `=>` signature
+  contexts). The few legacy spellings that wrote match arms with `=>` are
+  converted to `->`, and the parser no longer accepts `=>` in match-arm
+  position.
 - **Parser** — `parse_instance_def` already parses a parenthesized constraint
   list `(C a, D b) =>` into `Vec<(String, String)>` (`parser.rs`). The same
   shape is added to signature parsing: a `Def::Eval` sig may start with a
