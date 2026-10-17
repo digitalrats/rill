@@ -348,6 +348,21 @@ merge = \ f -> \ g -> \ p -> f p.first + g p.second;
 main = ();
 "#;
 
+/// Standard-library prelude: the common standard-library layer (streams now;
+/// threads/channels/actors later). This is deliberately distinct from
+/// [`CATEGORY_PRELUDE`] (pure category theory) and [`SIGNAL_PRELUDE`]
+/// (first-class buffer types). `InputStream`/`OutputStream` are the passive
+/// and active stream handles the boundary operations (`read`/`write`/
+/// `channel`/`runStream`) work on. They are higher-kinded record types
+/// (`InputStream Buffer`, `OutputStream Buffer`), declared in rill-lang
+/// itself like the other preludes. Registered by [`TypeEnv::with_builtins`].
+pub(crate) const STD_PRELUDE: &str = r#"
+data InputStream  a = { unInputStream: a };
+data OutputStream a = { unOutputStream: a };
+
+main = ();
+"#;
+
 /// Inline catalog of foreign builtin declarations auto-registered into
 /// [`TypeEnv::foreign_sigs`] (and their record `data` types into
 /// [`TypeEnv::data_types`]). Programs resolve these names without a
@@ -605,6 +620,9 @@ impl TypeEnv {
         // Signal-track prelude: the `Buffer` typeclass + `FixedBuffer` type.
         register_prelude(&mut env, SIGNAL_PRELUDE);
         env.derive_superclass_instances();
+        // Standard-library prelude: the stream contract types (`InputStream`/
+        // `OutputStream`) the boundary operations below are typed against.
+        register_prelude(&mut env, STD_PRELUDE);
         // Builtin foreign catalog: the migrated legacy builtins' declarations
         // plus the record types their params need. Parsed the same way as the
         // preludes — a parse failure here is a compiler bug.
@@ -650,6 +668,91 @@ impl TypeEnv {
                 vec![crate::ast::TypeExpr::TApp(
                     "List".to_string(),
                     vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "IO".to_string(),
+                    vec![crate::ast::TypeExpr::TName("()".into())],
+                )),
+            ),
+        );
+        // Stream boundary operations (`STD_PRELUDE`): `read`/`write`/`channel`/
+        // `runStream` work over the `InputStream`/`OutputStream` handles.
+        // `read ins` yields the whole input frame as a `List Buffer` (empty =
+        // closed/EOF); `write outs buf` pushes a frame out; `channel k bs`
+        // extracts the `k`-th channel of a frame; `runStream handler` runs a
+        // per-block handler between an input stream and an output stream. The
+        // overlapping names `read`/`write` are scoped as builtin sig precedents
+        // like `readInput`/`writeOutput`; there is no record-field or FFI
+        // collision today.
+        env.builtin_sigs.insert(
+            "read".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TApp(
+                    "InputStream".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "List".to_string(),
+                    vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                )),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "write".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![
+                    crate::ast::TypeExpr::TApp(
+                        "OutputStream".to_string(),
+                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                    ),
+                    crate::ast::TypeExpr::TApp(
+                        "List".to_string(),
+                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                    ),
+                ],
+                Box::new(crate::ast::TypeExpr::TApp(
+                    "IO".to_string(),
+                    vec![crate::ast::TypeExpr::TName("()".into())],
+                )),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "channel".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![
+                    crate::ast::TypeExpr::TName("Int".into()),
+                    crate::ast::TypeExpr::TApp(
+                        "List".to_string(),
+                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                    ),
+                ],
+                Box::new(crate::ast::TypeExpr::TName("Buffer".into())),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "runStream".to_string(),
+            // The handler parameter is a function value. The language's unary
+            // value model represents a multi-parameter function as a nest of
+            // single-argument thunks (`\ins -> \outs -> …`), so the signature
+            // must be declared NESTED (`Thunk([ins], [Thunk([outs], [IO])])`):
+            // a flat `Thunk([ins, outs], [IO])` would not unify with a curried
+            // lambda/definition (see `nest_thunk` in infer.rs).
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TFunc(
+                    vec![crate::ast::TypeExpr::TApp(
+                        "InputStream".to_string(),
+                        vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                    )],
+                    Box::new(crate::ast::TypeExpr::TFunc(
+                        vec![crate::ast::TypeExpr::TApp(
+                            "OutputStream".to_string(),
+                            vec![crate::ast::TypeExpr::TName("Buffer".into())],
+                        )],
+                        Box::new(crate::ast::TypeExpr::TApp(
+                            "IO".to_string(),
+                            vec![crate::ast::TypeExpr::TName("()".into())],
+                        )),
+                    )),
                 )],
                 Box::new(crate::ast::TypeExpr::TApp(
                     "IO".to_string(),
