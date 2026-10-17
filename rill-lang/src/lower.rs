@@ -1028,6 +1028,24 @@ impl<'a> Lowerer<'a> {
                 }
                 // Runtime dispatch: a sequential test chain per arm ending in a
                 // fail block that latches a ProcessError when no arm matched.
+                //
+                // Matching forces the scrutinee: in complete mode a `do`-bound
+                // value (`x <- mx`) is a lazy projection thunk, while the
+                // runtime constructor test inspects the register's value
+                // directly. Without the force, a `case` on a bound `Maybe` saw
+                // no constructor and fell through to the non-exhaustive latch.
+                // The static fast path above matched a syntactically known
+                // constructor and needs no force.
+                let scrutinee_reg = if self.mode == Mode::Complete {
+                    let forced = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueForce {
+                        dst: forced,
+                        src: scrutinee_reg,
+                    });
+                    forced
+                } else {
+                    scrutinee_reg
+                };
                 let scrutinee_block = self.cur_value_block;
                 let out = self.fresh_value_reg();
                 let join = self.new_value_block();
@@ -1096,6 +1114,19 @@ impl<'a> Lowerer<'a> {
                         span: *span,
                     });
                 }
+                // The condition must be forced before the branch reads it: in
+                // complete mode a `do`-bound Bool (`b <- atEnd s`) is a lazy
+                // thunk, and the block term inspects the register directly.
+                let cond_reg = if self.mode == Mode::Complete {
+                    let forced = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueForce {
+                        dst: forced,
+                        src: cond_reg,
+                    });
+                    forced
+                } else {
+                    cond_reg
+                };
                 let then_b = self.new_value_block();
                 let els_b = self.new_value_block();
                 let join = self.new_value_block();
@@ -1316,6 +1347,114 @@ impl<'a> Lowerer<'a> {
                             };
                             ValueTy::App("List".into(), vec![elem])
                         }
+                        _ => ValueTy::Void,
+                    };
+                    let effect = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueEffectOp {
+                        dst: effect,
+                        op,
+                        args: arg_regs,
+                    });
+                    let rec = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueConstructRecord {
+                        dst: rec,
+                        fields: vec![effect],
+                    });
+                    return Ok((rec, ValueTy::Data("IO".into(), vec![payload])));
+                }
+                // The remaining io-streams operations (`read`, `atEnd`,
+                // `unread`, `connect`, `makeInputStream`, `makeOutputStream`).
+                // Same shape as the block above: an `IO a` record whose `unIO`
+                // field is a primitive effect closure applied to the `World`
+                // token by the interpreter. `makeInputStream`/
+                // `makeOutputStream` additionally capture the program's closure
+                // operand in that effect closure's env; the handler applies it.
+                if let Some(op) = match name.as_str() {
+                    "read" => Some(ValueEffectOp::StreamRead),
+                    "atEnd" => Some(ValueEffectOp::StreamAtEnd),
+                    "unread" => Some(ValueEffectOp::StreamUnread),
+                    "connect" => Some(ValueEffectOp::StreamConnect),
+                    "makeInputStream" => Some(ValueEffectOp::StreamMakeInput),
+                    "makeOutputStream" => Some(ValueEffectOp::StreamMakeOutput),
+                    _ => None,
+                } {
+                    let arity = if matches!(
+                        op,
+                        ValueEffectOp::StreamUnread | ValueEffectOp::StreamConnect
+                    ) {
+                        2
+                    } else {
+                        1
+                    };
+                    if call_args.len() != arity {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "`{name}` expects {arity} argument(s), got {}",
+                                call_args.len()
+                            ),
+                            span: *span,
+                        });
+                    }
+                    // The two `make*Stream` constructors take a program closure.
+                    // Lower it against its real signature so a result-directed
+                    // method inside it (`return`) selects the `IO` instance, and
+                    // link the fresh element variable into the stream payload.
+                    if matches!(
+                        op,
+                        ValueEffectOp::StreamMakeInput | ValueEffectOp::StreamMakeOutput
+                    ) {
+                        let v = self.next_tyvar;
+                        self.next_tyvar += 1;
+                        let elem = ValueTy::Var(v);
+                        let maybe_elem = ValueTy::App("Maybe".into(), vec![elem.clone()]);
+                        let io_void = ValueTy::Data("IO".into(), vec![ValueTy::Void]);
+                        let expected = match op {
+                            ValueEffectOp::StreamMakeInput => {
+                                ValueTy::Data("IO".into(), vec![maybe_elem])
+                            }
+                            _ => ValueTy::Thunk(vec![maybe_elem], vec![io_void]),
+                        };
+                        let (r, _) = self.lower_value_expected(&call_args[0], Some(&expected))?;
+                        let effect = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueEffectOp {
+                            dst: effect,
+                            op,
+                            args: vec![r],
+                        });
+                        let rec = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueConstructRecord {
+                            dst: rec,
+                            fields: vec![effect],
+                        });
+                        let name = match op {
+                            ValueEffectOp::StreamMakeInput => "InputStream",
+                            _ => "OutputStream",
+                        };
+                        let payload = ValueTy::Data(name.into(), vec![elem]);
+                        return Ok((rec, ValueTy::Data("IO".into(), vec![payload])));
+                    }
+                    let mut arg_regs = Vec::with_capacity(arity);
+                    let mut arg_tys = Vec::with_capacity(arity);
+                    for a in call_args {
+                        let (r, t) = self.lower_value(a)?;
+                        arg_regs.push(r);
+                        arg_tys.push(t);
+                    }
+                    // The stream element type when the lowered operand reveals
+                    // it; the runtime's numeric value type otherwise.
+                    let elem = arg_tys.first().and_then(|ty| match ty {
+                        ValueTy::Data(n, args) | ValueTy::App(n, args)
+                            if n == "InputStream" || n == "OutputStream" =>
+                        {
+                            args.first().cloned()
+                        }
+                        _ => None,
+                    });
+                    let payload = match op {
+                        ValueEffectOp::StreamRead => {
+                            ValueTy::App("Maybe".into(), vec![elem.unwrap_or(ValueTy::Float)])
+                        }
+                        ValueEffectOp::StreamAtEnd => ValueTy::Bool,
                         _ => ValueTy::Void,
                     };
                     let effect = self.fresh_value_reg();
@@ -2873,11 +3012,25 @@ impl<'a> Lowerer<'a> {
             // Value-track builtins lowered in `Expr::Apply` (one-pole
             // smoothing, buffer elementwise ops): compile-time primitives, never
             // captured as free variables by a lambda. The io-streams operations
-            // (`fromList`/`toList`/`write`) and the stdio handles (`stdout`) are
-            // likewise resolved at lowering.
+            // (`fromList`/`toList`/`write`/`read`/`atEnd`/`unread`/`connect`/
+            // `makeInputStream`/`makeOutputStream`) and the stdio handles
+            // (`stdout`) are likewise resolved at lowering.
             || matches!(
                 name,
-                "fromList" | "toList" | "write" | "stdout" | "smooth" | "atan2" | "min" | "max"
+                "fromList"
+                    | "toList"
+                    | "write"
+                    | "read"
+                    | "atEnd"
+                    | "unread"
+                    | "connect"
+                    | "makeInputStream"
+                    | "makeOutputStream"
+                    | "stdout"
+                    | "smooth"
+                    | "atan2"
+                    | "min"
+                    | "max"
             )
             || matches!(
                 name,

@@ -2818,7 +2818,13 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
         // ---- io-streams effects (the World token threads them) ----
         crate::ir::ValueEffectOp::StreamFromList => exec_stream_from_list(prog, &args, drops),
         crate::ir::ValueEffectOp::StreamToList => exec_stream_to_list(prog, &args, drops),
-        crate::ir::ValueEffectOp::StreamWrite => exec_stream_write(prog, &args, drops),
+        crate::ir::ValueEffectOp::StreamWrite => exec_stream_write(prog, &args, token, drops),
+        crate::ir::ValueEffectOp::StreamRead => exec_stream_read(prog, &args, token, drops),
+        crate::ir::ValueEffectOp::StreamAtEnd => exec_stream_at_end(prog, &args, token, drops),
+        crate::ir::ValueEffectOp::StreamUnread => exec_stream_unread(prog, &args, drops),
+        crate::ir::ValueEffectOp::StreamConnect => exec_stream_connect(prog, &args, token, drops),
+        crate::ir::ValueEffectOp::StreamMakeInput => exec_stream_make_input(prog, &args, drops),
+        crate::ir::ValueEffectOp::StreamMakeOutput => exec_stream_make_output(prog, &args, drops),
     };
     let result = result?;
     // Thread a FRESH state token alongside the result. The payload identifies
@@ -2896,22 +2902,38 @@ fn exec_stream_from_list<T: Transcendental, const BUF: usize>(
             _ => break,
         }
     }
-    let idx = prog.world.borrow().streams.len();
-    if idx > (STREAM_HANDLE_TAG - 1) as usize {
-        latch_exhaustion(prog, "stream table");
-        for r in elems.drain(..) {
-            prog.arena.drop_ref(r);
-        }
-        return None;
-    }
-    prog.world
-        .borrow_mut()
-        .streams
-        .push(StreamHandle::Input { elems, pos: 0 });
+    let idx = alloc_stream(
+        prog,
+        StreamHandle::Input {
+            elems,
+            pos: 0,
+            pushback: Vec::new(),
+        },
+    )?;
     alloc_owned(prog, Value::Opaque(STREAM_HANDLE_TAG | idx as u32))
 }
 
-/// Drain a memory input stream into a `List` value.
+/// Register a stream handle in the World's stream table, returning its index.
+///
+/// The index is tagged into the high half of the `Value::Opaque` payload space
+/// ([`STREAM_HANDLE_TAG`]); the table bound keeps the two halves disjoint. A
+/// handle that cannot be registered releases the refs it owns.
+fn alloc_stream<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    handle: StreamHandle,
+) -> Option<usize> {
+    let idx = prog.world.borrow().streams.len();
+    if idx > (STREAM_HANDLE_TAG - 1) as usize {
+        latch_exhaustion(prog, "stream table");
+        handle.drop_refs(&mut prog.arena);
+        return None;
+    }
+    prog.world.borrow_mut().streams.push(handle);
+    Some(idx)
+}
+
+/// Drain a memory input stream into a `List` value, releasing the consumed
+/// prefix from the stream table.
 fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     args: &[ArenaRef],
@@ -2924,20 +2946,27 @@ fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
     let taken = {
         let mut world = prog.world.borrow_mut();
         match world.streams.get_mut(h) {
-            Some(StreamHandle::Input { elems, pos }) => {
-                let rest = elems.split_off(*pos);
+            Some(StreamHandle::Input {
+                elems,
+                pos,
+                pushback,
+            }) => {
+                // Pushed-back elements come first, most recently pushed first.
+                let mut rest: Vec<ArenaRef> = pushback.drain(..).rev().collect();
+                let tail = elems.split_off(*pos);
                 // The consumed prefix is no longer reachable: release it.
                 for r in elems.drain(..) {
                     prog.arena.drop_ref(r);
                 }
                 *pos = 0;
+                rest.extend(tail);
                 Some(rest)
             }
             _ => None,
         }
     };
     let Some(items) = taken else {
-        latch_fault(prog, "`toList` applied to a non-input stream");
+        latch_fault(prog, "`toList` applied to a non-memory-input stream");
         return None;
     };
     let n = items.len();
@@ -2960,84 +2989,505 @@ fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
 fn exec_stream_write<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     args: &[ArenaRef],
+    token: u32,
     drops: &mut Vec<ArenaRef>,
 ) -> Option<ArenaRef> {
     let mb = force(prog, *args.first()?, drops);
     // `Maybe a`: constructor 0 is `Just`, constructor 1 is `Nothing`.
-    let item = match prog.arena.get(mb) {
-        Some(Value::Sum(0, payload)) => payload.first().copied(),
-        Some(Value::Sum(_, _)) => None,
+    let payload = match prog.arena.get(mb) {
+        Some(Value::Sum(0, fields)) => Some(fields.first().copied()),
+        Some(Value::Sum(1, _)) => None,
         _ => {
+            latch_fault(prog, "`write` expects a Maybe");
+            return None;
+        }
+    };
+    // Read the written item before touching the stream table so an allocation
+    // failure cannot leave the table half-updated.
+    let item = match payload {
+        None => None,
+        Some(Some(r)) => {
+            let r = force(prog, r, drops);
+            Some(copy_owned(prog, r)?)
+        }
+        Some(None) => {
             latch_fault(prog, "`write` expects a Maybe");
             return None;
         }
     };
     let handle_ref = force(prog, *args.get(1)?, drops);
     let h = stream_handle_index(prog, handle_ref)?;
-    // Read the written item before touching the stream table so an allocation
-    // failure cannot leave the table half-updated.
-    let item_ref = match item {
-        Some(r) => {
-            let r = force(prog, r, drops);
-            match copy_owned(prog, r) {
-                Some(c) => Some(c),
-                None => {
-                    latch_exhaustion(prog, "value arena (io stream)");
+    if !stream_write(prog, h, item, token, drops) {
+        return None;
+    }
+    alloc_owned(prog, Value::Void)
+}
+
+/// Perform `read s`: pull the next element (`Just`) or report EOF (`Nothing`).
+fn exec_stream_read<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    token: u32,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let handle_ref = force(prog, *args.first()?, drops);
+    let h = stream_handle_index(prog, handle_ref)?;
+    match stream_read(prog, h, token, drops) {
+        ReadOutcome::Elem(r) => alloc_owned(prog, Value::Sum(0, vec![r])),
+        ReadOutcome::Eof => alloc_owned(prog, Value::Sum(1, vec![])),
+        ReadOutcome::Fault => None,
+    }
+}
+
+/// Perform `atEnd s`: report whether the input stream is at EOF, leaving the
+/// pending element readable (`read` is followed by a push-back when the stream
+/// is a wrapped source; a memory stream is checked by its cursor).
+fn exec_stream_at_end<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    token: u32,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    /// What the stream table says without running any IO.
+    enum Check {
+        /// EOF status is known without touching the stream.
+        Known(bool),
+        /// A wrapped source: a pull is needed to know.
+        Source,
+        /// The handle names a writing end (or no stream at all).
+        Fault,
+    }
+    let handle_ref = force(prog, *args.first()?, drops);
+    let h = stream_handle_index(prog, handle_ref)?;
+    let check = match prog.world.borrow().streams.get(h) {
+        Some(StreamHandle::Input {
+            elems,
+            pos,
+            pushback,
+            ..
+        }) => Check::Known(!pushback.is_empty() || *pos >= elems.len()),
+        Some(StreamHandle::Source { eof, pushback, .. }) => {
+            if !pushback.is_empty() {
+                Check::Known(false)
+            } else if *eof {
+                Check::Known(true)
+            } else {
+                Check::Source
+            }
+        }
+        _ => Check::Fault,
+    };
+    let at_end = match check {
+        Check::Known(b) => b,
+        Check::Fault => {
+            latch_fault(prog, "`atEnd` applied to a non-input stream");
+            return None;
+        }
+        // io-streams `atEnd` on a closure-backed source reads one element and
+        // pushes it back, leaving the stream unchanged.
+        Check::Source => match stream_read(prog, h, token, drops) {
+            ReadOutcome::Elem(r) => {
+                if !push_back(prog, h, r) {
+                    return None;
+                }
+                false
+            }
+            ReadOutcome::Eof => true,
+            ReadOutcome::Fault => return None,
+        },
+    };
+    alloc_owned(prog, Value::Bool(at_end))
+}
+
+/// Perform `unread x s`: push a value back onto an input stream so the next
+/// `read` returns it.
+fn exec_stream_unread<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let value = force(prog, *args.first()?, drops);
+    let owned = copy_owned(prog, value)?;
+    let handle_ref = force(prog, *args.get(1)?, drops);
+    let h = stream_handle_index(prog, handle_ref)?;
+    if !push_back(prog, h, owned) {
+        return None;
+    }
+    alloc_owned(prog, Value::Void)
+}
+
+/// Perform `connect input output`: pull from the input into the output until the
+/// input reaches EOF, then close the output (`write Nothing`). Unequal lengths
+/// end cleanly at input EOF.
+fn exec_stream_connect<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    token: u32,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let in_ref = force(prog, *args.first()?, drops);
+    let input = stream_handle_index(prog, in_ref)?;
+    let out_ref = force(prog, *args.get(1)?, drops);
+    let output = stream_handle_index(prog, out_ref)?;
+    loop {
+        match stream_read(prog, input, token, drops) {
+            ReadOutcome::Elem(r) => {
+                if !stream_write(prog, output, Some(r), token, drops) {
                     return None;
                 }
             }
-        }
-        None => None,
-    };
-    let mut world = prog.world.borrow_mut();
-    match world.streams.get_mut(h) {
-        Some(StreamHandle::Stdout) => {
-            if let Some(r) = item_ref {
-                match prog.arena.get(r) {
-                    Some(Value::String(s)) => world.stdout.push(s.clone()),
-                    _ => {
-                        prog.arena.drop_ref(r);
-                        drop(world);
-                        latch_fault(prog, "`stdout` expects a String element");
-                        return None;
-                    }
-                }
-                prog.arena.drop_ref(r);
-            }
-        }
-        Some(StreamHandle::Stderr) => {
-            if let Some(r) = item_ref {
-                match prog.arena.get(r) {
-                    Some(Value::String(s)) => world.stderr.push(s.clone()),
-                    _ => {
-                        prog.arena.drop_ref(r);
-                        drop(world);
-                        latch_fault(prog, "`stderr` expects a String element");
-                        return None;
-                    }
-                }
-                prog.arena.drop_ref(r);
-            }
-        }
-        Some(StreamHandle::Input { .. }) => {
-            if let Some(r) = item_ref {
-                prog.arena.drop_ref(r);
-            }
-            drop(world);
-            latch_fault(prog, "`write` applied to an input stream");
-            return None;
-        }
-        None => {
-            if let Some(r) = item_ref {
-                prog.arena.drop_ref(r);
-            }
-            drop(world);
-            latch_fault(prog, "invalid stream handle");
-            return None;
+            ReadOutcome::Eof => break,
+            ReadOutcome::Fault => return None,
         }
     }
-    drop(world);
+    // io-streams `connect` closes the output when the input ends.
+    if !stream_write(prog, output, None, token, drops) {
+        return None;
+    }
     alloc_owned(prog, Value::Void)
+}
+
+/// Perform `makeInputStream act`: wrap the program's `IO (Maybe a)` action as a
+/// memory source stream. The action is captured by the handle and applied to the
+/// `World` token on every `read`.
+fn exec_stream_make_input<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let _ = drops;
+    let action = copy_owned(prog, *args.first()?)?;
+    let idx = alloc_stream(
+        prog,
+        StreamHandle::Source {
+            action,
+            eof: false,
+            pushback: Vec::new(),
+        },
+    )?;
+    alloc_owned(prog, Value::Opaque(STREAM_HANDLE_TAG | idx as u32))
+}
+
+/// Perform `makeOutputStream sink`: wrap the program's `Maybe a -> IO ()`
+/// handler as a memory sink stream. The handler is captured by the handle and
+/// applied to every written element (and to the closing `Nothing`).
+fn exec_stream_make_output<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    args: &[ArenaRef],
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    let _ = drops;
+    let handler = copy_owned(prog, *args.first()?)?;
+    let idx = alloc_stream(
+        prog,
+        StreamHandle::Sink {
+            handler,
+            closed: false,
+        },
+    )?;
+    alloc_owned(prog, Value::Opaque(STREAM_HANDLE_TAG | idx as u32))
+}
+
+/// One pull from an input stream.
+enum ReadOutcome {
+    /// An element, as a fresh owner the caller must release.
+    Elem(ArenaRef),
+    /// The stream is at EOF.
+    Eof,
+    /// A latched fault (already recorded as a `ProcessError`).
+    Fault,
+}
+
+/// Pull one element from the input stream at `idx`, running a wrapped
+/// `makeInputStream` action when the stream is a closure-backed source.
+fn stream_read<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    idx: usize,
+    token: u32,
+    drops: &mut Vec<ArenaRef>,
+) -> ReadOutcome {
+    /// The stream table's verdict for one pull.
+    enum Step {
+        /// An element the table still owns (the cursor path): the pull copies it.
+        Borrowed(ArenaRef),
+        /// An element popped from the pushback stack: the pull owns it.
+        Owned(ArenaRef),
+        /// A wrapped source: run this `IO (Maybe a)` action.
+        Action(ArenaRef),
+        Eof,
+        Fault,
+    }
+    let step = {
+        let mut world = prog.world.borrow_mut();
+        match world.streams.get_mut(idx) {
+            Some(StreamHandle::Input {
+                elems,
+                pos,
+                pushback,
+                ..
+            }) => {
+                if let Some(r) = pushback.pop() {
+                    Step::Owned(r)
+                } else if let Some(r) = elems.get(*pos).copied() {
+                    *pos += 1;
+                    Step::Borrowed(r)
+                } else {
+                    Step::Eof
+                }
+            }
+            Some(StreamHandle::Source {
+                action,
+                eof,
+                pushback,
+            }) => {
+                if let Some(r) = pushback.pop() {
+                    Step::Owned(r)
+                } else if *eof {
+                    Step::Eof
+                } else {
+                    Step::Action(*action)
+                }
+            }
+            _ => Step::Fault,
+        }
+    };
+    match step {
+        // The popped pushback ref already transfers ownership to the caller.
+        Step::Owned(r) => ReadOutcome::Elem(r),
+        Step::Borrowed(r) => match copy_owned(prog, r) {
+            Some(c) => ReadOutcome::Elem(c),
+            None => ReadOutcome::Fault,
+        },
+        Step::Eof => ReadOutcome::Eof,
+        Step::Fault => {
+            latch_fault(prog, "`read` applied to a non-input stream");
+            ReadOutcome::Fault
+        }
+        Step::Action(action) => {
+            let Some(mb) = run_io_action(prog, action, token, drops) else {
+                return ReadOutcome::Fault;
+            };
+            let mb = force(prog, mb, drops);
+            // The action yields `IO (Maybe a)`: `Just` = Sum(0, [payload]),
+            // `Nothing` = Sum(1, []).
+            enum Shape {
+                Just(Option<ArenaRef>),
+                Nothing,
+                Invalid,
+            }
+            let shape = match prog.arena.get(mb) {
+                Some(Value::Sum(0, fields)) => Shape::Just(fields.first().copied()),
+                Some(Value::Sum(1, _)) => Shape::Nothing,
+                _ => Shape::Invalid,
+            };
+            match shape {
+                Shape::Just(Some(r)) => {
+                    let r = force(prog, r, drops);
+                    let out = copy_owned(prog, r);
+                    prog.arena.drop_ref(mb);
+                    match out {
+                        Some(r) => ReadOutcome::Elem(r),
+                        None => ReadOutcome::Fault,
+                    }
+                }
+                Shape::Nothing => {
+                    prog.arena.drop_ref(mb);
+                    if let Some(StreamHandle::Source { eof, .. }) =
+                        prog.world.borrow_mut().streams.get_mut(idx)
+                    {
+                        *eof = true;
+                    }
+                    ReadOutcome::Eof
+                }
+                Shape::Just(None) | Shape::Invalid => {
+                    prog.arena.drop_ref(mb);
+                    latch_fault(prog, "`makeInputStream` action must yield a Maybe");
+                    ReadOutcome::Fault
+                }
+            }
+        }
+    }
+}
+
+/// Push `value` (an owned ref) back onto the input stream at `idx`. Returns
+/// whether the push succeeded; a non-input stream is a latched fault.
+fn push_back<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    idx: usize,
+    value: ArenaRef,
+) -> bool {
+    let pushed = match prog.world.borrow_mut().streams.get_mut(idx) {
+        Some(StreamHandle::Input { pushback, .. })
+        | Some(StreamHandle::Source { pushback, .. }) => {
+            pushback.push(value);
+            true
+        }
+        _ => false,
+    };
+    if !pushed {
+        prog.arena.drop_ref(value);
+        latch_fault(prog, "`unread`/`atEnd` applied to a non-input stream");
+        return false;
+    }
+    true
+}
+
+/// Push `item` (an owned ref, or `None` for the closing `Nothing`) into the
+/// output stream at `idx`. Returns false on a latched fault.
+fn stream_write<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    idx: usize,
+    item: Option<ArenaRef>,
+    token: u32,
+    drops: &mut Vec<ArenaRef>,
+) -> bool {
+    /// Where a written element goes.
+    enum Target {
+        Stdout,
+        Stderr,
+        Sink { handler: ArenaRef, closed: bool },
+        Input,
+        Invalid,
+    }
+    let target = match prog.world.borrow().streams.get(idx) {
+        Some(StreamHandle::Stdout) => Target::Stdout,
+        Some(StreamHandle::Stderr) => Target::Stderr,
+        Some(StreamHandle::Sink { handler, closed }) => Target::Sink {
+            handler: *handler,
+            closed: *closed,
+        },
+        Some(StreamHandle::Input { .. }) | Some(StreamHandle::Source { .. }) => Target::Input,
+        None => Target::Invalid,
+    };
+    match target {
+        Target::Stdout => write_console(prog, item, false),
+        Target::Stderr => write_console(prog, item, true),
+        Target::Sink { handler, closed } => {
+            // A closed sink ignores writes (io-streams close semantics): an
+            // element is dropped and a repeated `Nothing` is inert.
+            let closing = item.is_none();
+            if closed {
+                if let Some(r) = item {
+                    prog.arena.drop_ref(r);
+                }
+                return true;
+            }
+            // The handler receives an owned `Maybe a` argument.
+            let arg = match item {
+                Some(r) => alloc_owned(prog, Value::Sum(0, vec![r])),
+                None => alloc_owned(prog, Value::Sum(1, vec![])),
+            };
+            let Some(arg) = arg else {
+                return false;
+            };
+            let action = apply_callable(prog, handler, arg, drops);
+            prog.arena.drop_ref(arg);
+            let Some(action) = action else {
+                latch_fault(prog, "`makeOutputStream` handler is not callable");
+                return false;
+            };
+            let ran = run_io_action(prog, action, token, drops).is_some();
+            prog.arena.drop_ref(action);
+            if !ran {
+                return false;
+            }
+            // The closing `Nothing` (`item == None`) closes the sink; ordinary
+            // elements leave it open.
+            if closing {
+                if let Some(StreamHandle::Sink { closed, .. }) =
+                    prog.world.borrow_mut().streams.get_mut(idx)
+                {
+                    *closed = true;
+                }
+            }
+            true
+        }
+        Target::Input => {
+            if let Some(r) = item {
+                prog.arena.drop_ref(r);
+            }
+            latch_fault(prog, "`write` applied to an input stream");
+            false
+        }
+        Target::Invalid => {
+            if let Some(r) = item {
+                prog.arena.drop_ref(r);
+            }
+            latch_fault(prog, "invalid stream handle");
+            false
+        }
+    }
+}
+
+/// Append a `String` element to the captured console. The console streams are
+/// not closeable, so the closing `Nothing` is inert.
+fn write_console<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    item: Option<ArenaRef>,
+    stderr: bool,
+) -> bool {
+    let Some(r) = item else {
+        return true;
+    };
+    let text = match prog.arena.get(r) {
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => None,
+    };
+    prog.arena.drop_ref(r);
+    let Some(text) = text else {
+        latch_fault(prog, "stdio stream expects a String element");
+        return false;
+    };
+    let mut world = prog.world.borrow_mut();
+    if stderr {
+        world.stderr.push(text);
+    } else {
+        world.stdout.push(text);
+    }
+    true
+}
+
+/// Run a `make*Stream`-captured `IO a` action against the `World` token and
+/// return its payload as a fresh owner.
+fn run_io_action<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    action: ArenaRef,
+    token: u32,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<ArenaRef> {
+    // The action may be a lazy thunk (`let`-bound); force it to WHNF (the IO
+    // record) before projecting `unIO`.
+    let action = force(prog, action, drops);
+    let un_io = match prog.arena.get(action) {
+        Some(Value::Record(fields)) => fields.first().copied(),
+        _ => None,
+    };
+    let Some(un_io) = un_io else {
+        latch_fault(prog, "`make*Stream` operand is not an IO action");
+        return None;
+    };
+    // `IO a = { unIO: World -> Pair World a }`: apply to a fresh World token.
+    let world = alloc_owned(prog, Value::Opaque(token))?;
+    let pair = apply_callable(prog, un_io, world, drops);
+    prog.arena.drop_ref(world);
+    let Some(pair) = pair else {
+        latch_fault(prog, "`make*Stream` action is not callable");
+        return None;
+    };
+    let pair = force_owned(prog, pair, drops)?;
+    let payload = match prog.arena.get(pair) {
+        Some(Value::Record(fields)) => fields.get(1).copied(),
+        _ => None,
+    };
+    let out = payload.and_then(|p| {
+        let p = force(prog, p, drops);
+        copy_owned(prog, p)
+    });
+    prog.arena.drop_ref(pair);
+    if payload.is_none() {
+        latch_fault(prog, "`make*Stream` action produced no result");
+    }
+    out
 }
 
 /// Resolve an opaque stream-handle value to its stream-table index.

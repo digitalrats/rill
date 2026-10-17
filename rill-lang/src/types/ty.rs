@@ -789,11 +789,17 @@ impl TypeEnv {
         // builtin-sig path instantiates the binder once per call site (Task 1),
         // keeping the input/output element types linked.
         //
-        //   fromList   :: List a -> IO (InputStream a)
-        //   toList     :: InputStream a -> IO (List a)
-        //   write      :: Maybe a -> OutputStream a -> IO ()
-        //   stdout     :: OutputStream String
-        //   show_float :: Float -> String
+        //   fromList        :: List a -> IO (InputStream a)
+        //   toList          :: InputStream a -> IO (List a)
+        //   write           :: Maybe a -> OutputStream a -> IO ()
+        //   read            :: InputStream a -> IO (Maybe a)
+        //   atEnd           :: InputStream a -> IO Bool
+        //   unread          :: a -> InputStream a -> IO ()
+        //   connect         :: InputStream a -> OutputStream a -> IO ()
+        //   makeInputStream :: IO (Maybe a) -> IO (InputStream a)
+        //   makeOutputStream:: (Maybe a -> IO ()) -> IO (OutputStream a)
+        //   stdout          :: OutputStream String
+        //   show_float      :: Float -> String
         let forall_a = |inner: crate::ast::TypeExpr| {
             crate::ast::TypeExpr::TForall(vec!["a".to_string()], Box::new(inner))
         };
@@ -835,6 +841,63 @@ impl TypeEnv {
         env.builtin_sigs.insert(
             "stdout".to_string(),
             crate::ast::TypeExpr::TFunc(vec![], Box::new(stream("OutputStream", tv("String")))),
+        );
+        env.builtin_sigs.insert(
+            "read".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
+                vec![stream("InputStream", tv("a"))],
+                Box::new(io(crate::ast::TypeExpr::TApp(
+                    "Maybe".to_string(),
+                    vec![tv("a")],
+                ))),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "atEnd".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
+                vec![stream("InputStream", tv("a"))],
+                Box::new(io(tv("Bool"))),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "unread".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
+                vec![tv("a"), stream("InputStream", tv("a"))],
+                Box::new(io(tv("()"))),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "connect".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
+                vec![
+                    stream("InputStream", tv("a")),
+                    stream("OutputStream", tv("a")),
+                ],
+                Box::new(io(tv("()"))),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "makeInputStream".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
+                vec![io(crate::ast::TypeExpr::TApp(
+                    "Maybe".to_string(),
+                    vec![tv("a")],
+                ))],
+                Box::new(io(stream("InputStream", tv("a")))),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "makeOutputStream".to_string(),
+            forall_a(crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TFunc(
+                    vec![crate::ast::TypeExpr::TApp(
+                        "Maybe".to_string(),
+                        vec![tv("a")],
+                    )],
+                    Box::new(io(tv("()"))),
+                )],
+                Box::new(io(stream("OutputStream", tv("a")))),
+            )),
         );
         env.builtin_sigs.insert(
             "show_float".to_string(),

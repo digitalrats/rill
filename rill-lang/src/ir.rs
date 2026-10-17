@@ -151,6 +151,23 @@ pub enum ValueEffectOp {
     /// `write mb out`: push `Just a` into an output stream (`Nothing` closes
     /// it); the stdio targets append to the World's captured console.
     StreamWrite,
+    /// `read s`: pull the next element of an input stream; `Nothing` at EOF.
+    StreamRead,
+    /// `atEnd s`: report whether an input stream is at EOF, without consuming
+    /// the pending element.
+    StreamAtEnd,
+    /// `unread x s`: push `x` back onto an input stream; the next `read`
+    /// returns it.
+    StreamUnread,
+    /// `connect input output`: pull from `input` into `output` until input EOF,
+    /// then close `output` (`write Nothing`).
+    StreamConnect,
+    /// `makeInputStream act`: wrap the program's `IO (Maybe a)` action as a
+    /// memory input stream; each `read` runs the action.
+    StreamMakeInput,
+    /// `makeOutputStream sink`: wrap the program's `Maybe a -> IO ()` handler
+    /// as a memory output stream; each `write` applies the handler.
+    StreamMakeOutput,
 }
 
 /// Value-track comparison operators.

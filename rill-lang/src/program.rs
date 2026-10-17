@@ -36,17 +36,66 @@ pub(crate) const STDOUT_HANDLE: u32 = STREAM_HANDLE_TAG;
 /// One entry of the runtime stream table — what an opaque stream handle
 /// resolves to inside the interpreter.
 pub(crate) enum StreamHandle {
-    /// A memory input stream: element refs (arena-owned) plus a read cursor.
+    /// A memory input stream: element refs (arena-owned), a read cursor, and a
+    /// pushback stack (`unread`/`atEnd`).
     Input {
         /// Element arena refs the stream owns.
         elems: Vec<crate::arena::ArenaRef>,
         /// Number of elements already consumed.
         pos: usize,
+        /// Pushed-back elements, most recent last: `read` pops from here first.
+        pushback: Vec<crate::arena::ArenaRef>,
+    },
+    /// A program-provided source (`makeInputStream`): the captured
+    /// `IO (Maybe a)` action, applied to the `World` token on every `read`.
+    /// `eof` latches once the action yields `Nothing`.
+    Source {
+        /// The captured `IO (Maybe a)` action (arena-owned).
+        action: crate::arena::ArenaRef,
+        /// True once the action has reported EOF.
+        eof: bool,
+        /// Pushed-back elements, most recent last (see [`StreamHandle::Input`]).
+        pushback: Vec<crate::arena::ArenaRef>,
+    },
+    /// A program-provided sink (`makeOutputStream`): the captured
+    /// `Maybe a -> IO ()` handler, applied to every written element. `closed`
+    /// is set by `write Nothing`; later writes are inert.
+    Sink {
+        /// The captured `Maybe a -> IO ()` handler (arena-owned).
+        handler: crate::arena::ArenaRef,
+        /// True after the closing `write Nothing`.
+        closed: bool,
     },
     /// The realized `stdout` sink: line-oriented text captured by the runner.
     Stdout,
     /// The realized `stderr` sink: line-oriented text captured by the runner.
     Stderr,
+}
+
+impl StreamHandle {
+    /// Release the arena refs this handle owns (used when a handle cannot be
+    /// registered after allocation).
+    pub(crate) fn drop_refs(&self, arena: &mut crate::arena::Arena<Value>) {
+        match self {
+            StreamHandle::Input {
+                elems, pushback, ..
+            } => {
+                for r in elems.iter().chain(pushback.iter()) {
+                    arena.drop_ref(*r);
+                }
+            }
+            StreamHandle::Source {
+                action, pushback, ..
+            } => {
+                arena.drop_ref(*action);
+                for r in pushback {
+                    arena.drop_ref(*r);
+                }
+            }
+            StreamHandle::Sink { handler, .. } => arena.drop_ref(*handler),
+            StreamHandle::Stdout | StreamHandle::Stderr => {}
+        }
+    }
 }
 
 /// The runtime realization of `realWorld`: the memory-stream table and the

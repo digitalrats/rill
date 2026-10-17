@@ -1,5 +1,6 @@
-//! Task 2 slice of the io-streams memory surface: `fromList`/`toList`.
-//! (Task 3 extends this file with read/atEnd/unread/connect/make*.)
+//! The io-streams memory surface: `fromList`/`toList`, `read`/`write`,
+//! `atEnd`, `unread`, `connect`, and the `makeInputStream`/`makeOutputStream`
+//! wrappers — faithful to Haskell io-streams (`Nothing` = EOF / close).
 
 use rill_lang::builtin::Registry;
 use rill_lang::compile_runner;
@@ -10,6 +11,34 @@ fn runner(src: &str) -> ProgramRunner<f32, 256> {
         .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"))
 }
 
+/// Compile and run a whole program, returning its captured `stdout`.
+///
+/// The program runs on a thread with a large stack: the interpreter evaluates
+/// the `IO` chain recursively (every `do` statement is one nested `bind`), and
+/// in a debug build a single statement's frame chain is large enough that a
+/// multi-statement stream program would exceed libtest's default 2 MiB thread
+/// stack. That is a depth property of the lazy `IO` interpreter, not of the
+/// stream surface under test.
+fn run(src: &str) -> Vec<String> {
+    let src = src.to_string();
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(move || {
+            let mut r = runner(&src);
+            r.run()
+                .unwrap_or_else(|e| panic!("run must succeed: {e}\nsource:\n{src}"));
+            r.stdout().to_vec()
+        })
+        .expect("spawn program thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
+/// Shared program prefix: renders a `Maybe Float` as text (`Nothing` = EOF).
+const SHOW_MAYBE: &str = r#"show_mb m = case m of { Nothing => "eof"; Just x => show_float x };"#;
+
+/// Wrap a stream-producing expression in `fromList` → `toList` → `stdout`,
+/// rendering the drained list with `fold`/`concat_string`/`show_float`.
 fn render(src_body: &str) -> Vec<String> {
     let src = format!(
         r#"
@@ -21,9 +50,7 @@ main = do {{
 }};
 "#
     );
-    let mut r = runner(&src);
-    r.run().expect("run must succeed");
-    r.stdout().to_vec()
+    run(&src)
 }
 
 #[test]
@@ -32,6 +59,164 @@ fn from_list_to_list_preserves_order() {
 }
 
 #[test]
-fn to_list_of_empty_stream_is_empty() {
+fn to_list_on_empty_stream_is_empty() {
     assert_eq!(render("fromList list"), vec![""]);
+}
+
+#[test]
+fn read_pulls_elements_and_nothing_at_eof() {
+    // Two elements then `Nothing`, and reading past EOF keeps yielding
+    // `Nothing` rather than erroring.
+    let src = format!(
+        r#"{SHOW_MAYBE}
+main = do {{
+    xs <- fromList [1.0, 2.0];
+    a <- read xs;
+    b <- read xs;
+    c <- read xs;
+    d <- read xs;
+    write (Just (show_mb a)) stdout;
+    write (Just (show_mb b)) stdout;
+    write (Just (show_mb c)) stdout;
+    write (Just (show_mb d)) stdout;
+    return ()
+}};
+"#
+    );
+    assert_eq!(run(&src), ["1.0", "2.0", "eof", "eof"]);
+}
+
+#[test]
+fn write_nothing_closes_the_stream() {
+    // `write Nothing` is the close signal: the sink sees it, and every later
+    // write is inert (it never reaches the sink).
+    let src = r#"
+main = do {
+    out <- makeOutputStream (\mb -> case mb of {
+        Nothing => write (Just "closed") stdout;
+        Just x => write (Just (show_float x)) stdout
+    });
+    write (Just 1.0) out;
+    write Nothing out;
+    write (Just 2.0) out;
+    return ()
+};
+"#;
+    assert_eq!(run(src), ["1.0", "closed"]);
+}
+
+#[test]
+fn at_end_reports_eof_without_consuming() {
+    // `atEnd` on a live stream is False and does not consume (the following
+    // `read` still yields the first element); on a drained stream it is True.
+    let src = format!(
+        r#"{SHOW_MAYBE}
+main = do {{
+    xs <- fromList [1.0];
+    before <- atEnd xs;
+    v <- read xs;
+    after <- atEnd xs;
+    w <- read xs;
+    write (Just (case before of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (show_mb v)) stdout;
+    write (Just (case after of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (show_mb w)) stdout;
+    return ()
+}};
+"#
+    );
+    assert_eq!(run(&src), ["open", "1.0", "at-end", "eof"]);
+}
+
+#[test]
+fn unread_then_read_roundtrips() {
+    // `unread` pushes a value back: the next `read` returns the pushed value,
+    // then the stream continues where it was.
+    let src = format!(
+        r#"{SHOW_MAYBE}
+main = do {{
+    xs <- fromList [1.0, 2.0];
+    a <- read xs;
+    unread 5.0 xs;
+    b <- read xs;
+    c <- read xs;
+    write (Just (show_mb a)) stdout;
+    write (Just (show_mb b)) stdout;
+    write (Just (show_mb c)) stdout;
+    return ()
+}};
+"#
+    );
+    assert_eq!(run(&src), ["1.0", "5.0", "2.0"]);
+}
+
+#[test]
+fn connect_pipes_input_to_output() {
+    // `connect` pulls every element of the input into the output and closes the
+    // output (`Nothing`) at input EOF.
+    let src = r#"
+main = do {
+    xs <- fromList [1.0, 2.0, 3.0];
+    out <- makeOutputStream (\mb -> case mb of {
+        Nothing => write (Just "|") stdout;
+        Just x => write (Just (show_float x)) stdout
+    });
+    connect xs out;
+    return ()
+};
+"#;
+    assert_eq!(run(src), ["1.0", "2.0", "3.0", "|"]);
+}
+
+#[test]
+fn make_stream_wraps_program_closures() {
+    // `makeInputStream` wraps a program-provided `IO (Maybe a)` action: each
+    // `read` runs it, and a `Nothing` result is EOF. `atEnd` on such a source
+    // pulls one element and pushes it back, so it does not consume.
+    let src = format!(
+        r#"{SHOW_MAYBE}
+main = do {{
+    src <- makeInputStream (return (Just 7.0));
+    e <- atEnd src;
+    a <- read src;
+    write (Just (case e of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (show_mb a)) stdout;
+    return ()
+}};
+"#
+    );
+    assert_eq!(run(&src), ["open", "7.0"]);
+
+    let src = format!(
+        r#"{SHOW_MAYBE}
+main = do {{
+    src <- makeInputStream (return Nothing);
+    e <- atEnd src;
+    a <- read src;
+    write (Just (case e of {{ true => "at-end"; false => "open" }})) stdout;
+    write (Just (show_mb a)) stdout;
+    return ()
+}};
+"#
+    );
+    assert_eq!(run(&src), ["at-end", "eof"]);
+}
+
+#[test]
+fn connect_unequal_lengths_ends_cleanly() {
+    // The input is longer than what the sink accepts: the sink drops the
+    // elements from 3.0 on (`write Nothing` on stdout is inert). `connect`
+    // still ends at input EOF (no error) and delivers the closing `Nothing`.
+    let src = r#"
+main = do {
+    xs <- fromList [1.0, 2.0, 3.0, 4.0];
+    out <- makeOutputStream (\mb -> case mb of {
+        Nothing => write (Just "closed") stdout;
+        Just x => if x < 3.0 then write (Just (show_float x)) stdout else write Nothing stdout
+    });
+    connect xs out;
+    return ()
+};
+"#;
+    assert_eq!(run(src), ["1.0", "2.0", "closed"]);
 }

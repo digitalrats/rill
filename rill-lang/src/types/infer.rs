@@ -2716,8 +2716,8 @@ fn infer_expr_expected(
                     span: cond.span(),
                 });
             }
-            let tt = infer_expr(ctx, then)?;
-            let et = infer_expr(ctx, els)?;
+            let tt = infer_expr_expected(ctx, then, expected.clone())?;
+            let et = infer_expr_expected(ctx, els, expected)?;
             let tv = arm_result_vty(tt, then, then.span())?;
             let ev = arm_result_vty(et, els, els.span())?;
             unify_value(&tv, &ev, &mut ctx.subst, *span)?;
@@ -3734,7 +3734,22 @@ fn infer_apply_impl(
             .collect::<Result<_, _>>()?;
         let ret_ty = instantiate_builtin_sig_vty(ctx, &ret, &mut sig_vars)?;
         for (pt, a) in param_tys.into_iter().zip(args.iter()) {
-            let at0 = infer_expr(ctx, a)?;
+            // Thread the parameter type as the argument's expected type when it
+            // is RESULT-DIRECTED for the argument's interior: an `IO` parameter
+            // (`makeInputStream :: IO (Maybe a) -> …` handed
+            // `return (Just 7.0)`) and a function parameter
+            // (`makeOutputStream :: (Maybe a -> IO ()) -> …` handed
+            // `\mb -> … return () …`). A result-directed method inside the
+            // argument then selects its instance. Other parameters keep plain
+            // inference (their expected type may be a signal channel).
+            let resolved_pt = ctx.subst.resolve_value(&pt);
+            let directed = matches!(&resolved_pt, ValueTy::Data(n, _) if n == "IO")
+                || matches!(resolved_pt, ValueTy::Thunk(..));
+            let at0 = if directed {
+                infer_expr_expected(ctx, a, Some(pt.clone()))?
+            } else {
+                infer_expr(ctx, a)?
+            };
             // A Buffer param (a foreign builtin's signal slot) accepts a signal
             // computation (a `Buffer -> … -> Buffer` arrow applied to the
             // program's buffers), a Buffer value, OR a numeric signal constant
