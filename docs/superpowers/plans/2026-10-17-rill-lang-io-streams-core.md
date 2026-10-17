@@ -166,6 +166,8 @@ main = ();
 ```
 Add `env.derive_superclass_instances()` after the STD registration so the moved `Monad` instances derive their `Applicative`/`Functor` superclasses (as they did while in `CATEGORY_PRELUDE`).
 
+**RULING (plan-defect fix, pre-flight scan):** the current tree's `STD_PRELUDE` also holds the OLD design's stream declarations — `data InputStream a = { unInputStream: a };`, `data OutputStream a = { unOutputStream: a };`, `data Stream a = { };`, `data BackendSpec = { name: String };`. Task 1 **KEEPS** those declarations (they keep `tests/stream_contract.rs` and the old stream sigs `runStream`/`asInput`/`asOutput`/`mkStream` type-checking through Task 1). Task 1 **ADDS** the new decls/instances above to `STD_PRELUDE` and **REMOVES** the moved `ST`/`IO`/instances from `CATEGORY_PRELUDE`; it does NOT delete `Stream`/`BackendSpec` or replace the record `InputStream`/`OutputStream` with opaque forms — that is Task 2's removal/swap (Task 2 Step 3/7).
+
 - [ ] **Step 9: Run the full suite**
 
 Run: `cargo test -p rill-lang --features dsp`.
