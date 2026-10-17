@@ -2039,6 +2039,9 @@ fn bind_pattern(
                 span: arm_span,
             })
         }
+        // A bang pattern forces the matched value at runtime but does not change
+        // its type: bind/check the inner pattern.
+        Pattern::Bang(inner) => bind_pattern(ctx, inner, vty, fallback_sum, arm_span),
     }
 }
 
@@ -2092,6 +2095,7 @@ fn check_scalar_pattern(
             msg: "constructor pattern requires a sum scrutinee".into(),
             span: arm_span,
         }),
+        Pattern::Bang(inner) => check_scalar_pattern(ctx, inner, scrutinee_vty, arm_span),
     }
 }
 
@@ -2110,7 +2114,7 @@ fn check_exhaustive_scalar(
         if arm_is_guarded(a) {
             continue;
         }
-        match &a.pattern {
+        match a.pattern.strip_bang() {
             Pattern::Wild | Pattern::Var(_) => has_wild = true,
             Pattern::LitBool(b) => {
                 if *b {
@@ -2150,7 +2154,7 @@ fn check_exhaustive_sum(
         if arm_is_guarded(a) {
             continue;
         }
-        match &a.pattern {
+        match a.pattern.strip_bang() {
             Pattern::Ctor(name, _) => {
                 covered.insert(name.as_str());
             }
@@ -2535,12 +2539,12 @@ fn infer_expr_expected(
             // `return`/`bind` resolve against the concrete monad.
             let pre_sum: Option<String> = if arms
                 .iter()
-                .any(|a| matches!(a.pattern, Pattern::Ctor(_, _)))
+                .any(|a| matches!(a.pattern.strip_bang(), Pattern::Ctor(_, _)))
             {
                 let mut candidates: Option<Vec<String>> = None;
                 let mut ok = true;
                 for a in arms {
-                    if let Pattern::Ctor(name, _) = &a.pattern {
+                    if let Pattern::Ctor(name, _) = a.pattern.strip_bang() {
                         let per_ctor = sum_types_with_ctor(ctx, name);
                         if per_ctor.is_empty() {
                             ok = false;
@@ -2623,7 +2627,7 @@ fn infer_expr_expected(
             };
             if arms
                 .iter()
-                .any(|a| matches!(a.pattern, Pattern::Ctor(_, _)))
+                .any(|a| matches!(a.pattern.strip_bang(), Pattern::Ctor(_, _)))
             {
                 // A constructor pattern requires a sum scrutinee. Derive the
                 // sum name from the scrutinee, else from the constructor
@@ -2635,7 +2639,7 @@ fn infer_expr_expected(
                     None => {
                         let mut candidates: Option<Vec<String>> = None;
                         for a in arms {
-                            if let Pattern::Ctor(name, _) = &a.pattern {
+                            if let Pattern::Ctor(name, _) = a.pattern.strip_bang() {
                                 let per_ctor = sum_types_with_ctor(ctx, name);
                                 if per_ctor.is_empty() {
                                     return Err(CompileError::Type {

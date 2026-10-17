@@ -118,6 +118,21 @@ pub enum Pattern {
     LitStr(String),
     /// Constructor application with (possibly nested) argument patterns.
     Ctor(String, Vec<Pattern>),
+    /// Bang pattern `!pat` — force the matched value to WHNF before matching
+    /// the inner pattern (GHC-style extension; no deep strictness).
+    Bang(Box<Pattern>),
+}
+
+impl Pattern {
+    /// This pattern with any leading bang markers stripped: `!x` → `x`,
+    /// `!!x` → `x`. Shape-based analyses (constructor/variable tests,
+    /// exhaustiveness) look through the markers; lowering re-emits the force.
+    pub fn strip_bang(&self) -> &Pattern {
+        match self {
+            Pattern::Bang(inner) => inner.strip_bang(),
+            other => other,
+        }
+    }
 }
 
 /// One `case` arm: a pattern, then a sequence of `(guard, body)` alternatives.
@@ -321,6 +336,10 @@ pub struct Param {
     pub name: String,
     /// Source span.
     pub span: Span,
+    /// Whether this is a bang parameter (`f !x = …`, `\ !x -> …`): the
+    /// argument is forced to WHNF on application entry.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub bang: bool,
 }
 
 /// A definition — top-level, `where`-block, or `let`-block.
@@ -344,6 +363,10 @@ pub enum Def {
         where_defs: Vec<Def>,
         /// Optional `:: TypeExpr` signature annotation.
         sig: Option<TypeExpr>,
+        /// Bang binding (`let !x = e`): force the right-hand side to WHNF at
+        /// the binding point (GHC-style extension; no deep strictness).
+        #[cfg_attr(feature = "serde", serde(default))]
+        bang: bool,
         /// Span of the whole definition.
         span: Span,
     },
@@ -479,6 +502,12 @@ impl Def {
             Def::Eval { params, .. } => params,
             _ => &[],
         }
+    }
+
+    /// Whether this is a bang binding (`let !x = e`): the right-hand side is
+    /// forced to WHNF at the binding point.
+    pub fn is_bang(&self) -> bool {
+        matches!(self, Def::Eval { bang: true, .. })
     }
 
     /// Returns the where-block definitions of this definition.

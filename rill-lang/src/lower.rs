@@ -938,7 +938,7 @@ impl<'a> Lowerer<'a> {
                 // is unaffected — the expected is only a hint.
                 let pre_sum: Option<String> = if arms
                     .iter()
-                    .any(|a| matches!(a.pattern, Pattern::Ctor(_, _)))
+                    .any(|a| matches!(a.pattern.strip_bang(), Pattern::Ctor(_, _)))
                 {
                     self.resolve_match_sum(arms, *span).ok()
                 } else {
@@ -965,7 +965,7 @@ impl<'a> Lowerer<'a> {
                     ValueTy::Data(n, _) => Some(n.clone()),
                     _ if arms
                         .iter()
-                        .any(|a| matches!(a.pattern, Pattern::Ctor(_, _))) =>
+                        .any(|a| matches!(a.pattern.strip_bang(), Pattern::Ctor(_, _))) =>
                     {
                         Some(self.resolve_match_sum(arms, *span)?)
                     }
@@ -1021,13 +1021,14 @@ impl<'a> Lowerer<'a> {
                         // patterns (plus Var/Wild arms) in one pass; a
                         // nested-pattern arm needs recursive runtime payload
                         // extraction, so it is routed to runtime dispatch.
-                        let statically_lowerable = arms.iter().all(|arm| match &arm.pattern {
-                            Pattern::Ctor(_, args) => args
-                                .iter()
-                                .all(|a| matches!(a, Pattern::Var(_) | Pattern::Wild)),
-                            Pattern::Var(_) | Pattern::Wild => true,
-                            _ => true,
-                        });
+                        let statically_lowerable =
+                            arms.iter().all(|arm| match arm.pattern.strip_bang() {
+                                Pattern::Ctor(_, args) => args.iter().all(|a| {
+                                    matches!(a.strip_bang(), Pattern::Var(_) | Pattern::Wild)
+                                }),
+                                Pattern::Var(_) | Pattern::Wild => true,
+                                _ => true,
+                            });
                         if statically_lowerable {
                             let static_sum = sum_name.clone().unwrap_or_default();
                             return self.lower_static_match_arm(
@@ -2911,7 +2912,21 @@ impl<'a> Lowerer<'a> {
                     for d in defs {
                         self.defs.insert(d.name().to_string(), d.clone());
                     }
+                    // A bang binding (`let !x = e`) is evaluated here, at the
+                    // binding point, and its name reads the forced result.
+                    let mut forced_scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    for d in defs.iter().filter(|d| d.is_bang()) {
+                        let (reg, ty) = self.lower_value(d.body())?;
+                        let forced = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueForce {
+                            dst: forced,
+                            src: reg,
+                        });
+                        forced_scope.insert(d.name().to_string(), (forced, ty));
+                    }
+                    self.value_locals.push(forced_scope);
                     let res = self.lower_value_expected(body, expected);
+                    self.value_locals.pop();
                     self.defs = saved;
                     res
                 } else {
@@ -2953,6 +2968,19 @@ impl<'a> Lowerer<'a> {
                             env: env_reg,
                             fragment: fragment_id,
                         });
+                        // A bang binding (`let !x = e`) forces the thunk here,
+                        // at the binding point, and the name reads the forced
+                        // value (WHNF only).
+                        let x_reg = if d.is_bang() {
+                            let forced = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueForce {
+                                dst: forced,
+                                src: x_reg,
+                            });
+                            forced
+                        } else {
+                            x_reg
+                        };
                         scope.insert(d.name().to_string(), (x_reg, _ret_ty));
                     }
                     self.value_locals.push(scope);
@@ -3582,7 +3610,7 @@ impl<'a> Lowerer<'a> {
                 span,
             })?;
         match def {
-            Def::Eval { body, .. } if def.params().is_empty() => {
+            Def::Eval { body, bang, .. } if def.params().is_empty() => {
                 // Complete mode: a RECURSIVE local definition (`fibs = cons …
                 // fibs …`) is a self-referential THUNK in a shared cell (the
                 // STG model) — the same shared-cell mechanism as Anchor
@@ -3629,7 +3657,20 @@ impl<'a> Lowerer<'a> {
                 let res = self.lower_value(&body);
                 self.pending_param_tys = saved_pending;
                 self.value_inline.remove(name);
-                res
+                // A bang binding (`!x = e`, `where !x = e`) forces its value to
+                // WHNF. Value bindings are re-evaluated per use site here, so a
+                // force at the inline site is the binding-point force.
+                match res {
+                    Ok((reg, ty)) if bang => {
+                        let forced = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueForce {
+                            dst: forced,
+                            src: reg,
+                        });
+                        Ok((forced, ty))
+                    }
+                    other => other,
+                }
             }
             Def::Eval {
                 params: def_params,
@@ -3964,6 +4005,24 @@ impl<'a> Lowerer<'a> {
             .zip(capture_tys.iter().cloned())
             .collect();
         self.next_value_reg = params.len();
+
+        // Bang parameters force their incoming argument to WHNF in the
+        // fragment's entry block, before the body binds/uses it.
+        for (i, p) in params.iter().enumerate() {
+            if !p.bang {
+                continue;
+            }
+            let forced = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueForce {
+                dst: forced,
+                src: i,
+            });
+            let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+            self.value_locals
+                .last_mut()
+                .unwrap()
+                .insert(p.name.clone(), (forced, ty));
+        }
 
         let res = self.lower_value_expected(body, expected_body);
         let body_result = match res {
@@ -4545,7 +4604,7 @@ impl<'a> Lowerer<'a> {
                 // result constructor.
                 let scrut_ctor = self.static_scrutinee_ctor_impl(scrutinee, visited)?;
                 for arm in arms {
-                    if let Pattern::Ctor(c, _) = &arm.pattern {
+                    if let Pattern::Ctor(c, _) = arm.pattern.strip_bang() {
                         if c == &scrut_ctor {
                             // A guarded arm's result constructor is NOT
                             // statically known (the guard may fail at runtime),
@@ -4782,7 +4841,7 @@ impl<'a> Lowerer<'a> {
     fn resolve_match_sum(&self, arms: &[MatchArm], span: Span) -> Result<String, CompileError> {
         let mut candidates: Option<Vec<String>> = None;
         for arm in arms {
-            let ctor = match &arm.pattern {
+            let ctor = match arm.pattern.strip_bang() {
                 Pattern::Ctor(c, _) => c,
                 _ => continue,
             };
@@ -4839,7 +4898,7 @@ impl<'a> Lowerer<'a> {
         // Var/Wild arm (a Var binds the whole scrutinee, a Wild ignores it).
         let selected = arms
             .iter()
-            .position(|arm| match &arm.pattern {
+            .position(|arm| match arm.pattern.strip_bang() {
                 Pattern::Ctor(c, _) => c == cname,
                 Pattern::Var(_) | Pattern::Wild => true,
                 _ => false,
@@ -4859,7 +4918,11 @@ impl<'a> Lowerer<'a> {
         // Bind the arm's pattern leaves in a fresh scope, visible to the body.
         self.value_locals.push(HashMap::new());
         self.value_local_ctors.push(HashMap::new());
-        let result = match &arm.pattern {
+        // A bang pattern forces the matched value before binding it (`!x`).
+        // The static path matched the constructor syntactically, so this is the
+        // only force the arm performs.
+        let scrutinee_reg = self.force_bang_markers(&arm.pattern, scrutinee_reg);
+        let result = match arm.pattern.strip_bang() {
             Pattern::Var(name) => {
                 // A variable arm binds the whole scrutinee (its ctor is
                 // statically known, so a nested match over it resolves too).
@@ -4896,9 +4959,11 @@ impl<'a> Lowerer<'a> {
                 // resolve them against the scrutinee's concrete type args
                 // (`Var(k)` → `scrutinee_args[k-1]`, mirroring inference).
                 for (idx, p) in args.iter().enumerate() {
-                    let Pattern::Var(name) = p else {
+                    let Pattern::Var(name) = p.strip_bang() else {
                         continue;
                     };
+                    // A bang sub-pattern (`Just !x`) forces its payload.
+                    let payload_reg = self.force_bang_markers(p, payload_regs[idx]);
                     let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
                     let pty = if is_builtin_sum {
                         match raw {
@@ -4914,7 +4979,7 @@ impl<'a> Lowerer<'a> {
                     self.value_locals
                         .last_mut()
                         .unwrap()
-                        .insert(name.clone(), (payload_regs[idx], pty));
+                        .insert(name.clone(), (payload_reg, pty));
                 }
                 self.lower_value(body)
             }
@@ -4945,6 +5010,10 @@ impl<'a> Lowerer<'a> {
         else_t: usize,
         span: Span,
     ) -> Result<usize, CompileError> {
+        // `!pat` forces the matched value to WHNF before the inner pattern is
+        // tested; the stripped pattern then binds against the forced register.
+        let scrutinee_reg = self.force_bang_markers(pattern, scrutinee_reg);
+        let pattern = pattern.strip_bang();
         match pattern {
             Pattern::Var(name) => {
                 // Binds the whole matched value; no test is emitted.
@@ -5050,7 +5119,27 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(pass)
             }
+            // `strip_bang` removed every marker before this match.
+            Pattern::Bang(_) => unreachable!("bang markers are stripped before the pattern test"),
         }
+    }
+
+    /// Emit one `ValueInstr::ValueForce` per bang marker on `pattern`,
+    /// returning the register the stripped pattern should test/bind against.
+    /// Forcing is to WHNF only — no deep strictness.
+    fn force_bang_markers(&mut self, pattern: &Pattern, reg: usize) -> usize {
+        let mut reg = reg;
+        let mut p = pattern;
+        while let Pattern::Bang(inner) = p {
+            let forced = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueForce {
+                dst: forced,
+                src: reg,
+            });
+            reg = forced;
+            p = inner;
+        }
+        reg
     }
 
     /// Emit the literal-equality test for a matched scalar: `ValueCompare { Eq }`

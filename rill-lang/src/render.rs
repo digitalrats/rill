@@ -44,9 +44,10 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             sig,
             ..
         } => {
-            write!(buf, "{pad}{name}").ok();
+            // A bang binding renders its marker before the bound name: `!x = e`.
+            write!(buf, "{pad}{}{name}", if def.is_bang() { "!" } else { "" }).ok();
             for p in params {
-                write!(buf, " {}", p.name).ok();
+                write!(buf, " {}{}", if p.bang { "!" } else { "" }, p.name).ok();
             }
             // Haskell 2010 signature annotation: `name args :: sig = body`.
             if let Some(sig) = sig {
@@ -377,7 +378,7 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
                 if i > 0 {
                     write!(buf, " ").ok();
                 }
-                write!(buf, "{}", p.name).ok();
+                write!(buf, "{}{}", if p.bang { "!" } else { "" }, p.name).ok();
             }
             write!(buf, " -> ").ok();
             render_expr(body, buf, 0)?;
@@ -490,6 +491,10 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
                 render_pattern_nested(a, buf);
             }
         }
+        Pattern::Bang(inner) => {
+            write!(buf, "!").ok();
+            render_pattern_nested(inner, buf);
+        }
     }
 }
 
@@ -497,9 +502,11 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
 /// arguments is parenthesized (`Just (Left y) 1`) so the inner constructor
 /// cannot swallow its sibling arguments on re-parse: the unparenthesized
 /// `Just Left y 1` would re-parse as `Just (Left y 1)`, silently changing the
-/// match.
+/// match. A bang marker in front of such a constructor is parenthesized with
+/// it (`Just (!Left y 1)`), since `Just !Left y 1` would attach the bang to
+/// the whole constructor application.
 fn render_pattern_nested(p: &Pattern, buf: &mut String) {
-    if let Pattern::Ctor(_, args) = p {
+    if let Pattern::Ctor(_, args) = p.strip_bang() {
         if !args.is_empty() {
             write!(buf, "(").ok();
             render_pattern(p, buf);
@@ -536,6 +543,7 @@ mod tests {
                 span: span(),
                 where_defs: vec![],
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -558,6 +566,7 @@ mod tests {
                 span: span(),
                 where_defs: vec![],
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -574,6 +583,7 @@ mod tests {
                 params: vec![crate::ast::Param {
                     name: "gain".into(),
                     span: span(),
+                    bang: false,
                 }],
                 body: Expr::Arith {
                     op: ArithOp::Mul,
@@ -584,6 +594,7 @@ mod tests {
                 span: span(),
                 where_defs: vec![],
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -602,6 +613,7 @@ mod tests {
                     params: vec![crate::ast::Param {
                         name: "x".into(),
                         span: span(),
+                        bang: false,
                     }],
                     body: Box::new(Expr::Arith {
                         op: ArithOp::Mul,
@@ -614,6 +626,7 @@ mod tests {
                 where_defs: vec![],
                 span: span(),
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -662,6 +675,7 @@ mod tests {
                 body: Expr::Float(1.0, span()),
                 where_defs: vec![],
                 sig: Some(TypeExpr::TName("Float".into())),
+                bang: false,
                 span: span(),
             }],
         };
@@ -774,6 +788,29 @@ main = 1.0;";
         // `Just (Left y 1)`).
         let dsl = roundtrip_main(r"main = case x of { Just (Left y) 1 -> y; _ -> 0.0; };");
         assert_eq!(dsl, r"main = case x of { Just (Left y) 1 -> y; _ -> 0.0; }");
+    }
+
+    #[test]
+    fn render_roundtrip_bang_forms() {
+        // Bang markers survive render → parse → render: on parameters, on
+        // lambdas, on `let` bindings, and on `case` patterns (including a bang
+        // in front of a nested constructor with a sibling argument).
+        let dsl = roundtrip_main("main !x = x + 1.0;");
+        assert_eq!(dsl, "main !x = x + 1.0");
+        let dsl = roundtrip_main(r"main = \ !x -> x + 1.0;");
+        assert_eq!(dsl, r"main = \!x -> x + 1.0");
+        let dsl = roundtrip_main("main = let !x = 1.0 in x;");
+        assert_eq!(dsl, "main = let !x = 1.0 in x");
+        let dsl = roundtrip_main(r"main = case Just 1.0 of { Just !x -> x; Nothing -> 0.0; };");
+        assert_eq!(
+            dsl,
+            r"main = case Just 1.0 of { Just !x -> x; Nothing -> 0.0; }"
+        );
+        let dsl = roundtrip_main(r"main = case x of { Just !(Left y) 1 -> y; _ -> 0.0; };");
+        assert_eq!(
+            dsl,
+            r"main = case x of { Just (!(Left y)) 1 -> y; _ -> 0.0; }"
+        );
     }
 
     #[test]

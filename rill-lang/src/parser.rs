@@ -26,6 +26,8 @@ enum InfixOp {
     CmpGe,
     LogicAnd,
     LogicOr,
+    /// `!` — infix indexing (`a ! i` ≡ `index a i`).
+    Index,
 }
 
 impl InfixOp {
@@ -109,6 +111,12 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         Tok::Star => (InfixOp::Mul, 13, 14),
         Tok::Slash => (InfixOp::Div, 13, 14),
         Tok::Percent => (InfixOp::Rem, 13, 14),
+        // `!` — infix indexing. Tight (just below juxtaposed application, above
+        // every arithmetic operator) and left-associative: `a ! i + 1` ≡
+        // `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`. An ATTACHED `!` is a bang
+        // marker, not an operator — the operator loop consults
+        // `is_attached_bang` first.
+        Tok::Bang => (InfixOp::Index, 15, 16),
         _ => return None,
     })
 }
@@ -143,6 +151,21 @@ fn peek_is_negative_literal(toks: &[Token], pos: usize) -> bool {
     matches!(next.tok, Tok::Int(_) | Tok::Float(_)) && next.span.start == toks[pos].span.end
 }
 
+/// Whether the `!` at `pos` is a bang marker rather than the infix indexing
+/// operator. Mirroring [`peek_is_negative_literal`]'s adjacency model, a bang
+/// is the marker `!pat` only when the following token is directly attached (no
+/// whitespace) AND can begin a pattern; a separated `!` is infix indexing
+/// (`a ! i`).
+fn is_attached_bang(toks: &[Token], pos: usize) -> bool {
+    if !matches!(toks[pos].tok, Tok::Bang) {
+        return false;
+    }
+    let Some(next) = toks.get(pos + 1) else {
+        return false;
+    };
+    is_pattern_start(&next.tok) && next.span.start == toks[pos].span.end
+}
+
 /// Whether a juxtaposed application argument may start here. `-` is included
 /// ONLY when it begins a negative literal (`-1.0`); a standalone `-` is infix
 /// subtraction and must reach the operator loop instead of being consumed as a
@@ -166,6 +189,7 @@ fn is_pattern_start(tok: &Tok) -> bool {
             | Tok::KwFalse
             | Tok::Wire
             | Tok::LParen
+            | Tok::Bang
     )
 }
 
@@ -275,6 +299,16 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::RParen)?;
                 Ok(p)
             }
+            Tok::Bang => {
+                // A bang pattern is always written attached: `!x`, `!Just y`.
+                if !is_attached_bang(self.toks, self.pos) {
+                    return Err(
+                        self.error("a bang pattern must be written `!pat` (no space after `!`)")
+                    );
+                }
+                self.bump();
+                Ok(Pattern::Bang(Box::new(self.parse_pattern()?)))
+            }
             Tok::Ident(name) => {
                 let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
                 self.bump();
@@ -303,6 +337,39 @@ impl<'a> Parser<'a> {
             .map(|p| p + 1)
             .unwrap_or(0);
         off - line_start
+    }
+
+    /// Whether a parameter may start here: a bare identifier, or a bang marker
+    /// attached to one (`!x`).
+    fn at_param_start(&self) -> bool {
+        match self.peek().tok {
+            Tok::Ident(_) => true,
+            Tok::Bang => is_attached_bang(self.toks, self.pos),
+            _ => false,
+        }
+    }
+
+    /// Parse one parameter: `x` or a bang parameter `!x`. The argument of a
+    /// bang parameter is forced to WHNF on application entry.
+    fn parse_param(&mut self) -> Result<Param, CompileError> {
+        if self.peek().tok == Tok::Bang && !is_attached_bang(self.toks, self.pos) {
+            return Err(self.error("a bang parameter must be written `!name` (no space after `!`)"));
+        }
+        let bang_span = if self.peek().tok == Tok::Bang {
+            Some(self.bump().span)
+        } else {
+            None
+        };
+        let (name, name_span) = self.expect_ident()?;
+        let span = match bang_span {
+            Some(s) => s.merge(name_span),
+            None => name_span,
+        };
+        Ok(Param {
+            name,
+            span,
+            bang: bang_span.is_some(),
+        })
     }
 
     /// True when a `Newline` layout separator sits immediately after the last
@@ -416,6 +483,19 @@ impl<'a> Parser<'a> {
             _ => {}
         }
         let start = self.peek().span.start;
+        // A leading bang marker (`let !x = e`) marks the binding itself: the
+        // right-hand side is forced to WHNF at the binding point.
+        let bang = if self.peek().tok == Tok::Bang {
+            if !is_attached_bang(self.toks, self.pos) {
+                return Err(
+                    self.error("a bang binding must be written `!name` (no space after `!`)")
+                );
+            }
+            self.bump();
+            true
+        } else {
+            false
+        };
         let name = match &self.peek().tok {
             Tok::Ident(n) => {
                 let n = n.clone();
@@ -434,12 +514,8 @@ impl<'a> Parser<'a> {
             }
         };
         let mut params = Vec::new();
-        while let Tok::Ident(_) = self.peek().tok {
-            let (pname, pspan) = self.expect_ident()?;
-            params.push(Param {
-                name: pname,
-                span: pspan,
-            });
+        while self.at_param_start() {
+            params.push(self.parse_param()?);
         }
         // Optional `:: TypeExpr` signature annotation (Haskell 2010). Typing is
         // still inferred (HM); the signature is a hint/constraint checked by a
@@ -470,6 +546,7 @@ impl<'a> Parser<'a> {
             body,
             where_defs,
             sig,
+            bang,
             span,
         })
     }
@@ -693,7 +770,11 @@ impl<'a> Parser<'a> {
                 let mut dparams = Vec::new();
                 while matches!(self.peek().tok, Tok::Ident(_)) {
                     let (p, ps) = self.expect_ident()?;
-                    dparams.push(Param { name: p, span: ps });
+                    dparams.push(Param {
+                        name: p,
+                        span: ps,
+                        bang: false,
+                    });
                 }
                 let body = self.parse_expr(0, true)?;
                 default = Some((dparams, body));
@@ -772,6 +853,7 @@ impl<'a> Parser<'a> {
                 params.push(Param {
                     name: pname,
                     span: pspan,
+                    bang: false,
                 });
             }
             self.eat(&Tok::Eq)?;
@@ -851,6 +933,17 @@ impl<'a> Parser<'a> {
     fn parse_expr(&mut self, min_bp: u8, no_comma: bool) -> Result<Expr, CompileError> {
         let mut lhs = self.parse_prefix(no_comma)?;
         while let Some((op, l_bp, r_bp)) = infix_binding_power(&self.peek().tok) {
+            // A `!` attached to the following token is a bang marker, not the
+            // infix index operator. It begins no expression, so it is an error
+            // in expression/operator position (`a!i`, `a !i`); only a separated
+            // `!` (`a ! i`) reaches the operator arm below.
+            if op == InfixOp::Index && is_attached_bang(self.toks, self.pos) {
+                return Err(CompileError::Parse {
+                    msg: "a bang pattern `!x` is not an expression: index with `a ! i` (spaces around `!`)"
+                        .into(),
+                    span: self.peek().span,
+                });
+            }
             if no_comma && op == InfixOp::Par {
                 break;
             }
@@ -897,6 +990,12 @@ impl<'a> Parser<'a> {
                             vec![("first".to_string(), lhs), ("second".to_string(), rhs)],
                             span,
                         )],
+                        span,
+                    },
+                    // `!` — infix indexing: `a ! i` ≡ `index a i`.
+                    InfixOp::Index => Expr::Apply {
+                        name: "index".to_string(),
+                        args: vec![lhs, rhs],
                         span,
                     },
                     _ => unreachable!(),
@@ -1018,15 +1117,12 @@ impl<'a> Parser<'a> {
                 // currying lives in definitions (`foo x y = body` ≡
                 // `foo = \x -> \y -> body`) and applications (`f a b` ≡
                 // `((f a) b)`), never in a single lambda literal.
-                let (pname, pspan) = self.expect_ident()?;
+                let param = self.parse_param()?;
                 self.eat(&Tok::ThinArrow)?;
                 let body = self.parse_expr(0, true)?;
                 let span = t.span.merge(body.span());
                 Ok(Expr::Lambda {
-                    params: vec![Param {
-                        name: pname,
-                        span: pspan,
-                    }],
+                    params: vec![param],
                     body: Box::new(body),
                     span,
                 })
@@ -1157,6 +1253,7 @@ impl<'a> Parser<'a> {
                         params: vec![Param {
                             name: x.clone(),
                             span,
+                            bang: false,
                         }],
                         body: Box::new(rest),
                         span,
@@ -1176,6 +1273,7 @@ impl<'a> Parser<'a> {
                             body: e.clone(),
                             where_defs: vec![],
                             sig: None,
+                            bang: false,
                             span,
                         }],
                         body: Box::new(rest),
@@ -1188,6 +1286,7 @@ impl<'a> Parser<'a> {
                         params: vec![Param {
                             name: "_".to_string(),
                             span,
+                            bang: false,
                         }],
                         body: Box::new(rest),
                         span,
@@ -2515,6 +2614,165 @@ mod tests {
             }
             other => panic!("expected Lambda, got {other:?}"),
         }
+    }
+
+    /// Parse `src`, expecting an error, and return its rendered message.
+    fn parse_err(src: &str) -> String {
+        parse(&tokenize(src).unwrap(), src.as_bytes())
+            .expect_err("expected a parse error")
+            .to_string()
+    }
+
+    #[test]
+    fn bang_index_parses_as_index_application() {
+        // A separated `!` is infix indexing: `a ! i` desugars to `index a i`.
+        let e = body("main = a ! i");
+        let Some(("index", args)) = curry_head(&e) else {
+            panic!("expected an `index` application, got {e:?}");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[0], Expr::Ref(n, _) if n == "a"));
+        assert!(matches!(args[1], Expr::Ref(n, _) if n == "i"));
+    }
+
+    #[test]
+    fn bang_index_is_left_associative() {
+        // `a ! b ! c` ≡ `(a ! b) ! c` ≡ `index (index a b) c`.
+        let e = body("main = a ! b ! c");
+        let Some(("index", args)) = curry_head(&e) else {
+            panic!("expected an `index` application, got {e:?}");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(curry_head(args[0]), Some(("index", inner)) if inner.len() == 2));
+        assert!(matches!(args[1], Expr::Ref(n, _) if n == "c"));
+    }
+
+    #[test]
+    fn bang_index_binds_tighter_than_plus() {
+        // `a ! i + 1` ≡ `(a ! i) + 1` — indexing sits just below application.
+        match body("main = a ! i + 1") {
+            Expr::Arith {
+                op: ArithOp::Add,
+                lhs,
+                rhs,
+                ..
+            } => {
+                assert!(matches!(curry_head(&lhs), Some(("index", args)) if args.len() == 2));
+                assert!(matches!(rhs.as_ref(), Expr::Int(1, _)));
+            }
+            other => panic!("expected Arith, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attached_bang_in_expression_position_is_rejected() {
+        // A `!` attached to the following token is a bang marker, which begins
+        // no expression: both `a!i` and `a !i` are parse errors.
+        for src in ["main = a!i", "main = a !i"] {
+            let msg = parse_err(src);
+            assert!(
+                msg.contains("bang"),
+                "expected a bang-pattern diagnostic for `{src}`, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn bang_param_marks_definition_param() {
+        // `f !x = …` — the bang marker rides on the parameter.
+        let p = prog("main !x = 1.0");
+        let main = p.main_def().unwrap();
+        assert_eq!(main.params().len(), 1);
+        assert_eq!(main.params()[0].name, "x");
+        assert!(main.params()[0].bang, "`!x` must set Param.bang");
+    }
+
+    #[test]
+    fn bang_param_survives_currying() {
+        // `f a !x = …` curries into `f = \a -> \!x -> …`; the marker is kept.
+        match body("main a !x = 1.0") {
+            Expr::Lambda { params, body, .. } => {
+                assert_eq!(params[0].name, "a");
+                assert!(!params[0].bang);
+                match body.as_ref() {
+                    Expr::Lambda { params, .. } => {
+                        assert_eq!(params[0].name, "x");
+                        assert!(params[0].bang);
+                    }
+                    other => panic!("expected nested lambda, got {other:?}"),
+                }
+            }
+            other => panic!("expected curried lambda, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_lambda_param_parses() {
+        match body("main = \\ !x -> x") {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(params[0].bang);
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_let_binding_parses() {
+        match body("main = let !x = 1.0 in x") {
+            Expr::Let { defs, .. } => {
+                assert_eq!(defs.len(), 1);
+                assert_eq!(defs[0].name(), "x");
+                assert!(defs[0].is_bang(), "`let !x = e` must set Def::Eval.bang");
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_case_pattern_parses() {
+        match body("main = case 1.0 of { !x -> x }") {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                assert!(
+                    matches!(&arms[0].pattern, Pattern::Bang(inner)
+                        if matches!(inner.as_ref(), Pattern::Var(v) if v == "x")),
+                    "expected Pattern::Bang(Var x), got {:?}",
+                    arms[0].pattern
+                );
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_nested_in_constructor_pattern() {
+        // `Just !x` — a bang sub-pattern inside a constructor pattern.
+        match body("main = case Just 1.0 of { Just !x -> x; Nothing -> 0.0 }") {
+            Expr::Match { arms, .. } => {
+                assert!(
+                    matches!(&arms[0].pattern, Pattern::Ctor(c, args)
+                        if c == "Just"
+                            && matches!(args.as_slice(), [Pattern::Bang(_)])),
+                    "expected Ctor(Just, [Bang …]), got {:?}",
+                    arms[0].pattern
+                );
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spaced_bang_pattern_is_rejected() {
+        // Bang is always attached: `! x` is not a bang pattern.
+        let msg = parse_err("main = case 1.0 of { ! x -> x }");
+        assert!(
+            msg.contains("bang"),
+            "expected a bang-attachment diagnostic, got: {msg}"
+        );
+        // Nor is a spaced bang a parameter marker.
+        assert!(parse_err("main ! x = 1.0").contains("expected"));
     }
 
     #[test]

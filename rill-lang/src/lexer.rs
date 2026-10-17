@@ -15,8 +15,9 @@ pub enum Tok {
     Str(String),
     /// `_`
     Wire,
-    /// `!`
-    Cut,
+    /// `!` — a bang marker (`!x`) when attached to its operand, otherwise the
+    /// infix indexing operator (`a ! i`).
+    Bang,
     /// `:`
     Colon,
     /// `<:`
@@ -463,7 +464,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             b'*' => Tok::Star,
             b'/' => Tok::Slash,
             b'%' => Tok::Percent,
-            b'!' => Tok::Cut,
+            b'!' => Tok::Bang,
             b'?' => Tok::Question,
             b'(' => Tok::LParen,
             b')' => Tok::RParen,
@@ -521,7 +522,7 @@ mod tests {
                 Tok::Star,
                 Tok::Slash,
                 Tok::Percent,
-                Tok::Cut,
+                Tok::Bang,
                 Tok::Question,
                 Tok::LParen,
                 Tok::RParen,

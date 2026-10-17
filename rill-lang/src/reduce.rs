@@ -21,6 +21,7 @@ pub(crate) fn pattern_vars(p: &Pattern) -> Vec<String> {
                 out.extend(pattern_vars(a));
             }
         }
+        Pattern::Bang(inner) => out.extend(pattern_vars(inner)),
         _ => {}
     }
     out
@@ -208,6 +209,7 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
             body,
             where_defs,
             sig,
+            bang,
             span,
         } => Def::Eval {
             name: name.clone(),
@@ -218,6 +220,7 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
                 .map(|w| substitute_def(w, subst))
                 .collect(),
             sig: sig.clone(),
+            bang: *bang,
             span: *span,
         },
         other => other.clone(),
@@ -264,14 +267,14 @@ fn unary_reduct<'a>(
     cafs: &HashSet<String>,
 ) -> Option<(Option<&'a str>, &'a str, &'a Expr)> {
     match callee {
-        Expr::Lambda { params, body, .. } if params.len() == 1 => {
+        Expr::Lambda { params, body, .. } if params.len() == 1 && !params[0].bang => {
             Some((None, params[0].name.as_str(), body.as_ref()))
         }
         Expr::Ref(name, _) if !cafs.contains(name) => {
             let def = ctx.get(name.as_str())?;
             if def.params().is_empty() && !def.is_decl() {
                 if let Expr::Lambda { params, body, .. } = def.body() {
-                    if params.len() == 1 {
+                    if params.len() == 1 && !params[0].bang {
                         return Some((Some(name.as_str()), params[0].name.as_str(), body.as_ref()));
                     }
                 }
@@ -305,6 +308,7 @@ fn reduce_def(
             name,
             params,
             sig,
+            bang,
             span,
             ..
         } => Def::Eval {
@@ -313,6 +317,7 @@ fn reduce_def(
             body: reduced_body,
             where_defs: reduced_where,
             sig: sig.clone(),
+            bang: *bang,
             span: *span,
         },
         _ => def.clone(),
@@ -337,11 +342,13 @@ fn reduce_expr(
                 // lowering can lift it once instead of duplicating state here.
                 e.clone()
             } else if let Some(def) = ctx.get(name) {
-                if def.params().is_empty() && !def.is_decl() {
-                    // Local binding with no params — inline the body
+                if def.params().is_empty() && !def.is_decl() && !def.is_bang() {
+                    // Local binding with no params — inline the body. A bang
+                    // binding (`let !x = e`) is NOT inlined: its force happens
+                    // at the binding point, which only lowering can emit.
                     reduce_expr(def.body(), ctx, cafs, reducing, mode)
                 } else {
-                    // Has unapplied λ-params — can't inline, leave as ref
+                    // Has unapplied λ-params, or is a bang binding — leave as ref
                     e.clone()
                 }
             } else {
@@ -398,6 +405,16 @@ fn reduce_expr(
                     // keep the Apply so lowering emits a curry closure.
                     // β-reducing it would substitute the applied args and leave
                     // the remaining parameters dangling in the body.
+                    Expr::Apply {
+                        name: name.clone(),
+                        args: reduced_args,
+                        span: *span,
+                    }
+                } else if def.params().iter().any(|p| p.bang) {
+                    // A bang parameter forces its argument on entry. Inlining
+                    // the body would drop that force (the argument may be
+                    // unused in the body), so the call is left for lowering to
+                    // dispatch through the closure fragment.
                     Expr::Apply {
                         name: name.clone(),
                         args: reduced_args,
@@ -502,18 +519,25 @@ fn reduce_expr(
                 span: *span,
             }
         }
-        Expr::Let {
-            defs,
-            body,
-            span: _,
-        } => {
+        Expr::Let { defs, body, span } => {
             // Reduce let defs, build context, reduce body
             let reduced_defs: Vec<Def> = defs
                 .iter()
                 .map(|d| reduce_def(d, ctx, cafs, reducing, mode))
                 .collect();
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
-            reduce_expr(body, &let_ctx, cafs, reducing, mode)
+            let reduced_body = reduce_expr(body, &let_ctx, cafs, reducing, mode);
+            if defs.iter().any(|d| d.is_bang()) {
+                // A bang binding forces its right-hand side at the binding
+                // point: keep the `let` node so lowering can emit the force.
+                Expr::Let {
+                    defs: reduced_defs,
+                    body: Box::new(reduced_body),
+                    span: *span,
+                }
+            } else {
+                reduced_body
+            }
         }
         Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
