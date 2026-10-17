@@ -108,11 +108,12 @@ pub enum Value {
         /// Sorted element arena refs.
         elems: Vec<ArenaRef>,
     },
-    /// A first-class immutable array: stored bounds (an ordinary value: a
-    /// `Pair i i` record — `Int` bounds or a `Pair Int Int` bounds pair for
-    /// matrices) plus flat elements in `lo..=hi` order, row-major for
-    /// multi-dim arrays. Boxed and strict: the elements are arena refs (like
-    /// [`Value::List`]).
+    /// A first-class immutable array: stored bounds as an ordinary value (a
+    /// `Pair i i` record where each index is an `Int`; a matrix's index type
+    /// is itself `Pair Int Int`, so its bounds nest as
+    /// `Pair (Pair Int Int) (Pair Int Int)`) plus flat elements in `lo..=hi`
+    /// order, row-major for multi-dim arrays. Boxed and strict: the elements
+    /// are arena refs (like [`Value::List`]).
     Array {
         /// Stored bounds as an ordinary value (`Pair i i`).
         bounds: ArenaRef,
@@ -287,6 +288,9 @@ impl ArenaValue for Value {
             Value::Record(fields) | Value::Sum(_, fields) => Some(std::mem::take(fields)),
             Value::List { elems } => Some(std::mem::take(elems)),
             Value::Set { elems } => Some(std::mem::take(elems)),
+            // The pooled payload is EXACTLY the element refs: `bounds` is
+            // copied by value, never pooled — symmetric with the shape arm in
+            // `clone_pooled` (the `(4, …)` slot), keeping take/put paired.
             Value::Array { elems, .. } => Some(std::mem::take(elems)),
             _ => None,
         }
@@ -364,14 +368,23 @@ mod tests {
             })
             .unwrap();
 
-        let cloned = a.clone_pooled(arr).unwrap();
-        match cloned {
+        let mut cloned = a.clone_pooled(arr).unwrap();
+        match &cloned {
             Value::Array { bounds: b, elems } => {
-                assert_eq!(b, bounds);
-                assert_eq!(elems, vec![e0, e1, e2]);
+                assert_eq!(*b, bounds);
+                assert_eq!(*elems, vec![e0, e1, e2]);
             }
             other => panic!("expected Array, got {other:?}"),
         }
+        // Round-trip the pooled payload: detach must return EXACTLY the three
+        // element refs (an `elems.len() + 1`/bounds-in-payload regression
+        // yields four refs here and fails immediately). This is the invariant
+        // that keeps the pool take/put pair symmetric with `clone_pooled`.
+        assert_eq!(cloned.detach_payload(), Some(vec![e0, e1, e2]));
+        // The detached payload is the pooled buffer: returning it (what
+        // `Arena::drop_ref` does via `put_buf`) keeps the pool reusable.
+        a.put_buf(vec![e0, e1, e2]);
+        assert!(a.take_buf(3).is_ok(), "pool re-take after put must succeed");
     }
 
     #[test]

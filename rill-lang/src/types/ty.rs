@@ -474,9 +474,9 @@ data STState;
 -- An opaque cell handle. Only `newSTRef` creates one; the region phantom `s`
 -- keeps it from escaping its `runST` region.
 data STRef s a;
--- An opaque mutable-array handle. Only the `newArray` effects create one; like
--- `STRef`, the region phantom `s` keeps an `STArray` from escaping its `runST`/
--- `runSTArray` region (frozen via `runSTArray`).
+-- An opaque mutable-array handle, mirroring `STRef`. The ST-effects builtins
+-- that create one and the `runSTArray` freeze land in a later task; the
+-- region phantom `s` keeps an `STArray` from escaping its `runST` region.
 data STArray s i e;
 -- The state-threading monad: a state token in, the advanced token AND the
 -- result out. `runST` supplies the initial token and discards the final one.
@@ -1963,6 +1963,11 @@ mod ctor_table_tests {
         assert!(env.ctor_arity("Array") == Some(2)); // i e
         assert!(env.ctor_arity("STArray") == Some(3)); // s i e
         assert!(env.ctor_arity("Nope").is_none());
+        // `STArray`'s arity lives in BOTH tables: `ctor_kinds` above AND the
+        // abstract prelude declaration (`data STArray s i e;` registers
+        // `data_arities`). Pin the declarations to each other so they cannot
+        // drift apart.
+        assert_eq!(env.data_arities.get("STArray"), Some(&3));
     }
 
     #[test]

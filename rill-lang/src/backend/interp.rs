@@ -783,6 +783,9 @@ fn kind_rank(v: &Value) -> i8 {
         Nil => 15,
         Buffer(_) => 16,
         Opaque(_) => 17,
+        // Array sits at the end rather than in the collection cluster: a fresh
+        // variant, so appending preserves every existing rank and keeps all
+        // previously-built values' cross-kind order stable.
         Array { .. } => 18,
         BuiltinCallable { .. } => 10,
     }
