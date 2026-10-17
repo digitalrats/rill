@@ -295,8 +295,10 @@ documents without writing Rust code.
 }
 ```
 
-`auto_start` — when `true`, sends `MidiTransport::Start` automatically
-when the system launches.
+`auto_start` — when `true`, sends `MidiTransport::Start` to the clock output at
+construction. No clock ticks reach the clock output afterwards: the modular host
+wires no clock source, so the control-module plane is currently inert (see
+[Patchbay & rack architecture](../architecture/patchbay-rack.md)).
 
 Both variants use the existing `ModuleFactory` infrastructure:
 `MidiConstructor` (registered as `"midi"`) and `ClockConstructor`
@@ -342,33 +344,30 @@ use rill_adrift::modular::{ModularSystem, ModularConfig};
 use rill_adrift::modular::serialization::{
     ModularSystemDef, RackDef, ModuleDef,
 };
-use rill_graph::serialization::GraphDef;
 use rill_patchbay::module_def::ClockDef;
+
+let mut rack = RackDef::new(
+    "main",
+    "main = do { write (Just \"hi\") stdout; return () };",
+);
+rack.modules = vec![ModuleDef::Clock(ClockDef {
+    backend: "midir".into(),
+    port_name: "rill-clock".into(),
+    auto_start: true,
+})];
 
 let def = ModularSystemDef {
     format_version: "rill/1".into(),
     sample_rate: 48000.0,
     block_size: 256,
-    racks: vec![RackDef {
-        name: "main".into(),
-        graph: GraphDef { /* ... */ },
-        modules: vec![
-            ModuleDef::Clock(ClockDef {
-                backend: "midir".into(),
-                port_name: "rill-clock".into(),
-                auto_start: true,
-            }),
-        ],
-        automatons: vec![],
-        mappings: vec![],
-        description: None,
-    }],
+    racks: vec![rack],
     description: None,
 };
 
 let mut system = ModularSystem::<256>::new(ModularConfig::default());
 system.launch(&def).unwrap();
-// Clock ticks flow automatically via Rack broadcast
+// The clock module is constructed, but no clock ticks are broadcast: the
+// control-module host is currently inert.
 ```
 
 ## Feature flags

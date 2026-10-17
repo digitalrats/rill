@@ -3,6 +3,11 @@
 //! A [`ModularSystemDef`] describes a modular processing system — one or more
 //! racks, each with a rill-lang program and control modules — in a single
 //! self-contained JSON document.
+//!
+//! The document round-trips through JSON and validates on load; it does not
+//! imply a live control plane. The current host constructs control modules but
+//! wires no clock or parameter source, so a servo, sensor, or clock has nothing
+//! to drive (see the [`modular`](super) module docs).
 
 use std::collections::HashMap;
 
@@ -21,9 +26,11 @@ use rill_patchbay::serialization::{AutomatonDef, ClockDef, MappingDef, SensorDef
 pub enum ModuleDef {
     /// MIDI clock output module.
     Clock(ClockDef),
-    /// Servo — bridges an automaton (LFO, envelope, etc.) to a program parameter.
+    /// Servo — an automaton → parameter bridge. Constructed, but not driven:
+    /// no clock ticks reach it in the current inert module host.
     Servo(ServoDef),
-    /// Sensor — external input source (MIDI, OSC, etc.).
+    /// Sensor — external input source (MIDI, OSC, etc.). Constructed, but the
+    /// current host wires no consumer for its events.
     Sensor(SensorDef),
     /// Custom module constructed via the module factory.
     Custom {
@@ -55,10 +62,12 @@ pub struct RackDef {
     /// Control automatons (LFO, envelope, sequencer) powering servos.
     #[serde(default)]
     pub automatons: Vec<AutomatonDef>,
-    /// Rack modules — servos, sensors, clocks, and custom modules.
+    /// Rack modules — servos, sensors, clocks, and custom modules. They are
+    /// constructed at launch; the current host does not drive them.
     #[serde(default)]
     pub modules: Vec<ModuleDef>,
-    /// Parameter-to-UI/controller mappings.
+    /// Parameter-to-UI/controller mappings. Reserved for the future control
+    /// plane: nothing consumes them in the current inert module host.
     #[serde(default)]
     pub mappings: Vec<MappingDef>,
     /// Optional human-readable description of the rack.

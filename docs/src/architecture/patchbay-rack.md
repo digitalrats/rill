@@ -102,7 +102,10 @@ ModuleDef::Sensor(SensorDef::Osc {
 
 **Behaviour:** `ModularSystem::launch()` dispatches each `ModuleDef::Sensor` to
 the appropriate constructor (`MidiConstructor` or `OscConstructor`), which spawns
-a sensor + mapping-only servo pair.
+a sensor + mapping-only servo pair. The modules are **constructed but not
+driven**: no clock or parameter source is wired in the current modular host, so
+the sensor's events have no consumer and the servo never steps. The module path
+is reserved for a future control/audio plan.
 
 ### MidiInputDef (legacy, superseded by SensorDef)
 

@@ -18,7 +18,10 @@ use std::collections::HashMap;
 /// Register all built-in module constructors into a `ModuleFactory`.
 ///
 /// Called once at application startup. Modules are constructed on-demand
-/// when a `RackDef` or `PatchbayDef` is processed.
+/// when a `RackDef` or `PatchbayDef` is processed. Registration only makes a
+/// module constructible — the modular host currently wires no clock or
+/// parameter source, so constructed modules are not driven (the control plane
+/// is inert; see [`modular`](crate::modular)).
 pub fn register_modules(factory: &mut rill_patchbay::module_factory::ModuleFactory) {
     factory.register(rill_patchbay::servo_constructor::ServoConstructor);
     #[cfg(feature = "midi")]

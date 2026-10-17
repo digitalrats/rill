@@ -38,10 +38,10 @@ cargo build --features "debug"
 For ModularSystem-based applications (using `rill-adrift`):
 
 ```bash
-cargo run --example chiptune_stc --features "lofi,pipewire,io,debug" -- --file music.stc pipewire
+cargo run --example program --features "debug" -- Alice
 ```
 
-The `debug` feature activates `rill-lang/debug`, `rill-graph/debug`, `rill-telemetry/debug`, and `rill-patchbay/debug`.
+The `debug` feature on `rill-adrift` activates `rill-telemetry/debug`, `rill-patchbay/debug`, and `rill-lang/debug`. It does not add graph probes or a parameter command log to the modular host.
 
 ## Signal Probes
 
@@ -68,7 +68,12 @@ Probes are identified by the node name (`node_0`, `node_1`, etc.) and report bot
 
 ### Enabling Specific Probes
 
-Probes are auto-enabled in `ModularSystem::launch()` for each graph node. To enable/disable individual probes, use `rill-analyzer`:
+The modular host (`ModularSystem`) does **not** wire signal probes or auto-enable
+them: rack programs run through the IO runner, which has no graph probe points
+and no parameter plane for the control modules. Graph probes remain available on
+the signal-graph path (`rill_graph`/`rill-analyzer`), not through
+`ModularSystem::launch()`. To enable/disable individual probes there, use
+`rill-analyzer`:
 
 ```
 (rla) enable <probe_id>
@@ -157,12 +162,17 @@ If the target ends with `.json`, it's treated as a serialized graph and launched
 When `debug` feature is enabled, `ModularSystem::launch()` adds lifecycle logging via the `log` crate:
 
 ```
-rill-adrift: launching rack 'chiptune_stc' — 1 nodes, 1 modules
-rill-adrift: rack 'chiptune_stc' engine built — 1 programs
-rill-adrift: rack 'chiptune_stc' backend 'pipewire' started
+rill-adrift: launching rack 'greeter' — 58 program bytes, 0 modules
+rill-adrift: rack 'greeter' program compiled
+rill-adrift: rack 'greeter' program finished
 rill-adrift: system launched with 1 rack(s)
 rill-adrift: stopping system
+rill-adrift: stopping rack 'greeter'
+rill-adrift: system stopped
 ```
+
+A program that fails at run time logs `rack '<name>' run: <error>` and is also
+reported by `ModularSystem::rack_run_error` after `stop()`.
 
 Use `RUST_LOG=info` to see these logs, or integrate with your preferred logger implementation.
 

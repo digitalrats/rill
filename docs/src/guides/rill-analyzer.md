@@ -38,7 +38,7 @@ Options:
 rill-analyzer attach 12345
 ```
 
-Connects to PID 12345 through the shared memory region at `/dev/shm/rill-debug-12345`. The target process must be compiled with `--features debug` and have created the shmem region (automatic with `ModularSystem::launch()` or manual via `rill_adrift::debug_init::init_shmem()`).
+Connects to PID 12345 through the shared memory region at `/dev/shm/rill-debug-12345`. The target process must be compiled with `--features debug` and must have created the shmem region: `ModularSystem::launch()` does **not** create it automatically — call `rill_adrift::debug_init::init_shmem()` (or `init_shmem_from_env()` in a child launched by `rill-analyzer`) explicitly.
 
 Attach flow:
 1. Opens the shmem region

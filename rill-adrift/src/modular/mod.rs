@@ -4,6 +4,21 @@
 //! rill-lang program (`main : (String…) -> IO ()`) that the IO runner executes
 //! to completion on the rack's own thread, plus optional control modules
 //! (servos, sensors, clocks) registered through the patchbay module factory.
+//!
+//! ## The control-module host is currently inert
+//!
+//! Control modules are constructed and registered with their rack's actor, but
+//! no clock or parameter source is wired: a servo, sensor, or clock receives no
+//! `ClockTick`, so nothing steps automatons, samples sensors, or writes
+//! parameters. Rack programs run to completion through the IO runner and do
+//! not expose a parameter plane to the modules. The module path is retained
+//! for the deferred control/audio plan; [`launch`](ModularSystem::launch) only
+//! validates that each module can be built.
+//!
+//! Consequently a launched system executes rack programs and surfaces their
+//! outcome (compile errors from `launch`, run errors through
+//! [`rack_run_error`](ModularSystem::rack_run_error)); it does not yet drive a
+//! control plane.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,9 +63,11 @@ pub enum ModularError {
 
 /// A modular program host that manages one or more [`RackCase`] instances.
 ///
-/// Each rack runs its own rill-lang program and owns its control modules
-/// (automatons, servos, sensors). The system provides shared infrastructure:
-/// the actor system and a module factory for custom rack modules.
+/// Each rack runs its own rill-lang program. Its control modules
+/// (automatons, servos, sensors) are constructed but **not driven** — the
+/// control plane is inert until the deferred control/audio plan (see the
+/// module docs). The system provides shared infrastructure: the actor system
+/// and a module factory for custom rack modules.
 pub struct ModularSystem<const BUF: usize = 64> {
     #[cfg_attr(not(feature = "serialization"), allow(dead_code))]
     actor_system: Arc<ActorSystem>,
@@ -82,7 +99,23 @@ impl<const BUF: usize> ModularSystem<BUF> {
         &mut self.module_factory
     }
 
-    /// Launch — compile and run every rack's program, register rack modules.
+    /// The run-time error reported by a rack's program thread, if the program
+    /// failed after a successful [`launch`](Self::launch).
+    ///
+    /// The error is written when the run returns; call [`stop`](Self::stop)
+    /// (which joins the rack thread) before reading it.
+    pub fn rack_run_error(&self, name: &str) -> Option<String> {
+        self.cases.get(name).and_then(RackCase::run_error)
+    }
+
+    /// Launch — compile and run every rack's program, construct rack modules.
+    ///
+    /// Returns [`ModularError::Program`] when a rack's program does not
+    /// compile, and [`ModularError::Rack`] when a rack's control module cannot
+    /// be constructed. A module is only constructed (never driven): the
+    /// control plane is inert (see the module docs). A program that fails at
+    /// run time does not fail `launch` — it finishes on the rack thread and is
+    /// reported by [`rack_run_error`](Self::rack_run_error).
     #[cfg(feature = "serialization")]
     pub fn launch(mut self, def: &ModularSystemDef) -> Result<Self, ModularError> {
         for rd in &def.racks {
@@ -126,7 +159,7 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
             if let Some(case) = self.cases.get_mut(&rd.name) {
                 let rack_name = rack_name.clone();
-                case.start(move |_running| {
+                case.start(move |_running, run_error| {
                     #[cfg(feature = "lofi")]
                     let registry = crate::lang_builtins::full_registry_f32();
                     #[cfg(not(feature = "lofi"))]
@@ -152,7 +185,12 @@ impl<const BUF: usize> ModularSystem<BUF> {
 
                     match runner.run() {
                         Ok(()) => log::info!("rill-adrift: rack '{}' program finished", rack_name),
-                        Err(e) => log::error!("rill-adrift: rack '{}' run: {e}", rack_name),
+                        Err(e) => {
+                            log::error!("rill-adrift: rack '{}' run: {e}", rack_name);
+                            if let Ok(mut slot) = run_error.lock() {
+                                *slot = Some(e.to_string());
+                            }
+                        }
                     }
                     for line in runner.stdout() {
                         log::info!("rill-adrift: rack '{}': {line}", rack_name);
@@ -191,11 +229,13 @@ impl<const BUF: usize> ModularSystem<BUF> {
                             .unwrap()
                             .insert(pb_def.type_name().to_string(), actor_ref);
                     }
-                    Err(e) => log::warn!(
-                        "rill-adrift: rack '{}' module construct '{}': {e}",
-                        rd.name,
-                        pb_def.type_name()
-                    ),
+                    Err(e) => {
+                        return Err(ModularError::Rack(format!(
+                            "rack '{}' module '{}': {e}",
+                            rd.name,
+                            pb_def.type_name()
+                        )))
+                    }
                 }
             }
         }

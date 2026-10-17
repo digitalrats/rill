@@ -1,10 +1,15 @@
 //! `ModularSystem::launch` runs each rack's rill-lang program through the IO
-//! runner and reports compile failures instead of starting a dead rack.
+//! runner and reports compile, module-construction, and (via the case) run-time
+//! failures instead of starting a dead rack.
 
 #[cfg(feature = "serialization")]
-use rill_adrift::modular::serialization::{ModularSystemDef, RackDef};
+use rill_adrift::lang::compile_runner;
 #[cfg(feature = "serialization")]
-use rill_adrift::modular::{ModularConfig, ModularSystem};
+use rill_adrift::lang_builtins::full_registry;
+#[cfg(feature = "serialization")]
+use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
+#[cfg(feature = "serialization")]
+use rill_adrift::modular::{ModularConfig, ModularError, ModularSystem};
 
 #[cfg(feature = "serialization")]
 fn system_def(rack: RackDef) -> ModularSystemDef {
@@ -39,24 +44,68 @@ fn launch_reports_a_program_compile_error() {
         Err(e) => e,
     };
     assert!(
-        matches!(err, rill_adrift::modular::ModularError::Program(_)),
+        matches!(err, ModularError::Program(_)),
         "expected a Program error, got {err:?}"
     );
 }
 
+/// Bind the rack arguments through the runner directly and pin the exact
+/// console: a no-op `set_args` (or a broken binding) leaves `name` as the empty
+/// string, so only the exact output proves the binding. Asserting that
+/// `launch` is `Ok` cannot: an unbound λ-parameter reads as `""` and the
+/// program still compiles and runs.
 #[cfg(feature = "serialization")]
 #[test]
-fn launch_binds_rack_args() {
-    // `main name` binds the first rack argument; a missing argument defaults to
-    // the empty string rather than failing.
+fn set_args_binds_main_string_parameters() {
+    let src = "main name = do { write (Just (concat_string \"hi \" name)) stdout; return () };";
+    let registry = full_registry::<f32>();
+    let mut runner = compile_runner::<f32, 256>(src, &registry, 44_100.0)
+        .expect("the greeter program must compile");
+    runner.set_args(&["rill".to_string()]);
+    runner.run().expect("the bound program must run");
+    assert_eq!(runner.stdout(), ["hi rill"]);
+}
+
+/// A module that cannot be constructed must fail the launch: reporting success
+/// while the rack has no working module would hide the failure.
+#[cfg(feature = "serialization")]
+#[test]
+fn launch_reports_a_module_construct_error() {
     let mut rack = RackDef::new(
-        "greeter",
-        "main name = do { write (Just (concat_string \"hi \" name)) stdout; return () };",
+        "noop",
+        "main = do { write (Just \"hi\") stdout; return () };",
     );
-    rack.args.push("rill".to_string());
-    let def = system_def(rack);
+    rack.modules.push(ModuleDef::Custom {
+        type_name: "no_such_module".to_string(),
+        params: Default::default(),
+    });
+    let err = match ModularSystem::<256>::new(ModularConfig::default()).launch(&system_def(rack)) {
+        Ok(_) => panic!("an unconstructible module must fail the launch"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, ModularError::Rack(_)),
+        "expected a Rack error, got {err:?}"
+    );
+}
+
+/// `main = 5.0` compiles, but it is not an executable `IO ()` action, so the
+/// run fails *after* `launch` has already reported success (the rack thread is
+/// asynchronous). `stop()` joins the thread and the failure is then readable
+/// from the case.
+#[cfg(feature = "serialization")]
+#[test]
+fn launch_surfaces_a_run_error_through_the_case() {
+    let def = system_def(RackDef::new("not_io", "main = 5.0;"));
     let mut system = ModularSystem::<256>::new(ModularConfig::default())
         .launch(&def)
-        .expect("a bound program must launch");
+        .expect("the program compiles, so the launch itself succeeds");
     system.stop();
+    let err = system
+        .rack_run_error("not_io")
+        .expect("the run failure must be reported by the case");
+    assert!(
+        err.contains("not an executable"),
+        "unexpected run error: {err}"
+    );
 }

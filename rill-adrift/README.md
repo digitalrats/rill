@@ -20,14 +20,19 @@ crates for signal processing application development.
 | `jack` | JACK backend (implies `io`) | no |
 | `pipewire` | PipeWire backend (implies `io`) | no |
 | `midi` | MIDI passthrough to `rill-patchbay` + `rill-io` | no |
-| `debug` | Diagnostic & debug infrastructure (probes, command log, IPC, lifecycle logging) | no |
+| `debug` | Shared-memory IPC (`debug_init`) for `rill-analyzer` attach + lifecycle logging. The modular host does not auto-create the shmem region or wire probes/command logs | no |
 
 ### Debug infrastructure (`debug` feature)
 
 - **`debug_init`** — `init_shmem()` and `init_shmem_from_env()` create the shared
-  memory region for `rill-analyzer` attach/launch.
+  memory region for `rill-analyzer` attach/launch. Call `init_shmem()` explicitly;
+  `ModularSystem::launch` does not create it for you.
 - **Lifecycle logging** — `ModularSystem` logs rack creation, program
-  compilation/execution, and shutdown via the `log` crate.
+  compilation/execution, run-time failures, and shutdown via the `log` crate.
+- **Control modules are inert** — modules declared in a rack are constructed at
+  launch, but no clock or parameter source is wired: servos, sensors, and clocks
+  receive no `ClockTick` and drive nothing. The module path is reserved for a
+  future control plan; see the `modular` module docs.
 
 ## Usage
 
@@ -41,6 +46,15 @@ let system = ModularSystem::<BUF_SIZE>::new(ModularConfig::default());
 // rack's rill-lang `main : (String…) -> IO ()` program runs to completion on
 // its own thread through the IO runner.
 ```
+
+`launch` returns an error when a rack program does not compile
+(`ModularError::Program`) or when a rack control module cannot be constructed
+(`ModularError::Rack`). A program that fails at run time is reported through
+`ModularSystem::rack_run_error` after `stop()` has joined the rack thread.
+
+The control-module host is currently **inert**: modules are constructed but no
+clock/parameter source drives them, so servos, sensors, and clocks do nothing.
+That path is reserved for a future control/audio plan.
 
 ## Always-on core (no feature gate)
 
