@@ -306,6 +306,43 @@ fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
     }
 }
 
+/// The `(i, e)` halves of an `STArray s i e` value type.
+///
+/// The index falls back to the builtin `Int` (the stored bounds are `Int` pairs
+/// on every path the language builds) and the element to the runtime's numeric
+/// value type — the same fallbacks [`array_index_ty`]/[`array_elem_ty`] use for
+/// a frozen `Array i e`.
+fn starray_handle_types(t: Option<&ValueTy>) -> (ValueTy, ValueTy) {
+    let args = match t {
+        Some(ValueTy::Data(name, args)) | Some(ValueTy::App(name, args))
+            if name == "STArray" && args.len() == 3 =>
+        {
+            Some(args)
+        }
+        _ => None,
+    };
+    let index = args
+        .and_then(|inner| inner.get(1).cloned())
+        .unwrap_or(ValueTy::Int);
+    let elem = concrete_or_float(
+        args.and_then(|inner| inner.get(2).cloned())
+            .unwrap_or(ValueTy::Float),
+    );
+    (index, elem)
+}
+
+/// The operand count of an STArray effect op (`newArrayFlat` takes the bounds,
+/// the flat size, and the initial element; `readArrayFlat` the handle and the
+/// flat offset; the writers one more than that; the readers none).
+fn starray_op_arity(op: ValueEffectOp) -> usize {
+    match op {
+        ValueEffectOp::NewArrayFlat => 3,
+        ValueEffectOp::ReadArrayFlat => 2,
+        ValueEffectOp::WriteArrayFlat | ValueEffectOp::ModifyArrayFlat => 3,
+        _ => 1,
+    }
+}
+
 /// Re-associate a right-nested `ApplyExpr` chain whose innermost callee is a
 /// name into the equivalent `Expr::Apply` argument list.
 ///
@@ -723,6 +760,106 @@ impl<'a> Lowerer<'a> {
             rec,
             ValueTy::Data("ST".into(), vec![ValueTy::Void, payload]),
         )
+    }
+
+    /// Lower `runSTArray (fn s -> body)` — the freezing sibling of `runST`.
+    ///
+    /// Like `runST`, the phantom-`s` lambda is dropped at lowering: the body is
+    /// the region computation and the emitted `RunSTArray` effect freezes its
+    /// `STArray` result into an immutable `Array i e`. Inference already
+    /// rejected a body that is not an `ST s (STArray s i e)` computation and
+    /// recorded the frozen result type in `runst_payload_tys`.
+    fn lower_runst_array(
+        &mut self,
+        call_args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if call_args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: "runSTArray expects 1 argument".into(),
+                span,
+            });
+        }
+        let Expr::Lambda { body: lam, .. } = &call_args[0] else {
+            return Err(CompileError::Type {
+                msg: "runSTArray expects a parenthesized lambda `fn s -> body`".into(),
+                span,
+            });
+        };
+        let Some(payload) = self.runst_payload_tys.get(&(span.start, span.end)).cloned() else {
+            return Err(CompileError::Type {
+                msg: "runSTArray body must be an `ST s (STArray s i e)` computation".into(),
+                span,
+            });
+        };
+        let (body_reg, _) = self.lower_value_expected(lam, None)?;
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueEffectOp {
+            dst,
+            op: ValueEffectOp::RunSTArray,
+            args: vec![body_reg],
+        });
+        Ok((dst, concrete_or_float(payload)))
+    }
+
+    /// Lower one STArray primitive (`newArrayFlat` … `getElems`): the operand
+    /// registers go to the effect op and the result is wrapped in the `ST s a`
+    /// record, exactly like the `STRef` family.
+    ///
+    /// The payload type comes from the operands: `newArrayFlat` derives the
+    /// handle's `i` from its bounds operand and `e` from the initial element,
+    /// every other operation reads both off the handle operand.
+    fn lower_starray_effect(
+        &mut self,
+        name: &str,
+        op: ValueEffectOp,
+        call_args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let arity = starray_op_arity(op);
+        if call_args.len() != arity {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "`{name}` expects {arity} argument(s), got {}",
+                    call_args.len()
+                ),
+                span,
+            });
+        }
+        let mut regs = Vec::with_capacity(arity);
+        let mut arg_tys = Vec::with_capacity(arity);
+        for a in call_args {
+            let (r, ty) = self.lower_value(a)?;
+            regs.push(r);
+            arg_tys.push(ty);
+        }
+        let (index, elem) = if matches!(op, ValueEffectOp::NewArrayFlat) {
+            (
+                pair_index_ty(arg_tys.first()),
+                concrete_or_float(arg_tys.get(2).cloned().unwrap_or(ValueTy::Float)),
+            )
+        } else {
+            starray_handle_types(arg_tys.first())
+        };
+        let payload = if matches!(op, ValueEffectOp::NewArrayFlat) {
+            ValueTy::Data("STArray".into(), vec![ValueTy::Void, index.clone(), elem])
+        } else if matches!(op, ValueEffectOp::ReadArrayFlat) {
+            elem
+        } else if matches!(op, ValueEffectOp::GetArrayBounds) {
+            ValueTy::App("Pair".into(), vec![index.clone(), index])
+        } else if matches!(op, ValueEffectOp::GetArrayElems) {
+            ValueTy::App("List".into(), vec![elem])
+        } else {
+            // `writeArrayFlat` / `modifyArrayFlat`.
+            ValueTy::Void
+        };
+        let effect = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueEffectOp {
+            dst: effect,
+            op,
+            args: regs,
+        });
+        Ok(self.finish_st_effect(effect, payload))
     }
 
     /// Lower `e` as a LAZY argument: in complete mode, wrap it in a
@@ -1406,6 +1543,15 @@ impl<'a> Lowerer<'a> {
                     });
                     return Ok((dst, concrete_or_float(payload)));
                 }
+                // `runSTArray (fn s -> body)`: the freezing sibling of `runST`.
+                // Its signature `(forall s. ST s (STArray s i e)) -> Array i e`
+                // carries the same type-level-only phantom, so lowering drops
+                // the lambda and emits the region computation with the
+                // `RunSTArray` effect: running it freezes the region's STArray
+                // into an immutable `Array i e`.
+                if name == "runSTArray" {
+                    return self.lower_runst_array(call_args, *span);
+                }
                 // ST cell primitives (`STD_PRELUDE`): `newSTRef`/`readSTRef`/
                 // `writeSTRef`/`modifySTRef` lower to a primitive effect
                 // closure wrapped in the `ST s a` record (the `unST` field).
@@ -1484,6 +1630,23 @@ impl<'a> Lowerer<'a> {
                         args: regs,
                     });
                     return Ok(self.finish_st_effect(effect, payload));
+                }
+                // STArray primitives (`builtin_sigs`): the flat mutable-array
+                // operations mirror the STRef family — each lowers to a
+                // primitive effect closure wrapped in the `ST s a` record.
+                // Their INDEX math lives in the language (the `Ix` class lands
+                // in a later task): `newArrayFlat` takes an already-computed
+                // flat size and the offsets are plain `Int`s.
+                if let Some(op) = match name.as_str() {
+                    "newArrayFlat" => Some(ValueEffectOp::NewArrayFlat),
+                    "readArrayFlat" => Some(ValueEffectOp::ReadArrayFlat),
+                    "writeArrayFlat" => Some(ValueEffectOp::WriteArrayFlat),
+                    "modifyArrayFlat" => Some(ValueEffectOp::ModifyArrayFlat),
+                    "getBounds" => Some(ValueEffectOp::GetArrayBounds),
+                    "getElems" => Some(ValueEffectOp::GetArrayElems),
+                    _ => None,
+                } {
+                    return self.lower_starray_effect(name, op, call_args, *span);
                 }
                 // io-streams primitives. Each action lowers to an `IO a`
                 // record whose single `unIO` field is a primitive effect
@@ -3293,11 +3456,21 @@ impl<'a> Lowerer<'a> {
         collection
             || self.env.foreign_sigs.contains_key(name)
             || name == "runST"
+            || name == "runSTArray"
             // The ST cell primitives are lowered to `ValueEffectOp`s in
             // `Expr::Apply` — never captured as free variables by a lambda.
             || matches!(
                 name,
-                "newSTRef" | "readSTRef" | "writeSTRef" | "modifySTRef"
+                "newSTRef"
+                    | "readSTRef"
+                    | "writeSTRef"
+                    | "modifySTRef"
+                    | "newArrayFlat"
+                    | "readArrayFlat"
+                    | "writeArrayFlat"
+                    | "modifyArrayFlat"
+                    | "getBounds"
+                    | "getElems"
             )
             // Value-track builtins lowered in `Expr::Apply` (one-pole
             // smoothing, buffer elementwise ops): compile-time primitives, never

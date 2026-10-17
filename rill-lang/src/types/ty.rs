@@ -474,8 +474,8 @@ data STState;
 -- An opaque cell handle. Only `newSTRef` creates one; the region phantom `s`
 -- keeps it from escaping its `runST` region.
 data STRef s a;
--- An opaque mutable-array handle, mirroring `STRef`. The ST-effects builtins
--- that create one and the `runSTArray` freeze land in a later task; the
+-- An opaque mutable-array handle, mirroring `STRef`. The ST effects create one
+-- (`newArrayFlat`) and `runSTArray` freezes it into an immutable `Array`; the
 -- region phantom `s` keeps an `STArray` from escaping its `runST` region.
 data STArray s i e;
 -- The state-threading monad: a state token in, the advanced token AND the
@@ -907,6 +907,94 @@ impl TypeEnv {
                     crate::ast::TypeExpr::TFunc(vec![tv("a")], Box::new(tv("a"))),
                 ],
                 Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
+            ),
+        );
+        // The STArray primitives. Flat, type-agnostic operations mirroring the
+        // STRef family: every flat size and offset is computed by the LANGUAGE
+        // (the `Ix` class lands in a later task), so there is no `Ix i =>`
+        // constraint and no range math in the interpreter. `s` is quantified in
+        // result position exactly like the STRef signatures, which links each
+        // operation to the enclosing `runST` region's phantom — that is what
+        // makes an escaping `STArray s i e` a compile-time error.
+        //
+        //   newArrayFlat    :: Pair i i -> Int -> e -> ST s (STArray s i e)
+        //   readArrayFlat   :: STArray s i e -> Int -> ST s e
+        //   writeArrayFlat  :: STArray s i e -> Int -> e -> ST s ()
+        //   modifyArrayFlat :: STArray s i e -> Int -> (e -> e) -> ST s ()
+        //   getBounds       :: STArray s i e -> ST s (Pair i i)
+        //   getElems        :: STArray s i e -> ST s (List e)
+        let starray = |args: Vec<crate::ast::TypeExpr>| {
+            crate::ast::TypeExpr::TApp("STArray".to_string(), args)
+        };
+        let pair_of =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("Pair".to_string(), args);
+        let list_of =
+            |arg: crate::ast::TypeExpr| crate::ast::TypeExpr::TApp("List".to_string(), vec![arg]);
+        let arr_ie = || crate::ast::TypeExpr::TApp("Array".to_string(), vec![tv("i"), tv("e")]);
+        let sa_ie = || starray(vec![tv("s"), tv("i"), tv("e")]);
+        env.builtin_sigs.insert(
+            "newArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![pair_of(vec![tv("i"), tv("i")]), tv("Int"), tv("e")],
+                Box::new(forall_s(st(vec![tv("s"), sa_ie()]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "readArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie(), tv("Int")],
+                Box::new(forall_s(st(vec![tv("s"), tv("e")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "writeArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie(), tv("Int"), tv("e")],
+                Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "modifyArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![
+                    sa_ie(),
+                    tv("Int"),
+                    crate::ast::TypeExpr::TFunc(vec![tv("e")], Box::new(tv("e"))),
+                ],
+                Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "getBounds".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie()],
+                Box::new(forall_s(st(vec![tv("s"), pair_of(vec![tv("i"), tv("i")])]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "getElems".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie()],
+                Box::new(forall_s(st(vec![tv("s"), list_of(tv("e"))]))),
+            ),
+        );
+        // `runSTArray` — the freeze. Its signature is the rank-N shape of
+        // `runST` with the region's payload pinned to an `STArray`:
+        //
+        //   runSTArray :: (forall s. ST s (STArray s i e)) -> Array i e
+        //
+        // The region phantom is quantified in the ARGUMENT (like `runST`), so
+        // the body's `s` cannot escape into `Array i e`. The rank-2 application
+        // itself lives in `infer_apply_impl` (mirroring `runST`); this entry is
+        // the signature of record and the shape the application detects.
+        env.builtin_sigs.insert(
+            "runSTArray".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TForall(
+                    vec!["s".to_string()],
+                    Box::new(st(vec![tv("s"), sa_ie()])),
+                )],
+                Box::new(arr_ie()),
             ),
         );
         // IO / io-streams primitives. `IO` is the state-threading monad

@@ -53,10 +53,12 @@ pub struct TypedProgram {
     /// tape INDEX; a `Ref` absent from the map stays a name-based resource
     /// binding (the graph duplex path's externally-shared registry).
     pub tape_decls: Vec<(String, usize)>,
-    /// Span (`start`, `end`) of every `runST` application whose body is a real
-    /// `ST s a` computation → the region's payload type `a`. Lowering emits the
-    /// `RunST` effect and returns this type; the lowered `ST` record type alone
-    /// does not carry the payload (it appears only in the `unST` field's type).
+    /// Span (`start`, `end`) of every `runST` / `runSTArray` application whose
+    /// body is a real `ST s a` computation → the region's result type (`a` for
+    /// `runST`, the frozen `Array i e` for `runSTArray`). Lowering emits the
+    /// `RunST`/`RunSTArray` effect and returns this type; the lowered `ST`
+    /// record type alone does not carry the payload (it appears only in the
+    /// `unST` field's type).
     pub runst_payload_tys: HashMap<(usize, usize), ValueTy>,
     /// The evaluation mode this program was compiled under (the file pragma,
     /// or the API-supplied mode when the file carries none).
@@ -99,9 +101,10 @@ struct Ctx {
     /// retry re-registers a recursive def's scheme with value-rate channels
     /// (§: recursion is the lazy value track).
     mode: Mode,
-    /// Span (`start`, `end`) of every `runST` application whose body is a real
-    /// `ST s a` computation → the region's payload type `a`. Lowering has no
-    /// unification substitution, so this is the only record of the payload
+    /// Span (`start`, `end`) of every `runST` / `runSTArray` application whose
+    /// body is a real `ST s a` computation → the region's result type (`a` for
+    /// `runST`, the frozen `Array i e` for `runSTArray`). Lowering has no
+    /// unification substitution, so this is the only record of the result
     /// type: the `ST` record's own lowered type carries no argument (its `a`
     /// lives only inside the `unST` field type).
     runst_payload_tys: HashMap<(usize, usize), ValueTy>,
@@ -1981,6 +1984,15 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     let (params, body) = effective_def_params(def);
     let saved_locals = ctx.locals.clone();
     if params.is_empty() {
+        // Capture the pre-attempt definition environment: a failed attempt may
+        // have left nested placeholder schemes behind (an inlined instance body
+        // such as `Monad (ST s)`'s `let p = … in let q = …` registers `p` in
+        // `ctx.defs`, and the enclosing `let` only restores it on its success
+        // path). Re-inferring on top of that leak reports a bogus
+        // `duplicate definition` instead of the real error, so the retry starts
+        // from the same defs the first attempt saw.
+        let attempt_defs = ctx.defs.clone();
+        let attempt_bodies = ctx.def_bodies.clone();
         let r = infer_expr(ctx, &body);
         if r.is_err() && ctx.mode == Mode::Complete {
             // Complete mode, self-recursive local (`fibs = cons … fibs …`):
@@ -1990,15 +2002,13 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             // track is where recursion lives) and re-infer.
             let saved_subst = ctx.subst.clone();
             let saved_next = ctx.next;
-            let saved_defs = ctx.defs.clone();
-            let saved_bodies = ctx.def_bodies.clone();
+            ctx.defs = attempt_defs;
+            ctx.def_bodies = attempt_bodies;
             rerate_value(ctx, def.name(), 0, leading_lambda_count(&body));
             let retry = infer_expr(ctx, &body);
             if retry.is_err() {
                 ctx.subst = saved_subst;
                 ctx.next = saved_next;
-                ctx.defs = saved_defs;
-                ctx.def_bodies = saved_bodies;
             }
             ctx.locals = saved_locals;
             return retry.map(|ty| DefBodyTy {
@@ -4214,13 +4224,15 @@ fn infer_apply_impl(
     span: Span,
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
-    // `runST` — a built-in function whose signature `(forall s. ST s a) -> a`
-    // is registered in [`TypeEnv::builtin_sigs`]. Its single argument is a
-    // lambda `fn s -> body` where `s` is a PHANTOM type token: a fresh
-    // quantified type-constructor variable. This is rank-N application —
-    // implemented specifically for `runST`; a generic mechanism for any callee
-    // signature with a `forall`-bound argument would iterate the registered
-    // `TypeExpr`'s `TForall`-headed parameters.
+    // `runST` / `runSTArray` — built-in functions whose signatures
+    // (`(forall s. ST s a) -> a` and
+    // `(forall s. ST s (STArray s i e)) -> Array i e`) are registered in
+    // [`TypeEnv::builtin_sigs`]. Each single argument is a lambda `fn s -> body`
+    // where `s` is a PHANTOM type token: a fresh quantified type-constructor
+    // variable. This is rank-N application — implemented specifically for these
+    // two; a generic mechanism for any callee signature with a `TForall`-headed
+    // argument would iterate the registered `TypeExpr`'s `TForall`-bound
+    // parameters.
     //
     // The phantom is bound in `ctx.locals` as a VALUE channel whose vty is
     // `TyConVar(s_id)` (save/restore like the `Expr::Lambda` arm), so
@@ -4233,8 +4245,14 @@ fn infer_apply_impl(
     // when cross-kind unification bound the phantom away into an outer
     // variable (an `s_id` entry in `subst.value_map`). The phantom is erased,
     // so the region types as `ArrowTy::value_channel(a)`.
-    let is_runst = name == "runST"
-        && ctx.env.builtin_sigs.get("runST").is_some_and(|sig| {
+    //
+    // `runSTArray` differs in ONE place: its payload is BY DESIGN an
+    // `STArray s i e`, so the payload's phantom is unified with the region's
+    // (rather than rejected) and the region result becomes the frozen
+    // `Array i e` — which must still not mention the phantom.
+    let is_runst_array = name == "runSTArray";
+    let is_runst = (name == "runST" || is_runst_array)
+        && ctx.env.builtin_sigs.get(name).is_some_and(|sig| {
             matches!(
                 sig,
                 crate::ast::TypeExpr::TFunc(args, _)
@@ -4308,6 +4326,43 @@ fn infer_apply_impl(
             }
             _ => (body_vty, false),
         };
+        // `runSTArray` freezes an `STArray`, so its body has no legacy erasure:
+        // the region result must be an `STArray s i e` of THIS region. The
+        // payload is the one type allowed to mention the phantom (it is what the
+        // freeze consumes), and unifying its `s` with the region's keeps an
+        // array allocated in a nested region from being frozen here.
+        if is_runst_array {
+            let payload = ctx.subst.resolve_value(&ret_vty);
+            let (index, elem) = match (is_st, &payload) {
+                (true, ValueTy::Data(n, args) | ValueTy::App(n, args))
+                    if n == "STArray" && args.len() == 3 =>
+                {
+                    unify_value(&args[0], &ValueTy::TyConVar(s_id), &mut ctx.subst, span)?;
+                    (args[1].clone(), args[2].clone())
+                }
+                _ => {
+                    return Err(CompileError::Type {
+                        msg: "runSTArray body must produce an `ST s (STArray s i e)` computation"
+                            .into(),
+                        span,
+                    })
+                }
+            };
+            // The frozen `Array i e` LEAVES the region: neither half may mention
+            // the phantom (the same check-escaping rule as `runST`).
+            let frozen = ctx
+                .subst
+                .resolve_value(&ValueTy::App("Array".into(), vec![index, elem]));
+            if vty_mentions_tyvar(&frozen, s_id) || ctx.subst.value_map.contains_key(&s_id) {
+                return Err(CompileError::Type {
+                    msg: "ST region result escapes the phantom type s".into(),
+                    span,
+                });
+            }
+            ctx.runst_payload_tys
+                .insert((span.start, span.end), frozen.clone());
+            return Ok(ArrowTy::value_channel(frozen));
+        }
         // Check-escaping: the region result must not mention the phantom. A
         // signal-rate channel carries no value type variables (its `vty` is a
         // placeholder), so only value-rate results can escape — `resolve_value`

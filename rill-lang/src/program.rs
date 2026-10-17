@@ -255,28 +255,47 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// token threaded through the region's `ST` computation is
     /// `Value::Opaque(region id)`.
     pub(crate) regions: Vec<RegionState>,
-    /// The ST cell table. An `STRef` handle is a `Value::Opaque` whose payload
-    /// is an index into this table; a region owns the ids it allocated and
-    /// releases them on exit, so the table is truncated back after each region
-    /// and never grows across ticks.
-    pub(crate) st_cells: Vec<Option<crate::arena::ArenaRef>>,
+    /// The ST cell table. An `STRef`/`STArray` handle is a `Value::Opaque`
+    /// whose payload is an index into this table; a region owns the ids it
+    /// allocated and releases them on exit, so the table is truncated back
+    /// after each region and never grows across ticks.
+    pub(crate) st_cells: Vec<Option<StCell>>,
     /// The realized `realWorld`: the memory-stream table and captured console.
     /// `IO` actions reach it through this shared handle; the `World` token only
     /// orders them.
     pub(crate) world: std::rc::Rc<std::cell::RefCell<WorldState>>,
 }
 
-/// One running `runST` region: the STRef cells it allocated.
+/// One running `runST` region: the STRef/STArray cells it allocated.
 #[derive(Debug, Default)]
 pub(crate) struct RegionState {
     /// Global cell-table ids allocated in this region, in allocation order.
     /// The cells themselves live in `RillProgram::st_cells`
-    /// (`STRef` handles are plain global ids); the region releases them on
-    /// exit.
+    /// (`STRef`/`STArray` handles are plain global ids); the region releases
+    /// them on exit.
     pub(crate) cells: Vec<u32>,
     /// `st_cells.len()` when the region was entered. Cells are always appended,
     /// and regions nest LIFO, so the table truncates back to this mark on exit.
     pub(crate) cell_base: usize,
+}
+
+/// One ST cell: the mutable state behind an opaque region handle.
+///
+/// Both variants own exactly ONE arena claim per ref they hold. A cell is
+/// released by `release_st_cell` when its region exits (or when a `writeSTRef`
+/// overwrites it).
+pub(crate) enum StCell {
+    /// An `STRef s a` cell: the current value.
+    Ref(crate::arena::ArenaRef),
+    /// An `STArray s i e` cell: the stored bounds (a `Pair i i` value) and the
+    /// flat elements in `lo..=hi` order. `runSTArray` freezes the pair into an
+    /// immutable `Array` by transferring these claims.
+    Array {
+        /// Stored bounds as an ordinary value (`Pair i i`).
+        bounds: crate::arena::ArenaRef,
+        /// Flat elements, one claim each.
+        elems: Vec<crate::arena::ArenaRef>,
+    },
 }
 
 /// A region-backed `@` delay site: a [`TapeRing`] over a [`RegionHandle`].

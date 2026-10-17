@@ -148,12 +148,12 @@ pub enum ValueBuiltinOp {
 
 /// A value-track effect operation (the ST/region and IO-stream primitives).
 ///
-/// The four STRef operations are first-class: lowered to
+/// The ST operations are first-class: lowered to
 /// [`Value::BuiltinCallable`](crate::arena::Value::BuiltinCallable), captured
 /// with their arguments and applied to the region's STState token by the
-/// enclosing `ST` record's `unST` closure. `RunST` is emitted directly as a
-/// [`ValueInstr::ValueEffectOp`] — it consumes an `ST` value and runs its
-/// region.
+/// enclosing `ST` record's `unST` closure. `RunST`/`RunSTArray` are emitted
+/// directly as a [`ValueInstr::ValueEffectOp`] — they consume an `ST` value and
+/// run its region, the latter freezing the region's `STArray` result.
 ///
 /// The IO-stream operations use the same shape: lowered to a `BuiltinCallable`
 /// and applied to the `World` token by the enclosing `IO` record's `unIO`
@@ -174,6 +174,26 @@ pub enum ValueEffectOp {
     WriteStRef,
     /// `modifySTRef r f`: overwrite the cell value with `f` applied to it.
     ModifyStRef,
+    /// `newArrayFlat bounds n init`: allocate a mutable array cell in the
+    /// current region. `bounds` is the stored `Pair i i` value, `n` the flat
+    /// element count (the language computes it via `rangeSize`), and `init`
+    /// the initial value of every element.
+    NewArrayFlat,
+    /// `readArrayFlat a i`: read the element at the flat offset `i`.
+    ReadArrayFlat,
+    /// `writeArrayFlat a i v`: overwrite the element at the flat offset `i`.
+    WriteArrayFlat,
+    /// `modifyArrayFlat a i f`: overwrite the element at the flat offset `i`
+    /// with `f` applied to its current value.
+    ModifyArrayFlat,
+    /// `getBounds a`: read the cell's stored bounds back out as a `Pair i i`.
+    GetArrayBounds,
+    /// `getElems a`: read the cell's current elements back out as a `List e`.
+    GetArrayElems,
+    /// `runSTArray st`: like [`Self::RunST`], but FREEZE the region's
+    /// `STArray` result into an immutable `Array` (a refcount transfer — no
+    /// element copies).
+    RunSTArray,
     /// `fromList xs`: allocate a memory input stream over `xs` in the World's
     /// stream table and yield its opaque handle.
     StreamFromList,
@@ -591,10 +611,11 @@ pub enum ValueInstr {
     },
     /// Dispatch an effect operation.
     ///
-    /// For [`ValueEffectOp::RunST`] the single argument register holds the `ST`
-    /// value; the interpreter runs the whole region and writes the region's
-    /// result to `dst`. For the STRef operations the arguments are the
-    /// operation's operands; the interpreter builds a
+    /// For [`ValueEffectOp::RunST`] / [`ValueEffectOp::RunSTArray`] the single
+    /// argument register holds the `ST` value; the interpreter runs the whole
+    /// region and writes the region's result (`runST`) or its frozen
+    /// `Array` (`runSTArray`) to `dst`. For the STRef/STArray operations the
+    /// arguments are the operation's operands; the interpreter builds a
     /// [`Value::BuiltinCallable`](crate::arena::Value::BuiltinCallable) capturing
     /// them and writes that to `dst` (the `unST` field of the `ST` record the
     /// lowering wraps around it).

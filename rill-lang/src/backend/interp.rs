@@ -11,7 +11,7 @@ use crate::ir::{
     BinArith, CmpOp, FragmentIr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr, ValueTerm,
 };
 use crate::program::{
-    RillProgram, StreamHandle, MAX_BUILTIN_CHANNELS, STREAM_HANDLE_TAG, WORLD_TOKEN,
+    RillProgram, StCell, StreamHandle, MAX_BUILTIN_CHANNELS, STREAM_HANDLE_TAG, WORLD_TOKEN,
 };
 
 pub(crate) fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
@@ -1584,13 +1584,16 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             exec_value_call_builtin(prog, *op, args, *dst + base, base, drops);
         }
         ValueInstr::ValueEffectOp { dst, op, args } => match op {
-            crate::ir::ValueEffectOp::RunST => {
+            crate::ir::ValueEffectOp::RunST | crate::ir::ValueEffectOp::RunSTArray => {
                 // The argument register holds the `ST s a` value; run its region.
+                // `runSTArray` additionally FREEZES the region's `STArray`
+                // result into an immutable `Array` before the region unwinds.
+                let freeze = matches!(op, crate::ir::ValueEffectOp::RunSTArray);
                 let st_value = args
                     .first()
                     .and_then(|a| prog.value_regs.get(*a + base).copied().flatten());
                 prog.value_regs[*dst + base] = match st_value {
-                    Some(st) => exec_runst(prog, st, drops),
+                    Some(st) => exec_runst(prog, st, drops, freeze),
                     None => None,
                 };
             }
@@ -3146,17 +3149,197 @@ fn force_owned<T: Transcendental, const BUF: usize>(
     }
 }
 
+/// The value ref stored in an `STRef` cell (a short borrow, no recount).
+///
+/// `Some(None)` is an unset slot (an uninitialized cell reads as unit,
+/// defensively); `None` latches a wrong-kind fault — a handle pointing at an
+/// `STArray` cell, which typed code cannot produce.
+fn st_ref_cell_value<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    h: usize,
+) -> Option<Option<ArenaRef>> {
+    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        Some(StCell::Ref(r)) => Some(Some(*r)),
+        Some(StCell::Array { .. }) => {
+            latch_fault(prog, "STRef operation on an STArray handle");
+            None
+        }
+        None => Some(None),
+    }
+}
+
+/// Store `stored` in an `STRef` cell, releasing the previous value's claim.
+///
+/// `stored` is dropped instead when the handle does not name a live `STRef`
+/// cell, so the refcount stays balanced on the unreachable wrong-kind path.
+fn st_ref_cell_store<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    h: usize,
+    stored: ArenaRef,
+) {
+    match prog.st_cells.get_mut(h) {
+        Some(Some(StCell::Ref(slot))) => {
+            let old = std::mem::replace(slot, stored);
+            prog.arena.drop_ref(old);
+        }
+        _ => prog.arena.drop_ref(stored),
+    }
+}
+
+/// The flat element count of an `STArray` cell, or `None` after latching a
+/// wrong-kind/released-cell fault (typed code cannot reach either).
+fn st_array_len<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    h: usize,
+) -> Option<usize> {
+    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        Some(StCell::Array { elems, .. }) => Some(elems.len()),
+        Some(StCell::Ref(_)) => {
+            latch_fault(prog, "STArray operation on an STRef handle");
+            None
+        }
+        None => {
+            latch_fault(prog, "STArray operation on a released cell");
+            None
+        }
+    }
+}
+
+/// The stored bounds ref of an `STArray` cell (`None` latches a fault).
+fn st_array_bounds<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    h: usize,
+) -> Option<ArenaRef> {
+    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        Some(StCell::Array { bounds, .. }) => Some(*bounds),
+        Some(StCell::Ref(_)) => {
+            latch_fault(prog, "STArray operation on an STRef handle");
+            None
+        }
+        None => {
+            latch_fault(prog, "STArray operation on a released cell");
+            None
+        }
+    }
+}
+
+/// The element ref at `pos` of an `STArray` cell (a borrow, no recount).
+fn st_array_elem<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    h: usize,
+    pos: usize,
+) -> Option<ArenaRef> {
+    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        Some(StCell::Array { elems, .. }) => elems.get(pos).copied(),
+        _ => {
+            latch_fault(prog, "STArray element read on a released cell");
+            None
+        }
+    }
+}
+
+/// Store `stored` at `pos` of an `STArray` cell, releasing the previous
+/// element's claim. `stored` is dropped when the handle/position is invalid
+/// (unreachable through typed code), keeping the refcount balanced.
+fn st_array_elem_store<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    h: usize,
+    pos: usize,
+    stored: ArenaRef,
+) {
+    match prog.st_cells.get_mut(h) {
+        Some(Some(StCell::Array { elems, .. })) if pos < elems.len() => {
+            let old = std::mem::replace(&mut elems[pos], stored);
+            prog.arena.drop_ref(old);
+        }
+        _ => prog.arena.drop_ref(stored),
+    }
+}
+
+/// Snapshot an `STArray` cell's element refs into a pooled buffer.
+///
+/// No recount: the cell keeps its own claims, and the caller `copy`s exactly
+/// the ones its result claims.
+fn st_array_elems_of<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    h: usize,
+) -> Option<Vec<ArenaRef>> {
+    let len = match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        Some(StCell::Array { elems, .. }) => elems.len(),
+        _ => {
+            latch_fault(prog, "getElems on a released STArray cell");
+            return None;
+        }
+    };
+    let mut out = match prog.arena.take_buf(len) {
+        Ok(b) => b,
+        Err(_) => {
+            latch_exhaustion(prog, "value buffer pool");
+            return None;
+        }
+    };
+    if let Some(StCell::Array { elems, .. }) = prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+        out.extend_from_slice(elems);
+    }
+    Some(out)
+}
+
+/// Release one ST cell's arena claims (region exit, or a wrong-kind overwrite).
+///
+/// The element payload buffer returns to the pool, keeping the take/put pairs
+/// balanced across ticks.
+fn release_st_cell<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    cell: StCell,
+) {
+    match cell {
+        StCell::Ref(r) => prog.arena.drop_ref(r),
+        StCell::Array { bounds, elems } => {
+            prog.arena.drop_ref(bounds);
+            for e in &elems {
+                prog.arena.drop_ref(*e);
+            }
+            prog.arena.put_buf(elems);
+        }
+    }
+}
+
+/// Force `r` and read its numeric payload as an integer.
+///
+/// The static type is `Int`, but the runtime payload of a NEGATED literal
+/// (`-1`) is a `Float`: value-track arithmetic (negation included) is
+/// Float-only, so an `Int`-typed slot can hold either kind. Both are accepted —
+/// an integral `Float` is truncated. Non-numeric operands yield `None`; the
+/// caller latches the operation-specific fault.
+fn forced_i64<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    r: ArenaRef,
+    drops: &mut Vec<ArenaRef>,
+) -> Option<i64> {
+    let r = force(prog, r, drops);
+    match prog.arena.get(r) {
+        Some(Value::Int(i)) => Some(*i),
+        Some(Value::Float(f)) if f.is_finite() => Some(*f as i64),
+        _ => None,
+    }
+}
+
 /// Execute one primitive effect against the threading `state` token and return
 /// `Pair token result` as a fresh owner.
 ///
 /// `env` is the effect closure's captured argument record (in application
 /// order); `state` is the current token (`Value::Opaque`): the region id for the
-/// `STRef` operations, the realized `World` token for the io-streams
+/// `STRef`/`STArray` operations, the realized `World` token for the io-streams
 /// operations. The returned `Pair` holds a FRESH token and the operation's
 /// result:
 /// - `NewStRef` → the new cell handle,
 /// - `ReadStRef` → the cell's value,
 /// - `WriteStRef`/`ModifyStRef` → `Void`,
+/// - `NewArrayFlat` → the new array cell handle,
+/// - `ReadArrayFlat` → the element at the flat offset,
+/// - `WriteArrayFlat`/`ModifyArrayFlat` → `Void`,
+/// - `GetArrayBounds` → the cell's `Pair i i` bounds,
+/// - `GetArrayElems` → the cell's current elements as a `List e`,
 /// - `StreamFromList` → the stream handle,
 /// - `StreamToList` → the drained `List`,
 /// - `StreamWrite` → `Void`.
@@ -3195,14 +3378,14 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             // The cell owns its own ref; the operand's owner keeps its.
             let stored = copy_owned(prog, init)?;
             let id = prog.st_cells.len() as u32;
-            prog.st_cells.push(Some(stored));
+            prog.st_cells.push(Some(StCell::Ref(stored)));
             let region = prog.regions.get_mut(region_id)?;
             region.cells.push(id);
             alloc_owned(prog, Value::Opaque(id))
         }
         crate::ir::ValueEffectOp::ReadStRef => {
             let h = handle(prog, drops)?;
-            match prog.st_cells.get(h).copied().flatten() {
+            match st_ref_cell_value(prog, h)? {
                 Some(v) => copy_owned(prog, v),
                 // An uninitialized cell reads as unit (defensive; typing makes
                 // it unreachable).
@@ -3213,17 +3396,13 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             let h = handle(prog, drops)?;
             let src = *args.get(1)?;
             let stored = copy_owned(prog, src)?;
-            if let Some(slot) = prog.st_cells.get_mut(h) {
-                if let Some(old) = slot.replace(stored) {
-                    prog.arena.drop_ref(old);
-                }
-            }
+            st_ref_cell_store(prog, h, stored);
             alloc_owned(prog, Value::Void)
         }
         crate::ir::ValueEffectOp::ModifyStRef => {
             let h = handle(prog, drops)?;
             let f = *args.get(1)?;
-            let old = prog.st_cells.get(h).copied().flatten()?;
+            let old = st_ref_cell_value(prog, h).flatten()?;
             // The stored value may be an unforced thunk: the modifier function
             // receives its WHNF form.
             let old = force(prog, old, drops);
@@ -3236,16 +3415,151 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             let stored = copy_owned(prog, new_value);
             prog.arena.drop_ref(new_value);
             let stored = stored?;
-            if let Some(slot) = prog.st_cells.get_mut(h) {
-                if let Some(prev) = slot.replace(stored) {
-                    prog.arena.drop_ref(prev);
-                }
-            }
+            st_ref_cell_store(prog, h, stored);
             alloc_owned(prog, Value::Void)
         }
-        // `RunST` is emitted directly as an instruction, never as an effect
-        // closure.
-        crate::ir::ValueEffectOp::RunST => None,
+        // ---- mutable-array (STArray) effects ----
+        //
+        // Both a flat SIZE and a flat OFFSET are computed by the LANGUAGE (the
+        // `Ix` class lands in a later task), so the interpreter trusts a numeric
+        // operand only after bounding it: a size is checked against the arena's
+        // free slots, an offset against the cell's element count. Every failure
+        // is a distinct, latched fault — never a panic and never an OOB index.
+        crate::ir::ValueEffectOp::NewArrayFlat => {
+            let bounds_src = *args.first()?;
+            let Some(size) = forced_i64(prog, *args.get(1)?, drops) else {
+                latch_fault(prog, "newArrayFlat: flat size is not a number");
+                return None;
+            };
+            let init = *args.get(2)?;
+            if size < 0 {
+                latch_fault(prog, "newArrayFlat: negative flat size");
+                return None;
+            }
+            let n = size as usize;
+            // The flat size is not known at build time, so it is not part of the
+            // pre-allocated arena budget: bound it by the FREE slots up front so
+            // an absurd computed size is a clean fault instead of a long futile
+            // allocation loop.
+            let free_slots = prog.arena.capacity().saturating_sub(prog.arena.live());
+            if n > free_slots {
+                latch_fault(
+                    prog,
+                    "newArrayFlat: flat size exceeds the value arena capacity",
+                );
+                return None;
+            }
+            let bounds = copy_owned(prog, bounds_src)?;
+            let mut elems = match prog.arena.take_buf(n) {
+                Ok(b) => b,
+                Err(_) => {
+                    prog.arena.drop_ref(bounds);
+                    latch_exhaustion(prog, "value buffer pool");
+                    return None;
+                }
+            };
+            for _ in 0..n {
+                match copy_owned(prog, init) {
+                    Some(c) => elems.push(c),
+                    None => {
+                        prog.arena.drop_ref(bounds);
+                        for e in &elems {
+                            prog.arena.drop_ref(*e);
+                        }
+                        prog.arena.put_buf(elems);
+                        return None;
+                    }
+                }
+            }
+            let id = prog.st_cells.len() as u32;
+            prog.st_cells.push(Some(StCell::Array { bounds, elems }));
+            let region = prog.regions.get_mut(region_id)?;
+            region.cells.push(id);
+            alloc_owned(prog, Value::Opaque(id))
+        }
+        crate::ir::ValueEffectOp::ReadArrayFlat => {
+            let h = handle(prog, drops)?;
+            let Some(offset) = forced_i64(prog, *args.get(1)?, drops) else {
+                latch_fault(prog, "readArrayFlat: flat offset is not a number");
+                return None;
+            };
+            let len = st_array_len(prog, h)?;
+            let Some(pos) = flat_index_in_range(offset, len) else {
+                latch_fault(prog, &format!("readArrayFlat: index {offset} out of range"));
+                return None;
+            };
+            let elem = st_array_elem(prog, h, pos)?;
+            copy_owned(prog, elem)
+        }
+        crate::ir::ValueEffectOp::WriteArrayFlat => {
+            let h = handle(prog, drops)?;
+            let Some(offset) = forced_i64(prog, *args.get(1)?, drops) else {
+                latch_fault(prog, "writeArrayFlat: flat offset is not a number");
+                return None;
+            };
+            let src = *args.get(2)?;
+            let len = st_array_len(prog, h)?;
+            let Some(pos) = flat_index_in_range(offset, len) else {
+                latch_fault(
+                    prog,
+                    &format!("writeArrayFlat: index {offset} out of range"),
+                );
+                return None;
+            };
+            // The cell owns its own ref; the operand's owner keeps its.
+            let stored = copy_owned(prog, src)?;
+            st_array_elem_store(prog, h, pos, stored);
+            alloc_owned(prog, Value::Void)
+        }
+        crate::ir::ValueEffectOp::ModifyArrayFlat => {
+            let h = handle(prog, drops)?;
+            let Some(offset) = forced_i64(prog, *args.get(1)?, drops) else {
+                latch_fault(prog, "modifyArrayFlat: flat offset is not a number");
+                return None;
+            };
+            let f = *args.get(2)?;
+            let len = st_array_len(prog, h)?;
+            let Some(pos) = flat_index_in_range(offset, len) else {
+                latch_fault(
+                    prog,
+                    &format!("modifyArrayFlat: index {offset} out of range"),
+                );
+                return None;
+            };
+            // The stored element may be an unforced thunk: the modifier function
+            // receives its WHNF form.
+            let elem = st_array_elem(prog, h, pos)?;
+            let old = force(prog, elem, drops);
+            // Apply to a copy: the cell keeps its own claim while the call runs.
+            let arg = copy_owned(prog, old)?;
+            let new_value = apply_callable(prog, f, arg, drops);
+            prog.arena.drop_ref(arg);
+            let new_value = new_value?;
+            let stored = copy_owned(prog, new_value);
+            prog.arena.drop_ref(new_value);
+            let stored = stored?;
+            st_array_elem_store(prog, h, pos, stored);
+            alloc_owned(prog, Value::Void)
+        }
+        crate::ir::ValueEffectOp::GetArrayBounds => {
+            let h = handle(prog, drops)?;
+            let bounds = st_array_bounds(prog, h)?;
+            copy_owned(prog, bounds)
+        }
+        crate::ir::ValueEffectOp::GetArrayElems => {
+            let h = handle(prog, drops)?;
+            let elems = st_array_elems_of(prog, h)?;
+            // Recount every element: the new list owns them independently of the
+            // cell (the cell keeps its own claims). `copy` shares the same ref
+            // with a fresh claim.
+            for e in &elems {
+                _ = prog.arena.copy(*e);
+            }
+            alloc_owned(prog, Value::List { elems })
+        }
+        // `RunST`/`RunSTArray` are emitted directly as instructions, never as
+        // effect closures: they consume the whole `ST` value.
+        crate::ir::ValueEffectOp::RunST | crate::ir::ValueEffectOp::RunSTArray => None,
         // ---- io-streams effects (the World token threads them) ----
         crate::ir::ValueEffectOp::StreamFromList => exec_stream_from_list(prog, &args, drops),
         crate::ir::ValueEffectOp::StreamToList => exec_stream_to_list(prog, &args, token, drops),
@@ -4012,13 +4326,21 @@ fn stream_handle_index<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Run one `runST`: enter a fresh region, apply the `ST` value's `unST`
-/// closure to the region token, discard the final state, and release every cell
-/// the region allocated. Returns the region's result as a fresh owner.
+/// Run one `runST`/`runSTArray`: enter a fresh region, apply the `ST` value's
+/// `unST` closure to the region token, discard the final state, and release
+/// every cell the region allocated.
+///
+/// With `freeze_array` (`runSTArray`), the region's result must be an `STArray`
+/// handle; the cell is frozen into an ordinary `Array i e` by a refcount
+/// TRANSFER: one fresh claim per element and on the bounds record goes to the
+/// frozen array, and the region's own cell claims are released by
+/// [`finish_region`] — net refcount unchanged, no element copies. Without it
+/// (`runST`) the region result is returned as a fresh owner.
 fn exec_runst<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     st_value: crate::arena::ArenaRef,
     drops: &mut Vec<crate::arena::ArenaRef>,
+    freeze_array: bool,
 ) -> Option<crate::arena::ArenaRef> {
     // The argument may arrive as a THUNK, not an eager record: lowering
     // re-inlines typeclass instance bodies, so a `let`-bound `ST` value lowers
@@ -4064,7 +4386,11 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
                         _ => None,
                     };
                     let forced = forced.map(|r| force(prog, r, drops));
-                    let out = forced.and_then(|r| copy_owned(prog, r));
+                    let out = if freeze_array {
+                        forced.and_then(|r| freeze_starray(prog, r))
+                    } else {
+                        forced.and_then(|r| copy_owned(prog, r))
+                    };
                     prog.arena.drop_ref(pair);
                     out
                 }
@@ -4077,15 +4403,48 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
     result
 }
 
+/// Freeze an `STArray` region result into an immutable `Array i e`.
+///
+/// `payload` is the region result (the opaque array-cell handle). The cell's
+/// bounds ref and every element ref receive ONE fresh claim for the frozen
+/// array; the cell's own claims are released when the region unwinds
+/// ([`finish_region`]), so the transfer is refcount-only — no element is
+/// copied and no value slot is allocated for one.
+fn freeze_starray<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    payload: ArenaRef,
+) -> Option<ArenaRef> {
+    let cell_id = match prog.arena.get(payload) {
+        Some(Value::Opaque(id)) => *id as usize,
+        _ => {
+            latch_fault(prog, "runSTArray: region result is not an STArray");
+            return None;
+        }
+    };
+    let bounds = st_array_bounds(prog, cell_id)?;
+    let elems = st_array_elems_of(prog, cell_id)?;
+    let Some(bounds) = copy_owned(prog, bounds) else {
+        prog.arena.put_buf(elems);
+        return None;
+    };
+    // Refcount transfer: one fresh claim per element ref for the frozen array.
+    // `copy` shares the same ref with a fresh claim (no element is copied).
+    for e in &elems {
+        _ = prog.arena.copy(*e);
+    }
+    alloc_owned(prog, Value::Array { bounds, elems })
+}
+
 /// Leave the innermost `ST` region: release every cell it allocated and
 /// truncate the cell table back to the region's mark. Regions nest LIFO, so no
-/// outer cell is lost. The caller supplies `runST`'s result; this only unwinds.
+/// outer cell is lost. The caller supplies the region's result; this only
+/// unwinds.
 fn finish_region<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>) {
     if let Some(region) = prog.regions.pop() {
         for id in region.cells {
             if let Some(slot) = prog.st_cells.get_mut(id as usize) {
-                if let Some(r) = slot.take() {
-                    prog.arena.drop_ref(r);
+                if let Some(cell) = slot.take() {
+                    release_st_cell(prog, cell);
                 }
             }
         }

@@ -13,6 +13,27 @@ fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 
     }
 }
 
+/// Compile `src` on a thread with a generous stack and report whether it
+/// compiled.
+///
+/// The deepest Arrow default chains (`fan` → `both` → `second`, all re-entering
+/// `compose`'s default body) inline instance bodies recursively at LOWERING, so
+/// the DEBUG-build stack frames of that recursion need more than the test
+/// harness's default thread stack (~2 MiB). The requirement is also
+/// codegen-sensitive: unrelated code added elsewhere in the crate can push the
+/// chain over the limit. The bar these tests assert is COMPILE success, so give
+/// the recursion room instead of letting the stack size decide.
+fn compiles_with_deep_stack(src: &str) -> bool {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn_scoped(scope, || compile::<f32>(src).is_ok())
+            .expect("the compile thread must spawn")
+            .join()
+            .expect("the compile thread must not panic")
+    })
+}
+
 #[test]
 fn value_tuple_is_pair() {
     // `(1.0, 2.0)` in value position is a `Pair { first, second }`.
@@ -255,7 +276,7 @@ fn arrow_default_both_composes() {
     // projections left the arrow's input type unconstrained). The compile bar
     // is the default-chain typecheck, not the scaffold.
     assert!(
-        compile::<f32>(src).is_ok(),
+        compiles_with_deep_stack(src),
         "both's default must compile (recursion guard must only fire on body re-entry)"
     );
     // NOTE: runtime execution of both/fan is deferred — arena-capacity
@@ -279,7 +300,7 @@ fn arrow_default_fan_composes() {
     // `fan` maps a scalar to a PAIR (`a b (Pair c d)`), so the input is a
     // Float (`3.0`) and the result projects `.first`.
     assert!(
-        compile::<f32>(src).is_ok(),
+        compiles_with_deep_stack(src),
         "fan's default must compile (recursion guard must only fire on body re-entry)"
     );
     // NOTE: runtime execution of both/fan is deferred — arena-capacity
