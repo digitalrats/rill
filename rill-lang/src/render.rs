@@ -214,6 +214,25 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             write!(buf, ". ").ok();
             render_type_expr(inner, buf);
         }
+        TypeExpr::TConstrained(constraints, inner) => {
+            // Haskell 2010: a single constraint stands bare, two or more must be
+            // parenthesized and comma-separated to re-parse.
+            if constraints.len() == 1 {
+                let (class, var) = &constraints[0];
+                write!(buf, "{class} {var}").ok();
+            } else {
+                write!(buf, "(").ok();
+                for (i, (class, var)) in constraints.iter().enumerate() {
+                    if i > 0 {
+                        write!(buf, ", ").ok();
+                    }
+                    write!(buf, "{class} {var}").ok();
+                }
+                write!(buf, ")").ok();
+            }
+            write!(buf, " => ").ok();
+            render_type_expr(inner, buf);
+        }
     }
 }
 
@@ -702,6 +721,22 @@ mod tests {
     fn render_roundtrip_def_signature_with_where() {
         let dsl = roundtrip_main("main :: Float = g where { g = 1.0; };");
         assert_eq!(dsl, "main :: Float = g where {\n    g = 1.0;\n}");
+    }
+
+    #[test]
+    fn render_roundtrip_constrained_def_signature() {
+        // A single-constraint context renders unparenthesized (`C v => T`) and
+        // survives render → parse → render.
+        let dsl = roundtrip_main("main :: Ix i => Pair i i -> List e -> Array i e = g;");
+        assert_eq!(dsl, "main :: Ix i => (Pair i i -> List e -> Array i e) = g");
+    }
+
+    #[test]
+    fn render_roundtrip_multi_constraint_def_signature() {
+        // Two or more constraints render as a parenthesized, comma-separated
+        // list — the only Haskell 2010 form that re-parses.
+        let dsl = roundtrip_main("main :: (Ix i, Ix j) => Float = 1.0;");
+        assert_eq!(dsl, "main :: (Ix i, Ix j) => Float = 1.0");
     }
 
     #[test]

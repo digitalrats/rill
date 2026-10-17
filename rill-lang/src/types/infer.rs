@@ -324,6 +324,7 @@ pub(crate) fn data_field_vty(
             vec![data_field_vty(env, tyvars, ret)],
         ),
         crate::ast::TypeExpr::TForall(_, inner) => data_field_vty(env, tyvars, inner),
+        crate::ast::TypeExpr::TConstrained(_, inner) => data_field_vty(env, tyvars, inner),
     }
 }
 
@@ -676,6 +677,12 @@ fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
 /// `idx` via [`TypeEnv::class_var_arg_index`], so the argument is always a
 /// `TApp` headed by the class variable.
 fn class_var_pattern(ctx: &mut Ctx, sig: &crate::ast::TypeExpr, idx: usize) -> ValueTy {
+    // A class context constrains the body; the container lives in the body's
+    // argument list.
+    let sig = match sig {
+        crate::ast::TypeExpr::TConstrained(_, inner) => inner.as_ref(),
+        other => other,
+    };
     let container_te = match sig {
         crate::ast::TypeExpr::TFunc(args, _) => args.get(idx).cloned(),
         _ => None,
@@ -913,6 +920,9 @@ pub(crate) fn signature_param_and_result_tys_conv(
                 vec![conv(env, class_var, ctor, vars, fresh, ret)],
             ),
             crate::ast::TypeExpr::TForall(_, inner) => {
+                conv(env, class_var, ctor, vars, fresh, inner)
+            }
+            crate::ast::TypeExpr::TConstrained(_, inner) => {
                 conv(env, class_var, ctor, vars, fresh, inner)
             }
         }
@@ -3218,6 +3228,9 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
             msg: "a forall-typed signature cannot be applied as a plain builtin".into(),
             span: Span::new(0, 0),
         }),
+        // The class context is not enforced yet (constrained-def dispatch is a
+        // later task); the type itself is the body's type.
+        crate::ast::TypeExpr::TConstrained(_, inner) => type_expr_to_vty(ctx, inner),
     }
 }
 
@@ -3255,6 +3268,7 @@ fn collect_forall_binders(te: &crate::ast::TypeExpr, out: &mut Vec<String>) {
             collect_forall_binders(ret, out);
         }
         TypeExpr::TName(_) => {}
+        TypeExpr::TConstrained(_, inner) => collect_forall_binders(inner, out),
     }
 }
 
@@ -3354,6 +3368,8 @@ fn instantiate_builtin_sig_vty(
             }
             instantiate_builtin_sig_vty(ctx, inner, vars)
         }
+        // The class context is not enforced yet; the value type is the body's.
+        TypeExpr::TConstrained(_, inner) => instantiate_builtin_sig_vty(ctx, inner, vars),
     }
 }
 
@@ -3368,6 +3384,7 @@ pub(crate) fn type_expr_mentions(te: &crate::ast::TypeExpr, var: &str) -> bool {
             args.iter().any(|a| type_expr_mentions(a, var)) || type_expr_mentions(ret, var)
         }
         crate::ast::TypeExpr::TForall(_, inner) => type_expr_mentions(inner, var),
+        crate::ast::TypeExpr::TConstrained(_, inner) => type_expr_mentions(inner, var),
     }
 }
 
@@ -3382,6 +3399,7 @@ pub(crate) fn type_expr_mentions(te: &crate::ast::TypeExpr, var: &str) -> bool {
 pub(crate) fn sig_result_directed(sig: &crate::ast::TypeExpr, class_var: &str) -> bool {
     match sig {
         crate::ast::TypeExpr::TForall(_, inner) => sig_result_directed(inner, class_var),
+        crate::ast::TypeExpr::TConstrained(_, inner) => sig_result_directed(inner, class_var),
         crate::ast::TypeExpr::TFunc(args, _) => {
             args.iter().all(|a| !type_expr_mentions(a, class_var))
         }

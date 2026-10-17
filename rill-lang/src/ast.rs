@@ -23,6 +23,11 @@ pub enum TypeExpr {
     TFunc(Vec<TypeExpr>, Box<TypeExpr>),
     /// Explicit universal quantification: `forall a b. T`.
     TForall(Vec<String>, Box<TypeExpr>),
+    /// A class-constrained type: `C v => T`, `(C v, C w) => T`. Each
+    /// constraint is a `(class name, type variable)` pair and constrains the
+    /// type VARIABLE it names; the body type follows. Generic over the class
+    /// (`Ix` is not special).
+    TConstrained(Vec<(String, String)>, Box<TypeExpr>),
 }
 
 impl TypeExpr {
@@ -31,6 +36,7 @@ impl TypeExpr {
         match self {
             TypeExpr::TFunc(args, _) => args.len(),
             TypeExpr::TForall(_, inner) => inner.arg_count(),
+            TypeExpr::TConstrained(_, inner) => inner.arg_count(),
             _ => 0,
         }
     }
@@ -39,16 +45,18 @@ impl TypeExpr {
         match self {
             TypeExpr::TFunc(args, _) => args,
             TypeExpr::TForall(_, inner) => inner.arg_types(),
+            TypeExpr::TConstrained(_, inner) => inner.arg_types(),
             _ => &[],
         }
     }
     /// The number of arguments a method signature accepts: the arity of a
     /// `TFunc`, `1` for a bare (class-var selector) signature, delegating
-    /// through a `TForall` binder.
+    /// through a `TForall` binder or a class context.
     pub fn sig_arg_count(&self) -> usize {
         match self {
             TypeExpr::TFunc(args, _) => args.len(),
             TypeExpr::TForall(_, inner) => inner.sig_arg_count(),
+            TypeExpr::TConstrained(_, inner) => inner.sig_arg_count(),
             _ => 1,
         }
     }
@@ -575,5 +583,41 @@ mod type_expr_tests {
             )),
         );
         assert!(matches!(t, TypeExpr::TFunc(..)));
+    }
+
+    #[test]
+    fn constrained_type_delegates_arity_to_body() {
+        // A class context constrains the body type; the arity queries must
+        // answer for the BODY, not for the constraint list.
+        let body = TypeExpr::TFunc(
+            vec![
+                TypeExpr::TApp(
+                    "Pair".into(),
+                    vec![TypeExpr::TName("i".into()), TypeExpr::TName("i".into())],
+                ),
+                TypeExpr::TApp("List".into(), vec![TypeExpr::TName("e".into())]),
+            ],
+            Box::new(TypeExpr::TApp(
+                "Array".into(),
+                vec![TypeExpr::TName("i".into()), TypeExpr::TName("e".into())],
+            )),
+        );
+        let t = TypeExpr::TConstrained(vec![("Ix".into(), "i".into())], Box::new(body));
+        assert_eq!(t.arg_count(), 2);
+        assert_eq!(t.arg_types().len(), 2);
+        assert_eq!(t.sig_arg_count(), 2);
+    }
+
+    #[test]
+    fn constrained_bare_signature_delegates_selector_arity() {
+        // A bare (non-function) body: a constrained `f : Ix i => a` still takes
+        // the single class-method selector argument.
+        let t = TypeExpr::TConstrained(
+            vec![("Ix".into(), "i".into())],
+            Box::new(TypeExpr::TName("a".into())),
+        );
+        assert_eq!(t.arg_count(), 0);
+        assert!(t.arg_types().is_empty());
+        assert_eq!(t.sig_arg_count(), 1);
     }
 }

@@ -1128,6 +1128,7 @@ impl TypeEnv {
                 crate::ast::TypeExpr::TApp(_, args) => {
                     args.iter().map(|a| depth(var, a)).max().unwrap_or(0)
                 }
+                crate::ast::TypeExpr::TConstrained(_, inner) => depth(var, inner),
                 crate::ast::TypeExpr::TFunc(args, ret) => args
                     .iter()
                     .map(|a| depth(var, a))
@@ -1150,6 +1151,9 @@ impl TypeEnv {
         class_var: &str,
     ) -> Option<usize> {
         match sig {
+            crate::ast::TypeExpr::TConstrained(_, inner) => {
+                self.class_var_arg_index(inner, class_var)
+            }
             crate::ast::TypeExpr::TFunc(args, _) => args
                 .iter()
                 .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),

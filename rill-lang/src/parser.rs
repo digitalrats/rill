@@ -552,7 +552,7 @@ impl<'a> Parser<'a> {
         let mut sig = None;
         if self.peek().tok == Tok::DoubleColon {
             self.bump();
-            sig = Some(self.parse_type_expr()?);
+            sig = Some(self.parse_sig_type()?);
         }
         self.eat(&Tok::Eq)?;
         let body = self.parse_expr(0, false)?;
@@ -729,6 +729,101 @@ impl<'a> Parser<'a> {
         self.eat(&Tok::Dot)?;
         let inner = self.parse_type_expr()?;
         Ok(TypeExpr::TForall(names, Box::new(inner)))
+    }
+
+    /// Parse a `::` signature type: an optional Haskell 2010 class context
+    /// (`Ix i => T`, `(Ix i, Ix j) => T`) wrapping the body type.
+    fn parse_sig_type(&mut self) -> Result<TypeExpr, CompileError> {
+        match self.parse_sig_constraints()? {
+            Some(constraints) => {
+                let body = self.parse_type_expr()?;
+                Ok(TypeExpr::TConstrained(constraints, Box::new(body)))
+            }
+            None => self.parse_type_expr(),
+        }
+    }
+
+    /// Parse a signature's constraint context, if one is present. A constraint
+    /// is a class name applied to a single type variable — `C v`, or a
+    /// comma-separated parenthesized list `(C v, C w)`. The representation is
+    /// generic over the class name (`Ix` is not special).
+    fn parse_sig_constraints(&mut self) -> Result<Option<Vec<(String, String)>>, CompileError> {
+        if !self.at_sig_constraints() {
+            return Ok(None);
+        }
+        let parenthesized = self.peek().tok == Tok::LParen;
+        if parenthesized {
+            self.bump();
+        }
+        let mut constraints = Vec::new();
+        loop {
+            let (class, _) = self.expect_ident()?;
+            let (var, _) = self.expect_ident()?;
+            constraints.push((class, var));
+            if !parenthesized {
+                break;
+            }
+            if self.peek().tok == Tok::Comma {
+                self.bump();
+            } else {
+                self.eat(&Tok::RParen)?;
+                break;
+            }
+        }
+        self.eat(&Tok::FatArrow)?;
+        Ok(Some(constraints))
+    }
+
+    /// Whether the next tokens spell a signature class context. Decided by
+    /// lookahead because a parenthesized TYPE opens with the same `(`: only the
+    /// shape `C v` / `(C v, …)` followed by `=>` is a context, so
+    /// `(Pair i i) -> …` falls through to the ordinary type parser.
+    fn at_sig_constraints(&self) -> bool {
+        let mut i = self.skip_newlines(self.pos);
+        match self.toks.get(i).map(|t| &t.tok) {
+            Some(Tok::Ident(_)) => {
+                i = self.skip_newlines(i + 1);
+                matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_)))
+                    && matches!(
+                        self.toks.get(self.skip_newlines(i + 1)).map(|t| &t.tok),
+                        Some(Tok::FatArrow)
+                    )
+            }
+            Some(Tok::LParen) => {
+                i = self.skip_newlines(i + 1);
+                loop {
+                    if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                        return false;
+                    }
+                    i = self.skip_newlines(i + 1);
+                    if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                        return false;
+                    }
+                    i = self.skip_newlines(i + 1);
+                    match self.toks.get(i).map(|t| &t.tok) {
+                        Some(Tok::Comma) => i = self.skip_newlines(i + 1),
+                        Some(Tok::RParen) => {
+                            return matches!(
+                                self.toks.get(self.skip_newlines(i + 1)).map(|t| &t.tok),
+                                Some(Tok::FatArrow)
+                            );
+                        }
+                        _ => return false,
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// The first non-newline token index at or after `i`, clamped to the last
+    /// token. [`Self::peek`]/[`Self::bump`] skip layout newlines, so lookahead
+    /// must skip them too.
+    fn skip_newlines(&self, mut i: usize) -> usize {
+        while i < self.toks.len() && self.toks[i].tok == Tok::Newline {
+            i += 1;
+        }
+        i.min(self.toks.len().saturating_sub(1))
     }
 
     /// Parse a type expression: a chain of juxta-applied type names and type
@@ -2387,6 +2482,82 @@ mod tests {
             }
             other => panic!("expected Typeclass, got {other:?}"),
         }
+    }
+
+    /// The `TypeExpr` stored as a `Def::Eval` signature.
+    fn eval_sig(src: &str) -> TypeExpr {
+        let p = prog(src);
+        match &p.defs[0] {
+            Def::Eval { sig: Some(sig), .. } => sig.clone(),
+            other => panic!("expected Eval with a signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_single_constraint_signature_context() {
+        // Haskell 2010: `f : C v => T` — one constraint, no parentheses.
+        let sig = eval_sig("f :: Ix i => Pair i i -> List e -> Array i e = f; main = 1.0");
+        match &sig {
+            TypeExpr::TConstrained(constraints, body) => {
+                assert_eq!(constraints, &vec![("Ix".to_string(), "i".to_string())]);
+                assert_eq!(body.arg_count(), 2);
+                match body.as_ref() {
+                    TypeExpr::TFunc(args, _) => {
+                        assert_eq!(
+                            args[0],
+                            TypeExpr::TApp(
+                                "Pair".into(),
+                                vec![TypeExpr::TName("i".into()), TypeExpr::TName("i".into())]
+                            )
+                        );
+                        assert_eq!(
+                            args[1],
+                            TypeExpr::TApp("List".into(), vec![TypeExpr::TName("e".into())])
+                        );
+                    }
+                    other => panic!("expected TFunc body, got {other:?}"),
+                }
+            }
+            other => panic!("expected a constrained signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_parenthesized_constraint_list_signature_context() {
+        // `(C v, C v) => T` — a comma-separated constraint list.
+        let sig =
+            eval_sig("ixmap :: (Ix i, Ix j) => Pair i i -> Pair j j -> Float = ixmap; main = 1.0");
+        match &sig {
+            TypeExpr::TConstrained(constraints, body) => {
+                assert_eq!(
+                    constraints,
+                    &vec![
+                        ("Ix".to_string(), "i".to_string()),
+                        ("Ix".to_string(), "j".to_string()),
+                    ]
+                );
+                assert_eq!(body.arg_count(), 2);
+            }
+            other => panic!("expected a constrained signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parenthesized_type_is_not_a_constraint_context() {
+        // `(Pair i i) -> Float` starts with `(` but holds ONE type, not a
+        // `C v` constraint pair — the constraint lookahead must not swallow it.
+        let sig = eval_sig("f :: (Pair i i) -> Float = f; main = 1.0");
+        match &sig {
+            TypeExpr::TFunc(args, _) => assert_eq!(args.len(), 1),
+            other => panic!("expected an unconstrained TFunc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unconstrained_signature_stays_unwrapped() {
+        // Backward-compatible shape: no `=>` means no `TConstrained` wrapper.
+        let sig = eval_sig("f :: Float -> Float = f; main = 1.0");
+        assert!(matches!(sig, TypeExpr::TFunc(ref args, _) if args.len() == 1));
     }
 
     #[test]
