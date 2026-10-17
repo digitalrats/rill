@@ -3386,8 +3386,15 @@ fn stream_write<T: Transcendental, const BUF: usize>(
                 latch_fault(prog, "`makeOutputStream` handler is not callable");
                 return false;
             };
-            let ran = run_io_action(prog, action, token, drops).is_some();
+            // The handler's `IO ()` payload is a fresh owner: release it, or a
+            // sink write sequence leaks one arena slot per element and can
+            // exhaust the (statically sized) arena.
+            let out = run_io_action(prog, action, token, drops);
             prog.arena.drop_ref(action);
+            let ran = out.is_some();
+            if let Some(r) = out {
+                prog.arena.drop_ref(r);
+            }
             if !ran {
                 return false;
             }

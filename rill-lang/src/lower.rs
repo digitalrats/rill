@@ -1101,9 +1101,9 @@ impl<'a> Lowerer<'a> {
                 // at compile time (single block, no Branch term).
                 if let Expr::Bool(b, _) = cond.as_ref() {
                     let (reg, ty) = if *b {
-                        self.lower_value(then)?
+                        self.lower_value_expected(then, expected)?
                     } else {
-                        self.lower_value(els)?
+                        self.lower_value_expected(els, expected)?
                     };
                     return Ok((reg, ty));
                 }
@@ -1140,14 +1140,19 @@ impl<'a> Lowerer<'a> {
                     },
                 );
                 self.cur_value_block = then_b;
-                let (t_reg, t_ty) = self.lower_value(then)?;
+                // Both branches are lowered with the `if`'s own expected type:
+                // inside a `make*Stream` handler the surrounding `IO ()` pins a
+                // result-directed method in an arm (`if c then write … stdout
+                // else return ()`), whose instance only the expected type
+                // selects.
+                let (t_reg, t_ty) = self.lower_value_expected(then, expected)?;
                 self.emit_value(ValueInstr::ValueMove {
                     dst: out,
                     src: t_reg,
                 });
                 self.set_value_term(self.cur_value_block, ValueTerm::Fallthrough(join));
                 self.cur_value_block = els_b;
-                let (e_reg, e_ty) = self.lower_value(els)?;
+                let (e_reg, e_ty) = self.lower_value_expected(els, expected)?;
                 self.emit_value(ValueInstr::ValueMove {
                     dst: out,
                     src: e_reg,

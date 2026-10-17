@@ -34,6 +34,32 @@ fn run(src: &str) -> Vec<String> {
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
+/// Compile a program and run its `IO main` action `runs` times, returning the
+/// captured `stdout`, the arena's live-slot count, and its capacity.
+///
+/// Repeated runs execute the same write sequence with a fixed instruction
+/// count, which is how a long sink write sequence is expressed here: the
+/// language has no `IO` loop construct. Growth that is proportional to the
+/// number of *writes* (rather than to the number of runs) is what a leak looks
+/// like. The work runs on a big-stack thread for the same reason as [`run`].
+fn run_many(src: &str, runs: usize) -> (Vec<String>, usize, usize) {
+    let src = src.to_string();
+    std::thread::Builder::new()
+        .stack_size(16 << 20)
+        .spawn(move || {
+            let mut r = runner(&src);
+            for i in 0..runs {
+                r.run()
+                    .unwrap_or_else(|e| panic!("run {i} must succeed: {e}\nsource:\n{src}"));
+            }
+            let arena = r.program().arena();
+            (r.stdout().to_vec(), arena.live(), arena.capacity())
+        })
+        .expect("spawn program thread")
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}
+
 /// Shared program prefix: renders a `Maybe Float` as text (`Nothing` = EOF).
 const SHOW_MAYBE: &str = r#"show_mb m = case m of { Nothing => "eof"; Just x => show_float x };"#;
 
@@ -219,4 +245,76 @@ main = do {
 };
 "#;
     assert_eq!(run(src), ["1.0", "2.0", "closed"]);
+}
+
+#[test]
+fn long_sink_write_sequence_does_not_exhaust_the_arena() {
+    // Every sink write runs the handler and must release the handler's `IO ()`
+    // result. If that owned value leaked, one arena slot would be lost per
+    // element and this sequence would die with "value arena capacity" — the
+    // pre-fix code did, at run 282 of 600 (capacity 3864). Ten element writes
+    // per run make the leak grow faster than the (heap-budgeted) capacity.
+    let mut writes = String::new();
+    for i in 0..10 {
+        writes.push_str(&format!("    write (Just {i}.0) out;\n"));
+    }
+    let src = format!(
+        r#"main = do {{
+    out <- makeOutputStream (\mb -> case mb of {{
+        Nothing => write (Just "closed") stdout;
+        Just x => write Nothing stdout
+    }});
+{writes}    write Nothing out;
+    return ()
+}};
+"#
+    );
+    let (lines, live, capacity) = run_many(&src, 600);
+    assert_eq!(lines.len(), 600, "one close line per run");
+    assert!(
+        lines.iter().all(|line| line == "closed"),
+        "the sink must see exactly the closing `Nothing` per run"
+    );
+    assert!(
+        live < capacity,
+        "arena live slots must stay below capacity: {live} of {capacity}"
+    );
+}
+
+#[test]
+fn if_on_a_lazy_bool_takes_the_right_branch() {
+    // In complete mode a call result is a suspended thunk, so `flag 2.0` is not
+    // a WHNF Bool in the condition register: the block term must force it
+    // before it dispatches (pre-fix, the true case took the `else` branch).
+    let src = r#"flag n = 1.0 < n;
+main = do {
+    if flag 2.0 then write (Just "t") stdout else write (Just "f") stdout;
+    if flag 0.5 then write (Just "t") stdout else write (Just "f") stdout;
+    return ()
+};
+"#;
+    assert_eq!(run(src), ["t", "f"]);
+}
+
+#[test]
+fn if_arm_in_a_sink_handler_resolves_monad_io() {
+    // A result-directed method in an `if` arm (`return ()`) selects its
+    // instance from the handler's expected `IO ()`: inference and lowering both
+    // thread the surrounding expected type into the branches. The condition
+    // stays dynamic (a comparison, not a literal Bool), so the arm really runs
+    // or does not at runtime.
+    let src = r#"
+main = do {
+    skipped <- makeOutputStream (\mb -> if 2.0 < 1.0 then write (Just "bad") stdout else return ());
+    write (Just 1.0) skipped;
+    write Nothing skipped;
+    run <- makeOutputStream (\mb -> if 1.0 < 2.0 then write (Just "kept") stdout else return ());
+    write (Just 1.0) run;
+    write Nothing run;
+    return ()
+};
+"#;
+    // `skipped`'s handler takes the `return ()` arm for both elements; `run`'s
+    // handler writes once per element (the value and the closing `Nothing`).
+    assert_eq!(run(src), ["kept", "kept"]);
 }
