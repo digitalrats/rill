@@ -164,6 +164,15 @@ fn assoc(i: i64, j: i64, v: f64) -> String {
     format!("Pair {{ first: {}, second: {v:?} }}", cell(i, j))
 }
 
+/// Run `src` and return its `Float` value output.
+fn float_of(src: &str) -> f64 {
+    let (_prog, v) = run(src);
+    match v {
+        Value::Float(f) => f,
+        other => panic!("expected a Float, got {other:?}\nsrc:\n{src}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Fault policy — out-of-range reads
 // ---------------------------------------------------------------------------
@@ -529,3 +538,75 @@ fn vector_update_and_accum_preserve_the_declared_origin() {
     assert_eq!((low, high), (2, 4), "the origin survives both operations");
     assert_eq!(values, vec![10.0, 20.0, 31.0]);
 }
+
+// ---------------------------------------------------------------------------
+// 5. The accessor in expression position, arrays as first-class values
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_accessor_composes_inside_a_larger_expression() {
+    // Every other assertion here reads one cell as the whole program. `!` is an
+    // ordinary infix operator, so it must compose: two reads added together,
+    // and a read whose index comes from a λ-parameter.
+    assert_eq!(
+        float_of(&format!(
+            "main = ({} ! {}) + ({} ! {});",
+            m3(),
+            cell(0, 0),
+            m3(),
+            cell(1, 1)
+        )),
+        6.0
+    );
+    assert_eq!(
+        float_of(&format!("main = (\\ i -> {} ! i) {};", m3(), cell(2, 0))),
+        7.0
+    );
+}
+
+#[test]
+fn an_array_passes_through_a_function_as_a_value() {
+    // Arrays are ordinary first-class values: a λ may take one and index it.
+    // The parameter is typed `Array (Pair Int Int) Float` by the ARGUMENT, so
+    // the accessor inside the body dispatches to the array definition rather
+    // than to a numeric fallback.
+    let src = format!("main = (\\ m -> m ! {}) {};", cell(1, 2), m3());
+    assert_eq!(float_of(&src), 6.0);
+}
+
+#[test]
+fn the_accessor_feeds_a_condition() {
+    // The read participates in a Bool expression, so the accessor's result must
+    // be a `Float` the comparison can consume — not a wrapped or deferred value.
+    assert_eq!(
+        float_of(&format!(
+            "main = if 4.0 < ({} ! {}) then 1.0 else 0.0;",
+            m3(),
+            cell(1, 1)
+        )),
+        1.0
+    );
+    assert_eq!(
+        float_of(&format!(
+            "main = if 4.0 > ({} ! {}) then 1.0 else 0.0;",
+            m3(),
+            cell(0, 0)
+        )),
+        1.0
+    );
+    // Written from the other side, so a comparison that ignored the operand
+    // order cannot pass both directions.
+    assert_eq!(
+        float_of(&format!(
+            "main = if 4.0 > ({} ! {}) then 1.0 else 0.0;",
+            m3(),
+            cell(1, 1)
+        )),
+        0.0
+    );
+}
+
+// NOTE: an `if` condition may not BEGIN with a parenthesis (`if (x) > y then`
+// is a parse error, `if y < (x) then` is not) — a pre-existing general grammar
+// limitation of `if`, unrelated to arrays. The conditions above are therefore
+// written comparison-first.
