@@ -255,7 +255,7 @@ The API break. Every interpreter function moves to `(ir: &Ir, world: &mut WorldS
 - `let prog = test_eval::<f32, 256>(defs, expr, &ffi, sr)` → the new helpers (below); `prog` becomes a `WorldState<f32, 256>` named `world`.
 - `prog.result()` → `world.result()`; `prog.arena()` → `world.arena()`; `prog.copy_buffer(r, dst)` → `world.copy_buffer(r, dst)`; structural asserts `arena().get(v)` unchanged.
 - `set_param(idx, …)`/`param(idx)`/`param_index(name)` → `set_param(name, …)`/`param(name)`; where a test pre-computed an index via `param_index`, use the name directly.
-- `compile_runner::<f32, 256>(src, &Registry::new(), sr)` → `compile::<f32, 256>(src, ForeignRegistry::new())`, then pre-seed `r.world.params.sample_rate = sr` where the program is signal-aware; `r.run()`, `r.stdout()`/`r.stderr()` unchanged.
+- `compile_runner::<f32, 256>(src, &Registry::new(), sr)` → `compile::<f32, 256>(src, ForeignRegistry::new())`, then pre-seed `r.world.params.sample_rate = sr` where the program is signal-aware; `r.run()`, `r.stdout()`/`r.stderr()` unchanged. The legacy zero-arg-ffi form `compile::<T>(src)` (e.g. `tests/compile_errors.rs`) becomes `compile::<T, 256>(src, ForeignRegistry::new())`.
 - `compile_with_ffi::<f32>(src, ffi, sr)` (value form) → `compile_eval` split (`defs`/`expr`) + world; `compile_with_mode::<f32>(src, Mode::X)` → `compile_eval(defs, expr, Mode::X)`.
 - Class 2 (multi-channel legacy, `set_param`-between-runs without the new surface, `value_outputs`-era asserts): rewrite to compile against the new API, then `#[ignore = "…; re-expressed in the world-state plan"]` or delete with a ledger record.
 
@@ -289,7 +289,7 @@ Files: `ffi, ffi_extended, ffi_partial_application, compile_errors, smooth, grap
 
 - [ ] **Step 6: Migrate the runner/IO files**
 
-Files: `io_runner, io_stdio, io_streams_memory, haskell2010_syntax, deep_recursion_parity, st_after_unification` → `compile::<f32, 256>(src, ForeignRegistry::new())` + `run()`; pre-seed `world_mut().params.sample_rate` where the program uses signal ops.
+Files: `io_runner, io_stdio, io_streams_memory, haskell2010_syntax, deep_recursion_parity` → `compile::<f32, 256>(src, ForeignRegistry::new())` + `run()`; pre-seed `world_mut().params.sample_rate` where the program uses signal ops. (`st_after_unification` does not exist — the runner-file set is exactly the five files above.)
 
 - [ ] **Step 7: Delete `RillProgram` and update docs/tests-in-crate**
 
