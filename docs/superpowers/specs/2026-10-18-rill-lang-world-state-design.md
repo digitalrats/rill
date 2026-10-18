@@ -48,9 +48,12 @@ foundation for rill-analyzer introspection of the live world.
    compile step produces `Ir` only (parse → infer → reduce → lower; no runtime
    state). An execution step runs an `Ir` against a world. `test_eval` takes a
    **compiled `Ir` and a `RealWorld`**, not a program.
-3. **The world is created externally, with caller-supplied config** (page size,
-   buffer budget, `BUF`, memory policy, FFI registry, initial streams/input).
-   The world's *config* is never derived from one program's IR.
+3. **The world is created externally, with caller-supplied config** (`BUF`,
+   memory policy, FFI registry, initial streams/input). The world's *config*
+   carries identity and policy (who the world is, which registry it resolves
+   against) — never derived from one program's IR. Storage *sizes* are the
+   opposite: they are **computed from the IR at seat time** (decision 5), not
+   config guesses.
 4. **The world survives compilation and execution** and is **inspectable after**
    a run: arena, buffers, streams/stdio, params, result — initial state can be
    injected before a run, live data read back after it.
@@ -112,10 +115,14 @@ foundation for rill-analyzer introspection of the live world.
 4. **The FFI registry lives in the world.** Foreign built-ins are resolved and
    instantiated at execution/seat time against the world's registry, not once in
    `new_with`.
-5. **Page-based allocation; capacity is not precomputed.** Start with one
-   fixed-size page and let the store grow page-by-page (Alexandrescu: page
-   allocation is the right compromise between dynamic allocation and speed).
-   This un-gates the existing `ChunkedVec`/`growable` door.
+5. **The arena is sized from the compiled IR, not guessed.** `Ir::value_state`
+   (`ValueLayout`) already carries a **build-time arena capacity bound**
+   computed during lowering — `ProgramRunner`/`seat` allocate the arena exactly
+   with `Arena::with_capacity(ir.value_state.capacity)`. The store grows
+   page-by-page only if a run exceeds that bound (Alexandrescu: pages are the
+   *growth unit*; the existing `ChunkedVec` page door stays, and the
+   `growable-arena` cargo feature becomes the world's memory-policy flag). The
+   world config supplies *policy*, never sizes.
 6. **`RillProgram` is removed.** `ProgramRunner` creates a fresh world and owns
    it ("можно и проще" — the ST-magic option was considered and declined).
 7. **`main : IO ()` gate stays at compile time.** Entry named `main` must infer
@@ -177,8 +184,9 @@ compile(defs…) ──▶ Ir (pure code; no runtime state)      ──▶ seat+
 
   `BUF` stays a const generic on the world because `block_state` uses
   `FixedBuffer<T, BUF>` (RT-safe fixed-size feedback); the *rest* of the world
-  config (page size, buffer budget, memory policy, FFI registry, initial stdio
-  input) is runtime data supplied by the caller.
+  config (memory policy, FFI registry, initial stdio input) is runtime data
+  supplied by the caller. Storage sizes — arena, buffers, registers, state
+  slots — are computed from the IR at seat time (decision 5), not guessed.
 
 ### Seat: the code-meets-memory boundary
 
@@ -192,12 +200,14 @@ fn seat(&mut self, ir: &Ir) -> Result<(), CompileError>
 What seat does is exactly today's `RillProgram::build` (`program.rs:627`), with
 three differences driven by the user's decisions:
 
-1. **The arena is not sized from the IR.** Instead of
-   `Arena::with_capacity(ir.value_state.capacity)` the world's arena starts at
-   **one fixed-size page** (page size from world config) and grows by appending
-   pages on demand (the `ChunkedVec` door). `BufferPool` is constructed with the
-   world's buffer budget and the world's growable policy (the `growable-arena`
-   cargo feature becomes the world's memory-policy flag, not a build-time gate).
+1. **The arena is sized from the compiled IR, exactly.** 
+   `Arena::with_capacity(ir.value_state.capacity)` — the IR's build-time
+   capacity bound (computed during lowering, already a `ValueLayout` field)
+   pre-sizes the slot store; the page door only appends pages if a run exceeds
+   it. `BufferPool` is constructed with `ir.value_state.buffer_budget` and the
+   world's growable policy (the `growable-arena` cargo feature becomes the
+   world's memory-policy flag, not a build-time gate). No size comes from
+   world config.
 2. **Built-ins resolve against the world's registry.** `build_builtin`
    (`program.rs:334`) is called with `world.ffi` instead of a per-assembly
    `foreign: Option<…>`; the legacy `Registry` path disappears with the in-flight
@@ -218,8 +228,10 @@ is sized `ir.num_value_regs + ir.max_call_regs`, `block_state` is sized
 `ir.state.block_state_slots`, the buffer table is carved per `ir.num_buffers`,
 tapes per `ir.tapes`, delays per `ir.state.delay_lens`. These are exact IR
 requirements — seating them is not "computing capacity", it is reading the
-program's layout. (User decision 5 is about the *arena's dynamic store*: that
-one starts at a page and grows.)
+program's layout. So is the arena: decision 5 fixes its initial size as the
+**IR's build-time capacity bound** (`ir.value_state.capacity`, computed during
+lowering) — the arena is sized from the IR exactly, and the page door is the
+safety net for runs that outlive the bound.
 
 A world may be **re-seated** for a different IR (a long-lived world running
 several compiled programs): structural tables resize to the next IR's layout;
