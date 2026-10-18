@@ -1,5 +1,15 @@
 # rill-lang: single run + `main : IO ()` + eval-entry test migration — Implementation Plan
 
+> **STATUS: COMPLETED — superseded by `docs/superpowers/plans/2026-10-18-rill-lang-world-state.md`.**
+> Tasks 1–3 landed on `feature/rill-lang-arrays` (`69a4c68`, `43a5fcd`, `b82f5fd`). Tasks 4–14 were
+> superseded by the world-state plan (explicitly per its header), which was fully executed
+> (Tasks 0–8, head `264de38`) and closed in
+> `docs/superpowers/ledgers/2026-10-18-world-state.md`; Tasks 15–19 were absorbed by the
+> world-state Tasks 4/6/8 and the whole-branch review. The intended end-state is delivered,
+> under the successor's API: `compile(src, ffi)` with the `IO ()` gate, `compile_eval(defs, expr, mode)`,
+> `test_eval(ir, &mut world)`, `WorldState`, `RillProgram`/legacy `Registry`/graph deleted.
+> The checkboxes below are left unmarked as historical record — nothing here remains to execute.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Finish `feature/rill-lang-arrays` by unifying every execution path into one `run_blocks`/`force` mechanism, making `main : IO ()` a STATIC typing rule — the only legal program form behind a single ForeignRegistry-only `compile` — and migrating the value-test surface onto an expression evaluator (`test_eval`) with full arena + buffer observability.
