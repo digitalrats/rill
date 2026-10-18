@@ -48,13 +48,45 @@ eager/lazy split a property of the frame, not of the entry path.
    change to fault messages, no change to the parser/AST/prelude. `signal_ins`
    etc. are vestigial (signal mode no longer exists — only values); they are
    left alone unless the unification touches their exact lines.
+6. **`main` is a pure value `IO ()`, not a function.** The runner contract
+   changes from `main : (String…) -> IO ()` to `main : IO ()`. String launch
+   arguments are removed as a feature: `set_args`/`set_main_arg`/`num_main_args`,
+   the `main_cells` store and `Ir::num_main_cells`, the `ValueReadMainCell` /
+   `ValueBufferMainCellRead` instructions, the `main`→`String` λ-param
+   special-case in inference, and the `Thunk` arm of `main_result_is_io_unit`
+   (a `main` with λ-params can no longer be a Thunk — its type is directly
+   `IO ()`). Downstream: `rill-adrift`'s `set_args` call site, its
+   `program.rs` example, and its `modular_launch` test are updated; the
+   `io_runner::main_string_args_bind` test and README/docs references to
+   `set_args` are dropped. A future `System.Env` (modelled on Haskell's
+   `System.Environment.getArgs`) will supply launch arguments through the
+   program's `World` instead — a separate task, out of scope here. This aligns
+   with Decision 3: the `main` fragment is nullary, one mechanism, no special
+   arg-binding path.
+7. **No value-output channels — the program surface is a single `main` field.**
+   Because `main : IO ()` is the only program form and IO is a generalized monad
+   (`IO a = { unIO: World -> Pair World a }`), a program's observable output is
+   its *effects* on the `World` (stdout/stderr/stream table), not a value. The
+   Rust program surface therefore stops carrying output channels: the
+   `value_outputs` per-tick store (`Vec<Option<ArenaRef>>`),
+   `Ir::value_output_regs`, the `run_value()` public entry, and the inspection
+   accessors (`value_outputs()`, `copy_output_samples()`) are removed. In their
+   place `RillProgram` holds one field `main: Option<ArenaRef>` — the evaluated
+   `IO ()` action. The main fragment's terminal register (returned by the
+   unified entry, §3) is captured into `prog.main` before the per-tick register
+   clear; `run_main_io` reads `prog.main`, projects `unIO`, applies to a World
+   token, and forces the pair. Buffer output inspection (`copy_output_samples`)
+   falls under the same removal — signal I/O is being redesigned as streams
+   *inside* the program (the backend becomes part of the program), a separate
+   deferred task; so the removal of the buffer-inspection tests is sequenced
+   with that redesign, not with this unification.
 
 ## Background: the six run forms and where the duplication lives
 
 | Form | Location | Role |
 |---|---|---|
-| `run_value` | `program.rs:979` | public entry, delegates to `run_value_tick` |
-| `run_value_tick` | `interp.rs:54` | one whole-buffer tick: push builtin params → release old outputs → `run_value_track` → `swap_block_state` → force+copy outputs → clear regs |
+| `run_value` | `program.rs:979` | public entry, delegates to `run_value_tick` — **removed** (Decision 7): the public surface is the runner / `run_main_io`; `prog.main` replaces `value_outputs` |
+| `run_value_tick` | `interp.rs:54` | one whole-buffer tick: push builtin params → release old outputs → `run_value_track` → `swap_block_state` → force+copy outputs → clear regs (the "outputs" become the single `prog.main` capture, Decision 7) |
 | `run_value_track` | `interp.rs:139` | walks top-level `value_blocks` from `value_entry`, base 0 |
 | `run_main_io` | `interp.rs:213` | runs `main : IO ()` to completion (tick + project `unIO` + apply + force) |
 | `run_io_action` | `interp.rs:4552` | reentrant helper: force `unIO`, apply to a World token, return payload (used by stream effects) |
@@ -104,11 +136,16 @@ run_blocks(prog, blocks: &[ValueBlock], entry: usize, base: usize, drops: &mut V
 - The top-level track becomes the body of the program's `main` fragment:
   `Ir.fragments` gains (or `Ir.value_blocks`/`value_entry` is aliased as) the
   main fragment, executed with `base = 0`, `ArgsSource`-empty env (no args,
-  nothing captured), and the top-level output registers.
+  nothing captured). The main fragment's terminal value register is the
+  program's `IO ()` action — the single `prog.main` field (Decision 7), not a
+  value-output channel.
 - `run_value_tick`'s track phase becomes "run the main fragment" through the
   same `run_call`-family entry as any other fragment. The per-tick
   orchestration (param push, output release, block-state swap, output copy,
   reg clear) stays in `run_value_tick` — that is tick policy, not execution.
+  Per Decision 7 the "output copy" is exactly the capture of the main
+  fragment's terminal register into the single `prog.main` field (no
+  value-output channels).
 - Consequence: `run_value_track` disappears as a separate function; the
   top-level path is a call with an empty frame at base 0. The `debug_assert!`
   and drops discipline of the top-level path are preserved by the main-fragment
@@ -176,10 +213,14 @@ run_blocks(prog, blocks: &[ValueBlock], entry: usize, base: usize, drops: &mut V
 
 ### 5. What stays
 
-- `run_value_tick` — tick orchestration (param push, output release, block
-  state swap, output copy, reg clear) around "run the main fragment".
-- `run_main_io` — IO entry: tick + project `unIO` + apply + force + the
-  `IO ()` payload contract. Its apply step goes through the unified entry.
+- `run_value_tick` — tick orchestration (param push, release of the previous
+  `prog.main`, block state swap, capture of the new `main` into `prog.main`,
+  reg clear) around "run the main fragment". No value-output channels
+  (Decision 7): the sole "output" is the `IO ()` action captured into
+  `prog.main`.
+- `run_main_io` — IO entry: run the main fragment + capture `prog.main` +
+  project `unIO` + apply + force + the `IO ()` payload contract. Its apply
+  step goes through the unified entry.
 - `run_io_action` — the reentrant stream helper: it already uses
   `force`/`apply_callable`; it now calls the unified entry. Kept as a distinct
   *orchestration* (it receives a token and returns a payload), not a distinct
@@ -202,12 +243,19 @@ run_blocks(prog, blocks: &[ValueBlock], entry: usize, base: usize, drops: &mut V
 
 - Full existing suite green: `cargo test -p rill-lang --features dsp`;
   clippy `--lib --tests`; fmt `--check`. The refactor is behavior-preserving.
+  Value-program tests (`compile` + `run_value` + `value_outputs` /
+  `copy_output_samples`) migrate to the IO form (Decision 7): a test asserts
+  on `ProgramRunner::stdout()` instead of reading a scalar/Buffer output.
+  Buffer-inspection tests that cannot yet express their check through streams
+  are sequenced with the deferred signal-I/O redesign (Decision 7) rather than
+  forced through the unification.
 - Dedicated tests:
   - A deep non-tail recursion now runs to the same result as before the
     refactor (behavior parity, not yet stack-safety — stack-safety is the
     trampoline step, out of scope here).
-  - Program-as-fragment: a program with top-level bindings, outputs, and a
-    `main : IO ()` all run identically to pre-refactor.
+  - Program-as-fragment: a program with top-level bindings and a
+    `main : IO ()` all run identically to pre-refactor; the `IO ()` action
+    lands in `prog.main` and `run_main_io` executes it to the same effect.
   - 0-ary vs 1-ary parity: a nullary `where` binding, a thunk in complete mode,
     an eager closure, and an applied effect all reach the same execution
     function (structural assertion via a test-only probe if feasible).
@@ -243,6 +291,11 @@ and summarized here for review:
 - Whether `Ir.fragments` gains a real `main` fragment entry or the top-level
   blocks are wrapped by reference (the "program = fragment" decision is fixed;
   the wiring is the builder's).
+- The exact shape of the `prog.main` capture (Decision 7): how the main
+  fragment's terminal register becomes the single `main: Option<ArenaRef>`
+  field, how `run_main_io` reads it instead of `value_outputs[0]`, and which
+  value-program test files are migrated to the IO form in this pass vs. held
+  for the deferred signal-I/O redesign.
 - How `apply_callable`'s 7 call sites are rewritten against the unified entry
   (each is a one-line change; the callable-kind dispatch moves into the unified
   function).
