@@ -1,0 +1,459 @@
+//! Immutable `Data.Array` language surface and its FAULT POLICY.
+//!
+//! The subject here is the immutable surface as a *user* reaches it — `!` /
+//! `index`, `listArray`, `array`, `update`, `accum`, `accumArray`, `ixmap`,
+//! `bounds`, `elems` — with the fault policy as the distinguishing theme:
+//! every out-of-range reference must latch a `ProcessError::Processing` (the
+//! design's clean fault channel), never panic and never silently read a
+//! neighbouring cell.
+//!
+//! Deliberately NOT duplicated here (already pinned by other targets):
+//! - the `Ix` offset/range/size arithmetic and the 1-D storage assertions
+//!   (`tests/ix.rs`, `tests/array_storage.rs`);
+//! - the ST surface and the freeze rules (`tests/st_array.rs`, `tests/ix.rs`);
+//! - the flat primitives' own fault messages (`tests/array_storage.rs`).
+//!
+//! This target asserts the SHAPES (`2-D` bounds/elements through the surface)
+//! and the fault surface those targets do not cover.
+
+use rill_core::traits::ProcessError;
+use rill_lang::arena::{ArenaRef, Value};
+use rill_lang::compile;
+use rill_lang::program::RillProgram;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Compile `src`, run one tick, and return the program (and its single value
+/// output).
+fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
+    let mut prog =
+        compile::<f32>(src).unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
+    prog.run_value()
+        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let v = output(&prog);
+    (prog, v)
+}
+
+/// The single value output of an already-run program.
+fn output(prog: &RillProgram<f32, 256>) -> Value {
+    let outputs = prog.value_outputs();
+    assert_eq!(outputs.len(), 1, "expected exactly one value output");
+    let v = outputs[0].expect("the value output must be bound");
+    prog.arena()
+        .get(v)
+        .expect("the output ref must resolve")
+        .clone()
+}
+
+/// Run `src` expecting the latched value-track fault, and return its detail.
+///
+/// A panic in the interpreter fails this helper outright (the harness reports
+/// the panic), so every caller doubles as the "clean error, never a panic"
+/// assertion.
+fn fault(src: &str) -> String {
+    let mut prog =
+        compile::<f32>(src).unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
+    match prog.run_value() {
+        Ok(()) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
+        Err(ProcessError::Processing(msg)) => msg,
+        Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
+    }
+}
+
+/// The two field VALUES of a `Pair` record, resolved through the arena.
+fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+    let fields = match v {
+        Value::Record(fields) if fields.len() == 2 => fields,
+        other => panic!("expected a Pair record, got {other:?}"),
+    };
+    (
+        prog.arena().get(fields[0]).expect("first resolves").clone(),
+        prog.arena()
+            .get(fields[1])
+            .expect("second resolves")
+            .clone(),
+    )
+}
+
+fn int_pair(prog: &RillProgram<f32, 256>, v: &Value) -> (i64, i64) {
+    match pair_values(prog, v) {
+        (Value::Int(lo), Value::Int(hi)) => (lo, hi),
+        other => panic!("expected an Int pair, got {other:?}"),
+    }
+}
+
+/// The element refs of an `Array` value.
+fn array_elems(v: &Value) -> Vec<ArenaRef> {
+    match v {
+        Value::Array { elems, .. } => elems.clone(),
+        other => panic!("expected an Array, got {other:?}"),
+    }
+}
+
+/// `(flat elements, ((lo1, hi1), (lo2, hi2)))` of a matrix-shaped `Array`.
+#[allow(clippy::type_complexity)]
+fn matrix(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i64, i64))) {
+    let elems = array_elems(v);
+    let values = elems
+        .iter()
+        .map(|r| match prog.arena().get(*r) {
+            Some(Value::Float(f)) => *f,
+            other => panic!("expected a Float element, got {other:?}"),
+        })
+        .collect();
+    let bounds = match v {
+        Value::Array { bounds, .. } => prog.arena().get(*bounds).expect("bounds resolve").clone(),
+        _ => unreachable!(),
+    };
+    let (low, high) = pair_values(prog, &bounds);
+    (values, (int_pair(prog, &low), int_pair(prog, &high)))
+}
+
+/// `(flat elements, (lo, hi))` of a 1-D `Array`.
+fn vector(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
+    let elems = array_elems(v);
+    let values = elems
+        .iter()
+        .map(|r| match prog.arena().get(*r) {
+            Some(Value::Float(f)) => *f,
+            other => panic!("expected a Float element, got {other:?}"),
+        })
+        .collect();
+    let bounds = match v {
+        Value::Array { bounds, .. } => prog.arena().get(*bounds).expect("bounds resolve").clone(),
+        _ => unreachable!(),
+    };
+    (values, int_pair(prog, &bounds))
+}
+
+/// A 2-D bounds expression `((r1, c1), (r2, c2))`, parenthesized so it stays
+/// one argument in a juxtaposition application.
+fn b2(r1: i64, c1: i64, r2: i64, c2: i64) -> String {
+    format!(
+        "(Pair {{ first: Pair {{ first: {r1}, second: {c1} }}, \
+          second: Pair {{ first: {r2}, second: {c2} }} }})"
+    )
+}
+
+/// A bounds expression for the 3x3 matrix `M3`.
+fn m3_bounds() -> String {
+    b2(0, 0, 2, 2)
+}
+
+/// The value expression of a 3x3 matrix holding 1.0..=9.0 (row-major).
+fn m3() -> String {
+    format!(
+        "(listArray {} [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0])",
+        m3_bounds()
+    )
+}
+
+/// A `Pair Int Int` cell literal.
+fn cell(i: i64, j: i64) -> String {
+    format!("(Pair {{ first: {i}, second: {j} }})")
+}
+
+/// A `(cell, value)` association literal in the surface's `Pair i e` shape.
+///
+/// The value is formatted with `Debug` so it always carries a decimal point
+/// (`10.0`, not `10`): an integer-looking literal would type as `Int` and a
+/// `List (Pair i Float)` association list would not unify.
+fn assoc(i: i64, j: i64, v: f64) -> String {
+    format!("Pair {{ first: {}, second: {v:?} }}", cell(i, j))
+}
+
+// ---------------------------------------------------------------------------
+// 1. Fault policy — out-of-range reads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn bang_out_of_range_is_a_clean_fault_not_a_panic() {
+    let arr = "(listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0])";
+    // Above the upper bound and below the lower bound: both are out of range.
+    for i in ["3", "-1"] {
+        let msg = fault(&format!("main = {arr} ! {i};"));
+        assert!(
+            msg.contains("arrayIndexFlat") && msg.contains("out of range"),
+            "expected the clean out-of-range fault for `! {i}`, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn the_named_index_accessor_faults_out_of_range_like_bang() {
+    let arr = "(listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0])";
+    for i in ["3", "-1"] {
+        let msg = fault(&format!("main = index {arr} {i};"));
+        assert!(
+            msg.contains("out of range"),
+            "expected the named accessor to fault for index {i}, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn bang_out_of_range_below_a_non_zero_origin_is_a_clean_fault() {
+    // Bounds 2..=4: the offsets of 1 and 5 are -1 and 3, both outside the
+    // stored element range. The origin must not turn them into in-range reads.
+    let arr = "(listArray (Pair { first: 2, second: 4 }) [10.0, 20.0, 30.0])";
+    for i in ["1", "5"] {
+        let msg = fault(&format!("main = {arr} ! {i};"));
+        assert!(
+            msg.contains("out of range"),
+            "expected the clean out-of-range fault for `! {i}` on 2..=4, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_matrix_dimension_reads_as_empty_and_access_faults() {
+    // `(0,0)..(1,-1)` has an empty column span: zero elements, and any cell is
+    // out of range rather than a wrapped read.
+    let empty = format!("(listArray {} [])", b2(0, 0, 1, -1));
+    let (_prog, elems) = run(&format!("main = elems {empty};"));
+    match elems {
+        Value::List { elems } => assert!(elems.is_empty(), "an empty span has no elements"),
+        other => panic!("expected the element list, got {other:?}"),
+    }
+    let (prog, bounds) = run(&format!("main = bounds {empty};"));
+    let (low, high) = pair_values(&prog, &bounds);
+    assert_eq!(int_pair(&prog, &low), (0, 0));
+    assert_eq!(int_pair(&prog, &high), (1, -1));
+
+    let msg = fault(&format!("main = {empty} ! {};", cell(0, 0)));
+    assert!(
+        msg.contains("out of range"),
+        "expected the clean out-of-range fault on an empty matrix, got: {msg}"
+    );
+}
+
+#[test]
+fn two_dimensional_list_array_rejects_a_length_that_does_not_match_range_size() {
+    // 2x2 = 4 cells; 3 and 5 elements are both wrong. The message names the
+    // language-level constructor and the contract it broke.
+    for n in [3usize, 5] {
+        let elems: Vec<String> = (0..n).map(|i| format!("{i}.0")).collect();
+        let msg = fault(&format!(
+            "main = listArray {} [{}];",
+            b2(0, 0, 1, 1),
+            elems.join(", ")
+        ));
+        assert!(
+            msg.contains("listArray") && msg.contains("rangeSize") && msg.contains(&n.to_string()),
+            "expected the clean length-mismatch fault for {n} elements, got: {msg}"
+        );
+    }
+    // 3x2 = 6 cells: a 5-element list is rejected, a 6-element one accepted.
+    let msg = fault(&format!(
+        "main = listArray {} [1.0, 2.0, 3.0, 4.0, 5.0];",
+        b2(0, 0, 2, 1)
+    ));
+    assert!(
+        msg.contains("listArray") && msg.contains("rangeSize"),
+        "expected the clean length-mismatch fault for a 3x2 with 5 elements, got: {msg}"
+    );
+}
+
+#[test]
+fn array_update_and_accum_array_reject_out_of_range_association_cells() {
+    // A 2x2 grid addressed by cell (2,0): the row-major offset is 4, one past
+    // the last element, so the association is rejected cleanly.
+    let msg = fault(&format!(
+        "main = array {} [{}];",
+        b2(0, 0, 1, 1),
+        assoc(2, 0, 1.5)
+    ));
+    assert!(
+        msg.contains("arrayUpdate") && msg.contains("out of range"),
+        "expected the clean out-of-range fault for an out-of-grid `array` assoc, got: {msg}"
+    );
+
+    let msg = fault(&format!("main = update {} [{}];", m3(), assoc(5, 0, 1.5)));
+    assert!(
+        msg.contains("arrayUpdate") && msg.contains("out of range"),
+        "expected the clean out-of-range fault for an out-of-grid `update` cell, got: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2. Matrix construction and the immutable operations
+// ---------------------------------------------------------------------------
+
+#[test]
+fn matrix_bounds_and_elements_are_read_through_the_surface() {
+    let (prog, v) = run(&format!("main = {};", m3()));
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!(low, (0, 0));
+    assert_eq!(high, (2, 2));
+    assert_eq!(values, (1..=9).map(f64::from).collect::<Vec<_>>());
+}
+
+#[test]
+fn update_on_a_matrix_replaces_the_selected_cells_only() {
+    let src = format!(
+        "main = update {} [{}, {}];",
+        m3(),
+        assoc(0, 0, 10.0),
+        assoc(2, 1, 20.0)
+    );
+    let (prog, v) = run(&src);
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!((low, high), ((0, 0), (2, 2)), "the shape is preserved");
+    assert_eq!(
+        values,
+        vec![10.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 20.0, 9.0],
+        "cell (0,0) and cell (2,1) take the new values, the rest is untouched"
+    );
+}
+
+#[test]
+fn update_keeps_the_last_association_for_a_repeated_cell() {
+    let src = format!(
+        "main = update {} [{}, {}];",
+        m3(),
+        assoc(1, 1, 5.0),
+        assoc(1, 1, 7.0)
+    );
+    let (prog, v) = run(&src);
+    let (values, _) = matrix(&prog, &v);
+    assert_eq!(values[4], 7.0, "the second association wins");
+}
+
+#[test]
+fn update_leaves_the_source_matrix_unchanged() {
+    // The updated array is read FIRST and the original SECOND: an in-place
+    // update would leak the new value into the original's read.
+    let src = format!(
+        "main = (\\arr -> Pair {{ first: (update arr [{}]) ! {}, \
+          second: arr ! {} }}) {};",
+        assoc(1, 1, 99.0),
+        cell(1, 1),
+        cell(1, 1),
+        m3()
+    );
+    let (prog, v) = run(&src);
+    let (updated, original) = pair_values(&prog, &v);
+    assert_eq!(updated, Value::Float(99.0));
+    assert_eq!(original, Value::Float(5.0), "the source keeps its element");
+}
+
+#[test]
+fn accum_on_a_matrix_folds_the_associations_in_order() {
+    let src = format!(
+        "main = accum (\\ a -> \\ b -> a + b) {} [{}, {}, {}];",
+        m3(),
+        assoc(1, 1, 5.0),
+        assoc(1, 1, 6.0),
+        assoc(2, 2, 10.0)
+    );
+    let (prog, v) = run(&src);
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!((low, high), ((0, 0), (2, 2)));
+    assert_eq!(
+        values,
+        vec![1.0, 2.0, 3.0, 4.0, 16.0, 6.0, 7.0, 8.0, 19.0],
+        "cell (1,1) accumulates twice (5 + 6 + its own 5)"
+    );
+}
+
+#[test]
+fn accum_array_builds_a_matrix_from_the_initial_value() {
+    // 3x2 with initial 1.0: two associations land on two different cells, and
+    // every other cell keeps the initial value.
+    let src = format!(
+        "main = accumArray (\\ a -> \\ b -> a + b) 1.0 {} [{}, {}];",
+        b2(0, 0, 2, 1),
+        assoc(0, 1, 10.0),
+        assoc(1, 0, 100.0)
+    );
+    let (prog, v) = run(&src);
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!((low, high), ((0, 0), (2, 1)));
+    assert_eq!(
+        values,
+        vec![1.0, 11.0, 101.0, 1.0, 1.0, 1.0],
+        "the initial value seeds every cell and the assocs fold on top"
+    );
+}
+
+#[test]
+fn array_builds_a_matrix_with_the_zero_fill() {
+    // `array` is Float-only and fills the unlisted positions with 0.0.
+    let src = format!(
+        "main = array {} [{}, {}];",
+        b2(0, 0, 1, 2),
+        assoc(0, 1, 1.5),
+        assoc(1, 2, 3.5)
+    );
+    let (prog, v) = run(&src);
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!((low, high), ((0, 0), (1, 2)));
+    assert_eq!(values, vec![0.0, 1.5, 0.0, 0.0, 0.0, 3.5]);
+}
+
+// ---------------------------------------------------------------------------
+// 3. `ixmap` — reindexing between matrix shapes
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ixmap_transposes_a_three_by_two_matrix() {
+    // 3x2 (rows 0..=2, cols 0..=1) reindexed into 2x3 with the transposing
+    // index map. The sibling target covers 2x3 -> 3x2; this is the inverse
+    // orientation, so an accidentally-symmetric implementation cannot pass
+    // both.
+    let src = format!(
+        "main = ixmap {} (\\ p -> Pair {{ first: p.second, second: p.first }}) \
+         (listArray {} [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);",
+        b2(0, 0, 1, 2),
+        b2(0, 0, 2, 1)
+    );
+    let (prog, v) = run(&src);
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!((low, high), ((0, 0), (1, 2)), "the target bounds are 2x3");
+    // Target (0,0)=s(0,0)=1, (0,1)=s(1,0)=3, (0,2)=s(2,0)=5, then the row 1.
+    assert_eq!(values, vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0]);
+}
+
+#[test]
+fn ixmap_with_shifted_bounds_reaches_the_source_cells_through_both_origins() {
+    // Source 2x3 at origin (1,2), target 3x2 at origin (2,1) — the transpose of
+    // the origin as well as of the shape, so the swap map alone lands on valid
+    // source cells: target (i,j) -> source (j,i). Two `Ix` instances with
+    // different origins are in play at once.
+    //
+    // The map stays a pure projection on purpose: arithmetic on a record
+    // projection inside a λ-literal is not typeable today (`p.second - k` has
+    // no Int operand to pin the literal), which is a general inference
+    // limitation unrelated to arrays.
+    let src = format!(
+        "main = ixmap {} (\\ p -> Pair {{ first: p.second, second: p.first }}) \
+         (listArray {} [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);",
+        b2(2, 1, 4, 2),
+        b2(1, 2, 2, 4)
+    );
+    let (prog, v) = run(&src);
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!((low, high), ((2, 1), (4, 2)), "the target origin is (2,1)");
+    // Target row-major: (2,1)->s(1,2)=10, (2,2)->s(2,2)=40, (3,1)->s(1,3)=20, …
+    assert_eq!(values, vec![10.0, 40.0, 20.0, 50.0, 30.0, 60.0]);
+}
+
+// ---------------------------------------------------------------------------
+// 4. The 1-D surface's fault path in vector form (the shape `ix.rs` leaves out)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn vector_update_and_accum_preserve_the_declared_origin() {
+    // Non-zero origin: the offsets are relative to `2`, so cell 2 is the first
+    // stored element and cell 4 the last.
+    let arr = "(listArray (Pair { first: 2, second: 4 }) [10.0, 20.0, 30.0])";
+    let (prog, v) = run(&format!(
+        "main = accum (\\ a -> \\ b -> a + b) (update {arr} [Pair {{ first: 4, second: 1.0 }}]) \
+           [Pair {{ first: 4, second: 30.0 }}];"
+    ));
+    let (values, (low, high)) = vector(&prog, &v);
+    assert_eq!((low, high), (2, 4), "the origin survives both operations");
+    assert_eq!(values, vec![10.0, 20.0, 31.0]);
+}
