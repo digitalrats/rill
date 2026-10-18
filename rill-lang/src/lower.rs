@@ -185,7 +185,6 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueNewtype { .. }
             | ValueInstr::ValueBindCell { .. }
             | ValueInstr::ValueReadCell { .. }
-            | ValueInstr::ValueReadMainCell { .. }
             | ValueInstr::ValueStateRead { .. }
             | ValueInstr::ValueUpdateField { .. }
             | ValueInstr::ValueMakeClosure { .. }
@@ -217,7 +216,6 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueBufferFill { .. }
             | ValueInstr::ValueCallForeign { .. }
             | ValueInstr::ValueBufferParamRead { .. }
-            | ValueInstr::ValueBufferMainCellRead { .. }
     )
 }
 
@@ -233,20 +231,18 @@ fn concrete_or_float(t: ValueTy) -> ValueTy {
     }
 }
 
-/// Whether `main`'s lowered type is `(String…) -> IO ()` — the
+/// Whether `main`'s lowered type is `IO ()` — the
 /// [`ProgramRunner`](crate::program_runner::ProgramRunner) contract.
 ///
-/// A `main` with λ-parameters is a `Thunk(_, [ret])`; the IO action is the
-/// result. The runtime payload of `()` is erased to `Float(0.0)` when it
-/// travels through a closure cell, so the static type recorded here is the
-/// only way the runner can accept the erased unit without also accepting an
-/// `IO Float` that returns `0.0`.
+/// The runtime payload of `()` is erased to `Float(0.0)` when it travels
+/// through a closure cell, so the static type recorded here is the only way
+/// the runner can accept the erased unit without also accepting an `IO Float`
+/// that returns `0.0`.
 fn main_result_is_io_unit(t: &ValueTy) -> bool {
     match t {
         ValueTy::Data(name, args) => {
             name == "IO" && args.len() == 1 && matches!(args.first(), Some(ValueTy::Void))
         }
-        ValueTy::Thunk(_, rets) => rets.len() == 1 && main_result_is_io_unit(&rets[0]),
         _ => false,
     }
 }
@@ -617,12 +613,6 @@ struct Lowerer<'a> {
     builtins: Vec<BuiltinInstance>,
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
-    /// main λ-parameter cells: name → persistent cell index. These are NOT
-    /// per-run value bindings — the cells are allocated once at program
-    /// construction ([`Ir::num_main_cells`]), so `SetParameter` writes persist
-    /// across runs. Block-track reads materialise the cell's float via
-    /// [`ValueInstr::ValueBufferMainCellRead`]; value-track reads via `ValueReadMainCell`.
-    main_cell_locals: HashMap<String, usize>,
     sample_rate: f32,
     /// Value-track blocks, executed once per run by
     /// [`run_entry`](crate::backend::interp::run_entry) (see
@@ -2851,7 +2841,7 @@ impl<'a> Lowerer<'a> {
                                         // this shape, so it is unreachable.
                                         break;
                                     }
-                                    // A main λ-param / actor param / named
+                                    // An actor param / named
                                     // param ref is a LIVE value: record a
                                     // param binding (set_param per tick). A
                                     // constant folds into the builtin's params.
@@ -4648,12 +4638,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        if let Some(&cell) = self.main_cell_locals.get(name) {
-            // A main λ-parameter (a String launch argument) in value
-            // position: copy the persistent cell's value into a fresh slot.
+        if let Some(&idx) = self.param_names.get(name) {
             let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueReadMainCell { dst, cell });
-            return Ok((dst, ValueTy::String));
+            self.emit_value(ValueInstr::ValueReadParam { dst, idx });
+            return Ok((dst, ValueTy::Float));
         }
         if self.env.data_types.contains_key(name) {
             return Err(CompileError::Type {
@@ -4860,7 +4848,7 @@ impl<'a> Lowerer<'a> {
     /// The static types of a lambda's free variables, in the same order as
     /// [`Self::free_vars`]: resolved from the enclosing value scopes (a captured
     /// record parameter keeps its `Data` type, so a field projection / method
-    /// call inside the fragment resolves), a main λ-parameter cell, defaulting
+    /// call inside the fragment resolves), defaulting
     /// to Float for an unknown capture (matching the v1 scalar-capture default).
     fn capture_tys(&self, free: &[String]) -> Vec<ValueTy> {
         free.iter()
@@ -7348,15 +7336,6 @@ impl<'a> Lowerer<'a> {
             });
             return Ok(vec![dst]);
         }
-        if let Some(&cell) = self.main_cell_locals.get(name) {
-            // A main λ-parameter in signal position. `main`'s λ-parameters are
-            // String launch arguments, so a typed program never reaches here;
-            // the arm materialises the cell defensively for the value track's
-            // benefit.
-            let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueBufferMainCellRead { dst, cell });
-            return Ok(vec![dst]);
-        }
         if let Some(&idx) = self.param_names.get(name) {
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueBufferParamRead { dst, idx });
@@ -7678,7 +7657,7 @@ pub fn lower_with_cafs_mode(
 /// Like [`lower_with_cafs_mode`], with an explicit entry name. The entry
 /// definition supplies the program's single value result; upstream,
 /// [`infer_program_with_entry`](crate::types::infer::infer_program_with_entry)
-/// derived `tp.process_ty` from the same name.
+/// recorded the entry's scheme in `tp.def_schemes`, which this function reads.
 pub(crate) fn lower_with_cafs_mode_entry(
     tp: &TypedProgram,
     sample_rate: f32,
@@ -7720,11 +7699,8 @@ pub fn lower_program_with_channels(
     }
 
     let recursive_locals = Lowerer::compute_recursive_locals(&defs);
-    // `main` is an ordinary value definition; its λ-parameters are the
-    // program's String launch arguments, bound by
-    // [`ProgramRunner::set_args`](crate::program_runner::ProgramRunner::set_args)
-    // into persistent main cells. They are NOT control parameters: `?name` /
-    // `SetParameter` remains for dynamic builtin params only.
+    // `main` is an ordinary value definition; `?name` / `SetParameter` remains
+    // for dynamic builtin params only.
     //
     // An explicit `input_channels` still sizes the program's input table in
     // the IR; the value-track body no longer reaches those channels (the
@@ -7741,7 +7717,6 @@ pub fn lower_program_with_channels(
         builtins: Vec::new(),
         params: Vec::new(),
         param_names: HashMap::new(),
-        main_cell_locals: HashMap::new(),
         sample_rate,
         value_blocks: vec![ValueBlock::default()],
         cur_value_block: 0,
@@ -7778,13 +7753,6 @@ pub fn lower_program_with_channels(
         input_buffers: Vec::new(),
     };
 
-    for (cell_idx, p) in main.params().iter().enumerate() {
-        // A main String launch argument: one persistent main cell, initialized
-        // to the empty string at build and written by `set_args`.
-        lw.main_cell_locals.insert(p.name.clone(), cell_idx);
-    }
-    debug_assert_eq!(lw.main_cell_locals.len(), main.params().len());
-
     let mut main_args = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
         let dst = lw.fresh_value_reg();
@@ -7800,7 +7768,11 @@ pub fn lower_program_with_channels(
     // An IO program is just a value program: `main`'s value is the `IO ()`
     // action the runner applies to the realized `World`. Its value register is
     // the program's single value output (no special-casing here).
-    let has_value_out = !matches!(tp.process_ty.vty, ValueTy::Buffer);
+    let entry_scheme = tp
+        .def_schemes
+        .get(entry)
+        .ok_or_else(|| CompileError::Unsupported(format!("no inferred scheme for `{entry}`")))?;
+    let has_value_out = !matches!(entry_scheme.ty.vty, ValueTy::Buffer);
     let outs = if has_value_out {
         let (vr, vty) = lw.lower_value(main.body())?;
         lw.value_regs_out.push(vr);
@@ -7821,7 +7793,6 @@ pub fn lower_program_with_channels(
         ));
     }
     let num_outputs = output_channels.unwrap_or(outs.len());
-    let num_main_cells = lw.main_cell_locals.len();
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
     // is a strict upper bound on simultaneously-live per-tick slots. On top of
@@ -7831,9 +7802,6 @@ pub fn lower_program_with_channels(
     //     children and the previous tick's output tree is still fully live
     //     while the next tick allocates. The bound therefore adds the static
     //     subtree size of each output's value type (a scalar adds 1).
-    //   * main λ-parameter cells are allocated once at construction and live
-    //     for the program's whole lifetime, so they occupy `num_main_cells`
-    //     permanent slots.
     // Value-state slots (`ValueStateRead`/`ValueStateWrite`) are not emitted by
     // lowering in v1; when a future task wires `~`/`@` over values, its slot
     // count must join the bound the same way.
@@ -7879,7 +7847,6 @@ pub fn lower_program_with_channels(
             .map(|t| lw.subtree_size(t))
             .sum::<usize>()
         + container_capacity
-        + num_main_cells
         + fragment_capacity;
     let slot_capacity = value_capacity * Lowerer::POOL_SAFETY_MULTIPLIER;
     // Payload buffer budget: every live slot may hold one pooled payload
@@ -7922,11 +7889,11 @@ pub fn lower_program_with_channels(
     // Terminate the program's value track: the entry block's fallthrough chain
     // ends here. Every existing program is a single block ending in `Halt`.
     lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
-    // The runner contract: `main : (String…) -> IO ()`. The static type is the
+    // The runner contract: `main : IO ()`. The static type is the
     // only place the unit payload survives — the value track represents `()`
     // as `Float(0.0)` once it travels through a closure cell (see
     // `Ir::main_io_unit`).
-    let main_io_unit = main_result_is_io_unit(&tp.process_ty.vty);
+    let main_io_unit = main_result_is_io_unit(&entry_scheme.ty.vty);
     // The program's single result register: where the entry body's value
     // landed. `lw.value_regs_out[0]` — architecturally there are no signal
     // programs (no output channels), so the result is exactly one register
@@ -7944,7 +7911,6 @@ pub fn lower_program_with_channels(
         },
         builtins: lw.builtins,
         params: lw.params,
-        num_main_cells,
         value_blocks: std::mem::take(&mut lw.value_blocks),
         value_entry: lw.value_entry,
         num_value_regs: lw.next_value_reg,
@@ -7986,7 +7952,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs,
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -8040,7 +8006,6 @@ mod tests {
             builtins: Vec::new(),
             params: Vec::new(),
             param_names: HashMap::new(),
-            main_cell_locals: HashMap::new(),
             sample_rate: 44_100.0,
             value_blocks: vec![ValueBlock::default()],
             cur_value_block: 0,
@@ -8134,23 +8099,14 @@ mod tests {
     }
 
     #[test]
-    fn main_param_lowers_to_cell_binding() {
+    fn actor_param_lowers_to_param_read() {
         // An actor param (`?gain`) is a named control parameter read as a
-        // scalar VALUE (`ValueInstr::ValueReadParam`). `main`'s own λ-params
-        // are String launch arguments (bound by the runner), so dynamic
-        // control uses `?name`.
+        // scalar VALUE (`ValueInstr::ValueReadParam`). `main` has no λ-params
+        // (String launch arguments are gone), so dynamic control uses `?name`.
         let ir = ir_of(r"main = ?gain * 1.0;");
-        assert_eq!(ir.num_main_cells, 0);
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueReadParam { .. })),
             "expected a ValueReadParam instruction for `?gain`"
-        );
-        assert!(
-            !has_instr(&ir, |i| matches!(
-                i,
-                ValueInstr::ValueBufferMainCellRead { .. }
-            )),
-            "actor params must not lower to MainCellRead"
         );
     }
 
@@ -8239,7 +8195,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -8267,7 +8223,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -8296,7 +8252,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -8330,7 +8286,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -8489,9 +8445,11 @@ mod tests {
 
     #[test]
     fn lower_if_emits_branch() {
-        // A non-constant Bool condition (`g > 0.5` on a main λ-param, read per
-        // tick) must lower to a runtime Branch term.
-        let ir = ir_of("main g = if g > 0.5 then 1.0 else 2.0;");
+        // A non-constant Bool condition (here: a comparison over a value def,
+        // whose result is a runtime value, not a literal) must lower to a
+        // runtime Branch term. (`main` λ-params are gone, so a runtime Bool
+        // comes from a value expression, not a launch-argument read.)
+        let ir = ir_of("g = 1.0; main = if g > 0.5 then 1.0 else 2.0;");
         assert!(
             ir.value_blocks
                 .iter()

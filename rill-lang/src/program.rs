@@ -207,12 +207,6 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) params_meta: Vec<ParamDef>,
     /// Value arena (fixed capacity from IR).
     pub(crate) arena: Arena<Value>,
-    /// Persistent main λ-parameter cells, one per [`Ir::num_main_cells`]. Each
-    /// cell is a `Void` arena slot allocated ONCE at construction — the value
-    /// track never rebinds them, so a `SetParameter` write survives across
-    /// ticks. The block track (`Instr::ReadMainCell`) and value track
-    /// (`ValueReadMainCell`) read these directly.
-    pub(crate) main_cells: Vec<Option<crate::arena::ArenaRef>>,
     /// Per-tick value registers. The store is pre-sized to
     /// `ir.num_value_regs + ir.max_call_regs`: the leading `num_value_regs`
     /// slots are the program's own registers, the tail is the pre-allocated
@@ -563,7 +557,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             ir.value_state.buffer_budget,
             cfg!(feature = "growable-arena"),
         );
-        let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
         // Pre-allocate the value-register store: the program's own registers
         // plus the function-call scratch (see `Ir::max_call_regs`).
         let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
@@ -584,7 +577,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             params_dirty,
             params_meta,
             arena,
-            main_cells,
             value_regs,
             value_regs_top,
             value_state,
@@ -688,7 +680,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             ir.value_state.buffer_budget,
             cfg!(feature = "growable-arena"),
         );
-        let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
         // Pre-allocate the value-register store: the program's own registers
         // plus the function-call scratch (see `Ir::max_call_regs`).
         let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
@@ -709,7 +700,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             params_dirty,
             params_meta,
             arena,
-            main_cells,
             value_regs,
             value_regs_top,
             value_state,
@@ -731,27 +721,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         for b in &mut self.block_state_next {
             b.fill(T::ZERO);
         }
-    }
-
-    /// Allocate the persistent main λ-parameter cells at construction.
-    ///
-    /// Each cell holds one of `main`'s String launch arguments and is owned
-    /// solely by `main_cells`, initialized to the empty string. Capacity is
-    /// computed at build time to include these `count` slots, so allocation
-    /// cannot fail in a correctly-lowered program.
-    fn alloc_main_cells(
-        arena: &mut Arena<Value>,
-        count: usize,
-    ) -> Vec<Option<crate::arena::ArenaRef>> {
-        (0..count)
-            .map(|_| {
-                Some(
-                    arena
-                        .alloc(crate::arena::Value::String(String::new()))
-                        .expect("main-cell allocation exceeds build-time capacity bound"),
-                )
-            })
-            .collect()
     }
 
     /// Carve the program-level buffer table out of a fresh region allocator:
@@ -857,9 +826,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// Set a parameter by index. RT-safe (plain store).
     ///
     /// The `params` store is kept in sync for readback (`param`) and for
-    /// pushing dynamic built-in parameter bindings. `main`'s λ-parameters are
-    /// launch arguments, not parameters: bind them with
-    /// [`set_main_arg`](Self::set_main_arg).
+    /// pushing dynamic built-in parameter bindings.
     pub fn set_param(&mut self, idx: usize, value: ParamValue) {
         if let Some(def) = self.params_meta.get(idx) {
             let clamped = match &value {
@@ -874,30 +841,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
                 *d = true;
             }
         }
-    }
-
-    /// Bind one of `main`'s String λ-parameters (`cell` = its position).
-    ///
-    /// The persistent main cell holds the String directly: the previous slot is
-    /// released first and the fresh `String` slot is allocated into the freed
-    /// slot (the arena free-list reuses it immediately), so the cell's footprint
-    /// stays at exactly one slot and the build-time capacity bound holds. An
-    /// out-of-range cell index is a no-op (the source has no such parameter).
-    pub fn set_main_arg(&mut self, cell: usize, value: &str) {
-        if let Some(slot) = self.main_cells.get_mut(cell) {
-            if let Some(old) = slot.take() {
-                self.arena.drop_ref(old);
-            }
-            *slot = self
-                .arena
-                .alloc(crate::arena::Value::String(value.to_string()))
-                .ok();
-        }
-    }
-
-    /// Number of `main` λ-parameters (the String launch arguments).
-    pub fn num_main_args(&self) -> usize {
-        self.main_cells.len()
     }
 
     /// Replace the console input (`stdin`) lines and rewind the stream cursor.
@@ -1064,7 +1007,6 @@ mod program_value_tests {
             state: StateLayout::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks: Vec::new(),
             value_entry: 0,
             num_value_regs: 0,
@@ -1095,7 +1037,6 @@ mod program_value_tests {
             state: StateLayout::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks: Vec::new(),
             value_entry: 0,
             num_value_regs: 0,

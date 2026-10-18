@@ -192,9 +192,9 @@ fn foreign_fn_types_as_signal_arrow() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    // `process_ty` is the value type of the whole program (main).
-    assert_eq!(typed.process_ty.arity_in(), 0);
-    assert_eq!(typed.process_ty.arity_out(), 1);
+    // `def_schemes["main"].ty` is the value type of the whole program (main).
+    assert_eq!(typed.def_schemes["main"].ty.arity_in(), 0);
+    assert_eq!(typed.def_schemes["main"].ty.arity_out(), 1);
 }
 
 #[test]
@@ -422,8 +422,8 @@ fn builtin_catalog_is_auto_registered() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 0);
-    assert_eq!(typed.process_ty.arity_out(), 1);
+    assert_eq!(typed.def_schemes["main"].ty.arity_in(), 0);
+    assert_eq!(typed.def_schemes["main"].ty.arity_out(), 1);
 }
 
 #[test]
@@ -438,8 +438,8 @@ fn signal_input_builtin_legacy_call_style_sugar() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 0);
-    assert_eq!(typed.process_ty.arity_out(), 1);
+    assert_eq!(typed.def_schemes["main"].ty.arity_in(), 0);
+    assert_eq!(typed.def_schemes["main"].ty.arity_out(), 1);
 }
 
 // Task 13b: the following tests were removed with the signal surface syntax —
@@ -476,8 +476,8 @@ fn combinator_sugar_binds_both_seq_operands() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 0);
-    assert_eq!(typed.process_ty.arity_out(), 1);
+    assert_eq!(typed.def_schemes["main"].ty.arity_in(), 0);
+    assert_eq!(typed.def_schemes["main"].ty.arity_out(), 1);
 }
 
 #[test]
@@ -492,8 +492,8 @@ fn combinator_sugar_rewrites_where_block_defs() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 0);
-    assert_eq!(typed.process_ty.arity_out(), 1);
+    assert_eq!(typed.def_schemes["main"].ty.arity_in(), 0);
+    assert_eq!(typed.def_schemes["main"].ty.arity_out(), 1);
 }
 
 #[test]
@@ -666,8 +666,8 @@ fn record_param_infer_accepts_record_literal() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    assert_eq!(typed.process_ty.arity_in(), 0);
-    assert_eq!(typed.process_ty.arity_out(), 1);
+    assert_eq!(typed.def_schemes["main"].ty.arity_in(), 0);
+    assert_eq!(typed.def_schemes["main"].ty.arity_out(), 1);
 }
 
 #[test]

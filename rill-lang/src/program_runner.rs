@@ -39,9 +39,8 @@ use crate::program::RillProgram;
 
 /// The executor of a compiled rill-lang program.
 ///
-/// Bind launch arguments with [`set_args`](Self::set_args), then
-/// [`run`](Self::run) the program's `main : IO ()` to completion. The captured
-/// console is available through [`stdout`](Self::stdout) and
+/// [`run`](Self::run) runs the program's `main : IO ()` to completion. The
+/// captured console is available through [`stdout`](Self::stdout) and
 /// [`stderr`](Self::stderr); it is captured (not echoed) and cumulative across
 /// runs. Multi-statement programs need a grown stack — see [`run_on_stack`].
 pub struct ProgramRunner<T: Transcendental, const BUF: usize> {
@@ -57,18 +56,6 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
             program,
             stdout: Vec::new(),
             stderr: Vec::new(),
-        }
-    }
-
-    /// Bind `main`'s String λ-parameters.
-    ///
-    /// The `n`-th argument binds `main`'s `n`-th λ-parameter. Parameters with
-    /// no corresponding argument default to the empty string. Extra arguments
-    /// are ignored (the source has no such parameter).
-    pub fn set_args(&mut self, args: &[String]) {
-        for cell in 0..self.program.num_main_args() {
-            let value = args.get(cell).map_or("", String::as_str);
-            self.program.set_main_arg(cell, value);
         }
     }
 

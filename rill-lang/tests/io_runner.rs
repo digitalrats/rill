@@ -52,14 +52,6 @@ fn io_effects_are_ordered() {
 }
 
 #[test]
-fn main_string_args_bind() {
-    let mut r = runner(r#"main a = do { write (Just a) stdout; return () };"#);
-    r.set_args(&["hi".to_string()]);
-    r.run().expect("run must succeed");
-    assert_eq!(r.stdout(), ["hi"]);
-}
-
-#[test]
 fn bounded_memory_overflow_is_a_clean_error() {
     // An unbounded lazy list is drained by fromList: the fixed arena budget is
     // exhausted and the runner reports a clean CAPACITY error instead of

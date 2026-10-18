@@ -161,7 +161,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
             //    failure aborts the parked thread instead of leaving a running
             //    (possibly non-terminating) program for `stop()` to join.
             let program = rd.program.clone();
-            let args = rd.args.clone();
             let rack_name = rd.name.clone();
             let sample_rate = def.sample_rate;
             let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
@@ -203,8 +202,6 @@ impl<const BUF: usize> ModularSystem<BUF> {
                         );
                         return;
                     }
-                    runner.set_args(&args);
-
                     match runner.run() {
                         Ok(()) => log::info!("rill-adrift: rack '{}' program finished", rack_name),
                         Err(e) => {

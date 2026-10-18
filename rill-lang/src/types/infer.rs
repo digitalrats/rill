@@ -22,8 +22,10 @@ pub struct TypedProgram {
     /// The program, desugared (foreign-fn combinator operands bound to signal
     /// wires) but otherwise unchanged; the caller's source is untouched.
     pub program: Program,
-    /// Resolved diagram type of the body.
-    pub process_ty: ArrowTy,
+    /// Resolved type schemes of every top-level definition, keyed by name.
+    /// The entry definition's scheme (`def_schemes[entry]`) replaces the old
+    /// `process_ty`: lowering reads the entry's resolved type from here.
+    pub def_schemes: HashMap<String, Scheme>,
     /// Names of closed top-level definitions (CAFs): zero λ-parameters and
     /// zero signal input channels. Referenced by name, shared across the graph.
     pub cafs: HashSet<String>,
@@ -1751,13 +1753,16 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
 
 /// Infer a program with an explicit entry name.
 ///
-/// The entry definition (by default `main`, or an internal marker for
-/// [`test_eval`](crate::test_eval) evaluations) supplies the program's process
-/// type. All other behaviour is identical to [`infer_program_with`].
+/// Inference is blind to the entry name: every top-level definition is typed
+/// symmetrically and `def_schemes` carries all their schemes. The entry name
+/// is accepted for call-compatibility (the compile pipeline threads it to
+/// lowering, which reads the entry's scheme from `def_schemes`), but it does
+/// not influence inference. All other behaviour is identical to
+/// [`infer_program_with`].
 pub fn infer_program_with_entry(
     program: &Program,
     mode: Mode,
-    entry: &str,
+    _entry: &str,
 ) -> Result<TypedProgram, CompileError> {
     // Build the type environment in two phases so declaration ORDER does not
     // matter. Phase 1 registers the pure name-mapping declarations (synonyms,
@@ -1941,30 +1946,6 @@ pub fn infer_program_with_entry(
     // time rather than leaving them to rot silently.
     validate_instances(&mut ctx)?;
 
-    let main_scheme = ctx
-        .defs
-        .get(entry)
-        .cloned()
-        .ok_or_else(|| CompileError::Type {
-            msg: format!("program must contain a `{entry}` definition"),
-            span: Span::new(0, 0),
-        })?;
-
-    // The unary core has no signal-port channels: a program's `main` consumes
-    // no wire inputs (`signal_arity_in` is always 0) and always produces one
-    // value.
-    let signal_arity_in = 0usize;
-    let signal_arity_out = main_scheme.ty.arity_out();
-
-    if signal_arity_out == 0 {
-        return Err(CompileError::Type {
-            msg: format!(
-                "program must produce at least one signal output, found ({signal_arity_in}->{signal_arity_out})"
-            ),
-            span: Span::new(0, 0),
-        });
-    }
-
     let cafs = program
         .defs
         .iter()
@@ -2047,7 +2028,7 @@ pub fn infer_program_with_entry(
 
     Ok(TypedProgram {
         program: program.clone(),
-        process_ty: main_scheme.ty,
+        def_schemes: ctx.defs.clone(),
         cafs,
         type_env: ctx.env.clone(),
         fn_param_tys,
@@ -2182,21 +2163,14 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         .map(|sig| def_sig_tys(ctx, sig).0)
         .filter(|tys| tys.len() == params.len());
     for (i, p) in params.iter().enumerate() {
-        // `main`: λ-parameters are the program's String launch arguments
-        // (`main a = …` → `a : String`), bound by `ProgramRunner::set_args`.
-        // Other definitions' λ-parameters take the signature's declared type
-        // when annotated, and keep their scalar default otherwise.
-        if def.name() == "main" {
-            ctx.locals
-                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
-        } else {
-            let ty = sig_param_tys
-                .as_ref()
-                .and_then(|tys| tys.get(i).cloned())
-                .unwrap_or(ValueTy::Float);
-            ctx.locals
-                .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
-        }
+        // λ-parameters take the signature's declared type when annotated, and
+        // keep their scalar `Float` default otherwise.
+        let ty = sig_param_tys
+            .as_ref()
+            .and_then(|tys| tys.get(i).cloned())
+            .unwrap_or(ValueTy::Float);
+        ctx.locals
+            .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
     }
     let result = match infer_expr(ctx, &body) {
         Ok(t) => {
@@ -2224,16 +2198,10 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             ctx.def_bodies = saved_bodies.clone();
             ctx.locals.clear();
             for p in &params {
-                if def.name() == "main" {
-                    // `main`: λ-parameters are String launch arguments.
-                    ctx.locals
-                        .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
-                } else {
-                    let v = ctx.next;
-                    ctx.next += 1;
-                    ctx.locals
-                        .insert(p.name.clone(), ArrowTy::value_channel(ValueTy::Var(v)));
-                }
+                let v = ctx.next;
+                ctx.next += 1;
+                ctx.locals
+                    .insert(p.name.clone(), ArrowTy::value_channel(ValueTy::Var(v)));
             }
             // Complete-mode recursion: the value-track retry re-registers the
             // CURRENT def's placeholder scheme with VALUE-rate channels, so a
@@ -2263,30 +2231,6 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                 }
             }
             let retry = infer_expr(ctx, &body);
-            // `main` is the program's entry point, typed `(String…) -> IO ()`.
-            // A body that is a bare result-directed monad action (`main =
-            // return ()`) carries no constraint fixing the monad, so the plain
-            // inference cannot resolve it. Re-infer against the program's
-            // declared result type `IO ()`; a value `main` (the retained
-            // pure-value test path) already succeeded above and is untouched.
-            let retry = if retry.is_err() && def.name() == "main" {
-                ctx.subst = saved_subst.clone();
-                ctx.next = saved_next;
-                ctx.defs = saved_defs.clone();
-                ctx.def_bodies = saved_bodies.clone();
-                ctx.locals.clear();
-                for p in &params {
-                    ctx.locals
-                        .insert(p.name.clone(), ArrowTy::uniform(0, 1, ValueTy::String));
-                }
-                let io_unit = ValueTy::Data("IO".into(), vec![ValueTy::Void]);
-                match infer_expr_expected(ctx, &body, Some(io_unit)) {
-                    Ok(t) => Ok(t),
-                    Err(_) => retry,
-                }
-            } else {
-                retry
-            };
             // Record the VALUE-track retry's resolved λ-parameter types: the
             // body's value demands (`tail xs` → xs : List, `k - 1.0` → k :
             // Float) resolve the fresh param vars here, and the final scheme
@@ -2508,8 +2452,7 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
 /// against (`body_ty.sig_params`), so the scheme and the lowered parameter
 /// registers agree — a `Float` scheme for an `Int`-typed parameter is exactly
 /// the divergence this avoids. Every other definition keeps the v1 shape — the
-/// inferred body type with the scalar λ-parameter default (`main`'s λ-params
-/// are the String launch arguments).
+/// inferred body type with the scalar λ-parameter default.
 fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usize) -> ValueTy {
     if let Some(sig) = constrained_def_sig(def) {
         let (sig_params, sig_ret, _) = def_sig_tys(ctx, sig);
@@ -2523,20 +2466,11 @@ fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usiz
         return body_ty.ty.vty.clone();
     }
     // Signature-driven scheme: the body was typed against these exact argument
-    // types, so call sites and lowering agree. `main` keeps its launch-argument
-    // (String) parameters regardless of its annotation.
-    if def.name() != "main" && body_ty.sig_params.len() == lam_count {
+    // types, so call sites and lowering agree.
+    if body_ty.sig_params.len() == lam_count {
         return ValueTy::Thunk(body_ty.sig_params.clone(), vec![body_ty.ty.vty.clone()]);
     }
-    let param_tys: Vec<ValueTy> = (0..lam_count)
-        .map(|_| {
-            if def.name() == "main" {
-                ValueTy::String
-            } else {
-                ValueTy::Float
-            }
-        })
-        .collect();
+    let param_tys: Vec<ValueTy> = (0..lam_count).map(|_| ValueTy::Float).collect();
     ValueTy::Thunk(param_tys, vec![body_ty.ty.vty.clone()])
 }
 
@@ -6581,7 +6515,7 @@ mod tests {
         // runner applies it to the realized `World`.
         let t = ty_of("main = do { write Nothing stdout; return () }").unwrap();
         assert_eq!(
-            t.process_ty.vty,
+            t.def_schemes["main"].ty.vty,
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
         );
     }
@@ -6590,50 +6524,50 @@ mod tests {
     fn gain_is_1_to_1() {
         // A buffer-valued signal expression over a literal generator.
         let t = ty_of(r"main = sine 440.0 0.5 0.0 * 0.5;").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
     }
 
     #[test]
     fn integrator_is_1_to_1() {
         // A foreign 1→1 builtin applied to a buffer value.
         let t = ty_of("main = integrator (sine 440.0 0.5 0.0)").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
     }
 
     #[test]
     fn user_def_alias_resolves() {
         let t = ty_of("main x = gain x where { gain y = y * 0.5; }").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn function_application_ok() {
         let t = ty_of("main x = g x where { g y = y * 0.5; }").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn where_mutual_visibility() {
         let t = ty_of("main x = a x where { a y = y * 0.5; b y = a y; }").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn top_level_mutual_visibility() {
         let t = ty_of("a x = x * 0.5; main x = a x").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn top_level_reverse_order() {
         let t = ty_of("main x = g x; g y = y * 0.5").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn let_expression_scoping() {
         let t = ty_of("main = let g = 0.5 in g * 0.5").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -6651,7 +6585,7 @@ mod tests {
     #[test]
     fn builtin_call_is_1_to_1() {
         let t = ty_with("main = lowpass 1000.0 0.7 (sine 440.0 0.5 0.0)").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
     }
 
     #[test]
@@ -6674,14 +6608,14 @@ mod tests {
     #[test]
     fn transitive_var_chain_resolves() {
         let t = ty_of("main x = g x where { f y = y * 0.5; g y = f 0.5; }").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
+        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(ref c, _) if c.len() == 1));
     }
 
     #[test]
     fn scalar_param_broadcasts_to_buffer() {
         let t = ty_of("main = sine 440.0 0.5 0.0 * 0.5").unwrap();
         // A buffer-valued main is the program's single signal output.
-        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
     }
 
     #[test]
@@ -6784,7 +6718,7 @@ mod tests {
     #[test]
     fn actor_param_no_default_typechecks() {
         let t = ty_of(r"main = if ?gain > 0.5 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -6792,7 +6726,7 @@ mod tests {
         // A `?name=default` actor param in a Buffer position keeps the
         // program's single signal output.
         let t = ty_of(r"main = sine 440.0 ?gain=0.5 0.0").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Buffer);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
     }
 
     #[test]
@@ -6822,7 +6756,10 @@ mod tests {
     fn data_record_constructor_infers_value_channel() {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Data("Point".into(), vec![]));
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]
@@ -6830,7 +6767,7 @@ mod tests {
         let t =
             ty_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x")
                 .unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -6839,7 +6776,7 @@ mod tests {
             r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r -> r; Rect w h -> w; }",
         )
         .unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -6848,7 +6785,10 @@ mod tests {
             "data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x := 3.0",
         )
         .unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Data("Point".into(), vec![]));
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]
@@ -6931,20 +6871,20 @@ mod tests {
     #[test]
     fn if_infers_bool_condition_and_branch_types() {
         let t = ty_of("main = if 1.0 < 2.0 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
         assert!(ty_of("main = if 1.0 then 1.0 else 2.0").is_err());
         assert!(ty_of("main = if 1.0 < 2.0 then 1 else 2").is_ok());
         let t2 = ty_of("main = if 1.0 < 2.0 then 1 else 2").unwrap();
-        assert_eq!(t2.process_ty.vty, ValueTy::Int);
+        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Int);
     }
 
     #[test]
     fn scalar_match_infers_literal_patterns_and_totality() {
         let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
         assert!(ty_of(r"main = case 0 of { 0 -> 1.0 }").is_err());
         let t2 = ty_of(r"main = case true of { true -> 1.0; false -> 2.0 }").unwrap();
-        assert_eq!(t2.process_ty.vty, ValueTy::Float);
+        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -6952,9 +6892,9 @@ mod tests {
         // `match 0 of {...}`: a bare Int literal is a signal-rate channel in v1
         // but value-compatible in value positions (mirroring arm_result_vty).
         let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
         let t2 = ty_of(r"main = case 0.0 of { 0.0 -> 1; _ -> 2; }").unwrap();
-        assert_eq!(t2.process_ty.vty, ValueTy::Int);
+        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Int);
     }
 
     #[test]
@@ -6963,7 +6903,7 @@ mod tests {
         // NOT `Maybe`. The sum context must be re-derived from the payload type
         // at each pattern level.
         let t = ty_of(r"main = case Just (Left 2.0) of { Just (Left x) -> x; _ -> 0.0; }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -6974,7 +6914,7 @@ mod tests {
             r"data Inner = Foo Float; data Outer = Wrap Inner | Empty; main = case Wrap (Foo 2.0) of { Wrap (Foo x) -> x; _ -> 0.0; }",
         )
         .unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -6982,7 +6922,10 @@ mod tests {
         // Regression: the synonym is declared AFTER the data type that uses it.
         // Registration must be order-independent (two-phase: aliases first).
         let t = ty_of("data P = { x: Angles }; type Angles = Float; main = P { x: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Data("P".into(), vec![]));
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Data("P".into(), vec![])
+        );
     }
 
     #[test]
@@ -6991,7 +6934,10 @@ mod tests {
         // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
         // it requires the explicit `Hz 440.0` wrapper.
         let t = ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: Hz 440.0 }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Data("P".into(), vec![]));
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Data("P".into(), vec![])
+        );
         // Newtypes are distinct wrappers: a bare Float does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
         // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
@@ -7002,7 +6948,10 @@ mod tests {
     fn chained_alias_resolves() {
         let t =
             ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Data("P".into(), vec![]));
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Data("P".into(), vec![])
+        );
     }
 
     #[test]
@@ -7023,7 +6972,10 @@ mod tests {
     fn acyclic_data_type_still_compiles() {
         let t =
             ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Data("Point".into(), vec![]));
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Data("Point".into(), vec![])
+        );
     }
 
     #[test]
@@ -7031,7 +6983,7 @@ mod tests {
         // A bare Def::Eval whose body is a lambda literal infers to a Func value
         // channel via the normal def-body inference path.
         let t = ty_of(r"double = \x -> x; main = double").unwrap();
-        assert!(matches!(t.process_ty.vty, ValueTy::Thunk(_, _)));
+        assert!(matches!(t.def_schemes["main"].ty.vty, ValueTy::Thunk(_, _)));
     }
 
     #[test]
@@ -7040,7 +6992,7 @@ mod tests {
         // 0→1 value channel, so the lambda body is well-typed (the tuple no
         // longer parses as two signal channels).
         let t = ty_of(r"main = \x -> (x , x)").unwrap();
-        match &t.process_ty.vty {
+        match &t.def_schemes["main"].ty.vty {
             ValueTy::Thunk(_, ret) => {
                 assert_eq!(ret.len(), 1);
                 match &ret[0] {
@@ -7059,7 +7011,7 @@ mod tests {
         // double = fn x -> x * 2.0  -> lambda body is value arithmetic over
         // value params, inferred as Func([Float], [Float]).
         let t = ty_of(r"double = \x -> x * 2.0; main = double").unwrap();
-        match &t.process_ty.vty {
+        match &t.def_schemes["main"].ty.vty {
             ValueTy::Thunk(arg_tys, ret_tys) => {
                 assert_eq!(arg_tys.len(), 1);
                 assert_eq!(ret_tys, &vec![ValueTy::Float]);
@@ -7074,11 +7026,11 @@ mod tests {
         // Func([Float], [Float]); fully applying it yields a Float.
         let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3").unwrap();
         assert_eq!(
-            t.process_ty.vty,
+            t.def_schemes["main"].ty.vty,
             ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])
         );
         let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]
@@ -7086,7 +7038,7 @@ mod tests {
         // add5 = add2 5.0 (partial application of a named def) types as
         // Func([Float], [Float]).
         let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
-        assert_eq!(t.process_ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
     }
 
     #[test]

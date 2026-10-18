@@ -1073,23 +1073,6 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 None => prog.value_regs[*dst + base] = None,
             }
         }
-        ValueInstr::ValueReadMainCell { dst, cell } => {
-            // Read a persistent main λ-parameter cell (see `ReadMainCell` in the
-            // block track). The result is a new owner; a `Void` cell reads 0.0.
-            // `cell` is an index into the main-cell store, NOT a fragment-local
-            // register — leave it unoffset.
-            match prog.main_cells[*cell] {
-                Some(cr) => {
-                    prog.value_regs[*dst + base] =
-                        if matches!(prog.arena.get(cr), Some(&Value::Void)) {
-                            alloc_owned(prog, Value::Float(0.0))
-                        } else {
-                            alloc_copy_slot(prog, cr)
-                        };
-                }
-                _ => prog.value_regs[*dst + base] = None,
-            }
-        }
         ValueInstr::ValueWriteCell { cell, src } => {
             // Write src's value INTO the existing cell slot, PRESERVING the
             // cell's identity: any other reference to the cell (an env-record
@@ -1880,19 +1863,6 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             let v = T::from_f64(param_to_f64(&prog.params[*idx]));
             let di = buffer_index(prog, *dst, base);
             prog.buffers[di].with_data_mut(|b| b[..n].fill(v));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
-        }
-        ValueInstr::ValueBufferMainCellRead { dst, cell } => {
-            let n = prog.block_len;
-            let v = match prog.main_cells[*cell] {
-                Some(r) => match prog.arena.get(r) {
-                    Some(crate::arena::Value::Float(f)) => *f,
-                    _ => 0.0,
-                },
-                _ => 0.0,
-            };
-            let di = buffer_index(prog, *dst, base);
-            prog.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
             prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
     }
@@ -5254,7 +5224,6 @@ mod closure_dispatch_tests {
             state: Default::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks: vec![ValueBlock {
                 instrs: vec![
                     ValueInstr::ValueBindCell { dst: 0 },
@@ -5322,7 +5291,6 @@ mod closure_dispatch_tests {
             state: Default::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks: vec![ValueBlock {
                 instrs: vec![
                     // Dummy `Void` cell as the thunk's capture environment (the
@@ -5423,7 +5391,6 @@ mod value_track_tests {
             state: StateLayout::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks,
             value_entry,
             num_value_regs,
@@ -6181,7 +6148,6 @@ mod lazy_track_tests {
             state: StateLayout::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks,
             value_entry: 0,
             num_value_regs,

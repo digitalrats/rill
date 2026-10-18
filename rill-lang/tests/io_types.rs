@@ -11,7 +11,7 @@ fn arrowty(src: &str) -> rill_lang::types::ty::ArrowTy {
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes()).unwrap();
     let tp = infer_program(&prog, prog.mode).unwrap();
-    tp.process_ty
+    tp.def_schemes["main"].ty.clone()
 }
 
 #[test]

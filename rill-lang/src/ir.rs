@@ -342,14 +342,6 @@ pub enum ValueInstr {
         /// Value register holding the cell ref, or the fragment capture index.
         cell: usize,
     },
-    /// Read a main λ-parameter cell into a fresh value slot (the result is a
-    /// new owner; a `Void` cell reads as `Float(0.0)`).
-    ValueReadMainCell {
-        /// Destination value register.
-        dst: usize,
-        /// Index into the persistent main-cell store.
-        cell: usize,
-    },
     /// Write a variable: value ref into a cell.
     ValueWriteCell {
         /// Cell register to write into.
@@ -774,13 +766,6 @@ pub enum ValueInstr {
         /// Index into [`Ir::params`].
         idx: usize,
     },
-    /// Fill the destination buffer with a main λ-parameter cell's value.
-    ValueBufferMainCellRead {
-        /// Destination value register (holds `Value::Buffer(dst)`).
-        dst: usize,
-        /// Index into the persistent main-cell store.
-        cell: usize,
-    },
 }
 
 /// Layout for value-track persistent storage.
@@ -910,8 +895,9 @@ pub struct Ir {
     pub num_inputs: usize,
     /// Number of program outputs. At most one: architecturally there are no
     /// signal programs (no output channels) — the program's single result is
-    /// [`Ir::result_reg`]. Kept behind the channel legacy until Task 3
-    /// (single-input/single-output IR shape).
+    /// [`Ir::result_reg`]. Kept behind the channel legacy; collapsing these
+    /// fields to a fixed 0-input/single-value shape is deferred beyond Task 3
+    /// (the value-track body already drives [`Ir::result_reg`] directly).
     pub num_outputs: usize,
     /// Persistent state layout.
     pub state: StateLayout,
@@ -920,11 +906,6 @@ pub struct Ir {
     pub builtins: Vec<BuiltinInstance>,
     /// Named parameter definitions, indexed by [`Instr::ReadParam::idx`].
     pub params: Vec<ParamDef>,
-    /// Number of persistent main λ-parameter cells (see
-    /// [`RillProgram::main_cells`](crate::program::RillProgram)). Main λ-params
-    /// are the first `num_main_cells` entries of [`Ir::params`] — `set_param`
-    /// on the program writes into the cell for exactly these indices.
-    pub num_main_cells: usize,
     /// Top-level value-track blocks: the program's single execution surface,
     /// executed once per run by [`run_entry`](crate::backend::interp::run_entry)
     /// directly (an ordinary top-level binding run at base 0 — no fragment

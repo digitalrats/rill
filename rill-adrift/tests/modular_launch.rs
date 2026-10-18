@@ -3,10 +3,6 @@
 //! failures instead of starting a dead rack.
 
 #[cfg(feature = "serialization")]
-use rill_adrift::lang::compile_runner;
-#[cfg(feature = "serialization")]
-use rill_adrift::lang_builtins::full_registry;
-#[cfg(feature = "serialization")]
 use rill_adrift::modular::serialization::{ModularSystemDef, ModuleDef, RackDef};
 #[cfg(feature = "serialization")]
 use rill_adrift::modular::{ModularConfig, ModularError, ModularSystem};
@@ -47,23 +43,6 @@ fn launch_reports_a_program_compile_error() {
         matches!(err, ModularError::Program(_)),
         "expected a Program error, got {err:?}"
     );
-}
-
-/// Bind the rack arguments through the runner directly and pin the exact
-/// console: a no-op `set_args` (or a broken binding) leaves `name` as the empty
-/// string, so only the exact output proves the binding. Asserting that
-/// `launch` is `Ok` cannot: an unbound λ-parameter reads as `""` and the
-/// program still compiles and runs.
-#[cfg(feature = "serialization")]
-#[test]
-fn set_args_binds_main_string_parameters() {
-    let src = "main name = do { write (Just (concat_string \"hi \" name)) stdout; return () };";
-    let registry = full_registry::<f32>();
-    let mut runner = compile_runner::<f32, 256>(src, &registry, 44_100.0)
-        .expect("the greeter program must compile");
-    runner.set_args(&["rill".to_string()]);
-    runner.run().expect("the bound program must run");
-    assert_eq!(runner.stdout(), ["hi rill"]);
 }
 
 /// A module that cannot be constructed must fail the launch: reporting success

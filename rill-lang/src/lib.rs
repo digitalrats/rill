@@ -301,11 +301,10 @@ fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileE
 
 /// Like [`compile_to_ir`], with an explicit entry name.
 ///
-/// The entry def supplies the program's process type (inference) and its value
-/// result (lowering): the whole pipeline treats `main` and `test_eval`'s
-/// internal marker identically. `main` is used for the runner path; the marker
-/// never triggers infer's literal-`main` special cases (String launch args, the
-/// `IO ()` retry), so a value expression evaluates as a plain binding.
+/// The entry def supplies the program's value result (lowering): the whole
+/// pipeline treats `main` and `test_eval`'s internal marker identically.
+/// `main` is used for the runner path; the marker evaluates a plain value
+/// expression as an ordinary binding.
 fn compile_to_ir_entry(
     src: &str,
     sample_rate: f32,

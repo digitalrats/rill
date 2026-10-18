@@ -46,8 +46,8 @@ runner.run().unwrap();
 assert_eq!(runner.stdout(), ["hi"]);
 ```
 
-`main` takes String launch arguments, bound with `set_args(&[String])`, and
-returns `IO ()`. The runner owns the program's `World`: `stdout`/`stderr` are
+`main` is a pure `IO ()` action — it takes no String launch arguments. The
+runner owns the program's `World`: `stdout`/`stderr` are
 captured into the runner (not echoed to the process console) and read back with
 `stdout()` / `stderr()`, which report the console built up by **all runs since
 construction**. `set_stdin(&[String])` injects the line-oriented input that
