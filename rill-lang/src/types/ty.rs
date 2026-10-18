@@ -553,19 +553,28 @@ instance Monad IO where {
 --
 --  It is written entirely against `Ix` (declared in `CATEGORY_PRELUDE`), on top
 --  of the flat storage primitives (`arrayFromList`, `arrayIndexFlat`,
---  `arrayUpdate`, `arrayAccum`, the `STArray` effects, and the buffer bridge).
---  Every offset and range is computed by an INSTANCE BODY, in the language, so
---  the primitives only ever receive plain `Int`s — that split is what keeps the
---  storage layer type-agnostic and the index math user-extensible.
+--  `arrayUpdate`, `arrayAccum`, `arrayFromAssocs`, `arraySeed`, the `STArray`
+--  effects, and the buffer bridge).
+--
+--  OFFSETS for construction/update/accum (`arrayFromAssocs`, `arrayUpdate`,
+--  `arrayAccum`) are now resolved BY THE PRIMITIVES against the stored bounds
+--  for the two prelude index shapes (`Int`, `Pair Int Int`) — a structural
+--  limitation: building an array over a user-defined index type faults
+--  "unsupported index type". READS stay language-side, through
+--  `checkedOffset`/`index`, so user `Ix` instances keep working for `!`
+--  and the ST wrappers; only `array`-construction over a non-prelude index
+--  shape is out of reach.
 --
 --  Two deliberate deviations from GHC are documented where they bite:
 --    * `listArray` / `newListArray` are STRICT: `length elems` must equal
 --      `rangeSize bounds`, otherwise the program faults cleanly instead of
 --      building a mis-indexed array.
---    * `array` fills the unlisted positions with `0.0`, so it is Float-element
---      only (`Array i Float`): the language has no `undefined`-style bottom to
---      conjure a value of an arbitrary element type. `accumArray` takes its
---      initial value as an argument and therefore stays generic.
+--    * `array`'s unlisted positions are UNDEFINED elements — one shared lazy
+--      callable that latches the clean fault "array: undefined array element"
+--      when forced (GHC's `undefined`), which makes `array` generic in the
+--      element type. Associations are applied in order; a repeated index
+--      leaves the last value. `accumArray` seeds every position with its
+--      initial value and therefore has no holes.
 --
 --  Fault policy: every CELL reference is bounds-checked, not just the flat
 --  offset. `checkedOffset` turns an out-of-range cell into `-1`, which the flat
@@ -640,19 +649,25 @@ checkedOffset b ix :: Ix i => Pair i i -> i -> Int = if inRange b ix then index 
 --  interpreter, which faults on a mismatch.
 listArray b es :: Ix i => Pair i i -> List e -> Array i e = arrayFromListChecked b (rangeSize b) es;
 
---  `array assocs`: every position starts at `0.0` and the associations are
---  applied over it in order, so a repeated index leaves the last value.
-array b xs :: Ix i => Pair i i -> List (Pair i Float) -> Array i Float = arrayUpdate (arrayFromList b (map (\ k -> 0.0) (range b))) (map (\ p -> Pair { first: checkedOffset b p.first, second: p.second }) xs);
+--  `array assocs`: every unlisted position is ONE SHARED lazy hole whose
+--  FORCE latches the clean fault "array: undefined array element" (GHC's
+--  `undefined` for unlisted positions — not a `0.0` fill). Associations are
+--  applied in order; a repeated index leaves the last value. The interpreter
+--  resolves the index-typed associations against the construction bounds for
+--  the two prelude index shapes (`Int`, `Pair Int Int`).
+array b xs :: Ix i => Pair i i -> List (Pair i e) -> Array i e = arrayFromAssocs b xs;
 
---  `accumArray f init assocs`: every position starts at `init` and the
---  associations are folded in order (`f old new`).
-accumArray f init b xs :: Ix i => (e -> (e -> e)) -> e -> Pair i i -> List (Pair i e) -> Array i e = arrayAccum (arrayFromList b (map (\ k -> init) (range b))) f (map (\ p -> Pair { first: checkedOffset b p.first, second: p.second }) xs);
+--  `accumArray f init assocs`: seed every position with `init`, then fold the
+--  associations in order (`f old new`). `arraySeed` fills all positions, so
+--  an `accumArray` has no holes.
+accumArray f init b xs :: Ix i => (e -> (e -> e)) -> e -> Pair i i -> List (Pair i e) -> Array i e
+                          = arrayAccum (arraySeed b init) f xs;
 
 --  `(//)` — apply (index, value) associations, last wins, source untouched.
-update a xs :: Ix i => Array i e -> List (Pair i e) -> Array i e = arrayUpdate a (map (\ p -> Pair { first: checkedOffset (arrayBounds a) p.first, second: p.second }) xs);
+update a xs :: Ix i => Array i e -> List (Pair i e) -> Array i e = arrayUpdate a xs;
 
 --  `accum f` — fold associations into an existing array.
-accum f a xs :: Ix i => (e -> (e -> e)) -> Array i e -> List (Pair i e) -> Array i e = arrayAccum a f (map (\ p -> Pair { first: checkedOffset (arrayBounds a) p.first, second: p.second }) xs);
+accum f a xs :: Ix i => (e -> (e -> e)) -> Array i e -> List (Pair i e) -> Array i e = arrayAccum a f xs;
 
 indices a :: Ix i => Array i e -> List i = range (arrayBounds a);
 
@@ -1314,7 +1329,10 @@ impl TypeEnv {
         );
         // Immutable array storage primitives: the flat, type-agnostic surface
         // (design §Storage primitives, immutable list). Every INDEX computation
-        // lives in the language's `Ix` instances (a later task), so these
+        // lives in the interpreter for the two prelude shapes (`Int`,
+        // `Pair Int Int`), resolved against the STORED bounds of the array; the
+        // language's `Ix` instances stay for READS (`checkedOffset`, `index`)
+        // and for user-defined index types over the read surface. These
         // signatures are deliberately UNCONSTRAINED — no `Ix i =>` context and
         // no range math in the interpreter. They are polymorphic over the index
         // type `i` and the element type `e`, bound with an explicit `TForall` so
@@ -1325,20 +1343,20 @@ impl TypeEnv {
         //   arrayBounds    :: Array i e -> Pair i i
         //   arrayElems     :: Array i e -> List e
         //   arrayIndexFlat :: Array i e -> Int -> e
-        //   arrayUpdate    :: Array i e -> List (Pair Int e) -> Array i e
-        //   arrayAccum     :: Array i e -> (e -> e -> e) -> List (Pair Int e)
+        //   arrayUpdate    :: Array i e -> List (Pair i e) -> Array i e
+        //   arrayAccum     :: Array i e -> (e -> e -> e) -> List (Pair i e)
         //                     -> Array i e
         //
         //   arrayFromAssocs :: Pair i i -> List (Pair i e) -> Array i e
         //   arraySeed       :: Pair i i -> e -> Array i e
         //
-        // `arrayUpdate`/`arrayAccum` still take FLAT `(Int offset, value)`
-        // associations; the language-side statements (prelude `array`, `update`,
-        // `accum`, `accumArray`) compute the offsets. `arrayFromAssocs` (the
-        // index-typed constructor behind the polymorphic `array`) and
-        // `arraySeed` are registered alongside: lowering resolves them by name
-        // and the interpreter resolves the index-typed associations against the
-        // bounds shape.
+        // Construction and update associations (`arrayFromAssocs`,
+        // `arrayUpdate`, `arrayAccum`) are INDEX-TYPED — the interpreter
+        // resolves each one against the bounds shape shared by every arm
+        // (`array_shape`/`ArrayShape::offset`), reproducing the prelude `Ix`
+        // instances for the two supported shapes. Reads stay language-side:
+        // `checkedOffset`/`index` go through `arrayIndexFlat` with a flat
+        // offset computed by the `Ix` instances.
         // The accumulator of `arrayAccum` is written CURRIED (`e -> e -> e`
         // right-associates to `e -> (e -> e)`), matching the language's
         // representation of a binary closure as a nest of unary lambdas.
@@ -1352,8 +1370,8 @@ impl TypeEnv {
         let list =
             |arg: crate::ast::TypeExpr| crate::ast::TypeExpr::TApp("List".to_string(), vec![arg]);
         let arr_ie = || array(vec![tv("i"), tv("e")]);
-        // `List (Pair Int e)`: the flat (offset, value) association list.
-        let flat_assocs = || list(pair(vec![tv("Int"), tv("e")]));
+        // `List (Pair i e)`: the index-typed (cell, value) association list.
+        let assocs_ie = || list(pair(vec![tv("i"), tv("e")]));
         env.builtin_sigs.insert(
             "arrayFromList".to_string(),
             forall_ie(crate::ast::TypeExpr::TFunc(
@@ -1385,7 +1403,7 @@ impl TypeEnv {
         env.builtin_sigs.insert(
             "arrayUpdate".to_string(),
             forall_ie(crate::ast::TypeExpr::TFunc(
-                vec![arr_ie(), flat_assocs()],
+                vec![arr_ie(), assocs_ie()],
                 Box::new(arr_ie()),
             )),
         );
@@ -1401,7 +1419,7 @@ impl TypeEnv {
                             Box::new(tv("e")),
                         )),
                     ),
-                    flat_assocs(),
+                    assocs_ie(),
                 ],
                 Box::new(arr_ie()),
             )),
@@ -2333,10 +2351,10 @@ mod builtin_array_sig_tests {
     }
 
     #[test]
-    fn array_update_accum_signatures_stay_flat_until_the_index_typed_flip() {
-        // Task 1 only ADDS the two construction ops; the update/accum entries
-        // still take FLAT `(Int offset, value)` associations until the prelude
-        // rewrite lands (their language-side statements compute offsets).
+    fn array_update_accum_signatures_are_index_typed() {
+        // The M8 flip: `arrayUpdate`/`arrayAccum` now take INDEX-typed
+        // associations (`List (Pair i e)`), resolved against the source array's
+        // stored bounds by the interpreter — not flat `(Int offset, value)`.
         let env = TypeEnv::with_builtins();
         for name in ["arrayUpdate", "arrayAccum"] {
             let sig = env
@@ -2352,10 +2370,10 @@ mod builtin_array_sig_tests {
                         if n == "List" && inner.len() == 1
                             && matches!(&inner[0], crate::ast::TypeExpr::TApp(p, el)
                                 if p == "Pair" && el.len() == 2
-                                    && matches!(&el[0], crate::ast::TypeExpr::TName(t)
+                                    && !matches!(&el[0], crate::ast::TypeExpr::TName(t)
                                         if t == "Int"))
                 ),
-                "{name}: association list must still be flat `List (Pair Int e)` in Task 1, got {:?}",
+                "{name}: association list must be index-typed `List (Pair i e)` (not flat `List (Pair Int e)`), got {:?}",
                 args[assoc_idx]
             );
         }

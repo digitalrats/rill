@@ -376,6 +376,34 @@ fn array_update_keeps_the_last_association_for_a_duplicate_offset() {
 }
 
 #[test]
+fn array_update_resolves_associations_against_non_unit_lower_bounds() {
+    // The association's `first` is an INDEX into the STORED bounds, resolved by
+    // the interpreter against the shape — index 3 in `(2,4)` is offset 1, so
+    // the second element (20.0) is replaced, not the fourth.
+    let src =
+        "main = arrayElems (arrayUpdate (arrayFromList (Pair { first: 2, second: 4 }) [10.0, 20.0, 30.0]) [Pair { first: 3, second: 99.0 }]);";
+    let prog = run(src);
+    assert_eq!(
+        list_floats(&prog, &output(&prog)),
+        vec![10.0, 99.0, 30.0],
+        "index 3 of (2,4) must resolve to offset 1"
+    );
+}
+
+#[test]
+fn array_update_rejects_an_out_of_rectangle_cell_even_with_an_in_range_flat() {
+    // Bounds ((0,0),(2,1)) — a 3x2 grid, 6 elements. The cell (0,2) has flat
+    // offset 2, which is INSIDE the 6-element storage, but column 2 is outside
+    // the rectangle: the bounds-shape check fires first (Q3).
+    let src = "main = arrayElems (arrayUpdate (arrayFromList (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 2, second: 1 } }) [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) [Pair { first: Pair { first: 0, second: 2 }, second: 99.0 }]);";
+    let msg = fault(src);
+    assert!(
+        msg.contains("arrayUpdate") && msg.contains("out of range"),
+        "expected the clean out-of-rectangle fault, got: {msg}"
+    );
+}
+
+#[test]
 fn array_from_list_with_a_cons_built_list_is_a_clean_fault() {
     // In Complete mode `:` builds a lazy cons chain, which has no flat element
     // Vec. `arrayFromList` reports that as a clean fault instead of leaving the

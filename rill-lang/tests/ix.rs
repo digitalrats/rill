@@ -383,17 +383,37 @@ fn list_array_accepts_an_empty_range_with_no_elements() {
 }
 
 #[test]
-fn array_fills_unlisted_positions_with_the_zero_default() {
-    // `array` is the assoc-list constructor: unlisted positions take the
-    // documented `0.0` fill.
-    let src = format!(
-        "main = array {} [Pair {{ first: 0, second: 1.5 }}, Pair {{ first: 2, second: 3.5 }}];",
+fn array_leaves_unlisted_positions_as_faulting_holes() {
+    // `array` is the assoc-list constructor: unlisted positions are UNDEFINED
+    // elements — a shared lazy callable that latches the clean "array:
+    // undefined array element" fault when forced (GHC's `undefined`), not a
+    // `0.0` fill.
+    let arr = format!(
+        "array {} [Pair {{ first: 0, second: 1.5 }}, Pair {{ first: 2, second: 3.5 }}]",
         bounds(0, 3)
     );
+    // Listed positions read their values through `index`; the bounds read back.
+    let src = format!(
+        "main = (\\a -> Pair {{ first: arrayBounds a, second: Pair {{ first: index a 0, second: index a 2 }} }}) ({arr});"
+    );
     let (prog, v) = run(&src);
-    let (values, (lo, hi)) = array_1d(&prog, &v);
-    assert_eq!((lo, hi), (0, 3));
-    assert_eq!(values, vec![1.5, 0.0, 3.5, 0.0]);
+    let (b, cells) = pair_values(&prog, &v);
+    let (lo, hi) = pair_values(&prog, &b);
+    assert_eq!(lo, Value::Int(0));
+    assert_eq!(hi, Value::Int(3));
+    let (c0, c2) = pair_values(&prog, &cells);
+    assert_eq!(c0, Value::Float(1.5));
+    assert_eq!(c2, Value::Float(3.5));
+
+    // Forcing an unlisted position faults cleanly (a fold over `arrayElems`
+    // forces every element; position 1 and 3 are holes).
+    let msg = fault(&format!(
+        "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems ({arr}));"
+    ));
+    assert!(
+        msg.contains("array: undefined array element"),
+        "expected the hole fault for an unlisted position, got: {msg}"
+    );
 }
 
 #[test]

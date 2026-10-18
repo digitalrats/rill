@@ -332,7 +332,7 @@ fn array_update_and_accum_array_reject_out_of_range_association_cells() {
         assoc(2, 0, 1.5)
     ));
     assert!(
-        msg.contains("arrayUpdate") && msg.contains("out of range"),
+        msg.contains("arrayFromAssocs") && msg.contains("out of range"),
         "expected the clean out-of-range fault for an out-of-grid `array` assoc, got: {msg}"
     );
 
@@ -470,18 +470,40 @@ fn accum_array_builds_a_matrix_from_the_initial_value() {
 }
 
 #[test]
-fn array_builds_a_matrix_with_the_zero_fill() {
-    // `array` is Float-only and fills the unlisted positions with 0.0.
-    let src = format!(
-        "main = array {} [{}, {}];",
+fn array_builds_a_matrix_with_undefined_holes_for_unlisted_cells() {
+    // `array` is element-polymorphic: unlisted positions are UNDEFINED elements
+    // — a shared lazy callable that latches the clean "array: undefined array
+    // element" fault when forced (GHC's `undefined`), not a `0.0` fill.
+    let arr = format!(
+        "array {} [{}, {}]",
         b2(0, 0, 1, 2),
         assoc(0, 1, 1.5),
         assoc(1, 2, 3.5)
     );
+    // Bounds read back; the listed cells read their values through `index`.
+    let src = format!(
+        "main = (\\a -> Pair {{ first: arrayBounds a, second: Pair {{ first: index a {}, second: index a {} }} }}) ({arr});",
+        cell(0, 1),
+        cell(1, 2)
+    );
     let (prog, v) = run(&src);
-    let (values, (low, high)) = matrix(&prog, &v);
-    assert_eq!((low, high), ((0, 0), (1, 2)));
-    assert_eq!(values, vec![0.0, 1.5, 0.0, 0.0, 0.0, 3.5]);
+    let (bounds, cells) = pair_values(&prog, &v);
+    let (low, high) = pair_values(&prog, &bounds);
+    assert_eq!(int_pair(&prog, &low), (0, 0));
+    assert_eq!(int_pair(&prog, &high), (1, 2));
+    let (c1, c2) = pair_values(&prog, &cells);
+    assert_eq!(c1, Value::Float(1.5));
+    assert_eq!(c2, Value::Float(3.5));
+
+    // Forcing an unlisted position faults cleanly (a fold over `arrayElems`
+    // forces every element; the unlisted holes latch on the first push).
+    let msg = fault(&format!(
+        "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems ({arr}));"
+    ));
+    assert!(
+        msg.contains("array: undefined array element"),
+        "expected the hole fault for an unlisted matrix cell, got: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------

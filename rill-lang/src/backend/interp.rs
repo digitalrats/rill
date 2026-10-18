@@ -2089,26 +2089,22 @@ fn copy_array_elems<T: Transcendental, const BUF: usize>(
     Some(out)
 }
 
-/// Read a flat `Pair Int e` association: the flat offset and the value ref.
+/// Read an index-typed `Pair i e` association: the pair's index ref and value
+/// ref.
 ///
-/// The offset is an `Int`; the pair is a `Pair` record (`first` = offset,
-/// `second` = value) — the shape the type checker enforces. A malformed pair
-/// (or a non-`Int` offset) is reported as a distinct fault reason rather than a
-/// panic, so the caller can name the actual cause.
-fn flat_assoc<T: Transcendental, const BUF: usize>(
-    _ir: &Ir,
+/// The pair is a `Pair` record (`first` = index, `second` = value) — the shape
+/// the type checker enforces. A malformed pair is reported as a distinct fault
+/// reason rather than a panic, so the caller can name the actual cause. The
+/// index itself is resolved against the bounds shape by the caller.
+fn indexed_assoc<T: Transcendental, const BUF: usize>(
     world: &WorldState<T, BUF>,
     pair: ArenaRef,
-) -> Result<(i64, ArenaRef), &'static str> {
+) -> Result<(ArenaRef, ArenaRef), &'static str> {
     let fields = match world.arena.get(pair) {
         Some(Value::Record(fields)) if fields.len() == 2 => fields,
         _ => return Err("association is not a Pair"),
     };
-    let offset = match world.arena.get(fields[0]) {
-        Some(Value::Int(i)) => *i,
-        _ => return Err("association offset is not an Int"),
-    };
-    Ok((offset, fields[1]))
+    Ok((fields[0], fields[1]))
 }
 
 /// The run-time shape of an array's bounds — the interpreter-side mirror of the
@@ -2195,11 +2191,8 @@ impl ArrayShape {
     /// OUT OF the bounded rectangle — checked BEFORE any arithmetic (Q3: an
     /// out-of-rectangle cell with an accidentally in-range flat offset must
     /// fault). Reproduces the prelude instances' `inRange`/`index` bodies
-    /// exactly.
-    ///
-    /// The index-typed `arrayUpdate`/`arrayAccum` arms (Task 3) call this for
-    /// every association; until then only the unit test below drives it.
-    #[allow(dead_code)]
+    /// exactly. Called by the index-typed construction/update arms
+    /// (`arrayFromAssocs`, `arrayUpdate`, `arrayAccum`) for every association.
     fn offset<T: Transcendental, const BUF: usize>(
         &self,
         ir: &Ir,
@@ -2238,6 +2231,42 @@ impl ArrayShape {
                     )
                 } else {
                     None
+                }
+            }
+        }
+    }
+
+    /// The cause string for an association index that `offset` rejected: a
+    /// structurally-wrong index (a non-`Int`, or a non-`Pair`-of-`Int`s for the
+    /// 2-D shape) is reported with a shape-specific cause, and an index inside
+    /// the right structure but outside the bounded rectangle is plain
+    /// "index out of range".
+    fn index_rejection_cause<T: Transcendental, const BUF: usize>(
+        &self,
+        ir: &Ir,
+        world: &mut WorldState<T, BUF>,
+        index: ArenaRef,
+        drops: &mut Vec<ArenaRef>,
+    ) -> &'static str {
+        match self {
+            ArrayShape::Dim1 { .. } => {
+                if forced_i64(ir, world, index, drops).is_some() {
+                    "index out of range"
+                } else {
+                    "association index is not an Int"
+                }
+            }
+            ArrayShape::Dim2 { .. } => {
+                let fields = match world.arena.get(index) {
+                    Some(Value::Record(f)) if f.len() == 2 => [f[0], f[1]],
+                    _ => return "association index is not a Pair of Ints",
+                };
+                if forced_i64(ir, world, fields[0], drops).is_some()
+                    && forced_i64(ir, world, fields[1], drops).is_some()
+                {
+                    "index out of range"
+                } else {
+                    "association index is not a Pair of Ints"
                 }
             }
         }
@@ -3388,12 +3417,14 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         ArrayUpdate | ArrayAccum => {
             // arrayUpdate arr assocs / arrayAccum arr f assocs: build a NEW
             // array (the source is never mutated). The source elements are
-            // recounted into the result payload, then each flat (offset, value)
-            // association replaces one element (update) or folds the old value
-            // with the new one through `f` (accum). Every failure keeps its own
-            // message (the op name plus the specific cause) — out-of-range
-            // offset, malformed association, non-Int offset, non-callable
-            // accumulator — all through the clean fault channel.
+            // recounted into the result payload, then each INDEX-TYPED
+            // (index, value) association — resolved against the source's STORED
+            // bounds through the shared shape helper — replaces one element
+            // (update) or folds the old value with the new one through `f`
+            // (accum). Every failure keeps its own message (the op name plus
+            // the specific cause): unsupported index shape, out-of-rectangle
+            // index, malformed association, non-callable accumulator — all
+            // through the clean fault channel.
             let op_name = if matches!(op, ArrayUpdate) {
                 "arrayUpdate"
             } else {
@@ -3419,6 +3450,45 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 world.value_regs[dst] = None;
                 return;
             };
+            // The associations are INDEX-typed: resolve them against the
+            // STORED bounds of the source array (not against a flat offset).
+            let Some(stored_bounds) =
+                world.value_regs[base + args[0]].and_then(|r| world.arena.get(r))
+            else {
+                world.arena.put_buf(assocs);
+                for r in &out {
+                    world.arena.drop_ref(*r);
+                }
+                world.arena.put_buf(out);
+                latch_fault(ir, world, &format!("{op_name}: operand is not an array"));
+                world.value_regs[dst] = None;
+                return;
+            };
+            let shape = match stored_bounds {
+                Value::Array { bounds, .. } => match array_shape(ir, world, *bounds, drops) {
+                    Ok(s) => s,
+                    Err(why) => {
+                        world.arena.put_buf(assocs);
+                        for r in &out {
+                            world.arena.drop_ref(*r);
+                        }
+                        world.arena.put_buf(out);
+                        latch_fault(ir, world, &format!("{op_name}: {why}"));
+                        world.value_regs[dst] = None;
+                        return;
+                    }
+                },
+                _ => {
+                    world.arena.put_buf(assocs);
+                    for r in &out {
+                        world.arena.drop_ref(*r);
+                    }
+                    world.arena.put_buf(out);
+                    latch_fault(ir, world, &format!("{op_name}: operand is not an array"));
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
             // `Some` carries a cause; `None` while `aborted` means the failure
             // was already latched (arena exhaustion).
             let mut fault: Option<String> = None;
@@ -3426,7 +3496,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             for pair in &assocs {
                 // Read the association in a short borrow, then mutate the
                 // payload (an `accum` closure call may dispatch a fragment).
-                let (offset, val) = match flat_assoc(ir, world, *pair) {
+                let (index, val) = match indexed_assoc(world, *pair) {
                     Ok(a) => a,
                     Err(why) => {
                         fault = Some(format!("{op_name}: {why}"));
@@ -3434,8 +3504,18 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         break;
                     }
                 };
+                let Some(offset) = shape.offset(ir, world, index, drops) else {
+                    fault = Some(format!(
+                        "{op_name}: {}",
+                        shape.index_rejection_cause(ir, world, index, drops)
+                    ));
+                    aborted = true;
+                    break;
+                };
+                // `offset` is in `[0, size)` of the STORED bounds; the recounted
+                // payload has exactly `size` claims, so it is in range.
                 let Some(pos) = flat_index_in_range(offset, out.len()) else {
-                    fault = Some(format!("{op_name}: index {offset} out of range"));
+                    fault = Some(format!("{op_name}: index out of range"));
                     aborted = true;
                     break;
                 };
@@ -3483,11 +3563,12 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 world.value_regs[dst] = None;
                 return;
             }
-            let bounds = match world.value_regs[base + args[0]].and_then(|r| world.arena.get(r)) {
-                Some(Value::Array { bounds, .. }) => Some(*bounds),
-                _ => None,
+            let Some(Value::Array { bounds, .. }) =
+                world.value_regs[base + args[0]].and_then(|r| world.arena.get(r))
+            else {
+                unreachable!("the source was read as an array above");
             };
-            let Some(bounds) = bounds.and_then(|b| world.arena.copy(b).ok()) else {
+            let Some(bounds) = world.arena.copy(*bounds).ok() else {
                 for r in &out {
                     world.arena.drop_ref(*r);
                 }
