@@ -208,6 +208,32 @@ fn bang_out_of_range_below_a_non_zero_origin_is_a_clean_fault() {
 }
 
 #[test]
+fn two_dimensional_bang_out_of_range_is_a_clean_fault() {
+    // Every way a cell can leave a 3x3 grid. The column cases are the
+    // interesting ones: a row-major flat offset of `r * cols + c` stays inside
+    // the element array for a positive column overflow, so the cell — not just
+    // the flat offset — has to be rejected.
+    for (i, j) in [(3, 0), (-1, 0), (0, 3), (0, -1), (2, 3)] {
+        let msg = fault(&format!("main = {} ! {};", m3(), cell(i, j)));
+        assert!(
+            msg.contains("out of range"),
+            "expected the clean out-of-range fault for cell ({i},{j}), got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn two_dimensional_index_accessor_faults_out_of_range_like_bang() {
+    // The named accessor shares the accessor body with `!`, so it must reject
+    // the same cells — for both a `Pair Int Int` index and a column overflow.
+    let msg = fault(&format!("main = index {} {};", m3(), cell(0, 3)));
+    assert!(
+        msg.contains("out of range"),
+        "expected the named accessor to fault for cell (0,3), got: {msg}"
+    );
+}
+
+#[test]
 fn an_empty_matrix_dimension_reads_as_empty_and_access_faults() {
     // `(0,0)..(1,-1)` has an empty column span: zero elements, and any cell is
     // out of range rather than a wrapped read.
@@ -274,6 +300,18 @@ fn array_update_and_accum_array_reject_out_of_range_association_cells() {
     assert!(
         msg.contains("arrayUpdate") && msg.contains("out of range"),
         "expected the clean out-of-range fault for an out-of-grid `update` cell, got: {msg}"
+    );
+
+    // A column past the last one in a 3x2 grid: the flat offset of (0,2) is 2,
+    // which is INSIDE the 6-element storage — only the cell check catches it.
+    let msg = fault(&format!(
+        "main = accumArray (\\ a -> \\ b -> a + b) 1.0 {} [{}];",
+        b2(0, 0, 2, 1),
+        assoc(0, 2, 10.0)
+    ));
+    assert!(
+        msg.contains("out of range"),
+        "expected the clean out-of-range fault for an out-of-grid accumArray assoc, got: {msg}"
     );
 }
 

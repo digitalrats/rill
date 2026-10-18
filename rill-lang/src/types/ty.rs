@@ -552,6 +552,12 @@ instance Monad IO where {
 --      conjure a value of an arbitrary element type. `accumArray` takes its
 --      initial value as an argument and therefore stays generic.
 --
+--  Fault policy: every CELL reference is bounds-checked, not just the flat
+--  offset. `checkedOffset` turns an out-of-range cell into `-1`, which the flat
+--  primitives reject with their own clean out-of-range fault — so `!`/`index`
+--  and every association's index fault instead of wrapping into a neighbouring
+--  row (a flat offset cannot tell the storage layer which cell it came from).
+--
 --  `range` enumerates ROW-MAJOR (last coordinate fastest), which is exactly the
 --  order `Ix.index` flattens to, so `indices`/`assocs` and the element list of
 --  a 2-D `listArray` all agree.
@@ -599,11 +605,20 @@ elems a :: Array i e -> List e = arrayElems a;
 --  this array accessor (`Array i e -> i -> e`, the `!` operator). The dispatch is
 --  type-directed on the first argument — a `Pair` bounds value selects the
 --  method, an `Array` selects this definition — and the body below relies on
---  exactly that to reach the METHOD for its offset. The offset reads the
---  PRIMITIVE `arrayBounds`, not the `bounds` definition: a plain definition is
---  lowered through its (polymorphic) scheme, so its index type would stay a
---  variable and the METHOD dispatch would be lost.
-index a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (index (arrayBounds a) ix);
+--  exactly that to reach the METHOD for its offset. The offset is computed by
+--  `checkedOffset` (the PRIMITIVE `arrayBounds`, not the `bounds` definition: a
+--  plain definition is lowered through its (polymorphic) scheme, so its index
+--  type would stay a variable and the METHOD dispatch would be lost).
+index a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (checkedOffset (arrayBounds a) ix);
+
+--  `checkedOffset bounds ix`: the flat offset of `ix`, or `-1` when the cell is
+--  outside the bounds. Every flat primitive rejects a negative offset, so an
+--  out-of-range CELL takes the same clean fault channel as an out-of-range flat
+--  offset. Without the check a 2-D cell such as `(0, 3)` in a 3x3 grid would
+--  compute the in-range offset `3` and silently read the next row's first
+--  element — a wrapped read the storage layer cannot detect, because a flat
+--  offset carries no information about the cell it came from.
+checkedOffset b ix :: Ix i => Pair i i -> i -> Int = if inRange b ix then index b ix else -1;
 
 --  The strict constructor: the element count must equal `rangeSize` of the
 --  bounds. `arrayFromListChecked` carries the pre-computed size to the
@@ -612,17 +627,17 @@ listArray b es :: Ix i => Pair i i -> List e -> Array i e = arrayFromListChecked
 
 --  `array assocs`: every position starts at `0.0` and the associations are
 --  applied over it in order, so a repeated index leaves the last value.
-array b xs :: Ix i => Pair i i -> List (Pair i Float) -> Array i Float = arrayUpdate (arrayFromList b (map (\ k -> 0.0) (range b))) (map (\ p -> Pair { first: index b p.first, second: p.second }) xs);
+array b xs :: Ix i => Pair i i -> List (Pair i Float) -> Array i Float = arrayUpdate (arrayFromList b (map (\ k -> 0.0) (range b))) (map (\ p -> Pair { first: checkedOffset b p.first, second: p.second }) xs);
 
 --  `accumArray f init assocs`: every position starts at `init` and the
 --  associations are folded in order (`f old new`).
-accumArray f init b xs :: Ix i => (e -> (e -> e)) -> e -> Pair i i -> List (Pair i e) -> Array i e = arrayAccum (arrayFromList b (map (\ k -> init) (range b))) f (map (\ p -> Pair { first: index b p.first, second: p.second }) xs);
+accumArray f init b xs :: Ix i => (e -> (e -> e)) -> e -> Pair i i -> List (Pair i e) -> Array i e = arrayAccum (arrayFromList b (map (\ k -> init) (range b))) f (map (\ p -> Pair { first: checkedOffset b p.first, second: p.second }) xs);
 
 --  `(//)` — apply (index, value) associations, last wins, source untouched.
-update a xs :: Ix i => Array i e -> List (Pair i e) -> Array i e = arrayUpdate a (map (\ p -> Pair { first: index (arrayBounds a) p.first, second: p.second }) xs);
+update a xs :: Ix i => Array i e -> List (Pair i e) -> Array i e = arrayUpdate a (map (\ p -> Pair { first: checkedOffset (arrayBounds a) p.first, second: p.second }) xs);
 
 --  `accum f` — fold associations into an existing array.
-accum f a xs :: Ix i => (e -> (e -> e)) -> Array i e -> List (Pair i e) -> Array i e = arrayAccum a f (map (\ p -> Pair { first: index (arrayBounds a) p.first, second: p.second }) xs);
+accum f a xs :: Ix i => (e -> (e -> e)) -> Array i e -> List (Pair i e) -> Array i e = arrayAccum a f (map (\ p -> Pair { first: checkedOffset (arrayBounds a) p.first, second: p.second }) xs);
 
 indices a :: Ix i => Array i e -> List i = range (arrayBounds a);
 
