@@ -50,6 +50,18 @@ required-features = ["dsp"]
 name = "program_json"
 required-features = ["serialization", "dsp"]
 
+[[test]]
+name = "array_buffer"
+required-features = ["dsp"]
+
+[[test]]
+name = "array_storage"
+required-features = ["dsp"]
+
+[[test]]
+name = "ix"
+required-features = ["dsp"]
+
 [[bench]]
 name = "lang_bench"
 harness = false
