@@ -495,12 +495,6 @@ impl<'a> Parser<'a> {
                 span: self.peek().span,
             });
         }
-        if !defs.iter().any(|d| d.name() == "main") {
-            return Err(CompileError::Parse {
-                msg: "program must contain a `main` definition".into(),
-                span: Span::new(0, self.src.len()),
-            });
-        }
         Ok(Program {
             mode,
             mode_explicit,
@@ -538,10 +532,6 @@ impl<'a> Parser<'a> {
                 let n = n.clone();
                 self.bump();
                 n
-            }
-            Tok::KwMain => {
-                self.bump();
-                "main".to_string()
             }
             other => {
                 return Err(CompileError::Parse {
@@ -2095,7 +2085,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_main() {
+    fn parses_program_without_main() {
+        // `main` is not required by the parser anymore: the entry name is a
+        // compile-time pipeline parameter (compile selects `main`; eval selects
+        // its synthesized marker). A def list without `main` is a valid program.
+        let p = prog("double x = x * 2.0");
+        assert_eq!(p.defs.len(), 1);
+        assert_eq!(p.defs[0].name(), "double");
+    }
+
+    #[test]
+    fn rejects_empty_program() {
+        // Def-less input is still rejected (the empty-program rule stays).
+        assert!(parse(&tokenize("").unwrap(), "".as_bytes()).is_err());
         assert!(parse(&tokenize("_ * 0.5").unwrap(), "_ * 0.5".as_bytes()).is_err());
     }
 

@@ -48,8 +48,6 @@ pub enum Tok {
     Eq,
     /// `;`
     Semi,
-    /// `main` keyword — entry point.
-    KwMain,
     /// `where` keyword — optional definition block.
     KwWhere,
     /// `let` keyword — expression-level mutually-recursive bindings.
@@ -404,7 +402,6 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
 
             let tok = match text {
                 "_" => Tok::Wire,
-                "main" if !followed_by_paren => Tok::KwMain,
                 "where" if !followed_by_paren => Tok::KwWhere,
                 "let" if !followed_by_paren => Tok::KwLet,
                 "in" if !followed_by_paren => Tok::KwIn,
@@ -606,11 +603,13 @@ mod tests {
     }
 
     #[test]
-    fn lexes_main_keyword() {
+    fn main_is_an_ordinary_identifier() {
+        // `main` is no longer a keyword: the entry name is a compile-time
+        // pipeline parameter, not a lexer token.
         assert_eq!(
             kinds("main foo bar"),
             vec![
-                Tok::KwMain,
+                Tok::Ident("main".into()),
                 Tok::Ident("foo".into()),
                 Tok::Ident("bar".into()),
                 Tok::Eof,
