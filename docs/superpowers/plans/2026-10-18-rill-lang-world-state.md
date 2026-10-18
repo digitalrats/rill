@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Gate for every task: `cargo test -p rill-lang --features dsp` green; `cargo test -p rill-adrift` green (lanes that touch it); `cargo clippy -p rill-lang --lib --tests` zero warnings; `cargo fmt --check`. Commits on `feature/rill-lang-arrays` in **single quotes**.
+- Gate for every task: `cargo test -p rill-lang --features dsp` green; `cargo test -p rill-adrift` green (lanes that touch it); `cargo clippy -p rill-lang --features dsp --lib --tests` zero warnings; `cargo fmt --check`. Commits on `feature/rill-lang-arrays` in **single quotes**.
 - `main : IO ()` stays a **static compile-time gate** on the compile entry (`"main"`), not a runtime latch: entry named `main` whose type is not `IO ()` is a compile error. The eval surface never selects `main` as an entry (internal marker `__rill_eval`); `main` in `defs` is a plain binding.
 - `RillProgram` is **removed**. The executable surface: `compile<T, BUF>(src, ffi) -> Result<ProgramRunner<T, BUF>, CompileError>` (Complete default, gate on `ir.main_io_unit`); `ProgramRunner { ir: Ir, world: WorldState<T, BUF> }`; `compile_eval(defs, expr, mode) -> Result<Ir, CompileError>`; `test_eval(ir, &mut world) -> Result<(), CompileError>` (seat + run; a run `ProcessError` maps to `CompileError::Unsupported`).
 - **`sample_rate` leaves the compiler and the API.** No `sample_rate` parameter on `compile`/`compile_eval`/lower lowering functions. `?sample_rate` reads `world.params.sample_rate` at run time; a caller needing a rate pre-seeds the world (`world.params.sample_rate = 48_000.0`) before `run()`/`test_eval`. `smooth` computes its coefficient at run time from the world rate (a `ms <= 0 || sr <= 0` guard yields identity `a = 1.0`).
@@ -79,7 +79,7 @@
 - [ ] **Step 2: Run the workspace gate**
 
 Run: `cargo test -p rill-lang --features dsp && cargo test -p rill-adrift`
-Expected: green. Then `cargo clippy -p rill-lang --lib --tests` (zero warnings) and `cargo fmt --check`.
+Expected: green. Then `cargo clippy -p rill-lang --features dsp --lib --tests` (zero warnings) and `cargo fmt --check`.
 
 - [ ] **Step 3: Grep-sweep for leftover launch-arg machinery**
 
@@ -126,7 +126,7 @@ Keep `program_runner.rs`'s `run()` console snapshot reading `world.stdout`/`worl
 - [ ] **Step 4: Full suite gate**
 
 Run: `cargo test -p rill-lang --features dsp`
-Expected: green, no test edits. Then `cargo clippy -p rill-lang --lib --tests` (zero warnings), `cargo fmt --check`.
+Expected: green, no test edits. Then `cargo clippy -p rill-lang --features dsp --lib --tests` (zero warnings), `cargo fmt --check`.
 
 - [ ] **Step 5: Commit**
 
@@ -171,7 +171,7 @@ Move `build`'s allocations into `seat`, sizing the arena and `BufferPool` from `
 - [ ] **Step 4: Full suite gate**
 
 Run: `cargo test -p rill-lang --features dsp`
-Expected: green. Then `cargo clippy -p rill-lang --lib --tests` (zero warnings), `cargo fmt --check`.
+Expected: green. Then `cargo clippy -p rill-lang --features dsp --lib --tests` (zero warnings), `cargo fmt --check`.
 
 - [ ] **Step 5: Commit**
 
@@ -223,7 +223,7 @@ Remove `sample_rate` from `LowerCtx` and all lowering entry signatures; translat
 - [ ] **Step 4: Full suite gate**
 
 Run: `cargo test -p rill-lang --features dsp`
-Expected: green (smooth/s’ params tests pass with runtime coefficient; `smooth.rs` unchanged). Then `cargo clippy -p rill-lang --lib --tests` (zero warnings), `cargo fmt --check`.
+Expected: green (smooth/s’ params tests pass with runtime coefficient; `smooth.rs` unchanged). Then `cargo clippy -p rill-lang --features dsp --lib --tests` (zero warnings), `cargo fmt --check`.
 
 - [ ] **Step 5: Commit**
 
@@ -298,7 +298,7 @@ Remove the type and its now-unused delegator; fix `src/program.rs` internal test
 - [ ] **Step 8: Full suite gate**
 
 Run: `cargo test -p rill-lang --features dsp`
-Expected: green (Class 2 ignored/deleted per the ledger). Then `cargo clippy -p rill-lang --lib --tests` (zero warnings), `cargo fmt --check`.
+Expected: green (Class 2 ignored/deleted per the ledger). Then `cargo clippy -p rill-lang --features dsp --lib --tests` (zero warnings), `cargo fmt --check`.
 
 - [ ] **Step 9: Commit**
 
@@ -336,7 +336,7 @@ Behavioral pins from the Review Focus that Task 4's refactor must not regress.
 - [ ] **Step 3: Gate**
 
 Run: `cargo test -p rill-lang --features dsp`
-Expected: green. `cargo clippy -p rill-lang --lib --tests` zero warnings; `cargo fmt --check`.
+Expected: green. `cargo clippy -p rill-lang --features dsp --lib --tests` zero warnings; `cargo fmt --check`.
 
 - [ ] **Step 4: Commit**
 
@@ -398,7 +398,7 @@ Remove `src/graph/`, `pub mod graph`, the `graph` feature, the `graph_partition`
 - [ ] **Step 2: Gate**
 
 Run: `cargo test -p rill-lang --features dsp && cargo test -p rill-adrift`
-Expected: green (`graph_parse.rs` still compiles; no `Registry` references remain). `cargo clippy -p rill-lang --lib --tests` zero warnings; `cargo fmt --check`.
+Expected: green (`graph_parse.rs` still compiles; no `Registry` references remain). `cargo clippy -p rill-lang --features dsp --lib --tests` zero warnings; `cargo fmt --check`.
 
 - [ ] **Step 3: Grep-sweep**
 
@@ -429,7 +429,7 @@ git commit -m 'refactor(rill-lang): delete legacy Registry and graph path; forei
 
 - [ ] **Step 2: Full workspace gate**
 
-Run: `cargo test -p rill-lang --features dsp && cargo test -p rill-adrift && cargo clippy -p rill-lang --lib --tests && cargo fmt --check`
+Run: `cargo test -p rill-lang --features dsp && cargo test -p rill-adrift && cargo clippy -p rill-lang --features dsp --lib --tests && cargo fmt --check`
 Expected: all green, zero warnings.
 
 - [ ] **Step 3: Record the ledger**
