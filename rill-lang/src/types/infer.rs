@@ -1015,6 +1015,20 @@ pub(crate) fn method_dispatch_key(
 /// passes agree on which `index` a call means — the invariant the T4 review
 /// established for class dispatch.
 pub(crate) fn first_arg_solves_class_var(env: &TypeEnv, name: &str, selector_ty: &ValueTy) -> bool {
+    fn value_has_var(ty: &ValueTy, var: TypeVarId) -> bool {
+        match ty {
+            ValueTy::Var(id) | ValueTy::TyConVar(id) => *id == var,
+            ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+                args.iter().any(|t| value_has_var(t, var))
+            }
+            ValueTy::Thunk(args, rets) => {
+                args.iter().any(|t| value_has_var(t, var))
+                    || rets.iter().any(|t| value_has_var(t, var))
+            }
+            ValueTy::TyConApp(id, args) => *id == var || args.iter().any(|t| value_has_var(t, var)),
+            _ => false,
+        }
+    }
     let Some(class_name) = env.class_of_method(name) else {
         return false;
     };
@@ -1038,13 +1052,23 @@ pub(crate) fn first_arg_solves_class_var(env: &TypeEnv, name: &str, selector_ty:
         next += 1;
         ValueTy::Var(next)
     };
+    let mut solved_for_debug: Option<ValueTy> = None;
     let key = if info.arity == 0 {
         env.class_var_solved_ty(&sig, &class_var, selector_ty, PROBE_VAR, &mut fresh)
-            .and_then(|solved| crate::types::ty::value_type_key(&solved))
+            .and_then(|solved| {
+                solved_for_debug = Some(solved.clone());
+                crate::types::ty::value_type_key(&solved)
+            })
     } else {
         // A constructor class (`Functor f`) dispatches by the container head.
         env.type_name_of_vty(selector_ty)
     };
+    if let Some(solved) = solved_for_debug {
+        debug_assert!(
+            !value_has_var(&solved, PROBE_VAR),
+            "probe class-var id leaked into method dispatch key"
+        );
+    }
     let Some(key) = key else {
         return false;
     };
@@ -4346,6 +4370,8 @@ fn infer_constrained_apply(
 /// method, anything else (`Array i e`) to the definition. Lowering applies the
 /// same predicate to the same recovered type, so the passes cannot disagree.
 fn method_shadowed_by_def(ctx: &mut Ctx, name: &str, args: &[Expr]) -> bool {
+    // Inference only knows about locals; fragment captures are a lowering-only
+    // concept, so lowering checks them separately.
     if ctx.locals.contains_key(name) {
         return true;
     }
@@ -4358,6 +4384,8 @@ fn method_shadowed_by_def(ctx: &mut Ctx, name: &str, args: &[Expr]) -> bool {
             return !probe_first_arg_solves_class_var(ctx, name, first);
         }
     }
+    // Untypeable or absent first arg: fall back to the definition (matches
+    // lowering's routing).
     true
 }
 

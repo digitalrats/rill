@@ -4108,6 +4108,8 @@ impl<'a> Lowerer<'a> {
     /// an argument that solves the method's class variable goes to the method,
     /// everything else to the definition.
     fn method_shadowed_by_def(&mut self, name: &str, args: &[Expr]) -> bool {
+        // Lowering sees fragment captures; inference never does, so the
+        // asymmetry is intentional and safe: captures only exist in lowering.
         if self.value_locals.iter().any(|s| s.contains_key(name))
             || self.fragment_captures.iter().any(|(n, _)| n == name)
         {
@@ -4124,6 +4126,8 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
+        // Untypeable or absent first arg: fall back to the definition (matches
+        // inference's routing).
         true
     }
 
@@ -4134,9 +4138,13 @@ impl<'a> Lowerer<'a> {
     /// self-contained scrutinees; a dispatch probe asks about an argument that
     /// usually IS a local reference (`index b i` with `b` a λ-parameter), so
     /// clearing them would make every probe of a local fail and silently route
-    /// every dual-name call to the definition. The emitted instructions,
-    /// registers, captures, inlined-def state, pending parameter types, and
-    /// head-arg bindings are all restored.
+    /// every dual-name call to the definition.
+    ///
+    /// The emitted instructions, register allocation, `anchor_cells`, pending
+    /// parameter types, and head-arg bindings are all restored. The monotone
+    /// append-only tables (`container_tys`, `value_funcs`, `fragments`) are
+    /// shared across probes; entries produced by a probe are dead IR and affect
+    /// compile time only.
     fn peek_value_ty(&mut self, e: &Expr) -> Option<ValueTy> {
         let saved_blocks = std::mem::take(&mut self.value_blocks);
         let saved_cur = self.cur_value_block;
@@ -4149,18 +4157,20 @@ impl<'a> Lowerer<'a> {
         // local reference fail, which silently routed every dual-name call
         // inside a λ body to the definition. Both maps are cloned and restored
         // instead, so a capture registered during the probe is discarded.
-        let saved_captures = self.fragment_captures.clone();
+        let saved_captures_len = self.fragment_captures.len();
         let saved_inline = self.value_inline.clone();
         let saved_pending = self.pending_param_tys.clone();
         let saved_bindings = self.head_arg_bindings.clone();
+        let saved_anchor_cells = self.anchor_cells.clone();
         let r = self.lower_value(e).ok();
         self.value_blocks = saved_blocks;
         self.cur_value_block = saved_cur;
         self.next_value_reg = saved_next;
-        self.fragment_captures = saved_captures;
+        self.fragment_captures.truncate(saved_captures_len);
         self.value_inline = saved_inline;
         self.pending_param_tys = saved_pending;
         self.head_arg_bindings = saved_bindings;
+        self.anchor_cells = saved_anchor_cells;
         r.map(|(_, ty)| ty)
     }
 
