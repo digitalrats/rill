@@ -158,11 +158,13 @@ pub struct WorldConfig<T: Transcendental> {
     /// when a run outgrows the IR's build-time bound.
     ///
     /// `false` keeps the bound hard: an overrun latches a `ProcessError`
-    /// (RT-safe). `true` is the non-RT interpreter policy (a long-running
-    /// world does not fail on a program that merely exceeds its build-time
-    /// estimate). The default follows the `growable-arena` crate feature, so a
-    /// default-config world behaves exactly as the feature-gated build did
-    /// before the policy became per-world.
+    /// (RT-safe). `true` is the non-RT interpreter policy: an overrun appends
+    /// pages to the arena instead of failing. **Caveat:** the growth path
+    /// currently panics for a non-power-of-two IR capacity — a pre-existing
+    /// `ChunkedVec` page-door limitation tracked as follow-up FU-1 — so
+    /// `growable: true` is not yet safe for arbitrary programs. The default is
+    /// `cfg!(feature = "growable-arena")` (`false` in default builds), the
+    /// safe bounded-memory path.
     pub growable: bool,
     /// The built-in factory registry as a world-owned value.
     ///
@@ -398,7 +400,10 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// re-sized to the new IR, the value-track bookkeeping is cleared, and the
     /// console/stdout/stderr state is left untouched. Seating the same IR twice
     /// yields the same layout, but a re-seat invalidates value refs from an
-    /// earlier run (`result()` returns `None` afterwards). Declared parameter
+    /// earlier run (`result()` returns `None` afterwards). Each seat builds a
+    /// fresh arena, buffer table, delay lines, and block-feedback state, so a
+    /// re-seat restarts the built-in instances and the signal state from the
+    /// compiled layout (repeated runs are independent). Declared parameter
     /// **defaults** are seeded only where the world's bag has no value yet, so
     /// a pre-seeded parameter survives; `sample_rate` is never seeded from a
     /// declaration (the field owns it).
@@ -943,7 +948,7 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// yields; after the lines are drained the stream reports EOF. Pushback
     /// entries left over from an earlier run are released (the stream keeps its
     /// `unread` stack across runs otherwise).
-    pub(crate) fn inject_stdin(&mut self, lines: &[String]) {
+    pub fn inject_stdin(&mut self, lines: &[String]) {
         let mut stale = Vec::new();
         let slot = (STDIN_HANDLE & !STREAM_HANDLE_TAG) as usize;
         if let Some(StreamHandle::Stdin {

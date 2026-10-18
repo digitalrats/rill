@@ -24,10 +24,11 @@ git diff 6594221..HEAD -U0 -- rill-lang/tests rill-adrift/tests | rg '^-fn '
 
 ### 1.1 Ignored at close-out — census
 
-`rg -n '#\[ignore' rill-lang/tests rill-adrift/tests` → **9 ignores, all in `rill-lang`;
+`rg -n '#\[ignore' rill-lang/tests rill-adrift/tests` → **7 ignores, all in `rill-lang`;
 0 in `rill-adrift`; 0 in `rill-lang/src` / `rill-adrift/src`.** None was added by this
 migration (Task 4 ledger: `git diff -U0 rill-lang | grep -E '^\+.*#\[(allow|ignore)'` → 0).
-All nine predate the plan and are unchanged in subject and reason.
+All seven predate the plan and are unchanged in subject and reason. (The final-review
+fix wave removed two further ignores — see FU-10 — after verifying they pass as written.)
 
 | # | File | Test | `#[ignore]` reason | Cause | Owner |
 |---|---|---|---|---|---|
@@ -38,11 +39,11 @@ All nine predate the plan and are unchanged in subject and reason.
 | 5 | `rill-lang/tests/ffi.rs:1348` | `tape_loop_float_capacity_is_rejected` | same | same | FU-5 |
 | 6 | `rill-lang/tests/ffi.rs:1369` | `tape_loop_zero_capacity_is_rejected` | same | same | FU-5 |
 | 7 | `rill-lang/tests/ffi.rs:1385` | `undeclared_resource_ref_is_reported_on_source_path` | same | same | FU-5 |
-| 8 | `rill-lang/tests/func_values.rs:29` | `function_reference_calls_signal_definition` | `signal-lambda main: no unary-model equivalent (removed with the signal surface)` | asserts the `Value::Callable`/value-channel output of a func value over a signal function; the unary value model collapses it to the block track | FU-10 — not planned as a fix: re-expressing it needs a callable-output channel (signal-surface era) |
-| 9 | `rill-lang/tests/func_values.rs:73` | `func_value_can_be_chained` | same | same | FU-10 (same) |
 
 World-state migration status: **no ignored test was un-ignored, re-scoped, or
-newly ignored**; the world-owned surface did not change any of their subjects.
+newly ignored by the migration tasks**; the world-owned surface did not change any
+of their subjects. The final-review fix wave un-ignored the two `func_values`
+tests because they pass as written (FU-10).
 
 ### 1.2 Deleted during this migration (`6594221..HEAD`)
 
@@ -98,7 +99,7 @@ multi-tick / re-run signal surface that the single-run value model removed.**
 | `rill-lang/tests/collections_list.rs` | `consed_list_shares_source_elements_across_ticks`, `repeated_growth_ticks_do_not_leak_arena` | cross-tick sharing / arena growth |
 | `rill-lang/tests/collections_capacity.rs` | `container_outputs_pin_subtrees_across_ticks`, `map_build_and_pin_across_ticks` | cross-tick pinning |
 | `rill-lang/tests/collections_map_set.rs` | `tail_shared_source_elements_survive_across_ticks` | cross-tick sharing |
-| `rill-lang/tests/func_values.rs` | `func_value_as_output_survives_ticks` | cross-tick output survival (the two surviving tests are the ignores in §1.1) |
+| `rill-lang/tests/func_values.rs` | `func_value_as_output_survives_ticks` | cross-tick output survival (the two other surviving tests were un-ignored in the final-review fix wave — FU-10) |
 | `rill-lang/tests/ffi.rs` | `digital_effects_delay_live_param_reaches_algorithm` | `SetParameter` routed into the algorithm across 3+ ticks |
 | `rill-lang/tests/ffi.rs` | `inline_tape_loop_calls_are_distinct_tapes` | two-output program read via `copy_output_samples(1, …)`; at-most-one-output model |
 | `rill-lang/tests/ffi.rs` (Task 13b list, comment only) | `combinator_sugar_binds_delay_lhs`, `combinator_sugar_binds_loop_operand`, `combinator_sugar_binds_merge_operand`, `combinator_sugar_binds_split_operand`, `combinator_sugar_binds_par_operand_with_two_signals`, `combinator_sugar_binds_gain_scalar_only_call`, `combinator_sugar_does_not_double_bind_positional_call`, `foreign_fn_multi_signal_wires_distinct_inputs`, `foreign_variadic_signal_merge_accepts_channels` | the `@`/`~`/`:`/`<:` combinator-sugar surface and multi-channel signal routing |
@@ -131,13 +132,19 @@ single-run structural asserts.
 | **FU-7** | `rill-lang/benches/lang_bench.rs` | Task 4 review (Concern #1), Task 6 review (Concern #2) | Still names `RillProgram` and `prog.process(..)`; it was **already broken at HEAD** (benches are outside the `--lib --tests` gate and not built by CI). Repair as an IO-program benchmark or delete. Not touched by this commit (outside the gate, pre-existing breakage). |
 | **FU-8** | `drift` publish-pinned usage | Task 7 review (Concern #1) | `drift` is a separate repository pinned to published `rill-adrift`; it must move from `full_registry*` / `compile_runner` / `RillProgram` to `full_ffi*` / `compile` on the next release. Out of this workspace's reach. |
 | **FU-9** | Runner-path parameter test debt (rill-adrift) | Task 6 review (Minor #3); §1.3 | The three `engine_params` `set_param`-between-runs tests are re-expressible on the now-repeatable `ProgramRunner::run()`. Restore them (or an equivalent) rather than leaving the module doc as the only record. **Cheaper route than an `IO ()` rewrite:** `WorldState::seat` is re-seatable (`rill-lang/src/program.rs:391-406`) and preserves a pre-supplied parameter bag (declared defaults seed only absent names, `:490-506`), while `ValueReadParam` reads the parameter store at run time (`rill-lang/src/backend/interp.rs:1630`) — so two `test_eval` calls with `set_param` between them are a valid value-path re-run that observes the new value. |
-| **FU-10** | `func_values` callable-output ignores | Task 8 review (Minor #6); §1.1 rows 8-9 | `function_reference_calls_signal_definition` and `func_value_can_be_chained` (`rill-lang/tests/func_values.rs:29,73`) assert a `Value::Callable` output over a signal function; the migration's unary value model collapses that to the block track, so they cannot be re-expressed against the new API without changing their subject. Resolving item: either add a callable-output channel or delete the two tests deliberately. Recorded here so "not planned" cannot silently become permanent. |
+| **FU-10** | `func_values` callable-output ignores | Task 8 review (Minor #6); former §1.1 rows 8-9 | RESOLVED — the two tests were un-ignored in the final-review fix wave (they pass as written); no callable-output channel needed. |
 
 ### 2.2 Smaller deferred items (docs, coverage, polish)
 
-- **`docs/src/reference/crates.md`** (mdBook site) still names `compile_runner` /
-  `full_registry` / `compile_with_ffi` / `run_value`. Out of this commit's scope
-  (Task 8 adds only the ledger under `docs/superpowers/`); fix in the docs-site pass.
+- **mdBook docs-site rewrite** (deferred as a whole): the site still names the
+  pre-migration API and must be rewritten in one pass. Included:
+  **`docs/src/reference/crates.md`** (`compile_runner` / `full_registry` /
+  `compile_with_ffi` / `run_value`), **`docs/src/guides/rill-lang.md`**
+  (`compile_runner`, `Registry`, `RillProgram`, `set_args`, `param_index`,
+  `run_value` throughout the guide — roughly lines 11-37, 70-91, 132-162, 617,
+  675-694, 755-781), and **`docs/src/index.md`** (lines 23 and 37). Out of this
+  commit's scope (Task 8 adds only the ledger under `docs/superpowers/`); fix in
+  the docs-site pass.
 - **`serde_def` value-result coverage** (Task 4 Minor #3): `compile_def` is gated to
   `IO ()`, so the old value-result path has no serialization test.
 - **`main_cells.rs:30` NOTE-DELETED block** (Task 4 Minor #5) is stale after the

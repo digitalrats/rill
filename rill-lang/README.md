@@ -184,9 +184,9 @@ let stdout = run_on_stack(16 << 20, || {
 assert_eq!(stdout, ["hi"]);
 ```
 
-`ProgramRunner` is **not `Send`** (its `WorldState` owns `Rc<RefCell<…>>`
-state), so compile
-*inside* the closure, not before it. `run_on_stack` resumes a panic on the
+`ProgramRunner` is **not `Send`** (its `WorldState` owns `Box<dyn
+BlockBuiltin<T>>` trait objects and other non-shareable runtime handles), so
+compile *inside* the closure, not before it. `run_on_stack` resumes a panic on the
 calling thread, and a failed spawn panics (a host-resource failure, not a program
 error). Trampolining the `bind` chain to remove the limit is a planned follow-up.
 
@@ -524,9 +524,13 @@ collection ops perform **no heap allocation** on the processing path in the
 default (RT) mode. Copy-on-write mutation (`p.x := 3.0`), reference counting,
 and acyclic-by-construction data types are unchanged; the pool is bounded by a
 conservative build-time budget, and a program that exhausts it (default mode)
-or grows it (`growable-arena` feature, non-RT) hits a detectable no-op /
-runtime error. `typeclass` methods resolve at compile time (no runtime
-dispatch).
+hits a detectable no-op / runtime error. With `growable: true` (the non-RT
+interpreter policy; its default follows the `growable-arena` build feature,
+`false` in default builds) an overrun appends pages instead — but the growth
+path currently panics for a non-power-of-two IR capacity (a pre-existing
+`ChunkedVec` page-door limitation, tracked as follow-up FU-1), so the bounded
+default is the safe path today. `typeclass` methods resolve at compile time (no
+runtime dispatch).
 
 ### Builtin value types and type constructors
 

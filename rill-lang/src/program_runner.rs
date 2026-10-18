@@ -88,7 +88,10 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
     /// seeded only where the world's bag has no value, so a caller's pre-seed
     /// and any `set_param` between runs survive) and re-instantiates the
     /// built-in instances from the world's registry, so a parameter written
-    /// between two runs reaches the built-ins bound to it.
+    /// between two runs reaches the built-ins bound to it. Each call re-seats
+    /// from the compiled layout, so it restarts the built-in instances and the
+    /// signal state: repeated runs are independent, and only the parameter
+    /// store (absent-only seeding) survives between them.
     ///
     /// A program whose `main` is not an executable `IO ()` action (including an
     /// action whose final result is not `()`), or whose evaluation exhausts the

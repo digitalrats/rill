@@ -26,7 +26,6 @@ fn run(src: &str) -> WorldState<f32, 256> {
 }
 
 #[test]
-#[ignore = "signal-lambda main: no unary-model equivalent (removed with the signal surface)"]
 fn function_reference_calls_signal_definition() {
     // `f = double` binds a func value; `main = f 21.0` β-reduces the reference
     // chain at compile time to the signal computation `21.0 * 2.0`, so the
@@ -70,7 +69,6 @@ fn func_value_as_output() {
 }
 
 #[test]
-#[ignore = "signal-lambda main: no unary-model equivalent (removed with the signal surface)"]
 fn func_value_can_be_chained() {
     // `g = f` where `f = double` resolves through the reference chain: calling
     // `g` still dispatches to `double` (the scheme collapses the func-value
