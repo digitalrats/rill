@@ -264,6 +264,30 @@ fn is_constrained_def(def: &Def) -> bool {
     def.sig().is_some_and(|s| s.is_constrained())
 }
 
+/// Whether any of `def`'s parameters is a BANG parameter (`f !x = …`).
+///
+/// The parser curries a multi-parameter definition into a λ-nest and CLEARS its
+/// parameter list, so for `f !x y = …` the flags live on the body's leading λs;
+/// only a single-parameter definition keeps them in `params`.
+fn has_bang_param(def: &Def) -> bool {
+    if def.params().iter().any(|p| p.bang) {
+        return true;
+    }
+    let mut body = def.body();
+    while let Expr::Lambda {
+        params,
+        body: inner,
+        ..
+    } = body
+    {
+        if params.iter().any(|p| p.bang) {
+            return true;
+        }
+        body = inner;
+    }
+    false
+}
+
 /// Resolve a unary β-reduct: the (definition name, parameter name, body) of a
 /// function-valued callee that can be reduced by substituting one argument.
 ///
@@ -357,13 +381,19 @@ fn reduce_expr(
                     && !def.is_decl()
                     && !def.is_bang()
                     && !is_constrained_def(def)
+                    && !has_bang_param(def)
                 {
                     // Local binding with no params — inline the body. A bang
                     // binding (`let !x = e`) is NOT inlined: its force happens
                     // at the binding point, which only lowering can emit. A
                     // class-constrained definition is not inlined either: it is
                     // specialized at its call sites, where the class variable is
-                    // solved (see `lower::lower_constrained_apply`).
+                    // solved (see `lower::lower_constrained_apply`). A
+                    // definition with a bang parameter is not inlined for the
+                    // same reason `Expr::Apply` below leaves it alone — the
+                    // parser curries its parameters into λs and clears `params`,
+                    // so this guard is the only thing standing between
+                    // `f !x y = …` and a body lowered with defaulted types.
                     reduce_expr(def.body(), ctx, cafs, reducing, mode)
                 } else {
                     // Has unapplied λ-params, or is a bang binding — leave as ref
@@ -438,11 +468,14 @@ fn reduce_expr(
                         args: reduced_args,
                         span: *span,
                     }
-                } else if def.params().iter().any(|p| p.bang) {
+                } else if has_bang_param(def) {
                     // A bang parameter forces its argument on entry. Inlining
                     // the body would drop that force (the argument may be
                     // unused in the body), so the call is left for lowering to
-                    // dispatch through the closure fragment.
+                    // dispatch through the closure fragment — which is also the
+                    // only path that knows the definition's parameter types
+                    // (a bang parameter keeps its signature type instead of the
+                    // scalar default).
                     Expr::Apply {
                         name: name.clone(),
                         args: reduced_args,
