@@ -1,8 +1,8 @@
 //! `RillProgram<T, BUF>` — a compiled rill-lang program.
 //!
-//! It owns its IR, schedule, and pre-allocated state. A program is executed
-//! once to completion: its entry fragment runs and the terminal register is
-//! captured into [`RillProgram::main`] (inspected with
+//! It owns its IR and a [`WorldState`] holding the pre-allocated runtime state.
+//! A program is executed once to completion: its entry fragment runs and the
+//! terminal register is captured into the world's `main` (inspected with
 //! [`result`](RillProgram::result)). The
 //! [`ProgramRunner`](crate::program_runner::ProgramRunner) runs `main : IO ()`
 //! through this same path. Nothing allocates after warm-up.
@@ -130,14 +130,18 @@ impl StreamHandle {
     }
 }
 
-/// The runtime realization of `realWorld`: the memory-stream table and the
-/// captured stdio console.
+/// The runtime realization of `realWorld`: **all** mutable runtime state.
 ///
 /// `main : IO ()` threads the opaque `World` token for ordering only; the state
-/// the effects actually mutate lives here, on the program. The runner captures
-/// the console (`stdout`/`stderr`) so tests and drivers can assert on it, and
-/// injects the console input (`stdin`).
-pub struct WorldState {
+/// the effects actually mutate lives here. The world owns the memory-stream
+/// table and the captured stdio console, the signal runtime (block feedback,
+/// delay lines, the buffer table, built-in instances), the parameter store and
+/// its metadata, and the whole value track (arena, registers, capture cells,
+/// deferred drops, ST regions). [`RillProgram`] owns only the `Ir` and
+/// delegates every operation here. The runner captures the console
+/// (`stdout`/`stderr`) so tests and drivers can assert on it, and injects the
+/// console input (`stdin`).
+pub struct WorldState<T: Transcendental, const BUF: usize> {
     /// The memory-stream table. A stream handle's payload indexes this table
     /// (offset by [`STREAM_HANDLE_TAG`]); slots 0, 1 and 2 are
     /// `stdout`/`stderr`/`stdin`.
@@ -146,43 +150,6 @@ pub struct WorldState {
     pub stdout: Vec<String>,
     /// Lines written to `stderr`, in program order.
     pub stderr: Vec<String>,
-}
-
-impl WorldState {
-    /// A fresh world: an empty memory-stream table, the two stdio sinks, and an
-    /// empty console input.
-    ///
-    /// The table order fixes the stdio handle slots: 0 = `stdout`
-    /// ([`STDOUT_HANDLE`]), 1 = `stderr` ([`STDERR_HANDLE`]), 2 = `stdin`
-    /// ([`STDIN_HANDLE`]).
-    pub(crate) fn new() -> Self {
-        Self {
-            streams: vec![
-                StreamHandle::Stdout,
-                StreamHandle::Stderr,
-                StreamHandle::Stdin {
-                    lines: Vec::new(),
-                    pos: 0,
-                    pushback: Vec::new(),
-                },
-            ],
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        }
-    }
-}
-
-/// A runtime built-in instance, indexed directly by IR `instance` fields.
-pub(crate) enum BuiltinInst<T: Transcendental> {
-    /// An opaque whole-buffer built-in.
-    Block(Box<dyn BlockBuiltin<T>>),
-    /// A whole-buffer multi-channel built-in.
-    MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
-}
-
-/// A compiled program ready to run.
-pub struct RillProgram<T: Transcendental, const BUF: usize> {
-    pub(crate) ir: Ir,
     /// Block-level feedback state (previous tick's whole block per slot).
     pub(crate) block_state: Vec<FixedBuffer<T, BUF>>,
     /// Current-tick feedback writes, swapped with `block_state` at tick end.
@@ -258,17 +225,86 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// allocated and releases them on exit, so the table is truncated back
     /// after each region and never grows across ticks.
     pub(crate) st_cells: Vec<Option<StCell>>,
-    /// The realized `realWorld`: the memory-stream table and captured console.
-    /// `IO` actions reach it through this shared handle; the `World` token only
-    /// orders them.
-    pub(crate) world: std::rc::Rc<std::cell::RefCell<WorldState>>,
+}
+
+impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
+    /// A fresh world: an empty memory-stream table, the two stdio sinks, an
+    /// empty console input, and empty (zero-sized) runtime state.
+    ///
+    /// The table order fixes the stdio handle slots: 0 = `stdout`
+    /// (`STDOUT_HANDLE`), 1 = `stderr` (`STDERR_HANDLE`), 2 = `stdin`
+    /// (`STDIN_HANDLE`). The IR-derived state (delays, buffers, registers,
+    /// parameter store, arena) is filled in by `RillProgram::build`; a world
+    /// built here alone is the degenerate zero-program world.
+    pub fn new() -> Self {
+        Self {
+            streams: vec![
+                StreamHandle::Stdout,
+                StreamHandle::Stderr,
+                StreamHandle::Stdin {
+                    lines: Vec::new(),
+                    pos: 0,
+                    pushback: Vec::new(),
+                },
+            ],
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            block_state: Vec::new(),
+            block_state_next: Vec::new(),
+            delays: Vec::new(),
+            buffers: Vec::new(),
+            block_len: 0,
+            builtins: Vec::new(),
+            params: Vec::new(),
+            params_dirty: Vec::new(),
+            params_meta: Vec::new(),
+            arena: Arena::with_capacity(0),
+            value_regs: Vec::new(),
+            value_regs_top: 0,
+            value_state: Vec::new(),
+            cell_stack: Vec::new(),
+            frag_cells: Vec::new(),
+            frag_cells_base: 0,
+            drops_scratch: Vec::new(),
+            main: None,
+            value_error: None,
+            regions: Vec::new(),
+            st_cells: Vec::new(),
+        }
+    }
+}
+
+impl<T: Transcendental, const BUF: usize> Default for WorldState<T, BUF> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A runtime built-in instance, indexed directly by IR `instance` fields.
+pub(crate) enum BuiltinInst<T: Transcendental> {
+    /// An opaque whole-buffer built-in.
+    Block(Box<dyn BlockBuiltin<T>>),
+    /// A whole-buffer multi-channel built-in.
+    MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
+}
+
+/// A compiled program ready to run.
+///
+/// The program owns its `Ir` and the [`WorldState`] holding every piece of
+/// mutable runtime state; every operation delegates to the world.
+pub struct RillProgram<T: Transcendental, const BUF: usize> {
+    pub(crate) ir: Ir,
+    /// The realized `realWorld`: streams, captured console, signal runtime,
+    /// parameters, and the value track. `IO` actions reach it through this
+    /// world; the `World` token only orders them.
+    pub(crate) world: WorldState<T, BUF>,
 }
 
 /// One running `runST` region: the STRef/STArray cells it allocated.
 #[derive(Debug, Default)]
 pub(crate) struct RegionState {
     /// Global cell-table ids allocated in this region, in allocation order.
-    /// The cells themselves live in `RillProgram::st_cells`
+    /// The cells themselves live in `WorldState::st_cells`
     /// (`STRef`/`STArray` handles are plain global ids); the region releases
     /// them on exit.
     pub(crate) cells: Vec<u32>,
@@ -541,55 +577,34 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// and builds the execution schedule. Built-ins are NOT instantiated — use
     /// [`new_with`](Self::new_with) if the IR references built-in functions.
     pub fn new(ir: Ir) -> Self {
-        let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        let mut world = WorldState::new();
+        world.block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        world.block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         let (delays, _allocator) = Self::alloc_delays(&ir);
-        let buffers = Self::alloc_buffers(&ir);
-        let params_meta = ir.params.clone();
+        world.delays = delays;
+        world.buffers = Self::alloc_buffers(&ir);
+        world.params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
             .iter()
             .map(|p| ParamValue::Float(p.default as f32))
             .collect();
-        let params_dirty = vec![false; params.len()];
+        world.params_dirty = vec![false; params.len()];
+        world.params = params;
         let mut arena = Arena::with_capacity(ir.value_state.capacity);
         arena.pool = BufferPool::new(
             ir.value_state.buffer_budget,
             cfg!(feature = "growable-arena"),
         );
+        world.arena = arena;
         // Pre-allocate the value-register store: the program's own registers
         // plus the function-call scratch (see `Ir::max_call_regs`).
-        let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
-        let value_regs_top = ir.num_value_regs;
-        let value_state = vec![None; ir.value_state.value_state_slots];
-        let cell_stack = Vec::new();
-        let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
-        let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
-        Self {
-            ir,
-            block_state,
-            block_state_next,
-            delays,
-            buffers,
-            block_len: 0,
-            builtins: Vec::new(),
-            params,
-            params_dirty,
-            params_meta,
-            arena,
-            value_regs,
-            value_regs_top,
-            value_state,
-            cell_stack,
-            frag_cells,
-            frag_cells_base: 0,
-            drops_scratch,
-            main: None,
-            value_error: None,
-            regions: Vec::new(),
-            st_cells: Vec::new(),
-            world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
-        }
+        world.value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
+        world.value_regs_top = ir.num_value_regs;
+        world.value_state = vec![None; ir.value_state.value_state_slots];
+        world.frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
+        world.drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
+        Self { ir, world }
     }
 
     /// Create a program from a compiled [`Ir`], instantiating all built-ins
@@ -650,8 +665,10 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .collect::<Result<_, CompileError>>()?;
         // Carve the delay sites first so the allocator is available to
         // built-in factories below.
+        let mut world = WorldState::new();
         let (delays, mut allocator) = Self::alloc_delays(&ir);
-        let mut builtins = Vec::with_capacity(ir.builtins.len());
+        world.delays = delays;
+        world.builtins.reserve(ir.builtins.len());
         for bi in &ir.builtins {
             let b = build_builtin(
                 bi,
@@ -662,65 +679,39 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
                 sample_rate,
                 Some(&mut allocator),
             )?;
-            builtins.push(b);
+            world.builtins.push(b);
         }
 
-        let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let buffers = Self::alloc_buffers(&ir);
-        let params_meta = ir.params.clone();
+        world.block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        world.block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        world.buffers = Self::alloc_buffers(&ir);
+        world.params_meta = ir.params.clone();
         let params: Vec<ParamValue> = ir
             .params
             .iter()
             .map(|p| ParamValue::Float(p.default as f32))
             .collect();
-        let params_dirty = vec![false; params.len()];
+        world.params_dirty = vec![false; params.len()];
+        world.params = params;
         let mut arena = Arena::with_capacity(ir.value_state.capacity);
         arena.pool = BufferPool::new(
             ir.value_state.buffer_budget,
             cfg!(feature = "growable-arena"),
         );
+        world.arena = arena;
         // Pre-allocate the value-register store: the program's own registers
         // plus the function-call scratch (see `Ir::max_call_regs`).
-        let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
-        let value_regs_top = ir.num_value_regs;
-        let value_state = vec![None; ir.value_state.value_state_slots];
-        let cell_stack = Vec::new();
-        let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
-        let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
-        Ok(Self {
-            ir,
-            block_state,
-            block_state_next,
-            delays,
-            buffers,
-            block_len: 0,
-            builtins,
-            params,
-            params_dirty,
-            params_meta,
-            arena,
-            value_regs,
-            value_regs_top,
-            value_state,
-            cell_stack,
-            frag_cells,
-            frag_cells_base: 0,
-            drops_scratch,
-            main: None,
-            value_error: None,
-            regions: Vec::new(),
-            st_cells: Vec::new(),
-            world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
-        })
+        world.value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
+        world.value_regs_top = ir.num_value_regs;
+        world.value_state = vec![None; ir.value_state.value_state_slots];
+        world.frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
+        world.drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
+        Ok(Self { ir, world })
     }
 
     /// Swap the double-buffered block feedback state at the end of a tick.
     pub(crate) fn swap_block_state(&mut self) {
-        std::mem::swap(&mut self.block_state, &mut self.block_state_next);
-        for b in &mut self.block_state_next {
-            b.fill(T::ZERO);
-        }
+        self.world.swap_block_state();
     }
 
     /// Carve the program-level buffer table out of a fresh region allocator:
@@ -802,16 +793,117 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// counted arena ref that must be released before the next run (otherwise
     /// a repeated-run value program leaks one slot per register per run and
     /// exhausts the fixed arena). Called at the very end of a run, after the
-    /// result has been captured into `prog.main`. Only the program's own
-    /// registers (`0..ir.num_value_regs`) are cleared — the pre-allocated call
-    /// scratch is drained by `run_call` on every dispatch return, so its slots
-    /// are already `None`.
+    /// result has been captured into the world's `main`. Only the program's
+    /// own registers (`0..ir.num_value_regs`) are cleared — the pre-allocated
+    /// call scratch is drained by `run_call` on every dispatch return, so its
+    /// slots are already `None`.
     pub(crate) fn clear_value_regs(&mut self) {
+        self.world.clear_value_regs(self.ir.num_value_regs);
+    }
+
+    /// Index of a named parameter, if present.
+    pub fn param_index(&self, name: &str) -> Option<usize> {
+        self.world.param_index(name)
+    }
+
+    /// Set a parameter by index. RT-safe (plain store).
+    ///
+    /// The `params` store is kept in sync for readback (`param`) and for
+    /// pushing dynamic built-in parameter bindings.
+    pub fn set_param(&mut self, idx: usize, value: ParamValue) {
+        self.world.set_param(idx, value);
+    }
+
+    /// Replace the console input (`stdin`) lines and rewind the stream cursor.
+    ///
+    /// The runner's captured console realizes the program's stdio, so the
+    /// caller supplies the finite, line-oriented input that `read stdin`
+    /// yields; after the lines are drained the stream reports EOF. Pushback
+    /// entries left over from an earlier run are released (the stream keeps its
+    /// `unread` stack across runs otherwise).
+    pub(crate) fn inject_stdin(&mut self, lines: &[String]) {
+        self.world.inject_stdin(lines);
+    }
+
+    /// Current value of a parameter by index.
+    pub fn param(&self, idx: usize) -> ParamValue {
+        self.world.param(idx)
+    }
+
+    /// Metadata for all parameters (name, default, range).
+    pub fn params_meta(&self) -> &[ParamDef] {
+        self.world.params_meta()
+    }
+
+    /// The result of the program's single run: the terminal arena ref captured
+    /// by [`run_entry`](crate::backend::interp::run_entry) into the world's
+    /// `main`.
+    ///
+    /// A rill-lang program executes its entry fragment exactly ONCE, so this is
+    /// the program's one value-level result — the whole-buffer
+    /// (`Value::Buffer`) forms are inspected with
+    /// [`copy_buffer`](Self::copy_buffer). Returns `None` before the first run
+    /// or when the run produced no output register.
+    pub fn result(&self) -> Option<crate::arena::ArenaRef> {
+        self.world.result()
+    }
+
+    /// Access to the value arena, for inspecting output values (tests, tooling).
+    pub fn arena(&self) -> &Arena<Value> {
+        self.world.arena()
+    }
+
+    /// Forward initialisation to all built-in instances.
+    pub fn init(&mut self, sample_rate: f32) {
+        self.world.init(sample_rate);
+    }
+
+    /// Copy the samples of a whole-buffer run result into `dst`.
+    ///
+    /// Returns `true` when `dst` was filled (up to `dst.len()` or the run
+    /// length, whichever is smaller); `false` when `r` is not a buffer value
+    /// (a scalar/list/record value) or its buffer is gone. Intended for tests
+    /// and tooling that inspect the retained buffer path.
+    pub fn copy_buffer(&self, r: crate::arena::ArenaRef, dst: &mut [T]) -> bool {
+        self.world.copy_buffer(r, dst)
+    }
+
+    /// Reset the program to its initial state.
+    ///
+    /// Clears the signal state (feedback slots, delay lines), re-initialises
+    /// every built-in instance, and releases the value-track state (value
+    /// state slots, per-tick registers, outputs, capture cells, deferred
+    /// drops) so a mid-lifetime reset cannot exhaust the fixed arena.
+    pub fn reset(&mut self) {
+        self.world.reset(self.ir.num_value_regs);
+    }
+}
+
+impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
+    /// Swap the double-buffered block feedback state at the end of a tick.
+    pub(crate) fn swap_block_state(&mut self) {
+        std::mem::swap(&mut self.block_state, &mut self.block_state_next);
+        for b in &mut self.block_state_next {
+            b.fill(T::ZERO);
+        }
+    }
+
+    /// Release this run's per-run value registers.
+    ///
+    /// Value registers are per-run scratch: every occupied register holds a
+    /// counted arena ref that must be released before the next run (otherwise
+    /// a repeated-run value program leaks one slot per register per run and
+    /// exhausts the fixed arena). Called at the very end of a run, after the
+    /// result has been captured into `main`. Only the program's own registers
+    /// (`0..num_value_regs`) are cleared — the pre-allocated call scratch is
+    /// drained by `run_call` on every dispatch return, so its slots are
+    /// already `None`.
+    pub(crate) fn clear_value_regs(&mut self, num_value_regs: usize) {
         debug_assert!(
-            self.value_regs_top == self.ir.num_value_regs,
+            self.value_regs_top == num_value_regs,
             "call scratch watermark not unwound at run end"
         );
-        for r in self.value_regs.iter_mut().take(self.ir.num_value_regs) {
+        for r in self.value_regs.iter_mut().take(num_value_regs) {
             if let Some(r) = r.take() {
                 self.arena.drop_ref(r);
             }
@@ -843,35 +935,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         }
     }
 
-    /// Replace the console input (`stdin`) lines and rewind the stream cursor.
-    ///
-    /// The runner's captured console realizes the program's stdio, so the
-    /// caller supplies the finite, line-oriented input that `read stdin`
-    /// yields; after the lines are drained the stream reports EOF. Pushback
-    /// entries left over from an earlier run are released (the stream keeps its
-    /// `unread` stack across runs otherwise).
-    pub(crate) fn inject_stdin(&mut self, lines: &[String]) {
-        let mut stale = Vec::new();
-        {
-            let mut world = self.world.borrow_mut();
-            let slot = (STDIN_HANDLE & !STREAM_HANDLE_TAG) as usize;
-            if let Some(StreamHandle::Stdin {
-                lines: injected,
-                pos,
-                pushback,
-            }) = world.streams.get_mut(slot)
-            {
-                injected.clear();
-                injected.extend(lines.iter().cloned());
-                *pos = 0;
-                stale.append(pushback);
-            }
-        }
-        for r in stale {
-            self.arena.drop_ref(r);
-        }
-    }
-
     /// Current value of a parameter by index.
     pub fn param(&self, idx: usize) -> ParamValue {
         self.params
@@ -885,8 +948,34 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         &self.params_meta
     }
 
+    /// Replace the console input (`stdin`) lines and rewind the stream cursor.
+    ///
+    /// The runner's captured console realizes the program's stdio, so the
+    /// caller supplies the finite, line-oriented input that `read stdin`
+    /// yields; after the lines are drained the stream reports EOF. Pushback
+    /// entries left over from an earlier run are released (the stream keeps its
+    /// `unread` stack across runs otherwise).
+    pub(crate) fn inject_stdin(&mut self, lines: &[String]) {
+        let mut stale = Vec::new();
+        let slot = (STDIN_HANDLE & !STREAM_HANDLE_TAG) as usize;
+        if let Some(StreamHandle::Stdin {
+            lines: injected,
+            pos,
+            pushback,
+        }) = self.streams.get_mut(slot)
+        {
+            injected.clear();
+            injected.extend(lines.iter().cloned());
+            *pos = 0;
+            stale.append(pushback);
+        }
+        for r in stale {
+            self.arena.drop_ref(r);
+        }
+    }
+
     /// The result of the program's single run: the terminal arena ref captured
-    /// by [`run_entry`](crate::backend::interp::run_entry) into [`Self::main`].
+    /// by `run_entry` into `main`.
     ///
     /// A rill-lang program executes its entry fragment exactly ONCE, so this is
     /// the program's one value-level result — the whole-buffer
@@ -930,13 +1019,17 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         true
     }
 
-    /// Reset the program to its initial state.
+    /// Reset the world to its initial state.
     ///
     /// Clears the signal state (feedback slots, delay lines), re-initialises
     /// every built-in instance, and releases the value-track state (value
     /// state slots, per-tick registers, outputs, capture cells, deferred
     /// drops) so a mid-lifetime reset cannot exhaust the fixed arena.
-    pub fn reset(&mut self) {
+    ///
+    /// `num_value_regs` is the IR's register count: it is the watermark the
+    /// per-tick register store returns to after the value-track state is
+    /// released.
+    pub(crate) fn reset(&mut self, num_value_regs: usize) {
         for b in &mut self.block_state {
             b.fill(T::ZERO);
         }
@@ -977,7 +1070,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             }
         }
         self.cell_stack.clear();
-        self.value_regs_top = self.ir.num_value_regs;
+        self.value_regs_top = num_value_regs;
         // The shared fragment-capture cells and deferred-drop scratch are
         // drained by every dispatch, but reset must still empty them (a reset
         // mid-dispatch is impossible — a single dispatcher runs the track — yet
@@ -1024,8 +1117,8 @@ mod program_value_tests {
             tapes: Vec::new(),
         };
         let prog = RillProgram::<f32, 256>::new(ir);
-        assert_eq!(prog.arena.capacity(), 4);
-        assert_eq!(prog.value_state.len(), 2);
+        assert_eq!(prog.world.arena.capacity(), 4);
+        assert_eq!(prog.world.value_state.len(), 2);
     }
 
     #[test]
@@ -1056,16 +1149,16 @@ mod program_value_tests {
         let mut prog = RillProgram::<f32, 256>::new(ir);
         // Three counted refs to the same value: one per value-state slot,
         // value register, and cell-stack frame.
-        let r = prog.arena.alloc(crate::arena::Value::Int(1)).unwrap();
-        prog.value_state[0] = Some(r);
-        let r2 = prog.arena.copy(r).unwrap();
-        prog.value_regs.push(Some(r2));
-        let r3 = prog.arena.copy(r).unwrap();
-        prog.cell_stack.push(vec![(0, r3)]);
+        let r = prog.world.arena.alloc(crate::arena::Value::Int(1)).unwrap();
+        prog.world.value_state[0] = Some(r);
+        let r2 = prog.world.arena.copy(r).unwrap();
+        prog.world.value_regs.push(Some(r2));
+        let r3 = prog.world.arena.copy(r).unwrap();
+        prog.world.cell_stack.push(vec![(0, r3)]);
         prog.reset();
-        assert_eq!(prog.value_state[0], None);
-        assert_eq!(prog.value_regs[0], None);
-        assert_eq!(prog.cell_stack.len(), 0);
-        assert_eq!(prog.arena.rc(r), 0, "all refs dropped, slot freed");
+        assert_eq!(prog.world.value_state[0], None);
+        assert_eq!(prog.world.value_regs[0], None);
+        assert_eq!(prog.world.cell_stack.len(), 0);
+        assert_eq!(prog.world.arena.rc(r), 0, "all refs dropped, slot freed");
     }
 }

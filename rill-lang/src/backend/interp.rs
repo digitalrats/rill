@@ -30,12 +30,12 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
         let blen = prog.ir.builtins[instance].param_bindings.len();
         for k in 0..blen {
             let (arg_pos, param_idx) = prog.ir.builtins[instance].param_bindings[k];
-            if !prog.params_dirty[param_idx] {
+            if !prog.world.params_dirty[param_idx] {
                 continue;
             }
-            let v = prog.params[param_idx].clone();
-            prog.params_dirty[param_idx] = false;
-            match &mut prog.builtins[instance] {
+            let v = prog.world.params[param_idx].clone();
+            prog.world.params_dirty[param_idx] = false;
+            match &mut prog.world.builtins[instance] {
                 crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),
                 crate::program::BuiltinInst::MultichannelBlock(b) => b.set_param(arg_pos, &v),
             }
@@ -44,7 +44,7 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
 }
 
 /// Run a program: execute its top-level value track at base 0 once to
-/// completion and capture the result register into [`prog.main`].
+/// completion and capture the result register into [`prog.world.main`].
 ///
 /// This is the single execution mode of a rill-lang program. It evaluates ALL
 /// of the program's value-level semantics (whole-buffer `Value::Buffer` ops,
@@ -55,7 +55,7 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
 /// architecturally the language has no signal programs (0/1-argument lambdas
 /// only) — the run is one block-walk that ends at the entry's terminal. There
 /// is NO per-block signal tick loop: the walk runs once to its terminal and
-/// the result register is captured into [`prog.main`](RillProgram::main).
+/// the result register is captured into the world's `main`.
 /// Returns a `ProcessError` when the run latched one (a collection capacity
 /// overflow — a user error, not a build bug).
 ///
@@ -66,17 +66,17 @@ pub(crate) fn run_entry<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) -> Result<(), ProcessError> {
     push_builtin_params(prog);
-    prog.block_len = BUF;
+    prog.world.block_len = BUF;
 
-    // Release the previous run's captured `prog.main` BEFORE this run
+    // Release the previous run's captured `prog.world.main` BEFORE this run
     // allocates. The captured terminal pins its whole subtree across runs (the
     // root is kept at rc >= 1), and a closure result additionally pins its
     // captured env record — so the old tree must be freed before this run's
     // allocations can reuse its slots (the build-time capacity bound assumes
     // at most one run's live set at a time). The new terminal is captured at
     // run end.
-    if let Some(r) = prog.main.take() {
-        prog.arena.drop_ref(r);
+    if let Some(r) = prog.world.main.take() {
+        prog.world.arena.drop_ref(r);
     }
 
     // Value-track phase (this run): walk the program's own top-level blocks at
@@ -92,14 +92,14 @@ pub(crate) fn run_entry<T: Transcendental, const BUF: usize>(
     // run-end cleanup below — the registers, block-state swap and terminal
     // release all still run, so a repeatedly erroring program cannot leak the
     // fixed arena or desync its feedback state.
-    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let mut drops = std::mem::take(&mut prog.world.drops_scratch);
     let drops_mark = drops.len();
-    prog.value_regs_top = prog.ir.num_value_regs;
+    prog.world.value_regs_top = prog.ir.num_value_regs;
     let entry = prog.ir.value_entry;
     let blocks = std::mem::take(&mut prog.ir.value_blocks);
     run_blocks(prog, &blocks, entry, 0, &mut drops);
     prog.ir.value_blocks = blocks;
-    let value_res = match prog.value_error.take() {
+    let value_res = match prog.world.value_error.take() {
         Some(err) => Err(err),
         None => Ok(()),
     };
@@ -107,36 +107,41 @@ pub(crate) fn run_entry<T: Transcendental, const BUF: usize>(
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
 
-    // Capture the run's terminal into `prog.main`: `value_regs[result_reg]`
+    // Capture the run's terminal into `prog.world.main`: `value_regs[result_reg]`
     // holds the entry body's value (owned by the register slot). Copy it out
     // (a fresh owner via `copy`), force it to WHNF (a lazy terminal register
     // holding a thunk materializes its head here) and copy the head (rc++) so
     // it survives the register clear below. The previous terminal was already
     // released at the start of this run (see above), so nothing leaks across
     // runs.
-    let result: Option<ArenaRef> = match prog.value_regs.get(prog.ir.result_reg).copied().flatten()
+    let result: Option<ArenaRef> = match prog
+        .world
+        .value_regs
+        .get(prog.ir.result_reg)
+        .copied()
+        .flatten()
     {
         Some(sr) => copy_owned(prog, sr),
         None => None,
     };
     if let Some(r) = result {
         let head = force(prog, r, &mut drops);
-        if let Ok(c) = prog.arena.copy(head) {
-            prog.main = Some(c);
+        if let Ok(c) = prog.world.arena.copy(head) {
+            prog.world.main = Some(c);
         }
-        prog.arena.drop_ref(r);
+        prog.world.arena.drop_ref(r);
     }
     for r in drops.drain(drops_mark..) {
-        prog.arena.drop_ref(r);
+        prog.world.arena.drop_ref(r);
     }
-    prog.drops_scratch = drops;
+    prog.world.drops_scratch = drops;
 
     // A resource exhaustion can be latched DURING terminal forcing (a lazy
     // terminal register recurses past `max_call_regs` / the arena pool while
     // its head is materialized here, after the fragment already returned).
     // Surface it as the run's error instead of a silent `Bottom`.
     let latched: Option<Result<(), ProcessError>> = match &value_res {
-        Ok(()) => prog.value_error.take().map(Err),
+        Ok(()) => prog.world.value_error.take().map(Err),
         Err(_) => None,
     };
 
@@ -153,10 +158,10 @@ pub(crate) fn run_entry<T: Transcendental, const BUF: usize>(
 
 /// Test-visible top-level-track driver: run the program's own value blocks at
 /// base 0 WITHOUT `run_entry`'s run-end behavior (no register clear, no
-/// `prog.main` capture).
+/// `prog.world.main` capture).
 ///
 /// The interpreter's internal tests drive the program's own registers directly
-/// (seeding `prog.value_regs`, asserting on `arena.get(0)`-style absolute
+/// (seeding `prog.world.value_regs`, asserting on `arena.get(0)`-style absolute
 /// slots), so they need the raw top-level block walk previously provided by
 /// the deleted `run_value_track`. `mem::take` the blocks out of `Ir` (an empty
 /// vec swap, no allocation) so `prog` can be borrowed mutably while walking;
@@ -166,17 +171,17 @@ pub(crate) fn run_entry<T: Transcendental, const BUF: usize>(
 pub(crate) fn run_main_fragment_for_tests<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) -> Result<(), ProcessError> {
-    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let mut drops = std::mem::take(&mut prog.world.drops_scratch);
     let mark = drops.len();
     let entry = prog.ir.value_entry;
     let blocks = std::mem::take(&mut prog.ir.value_blocks);
     run_blocks(prog, &blocks, entry, 0, &mut drops);
     prog.ir.value_blocks = blocks;
     for r in drops.drain(mark..) {
-        prog.arena.drop_ref(r);
+        prog.world.arena.drop_ref(r);
     }
-    prog.drops_scratch = drops;
-    if let Some(err) = prog.value_error.take() {
+    prog.world.drops_scratch = drops;
+    if let Some(err) = prog.world.value_error.take() {
         return Err(err);
     }
     Ok(())
@@ -256,16 +261,16 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) -> Result<(), ProcessError> {
     // Run one value-track pass with no signal outputs: `main`'s value (the IO
-    // action) lands in `prog.main`.
+    // action) lands in `prog.world.main`.
     run_entry(prog)?;
 
-    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let mut drops = std::mem::take(&mut prog.world.drops_scratch);
     let mark = drops.len();
     let mut applied = false;
-    if let Some(action) = prog.main {
+    if let Some(action) = prog.world.main {
         let action = force(prog, action, &mut drops);
         // `IO a = { unIO: World -> Pair World a }`: field 0 is the computation.
-        let un_io = match prog.arena.get(action) {
+        let un_io = match prog.world.arena.get(action) {
             Some(Value::Record(fields)) => fields.first().copied(),
             _ => None,
         };
@@ -273,13 +278,13 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
             if let Some(world) = alloc_owned(prog, Value::Opaque(WORLD_TOKEN)) {
                 let pair = apply_callable(prog, un_io, world, &mut drops);
                 // The action only borrowed the token.
-                prog.arena.drop_ref(world);
+                prog.world.arena.drop_ref(world);
                 if let Some(pair) = pair.and_then(|p| force_owned(prog, p, &mut drops)) {
                     // Force the action's result while its parts are still
                     // alive: leaving the run is a strict boundary, so the
                     // final effect must be materialized before the pair (and
                     // the closure environment it pins) is released.
-                    let payload = match prog.arena.get(pair) {
+                    let payload = match prog.world.arena.get(pair) {
                         Some(Value::Record(fields)) => fields.get(1).copied(),
                         _ => None,
                     };
@@ -299,7 +304,7 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
                         // is accepted ONLY when `main` is statically `IO ()`
                         // (`ir.main_io_unit`): `main = do { …; return 0.0 }`
                         // is typed `IO Float` and is still rejected.
-                        let payload_is_unit = match prog.arena.get(payload) {
+                        let payload_is_unit = match prog.world.arena.get(payload) {
                             Some(Value::Void) => true,
                             Some(Value::Float(f)) => prog.ir.main_io_unit && *f == 0.0,
                             _ => false,
@@ -311,17 +316,17 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
                             );
                         }
                     }
-                    prog.arena.drop_ref(pair);
+                    prog.world.arena.drop_ref(pair);
                 }
             }
         }
     }
     for r in drops.drain(mark..) {
-        prog.arena.drop_ref(r);
+        prog.world.arena.drop_ref(r);
     }
-    prog.drops_scratch = drops;
+    prog.world.drops_scratch = drops;
 
-    if let Some(err) = prog.value_error.take() {
+    if let Some(err) = prog.world.value_error.take() {
         return Err(err);
     }
     if applied {
@@ -341,8 +346,8 @@ fn latch_exhaustion<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     what: &'static str,
 ) {
-    if prog.value_error.is_none() {
-        prog.value_error = Some(ProcessError::processing(format!(
+    if prog.world.value_error.is_none() {
+        prog.world.value_error = Some(ProcessError::processing(format!(
             "value-track resource exhausted: {what}"
         )));
     }
@@ -352,8 +357,8 @@ fn latch_exhaustion<T: Transcendental, const BUF: usize>(
 /// invariant violation (a primitive effect with an unbound operand), as opposed
 /// to [`latch_exhaustion`]'s resource limits. First latch wins.
 fn latch_fault<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>, what: &str) {
-    if prog.value_error.is_none() {
-        prog.value_error = Some(ProcessError::processing(format!(
+    if prog.world.value_error.is_none() {
+        prog.world.value_error = Some(ProcessError::processing(format!(
             "value-track fault: {what}"
         )));
     }
@@ -366,11 +371,12 @@ fn value_reg_is_true<T: Transcendental, const BUF: usize>(
     reg: usize,
 ) -> bool {
     matches!(
-        prog.value_regs
+        prog.world
+            .value_regs
             .get(reg)
             .copied()
             .flatten()
-            .and_then(|r| prog.arena.get(r)),
+            .and_then(|r| prog.world.arena.get(r)),
         Some(Value::Bool(true))
     )
 }
@@ -381,11 +387,12 @@ fn value_reg_ctor<T: Transcendental, const BUF: usize>(
     reg: usize,
 ) -> Option<u32> {
     match prog
+        .world
         .value_regs
         .get(reg)
         .copied()
         .flatten()
-        .and_then(|r| prog.arena.get(r))
+        .and_then(|r| prog.world.arena.get(r))
     {
         Some(Value::Sum(c, _)) => Some(*c),
         _ => None,
@@ -409,7 +416,7 @@ fn alloc_owned<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     v: Value,
 ) -> Option<ArenaRef> {
-    match prog.arena.alloc(v) {
+    match prog.world.arena.alloc(v) {
         Ok(r) => Some(r),
         Err((_, v)) => {
             drop_value_children(prog, &v);
@@ -439,8 +446,8 @@ fn buffer_index<T: Transcendental, const BUF: usize>(
     reg: usize,
     base: usize,
 ) -> usize {
-    match prog.value_regs.get(reg + base).copied().flatten() {
-        Some(r) => match prog.arena.get(r) {
+    match prog.world.value_regs.get(reg + base).copied().flatten() {
+        Some(r) => match prog.world.arena.get(r) {
             Some(Value::Buffer(idx)) => *idx,
             _ => buffer_index_fallback(prog, reg, base),
         },
@@ -456,7 +463,7 @@ fn buffer_index_fallback<T: Transcendental, const BUF: usize>(
     base: usize,
 ) -> usize {
     let abs = reg + base;
-    if abs < prog.buffers.len() {
+    if abs < prog.world.buffers.len() {
         abs
     } else {
         reg
@@ -472,53 +479,53 @@ fn recount_children<T: Transcendental, const BUF: usize>(
     match v {
         Value::Record(fields) | Value::Sum(_, fields) => {
             for f in fields {
-                _ = prog.arena.copy(*f);
+                _ = prog.world.arena.copy(*f);
             }
         }
         Value::Newtype(inner) => {
-            _ = prog.arena.copy(*inner);
+            _ = prog.world.arena.copy(*inner);
         }
         Value::Callable { env, cell, .. } => {
-            _ = prog.arena.copy(*env);
+            _ = prog.world.arena.copy(*env);
             if let Some(c) = cell {
-                _ = prog.arena.copy(*c);
+                _ = prog.world.arena.copy(*c);
             }
         }
         Value::BuiltinCallable { env, .. } => {
-            _ = prog.arena.copy(*env);
+            _ = prog.world.arena.copy(*env);
         }
         Value::List { elems } => {
             for e in elems {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
         }
         Value::Map { pairs, .. } => {
             for (k, v) in pairs {
-                _ = prog.arena.copy(*k);
-                _ = prog.arena.copy(*v);
+                _ = prog.world.arena.copy(*k);
+                _ = prog.world.arena.copy(*v);
             }
         }
         Value::Set { elems } => {
             for e in elems {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
         }
         Value::Array { bounds, elems } => {
-            _ = prog.arena.copy(*bounds);
+            _ = prog.world.arena.copy(*bounds);
             for e in elems {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
         }
         // A lazy callable owns its memo cell; a forced cell owns its result.
         // Mirroring `visit_refs` keeps the recount accounting balanced when a
         // callable/cell value is copied into a fresh slot.
         Value::ThunkCell(ThunkState::Forced(r)) => {
-            _ = prog.arena.copy(*r);
+            _ = prog.world.arena.copy(*r);
         }
         // A cons cell owns its head and (lazy) tail.
         Value::Cons(h, t) => {
-            _ = prog.arena.copy(*h);
-            _ = prog.arena.copy(*t);
+            _ = prog.world.arena.copy(*h);
+            _ = prog.world.arena.copy(*t);
         }
         // An unforced/forcing/bottom cell and bottom itself own nothing.
         Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
@@ -536,7 +543,7 @@ fn alloc_copy_slot<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     r: ArenaRef,
 ) -> Option<ArenaRef> {
-    let cloned = match prog.arena.clone_pooled(r) {
+    let cloned = match prog.world.arena.clone_pooled(r) {
         Ok(v) => v,
         Err(_) => return None,
     };
@@ -556,7 +563,7 @@ fn alloc_copy<T: Transcendental, const BUF: usize>(
 ) -> Option<ArenaRef> {
     let cloned = pool_clone_value(prog, v);
     recount_children(prog, &cloned);
-    match prog.arena.alloc(cloned) {
+    match prog.world.arena.alloc(cloned) {
         Ok(r) => Some(r),
         Err((_, cloned)) => {
             // No slot was created; undo the recounts above so the original
@@ -573,7 +580,7 @@ fn copy_owned<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     r: ArenaRef,
 ) -> Option<ArenaRef> {
-    match prog.arena.copy(r) {
+    match prog.world.arena.copy(r) {
         Ok(c) => Some(c),
         Err(_) => {
             latch_exhaustion(prog, "arena ref copy");
@@ -593,7 +600,7 @@ fn pool_clone_value<T: Transcendental, const BUF: usize>(
 ) -> Value {
     match v {
         Value::Record(fields) | Value::Sum(_, fields) => {
-            let mut out = match prog.arena.take_buf(fields.len()) {
+            let mut out = match prog.world.arena.take_buf(fields.len()) {
                 Ok(b) => b,
                 Err(_) => return v.clone(),
             };
@@ -605,7 +612,7 @@ fn pool_clone_value<T: Transcendental, const BUF: usize>(
             }
         }
         Value::List { elems } => {
-            let mut out = match prog.arena.take_buf(elems.len()) {
+            let mut out = match prog.world.arena.take_buf(elems.len()) {
                 Ok(b) => b,
                 Err(_) => return v.clone(),
             };
@@ -613,7 +620,7 @@ fn pool_clone_value<T: Transcendental, const BUF: usize>(
             Value::List { elems: out }
         }
         Value::Set { elems } => {
-            let mut out = match prog.arena.take_buf(elems.len()) {
+            let mut out = match prog.world.arena.take_buf(elems.len()) {
                 Ok(b) => b,
                 Err(_) => return v.clone(),
             };
@@ -621,7 +628,7 @@ fn pool_clone_value<T: Transcendental, const BUF: usize>(
             Value::Set { elems: out }
         }
         Value::Array { bounds, elems } => {
-            let mut out = match prog.arena.take_buf(elems.len()) {
+            let mut out = match prog.world.arena.take_buf(elems.len()) {
                 Ok(b) => b,
                 Err(_) => return v.clone(),
             };
@@ -648,7 +655,7 @@ fn read_field_refs<T: Transcendental, const BUF: usize>(
     regs: &[usize],
     base: usize,
 ) -> Option<Vec<ArenaRef>> {
-    let mut refs: Vec<ArenaRef> = match prog.arena.take_buf(regs.len()) {
+    let mut refs: Vec<ArenaRef> = match prog.world.arena.take_buf(regs.len()) {
         Ok(b) => b,
         Err(_) => {
             latch_exhaustion(prog, "value buffer pool");
@@ -656,19 +663,19 @@ fn read_field_refs<T: Transcendental, const BUF: usize>(
         }
     };
     for r in regs {
-        match prog.value_regs[*r + base] {
-            Some(src) => match prog.arena.copy(src) {
+        match prog.world.value_regs[*r + base] {
+            Some(src) => match prog.world.arena.copy(src) {
                 Ok(c) => refs.push(c),
                 Err(_) => {
                     for x in &refs {
-                        prog.arena.drop_ref(*x);
+                        prog.world.arena.drop_ref(*x);
                     }
                     return None;
                 }
             },
             None => {
                 for x in &refs {
-                    prog.arena.drop_ref(*x);
+                    prog.world.arena.drop_ref(*x);
                 }
                 return None;
             }
@@ -686,47 +693,47 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
     match v {
         Value::Record(fields) | Value::Sum(_, fields) => {
             for f in fields {
-                prog.arena.drop_ref(*f);
+                prog.world.arena.drop_ref(*f);
             }
         }
-        Value::Newtype(inner) => prog.arena.drop_ref(*inner),
+        Value::Newtype(inner) => prog.world.arena.drop_ref(*inner),
         Value::Callable { env, cell, .. } => {
-            prog.arena.drop_ref(*env);
+            prog.world.arena.drop_ref(*env);
             if let Some(c) = cell {
-                prog.arena.drop_ref(*c);
+                prog.world.arena.drop_ref(*c);
             }
         }
-        Value::BuiltinCallable { env, .. } => prog.arena.drop_ref(*env),
+        Value::BuiltinCallable { env, .. } => prog.world.arena.drop_ref(*env),
         Value::List { elems, .. } => {
             for e in elems {
-                prog.arena.drop_ref(*e);
+                prog.world.arena.drop_ref(*e);
             }
         }
         Value::Map { pairs, .. } => {
             for (k, v) in pairs {
-                prog.arena.drop_ref(*k);
-                prog.arena.drop_ref(*v);
+                prog.world.arena.drop_ref(*k);
+                prog.world.arena.drop_ref(*v);
             }
         }
         Value::Set { elems, .. } => {
             for e in elems {
-                prog.arena.drop_ref(*e);
+                prog.world.arena.drop_ref(*e);
             }
         }
         Value::Array { bounds, elems } => {
-            prog.arena.drop_ref(*bounds);
+            prog.world.arena.drop_ref(*bounds);
             for e in elems {
-                prog.arena.drop_ref(*e);
+                prog.world.arena.drop_ref(*e);
             }
         }
         // A lazy callable releases its memo cell; a forced cell releases its
         // result. Mirroring `visit_refs` keeps the raw-value drop (an alloc
         // failure) balanced with the arena's own recursive drop.
-        Value::ThunkCell(ThunkState::Forced(r)) => prog.arena.drop_ref(*r),
+        Value::ThunkCell(ThunkState::Forced(r)) => prog.world.arena.drop_ref(*r),
         // A cons cell releases its head and (lazy) tail.
         Value::Cons(h, t) => {
-            prog.arena.drop_ref(*h);
-            prog.arena.drop_ref(*t);
+            prog.world.arena.drop_ref(*h);
+            prog.world.arena.drop_ref(*t);
         }
         // An unforced/forcing/bottom cell and bottom itself own nothing.
         Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
@@ -886,11 +893,11 @@ fn arithmetic_operand<T: Transcendental, const BUF: usize>(
     reg: usize,
     drops: &mut Vec<ArenaRef>,
 ) -> ArithmeticOperand {
-    let Some(r) = prog.value_regs.get(reg).copied().flatten() else {
+    let Some(r) = prog.world.value_regs.get(reg).copied().flatten() else {
         return ArithmeticOperand::Float(0.0);
     };
     let head = force(prog, r, drops);
-    match prog.arena.get(head) {
+    match prog.world.arena.get(head) {
         Some(Value::Bottom) => ArithmeticOperand::Bottom,
         Some(Value::Int(i)) => ArithmeticOperand::Int(*i),
         Some(Value::Float(f)) => ArithmeticOperand::Float(*f),
@@ -939,12 +946,12 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     let bv = arithmetic_operand(prog, b, drops);
     // Release the previous `dst` occupant AFTER the operands are read/forced,
     // so `dst` may alias an operand without losing its value.
-    if let Some(r) = prog.value_regs.get_mut(dst).and_then(|r| r.take()) {
+    if let Some(r) = prog.world.value_regs.get_mut(dst).and_then(|r| r.take()) {
         drops.push(r);
     }
     // Bottom propagates through strict arithmetic.
     if matches!(av, ArithmeticOperand::Bottom) || matches!(bv, ArithmeticOperand::Bottom) {
-        prog.value_regs[dst] = alloc_owned(prog, Value::Bottom);
+        prog.world.value_regs[dst] = alloc_owned(prog, Value::Bottom);
         return;
     }
     // Int-preserving `+`/`-`/`*` (see the doc comment above).
@@ -956,7 +963,7 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
             ValueArith::Div => None,
         };
         if let Some(v) = int_result {
-            prog.value_regs[dst] = alloc_owned(prog, Value::Int(v));
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Int(v));
             return;
         }
     }
@@ -976,7 +983,7 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
         ValueArith::Mul => av * bv,
         ValueArith::Div => av / bv,
     };
-    prog.value_regs[dst] = alloc_owned(prog, Value::Float(result));
+    prog.world.value_regs[dst] = alloc_owned(prog, Value::Float(result));
 }
 
 /// Allocate a fresh `Value::Bottom` slot. `None` on arena exhaustion (a
@@ -985,7 +992,7 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
 fn try_alloc_bottom<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) -> Option<ArenaRef> {
-    match prog.arena.alloc(Value::Bottom) {
+    match prog.world.arena.alloc(Value::Bottom) {
         Ok(b) => Some(b),
         Err(_) => {
             latch_exhaustion(prog, "value arena capacity");
@@ -1000,10 +1007,10 @@ fn write_bottom<T: Transcendental, const BUF: usize>(
     dst: usize,
     drops: &mut Vec<ArenaRef>,
 ) {
-    if let Some(old) = prog.value_regs.get_mut(dst).and_then(|r| r.take()) {
+    if let Some(old) = prog.world.value_regs.get_mut(dst).and_then(|r| r.take()) {
         drops.push(old);
     }
-    prog.value_regs[dst] = try_alloc_bottom(prog);
+    prog.world.value_regs[dst] = try_alloc_bottom(prog);
 }
 
 /// Force a value register's operand to WHNF and return the head ref.
@@ -1017,7 +1024,7 @@ fn forced_operand<T: Transcendental, const BUF: usize>(
     reg: usize,
     drops: &mut Vec<ArenaRef>,
 ) -> Option<ArenaRef> {
-    let r = prog.value_regs.get(reg).copied().flatten()?;
+    let r = prog.world.value_regs.get(reg).copied().flatten()?;
     Some(force(prog, r, drops))
 }
 
@@ -1029,12 +1036,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
 ) {
     match instr {
         ValueInstr::ValuePushScope => {
-            prog.cell_stack.push(Vec::new());
+            prog.world.cell_stack.push(Vec::new());
         }
         ValueInstr::ValuePopScope => {
             // Frames are empty in v1 (cells are owned by their register); the
             // drop collection below is the future-proof hook for scoped cells.
-            if let Some(frame) = prog.cell_stack.pop() {
+            if let Some(frame) = prog.world.cell_stack.pop() {
                 for (_, cell) in frame {
                     drops.push(cell);
                 }
@@ -1043,7 +1050,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueBindCell { dst } => {
             // A cell is a fresh slot holding the cell's value directly; the
             // register owns the cell ref.
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
         }
         ValueInstr::ValueReadCell { dst, cell } => {
             // Inside a fragment (`frag_cells_base < frag_cells.len()`), `cell`
@@ -1052,25 +1059,25 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // Otherwise `cell` is a value register holding a cell ref
             // (main-track reads). `cell` is never a fragment-local register, so
             // it is NOT offset by `base`.
-            let capture = if prog.frag_cells_base < prog.frag_cells.len() {
-                Some(prog.frag_cells[prog.frag_cells_base + *cell])
+            let capture = if prog.world.frag_cells_base < prog.world.frag_cells.len() {
+                Some(prog.world.frag_cells[prog.world.frag_cells_base + *cell])
             } else {
                 None
             };
-            match capture.or_else(|| prog.value_regs.get(*cell).copied().flatten()) {
+            match capture.or_else(|| prog.world.value_regs.get(*cell).copied().flatten()) {
                 Some(cr) => {
                     // Copy the value OUT of the cell into a fresh slot: a
                     // read result is a new owner, it does not share. An
                     // uninitialised (Void) cell reads as 0.0. Payloads are
                     // pooled (no per-tick heap allocation).
-                    prog.value_regs[*dst + base] =
-                        if matches!(prog.arena.get(cr), Some(&Value::Void)) {
+                    prog.world.value_regs[*dst + base] =
+                        if matches!(prog.world.arena.get(cr), Some(&Value::Void)) {
                             alloc_owned(prog, Value::Float(0.0))
                         } else {
                             alloc_copy_slot(prog, cr)
                         };
                 }
-                None => prog.value_regs[*dst + base] = None,
+                None => prog.world.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueWriteCell { cell, src } => {
@@ -1081,12 +1088,13 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // updated only the register — captured references went stale and
             // read the freed slot as Void. Both `cell` and `src` are
             // fragment-local registers — offset both.
-            if let (Some(cr), Some(sr)) =
-                (prog.value_regs[*cell + base], prog.value_regs[*src + base])
-            {
+            if let (Some(cr), Some(sr)) = (
+                prog.world.value_regs[*cell + base],
+                prog.world.value_regs[*src + base],
+            ) {
                 // A safe copy: recount (RC++) the children so the cell owns
                 // them independently of src.
-                let new_value: Option<Value> = match prog.arena.get(sr).cloned() {
+                let new_value: Option<Value> = match prog.world.arena.get(sr).cloned() {
                     Some(v) => {
                         recount_children(prog, &v);
                         Some(v.clone())
@@ -1096,20 +1104,20 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 if let Some(nv) = new_value {
                     // Release the old cell value's children, then write the
                     // new value into the same slot.
-                    if let Some(old) = prog.arena.get(cr).cloned() {
+                    if let Some(old) = prog.world.arena.get(cr).cloned() {
                         drop_value_children(prog, &old);
                     }
-                    let _ = prog.arena.mutate_slot(cr, |slot| {
+                    let _ = prog.world.arena.mutate_slot(cr, |slot| {
                         *slot = nv;
                     });
                 }
             }
         }
         ValueInstr::ValueConstInt { dst, value } => {
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Int(*value));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Int(*value));
         }
         ValueInstr::ValueConstFloat { dst, value } => {
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Float(*value));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Float(*value));
         }
         ValueInstr::ValueAdd { dst, a, b } => exec_value_arith(
             prog,
@@ -1144,24 +1152,25 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             drops,
         ),
         ValueInstr::ValueConstructRecord { dst, fields } => {
-            prog.value_regs[*dst + base] = if let Some(refs) = read_field_refs(prog, fields, base) {
-                alloc_owned(prog, Value::Record(refs))
-            } else {
-                None
-            };
+            prog.world.value_regs[*dst + base] =
+                if let Some(refs) = read_field_refs(prog, fields, base) {
+                    alloc_owned(prog, Value::Record(refs))
+                } else {
+                    None
+                };
         }
         ValueInstr::ValueConstructSum { dst, ctor, payload } => {
-            prog.value_regs[*dst + base] = if let Some(refs) = read_field_refs(prog, payload, base)
-            {
-                alloc_owned(prog, Value::Sum(*ctor, refs))
-            } else {
-                None
-            };
+            prog.world.value_regs[*dst + base] =
+                if let Some(refs) = read_field_refs(prog, payload, base) {
+                    alloc_owned(prog, Value::Sum(*ctor, refs))
+                } else {
+                    None
+                };
         }
         ValueInstr::ValueProject { dst, slot, field } => {
             match forced_operand(prog, *slot + base, drops) {
                 Some(rec) => {
-                    let fref: Option<ArenaRef> = match prog.arena.get(rec) {
+                    let fref: Option<ArenaRef> = match prog.world.arena.get(rec) {
                         Some(Value::Bottom) => {
                             // Projecting bottom is bottom.
                             write_bottom(prog, *dst + base, drops);
@@ -1172,35 +1181,38 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     };
                     // A project result is a new owner: share the field ref.
                     match fref {
-                        Some(fr) => prog.value_regs[*dst + base] = copy_owned(prog, fr),
-                        None => prog.value_regs[*dst + base] = None,
+                        Some(fr) => prog.world.value_regs[*dst + base] = copy_owned(prog, fr),
+                        None => prog.world.value_regs[*dst + base] = None,
                     }
                 }
-                None => prog.value_regs[*dst + base] = None,
+                None => prog.world.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueUpdateField { slot, field, src } => {
-            match (prog.value_regs[*slot + base], prog.value_regs[*src + base]) {
+            match (
+                prog.world.value_regs[*slot + base],
+                prog.world.value_regs[*src + base],
+            ) {
                 (Some(rec), Some(sr)) => {
                     // COW: if the record is shared, mutate gives us a private
                     // copy; the slot register takes the (possibly new) ref.
-                    let new_rec = match prog.arena.mutate(rec) {
+                    let new_rec = match prog.world.arena.mutate(rec) {
                         Ok(r) => r,
                         Err(_) => {
-                            prog.value_regs[*slot + base] = None;
+                            prog.world.value_regs[*slot + base] = None;
                             return;
                         }
                     };
                     // Snapshot the old field ref and count the source ref
                     // before touching the record, so the field write below is
                     // a clean replacement.
-                    let old_field: Option<ArenaRef> = match prog.arena.get(new_rec) {
+                    let old_field: Option<ArenaRef> = match prog.world.arena.get(new_rec) {
                         Some(Value::Record(fields)) => fields.get(*field).cloned(),
                         _ => None,
                     };
                     let new_field = copy_owned(prog, sr);
                     let wrote = match new_field {
-                        Some(nf) => match prog.arena.get_mut(new_rec) {
+                        Some(nf) => match prog.world.arena.get_mut(new_rec) {
                             Some(Value::Record(fields)) => {
                                 fields[*field] = nf;
                                 true
@@ -1208,7 +1220,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                             _ => {
                                 // The slot held no record after all: release
                                 // the counted ref and fail the update.
-                                prog.arena.drop_ref(nf);
+                                prog.world.arena.drop_ref(nf);
                                 false
                             }
                         },
@@ -1219,36 +1231,37 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     // COW-copied) record ref to the slot register.
                     if wrote {
                         if let Some(of) = old_field {
-                            prog.arena.drop_ref(of);
+                            prog.world.arena.drop_ref(of);
                         }
-                        prog.value_regs[*slot + base] = Some(new_rec);
+                        prog.world.value_regs[*slot + base] = Some(new_rec);
                     } else {
-                        prog.value_regs[*slot + base] = None;
+                        prog.world.value_regs[*slot + base] = None;
                     }
                 }
-                _ => prog.value_regs[*slot + base] = None,
+                _ => prog.world.value_regs[*slot + base] = None,
             }
         }
         ValueInstr::ValueNewtype { dst, src } => {
-            match prog.value_regs[*src + base] {
+            match prog.world.value_regs[*src + base] {
                 // The newtype owns its inner value; the src register keeps its
                 // own ref — copy first so both hold a counted ref.
                 Some(sr) => {
                     let copied = copy_owned(prog, sr);
                     match copied {
                         Some(c) => {
-                            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Newtype(c))
+                            prog.world.value_regs[*dst + base] =
+                                alloc_owned(prog, Value::Newtype(c))
                         }
-                        None => prog.value_regs[*dst + base] = None,
+                        None => prog.world.value_regs[*dst + base] = None,
                     }
                 }
-                None => prog.value_regs[*dst + base] = None,
+                None => prog.world.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueUnwrap { dst, src } => {
             match forced_operand(prog, *src + base, drops) {
                 Some(sr) => {
-                    let inner: Option<ArenaRef> = match prog.arena.get(sr) {
+                    let inner: Option<ArenaRef> = match prog.world.arena.get(sr) {
                         Some(Value::Bottom) => {
                             // Unwrapping bottom is bottom.
                             write_bottom(prog, *dst + base, drops);
@@ -1259,11 +1272,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     };
                     // The unwrapped result is a new owner: share the inner ref.
                     match inner {
-                        Some(i) => prog.value_regs[*dst + base] = copy_owned(prog, i),
-                        None => prog.value_regs[*dst + base] = None,
+                        Some(i) => prog.world.value_regs[*dst + base] = copy_owned(prog, i),
+                        None => prog.world.value_regs[*dst + base] = None,
                     }
                 }
-                None => prog.value_regs[*dst + base] = None,
+                None => prog.world.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueCallFunc {
@@ -1275,22 +1288,30 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // referenced fragment with a temporary register frame, and copy the
             // result into `dst`. An unbound slot or a non-eager callable value
             // (a lazy thunk) yields a detectable `None`.
-            let slot = prog.value_regs.get(*closure_slot + base).copied().flatten();
+            let slot = prog
+                .world
+                .value_regs
+                .get(*closure_slot + base)
+                .copied()
+                .flatten();
             // A primitive effect closure (`Value::BuiltinCallable`) is applied
             // to its STState token and run eagerly — effects never suspend.
             if let Some(callee) = slot {
-                if matches!(prog.arena.get(callee), Some(Value::BuiltinCallable { .. })) {
+                if matches!(
+                    prog.world.arena.get(callee),
+                    Some(Value::BuiltinCallable { .. })
+                ) {
                     let arg = args
                         .first()
-                        .and_then(|a| prog.value_regs.get(*a + base).copied().flatten());
-                    prog.value_regs[*dst + base] = match arg {
+                        .and_then(|a| prog.world.value_regs.get(*a + base).copied().flatten());
+                    prog.world.value_regs[*dst + base] = match arg {
                         Some(a) => apply_callable(prog, callee, a, drops),
                         None => None,
                     };
                     return;
                 }
             }
-            match slot.and_then(|s| prog.arena.get(s)) {
+            match slot.and_then(|s| prog.world.arena.get(s)) {
                 Some(Value::Callable {
                     fragment: fragment_id,
                     env: env_ref,
@@ -1311,10 +1332,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                                 drops,
                             );
                         }
-                        None => prog.value_regs[*dst + base] = None,
+                        None => prog.world.value_regs[*dst + base] = None,
                     }
                 }
-                _ => prog.value_regs[*dst + base] = None,
+                _ => prog.world.value_regs[*dst + base] = None,
             }
         }
         ValueInstr::ValueCallLazy {
@@ -1327,8 +1348,14 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // with the (unforced) argument refs. The application does not run —
             // `run_call` splits the env into captures + args by the fragment's
             // `value_ins` when the thunk is forced.
-            let Some(cr) = prog.value_regs.get(*closure_slot + base).copied().flatten() else {
-                prog.value_regs[*dst + base] = None;
+            let Some(cr) = prog
+                .world
+                .value_regs
+                .get(*closure_slot + base)
+                .copied()
+                .flatten()
+            else {
+                prog.world.value_regs[*dst + base] = None;
                 return;
             };
             // Only an EAGER function closure is suspended into a thunk. A
@@ -1344,57 +1371,64 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // nothing — an infinite structure cannot be applied as a function,
             // so no terminating program loses an answer that used to be
             // returned.
-            if !matches!(prog.arena.get(cr), Some(Value::Callable { cell: None, .. })) {
+            if !matches!(
+                prog.world.arena.get(cr),
+                Some(Value::Callable { cell: None, .. })
+            ) {
                 let arg = args
                     .first()
-                    .and_then(|a| prog.value_regs.get(*a + base).copied().flatten());
-                prog.value_regs[*dst + base] = match arg {
+                    .and_then(|a| prog.world.value_regs.get(*a + base).copied().flatten());
+                prog.world.value_regs[*dst + base] = match arg {
                     Some(a) => apply_callable(prog, cr, a, drops),
                     None => None,
                 };
                 return;
             }
-            let (env_ref, fid) = match prog.arena.get(cr) {
+            let (env_ref, fid) = match prog.world.arena.get(cr) {
                 Some(Value::Callable {
                     fragment,
                     env,
                     cell: None,
                 }) => (*env, *fragment),
                 _ => {
-                    prog.value_regs[*dst + base] = None;
+                    prog.world.value_regs[*dst + base] = None;
                     return;
                 }
             };
-            let cell = match prog.arena.alloc(Value::ThunkCell(ThunkState::Unforced)) {
+            let cell = match prog
+                .world
+                .arena
+                .alloc(Value::ThunkCell(ThunkState::Unforced))
+            {
                 Ok(c) => c,
                 Err(_) => {
-                    prog.value_regs[*dst + base] = None;
+                    prog.world.value_regs[*dst + base] = None;
                     return;
                 }
             };
             // Combined env: the closure's captured fields (recounted so both
             // the closure's env and this record own them) followed by the arg
             // refs (copied from the caller's registers).
-            let mut fields: Vec<ArenaRef> = match prog.arena.get(env_ref) {
+            let mut fields: Vec<ArenaRef> = match prog.world.arena.get(env_ref) {
                 Some(Value::Record(fs)) => {
                     let fs = fs.clone();
                     for f in &fs {
-                        let _ = prog.arena.copy(*f);
+                        let _ = prog.world.arena.copy(*f);
                     }
                     fs
                 }
                 _ => Vec::new(),
             };
             for &a in args {
-                if let Some(r) = prog.value_regs.get(a + base).copied().flatten() {
-                    match prog.arena.copy(r) {
+                if let Some(r) = prog.world.value_regs.get(a + base).copied().flatten() {
+                    match prog.world.arena.copy(r) {
                         Ok(c) => fields.push(c),
                         Err(_) => {
                             for f in &fields {
-                                prog.arena.drop_ref(*f);
+                                prog.world.arena.drop_ref(*f);
                             }
-                            prog.arena.drop_ref(cell);
-                            prog.value_regs[*dst + base] = None;
+                            prog.world.arena.drop_ref(cell);
+                            prog.world.value_regs[*dst + base] = None;
                             return;
                         }
                     }
@@ -1403,12 +1437,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             let env_owned = match alloc_owned(prog, Value::Record(fields)) {
                 Some(e) => e,
                 None => {
-                    prog.arena.drop_ref(cell);
-                    prog.value_regs[*dst + base] = None;
+                    prog.world.arena.drop_ref(cell);
+                    prog.world.value_regs[*dst + base] = None;
                     return;
                 }
             };
-            prog.value_regs[*dst + base] = alloc_owned(
+            prog.world.value_regs[*dst + base] = alloc_owned(
                 prog,
                 Value::Callable {
                     fragment: fid,
@@ -1425,24 +1459,24 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // `drop_ref` releases the env when the callable is freed. An
             // unbound env (v1 named references) falls back to a fresh Void slot
             // the callable owns outright.
-            let env_ref = match prog.value_regs.get(*env + base).copied().flatten() {
-                Some(r) => match prog.arena.copy(r) {
+            let env_ref = match prog.world.value_regs.get(*env + base).copied().flatten() {
+                Some(r) => match prog.world.arena.copy(r) {
                     Ok(c) => c,
                     Err(_) => {
-                        prog.value_regs[*dst + base] = None;
+                        prog.world.value_regs[*dst + base] = None;
                         return;
                     }
                 },
-                None => match prog.arena.alloc(Value::Void) {
+                None => match prog.world.arena.alloc(Value::Void) {
                     Ok(v) => v,
                     Err((err, _)) => {
-                        prog.value_regs[*dst + base] = None;
+                        prog.world.value_regs[*dst + base] = None;
                         let _ = err;
                         return;
                     }
                 },
             };
-            prog.value_regs[*dst + base] = alloc_owned(
+            prog.world.value_regs[*dst + base] = alloc_owned(
                 prog,
                 Value::Callable {
                     fragment: *fragment as u32,
@@ -1451,49 +1485,49 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
             );
         }
-        ValueInstr::ValueCopy { dst, src } => match prog.value_regs[*src + base] {
+        ValueInstr::ValueCopy { dst, src } => match prog.world.value_regs[*src + base] {
             Some(sr) => {
                 let copied = copy_owned(prog, sr);
-                prog.value_regs[*dst + base] = copied;
+                prog.world.value_regs[*dst + base] = copied;
             }
-            None => prog.value_regs[*dst + base] = None,
+            None => prog.world.value_regs[*dst + base] = None,
         },
         ValueInstr::ValueMove { dst, src } => {
             // A move overwrites `dst`, so release any previous occupant (dst
             // regs are SSA in lowering, but re-assignment must not leak) — and
             // a self-move (`dst == src`) is a no-op, never a clear.
             if *dst != *src {
-                if let Some(old) = prog.value_regs[*dst + base].take() {
+                if let Some(old) = prog.world.value_regs[*dst + base].take() {
                     drops.push(old);
                 }
-                prog.value_regs[*dst + base] = prog.value_regs[*src + base].take();
+                prog.world.value_regs[*dst + base] = prog.world.value_regs[*src + base].take();
             }
         }
         ValueInstr::ValueDrop { src } => {
-            if let Some(r) = prog.value_regs[*src + base].take() {
+            if let Some(r) = prog.world.value_regs[*src + base].take() {
                 drops.push(r);
             }
         }
         ValueInstr::ValueStateRead { dst, slot } => {
-            match prog.value_state.get(*slot) {
+            match prog.world.value_state.get(*slot) {
                 // The read result is a new owner of the stored value.
                 Some(Some(stored)) => {
                     let sr = *stored;
-                    prog.value_regs[*dst + base] = copy_owned(prog, sr);
+                    prog.world.value_regs[*dst + base] = copy_owned(prog, sr);
                 }
                 // An empty state slot reads as 0.0.
-                _ => prog.value_regs[*dst + base] = alloc_owned(prog, Value::Float(0.0)),
+                _ => prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Float(0.0)),
             }
         }
         ValueInstr::ValueStateWrite { slot, src } => {
-            if let Some(sr) = prog.value_regs[*src + base] {
+            if let Some(sr) = prog.world.value_regs[*src + base] {
                 // The state slot owns its value: copy the src ref, then
                 // release the previous tick's value and store the fresh one.
                 let stored = copy_owned(prog, sr);
-                if let Some(old) = prog.value_state[*slot].take() {
-                    prog.arena.drop_ref(old);
+                if let Some(old) = prog.world.value_state[*slot].take() {
+                    prog.world.arena.drop_ref(old);
                 }
-                prog.value_state[*slot] = stored;
+                prog.world.value_state[*slot] = stored;
             }
         }
         ValueInstr::ValueMatch { dst, slot, ctor } => {
@@ -1507,7 +1541,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // its own ownership of the sum.
             let scrutinee = forced_operand(prog, *slot + base, drops);
             if let Some(sr) = scrutinee {
-                if matches!(prog.arena.get(sr), Some(Value::Bottom)) {
+                if matches!(prog.world.arena.get(sr), Some(Value::Bottom)) {
                     for d in dst {
                         write_bottom(prog, *d + base, drops);
                     }
@@ -1515,7 +1549,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
             }
             let payload: Option<Vec<ArenaRef>> = match scrutinee {
-                Some(sr) => match prog.arena.get(sr) {
+                Some(sr) => match prog.world.arena.get(sr) {
                     Some(Value::Sum(c, fields)) if *c == *ctor => Some(fields.clone()),
                     _ => None,
                 },
@@ -1527,8 +1561,8 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                         let r = fields
                             .get(i)
                             .copied()
-                            .and_then(|fr| prog.arena.copy(fr).ok());
-                        if let Some(reg) = prog.value_regs.get_mut(*d + base) {
+                            .and_then(|fr| prog.world.arena.copy(fr).ok());
+                        if let Some(reg) = prog.world.value_regs.get_mut(*d + base) {
                             // Release any previous occupant (dst regs are SSA in
                             // lowering, but re-assignment must not leak).
                             if let Some(old) = reg.take() {
@@ -1540,7 +1574,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
                 None => {
                     for d in dst {
-                        if let Some(reg) = prog.value_regs.get_mut(*d + base) {
+                        if let Some(reg) = prog.world.value_regs.get_mut(*d + base) {
                             if let Some(old) = reg.take() {
                                 drops.push(old);
                             }
@@ -1551,30 +1585,31 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             }
         }
         ValueInstr::ValueBool { dst, value } => {
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Bool(*value));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Bool(*value));
         }
         ValueInstr::ValueConstVoid { dst } => {
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Void);
         }
         ValueInstr::ValueConstOpaque { dst, handle } => {
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Opaque(*handle));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Opaque(*handle));
         }
         ValueInstr::ValueReadParam { dst, idx } => {
-            let v = param_to_f64(&prog.params[*idx]);
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Float(v));
+            let v = param_to_f64(&prog.world.params[*idx]);
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Float(v));
         }
         ValueInstr::ValueConstString { dst, value } => {
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::String(value.clone()));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::String(value.clone()));
         }
         ValueInstr::ValueListLit { dst, elems } => {
-            prog.value_regs[*dst + base] = if let Some(refs) = read_field_refs(prog, elems, base) {
-                alloc_owned(prog, Value::List { elems: refs })
-            } else {
-                None
-            };
+            prog.world.value_regs[*dst + base] =
+                if let Some(refs) = read_field_refs(prog, elems, base) {
+                    alloc_owned(prog, Value::List { elems: refs })
+                } else {
+                    None
+                };
         }
         ValueInstr::ValueMapLit { dst, keys, vals } => {
-            prog.value_regs[*dst + base] = if let (Some(ks), Some(vs)) = (
+            prog.world.value_regs[*dst + base] = if let (Some(ks), Some(vs)) = (
                 read_field_refs(prog, keys, base),
                 read_field_refs(prog, vals, base),
             ) {
@@ -1582,7 +1617,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 // insert/lookup/member binary search relies on it), so a map
                 // literal written out of order is normalised here.
                 let mut pairs: Vec<(ArenaRef, ArenaRef)> = ks.into_iter().zip(vs).collect();
-                pairs.sort_by(|a, b| value_cmp(&prog.arena, a.0, b.0).cmp(&0));
+                pairs.sort_by(|a, b| value_cmp(&prog.world.arena, a.0, b.0).cmp(&0));
                 alloc_owned(prog, Value::Map { pairs })
             } else {
                 None
@@ -1594,10 +1629,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 forced_operand(prog, *b + base, drops),
             );
             let res = match (ar, br) {
-                (Some(x), Some(y)) => match (prog.arena.get(x), prog.arena.get(y)) {
+                (Some(x), Some(y)) => match (prog.world.arena.get(x), prog.world.arena.get(y)) {
                     (Some(Value::Bottom), _) | (_, Some(Value::Bottom)) => Some(Value::Bottom),
                     _ => {
-                        let c = value_cmp(&prog.arena, x, y);
+                        let c = value_cmp(&prog.world.arena, x, y);
                         let b = match op {
                             CmpOp::Eq => c == 0,
                             CmpOp::Ne => c != 0,
@@ -1611,7 +1646,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
                 _ => None,
             };
-            prog.value_regs[*dst + base] = res.and_then(|v| alloc_owned(prog, v));
+            prog.world.value_regs[*dst + base] = res.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueLogic { dst, op, a, b } => {
             let (ar, br) = (
@@ -1619,7 +1654,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 forced_operand(prog, *b + base, drops),
             );
             let res = match (ar, br) {
-                (Some(x), Some(y)) => match (prog.arena.get(x), prog.arena.get(y)) {
+                (Some(x), Some(y)) => match (prog.world.arena.get(x), prog.world.arena.get(y)) {
                     (Some(Value::Bottom), _) | (_, Some(Value::Bottom)) => Some(Value::Bottom),
                     (Some(Value::Bool(p)), Some(Value::Bool(q))) => Some(Value::Bool(match op {
                         LogicOp::And => *p && *q,
@@ -1629,21 +1664,21 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 },
                 _ => None,
             };
-            prog.value_regs[*dst + base] = res.and_then(|v| alloc_owned(prog, v));
+            prog.world.value_regs[*dst + base] = res.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueNot { dst, src } => {
             let b = match forced_operand(prog, *src + base, drops) {
-                Some(r) => match prog.arena.get(r) {
+                Some(r) => match prog.world.arena.get(r) {
                     Some(Value::Bottom) => Some(Value::Bottom),
                     Some(Value::Bool(p)) => Some(Value::Bool(!*p)),
                     _ => None,
                 },
                 _ => None,
             };
-            prog.value_regs[*dst + base] = b.and_then(|v| alloc_owned(prog, v));
+            prog.world.value_regs[*dst + base] = b.and_then(|v| alloc_owned(prog, v));
         }
         ValueInstr::ValueSetError => {
-            prog.value_error = Some(ProcessError::processing(
+            prog.world.value_error = Some(ProcessError::processing(
                 "match is non-exhaustive at runtime (no arm matched)",
             ));
         }
@@ -1658,8 +1693,8 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 let freeze = matches!(op, crate::ir::ValueEffectOp::RunSTArray);
                 let st_value = args
                     .first()
-                    .and_then(|a| prog.value_regs.get(*a + base).copied().flatten());
-                prog.value_regs[*dst + base] = match st_value {
+                    .and_then(|a| prog.world.value_regs.get(*a + base).copied().flatten());
+                prog.world.value_regs[*dst + base] = match st_value {
                     Some(st) => exec_runst(prog, st, drops, freeze),
                     None => None,
                 };
@@ -1669,16 +1704,16 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 // the operand refs (the operand registers keep their own).
                 let mut fields: Vec<crate::arena::ArenaRef> = Vec::with_capacity(args.len());
                 for a in args {
-                    let Some(r) = prog.value_regs.get(*a + base).copied().flatten() else {
+                    let Some(r) = prog.world.value_regs.get(*a + base).copied().flatten() else {
                         // `exec_effect` reads the captured operands
                         // POSITIONALLY, so skipping an unbound one would
                         // silently re-index the rest — a missing FIRST operand
                         // would turn the stored value into the cell handle.
                         // Typed code cannot reach this; fail loudly instead.
                         for f in &fields {
-                            prog.arena.drop_ref(*f);
+                            prog.world.arena.drop_ref(*f);
                         }
-                        prog.value_regs[*dst + base] = None;
+                        prog.world.value_regs[*dst + base] = None;
                         latch_fault(prog, "primitive effect with an unbound operand");
                         return;
                     };
@@ -1686,15 +1721,15 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                         Some(c) => fields.push(c),
                         None => {
                             for f in &fields {
-                                prog.arena.drop_ref(*f);
+                                prog.world.arena.drop_ref(*f);
                             }
-                            prog.value_regs[*dst + base] = None;
+                            prog.world.value_regs[*dst + base] = None;
                             return;
                         }
                     }
                 }
                 let env = alloc_owned(prog, Value::Record(fields));
-                prog.value_regs[*dst + base] = match env {
+                prog.world.value_regs[*dst + base] = match env {
                     Some(env) => alloc_owned(prog, Value::BuiltinCallable { op: *op, env }),
                     None => None,
                 };
@@ -1710,33 +1745,37 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // referenced only by this callable value — copies of it SHARE the
             // slot (`ValueCopy`/`copy_owned`), never duplicating the cell, so
             // forcing can mutate it in place.
-            let cell = match prog.arena.alloc(Value::ThunkCell(ThunkState::Unforced)) {
+            let cell = match prog
+                .world
+                .arena
+                .alloc(Value::ThunkCell(ThunkState::Unforced))
+            {
                 Ok(c) => c,
                 Err(_) => {
-                    prog.value_regs[*dst + base] = None;
+                    prog.world.value_regs[*dst + base] = None;
                     return;
                 }
             };
-            let env_ref = match prog.value_regs.get(*env + base).copied().flatten() {
-                Some(r) => match prog.arena.copy(r) {
+            let env_ref = match prog.world.value_regs.get(*env + base).copied().flatten() {
+                Some(r) => match prog.world.arena.copy(r) {
                     Ok(c) => c,
                     Err(_) => {
-                        prog.arena.drop_ref(cell);
-                        prog.value_regs[*dst + base] = None;
+                        prog.world.arena.drop_ref(cell);
+                        prog.world.value_regs[*dst + base] = None;
                         return;
                     }
                 },
-                None => match prog.arena.alloc(Value::Void) {
+                None => match prog.world.arena.alloc(Value::Void) {
                     Ok(v) => v,
                     Err((err, _)) => {
-                        prog.arena.drop_ref(cell);
-                        prog.value_regs[*dst + base] = None;
+                        prog.world.arena.drop_ref(cell);
+                        prog.world.value_regs[*dst + base] = None;
                         let _ = err;
                         return;
                     }
                 },
             };
-            prog.value_regs[*dst + base] = alloc_owned(
+            prog.world.value_regs[*dst + base] = alloc_owned(
                 prog,
                 Value::Callable {
                     fragment: *fragment as u32,
@@ -1749,12 +1788,12 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // Force the source to WHNF and share the head ref with `dst`. The
             // head is borrowed from the source's memo cell (or is the source
             // itself when already WHNF), so `dst` claims its own copy.
-            match prog.value_regs.get(*src + base).copied().flatten() {
+            match prog.world.value_regs.get(*src + base).copied().flatten() {
                 Some(sr) => {
                     let head = force(prog, sr, drops);
-                    prog.value_regs[*dst + base] = copy_owned(prog, head);
+                    prog.world.value_regs[*dst + base] = copy_owned(prog, head);
                 }
-                None => prog.value_regs[*dst + base] = None,
+                None => prog.world.value_regs[*dst + base] = None,
             }
         }
         // ---- Whole-buffer value ops (B3-2) ----
@@ -1764,10 +1803,10 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         // marker into the destination value register. The buffer index equals
         // the value register index (1:1 signal lowering).
         ValueInstr::ValueBufferConst { dst, value } => {
-            let n = prog.block_len;
-            prog.buffers[*dst]
+            let n = prog.world.block_len;
+            prog.world.buffers[*dst]
                 .with_data_mut(|b| crate::buffer_math::fill_into(&mut b[..n], T::from_f64(*value)));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
         }
         ValueInstr::ValueBufferLoadInput { dst, index } => {
             // Allocate the `Value::Buffer` marker for the k-th program input
@@ -1776,60 +1815,61 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             // them), so the marker is never read; the buffer index is the
             // destination register (the 1:1 signal lowering).
             let _ = index;
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(*dst));
         }
         ValueInstr::ValueBufferStateRead { dst, slot } => {
-            let n = prog.block_len;
+            let n = prog.world.block_len;
             let di = buffer_index(prog, *dst, base);
-            prog.buffers[di]
-                .with_data_mut(|b| b[..n].copy_from_slice(&prog.block_state[*slot][..n]));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.buffers[di]
+                .with_data_mut(|b| b[..n].copy_from_slice(&prog.world.block_state[*slot][..n]));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferDelayRead { dst, line } => {
-            let n = prog.block_len;
+            let n = prog.world.block_len;
             let di = buffer_index(prog, *dst, base);
-            prog.buffers[di].with_data_mut(|b| prog.delays[*line].read_block(&mut b[..n]));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.buffers[di]
+                .with_data_mut(|b| prog.world.delays[*line].read_block(&mut b[..n]));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferUn { dst, op, src } => {
-            let n = prog.block_len;
+            let n = prog.world.block_len;
             let si = buffer_index(prog, *src, base);
             let di = buffer_index(prog, *dst, base);
             let mut scratch = [T::ZERO; BUF];
-            prog.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
-            prog.buffers[di].with_data_mut(|b| {
+            prog.world.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.world.buffers[di].with_data_mut(|b| {
                 apply_un_slice(*op, &scratch[..n], &mut b[..n]);
             });
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferBin { dst, op, a, b } => {
-            let n = prog.block_len;
+            let n = prog.world.block_len;
             let ai = buffer_index(prog, *a, base);
             let bi = buffer_index(prog, *b, base);
             let di = buffer_index(prog, *dst, base);
             let mut sa = [T::ZERO; BUF];
             let mut sb = [T::ZERO; BUF];
-            prog.buffers[ai].with_data(|s| sa[..n].copy_from_slice(&s[..n]));
-            prog.buffers[bi].with_data(|s| sb[..n].copy_from_slice(&s[..n]));
-            prog.buffers[di].with_data_mut(|out| {
+            prog.world.buffers[ai].with_data(|s| sa[..n].copy_from_slice(&s[..n]));
+            prog.world.buffers[bi].with_data(|s| sb[..n].copy_from_slice(&s[..n]));
+            prog.world.buffers[di].with_data_mut(|out| {
                 apply_bin_slice(*op, &sa[..n], &sb[..n], &mut out[..n]);
             });
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferMove { dst, src } => {
-            let n = prog.block_len;
+            let n = prog.world.block_len;
             let si = buffer_index(prog, *src, base);
             let di = buffer_index(prog, *dst, base);
             let mut scratch = [T::ZERO; BUF];
-            prog.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
-            prog.buffers[di].with_data_mut(|b| b[..n].copy_from_slice(&scratch[..n]));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.world.buffers[di].with_data_mut(|b| b[..n].copy_from_slice(&scratch[..n]));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferFill { dst, src } => {
             // Broadcast a scalar Float value register into a buffer constant.
-            let n = prog.block_len;
-            let v = match prog.value_regs.get(*src + base).copied().flatten() {
-                Some(r) => match prog.arena.get(r) {
+            let n = prog.world.block_len;
+            let v = match prog.world.value_regs.get(*src + base).copied().flatten() {
+                Some(r) => match prog.world.arena.get(r) {
                     Some(Value::Float(f)) => *f,
                     Some(Value::Int(i)) => *i as f64,
                     _ => 0.0,
@@ -1837,19 +1877,19 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 _ => 0.0,
             };
             let di = buffer_index(prog, *dst, base);
-            prog.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
         ValueInstr::ValueBufferStateWrite { slot, src } => {
-            let n = prog.block_len;
+            let n = prog.world.block_len;
             let si = buffer_index(prog, *src, base);
-            prog.buffers[si]
-                .with_data(|s| prog.block_state_next[*slot][..n].copy_from_slice(&s[..n]));
+            prog.world.buffers[si]
+                .with_data(|s| prog.world.block_state_next[*slot][..n].copy_from_slice(&s[..n]));
         }
         ValueInstr::ValueBufferDelayWrite { line, src } => {
-            let n = prog.block_len;
+            let n = prog.world.block_len;
             let si = buffer_index(prog, *src, base);
-            prog.buffers[si].with_data(|s| prog.delays[*line].write_block(&s[..n]));
+            prog.world.buffers[si].with_data(|s| prog.world.delays[*line].write_block(&s[..n]));
         }
         ValueInstr::ValueCallForeign {
             dst,
@@ -1859,11 +1899,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             exec_value_foreign(prog, *dst, srcs, *instance, base);
         }
         ValueInstr::ValueBufferParamRead { dst, idx } => {
-            let n = prog.block_len;
-            let v = T::from_f64(param_to_f64(&prog.params[*idx]));
+            let n = prog.world.block_len;
+            let v = T::from_f64(param_to_f64(&prog.world.params[*idx]));
             let di = buffer_index(prog, *dst, base);
-            prog.buffers[di].with_data_mut(|b| b[..n].fill(v));
-            prog.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.buffers[di].with_data_mut(|b| b[..n].fill(v));
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));
         }
     }
 }
@@ -1882,7 +1922,7 @@ fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
     let mut hi = keys.len();
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        if value_cmp(&prog.arena, key, keys[mid]) > 0 {
+        if value_cmp(&prog.world.arena, key, keys[mid]) > 0 {
             lo = mid + 1;
         } else {
             hi = mid;
@@ -1893,7 +1933,7 @@ fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
 
 /// Copy a slot's List/Set element refs into a freshly pooled buffer.
 ///
-/// Returns an OWNED copy of the refs (no borrow of `prog.arena` survives), so
+/// Returns an OWNED copy of the refs (no borrow of `prog.world.arena` survives), so
 /// the caller can iterate them while mutating the arena (calling closures,
 /// recounting) without a borrow conflict and without a per-tick heap
 /// allocation. `None` when the register/slot is not the right container kind.
@@ -1901,19 +1941,19 @@ fn pooled_elems_of<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     reg: usize,
 ) -> Option<Vec<ArenaRef>> {
-    let r = prog.value_regs[reg]?;
-    let len = match prog.arena.get(r) {
+    let r = prog.world.value_regs[reg]?;
+    let len = match prog.world.arena.get(r) {
         Some(Value::List { elems }) | Some(Value::Set { elems }) => elems.len(),
         _ => return None,
     };
-    let mut out = match prog.arena.take_buf(len) {
+    let mut out = match prog.world.arena.take_buf(len) {
         Ok(b) => b,
         Err(_) => {
             latch_exhaustion(prog, "value buffer pool");
             return None;
         }
     };
-    if let Some(elems) = match prog.arena.get(r) {
+    if let Some(elems) = match prog.world.arena.get(r) {
         Some(Value::List { elems }) | Some(Value::Set { elems }) => Some(elems),
         _ => None,
     } {
@@ -1930,18 +1970,18 @@ fn pooled_elems_of_ref<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     r: ArenaRef,
 ) -> Option<Vec<ArenaRef>> {
-    let len = match prog.arena.get(r) {
+    let len = match prog.world.arena.get(r) {
         Some(Value::List { elems }) => elems.len(),
         _ => return None,
     };
-    let mut out = match prog.arena.take_buf(len) {
+    let mut out = match prog.world.arena.take_buf(len) {
         Ok(b) => b,
         Err(_) => {
             latch_exhaustion(prog, "value buffer pool");
             return None;
         }
     };
-    if let Some(elems) = match prog.arena.get(r) {
+    if let Some(elems) = match prog.world.arena.get(r) {
         Some(Value::List { elems }) => Some(elems),
         _ => None,
     } {
@@ -1961,19 +2001,19 @@ fn pooled_array_elems_of<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     reg: usize,
 ) -> Option<Vec<ArenaRef>> {
-    let r = prog.value_regs[reg]?;
-    let len = match prog.arena.get(r) {
+    let r = prog.world.value_regs[reg]?;
+    let len = match prog.world.arena.get(r) {
         Some(Value::Array { elems, .. }) => elems.len(),
         _ => return None,
     };
-    let mut out = match prog.arena.take_buf(len) {
+    let mut out = match prog.world.arena.take_buf(len) {
         Ok(b) => b,
         Err(_) => {
             latch_exhaustion(prog, "value buffer pool");
             return None;
         }
     };
-    if let Some(elems) = match prog.arena.get(r) {
+    if let Some(elems) = match prog.world.arena.get(r) {
         Some(Value::Array { elems, .. }) => Some(elems),
         _ => None,
     } {
@@ -1996,7 +2036,7 @@ fn copy_array_elems<T: Transcendental, const BUF: usize>(
     let out = pooled_array_elems_of(prog, reg)?;
     for e in &out {
         // `copy` shares the same ref with a fresh claim (RC++).
-        _ = prog.arena.copy(*e);
+        _ = prog.world.arena.copy(*e);
     }
     Some(out)
 }
@@ -2011,11 +2051,11 @@ fn flat_assoc<T: Transcendental, const BUF: usize>(
     prog: &RillProgram<T, BUF>,
     pair: ArenaRef,
 ) -> Result<(i64, ArenaRef), &'static str> {
-    let fields = match prog.arena.get(pair) {
+    let fields = match prog.world.arena.get(pair) {
         Some(Value::Record(fields)) if fields.len() == 2 => fields,
         _ => return Err("association is not a Pair"),
     };
-    let offset = match prog.arena.get(fields[0]) {
+    let offset = match prog.world.arena.get(fields[0]) {
         Some(Value::Int(i)) => *i,
         _ => return Err("association offset is not an Int"),
     };
@@ -2042,12 +2082,12 @@ fn alloc_int_bounds<T: Transcendental, const BUF: usize>(
     let hi_ref = alloc_owned(prog, Value::Int(hi));
     match (lo_ref, hi_ref) {
         (Some(l), Some(h)) => {
-            let mut fields = match prog.arena.take_buf(2) {
+            let mut fields = match prog.world.arena.take_buf(2) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.arena.drop_ref(l);
-                    prog.arena.drop_ref(h);
+                    prog.world.arena.drop_ref(l);
+                    prog.world.arena.drop_ref(h);
                     return None;
                 }
             };
@@ -2057,10 +2097,10 @@ fn alloc_int_bounds<T: Transcendental, const BUF: usize>(
         }
         (l, h) => {
             if let Some(l) = l {
-                prog.arena.drop_ref(l);
+                prog.world.arena.drop_ref(l);
             }
             if let Some(h) = h {
-                prog.arena.drop_ref(h);
+                prog.world.arena.drop_ref(h);
             }
             None
         }
@@ -2088,22 +2128,24 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     // demand loop below. Nil has no arguments to demand.
     match op {
         LazyCons => {
-            let Some(xr) = prog.value_regs[base + args[0]].and_then(|r| prog.arena.copy(r).ok())
+            let Some(xr) =
+                prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.copy(r).ok())
             else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let Some(tr) = prog.value_regs[base + args[1]].and_then(|r| prog.arena.copy(r).ok())
+            let Some(tr) =
+                prog.world.value_regs[base + args[1]].and_then(|r| prog.world.arena.copy(r).ok())
             else {
-                prog.arena.drop_ref(xr);
-                prog.value_regs[dst] = None;
+                prog.world.arena.drop_ref(xr);
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            prog.value_regs[dst] = alloc_owned(prog, Value::Cons(xr, tr));
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Cons(xr, tr));
             return;
         }
         Nil => {
-            prog.value_regs[dst] = alloc_owned(prog, Value::Nil);
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Nil);
             return;
         }
         _ => {}
@@ -2115,24 +2157,29 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
     // original claim (the bottom slot survives via its cell) and writes bottom
     // to the dst. In strict mode no thunks exist, so this is a no-op modulo RC.
     for &a in args {
-        let Some(r) = prog.value_regs.get_mut(base + a).and_then(|r| r.take()) else {
+        let Some(r) = prog
+            .world
+            .value_regs
+            .get_mut(base + a)
+            .and_then(|r| r.take())
+        else {
             continue;
         };
         let head = force(prog, r, drops);
-        if matches!(prog.arena.get(head), Some(Value::Bottom)) {
-            prog.arena.drop_ref(r);
+        if matches!(prog.world.arena.get(head), Some(Value::Bottom)) {
+            prog.world.arena.drop_ref(r);
             write_bottom(prog, dst, drops);
             return;
         }
-        prog.value_regs[base + a] = match prog.arena.copy(head) {
+        prog.world.value_regs[base + a] = match prog.world.arena.copy(head) {
             Ok(c) => Some(c),
             Err(_) => {
-                prog.arena.drop_ref(r);
-                prog.value_regs[dst] = None;
+                prog.world.arena.drop_ref(r);
+                prog.world.value_regs[dst] = None;
                 return;
             }
         };
-        prog.arena.drop_ref(r);
+        prog.world.arena.drop_ref(r);
     }
     match op {
         Cons => {
@@ -2142,30 +2189,31 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // result own them (the source register is dropped at tick end).
             // Payloads are pooled — no per-tick heap allocation.
             let Some(mut src) = pooled_elems_of(prog, base + args[1]) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let Some(xr) = prog.value_regs[base + args[0]].and_then(|r| prog.arena.copy(r).ok())
+            let Some(xr) =
+                prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.copy(r).ok())
             else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             for e in &src {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
-            let mut out = match prog.arena.take_buf(src.len() + 1) {
+            let mut out = match prog.world.arena.take_buf(src.len() + 1) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
             out.push(xr);
             out.append(&mut src);
             // `src`'s refs moved into `out`; return the emptied pooled buffer.
-            prog.arena.put_buf(src);
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
+            prog.world.arena.put_buf(src);
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
         }
         // Handled before the demand loop (they must not force their tail / have
         // no arguments); unreachable here.
@@ -2178,8 +2226,8 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // only count an array has that does not require `Ix` math. Falling
             // through to the `_ => 0` arm would silently report an empty
             // non-empty array.
-            let n = prog.value_regs[base + args[0]]
-                .and_then(|r| prog.arena.get(r))
+            let n = prog.world.value_regs[base + args[0]]
+                .and_then(|r| prog.world.arena.get(r))
                 .map(|v| match v {
                     Value::List { elems } => elems.len() as i64,
                     Value::Map { pairs, .. } => pairs.len() as i64,
@@ -2188,26 +2236,26 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     _ => 0,
                 })
                 .unwrap_or(0);
-            prog.value_regs[dst] = alloc_owned(prog, Value::Int(n));
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Int(n));
         }
         Head => {
             let first = {
-                let Some(r) = prog.value_regs[base + args[0]] else {
-                    prog.value_regs[dst] = None;
+                let Some(r) = prog.world.value_regs[base + args[0]] else {
+                    prog.world.value_regs[dst] = None;
                     return;
                 };
-                match prog.arena.get(r) {
+                match prog.world.arena.get(r) {
                     Some(Value::List { elems }) => elems.first().copied(),
                     Some(Value::Cons(h, _)) => Some(*h),
                     _ => None,
                 }
             };
-            prog.value_regs[dst] = match first {
+            prog.world.value_regs[dst] = match first {
                 // `Just e`: the Sum owns a counted ref on the element (the list
                 // keeps its own ownership). `Nothing`: an empty sum payload.
                 Some(e) => match copy_owned(prog, e) {
                     Some(ce) => {
-                        let mut payload = match prog.arena.take_buf(1) {
+                        let mut payload = match prog.world.arena.take_buf(1) {
                             Ok(b) => b,
                             Err(_) => {
                                 latch_exhaustion(prog, "value buffer pool");
@@ -2225,14 +2273,14 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         Map => {
             // map f xs: dispatch f per element via a one-arg closure call.
             let Some(src) = pooled_elems_of(prog, base + args[1]) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let mut out = match prog.arena.take_buf(src.len()) {
+            let mut out = match prog.world.arena.take_buf(src.len()) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
@@ -2241,24 +2289,24 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     out.push(o);
                 }
             }
-            prog.arena.put_buf(src);
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
+            prog.world.arena.put_buf(src);
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
         }
         Fold => {
             // fold f z xs: seed the accumulator with a copy of z, then for each
             // element call f with (acc, elem); the result becomes the new acc.
             let Some(src) = pooled_elems_of(prog, base + args[2]) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let Some(accr) = prog.value_regs[base + args[1]] else {
-                prog.value_regs[dst] = None;
+            let Some(accr) = prog.world.value_regs[base + args[1]] else {
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let mut cur = match copy_owned(prog, accr) {
                 Some(c) => c,
                 None => {
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
@@ -2270,7 +2318,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     Some(n) => {
                         // Replace the previous accumulator copy with the
                         // fresh result: exactly one owner lives.
-                        prog.arena.drop_ref(cur);
+                        prog.world.arena.drop_ref(cur);
                         cur = n;
                     }
                     None => {
@@ -2279,18 +2327,18 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     }
                 }
             }
-            prog.arena.put_buf(src);
+            prog.world.arena.put_buf(src);
             if failed {
-                prog.arena.drop_ref(cur);
-                prog.value_regs[dst] = None;
+                prog.world.arena.drop_ref(cur);
+                prog.world.value_regs[dst] = None;
             } else {
-                prog.value_regs[dst] = Some(cur);
+                prog.world.value_regs[dst] = Some(cur);
             }
         }
         ListEmpty => {
             // list: an empty List. Open collections have no capacity — the
             // list grows via cons/append up to the pre-allocated arena pool.
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
         }
         Tail => {
             // tail xs: the source without its head. For a lazy Cons the tail is
@@ -2301,29 +2349,30 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // kept slice, then release the extra count on the removed head —
             // the source keeps its single claim, and the head is never freed
             // mid-tick. An empty array list is its own tail; Nil's tail is Nil.
-            match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
+            match prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.get(r)) {
                 Some(Value::Cons(_, t)) => {
-                    prog.value_regs[dst] = copy_owned(prog, *t);
+                    prog.world.value_regs[dst] = copy_owned(prog, *t);
                 }
                 Some(Value::Nil) => {
-                    prog.value_regs[dst] = alloc_owned(prog, Value::Nil);
+                    prog.world.value_regs[dst] = alloc_owned(prog, Value::Nil);
                 }
                 _ => {
                     let Some(mut kept) = pooled_elems_of(prog, base + args[0]) else {
-                        prog.value_regs[dst] = None;
+                        prog.world.value_regs[dst] = None;
                         return;
                     };
                     if kept.is_empty() {
-                        prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: Vec::new() });
+                        prog.world.value_regs[dst] =
+                            alloc_owned(prog, Value::List { elems: Vec::new() });
                         return;
                     }
                     for e in &kept {
-                        _ = prog.arena.copy(*e);
+                        _ = prog.world.arena.copy(*e);
                     }
                     let head = kept[0];
                     kept.remove(0);
-                    prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
-                    prog.arena.drop_ref(head);
+                    prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
+                    prog.world.arena.drop_ref(head);
                 }
             }
         }
@@ -2333,37 +2382,37 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // result list so both the source and the result own it; the
             // predicate's Bool result is released after each call.
             let Some(src) = pooled_elems_of(prog, base + args[1]) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let mut kept = match prog.arena.take_buf(src.len()) {
+            let mut kept = match prog.world.arena.take_buf(src.len()) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
             for e in &src {
                 let pred = call_closure_single(prog, base + args[0], *e, dst, drops);
                 let is_keep = match pred {
-                    Some(pr) => match prog.arena.get(pr) {
+                    Some(pr) => match prog.world.arena.get(pr) {
                         Some(Value::Bool(b)) => *b,
                         _ => false,
                     },
                     None => false,
                 };
                 if is_keep {
-                    if let Ok(c) = prog.arena.copy(*e) {
+                    if let Ok(c) = prog.world.arena.copy(*e) {
                         kept.push(c);
                     }
                 }
                 if let Some(pr) = pred {
-                    prog.arena.drop_ref(pr);
+                    prog.world.arena.drop_ref(pr);
                 }
             }
-            prog.arena.put_buf(src);
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
+            prog.world.arena.put_buf(src);
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems: kept });
         }
         InsertMap => {
             // insert k v m: COW-insert (k, v) into the sorted map, or
@@ -2372,25 +2421,25 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // heap-backed in v1 (deferred pooling); the source is read via
             // short borrows, not a full value clone.
             let (Some(kr), Some(vr), Some(sr)) = (
-                prog.value_regs[base + args[0]],
-                prog.value_regs[base + args[1]],
-                prog.value_regs[base + args[2]],
+                prog.world.value_regs[base + args[0]],
+                prog.world.value_regs[base + args[1]],
+                prog.world.value_regs[base + args[2]],
             ) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let (pos, dup) = {
-                let Some(Value::Map { pairs, .. }) = prog.arena.get(sr) else {
-                    prog.value_regs[dst] = None;
+                let Some(Value::Map { pairs, .. }) = prog.world.arena.get(sr) else {
+                    prog.world.value_regs[dst] = None;
                     return;
                 };
                 let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
                 let pos = sorted_insert_pos(prog, kr, &keys);
-                let dup = pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0;
+                let dup = pos < pairs.len() && value_cmp(&prog.world.arena, kr, pairs[pos].0) == 0;
                 (pos, dup)
             };
-            let Some(Value::Map { pairs, .. }) = prog.arena.get(sr).cloned() else {
-                prog.value_regs[dst] = None;
+            let Some(Value::Map { pairs, .. }) = prog.world.arena.get(sr).cloned() else {
+                prog.world.value_regs[dst] = None;
                 return;
             };
             if dup {
@@ -2400,14 +2449,14 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 // claim, so the replaced value is never freed mid-tick.
                 let mut new_pairs = pairs;
                 for (pk, pv) in &new_pairs {
-                    _ = prog.arena.copy(*pk);
-                    _ = prog.arena.copy(*pv);
+                    _ = prog.world.arena.copy(*pk);
+                    _ = prog.world.arena.copy(*pv);
                 }
                 let old_val = new_pairs[pos].1;
                 new_pairs[pos].1 = vr;
-                _ = prog.arena.copy(vr);
-                prog.arena.drop_ref(old_val);
-                prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
+                _ = prog.world.arena.copy(vr);
+                prog.world.arena.drop_ref(old_val);
+                prog.world.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
             } else {
                 // Insert at the sorted position: splice (k, v) into the cloned
                 // pair list, then recount every key and value the new map
@@ -2423,10 +2472,10 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     new_pairs.push((kr, vr));
                 }
                 for (pk, pv) in &new_pairs {
-                    _ = prog.arena.copy(*pk);
-                    _ = prog.arena.copy(*pv);
+                    _ = prog.world.arena.copy(*pk);
+                    _ = prog.world.arena.copy(*pv);
                 }
-                prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
+                prog.world.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: new_pairs });
             }
         }
         Lookup => {
@@ -2435,20 +2484,20 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // `head`). The found value ref is counted (RC++) so the Sum owns
             // it independently of the map.
             let (Some(kr), Some(sr)) = (
-                prog.value_regs[base + args[0]],
-                prog.value_regs[base + args[1]],
+                prog.world.value_regs[base + args[0]],
+                prog.world.value_regs[base + args[1]],
             ) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let found = {
-                let Some(Value::Map { pairs, .. }) = prog.arena.get(sr) else {
-                    prog.value_regs[dst] = None;
+                let Some(Value::Map { pairs, .. }) = prog.world.arena.get(sr) else {
+                    prog.world.value_regs[dst] = None;
                     return;
                 };
                 let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
                 let pos = sorted_insert_pos(prog, kr, &keys);
-                if pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0 {
+                if pos < pairs.len() && value_cmp(&prog.world.arena, kr, pairs[pos].0) == 0 {
                     Some(pairs[pos].1)
                 } else {
                     None
@@ -2457,7 +2506,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             match found {
                 Some(fv) => match copy_owned(prog, fv) {
                     Some(cv) => {
-                        let mut payload = match prog.arena.take_buf(1) {
+                        let mut payload = match prog.world.arena.take_buf(1) {
                             Ok(b) => b,
                             Err(_) => {
                                 latch_exhaustion(prog, "value buffer pool");
@@ -2465,11 +2514,11 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                             }
                         };
                         payload.push(cv);
-                        prog.value_regs[dst] = alloc_owned(prog, Value::Sum(0, payload));
+                        prog.world.value_regs[dst] = alloc_owned(prog, Value::Sum(0, payload));
                     }
-                    None => prog.value_regs[dst] = None,
+                    None => prog.world.value_regs[dst] = None,
                 },
-                None => prog.value_regs[dst] = alloc_owned(prog, Value::Sum(1, vec![])),
+                None => prog.world.value_regs[dst] = alloc_owned(prog, Value::Sum(1, vec![])),
             }
         }
         Member => {
@@ -2477,58 +2526,58 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // membership (among the sorted keys) from set membership (among
             // the sorted elements). A non-container reads as `false`.
             let (Some(kr), Some(sr)) = (
-                prog.value_regs[base + args[0]],
-                prog.value_regs[base + args[1]],
+                prog.world.value_regs[base + args[0]],
+                prog.world.value_regs[base + args[1]],
             ) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let found = match prog.arena.get(sr) {
+            let found = match prog.world.arena.get(sr) {
                 Some(Value::Map { pairs, .. }) => {
                     let keys: Vec<ArenaRef> = pairs.iter().map(|(pk, _)| *pk).collect();
                     let pos = sorted_insert_pos(prog, kr, &keys);
-                    pos < pairs.len() && value_cmp(&prog.arena, kr, pairs[pos].0) == 0
+                    pos < pairs.len() && value_cmp(&prog.world.arena, kr, pairs[pos].0) == 0
                 }
                 Some(Value::Set { elems }) => {
                     let pos = sorted_insert_pos(prog, kr, elems);
-                    pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0
+                    pos < elems.len() && value_cmp(&prog.world.arena, kr, elems[pos]) == 0
                 }
                 _ => false,
             };
-            prog.value_regs[dst] = alloc_owned(prog, Value::Bool(found));
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Bool(found));
         }
         InsertSet => {
             // insert k s: COW-insert the element into the sorted set; a
             // duplicate leaves the set unchanged (a fresh COW copy). Open
             // collections have no capacity bound.
             let (Some(kr), Some(sr)) = (
-                prog.value_regs[base + args[0]],
-                prog.value_regs[base + args[1]],
+                prog.world.value_regs[base + args[0]],
+                prog.world.value_regs[base + args[1]],
             ) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let (len, pos, dup) = {
-                let Some(elems) = (match prog.arena.get(sr) {
+                let Some(elems) = (match prog.world.arena.get(sr) {
                     Some(Value::Set { elems }) => Some(elems),
                     _ => None,
                 }) else {
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 };
                 let pos = sorted_insert_pos(prog, kr, elems);
-                let dup = pos < elems.len() && value_cmp(&prog.arena, kr, elems[pos]) == 0;
+                let dup = pos < elems.len() && value_cmp(&prog.world.arena, kr, elems[pos]) == 0;
                 (elems.len(), pos, dup)
             };
-            let mut out = match prog.arena.take_buf(len + usize::from(!dup)) {
+            let mut out = match prog.world.arena.take_buf(len + usize::from(!dup)) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
-            if let Some(elems) = match prog.arena.get(sr) {
+            if let Some(elems) = match prog.world.arena.get(sr) {
                 Some(Value::Set { elems }) => Some(elems),
                 _ => None,
             } {
@@ -2536,38 +2585,38 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             }
             if dup {
                 for e in &out {
-                    _ = prog.arena.copy(*e);
+                    _ = prog.world.arena.copy(*e);
                 }
             } else {
                 out.insert(pos, kr);
                 for e in &out {
-                    _ = prog.arena.copy(*e);
+                    _ = prog.world.arena.copy(*e);
                 }
             }
-            prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: out });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Set { elems: out });
         }
         MapEmpty => {
             // empty_map: an empty Map. Open collections have no capacity — the
             // map grows via insert up to the pre-allocated arena pool.
-            prog.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: Vec::new() });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Map { pairs: Vec::new() });
         }
         SetEmpty => {
             // empty_set: an empty Set. Open collections have no capacity.
-            prog.value_regs[dst] = alloc_owned(prog, Value::Set { elems: Vec::new() });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Set { elems: Vec::new() });
         }
         ConcatMap => {
             // bind xs f: for each element, call f -> a List, splicing all the
             // resulting lists into one (`concat_map`). Element and result
             // payloads are pooled.
             let Some(src) = pooled_elems_of(prog, base + args[1]) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let mut out = match prog.arena.take_buf(src.len()) {
+            let mut out = match prog.world.arena.take_buf(src.len()) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
@@ -2575,117 +2624,123 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 if let Some(lr) = call_closure_single(prog, base + args[0], *e, dst, drops) {
                     if let Some(sub) = pooled_elems_of_ref(prog, lr) {
                         for s in &sub {
-                            if let Ok(c) = prog.arena.copy(*s) {
+                            if let Ok(c) = prog.world.arena.copy(*s) {
                                 out.push(c);
                             }
                         }
-                        prog.arena.put_buf(sub);
+                        prog.world.arena.put_buf(sub);
                     }
-                    prog.arena.drop_ref(lr);
+                    prog.world.arena.drop_ref(lr);
                 }
             }
-            prog.arena.put_buf(src);
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
+            prog.world.arena.put_buf(src);
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
         }
         AppendList => {
             // append_list xs ys: the concatenation of two lists (Monoid
             // mappend). Every element is recounted for the result.
             let Some(mut left) = pooled_elems_of(prog, base + args[0]) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let Some(mut right) = pooled_elems_of(prog, base + args[1]) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             for e in &left {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
             for e in &right {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
-            let mut out = match prog.arena.take_buf(left.len() + right.len()) {
+            let mut out = match prog.world.arena.take_buf(left.len() + right.len()) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
             out.append(&mut left);
             out.append(&mut right);
-            prog.arena.put_buf(left);
-            prog.arena.put_buf(right);
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
+            prog.world.arena.put_buf(left);
+            prog.world.arena.put_buf(right);
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems: out });
         }
         ConcatString => {
             let a = prog
+                .world
                 .value_regs
                 .get(base + args[0])
                 .copied()
                 .flatten()
-                .and_then(|r| prog.arena.get(r))
+                .and_then(|r| prog.world.arena.get(r))
                 .and_then(|v| match v {
                     Value::String(s) => Some(s.clone()),
                     _ => None,
                 });
             let b = prog
+                .world
                 .value_regs
                 .get(base + args[1])
                 .copied()
                 .flatten()
-                .and_then(|r| prog.arena.get(r))
+                .and_then(|r| prog.world.arena.get(r))
                 .and_then(|v| match v {
                     Value::String(s) => Some(s.clone()),
                     _ => None,
                 });
-            prog.value_regs[dst] = match (a, b) {
+            prog.world.value_regs[dst] = match (a, b) {
                 (Some(x), Some(y)) => alloc_owned(prog, Value::String(format!("{x}{y}"))),
                 _ => None,
             };
         }
         ShowFloat => {
             let v = prog
+                .world
                 .value_regs
                 .get(base + args[0])
                 .copied()
                 .flatten()
-                .and_then(|r| prog.arena.get(r))
+                .and_then(|r| prog.world.arena.get(r))
                 .and_then(value_to_f64);
-            prog.value_regs[dst] =
+            prog.world.value_regs[dst] =
                 v.and_then(|x| alloc_owned(prog, Value::String(format!("{x:?}"))));
         }
         ShowInt => {
             // `show_int 3` renders `3` (decimal, no fractional part). A Float
             // operand is truncated defensively; typing makes it unreachable.
             let v = prog
+                .world
                 .value_regs
                 .get(base + args[0])
                 .copied()
                 .flatten()
-                .and_then(|r| prog.arena.get(r))
+                .and_then(|r| prog.world.arena.get(r))
                 .and_then(|v| match v {
                     Value::Int(i) => Some(*i),
                     Value::Float(f) => Some(*f as i64),
                     _ => None,
                 });
-            prog.value_regs[dst] = v.and_then(|i| alloc_owned(prog, Value::String(i.to_string())));
+            prog.world.value_regs[dst] =
+                v.and_then(|i| alloc_owned(prog, Value::String(i.to_string())));
         }
         ShowBool => {
             // Booleans are the `true`/`false` keywords in source, but they
             // render with the Haskell constructor spelling (per the spec's
             // `show`), matching `show_float`'s `{:?}` conventions.
             let v = prog
+                .world
                 .value_regs
                 .get(base + args[0])
                 .copied()
                 .flatten()
-                .and_then(|r| prog.arena.get(r))
+                .and_then(|r| prog.world.arena.get(r))
                 .and_then(|v| match v {
                     Value::Bool(b) => Some(*b),
                     _ => None,
                 });
-            prog.value_regs[dst] = v.and_then(|b| {
+            prog.world.value_regs[dst] = v.and_then(|b| {
                 alloc_owned(
                     prog,
                     Value::String(if b { "True" } else { "False" }.to_string()),
@@ -2708,33 +2763,34 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 // (Pool exhaustion, if that was the cause, already latched;
                 // first latch wins.)
                 latch_fault(prog, "arrayFromList: expected a list of elements");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let Some(bounds) = prog.value_regs[base + args[0]] else {
-                prog.arena.put_buf(elems);
+            let Some(bounds) = prog.world.value_regs[base + args[0]] else {
+                prog.world.arena.put_buf(elems);
                 latch_fault(prog, "arrayFromList: bounds operand is unbound");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let Some(bounds) = copy_owned(prog, bounds) else {
-                prog.arena.put_buf(elems);
-                prog.value_regs[dst] = None;
+                prog.world.arena.put_buf(elems);
+                prog.world.value_regs[dst] = None;
                 return;
             };
             for e in &elems {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
-            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
         }
         ArrayBounds => {
             // arrayBounds arr: a direct primitive read of the stored bounds
             // value. The result claims its own ref.
-            let bounds = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
-                Some(Value::Array { bounds, .. }) => Some(*bounds),
-                _ => None,
-            };
-            prog.value_regs[dst] = match bounds.and_then(|b| copy_owned(prog, b)) {
+            let bounds =
+                match prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.get(r)) {
+                    Some(Value::Array { bounds, .. }) => Some(*bounds),
+                    _ => None,
+                };
+            prog.world.value_regs[dst] = match bounds.and_then(|b| copy_owned(prog, b)) {
                 Some(b) => Some(b),
                 None => {
                     // (Arena exhaustion, if that was the cause, already
@@ -2749,10 +2805,10 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // a List. Every element is recounted for the new list.
             let Some(elems) = copy_array_elems(prog, base + args[0]) else {
                 latch_fault(prog, "arrayElems: operand is not an array");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems });
         }
         ArrayFromListChecked => {
             // arrayFromListChecked bounds rangeSize xs: the strict constructor
@@ -2764,30 +2820,30 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // so its fault names that function.
             let Some(elems) = pooled_elems_of(prog, base + args[2]) else {
                 latch_fault(prog, "listArray: expected a list of elements");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let size_reg = match prog.value_regs[base + args[1]] {
+            let size_reg = match prog.world.value_regs[base + args[1]] {
                 Some(r) => r,
                 None => {
-                    prog.arena.put_buf(elems);
+                    prog.world.arena.put_buf(elems);
                     latch_fault(prog, "listArray: the rangeSize operand is unbound");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
             let expected = match forced_i64(prog, size_reg, drops) {
                 Some(n) => n,
                 None => {
-                    prog.arena.put_buf(elems);
+                    prog.world.arena.put_buf(elems);
                     latch_fault(prog, "listArray: rangeSize is not an integral number");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
             if elems.len() as i64 != expected {
                 let got = elems.len();
-                prog.arena.put_buf(elems);
+                prog.world.arena.put_buf(elems);
                 latch_fault(
                     prog,
                     &format!(
@@ -2795,24 +2851,24 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                          (the length must equal rangeSize of the bounds)"
                     ),
                 );
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             }
-            let Some(bounds) = prog.value_regs[base + args[0]] else {
-                prog.arena.put_buf(elems);
+            let Some(bounds) = prog.world.value_regs[base + args[0]] else {
+                prog.world.arena.put_buf(elems);
                 latch_fault(prog, "listArray: bounds operand is unbound");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let Some(bounds) = copy_owned(prog, bounds) else {
-                prog.arena.put_buf(elems);
-                prog.value_regs[dst] = None;
+                prog.world.arena.put_buf(elems);
+                prog.world.value_regs[dst] = None;
                 return;
             };
             for e in &elems {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
-            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
         }
         ListRange => {
             // listRange (l, u): the inclusive `[l..=u]` as a flat Int list —
@@ -2821,24 +2877,24 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // `(0, -1)`, which therefore yields no elements). The size is
             // bounded by the arena's free slots up front, so an absurd computed
             // range is a clean fault rather than a long futile allocation.
-            let Some(Value::Record(fields)) = prog.value_regs[base + args[0]]
-                .and_then(|r| prog.arena.get(r))
+            let Some(Value::Record(fields)) = prog.world.value_regs[base + args[0]]
+                .and_then(|r| prog.world.arena.get(r))
                 .cloned()
             else {
                 latch_fault(prog, "listRange: bounds operand is not a Pair");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             if fields.len() != 2 {
                 latch_fault(prog, "listRange: bounds operand is not a Pair");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             }
             let lo = forced_i64(prog, fields[0], drops);
             let hi = forced_i64(prog, fields[1], drops);
             let (Some(lo), Some(hi)) = (lo, hi) else {
                 latch_fault(prog, "listRange: bounds are not integral numbers");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let n = if hi < lo {
@@ -2849,20 +2905,24 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 // free-slot bound below.
                 usize::try_from((hi as i128) - (lo as i128) + 1).unwrap_or(usize::MAX)
             };
-            let free_slots = prog.arena.capacity().saturating_sub(prog.arena.live());
+            let free_slots = prog
+                .world
+                .arena
+                .capacity()
+                .saturating_sub(prog.world.arena.live());
             if n > free_slots {
                 latch_fault(prog, "listRange: range exceeds the value arena capacity");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             }
-            let Some(mut elems) = (match prog.arena.take_buf(n) {
+            let Some(mut elems) = (match prog.world.arena.take_buf(n) {
                 Ok(b) => Some(b),
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
                     None
                 }
             }) else {
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let mut ok = true;
@@ -2877,13 +2937,13 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             }
             if !ok {
                 for e in &elems {
-                    prog.arena.drop_ref(*e);
+                    prog.world.arena.drop_ref(*e);
                 }
-                prog.arena.put_buf(elems);
-                prog.value_regs[dst] = None;
+                prog.world.arena.put_buf(elems);
+                prog.world.value_regs[dst] = None;
                 return;
             }
-            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::List { elems });
         }
         ArrayIndexFlat => {
             // arrayIndexFlat arr i: read a FLAT offset (the language computed
@@ -2892,32 +2952,35 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // the last is a clean runtime fault through the latched channel,
             // never a panic and never an index into the element Vec (design
             // §Fault policy).
-            let len = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
-                Some(Value::Array { elems, .. }) => elems.len(),
-                _ => {
-                    latch_fault(prog, "arrayIndexFlat: operand is not an array");
-                    prog.value_regs[dst] = None;
-                    return;
-                }
-            };
-            let offset = match prog.value_regs[base + args[1]].and_then(|r| prog.arena.get(r)) {
-                Some(Value::Int(i)) => *i,
-                _ => {
-                    latch_fault(prog, "arrayIndexFlat: index is not an Int");
-                    prog.value_regs[dst] = None;
-                    return;
-                }
-            };
+            let len =
+                match prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.get(r)) {
+                    Some(Value::Array { elems, .. }) => elems.len(),
+                    _ => {
+                        latch_fault(prog, "arrayIndexFlat: operand is not an array");
+                        prog.world.value_regs[dst] = None;
+                        return;
+                    }
+                };
+            let offset =
+                match prog.world.value_regs[base + args[1]].and_then(|r| prog.world.arena.get(r)) {
+                    Some(Value::Int(i)) => *i,
+                    _ => {
+                        latch_fault(prog, "arrayIndexFlat: index is not an Int");
+                        prog.world.value_regs[dst] = None;
+                        return;
+                    }
+                };
             let Some(pos) = flat_index_in_range(offset, len) else {
                 latch_fault(prog, "arrayIndexFlat: index out of range");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            let elem = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
-                Some(Value::Array { elems, .. }) => Some(elems[pos]),
-                _ => None,
-            };
-            prog.value_regs[dst] = match elem.and_then(|e| copy_owned(prog, e)) {
+            let elem =
+                match prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.get(r)) {
+                    Some(Value::Array { elems, .. }) => Some(elems[pos]),
+                    _ => None,
+                };
+            prog.world.value_regs[dst] = match elem.and_then(|e| copy_owned(prog, e)) {
                 Some(e) => Some(e),
                 None => {
                     latch_fault(prog, "arrayIndexFlat: element is unreadable");
@@ -2946,13 +3009,13 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             };
             let Some(assocs) = pooled_elems_of(prog, assoc_reg) else {
                 latch_fault(prog, &format!("{op_name}: expected a list of associations"));
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let Some(mut out) = copy_array_elems(prog, base + args[0]) else {
-                prog.arena.put_buf(assocs);
+                prog.world.arena.put_buf(assocs);
                 latch_fault(prog, &format!("{op_name}: operand is not an array"));
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             // `Some` carries a cause; `None` while `aborted` means the failure
@@ -2992,7 +3055,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                         // mid-tick and the original stays intact.
                         let old = out[pos];
                         out[pos] = f;
-                        prog.arena.drop_ref(old);
+                        prog.world.arena.drop_ref(old);
                     }
                     None => {
                         // An update only fails on arena exhaustion (already
@@ -3005,33 +3068,34 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     }
                 }
             }
-            prog.arena.put_buf(assocs);
+            prog.world.arena.put_buf(assocs);
             if aborted {
                 // Release exactly the claims the result payload holds (the
                 // source array's claims are untouched).
                 for r in &out {
-                    prog.arena.drop_ref(*r);
+                    prog.world.arena.drop_ref(*r);
                 }
-                prog.arena.put_buf(out);
+                prog.world.arena.put_buf(out);
                 if let Some(why) = fault {
                     latch_fault(prog, &why);
                 }
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             }
-            let bounds = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
-                Some(Value::Array { bounds, .. }) => Some(*bounds),
-                _ => None,
-            };
-            let Some(bounds) = bounds.and_then(|b| prog.arena.copy(b).ok()) else {
+            let bounds =
+                match prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.get(r)) {
+                    Some(Value::Array { bounds, .. }) => Some(*bounds),
+                    _ => None,
+                };
+            let Some(bounds) = bounds.and_then(|b| prog.world.arena.copy(b).ok()) else {
                 for r in &out {
-                    prog.arena.drop_ref(*r);
+                    prog.world.arena.drop_ref(*r);
                 }
-                prog.arena.put_buf(out);
-                prog.value_regs[dst] = None;
+                prog.world.arena.put_buf(out);
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems: out });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems: out });
         }
         ArrayFromBuffer => {
             // arrayFromBuffer buf: copy the live block (`block_len` samples)
@@ -3039,27 +3103,27 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // `(0, len - 1)`. The samples are read out first (a short buffer
             // borrow) so the per-element arena allocations happen afterwards.
             let si = buffer_index(prog, args[0], base);
-            let n = prog.block_len.min(prog.buffers[si].len());
+            let n = prog.world.block_len.min(prog.world.buffers[si].len());
             let mut scratch = [T::ZERO; BUF];
-            prog.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
-            let mut elems = match prog.arena.take_buf(n) {
+            prog.world.buffers[si].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            let mut elems = match prog.world.arena.take_buf(n) {
                 Ok(b) => b,
                 Err(_) => {
                     latch_exhaustion(prog, "value buffer pool");
-                    prog.value_regs[dst] = None;
+                    prog.world.value_regs[dst] = None;
                     return;
                 }
             };
             for sample in &scratch[..n] {
-                match prog.arena.alloc(Value::Float(sample.to_f64())) {
+                match prog.world.arena.alloc(Value::Float(sample.to_f64())) {
                     Ok(r) => elems.push(r),
                     Err(_) => {
                         for r in &elems {
-                            prog.arena.drop_ref(*r);
+                            prog.world.arena.drop_ref(*r);
                         }
-                        prog.arena.put_buf(elems);
+                        prog.world.arena.put_buf(elems);
                         latch_exhaustion(prog, "value arena capacity");
-                        prog.value_regs[dst] = None;
+                        prog.world.value_regs[dst] = None;
                         return;
                     }
                 }
@@ -3068,13 +3132,13 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // conventional empty range).
             let Some(bounds) = alloc_int_bounds(prog, 0, n as i64 - 1) else {
                 for r in &elems {
-                    prog.arena.drop_ref(*r);
+                    prog.world.arena.drop_ref(*r);
                 }
-                prog.arena.put_buf(elems);
-                prog.value_regs[dst] = None;
+                prog.world.arena.put_buf(elems);
+                prog.world.value_regs[dst] = None;
                 return;
             };
-            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
         }
         BufferFromArray => {
             // bufferFromArray arr: copy the array's samples into a program
@@ -3088,29 +3152,30 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // buffer index is `dst` itself. `buffer_index` must not be used
             // here: it would add `base` a second time.
             let di = dst;
-            let elems = match prog.value_regs[base + args[0]].and_then(|r| prog.arena.get(r)) {
-                Some(Value::Array { elems, .. }) => Some(elems),
-                _ => None,
-            };
+            let elems =
+                match prog.world.value_regs[base + args[0]].and_then(|r| prog.world.arena.get(r)) {
+                    Some(Value::Array { elems, .. }) => Some(elems),
+                    _ => None,
+                };
             let Some(elems) = elems else {
                 latch_fault(prog, "bufferFromArray: operand is not an array");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             };
             let len = elems.len();
             if len > BUF {
                 latch_fault(prog, "bufferFromArray: array exceeds the buffer capacity");
-                prog.value_regs[dst] = None;
+                prog.world.value_regs[dst] = None;
                 return;
             }
             let mut scratch = [T::ZERO; BUF];
             for (i, r) in elems.iter().enumerate() {
-                if let Some(Value::Float(f)) = prog.arena.get(*r) {
+                if let Some(Value::Float(f)) = prog.world.arena.get(*r) {
                     scratch[i] = T::from_f64(*f);
                 }
             }
-            let n = prog.block_len.min(prog.buffers[di].len());
-            prog.buffers[di].with_data_mut(|b| {
+            let n = prog.world.block_len.min(prog.world.buffers[di].len());
+            prog.world.buffers[di].with_data_mut(|b| {
                 let copy = len.min(n);
                 b[..copy].copy_from_slice(&scratch[..copy]);
                 // Zero-pad a shorter array so the live block is deterministic.
@@ -3118,7 +3183,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     b[copy..n].fill(T::ZERO);
                 }
             });
-            prog.value_regs[dst] = alloc_owned(prog, Value::Buffer(di));
+            prog.world.value_regs[dst] = alloc_owned(prog, Value::Buffer(di));
         }
     }
 }
@@ -3167,8 +3232,9 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
     let mut callee_reg = closure_reg;
     let mut start = 0usize;
     loop {
-        let (env_ref, fragment_id) = match prog.value_regs.get(callee_reg).copied().flatten() {
-            Some(r) => match prog.arena.get(r) {
+        let (env_ref, fragment_id) = match prog.world.value_regs.get(callee_reg).copied().flatten()
+        {
+            Some(r) => match prog.world.arena.get(r) {
                 Some(Value::Callable {
                     fragment,
                     env,
@@ -3179,7 +3245,7 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
             None => return None,
         };
         let frag = prog.ir.fragments.get(fragment_id as usize).cloned()?;
-        let base = prog.value_regs_top;
+        let base = prog.world.value_regs_top;
         // Bounds-guard: the pre-sized call scratch reserves `max_call_regs`
         // slots, so a wrong-arity callable (e.g. `fold (fn a -> a) ...`) could
         // pass more args than the fragment declares and write the raw borrows
@@ -3190,15 +3256,20 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
         let n = remaining
             .len()
             .min(frag.sig.value_ins)
-            .min(prog.value_regs.len().saturating_sub(base));
+            .min(prog.world.value_regs.len().saturating_sub(base));
         if n < remaining.len() && n < frag.sig.value_ins {
             // The scratch region cannot hold the arguments: nothing to do.
             return None;
         }
         for (i, e) in remaining.iter().take(n).enumerate() {
-            prog.value_regs[base + i] = Some(*e);
+            prog.world.value_regs[base + i] = Some(*e);
         }
-        if let Some(old) = prog.value_regs.get_mut(result_reg).and_then(|r| r.take()) {
+        if let Some(old) = prog
+            .world
+            .value_regs
+            .get_mut(result_reg)
+            .and_then(|r| r.take())
+        {
             drops.push(old);
         }
         let arg_regs: Vec<usize> = (0..n).map(|i| base + i).collect();
@@ -3213,14 +3284,18 @@ fn call_closure_args<T: Transcendental, const BUF: usize>(
             Some(result_reg),
             drops,
         );
-        let out = prog.value_regs.get_mut(result_reg).and_then(|r| r.take());
+        let out = prog
+            .world
+            .value_regs
+            .get_mut(result_reg)
+            .and_then(|r| r.take());
         start += n;
         if start >= args.len() {
             return out;
         }
         // More arguments remain: the result must itself be a closure. Park it in
         // the (now free) result register and use it as the next callee.
-        prog.value_regs[result_reg] = Some(out?);
+        prog.world.value_regs[result_reg] = Some(out?);
         callee_reg = result_reg;
     }
 }
@@ -3273,7 +3348,7 @@ fn apply_callable<T: Transcendental, const BUF: usize>(
     // A complete-mode `let` may hold the callee as a lazy thunk: force to WHNF
     // first (a no-op for an eager closure/effect).
     let head = force(prog, callee, drops);
-    let kind = match prog.arena.get(head) {
+    let kind = match prog.world.arena.get(head) {
         Some(Value::BuiltinCallable { op, env }) => CallableKind::Effect(*op, *env),
         Some(Value::Callable {
             fragment,
@@ -3289,13 +3364,13 @@ fn apply_callable<T: Transcendental, const BUF: usize>(
             // Park the borrowed argument in its own scratch slot, claiming it
             // so `run_call`'s frame starts ABOVE it. `run_call` copies the
             // argument into the fragment frame, so the slot never owns it.
-            let slot = prog.value_regs_top;
-            if slot >= prog.value_regs.len() {
+            let slot = prog.world.value_regs_top;
+            if slot >= prog.world.value_regs.len() {
                 latch_exhaustion(prog, "call scratch (max_call_regs)");
                 return None;
             }
-            prog.value_regs[slot] = Some(arg);
-            prog.value_regs_top = slot + 1;
+            prog.world.value_regs[slot] = Some(arg);
+            prog.world.value_regs_top = slot + 1;
             let out = run_call(
                 prog,
                 &frag,
@@ -3307,8 +3382,8 @@ fn apply_callable<T: Transcendental, const BUF: usize>(
                 None,
                 drops,
             );
-            prog.value_regs_top = slot;
-            prog.value_regs[slot] = None;
+            prog.world.value_regs_top = slot;
+            prog.world.value_regs[slot] = None;
             out
         }
     }
@@ -3330,7 +3405,7 @@ fn force_owned<T: Transcendental, const BUF: usize>(
         Some(r)
     } else {
         let owned = copy_owned(prog, head);
-        prog.arena.drop_ref(r);
+        prog.world.arena.drop_ref(r);
         owned
     }
 }
@@ -3344,7 +3419,7 @@ fn st_ref_cell_value<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     h: usize,
 ) -> Option<Option<ArenaRef>> {
-    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    match prog.world.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Ref(r)) => Some(Some(*r)),
         Some(StCell::Array { .. }) => {
             latch_fault(prog, "STRef operation on an STArray handle");
@@ -3367,26 +3442,26 @@ fn st_ref_cell_store<T: Transcendental, const BUF: usize>(
 ) {
     // Classify BEFORE mutating: `latch_fault` borrows the whole program, so the
     // cell cannot stay borrowed across it.
-    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    match prog.world.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Ref(_)) => {}
         Some(StCell::Array { .. }) => {
             latch_fault(prog, "STRef operation on an STArray handle");
-            prog.arena.drop_ref(stored);
+            prog.world.arena.drop_ref(stored);
             return;
         }
         None => {
             latch_fault(prog, "STRef store on a released cell");
-            prog.arena.drop_ref(stored);
+            prog.world.arena.drop_ref(stored);
             return;
         }
     }
-    match prog.st_cells.get_mut(h) {
+    match prog.world.st_cells.get_mut(h) {
         // The classification above guarantees this arm.
         Some(Some(StCell::Ref(slot))) => {
             let old = std::mem::replace(slot, stored);
-            prog.arena.drop_ref(old);
+            prog.world.arena.drop_ref(old);
         }
-        _ => prog.arena.drop_ref(stored),
+        _ => prog.world.arena.drop_ref(stored),
     }
 }
 
@@ -3396,7 +3471,7 @@ fn st_array_len<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     h: usize,
 ) -> Option<usize> {
-    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    match prog.world.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Array { elems, .. }) => Some(elems.len()),
         Some(StCell::Ref(_)) => {
             latch_fault(prog, "STArray operation on an STRef handle");
@@ -3414,7 +3489,7 @@ fn st_array_bounds<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     h: usize,
 ) -> Option<ArenaRef> {
-    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    match prog.world.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Array { bounds, .. }) => Some(*bounds),
         Some(StCell::Ref(_)) => {
             latch_fault(prog, "STArray operation on an STRef handle");
@@ -3437,7 +3512,7 @@ fn st_array_elem<T: Transcendental, const BUF: usize>(
     h: usize,
     pos: usize,
 ) -> Option<ArenaRef> {
-    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    match prog.world.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Array { elems, .. }) => elems.get(pos).copied(),
         Some(StCell::Ref(_)) => {
             latch_fault(prog, "STArray operation on an STRef handle");
@@ -3463,31 +3538,31 @@ fn st_array_elem_store<T: Transcendental, const BUF: usize>(
     stored: ArenaRef,
 ) {
     // Classify BEFORE mutating: `latch_fault` borrows the whole program.
-    match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    match prog.world.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Array { elems, .. }) if pos < elems.len() => {}
         Some(StCell::Array { .. }) => {
             latch_fault(prog, "STArray element store: offset out of range");
-            prog.arena.drop_ref(stored);
+            prog.world.arena.drop_ref(stored);
             return;
         }
         Some(StCell::Ref(_)) => {
             latch_fault(prog, "STArray operation on an STRef handle");
-            prog.arena.drop_ref(stored);
+            prog.world.arena.drop_ref(stored);
             return;
         }
         None => {
             latch_fault(prog, "STArray element store on a released cell");
-            prog.arena.drop_ref(stored);
+            prog.world.arena.drop_ref(stored);
             return;
         }
     }
-    match prog.st_cells.get_mut(h) {
+    match prog.world.st_cells.get_mut(h) {
         // The classification above guarantees this arm.
         Some(Some(StCell::Array { elems, .. })) if pos < elems.len() => {
             let old = std::mem::replace(&mut elems[pos], stored);
-            prog.arena.drop_ref(old);
+            prog.world.arena.drop_ref(old);
         }
-        _ => prog.arena.drop_ref(stored),
+        _ => prog.world.arena.drop_ref(stored),
     }
 }
 
@@ -3499,7 +3574,7 @@ fn st_array_elems_of<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     h: usize,
 ) -> Option<Vec<ArenaRef>> {
-    let len = match prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    let len = match prog.world.st_cells.get(h).and_then(|slot| slot.as_ref()) {
         Some(StCell::Array { elems, .. }) => elems.len(),
         Some(StCell::Ref(_)) => {
             latch_fault(prog, "STArray operation on an STRef handle");
@@ -3510,14 +3585,16 @@ fn st_array_elems_of<T: Transcendental, const BUF: usize>(
             return None;
         }
     };
-    let mut out = match prog.arena.take_buf(len) {
+    let mut out = match prog.world.arena.take_buf(len) {
         Ok(b) => b,
         Err(_) => {
             latch_exhaustion(prog, "value buffer pool");
             return None;
         }
     };
-    if let Some(StCell::Array { elems, .. }) = prog.st_cells.get(h).and_then(|slot| slot.as_ref()) {
+    if let Some(StCell::Array { elems, .. }) =
+        prog.world.st_cells.get(h).and_then(|slot| slot.as_ref())
+    {
         out.extend_from_slice(elems);
     }
     Some(out)
@@ -3532,13 +3609,13 @@ fn release_st_cell<T: Transcendental, const BUF: usize>(
     cell: StCell,
 ) {
     match cell {
-        StCell::Ref(r) => prog.arena.drop_ref(r),
+        StCell::Ref(r) => prog.world.arena.drop_ref(r),
         StCell::Array { bounds, elems } => {
-            prog.arena.drop_ref(bounds);
+            prog.world.arena.drop_ref(bounds);
             for e in &elems {
-                prog.arena.drop_ref(*e);
+                prog.world.arena.drop_ref(*e);
             }
-            prog.arena.put_buf(elems);
+            prog.world.arena.put_buf(elems);
         }
     }
 }
@@ -3557,7 +3634,7 @@ fn forced_i64<T: Transcendental, const BUF: usize>(
     drops: &mut Vec<ArenaRef>,
 ) -> Option<i64> {
     let r = force(prog, r, drops);
-    match prog.arena.get(r) {
+    match prog.world.arena.get(r) {
         Some(Value::Int(i)) => Some(*i),
         Some(Value::Float(f)) if f.is_finite() && f.fract() == 0.0 => Some(*f as i64),
         _ => None,
@@ -3592,13 +3669,13 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
 ) -> Option<crate::arena::ArenaRef> {
     // The threading token: an opaque region id (ST) or the realized World
     // token (IO). Anything else is a bug upstream.
-    let Some(Value::Opaque(id)) = prog.arena.get(state) else {
+    let Some(Value::Opaque(id)) = prog.world.arena.get(state) else {
         return None;
     };
     let token = *id;
     let region_id = token as usize;
     // The captured operands, borrowed from the env record.
-    let args: Vec<crate::arena::ArenaRef> = match prog.arena.get(env) {
+    let args: Vec<crate::arena::ArenaRef> = match prog.world.arena.get(env) {
         Some(Value::Record(fields)) => fields.clone(),
         _ => Vec::new(),
     };
@@ -3607,7 +3684,7 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
     // still be an unforced thunk: force it to WHNF before reading its payload.
     let handle = |prog: &mut RillProgram<T, BUF>, drops: &mut Vec<ArenaRef>| -> Option<usize> {
         let r = force(prog, *args.first()?, drops);
-        match prog.arena.get(r) {
+        match prog.world.arena.get(r) {
             Some(Value::Opaque(h)) => Some(*h as usize),
             _ => None,
         }
@@ -3617,9 +3694,9 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             let init = *args.first()?;
             // The cell owns its own ref; the operand's owner keeps its.
             let stored = copy_owned(prog, init)?;
-            let id = prog.st_cells.len() as u32;
-            prog.st_cells.push(Some(StCell::Ref(stored)));
-            let region = prog.regions.get_mut(region_id)?;
+            let id = prog.world.st_cells.len() as u32;
+            prog.world.st_cells.push(Some(StCell::Ref(stored)));
+            let region = prog.world.regions.get_mut(region_id)?;
             region.cells.push(id);
             alloc_owned(prog, Value::Opaque(id))
         }
@@ -3650,10 +3727,10 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             // its own ref while the call runs).
             let arg = copy_owned(prog, old)?;
             let new_value = apply_callable(prog, f, arg, drops);
-            prog.arena.drop_ref(arg);
+            prog.world.arena.drop_ref(arg);
             let new_value = new_value?;
             let stored = copy_owned(prog, new_value);
-            prog.arena.drop_ref(new_value);
+            prog.world.arena.drop_ref(new_value);
             let stored = stored?;
             st_ref_cell_store(prog, h, stored);
             alloc_owned(prog, Value::Void)
@@ -3681,7 +3758,11 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             // pre-allocated arena budget: bound it by the FREE slots up front so
             // an absurd computed size is a clean fault instead of a long futile
             // allocation loop.
-            let free_slots = prog.arena.capacity().saturating_sub(prog.arena.live());
+            let free_slots = prog
+                .world
+                .arena
+                .capacity()
+                .saturating_sub(prog.world.arena.live());
             if n > free_slots {
                 latch_fault(
                     prog,
@@ -3690,10 +3771,10 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
                 return None;
             }
             let bounds = copy_owned(prog, bounds_src)?;
-            let mut elems = match prog.arena.take_buf(n) {
+            let mut elems = match prog.world.arena.take_buf(n) {
                 Ok(b) => b,
                 Err(_) => {
-                    prog.arena.drop_ref(bounds);
+                    prog.world.arena.drop_ref(bounds);
                     latch_exhaustion(prog, "value buffer pool");
                     return None;
                 }
@@ -3702,18 +3783,20 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
                 match copy_owned(prog, init) {
                     Some(c) => elems.push(c),
                     None => {
-                        prog.arena.drop_ref(bounds);
+                        prog.world.arena.drop_ref(bounds);
                         for e in &elems {
-                            prog.arena.drop_ref(*e);
+                            prog.world.arena.drop_ref(*e);
                         }
-                        prog.arena.put_buf(elems);
+                        prog.world.arena.put_buf(elems);
                         return None;
                     }
                 }
             }
-            let id = prog.st_cells.len() as u32;
-            prog.st_cells.push(Some(StCell::Array { bounds, elems }));
-            let region = prog.regions.get_mut(region_id)?;
+            let id = prog.world.st_cells.len() as u32;
+            prog.world
+                .st_cells
+                .push(Some(StCell::Array { bounds, elems }));
+            let region = prog.world.regions.get_mut(region_id)?;
             region.cells.push(id);
             alloc_owned(prog, Value::Opaque(id))
         }
@@ -3735,14 +3818,14 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             let expected = match forced_i64(prog, *args.get(1)?, drops) {
                 Some(n) => n,
                 None => {
-                    prog.arena.put_buf(elems);
+                    prog.world.arena.put_buf(elems);
                     latch_fault(prog, "newListArray: rangeSize is not an integral number");
                     return None;
                 }
             };
             if elems.len() as i64 != expected {
                 let got = elems.len();
-                prog.arena.put_buf(elems);
+                prog.world.arena.put_buf(elems);
                 latch_fault(
                     prog,
                     &format!(
@@ -3755,11 +3838,13 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             let bounds = copy_owned(prog, bounds_src)?;
             // The cell owns its elements independently of the source list.
             for e in &elems {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
-            let id = prog.st_cells.len() as u32;
-            prog.st_cells.push(Some(StCell::Array { bounds, elems }));
-            let region = prog.regions.get_mut(region_id)?;
+            let id = prog.world.st_cells.len() as u32;
+            prog.world
+                .st_cells
+                .push(Some(StCell::Array { bounds, elems }));
+            let region = prog.world.regions.get_mut(region_id)?;
             region.cells.push(id);
             alloc_owned(prog, Value::Opaque(id))
         }
@@ -3825,10 +3910,10 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             // Apply to a copy: the cell keeps its own claim while the call runs.
             let arg = copy_owned(prog, old)?;
             let new_value = apply_callable(prog, f, arg, drops);
-            prog.arena.drop_ref(arg);
+            prog.world.arena.drop_ref(arg);
             let new_value = new_value?;
             let stored = copy_owned(prog, new_value);
-            prog.arena.drop_ref(new_value);
+            prog.world.arena.drop_ref(new_value);
             let stored = stored?;
             st_array_elem_store(prog, h, pos, stored);
             alloc_owned(prog, Value::Void)
@@ -3845,7 +3930,7 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
             // cell (the cell keeps its own claims). `copy` shares the same ref
             // with a fresh claim.
             for e in &elems {
-                _ = prog.arena.copy(*e);
+                _ = prog.world.arena.copy(*e);
             }
             alloc_owned(prog, Value::List { elems })
         }
@@ -3894,7 +3979,7 @@ fn exec_stream_from_list<T: Transcendental, const BUF: usize>(
     loop {
         // Snapshot the spine node before copying its elements: the copy borrows
         // the arena mutably, so the node's refs must outlive that borrow.
-        let node = match prog.arena.get(cur) {
+        let node = match prog.world.arena.get(cur) {
             Some(Value::List { elems: items }) => Some(Ok(items.clone())),
             Some(Value::Cons(head, tail)) => Some(Err((*head, *tail))),
             _ => None,
@@ -3906,7 +3991,7 @@ fn exec_stream_from_list<T: Transcendental, const BUF: usize>(
                         Some(c) => elems.push(c),
                         None => {
                             for r in elems.drain(..) {
-                                prog.arena.drop_ref(r);
+                                prog.world.arena.drop_ref(r);
                             }
                             latch_exhaustion(prog, "value arena (io stream)");
                             return None;
@@ -3920,7 +4005,7 @@ fn exec_stream_from_list<T: Transcendental, const BUF: usize>(
                     Some(c) => elems.push(c),
                     None => {
                         for r in elems.drain(..) {
-                            prog.arena.drop_ref(r);
+                            prog.world.arena.drop_ref(r);
                         }
                         latch_exhaustion(prog, "value arena (io stream)");
                         return None;
@@ -3959,13 +4044,13 @@ fn alloc_stream<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     handle: StreamHandle,
 ) -> Option<usize> {
-    let idx = prog.world.borrow().streams.len();
+    let idx = prog.world.streams.len();
     if idx > (STREAM_HANDLE_TAG - 1) as usize {
         latch_exhaustion(prog, "stream table");
-        handle.drop_refs(&mut prog.arena);
+        handle.drop_refs(&mut prog.world.arena);
         return None;
     }
-    prog.world.borrow_mut().streams.push(handle);
+    prog.world.streams.push(handle);
     Some(idx)
 }
 
@@ -3995,29 +4080,31 @@ fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
     // `xs <- fromList …` is bound lazily): force it before reading its payload.
     let handle_ref = force(prog, *args.first()?, drops);
     let h = stream_handle_index(prog, handle_ref)?;
-    let drain = {
-        let mut world = prog.world.borrow_mut();
-        match world.streams.get_mut(h) {
-            Some(StreamHandle::Input {
-                elems,
-                pos,
-                pushback,
-            }) => {
-                // Pushed-back elements come first, most recently pushed first.
-                let mut rest: Vec<ArenaRef> = pushback.drain(..).rev().collect();
-                let tail = elems.split_off(*pos);
-                // The consumed prefix is no longer reachable: release it.
-                for r in elems.drain(..) {
-                    prog.arena.drop_ref(r);
-                }
-                *pos = 0;
-                rest.extend(tail);
-                Drain::Items(rest)
-            }
-            Some(StreamHandle::Source { .. }) | Some(StreamHandle::Stdin { .. }) => Drain::Read,
-            _ => Drain::Fault,
+    // The consumed prefix is released only after the stream-table borrow ends:
+    // the table and the arena both live in the world now, so they cannot be
+    // borrowed at the same time.
+    let mut stale: Vec<ArenaRef> = Vec::new();
+    let drain = match prog.world.streams.get_mut(h) {
+        Some(StreamHandle::Input {
+            elems,
+            pos,
+            pushback,
+        }) => {
+            // Pushed-back elements come first, most recently pushed first.
+            let mut rest: Vec<ArenaRef> = pushback.drain(..).rev().collect();
+            let tail = elems.split_off(*pos);
+            // The consumed prefix is no longer reachable: release it.
+            stale.append(elems);
+            *pos = 0;
+            rest.extend(tail);
+            Drain::Items(rest)
         }
+        Some(StreamHandle::Source { .. }) | Some(StreamHandle::Stdin { .. }) => Drain::Read,
+        _ => Drain::Fault,
     };
+    for r in stale {
+        prog.world.arena.drop_ref(r);
+    }
     let items = match drain {
         Drain::Items(items) => items,
         Drain::Fault => {
@@ -4033,7 +4120,7 @@ fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
                     ReadOutcome::Fault => {
                         // The read path latched the fault; release the prefix.
                         for r in items {
-                            prog.arena.drop_ref(r);
+                            prog.world.arena.drop_ref(r);
                         }
                         return None;
                     }
@@ -4043,11 +4130,11 @@ fn exec_stream_to_list<T: Transcendental, const BUF: usize>(
         }
     };
     let n = items.len();
-    let mut buf = match prog.arena.take_buf(n) {
+    let mut buf = match prog.world.arena.take_buf(n) {
         Ok(b) => b,
         Err(_) => {
             for r in items {
-                prog.arena.drop_ref(r);
+                prog.world.arena.drop_ref(r);
             }
             latch_exhaustion(prog, "value buffer pool (io stream)");
             return None;
@@ -4067,7 +4154,7 @@ fn exec_stream_write<T: Transcendental, const BUF: usize>(
 ) -> Option<ArenaRef> {
     let mb = force(prog, *args.first()?, drops);
     // `Maybe a`: constructor 0 is `Just`, constructor 1 is `Nothing`.
-    let payload = match prog.arena.get(mb) {
+    let payload = match prog.world.arena.get(mb) {
         Some(Value::Sum(0, fields)) => Some(fields.first().copied()),
         Some(Value::Sum(1, _)) => None,
         _ => {
@@ -4132,7 +4219,7 @@ fn exec_stream_at_end<T: Transcendental, const BUF: usize>(
     }
     let handle_ref = force(prog, *args.first()?, drops);
     let h = stream_handle_index(prog, handle_ref)?;
-    let check = match prog.world.borrow().streams.get(h) {
+    let check = match prog.world.streams.get(h) {
         Some(StreamHandle::Input {
             elems,
             pos,
@@ -4297,53 +4384,50 @@ fn stream_read<T: Transcendental, const BUF: usize>(
         Eof,
         Fault,
     }
-    let step = {
-        let mut world = prog.world.borrow_mut();
-        match world.streams.get_mut(idx) {
-            Some(StreamHandle::Input {
-                elems,
-                pos,
-                pushback,
-                ..
-            }) => {
-                if let Some(r) = pushback.pop() {
-                    Step::Owned(r)
-                } else if let Some(r) = elems.get(*pos).copied() {
-                    *pos += 1;
-                    Step::Borrowed(r)
-                } else {
-                    Step::Eof
-                }
+    let step = match prog.world.streams.get_mut(idx) {
+        Some(StreamHandle::Input {
+            elems,
+            pos,
+            pushback,
+            ..
+        }) => {
+            if let Some(r) = pushback.pop() {
+                Step::Owned(r)
+            } else if let Some(r) = elems.get(*pos).copied() {
+                *pos += 1;
+                Step::Borrowed(r)
+            } else {
+                Step::Eof
             }
-            Some(StreamHandle::Source {
-                action,
-                eof,
-                pushback,
-            }) => {
-                if let Some(r) = pushback.pop() {
-                    Step::Owned(r)
-                } else if *eof {
-                    Step::Eof
-                } else {
-                    Step::Action(*action)
-                }
-            }
-            Some(StreamHandle::Stdin {
-                lines,
-                pos,
-                pushback,
-            }) => {
-                if let Some(r) = pushback.pop() {
-                    Step::Owned(r)
-                } else if let Some(line) = lines.get(*pos) {
-                    *pos += 1;
-                    Step::Line(line.clone())
-                } else {
-                    Step::Eof
-                }
-            }
-            _ => Step::Fault,
         }
+        Some(StreamHandle::Source {
+            action,
+            eof,
+            pushback,
+        }) => {
+            if let Some(r) = pushback.pop() {
+                Step::Owned(r)
+            } else if *eof {
+                Step::Eof
+            } else {
+                Step::Action(*action)
+            }
+        }
+        Some(StreamHandle::Stdin {
+            lines,
+            pos,
+            pushback,
+        }) => {
+            if let Some(r) = pushback.pop() {
+                Step::Owned(r)
+            } else if let Some(line) = lines.get(*pos) {
+                *pos += 1;
+                Step::Line(line.clone())
+            } else {
+                Step::Eof
+            }
+        }
+        _ => Step::Fault,
     };
     match step {
         // The popped pushback ref already transfers ownership to the caller.
@@ -4374,7 +4458,7 @@ fn stream_read<T: Transcendental, const BUF: usize>(
                 Nothing,
                 Invalid,
             }
-            let shape = match prog.arena.get(mb) {
+            let shape = match prog.world.arena.get(mb) {
                 Some(Value::Sum(0, fields)) => Shape::Just(fields.first().copied()),
                 Some(Value::Sum(1, _)) => Shape::Nothing,
                 _ => Shape::Invalid,
@@ -4383,23 +4467,22 @@ fn stream_read<T: Transcendental, const BUF: usize>(
                 Shape::Just(Some(r)) => {
                     let r = force(prog, r, drops);
                     let out = copy_owned(prog, r);
-                    prog.arena.drop_ref(mb);
+                    prog.world.arena.drop_ref(mb);
                     match out {
                         Some(r) => ReadOutcome::Elem(r),
                         None => ReadOutcome::Fault,
                     }
                 }
                 Shape::Nothing => {
-                    prog.arena.drop_ref(mb);
-                    if let Some(StreamHandle::Source { eof, .. }) =
-                        prog.world.borrow_mut().streams.get_mut(idx)
+                    prog.world.arena.drop_ref(mb);
+                    if let Some(StreamHandle::Source { eof, .. }) = prog.world.streams.get_mut(idx)
                     {
                         *eof = true;
                     }
                     ReadOutcome::Eof
                 }
                 Shape::Just(None) | Shape::Invalid => {
-                    prog.arena.drop_ref(mb);
+                    prog.world.arena.drop_ref(mb);
                     latch_fault(prog, "`makeInputStream` action must yield a Maybe");
                     ReadOutcome::Fault
                 }
@@ -4415,7 +4498,7 @@ fn push_back<T: Transcendental, const BUF: usize>(
     idx: usize,
     value: ArenaRef,
 ) -> bool {
-    let pushed = match prog.world.borrow_mut().streams.get_mut(idx) {
+    let pushed = match prog.world.streams.get_mut(idx) {
         Some(StreamHandle::Input { pushback, .. })
         | Some(StreamHandle::Source { pushback, .. })
         | Some(StreamHandle::Stdin { pushback, .. }) => {
@@ -4425,7 +4508,7 @@ fn push_back<T: Transcendental, const BUF: usize>(
         _ => false,
     };
     if !pushed {
-        prog.arena.drop_ref(value);
+        prog.world.arena.drop_ref(value);
         latch_fault(prog, "`unread`/`atEnd` applied to a non-input stream");
         return false;
     }
@@ -4449,7 +4532,7 @@ fn stream_write<T: Transcendental, const BUF: usize>(
         Input,
         Invalid,
     }
-    let target = match prog.world.borrow().streams.get(idx) {
+    let target = match prog.world.streams.get(idx) {
         Some(StreamHandle::Stdout) => Target::Stdout,
         Some(StreamHandle::Stderr) => Target::Stderr,
         Some(StreamHandle::Sink { handler, closed }) => Target::Sink {
@@ -4469,7 +4552,7 @@ fn stream_write<T: Transcendental, const BUF: usize>(
             let closing = item.is_none();
             if closed {
                 if let Some(r) = item {
-                    prog.arena.drop_ref(r);
+                    prog.world.arena.drop_ref(r);
                 }
                 return true;
             }
@@ -4482,7 +4565,7 @@ fn stream_write<T: Transcendental, const BUF: usize>(
                 return false;
             };
             let action = apply_callable(prog, handler, arg, drops);
-            prog.arena.drop_ref(arg);
+            prog.world.arena.drop_ref(arg);
             let Some(action) = action else {
                 latch_fault(prog, "`makeOutputStream` handler is not callable");
                 return false;
@@ -4491,10 +4574,10 @@ fn stream_write<T: Transcendental, const BUF: usize>(
             // sink write sequence leaks one arena slot per element and can
             // exhaust the (statically sized) arena.
             let out = run_io_action(prog, action, token, drops);
-            prog.arena.drop_ref(action);
+            prog.world.arena.drop_ref(action);
             let ran = out.is_some();
             if let Some(r) = out {
-                prog.arena.drop_ref(r);
+                prog.world.arena.drop_ref(r);
             }
             if !ran {
                 return false;
@@ -4502,9 +4585,7 @@ fn stream_write<T: Transcendental, const BUF: usize>(
             // The closing `Nothing` (`item == None`) closes the sink; ordinary
             // elements leave it open.
             if closing {
-                if let Some(StreamHandle::Sink { closed, .. }) =
-                    prog.world.borrow_mut().streams.get_mut(idx)
-                {
+                if let Some(StreamHandle::Sink { closed, .. }) = prog.world.streams.get_mut(idx) {
                     *closed = true;
                 }
             }
@@ -4512,14 +4593,14 @@ fn stream_write<T: Transcendental, const BUF: usize>(
         }
         Target::Input => {
             if let Some(r) = item {
-                prog.arena.drop_ref(r);
+                prog.world.arena.drop_ref(r);
             }
             latch_fault(prog, "`write` applied to an input stream");
             false
         }
         Target::Invalid => {
             if let Some(r) = item {
-                prog.arena.drop_ref(r);
+                prog.world.arena.drop_ref(r);
             }
             latch_fault(prog, "invalid stream handle");
             false
@@ -4541,20 +4622,19 @@ fn write_console<T: Transcendental, const BUF: usize>(
     let Some(r) = item else {
         return true;
     };
-    let text = match prog.arena.get(r) {
+    let text = match prog.world.arena.get(r) {
         Some(Value::String(s)) => Some(s.clone()),
         _ => None,
     };
-    prog.arena.drop_ref(r);
+    prog.world.arena.drop_ref(r);
     let Some(text) = text else {
         latch_fault(prog, "stdio stream expects a String element");
         return false;
     };
-    let mut world = prog.world.borrow_mut();
     if stderr {
-        world.stderr.push(text);
+        prog.world.stderr.push(text);
     } else {
-        world.stdout.push(text);
+        prog.world.stdout.push(text);
     }
     true
 }
@@ -4570,7 +4650,7 @@ fn run_io_action<T: Transcendental, const BUF: usize>(
     // The action may be a lazy thunk (`let`-bound); force it to WHNF (the IO
     // record) before projecting `unIO`.
     let action = force(prog, action, drops);
-    let un_io = match prog.arena.get(action) {
+    let un_io = match prog.world.arena.get(action) {
         Some(Value::Record(fields)) => fields.first().copied(),
         _ => None,
     };
@@ -4581,13 +4661,13 @@ fn run_io_action<T: Transcendental, const BUF: usize>(
     // `IO a = { unIO: World -> Pair World a }`: apply to a fresh World token.
     let world = alloc_owned(prog, Value::Opaque(token))?;
     let pair = apply_callable(prog, un_io, world, drops);
-    prog.arena.drop_ref(world);
+    prog.world.arena.drop_ref(world);
     let Some(pair) = pair else {
         latch_fault(prog, "`make*Stream` action is not callable");
         return None;
     };
     let pair = force_owned(prog, pair, drops)?;
-    let payload = match prog.arena.get(pair) {
+    let payload = match prog.world.arena.get(pair) {
         Some(Value::Record(fields)) => fields.get(1).copied(),
         _ => None,
     };
@@ -4595,7 +4675,7 @@ fn run_io_action<T: Transcendental, const BUF: usize>(
         let p = force(prog, p, drops);
         copy_owned(prog, p)
     });
-    prog.arena.drop_ref(pair);
+    prog.world.arena.drop_ref(pair);
     if payload.is_none() {
         latch_fault(prog, "`make*Stream` action produced no result");
     }
@@ -4607,7 +4687,7 @@ fn stream_handle_index<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     value: ArenaRef,
 ) -> Option<usize> {
-    match prog.arena.get(value) {
+    match prog.world.arena.get(value) {
         Some(Value::Opaque(payload)) if *payload >= STREAM_HANDLE_TAG => {
             Some((payload & !STREAM_HANDLE_TAG) as usize)
         }
@@ -4642,13 +4722,13 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
     let st_ref = force(prog, st_value, drops);
     // `ST s a` is `{ unST: STState -> Pair STState a }`: field 0 is the region
     // computation.
-    let un_st = match prog.arena.get(st_ref) {
+    let un_st = match prog.world.arena.get(st_ref) {
         Some(Value::Record(fields)) => fields.first().copied(),
         _ => None,
     };
-    let region_id = prog.regions.len() as u32;
-    let cell_base = prog.st_cells.len();
-    prog.regions.push(crate::program::RegionState {
+    let region_id = prog.world.regions.len() as u32;
+    let cell_base = prog.world.st_cells.len();
+    prog.world.regions.push(crate::program::RegionState {
         cells: Vec::new(),
         cell_base,
     });
@@ -4665,7 +4745,7 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
             let pair =
                 apply_callable(prog, un_st, state, drops).and_then(|p| force_owned(prog, p, drops));
             // The effect closure only borrowed the token.
-            prog.arena.drop_ref(state);
+            prog.world.arena.drop_ref(state);
             // The region result is the pair's `second` field; the final state
             // (`first`) is discarded with the pair.
             match pair {
@@ -4673,7 +4753,7 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
                     // Force the region result: leaving the region is a strict
                     // boundary, so the payload must be materialized while its
                     // cells are still alive.
-                    let forced = match prog.arena.get(pair) {
+                    let forced = match prog.world.arena.get(pair) {
                         Some(Value::Record(fields)) => fields.get(1).copied(),
                         _ => None,
                     };
@@ -4683,7 +4763,7 @@ fn exec_runst<T: Transcendental, const BUF: usize>(
                     } else {
                         forced.and_then(|r| copy_owned(prog, r))
                     };
-                    prog.arena.drop_ref(pair);
+                    prog.world.arena.drop_ref(pair);
                     out
                 }
                 None => None,
@@ -4706,7 +4786,7 @@ fn freeze_starray<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     payload: ArenaRef,
 ) -> Option<ArenaRef> {
-    let cell_id = match prog.arena.get(payload) {
+    let cell_id = match prog.world.arena.get(payload) {
         Some(Value::Opaque(id)) => *id as usize,
         _ => {
             latch_fault(prog, "runSTArray: region result is not an STArray");
@@ -4716,13 +4796,13 @@ fn freeze_starray<T: Transcendental, const BUF: usize>(
     let bounds = st_array_bounds(prog, cell_id)?;
     let elems = st_array_elems_of(prog, cell_id)?;
     let Some(bounds) = copy_owned(prog, bounds) else {
-        prog.arena.put_buf(elems);
+        prog.world.arena.put_buf(elems);
         return None;
     };
     // Refcount transfer: one fresh claim per element ref for the frozen array.
     // `copy` shares the same ref with a fresh claim (no element is copied).
     for e in &elems {
-        _ = prog.arena.copy(*e);
+        _ = prog.world.arena.copy(*e);
     }
     alloc_owned(prog, Value::Array { bounds, elems })
 }
@@ -4732,15 +4812,15 @@ fn freeze_starray<T: Transcendental, const BUF: usize>(
 /// outer cell is lost. The caller supplies the region's result; this only
 /// unwinds.
 fn finish_region<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, BUF>) {
-    if let Some(region) = prog.regions.pop() {
+    if let Some(region) = prog.world.regions.pop() {
         for id in region.cells {
-            if let Some(slot) = prog.st_cells.get_mut(id as usize) {
+            if let Some(slot) = prog.world.st_cells.get_mut(id as usize) {
                 if let Some(cell) = slot.take() {
                     release_st_cell(prog, cell);
                 }
             }
         }
-        prog.st_cells.truncate(region.cell_base);
+        prog.world.st_cells.truncate(region.cell_base);
     }
 }
 
@@ -4787,9 +4867,9 @@ fn run_call<T: Transcendental, const BUF: usize>(
     //    recursion depth beyond `max_call_regs` latches a ProcessError instead
     //    of a release-mode Vec OOB (deep-but-finite recursion can legitimately
     //    exceed the acyclic bound). The watermark grows into the reserved tail.
-    let base = prog.value_regs_top;
+    let base = prog.world.value_regs_top;
     let top = base + frag.num_value_regs;
-    if top > prog.value_regs.len() {
+    if top > prog.world.value_regs.len() {
         latch_exhaustion(prog, "call scratch (max_call_regs)");
         return None;
     }
@@ -4799,8 +4879,8 @@ fn run_call<T: Transcendental, const BUF: usize>(
     //    lazy call the FIRST `fields.len() - value_ins` fields are the lambda's
     //    free variables and the LAST `value_ins` are the function's arguments.
     let mut arg_refs: Vec<ArenaRef> = Vec::new();
-    let cell_base = prog.frag_cells.len();
-    if let Some(Value::Record(fields)) = prog.arena.get(env_ref) {
+    let cell_base = prog.world.frag_cells.len();
+    if let Some(Value::Record(fields)) = prog.world.arena.get(env_ref) {
         // Clone the field refs so the arena can be borrowed mutably while the
         // capture cells are allocated below.
         let fields = fields.clone();
@@ -4812,22 +4892,22 @@ fn run_call<T: Transcendental, const BUF: usize>(
             if i < n_capture {
                 // Clone the field value so the arena borrow ends before the
                 // mutable alloc_copy below (mirrors the outer `fields.clone()`).
-                let cell = match prog.arena.get(*f).cloned() {
+                let cell = match prog.world.arena.get(*f).cloned() {
                     Some(v) => alloc_copy(prog, &v),
-                    None => prog.arena.alloc(Value::Void).ok(),
+                    None => prog.world.arena.alloc(Value::Void).ok(),
                 };
                 if let Some(c) = cell {
-                    prog.frag_cells.push(c);
+                    prog.world.frag_cells.push(c);
                 }
             } else {
                 arg_refs.push(*f);
             }
         }
     }
-    let saved_cells_base = prog.frag_cells_base;
-    prog.frag_cells_base = cell_base;
+    let saved_cells_base = prog.world.frag_cells_base;
+    prog.world.frag_cells_base = cell_base;
     // 2. The pre-sized store guarantees the reserved slice is available here.
-    prog.value_regs_top = top;
+    prog.world.value_regs_top = top;
     // 3. Value args: bind the fragment's leading registers. Each copy is a
     //    fresh owner (RC++) so the caller (or the thunk's env) keeps its own
     //    ref.
@@ -4837,15 +4917,21 @@ fn run_call<T: Transcendental, const BUF: usize>(
             base: caller_base,
         } => {
             for (i, a) in regs.iter().take(value_ins.min(regs.len())).enumerate() {
-                if let Some(sr) = prog.value_regs.get(caller_base + *a).copied().flatten() {
-                    prog.value_regs[base + i] = copy_owned(prog, sr);
+                if let Some(sr) = prog
+                    .world
+                    .value_regs
+                    .get(caller_base + *a)
+                    .copied()
+                    .flatten()
+                {
+                    prog.world.value_regs[base + i] = copy_owned(prog, sr);
                 }
             }
         }
         ArgsSource::EnvTail => {
             for (i, a) in arg_refs.iter().take(value_ins).enumerate() {
                 if let Some(c) = copy_owned(prog, *a) {
-                    prog.value_regs[base + i] = Some(c);
+                    prog.world.value_regs[base + i] = Some(c);
                 }
             }
         }
@@ -4856,19 +4942,19 @@ fn run_call<T: Transcendental, const BUF: usize>(
     let drops_mark = drops.len();
     run_blocks(prog, &frag.value_blocks, frag.entry, base, drops);
     for r in drops.drain(drops_mark..) {
-        prog.arena.drop_ref(r);
+        prog.world.arena.drop_ref(r);
     }
     // 5. Copy the fragment's result out (a fresh owner via `copy`) and write it
     //    into `dst` when one is given and the fragment declares an output.
     let result: Option<ArenaRef> = match frag.output_value_regs.first() {
-        Some(or) => match prog.value_regs.get(base + *or).copied().flatten() {
+        Some(or) => match prog.world.value_regs.get(base + *or).copied().flatten() {
             Some(sr) => copy_owned(prog, sr),
             None => None,
         },
         None => None,
     };
     if let (Some(d), true) = (dst, !frag.output_value_regs.is_empty()) {
-        prog.value_regs[d] = result;
+        prog.world.value_regs[d] = result;
     }
     // 6. Drain the scratch slice (dropping every fragment-local register's
     //    counted ref — value args and body temps own arena slots, so removing
@@ -4877,15 +4963,15 @@ fn run_call<T: Transcendental, const BUF: usize>(
     //    capture cells, and restore the caller's frame. There is no
     //    `no_unwind` path — the top-level entry is walked directly by
     //    `run_entry` (not via `run_call`), so every call here unwinds fully.
-    for i in base..prog.value_regs_top {
-        if let Some(r) = prog.value_regs[i].take() {
-            prog.arena.drop_ref(r);
+    for i in base..prog.world.value_regs_top {
+        if let Some(r) = prog.world.value_regs[i].take() {
+            prog.world.arena.drop_ref(r);
         }
     }
-    prog.value_regs_top = base;
-    prog.frag_cells_base = saved_cells_base;
-    for c in prog.frag_cells.drain(cell_base..) {
-        prog.arena.drop_ref(c);
+    prog.world.value_regs_top = base;
+    prog.world.frag_cells_base = saved_cells_base;
+    for c in prog.world.frag_cells.drain(cell_base..) {
+        prog.world.arena.drop_ref(c);
     }
     result
 }
@@ -4922,7 +5008,7 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
     // bottom, not a hang.
     let mut seen_cells: Vec<ArenaRef> = Vec::new();
     loop {
-        let v = match prog.arena.get(r) {
+        let v = match prog.world.arena.get(r) {
             Some(v) => v,
             None => return r, // dangling: caller's bug; treat as-is
         };
@@ -4935,12 +5021,12 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
             return r; // already WHNF (eager callable, or a non-callable value)
         };
         let (fragment, env, cell) = (*fragment, *env, *cell);
-        let state: Option<Value> = prog.arena.get(cell).cloned();
+        let state: Option<Value> = prog.world.arena.get(cell).cloned();
         match state {
             Some(Value::ThunkCell(ThunkState::Forced(res))) => {
                 // Cycle guard: a memoized result that re-enters a cell already
                 // forced in this chase is a self-referential loop.
-                if let Some(Value::Callable { cell: Some(c2), .. }) = prog.arena.get(res) {
+                if let Some(Value::Callable { cell: Some(c2), .. }) = prog.world.arena.get(res) {
                     if seen_cells.contains(c2) {
                         return memoize_bottom(prog, cell);
                     }
@@ -4955,7 +5041,7 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
             }
             Some(Value::ThunkCell(ThunkState::Unforced)) => {
                 // Mark the cell Forcing (black hole) before dispatching.
-                let _ = prog.arena.mutate_slot(cell, |v| {
+                let _ = prog.world.arena.mutate_slot(cell, |v| {
                     if let Value::ThunkCell(st) = v {
                         *st = ThunkState::Forcing;
                     }
@@ -4983,21 +5069,21 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
                 // Re-entrancy guard: a body that forced ITSELF left a black-
                 // hole bottom behind while its cell was Forcing. Such a thunk
                 // is divergent — keep the bottom, discard the body result.
-                match prog.arena.get(cell).cloned() {
+                match prog.world.arena.get(cell).cloned() {
                     Some(Value::ThunkCell(ThunkState::Forcing)) => {
                         // Normal completion — unless the body produced a thunk
                         // that re-enters THIS cell (a self-cycle).
                         let cyclic = matches!(
-                            prog.arena.get(result),
+                            prog.world.arena.get(result),
                             Some(Value::Callable { cell: Some(c2), .. })
                                 if *c2 == cell || seen_cells.contains(c2)
                         );
                         if cyclic {
-                            prog.arena.drop_ref(result);
+                            prog.world.arena.drop_ref(result);
                             return memoize_bottom(prog, cell);
                         }
                         seen_cells.push(cell);
-                        let _ = prog.arena.mutate_slot(cell, |v| {
+                        let _ = prog.world.arena.mutate_slot(cell, |v| {
                             if let Value::ThunkCell(st) = v {
                                 *st = ThunkState::Forced(result);
                             }
@@ -5006,16 +5092,16 @@ pub(crate) fn force<T: Transcendental, const BUF: usize>(
                         continue;
                     }
                     Some(Value::ThunkCell(ThunkState::Forced(b))) => {
-                        prog.arena.drop_ref(result);
+                        prog.world.arena.drop_ref(result);
                         r = b;
                         continue;
                     }
                     Some(Value::ThunkCell(ThunkState::Bottom)) => {
-                        prog.arena.drop_ref(result);
+                        prog.world.arena.drop_ref(result);
                         return memoize_bottom(prog, cell);
                     }
                     _ => {
-                        prog.arena.drop_ref(result);
+                        prog.world.arena.drop_ref(result);
                         return r;
                     }
                 }
@@ -5038,7 +5124,7 @@ fn memoize_bottom<T: Transcendental, const BUF: usize>(
 ) -> ArenaRef {
     match try_alloc_bottom(prog) {
         Some(b) => {
-            let _ = prog.arena.mutate_slot(cell, |v| {
+            let _ = prog.world.arena.mutate_slot(cell, |v| {
                 if let Value::ThunkCell(st) = v {
                     *st = ThunkState::Forced(b);
                 }
@@ -5071,7 +5157,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
         "built-in '{0}' has {n_in}→{n_out} channels, exceeding MAX_BUILTIN_CHANNELS ({MAX_BUILTIN_CHANNELS})",
         bi.name
     );
-    let n = prog.block_len;
+    let n = prog.world.block_len;
     let src_bufs: Vec<usize> = srcs.iter().map(|&r| buffer_index(prog, r, base)).collect();
     let dst_buf = buffer_index(prog, first_dst, base);
 
@@ -5086,12 +5172,12 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
         let maybe_in = if n_in == 0 {
             None
         } else {
-            prog.buffers[src_bufs[0]].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
+            prog.world.buffers[src_bufs[0]].with_data(|s| scratch[..n].copy_from_slice(&s[..n]));
             Some(&scratch[..n])
         };
-        match &mut prog.builtins[instance] {
+        match &mut prog.world.builtins[instance] {
             crate::program::BuiltinInst::Block(b) => {
-                prog.buffers[dst_buf].with_data_mut(|out| {
+                prog.world.buffers[dst_buf].with_data_mut(|out| {
                     let _ = b.process(maybe_in, &mut out[..n]);
                 });
             }
@@ -5100,12 +5186,12 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
             }
         }
     } else {
-        match &mut prog.builtins[instance] {
+        match &mut prog.world.builtins[instance] {
             crate::program::BuiltinInst::MultichannelBlock(mb) => {
                 let mut in_bufs: [FixedBuffer<T, BUF>; MAX_BUILTIN_CHANNELS] =
                     std::array::from_fn(|_| FixedBuffer::new());
                 for ch in 0..n_in {
-                    prog.buffers[src_bufs[ch]].with_data(|s| {
+                    prog.world.buffers[src_bufs[ch]].with_data(|s| {
                         in_bufs[ch][..n].copy_from_slice(&s[..n]);
                     });
                 }
@@ -5126,7 +5212,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
                     &mut out_refs[..n_out],
                 );
                 for (ch, ob) in out_bufs.iter().take(n_out).enumerate() {
-                    prog.buffers[dst_buf + ch].with_data_mut(|out| {
+                    prog.world.buffers[dst_buf + ch].with_data_mut(|out| {
                         out[..n].copy_from_slice(&ob[..n]);
                     });
                 }
@@ -5135,7 +5221,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
                 let mut inp: [[T; BUF]; MAX_BUILTIN_CHANNELS] =
                     std::array::from_fn(|_| [T::ZERO; BUF]);
                 for (ch, _) in srcs.iter().enumerate() {
-                    prog.buffers[src_bufs[ch]].with_data(|s| {
+                    prog.world.buffers[src_bufs[ch]].with_data(|s| {
                         inp[ch][..n].copy_from_slice(&s[..n]);
                     });
                 }
@@ -5146,7 +5232,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
                     &mut out_buf.as_flattened_mut()[..n_out * n],
                 );
                 for ch in 0..n_out {
-                    prog.buffers[dst_buf + ch].with_data_mut(|out| {
+                    prog.world.buffers[dst_buf + ch].with_data_mut(|out| {
                         let start = ch * n;
                         out[..n].copy_from_slice(&out_buf.as_flattened()[start..start + n]);
                     });
@@ -5156,7 +5242,7 @@ fn exec_value_foreign<T: Transcendental, const BUF: usize>(
     }
     for i in 0..n_out {
         let reg = first_dst + i;
-        prog.value_regs[reg + base] = alloc_owned(prog, Value::Buffer(reg));
+        prog.world.value_regs[reg + base] = alloc_owned(prog, Value::Buffer(reg));
     }
 }
 
@@ -5274,7 +5360,10 @@ mod closure_dispatch_tests {
         let mut prog = RillProgram::<f32, 256>::new(ir);
         run_entry(&mut prog).unwrap();
         let v = prog.result().unwrap();
-        assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(7));
+        assert_eq!(
+            prog.world.arena().get(v).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
     }
 
     #[test]
@@ -5369,7 +5458,10 @@ mod closure_dispatch_tests {
         let mut prog = RillProgram::<f32, 256>::new(ir);
         run_entry(&mut prog).unwrap();
         let v = prog.result().expect("the lazy call must produce a value");
-        assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(9));
+        assert_eq!(
+            prog.world.arena().get(v).unwrap(),
+            &crate::arena::Value::Int(9)
+        );
     }
 }
 
@@ -5430,10 +5522,10 @@ mod value_track_tests {
         // the per-tick registers at the end) so the registers and arena can be
         // inspected mid-tick.
         run_main_fragment_for_tests(&mut prog).unwrap();
-        assert_eq!(prog.value_regs[0], Some(0));
-        let slot0 = prog.arena.get(0).unwrap().clone();
+        assert_eq!(prog.world.value_regs[0], Some(0));
+        let slot0 = prog.world.arena.get(0).unwrap().clone();
         assert_eq!(slot0, crate::arena::Value::Int(42));
-        let slot1 = prog.arena.get(1).unwrap().clone();
+        let slot1 = prog.world.arena.get(1).unwrap().clone();
         assert_eq!(slot1, crate::arena::Value::Float(1.5));
     }
 
@@ -5456,11 +5548,14 @@ mod value_track_tests {
             0,
         );
         run_main_fragment_for_tests(&mut prog).unwrap();
-        let cell = prog.value_regs[1].unwrap();
-        let val = prog.arena.get(cell).unwrap();
+        let cell = prog.world.value_regs[1].unwrap();
+        let val = prog.world.arena.get(cell).unwrap();
         assert_eq!(val, &crate::arena::Value::Int(7));
-        let read = prog.value_regs[2].unwrap();
-        assert_eq!(prog.arena.get(read).unwrap(), &crate::arena::Value::Int(7));
+        let read = prog.world.value_regs[2].unwrap();
+        assert_eq!(
+            prog.world.arena.get(read).unwrap(),
+            &crate::arena::Value::Int(7)
+        );
     }
 
     #[test]
@@ -5489,7 +5584,10 @@ mod value_track_tests {
             format!("{err}").contains("unbound operand"),
             "expected the effect-fault message, got: {err}"
         );
-        assert_eq!(prog.value_regs[1], None, "the effect must yield no value");
+        assert_eq!(
+            prog.world.value_regs[1], None,
+            "the effect must yield no value"
+        );
     }
 
     #[test]
@@ -5515,18 +5613,27 @@ mod value_track_tests {
         // Run 1: the read saw the empty state (0.0); slot 0 was then written 7
         // and must survive until the next run.
         assert_eq!(
-            prog.arena.get(prog.value_state[0].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_state[0].unwrap())
+                .unwrap(),
             &crate::arena::Value::Int(7)
         );
         assert_eq!(
-            prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_state[1].unwrap())
+                .unwrap(),
             &crate::arena::Value::Float(0.0)
         );
         run_entry(&mut prog).unwrap();
         // Run 2: the read saw run 1's 7 (the 1-run delay) and latched it
         // into slot 1.
         assert_eq!(
-            prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_state[1].unwrap())
+                .unwrap(),
             &crate::arena::Value::Int(7)
         );
     }
@@ -5536,7 +5643,7 @@ mod value_track_tests {
         // Value registers are per-run scratch: after a run they must be
         // cleared and their refs released, so a repeated-run value program
         // cannot exhaust the fixed arena (one leaked slot per register per
-        // run). The run's result is captured into `prog.main` (a fresh owner
+        // run). The run's result is captured into `prog.world.main` (a fresh owner
         // held across runs), so exactly one slot stays live.
         let mut prog = prog_with(
             vec![ValueBlock {
@@ -5551,15 +5658,15 @@ mod value_track_tests {
             0,
         );
         run_entry(&mut prog).unwrap();
-        assert_eq!(prog.value_regs[0], None);
-        assert_eq!(prog.value_regs[1], None);
+        assert_eq!(prog.world.value_regs[0], None);
+        assert_eq!(prog.world.value_regs[1], None);
         assert_eq!(
-            prog.arena.live(),
+            prog.world.arena.live(),
             1,
             "only the captured result survives the run"
         );
         run_entry(&mut prog).unwrap();
-        assert_eq!(prog.arena.live(), 1, "second run leaks nothing");
+        assert_eq!(prog.world.arena.live(), 1, "second run leaks nothing");
     }
 
     #[test]
@@ -5581,7 +5688,13 @@ mod value_track_tests {
             0,
         );
         run_main_fragment_for_tests(&mut prog).unwrap();
-        let get = |r: usize| prog.arena.get(prog.value_regs[r].unwrap()).unwrap().clone();
+        let get = |r: usize| {
+            prog.world
+                .arena
+                .get(prog.world.value_regs[r].unwrap())
+                .unwrap()
+                .clone()
+        };
         assert_eq!(get(2), crate::arena::Value::Float(5.0), "3 + 2.0");
         assert_eq!(get(3), crate::arena::Value::Float(10.0), "2.0 * 5.0");
         assert_eq!(get(4), crate::arena::Value::Float(5.0), "10.0 / 2.0");
@@ -5594,12 +5707,13 @@ mod value_track_tests {
         // Dropping that slot must release exactly those claims — the original
         // array's own ownership is untouched.
         let mut prog = prog_with(vec![], 0, 0, 0);
-        let lo = prog.arena.alloc(Value::Int(0)).unwrap();
-        let hi = prog.arena.alloc(Value::Int(2)).unwrap();
-        let bounds = prog.arena.alloc(Value::Record(vec![lo, hi])).unwrap();
-        let e0 = prog.arena.alloc(Value::Int(10)).unwrap();
-        let e1 = prog.arena.alloc(Value::Int(20)).unwrap();
+        let lo = prog.world.arena.alloc(Value::Int(0)).unwrap();
+        let hi = prog.world.arena.alloc(Value::Int(2)).unwrap();
+        let bounds = prog.world.arena.alloc(Value::Record(vec![lo, hi])).unwrap();
+        let e0 = prog.world.arena.alloc(Value::Int(10)).unwrap();
+        let e1 = prog.world.arena.alloc(Value::Int(20)).unwrap();
         let arr = prog
+            .world
             .arena
             .alloc(Value::Array {
                 bounds,
@@ -5608,20 +5722,28 @@ mod value_track_tests {
             .unwrap();
 
         // Baseline: each child is owned exactly once, by the array.
-        assert_eq!(prog.arena.rc(bounds), 1);
-        assert_eq!(prog.arena.rc(e0), 1);
-        assert_eq!(prog.arena.rc(e1), 1);
+        assert_eq!(prog.world.arena.rc(bounds), 1);
+        assert_eq!(prog.world.arena.rc(e0), 1);
+        assert_eq!(prog.world.arena.rc(e1), 1);
 
-        let value = prog.arena.get(arr).unwrap().clone();
+        let value = prog.world.arena.get(arr).unwrap().clone();
         let copy = alloc_copy(&mut prog, &value).unwrap();
-        assert_eq!(prog.arena.rc(bounds), 2, "the copy claims the bounds ref");
-        assert_eq!(prog.arena.rc(e0), 2, "the copy claims element 0");
-        assert_eq!(prog.arena.rc(e1), 2, "the copy claims element 1");
+        assert_eq!(
+            prog.world.arena.rc(bounds),
+            2,
+            "the copy claims the bounds ref"
+        );
+        assert_eq!(prog.world.arena.rc(e0), 2, "the copy claims element 0");
+        assert_eq!(prog.world.arena.rc(e1), 2, "the copy claims element 1");
 
-        prog.arena.drop_ref(copy);
-        assert_eq!(prog.arena.rc(bounds), 1, "the bounds claim is released");
-        assert_eq!(prog.arena.rc(e0), 1, "element 0's claim is released");
-        assert_eq!(prog.arena.rc(e1), 1, "element 1's claim is released");
+        prog.world.arena.drop_ref(copy);
+        assert_eq!(
+            prog.world.arena.rc(bounds),
+            1,
+            "the bounds claim is released"
+        );
+        assert_eq!(prog.world.arena.rc(e0), 1, "element 0's claim is released");
+        assert_eq!(prog.world.arena.rc(e1), 1, "element 1's claim is released");
     }
 
     #[test]
@@ -5633,90 +5755,90 @@ mod value_track_tests {
         // LATCH a fault and keep the refcount balanced rather than quietly drop
         // the operand.
         let mut prog = prog_with(vec![], 0, 0, 0);
-        let bounds = prog.arena.alloc(Value::Int(0)).unwrap();
-        let e0 = prog.arena.alloc(Value::Int(10)).unwrap();
-        let e1 = prog.arena.alloc(Value::Int(20)).unwrap();
-        let e2 = prog.arena.alloc(Value::Int(30)).unwrap();
+        let bounds = prog.world.arena.alloc(Value::Int(0)).unwrap();
+        let e0 = prog.world.arena.alloc(Value::Int(10)).unwrap();
+        let e1 = prog.world.arena.alloc(Value::Int(20)).unwrap();
+        let e2 = prog.world.arena.alloc(Value::Int(30)).unwrap();
         // Each cell owns one claim per ref it holds: the STArray owns `e0`/`e1`,
         // the STRef cell owns `e2`. Every value also keeps the test's own claim,
         // so the baseline rc is 2 throughout.
-        _ = prog.arena.copy(e0);
-        _ = prog.arena.copy(e1);
-        _ = prog.arena.copy(e2);
-        prog.st_cells.push(Some(StCell::Array {
+        _ = prog.world.arena.copy(e0);
+        _ = prog.world.arena.copy(e1);
+        _ = prog.world.arena.copy(e2);
+        prog.world.st_cells.push(Some(StCell::Array {
             bounds,
             elems: vec![e0, e1],
         }));
-        prog.st_cells.push(Some(StCell::Ref(e2)));
-        assert_eq!(prog.arena.rc(e0), 2);
+        prog.world.st_cells.push(Some(StCell::Ref(e2)));
+        assert_eq!(prog.world.arena.rc(e0), 2);
 
         // Hand the store a FRESH claim (`copy`), which is what a lowering-side
         // operand owns: a rejected store must release exactly that claim.
-        let operand = prog.arena.copy(e0).unwrap();
+        let operand = prog.world.arena.copy(e0).unwrap();
         st_ref_cell_store(&mut prog, 0, operand);
         assert_eq!(
-            format!("{}", prog.value_error.as_ref().unwrap()),
+            format!("{}", prog.world.value_error.as_ref().unwrap()),
             "Processing error: value-track fault: STRef operation on an STArray handle"
         );
         assert_eq!(
-            prog.arena.rc(e0),
+            prog.world.arena.rc(e0),
             2,
             "the rejected operand's own claim is released; the cell keeps its own"
         );
 
         // STArray operations onto an STRef cell: the KIND is named, not reported
         // as a released cell.
-        prog.value_error = None;
+        prog.world.value_error = None;
         assert!(st_array_len(&mut prog, 1).is_none());
         assert_eq!(
-            format!("{}", prog.value_error.as_ref().unwrap()),
+            format!("{}", prog.world.value_error.as_ref().unwrap()),
             "Processing error: value-track fault: STArray operation on an STRef handle"
         );
-        prog.value_error = None;
+        prog.world.value_error = None;
         assert!(st_array_elem(&mut prog, 1, 0).is_none());
         assert_eq!(
-            format!("{}", prog.value_error.as_ref().unwrap()),
+            format!("{}", prog.world.value_error.as_ref().unwrap()),
             "Processing error: value-track fault: STArray operation on an STRef handle"
         );
-        prog.value_error = None;
-        let operand = prog.arena.copy(e0).unwrap();
+        prog.world.value_error = None;
+        let operand = prog.world.arena.copy(e0).unwrap();
         st_array_elem_store(&mut prog, 1, 0, operand);
         assert_eq!(
-            format!("{}", prog.value_error.as_ref().unwrap()),
+            format!("{}", prog.world.value_error.as_ref().unwrap()),
             "Processing error: value-track fault: STArray operation on an STRef handle"
         );
         assert_eq!(
-            prog.arena.rc(e0),
+            prog.world.arena.rc(e0),
             2,
             "the rejected operand is released once"
         );
 
         // A live STArray cell with an out-of-range position is its own cause.
-        prog.value_error = None;
-        let operand = prog.arena.copy(e0).unwrap();
+        prog.world.value_error = None;
+        let operand = prog.world.arena.copy(e0).unwrap();
         st_array_elem_store(&mut prog, 0, 5, operand);
         assert_eq!(
-            format!("{}", prog.value_error.as_ref().unwrap()),
+            format!("{}", prog.world.value_error.as_ref().unwrap()),
             "Processing error: value-track fault: STArray element store: offset out of range"
         );
 
         // A RELEASED cell is reported distinctly, on both families.
-        prog.value_error = None;
-        let operand = prog.arena.copy(e0).unwrap();
+        prog.world.value_error = None;
+        let operand = prog.world.arena.copy(e0).unwrap();
         st_ref_cell_store(&mut prog, 99, operand);
         assert_eq!(
-            format!("{}", prog.value_error.as_ref().unwrap()),
+            format!("{}", prog.world.value_error.as_ref().unwrap()),
             "Processing error: value-track fault: STRef store on a released cell"
         );
-        prog.value_error = None;
-        let operand = prog.arena.copy(e0).unwrap();
+        prog.world.value_error = None;
+        let operand = prog.world.arena.copy(e0).unwrap();
         st_array_elem_store(&mut prog, 99, 0, operand);
         assert_eq!(
-            format!("{}", prog.value_error.as_ref().unwrap()),
+            format!("{}", prog.world.value_error.as_ref().unwrap()),
             "Processing error: value-track fault: STArray element store on a released cell"
         );
         assert_eq!(
-            prog.arena.rc(e0),
+            prog.world.arena.rc(e0),
             2,
             "every rejected store dropped its own operand claim"
         );
@@ -5730,11 +5852,15 @@ mod value_track_tests {
         // fractional float must be REFUSED instead of truncating `1.5` to index
         // 1 — silently addressing the wrong element.
         let mut prog = prog_with(vec![], 0, 0, 0);
-        let int = prog.arena.alloc(Value::Int(3)).unwrap();
-        let integral = prog.arena.alloc(Value::Float(2.0)).unwrap();
-        let negative = prog.arena.alloc(Value::Float(-1.0)).unwrap();
-        let fractional = prog.arena.alloc(Value::Float(1.5)).unwrap();
-        let text = prog.arena.alloc(Value::String("nope".into())).unwrap();
+        let int = prog.world.arena.alloc(Value::Int(3)).unwrap();
+        let integral = prog.world.arena.alloc(Value::Float(2.0)).unwrap();
+        let negative = prog.world.arena.alloc(Value::Float(-1.0)).unwrap();
+        let fractional = prog.world.arena.alloc(Value::Float(1.5)).unwrap();
+        let text = prog
+            .world
+            .arena
+            .alloc(Value::String("nope".into()))
+            .unwrap();
 
         let mut drops = Vec::new();
         assert_eq!(forced_i64(&mut prog, int, &mut drops), Some(3));
@@ -5767,10 +5893,17 @@ mod value_track_tests {
         );
         run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(
-            prog.arena.get(prog.value_regs[0].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_regs[0].unwrap())
+                .unwrap(),
             &crate::arena::Value::Float(84.0)
         );
-        assert_eq!(prog.arena.live(), 2, "old dst occupant must be dropped");
+        assert_eq!(
+            prog.world.arena.live(),
+            2,
+            "old dst occupant must be dropped"
+        );
     }
 
     #[test]
@@ -5799,15 +5932,15 @@ mod value_track_tests {
             0,
         );
         run_main_fragment_for_tests(&mut prog).unwrap();
-        let payload = prog.value_regs[2].unwrap();
+        let payload = prog.world.value_regs[2].unwrap();
         assert_eq!(
-            prog.arena.get(payload).unwrap(),
+            prog.world.arena.get(payload).unwrap(),
             &crate::arena::Value::Int(7)
         );
-        let sum = prog.value_regs[1].unwrap();
-        assert_eq!(prog.arena.rc(sum), 1);
+        let sum = prog.world.value_regs[1].unwrap();
+        assert_eq!(prog.world.arena.rc(sum), 1);
         assert_eq!(
-            prog.arena.rc(payload),
+            prog.world.arena.rc(payload),
             3,
             "const reg + sum payload + match dst each own it"
         );
@@ -5839,7 +5972,7 @@ mod value_track_tests {
             0,
         );
         run_main_fragment_for_tests(&mut prog).unwrap();
-        assert_eq!(prog.value_regs[2], None);
+        assert_eq!(prog.world.value_regs[2], None);
     }
 
     #[test]
@@ -5899,20 +6032,32 @@ mod value_track_tests {
             0,
         );
         run_main_fragment_for_tests(&mut prog).unwrap();
-        assert_eq!(prog.value_regs[1], None, "ValueMove cleared the source reg");
-        assert_eq!(prog.value_regs[2], None, "ValueMove cleared the source reg");
         assert_eq!(
-            prog.arena.get(prog.value_regs[3].unwrap()).unwrap(),
+            prog.world.value_regs[1], None,
+            "ValueMove cleared the source reg"
+        );
+        assert_eq!(
+            prog.world.value_regs[2], None,
+            "ValueMove cleared the source reg"
+        );
+        assert_eq!(
+            prog.world
+                .arena
+                .get(prog.world.value_regs[3].unwrap())
+                .unwrap(),
             &crate::arena::Value::Float(1.0),
             "block 0's move landed the then-path value"
         );
         assert_eq!(
-            prog.arena.get(prog.value_regs[4].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_regs[4].unwrap())
+                .unwrap(),
             &crate::arena::Value::Float(0.0),
             "the Branch selected the then block, not the else (999.0)"
         );
         assert_eq!(
-            prog.value_regs[5], None,
+            prog.world.value_regs[5], None,
             "the sentinel block after Halt must never execute"
         );
     }
@@ -5970,12 +6115,15 @@ mod value_track_tests {
         );
         run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(
-            prog.arena.get(prog.value_regs[3].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_regs[3].unwrap())
+                .unwrap(),
             &crate::arena::Value::Float(0.0),
             "the false Branch ran the els block, not the then (999.0)"
         );
         assert_eq!(
-            prog.value_regs[4], None,
+            prog.world.value_regs[4], None,
             "the sentinel block after Halt must never execute"
         );
     }
@@ -6170,13 +6318,14 @@ mod lazy_track_tests {
     }
 
     fn empty_env(prog: &mut RillProgram<f32, 256>) -> ArenaRef {
-        prog.arena.alloc(Value::Record(vec![])).unwrap()
+        prog.world.arena.alloc(Value::Record(vec![])).unwrap()
     }
 
     fn alloc_thunk(prog: &mut RillProgram<f32, 256>, state: ThunkState) -> (ArenaRef, ArenaRef) {
         let env = empty_env(prog);
-        let cell = prog.arena.alloc(Value::ThunkCell(state)).unwrap();
+        let cell = prog.world.arena.alloc(Value::ThunkCell(state)).unwrap();
         let t = prog
+            .world
             .arena
             .alloc(Value::Callable {
                 fragment: 0,
@@ -6198,9 +6347,9 @@ mod lazy_track_tests {
         let r1 = force(&mut prog, t, &mut drops);
         let r2 = force(&mut prog, t, &mut drops);
         assert_eq!(r1, r2, "memoization: both forces return the same head ref");
-        assert_eq!(prog.arena.get(r1).unwrap(), &Value::Int(7));
+        assert_eq!(prog.world.arena.get(r1).unwrap(), &Value::Int(7));
         assert_eq!(
-            prog.arena.get(cell).unwrap(),
+            prog.world.arena.get(cell).unwrap(),
             &Value::ThunkCell(ThunkState::Forced(r1)),
             "the body ran exactly once and the cell memoized its result"
         );
@@ -6215,12 +6364,12 @@ mod lazy_track_tests {
         let mut drops = Vec::new();
         let b = force(&mut prog, t, &mut drops);
         assert_eq!(
-            prog.arena.get(b).unwrap(),
+            prog.world.arena.get(b).unwrap(),
             &Value::Bottom,
             "a black hole yields bottom"
         );
         assert_eq!(
-            prog.arena.get(cell).unwrap(),
+            prog.world.arena.get(cell).unwrap(),
             &Value::ThunkCell(ThunkState::Forced(b)),
             "the black hole is memoized as a bottom result"
         );
@@ -6235,16 +6384,16 @@ mod lazy_track_tests {
         let (t, cell) = alloc_thunk(&mut prog, ThunkState::Unforced);
         let mut drops = Vec::new();
         let r1 = force(&mut prog, t, &mut drops);
-        let t2 = prog.arena.copy(t).unwrap();
+        let t2 = prog.world.arena.copy(t).unwrap();
         assert_eq!(
-            prog.arena.rc(cell),
+            prog.world.arena.rc(cell),
             1,
             "sharing the thunk shares the memo cell"
         );
         let r2 = force(&mut prog, t2, &mut drops);
         assert_eq!(r1, r2, "the shared copy sees the same memoized result");
         assert_eq!(
-            prog.arena.get(cell).unwrap(),
+            prog.world.arena.get(cell).unwrap(),
             &Value::ThunkCell(ThunkState::Forced(r1))
         );
     }
@@ -6264,12 +6413,12 @@ mod lazy_track_tests {
             0,
             Vec::new(),
         );
-        let bottom = prog.arena.alloc(Value::Bottom).unwrap();
-        prog.value_regs[1] = Some(bottom);
+        let bottom = prog.world.arena.alloc(Value::Bottom).unwrap();
+        prog.world.value_regs[1] = Some(bottom);
         run_main_fragment_for_tests(&mut prog).unwrap();
-        let res = prog.value_regs[2].unwrap();
+        let res = prog.world.value_regs[2].unwrap();
         assert_eq!(
-            prog.arena.get(res).unwrap(),
+            prog.world.arena.get(res).unwrap(),
             &Value::Bottom,
             "strict ops propagate a bottom operand"
         );
@@ -6297,10 +6446,14 @@ mod lazy_track_tests {
             vec![const7_fragment()],
         );
         let env = empty_env(&mut prog);
-        prog.value_regs[0] = Some(env);
+        prog.world.value_regs[0] = Some(env);
         run_main_fragment_for_tests(&mut prog).unwrap();
-        let res = prog.value_regs[3].unwrap();
-        assert_eq!(prog.arena.get(res).unwrap(), &Value::Float(8.5), "7 + 1.5");
+        let res = prog.world.value_regs[3].unwrap();
+        assert_eq!(
+            prog.world.arena.get(res).unwrap(),
+            &Value::Float(8.5),
+            "7 + 1.5"
+        );
     }
 
     #[test]
@@ -6320,15 +6473,21 @@ mod lazy_track_tests {
             0,
             Vec::new(),
         );
-        let bottom = prog.arena.alloc(Value::Bottom).unwrap();
-        prog.value_regs[0] = Some(bottom);
+        let bottom = prog.world.arena.alloc(Value::Bottom).unwrap();
+        prog.world.value_regs[0] = Some(bottom);
         run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(
-            prog.arena.get(prog.value_regs[1].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_regs[1].unwrap())
+                .unwrap(),
             &Value::Bottom
         );
         assert_eq!(
-            prog.arena.get(prog.value_regs[2].unwrap()).unwrap(),
+            prog.world
+                .arena
+                .get(prog.world.value_regs[2].unwrap())
+                .unwrap(),
             &Value::Bottom
         );
     }
@@ -6366,12 +6525,12 @@ mod lazy_track_tests {
         let mut drops = Vec::new();
         let r = force(&mut prog, t, &mut drops);
         assert_eq!(
-            prog.arena.get(r).unwrap(),
+            prog.world.arena.get(r).unwrap(),
             &Value::Int(7),
             "the outer thunk's body forced the nested thunk to WHNF"
         );
         assert_eq!(
-            prog.arena.get(cell).unwrap(),
+            prog.world.arena.get(cell).unwrap(),
             &Value::ThunkCell(ThunkState::Forced(r))
         );
     }
@@ -6394,15 +6553,19 @@ mod lazy_track_tests {
             vec![const7_fragment()],
         );
         let env = empty_env(&mut prog);
-        prog.value_regs[0] = Some(env);
+        prog.world.value_regs[0] = Some(env);
         run_entry(&mut prog).unwrap();
         let v = prog.result().expect("the run must capture a result");
         assert_eq!(
-            prog.arena().get(v).unwrap(),
+            prog.world.arena().get(v).unwrap(),
             &Value::Int(7),
             "the result capture forces the lazy result to WHNF"
         );
-        assert_eq!(prog.arena.live(), 1, "only the result survives the run");
+        assert_eq!(
+            prog.world.arena.live(),
+            1,
+            "only the result survives the run"
+        );
     }
 
     /// The shared self-referential body: reads capture cell 0 (the thunk's own
@@ -6434,12 +6597,14 @@ mod lazy_track_tests {
         // rc > 1), so this also exercises the shared-cell mutation path that
         // used to debug-assert on rc == 1.
         let mut prog = prog_with(Vec::new(), 2, 0, vec![self_ref_fragment()]);
-        let env = prog.arena.alloc(Value::Record(vec![])).unwrap();
+        let env = prog.world.arena.alloc(Value::Record(vec![])).unwrap();
         let cell = prog
+            .world
             .arena
             .alloc(Value::ThunkCell(ThunkState::Unforced))
             .unwrap();
         let t = prog
+            .world
             .arena
             .alloc(Value::Callable {
                 fragment: 0,
@@ -6449,24 +6614,28 @@ mod lazy_track_tests {
             .unwrap();
         // The env record holds the thunk itself (its field 0 is `t`), so the
         // body's capture read of field 0 produces a self-referential copy.
-        if let Value::Record(fields) = prog.arena.get_mut(env).unwrap() {
+        if let Value::Record(fields) = prog.world.arena.get_mut(env).unwrap() {
             fields.push(t);
         }
         let mut drops = Vec::new();
         let b = force(&mut prog, t, &mut drops);
         assert_eq!(
-            prog.arena.get(b).unwrap(),
+            prog.world.arena.get(b).unwrap(),
             &Value::Bottom,
             "a self-cycle is bottom, not a hang"
         );
         assert_eq!(
-            prog.arena.get(cell).unwrap(),
+            prog.world.arena.get(cell).unwrap(),
             &Value::ThunkCell(ThunkState::Forced(b)),
             "the self-cycle is memoized as a bottom result"
         );
         // The COW copy created during forcing was dropped; the cell is back to
         // a single reference (the thunk `t`).
-        assert_eq!(prog.arena.rc(cell), 1, "shared-cell mutation did not leak");
+        assert_eq!(
+            prog.world.arena.rc(cell),
+            1,
+            "shared-cell mutation did not leak"
+        );
     }
 
     #[test]
@@ -6475,12 +6644,14 @@ mod lazy_track_tests {
         // forcing either must not assert on the cell's rc and both see the
         // memoized result.
         let mut prog = prog_with(Vec::new(), 2, 0, vec![const7_fragment()]);
-        let env = prog.arena.alloc(Value::Record(vec![])).unwrap();
+        let env = prog.world.arena.alloc(Value::Record(vec![])).unwrap();
         let cell = prog
+            .world
             .arena
             .alloc(Value::ThunkCell(ThunkState::Unforced))
             .unwrap();
         let _t1 = prog
+            .world
             .arena
             .alloc(Value::Callable {
                 fragment: 0,
@@ -6489,9 +6660,10 @@ mod lazy_track_tests {
             })
             .unwrap();
         // Second thunk value sharing env + cell; count its references.
-        prog.arena.copy(env).unwrap();
-        prog.arena.copy(cell).unwrap();
+        prog.world.arena.copy(env).unwrap();
+        prog.world.arena.copy(cell).unwrap();
         let t2 = prog
+            .world
             .arena
             .alloc(Value::Callable {
                 fragment: 0,
@@ -6502,12 +6674,12 @@ mod lazy_track_tests {
         let mut drops = Vec::new();
         let r = force(&mut prog, t2, &mut drops);
         assert_eq!(
-            prog.arena.get(r).unwrap(),
+            prog.world.arena.get(r).unwrap(),
             &Value::Int(7),
             "forcing the shared-cell thunk memoizes Int(7)"
         );
         assert_eq!(
-            prog.arena.get(cell).unwrap(),
+            prog.world.arena.get(cell).unwrap(),
             &Value::ThunkCell(ThunkState::Forced(r))
         );
         // A second force through the OTHER thunk returns the same memo.

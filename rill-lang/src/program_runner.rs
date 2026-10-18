@@ -87,7 +87,7 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
     /// `std::thread::Builder::stack_size` thread of your own).
     pub fn run(&mut self) -> Result<(), ProcessError> {
         let result = crate::backend::interp::run_main_io(&mut self.program);
-        let world = self.program.world.borrow();
+        let world = &self.program.world;
         self.stdout.clone_from(&world.stdout);
         self.stderr.clone_from(&world.stderr);
         result
@@ -130,8 +130,8 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
 /// a debug build, one statement costs roughly 300 KiB of native stack. A
 /// multi-statement stream program therefore overflows libtest's default 2 MiB
 /// thread (an abort, not a clean error). [`ProgramRunner`] is not `Send` — it
-/// owns `Rc<RefCell<…>>` state — so a built runner cannot be moved into the
-/// thread; the whole compile-then-run sequence must happen **inside** `f`:
+/// owns single-threaded buffer state — so a built runner cannot be moved into
+/// the thread; the whole compile-then-run sequence must happen **inside** `f`:
 ///
 /// ```
 /// use rill_lang::{compile_runner, run_on_stack, Registry};
