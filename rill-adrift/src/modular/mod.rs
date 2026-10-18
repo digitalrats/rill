@@ -1,7 +1,7 @@
 //! # ModularSystem — modular program host
 //!
 //! A [`ModularSystemDef`] describes one or more racks. Each rack owns a
-//! rill-lang program (`main : (String…) -> IO ()`) that the IO runner executes
+//! rill-lang program (`main : IO ()`) that the IO runner executes
 //! to completion on the rack's own thread, plus optional control modules
 //! (servos, sensors, clocks) registered through the patchbay module factory.
 //!
@@ -154,12 +154,15 @@ impl<const BUF: usize> ModularSystem<BUF> {
             let case = RackCase::new(rd.name.clone(), def.sample_rate, actor_ref, Vec::new());
             self.cases.insert(rd.name.clone(), case);
 
-            // 2. Compile the rack's program on its own thread (a `RillProgram`
-            //    is not `Send`) and report the compile result back, so a bad
-            //    program fails `launch`. The thread then PARKS: the go-ahead is
-            //    sent only once every rack is built, so a compile or construct
-            //    failure aborts the parked thread instead of leaving a running
-            //    (possibly non-terminating) program for `stop()` to join.
+            // 2. Compile the rack's program on its own thread (a
+            //    `ProgramRunner` is not `Send`) and report the compile result
+            //    back, so a bad program fails `launch`. `compile` gates the
+            //    entry on `main : IO ()`, so a non-IO `main` is a launch
+            //    failure here, not a deferred run error. The thread then PARKS:
+            //    the go-ahead is sent only once every rack is built, so a
+            //    compile or construct failure aborts the parked thread instead
+            //    of leaving a running (possibly non-terminating) program for
+            //    `stop()` to join.
             let program = rd.program.clone();
             let rack_name = rd.name.clone();
             let sample_rate = def.sample_rate;
@@ -170,16 +173,15 @@ impl<const BUF: usize> ModularSystem<BUF> {
                 let rack_name = rack_name.clone();
                 case.start(move |_running, run_error| {
                     #[cfg(feature = "lofi")]
-                    let registry = crate::lang_builtins::full_registry_f32();
+                    let ffi = crate::lang_builtins::full_ffi_f32();
                     #[cfg(not(feature = "lofi"))]
-                    let registry = crate::lang_builtins::full_registry::<f32>();
+                    let ffi = crate::lang_builtins::full_ffi::<f32>();
 
-                    let mut runner = match rill_lang::compile_runner::<f32, BUF>(
-                        &program,
-                        &registry,
-                        sample_rate,
-                    ) {
-                        Ok(runner) => {
+                    let mut runner = match rill_lang::compile::<f32, BUF>(&program, ffi) {
+                        Ok(mut runner) => {
+                            // The world owns the sample rate: pre-seed it before
+                            // `run()` seats the world for the program.
+                            runner.world_mut().params.sample_rate = sample_rate;
                             let _ = ready_tx.send(Ok(()));
                             runner
                         }

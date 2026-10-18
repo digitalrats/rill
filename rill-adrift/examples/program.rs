@@ -9,7 +9,7 @@
 //! streams — and the console it captures (`stdout`/`stderr`) is printed here
 //! after the run.
 
-use rill_lang::compile_runner;
+use rill_lang::compile;
 
 const DEMO: &str = r#"
 main = do {
@@ -29,11 +29,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     #[cfg(feature = "lofi")]
-    let registry = rill_adrift::lang_builtins::full_registry_f32();
+    let ffi = rill_adrift::lang_builtins::full_ffi_f32();
     #[cfg(not(feature = "lofi"))]
-    let registry = rill_adrift::lang_builtins::full_registry::<f32>();
+    let ffi = rill_adrift::lang_builtins::full_ffi::<f32>();
 
-    let mut runner = compile_runner::<f32, 256>(&source, &registry, 44_100.0)?;
+    let mut runner = compile::<f32, 256>(&source, ffi)?;
+    // The world owns the sample rate: pre-seed it before `run()` seats the
+    // world for the program.
+    runner.world_mut().params.sample_rate = 44_100.0;
     runner.run()?;
 
     // The runner never echoes to the process console: drain its captured

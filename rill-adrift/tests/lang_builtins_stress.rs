@@ -1,24 +1,37 @@
 //! rill-lang builtin chains and parameter folding on the retained value path.
 
 use rill_adrift::lang_builtins::full_ffi;
-use rill_lang::test_eval;
+use rill_adrift::rill_core::Params;
+use rill_lang::mode::Mode;
+use rill_lang::program::{WorldConfig, WorldState};
+use rill_lang::{compile_eval, test_eval};
 
 const BUF: usize = 256;
 
+/// The world sample rate this suite is pinned to (the pre-world `test_eval`
+/// surface's explicit rate argument).
+const RATE: f32 = 48_000.0;
+
 /// Evaluate `src` against rill-adrift's FFI registry and return the single
-/// whole-buffer result (`test_eval` compiles `main = <expr>` and runs it once).
+/// whole-buffer result: the expression is compiled by `compile_eval`, seated
+/// and run once by `test_eval` in a world that owns the registry.
 fn run(src: &str) -> Vec<f32> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let ffi = full_ffi::<f32>();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 48_000.0)
+    let ir = compile_eval::<f32, BUF>(defs, expr, Mode::Strict)
         .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
-    let r = prog.result().expect("whole-buffer result expected");
+    let mut world = WorldState::<f32, BUF>::new(WorldConfig {
+        ffi: Some(full_ffi::<f32>()),
+        params: Params::new(RATE),
+        ..Default::default()
+    });
+    test_eval(&ir, &mut world).unwrap_or_else(|e| panic!("program must run: {e}\nsource:\n{src}"));
+    let r = world.result().expect("whole-buffer result expected");
     let mut out = vec![0.0f32; BUF];
     assert!(
-        prog.copy_buffer(r, &mut out),
+        world.copy_buffer(r, &mut out),
         "program must produce a buffer output"
     );
     out

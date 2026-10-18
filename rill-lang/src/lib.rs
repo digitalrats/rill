@@ -316,7 +316,7 @@ mod ir_tests {
     }
 
     #[test]
-    fn compile_with_closed_caf_compiles() {
+    fn closed_caf_compiles() {
         // A closed CAF (`osc`, 0 signal inputs) referenced from the value model
         // compiles and instantiates its generator builtin. Sharing one closed
         // CAF across multiple references is a Thunk-model concern (Task 7);
@@ -392,7 +392,7 @@ mod ir_tests {
     }
 
     #[test]
-    fn compile_with_mode_complete_compiles() {
+    fn complete_mode_compiles() {
         let res = compile_to_ir("main = 1.0", crate::mode::Mode::Complete);
         assert!(res.is_ok());
     }

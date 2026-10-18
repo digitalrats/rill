@@ -57,6 +57,11 @@ captured into the runner (not echoed to the process console) and read back with
 construction**. `set_stdin(&[String])` injects the line-oriented input that
 `read stdin` yields, rewinding the stream for the next run.
 
+The world owns the sample rate as well, and it starts at `0.0` ("not a signal
+program"). A host running signal-aware code pre-seeds it before the run:
+`runner.world_mut().params.sample_rate = 48_000.0;` — the seat that `run()`
+performs reads the rate from this field (there is no rate argument).
+
 A program whose `main` reaches `return ()` runs to completion cleanly, even when
 it performs no I/O; a `main` that does not type as `IO ()` is rejected by
 `compile` with a `CompileError` (`` `main` must have type `IO ()` ``) rather
@@ -69,7 +74,7 @@ well. Because the `Monad` method is resolved from the expected type, a bare
 
 | Function | Produces | Use |
 |---|---|---|
-| `compile(src, ffi)` | `ProgramRunner<T, 256>` | The executor for `main : IO ()` programs; owns the `Ir` and the `WorldState` (including the `ForeignRegistry`); compiles in `Complete` (lazy) mode unless the source has a mode pragma |
+| `compile(src, ffi)` | `ProgramRunner<T, BUF>` | The executor for `main : IO ()` programs; owns the `Ir` and the `WorldState` (including the `ForeignRegistry`); compiles in `Complete` (lazy) mode unless the source has a mode pragma |
 | `compile_eval::<T, BUF>(defs, expr, mode)` | `Ir` | Compiles `expr` as a fresh entry in the context of `defs`; no sample rate, no run |
 | `test_eval(&ir, &mut world)` | `Result<(), CompileError>` | Seats the world for `ir` and runs the entry once; read the result with `world.result()` / `world.copy_buffer(r, dst)` |
 | `WorldState::seat(&ir)` | `Result<(), CompileError>` | Assembles the world's tables for an IR, resolving built-ins against `world.ffi` (idempotent for params) |
@@ -307,10 +312,11 @@ main = eq_parametric _ { bands: [{ freq: 500.0, q: 2.0, gain_db: -3.0 }] };
 ```
 
 All built-ins are whole-buffer `BlockBuiltin`s. Per-sample state (filters,
-integrators) lives inside the built-in. Bindings and registries live in
-`rill-adrift` (`lang_builtins::full_registry`), with per-crate
-`register_lang_builtins()` functions for selective registration. For declaring
-Rust-implemented built-ins in the language, see *FFI (foreign functions)* below.
+integrators) lives inside the built-in. The registry builders live in
+`rill-adrift` (`lang_builtins::full_ffi`), with per-crate
+`register_foreign_lang_builtins()` functions for selective registration. For
+declaring Rust-implemented built-ins in the language, see *FFI (foreign
+functions)* below.
 
 ### Dynamic parameters (`?name=default`)
 

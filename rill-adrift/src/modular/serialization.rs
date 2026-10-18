@@ -52,12 +52,16 @@ pub enum ModuleDef {
 pub struct RackDef {
     /// Human-readable rack identifier.
     pub name: String,
-    /// rill-lang program source: `main : (String…) -> IO ()`.
+    /// rill-lang program source: `main : IO ()`.
     ///
     /// The program is compiled and executed to completion by the IO runner on
-    /// the rack's own thread.
+    /// the rack's own thread. A `main` that does not type as `IO ()` is a
+    /// compile error, reported by `launch`.
     pub program: String,
-    /// Arguments bound to `main`'s String λ-parameters, in order.
+    /// Arguments bound to `main`'s former String λ-parameters, in order.
+    ///
+    /// Retained for format compatibility only: `main` no longer takes launch
+    /// arguments, and `launch` ignores this field.
     #[serde(default)]
     pub args: Vec<String>,
     /// Control automatons (LFO, envelope, sequencer) powering servos.

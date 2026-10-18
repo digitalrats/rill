@@ -3,8 +3,8 @@
 //! Provides `register_modules` (rack modules) and `register_backends` (I/O
 //! backend constructors) for populating the host's factories before launch.
 //!
-//! `register_all_nodes` is deprecated — use per-crate `register_lang_builtins()`
-//! with `rill_lang::builtin::Registry` instead.
+//! The per-crate FFI registration functions (`register_foreign_*`) populate the
+//! `ForeignRegistry` a world owns; there is no central node registry.
 
 #[cfg(feature = "io")]
 use rill_core::traits::ParamValue;
