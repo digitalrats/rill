@@ -207,6 +207,93 @@ fn array_seed_rejects_an_unsupported_index_type() {
 }
 
 #[test]
+fn array_from_assocs_unlisted_positions_are_faulting_holes() {
+    // M8: unlisted positions of an `arrayFromAssocs` array are ONE shared lazy
+    // hole. A fold forces every element, so hitting an unlisted position
+    // latches the clean "undefined array element" fault (GHC's `undefined`).
+    let src = "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems (arrayFromAssocs (Pair { first: 0, second: 3 }) [Pair { first: 0, second: 1.5 }, Pair { first: 2, second: 3.5 }]));";
+    let msg = fault(src);
+    assert!(
+        msg.contains("array: undefined array element"),
+        "expected the hole fault, got: {msg}"
+    );
+}
+
+#[test]
+fn array_from_assocs_length_does_not_force_holes() {
+    // `length`/`arrayElems` read the element list WITHOUT forcing elements, so
+    // an array full of holes still reports its flat size (the hole mechanism
+    // only bites when a value is demanded).
+    let src = "main = length (arrayElems (arrayFromAssocs (Pair { first: 0, second: 3 }) [Pair { first: 0, second: 1.5 }, Pair { first: 2, second: 3.5 }]));";
+    assert_eq!(run_value_output(src), Value::Int(4));
+}
+
+#[test]
+fn array_from_assocs_last_association_for_a_cell_wins() {
+    // The assocs are overlaid in order; a repeated index leaves the LAST value
+    // (like `arrayUpdate`'s duplicate-offset rule, but index-typed).
+    let src = "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems (arrayFromAssocs (Pair { first: 0, second: 1 }) [Pair { first: 0, second: 1.0 }, Pair { first: 0, second: 7.0 }, Pair { first: 1, second: 5.0 }]));";
+    let prog = run(src);
+    assert_eq!(run_value_output(src), Value::Float(12.0));
+    let _ = prog;
+}
+
+#[test]
+fn array_from_assocs_resolves_2d_cells_against_the_stored_bounds() {
+    // Bounds `((1,2),(2,3))`: a 2x2 grid (rows 1-2, cols 2-3), row-major.
+    // Cells resolve to offsets (1,2)->0, (1,3)->1, (2,2)->2, (2,3)->3; the
+    // fold of all four listed values is 5.0+11.0+13.0+9.0 = 38.0.
+    let src = "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems (arrayFromAssocs (Pair { first: Pair { first: 1, second: 2 }, second: Pair { first: 2, second: 3 } }) [Pair { first: Pair { first: 1, second: 2 }, second: 5.0 }, Pair { first: Pair { first: 1, second: 3 }, second: 11.0 }, Pair { first: Pair { first: 2, second: 2 }, second: 13.0 }, Pair { first: Pair { first: 2, second: 3 }, second: 9.0 }]));";
+    assert_eq!(run_value_output(src), Value::Float(38.0));
+}
+
+#[test]
+fn array_from_assocs_rejects_an_out_of_rectangle_cell() {
+    // Bounds `((0,0),(2,1))` (3x2): cell (0,2) has a FLAT offset (2) inside the
+    // 6-slot buffer, but column 2 exceeds the bounded rectangle — the
+    // rectangle check fires before any flat-offset arithmetic (Q3).
+    let src = "main = arrayElems (arrayFromAssocs (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 2, second: 1 } }) [Pair { first: Pair { first: 0, second: 2 }, second: 1.0 }]);";
+    let msg = fault(src);
+    assert!(
+        msg.contains("arrayFromAssocs") && msg.contains("out of range"),
+        "expected the out-of-range fault, got: {msg}"
+    );
+}
+
+#[test]
+fn array_from_assocs_rejects_an_unsupported_index_type() {
+    // Float bounds are not a prelude index shape: a clean fault (Q1). The
+    // assoc list carries the same Float index so the program type-checks and
+    // the FAULT is a runtime one, not a compile-time type error.
+    let src = "main = arrayFromAssocs (Pair { first: 0.5, second: 2.0 }) [Pair { first: 0.5, second: 1.0 }];";
+    let msg = fault(src);
+    assert!(
+        msg.contains("arrayFromAssocs") && msg.contains("unsupported index type"),
+        "expected the unsupported index type fault, got: {msg}"
+    );
+}
+
+#[test]
+fn array_from_assocs_on_inverted_bounds_is_a_valid_empty_array() {
+    // (0,-1) is the canonical empty range: zero elements, no fault. The empty
+    // assocs list is built by mapping over an inverted `range` — a typed empty
+    // `List (Pair Int Float)` (the bare `[]` literal defaults to `List Float`
+    // and cannot unify with `List (Pair Int e)`).
+    let src = "main = arrayElems (arrayFromAssocs (Pair { first: 0, second: -1 }) (map (\\i -> Pair { first: i, second: 0.0 }) (range (Pair { first: 1, second: 0 }))));";
+    let prog = run(src);
+    assert_eq!(list_floats(&prog, &output(&prog)), vec![]);
+}
+
+#[test]
+fn array_from_assocs_wide_range_with_few_assocs_builds_cheaply() {
+    // One shared hole claimed by thousands of slots: no per-slot arena
+    // allocation, so a wide unlisted range builds without exhaustion and the
+    // listed cells are still addressable by flat footprint.
+    let src = "main = length (arrayElems (arrayFromAssocs (Pair { first: 0, second: 999 }) [Pair { first: 999, second: 3.5 }]));";
+    assert_eq!(run_value_output(src), Value::Int(1000));
+}
+
+#[test]
 fn array_update_returns_a_new_array_and_leaves_the_original_unchanged() {
     // The updated array is observed FIRST, the original SECOND: an in-place
     // update would leak the new element into the original's read.

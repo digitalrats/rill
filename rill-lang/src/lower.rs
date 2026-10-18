@@ -773,6 +773,15 @@ struct Lowerer<'a> {
     /// Tape index per named declaration (`name -> index into [`Self::tapes`]`),
     /// so all `Ref(name)` uses of the same declared tape resolve to one cell.
     named_tapes: HashMap<String, usize>,
+    /// Whether lowering lowered an `arrayFromAssocs` call (the M8 polymorphic
+    /// array construction). Set during `value_builtin` name resolution; the
+    /// assembly step appends one synthetic hole fragment when set and points
+    /// [`Ir::array_hole_frag`](crate::ir::Ir) at it.
+    uses_array_hole: bool,
+    /// Index of the appended synthetic hole fragment; set together with
+    /// `uses_array_hole` during assembly and copied into the `Ir`. `None`
+    /// (the default) for a program that never lowers `arrayFromAssocs`.
+    array_hole_frag: Option<u32>,
 }
 
 /// Reject a specialized constrained-definition body whose static type
@@ -3786,7 +3795,7 @@ impl<'a> Lowerer<'a> {
             )
     }
 
-    fn value_builtin(&self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
+    fn value_builtin(&mut self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
         use ValueBuiltinOp::*;
         Some(match (name, nargs) {
             // In complete mode `cons` is the LAZY constructor (the tail is not
@@ -3826,7 +3835,14 @@ impl<'a> Lowerer<'a> {
             ("arrayAccum", 3) => ArrayAccum,
             ("arrayFromBuffer", 1) => ArrayFromBuffer,
             ("bufferFromArray", 1) => BufferFromArray,
-            ("arrayFromAssocs", 2) => ArrayFromAssocs,
+            ("arrayFromAssocs", 2) => {
+                // The M8 polymorphic constructor resolves against the bounds
+                // shape in the interpreter; mark lowering so the assembly step
+                // appends the synthetic hole fragment (one shared callable per
+                // array, pointing at a single faulting body).
+                self.uses_array_hole = true;
+                ArrayFromAssocs
+            }
             ("arraySeed", 2) => ArraySeed,
             // `listRange (l, u)` — the inclusive Int range (the only
             // list-GENERATING primitive; `Ix.range` is built on it).
@@ -7832,6 +7848,8 @@ pub fn lower_program_with_channels(
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
         input_buffers: Vec::new(),
+        uses_array_hole: false,
+        array_hole_frag: None,
     };
 
     let mut main_args = Vec::with_capacity(num_inputs);
@@ -7952,6 +7970,28 @@ pub fn lower_program_with_channels(
     // no fragment can recur on a dispatch chain), so the total fragment count
     // is a strict upper bound on the deepest nesting. Each frame needs at most
     // `max_fragment_regs` value-register slots, giving the product below.
+    // The M8 synthetic hole fragment (appended below, when an `arrayFromAssocs`
+    // was lowered) must be counted in `max_call_depth`: forcing an unlisted
+    // array position runs a real fragment frame.
+    if lw.uses_array_hole {
+        let hole_id = lw.fragments.len() as u32;
+        lw.fragments.push(std::sync::Arc::new(FragmentIr {
+            value_blocks: vec![ValueBlock {
+                instrs: vec![ValueInstr::ValueArrayHoleFault],
+                term: ValueTerm::Halt,
+            }],
+            entry: 0,
+            num_value_regs: 1,
+            output_value_regs: vec![],
+            num_capture_cells: 0,
+            sig: FuncSig {
+                value_ins: 0,
+                value_outs: 0,
+                signal_ins: 0,
+            },
+        }));
+        lw.array_hole_frag = Some(hole_id);
+    }
     let max_call_depth = lw.fragments.len();
     let max_fragment_regs = lw
         .fragments
@@ -7998,6 +8038,7 @@ pub fn lower_program_with_channels(
         result_reg,
         value_funcs: lw.value_funcs,
         fragments: lw.fragments,
+        array_hole_frag: lw.array_hole_frag,
         max_call_regs,
         value_state: ValueLayout {
             capacity: slot_capacity,
@@ -8120,6 +8161,8 @@ mod tests {
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
             input_buffers: Vec::new(),
+            uses_array_hole: false,
+            array_hole_frag: None,
         }
     }
 

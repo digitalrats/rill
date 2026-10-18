@@ -628,6 +628,11 @@ pub enum ValueInstr {
     /// non-exhaustive). The run fails when the latch is consumed by the
     /// entry-fragment runner.
     ValueSetError,
+    /// Latches the clean "array: undefined array element" fault. The only
+    /// ever-instantiated copy lives in the program's synthetic hole fragment
+    /// (see [`Ir::array_hole_frag`]) — forcing an unlisted position of an
+    /// M8 `array`/`arrayFromAssocs` array runs it and faults.
+    ValueArrayHoleFault,
     /// Move an arena ref between registers (`dst = src; src = None`) — an
     /// ownership transfer used at control-flow join points.
     ValueMove {
@@ -957,6 +962,11 @@ pub struct Ir {
     /// [`ValueInstr::ValueCallFunc`]. Shared via `Arc` so a dispatch shares the
     /// fragment without cloning it (no heap allocation on the RT path).
     pub fragments: Vec<std::sync::Arc<FragmentIr>>,
+    /// The index of the program's synthetic hole fragment, `Some` iff lowering
+    /// emitted it (the program lowered an `arrayFromAssocs` call). The one-shot
+    /// fragment body is a single `ValueArrayHoleFault`; `arrayFromAssocs`
+    /// shares ONE callable pointing at it across every unlisted position.
+    pub array_hole_frag: Option<u32>,
     /// Number of value-register slots pre-allocated for the runtime function
     /// call stack: `max_call_depth × max_fragment_regs`, where
     /// `max_call_depth` is the total fragment count (a strict upper bound on

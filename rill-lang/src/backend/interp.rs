@@ -1720,6 +1720,15 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 "match is non-exhaustive at runtime (no arm matched)",
             ));
         }
+        ValueInstr::ValueArrayHoleFault => {
+            // The synthetic hole fragment's sole instruction: forcing an
+            // unlisted position of an M8 array latches the clean fault (the
+            // message is the "undefined array element" contract, NOT the
+            // match-specific `ValueSetError` text). The forced thunk gets no
+            // register result — `run_call` returns None, `force()` memoizes
+            // bottom into the shared cell, and the fault surfaces at tick end.
+            latch_fault(ir, world, "array: undefined array element");
+        }
         ValueInstr::ValueCallBuiltin { dst, op, args } => {
             exec_value_call_builtin(ir, world, *op, args, *dst + base, base, drops);
         }
@@ -3013,12 +3022,165 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             world.value_regs[dst] = alloc_owned(ir, world, Value::Array { bounds, elems });
         }
         ArrayFromAssocs => {
-            // Placeholder: the index-typed constructor is registered and fully
-            // replaces the prelude `array` in Task 3; until the shared lazy hole
-            // lands (Task 2) it latches a clean fault instead of producing a
-            // wrong array.
-            latch_fault(ir, world, "arrayFromAssocs: not implemented yet");
-            world.value_regs[dst] = None;
+            // arrayFromAssocs bounds assocs: build an immutable array whose
+            // every position starts as ONE shared lazy hole (a callable over
+            // the synthetic hole fragment), then overlay the index-typed
+            // associations (last wins). Forcing an unlisted position runs the
+            // hole fragment, which latches the clean "undefined array element"
+            // fault (GHC's `undefined` for absent array positions). Large holes
+            // are cheap: one callable claimed by every slot, no per-slot arena
+            // allocation beyond the ref claims.
+            let Some(bounds) = world.value_regs[base + args[0]] else {
+                latch_fault(ir, world, "arrayFromAssocs: bounds operand is unbound");
+                world.value_regs[dst] = None;
+                return;
+            };
+            let shape = match array_shape(ir, world, bounds, drops) {
+                Ok(shape) => shape,
+                Err(why) => {
+                    latch_fault(ir, world, &format!("arrayFromAssocs: {why}"));
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
+            let size = shape.size();
+            let mut elems = Vec::new();
+            if size > 0 {
+                let n = usize::try_from(size).unwrap_or(usize::MAX);
+                match world.arena.take_buf(n) {
+                    Ok(buf) => elems = buf,
+                    Err(_) => {
+                        latch_exhaustion(ir, world, "value buffer pool");
+                        world.value_regs[dst] = None;
+                        return;
+                    }
+                }
+                // Build the ONE shared hole: a callable over the synthetic hole
+                // fragment with an empty env (the body takes no captures) and a
+                // memo cell (a forced hole memoizes bottom into the SHARED
+                // cell, so every position observes the same divergence). The
+                // construction shape mirrors `ValueCallLazy`.
+                let Some(frag) = ir.array_hole_frag else {
+                    world.arena.put_buf(elems);
+                    latch_fault(ir, world, "arrayFromAssocs: no hole fragment");
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                let Some(cell) = alloc_owned(ir, world, Value::ThunkCell(ThunkState::Unforced))
+                else {
+                    world.arena.put_buf(elems);
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                let Some(env) = alloc_owned(ir, world, Value::Record(vec![])) else {
+                    world.arena.drop_ref(cell);
+                    world.arena.put_buf(elems);
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                let Some(hole) = alloc_owned(
+                    ir,
+                    world,
+                    Value::Callable {
+                        fragment: frag,
+                        env,
+                        cell: Some(cell),
+                    },
+                ) else {
+                    world.arena.drop_ref(env);
+                    world.arena.drop_ref(cell);
+                    world.arena.put_buf(elems);
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                // `size` claims on the same ref: one claim per slot, released
+                // when the array (or a later association) drops it. The pooled
+                // buffer starts EMPTY (`take_buf` returns len 0), so push one
+                // claim per slot (mirrors the `arraySeed` fill).
+                let mut ok = true;
+                for _ in 0..n {
+                    match world.arena.copy(hole) {
+                        Ok(c) => elems.push(c),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    for r in &elems {
+                        world.arena.drop_ref(*r);
+                    }
+                    world.arena.drop_ref(hole);
+                    world.arena.put_buf(elems);
+                    latch_exhaustion(ir, world, "value arena capacity");
+                    world.value_regs[dst] = None;
+                    return;
+                }
+                world.arena.drop_ref(hole);
+            }
+            // Overlay the associations: resolve each index against the bounds
+            // shape, replace the hole claim at that position. In-order
+            // application gives last-wins (mirrors `arrayUpdate`'s duplicate-
+            // offset rule, but index-typed).
+            let Some(assocs) = pooled_elems_of(ir, world, base + args[1]) else {
+                for r in &elems {
+                    world.arena.drop_ref(*r);
+                }
+                world.arena.put_buf(elems);
+                latch_fault(
+                    ir,
+                    world,
+                    "arrayFromAssocs: expected a list of associations",
+                );
+                world.value_regs[dst] = None;
+                return;
+            };
+            let mut fault: Option<String> = None;
+            let mut aborted = false;
+            for pair in &assocs {
+                let fields = match world.arena.get(*pair) {
+                    Some(Value::Record(fields)) if fields.len() == 2 => [fields[0], fields[1]],
+                    _ => {
+                        fault = Some(String::from("arrayFromAssocs: association is not a Pair"));
+                        aborted = true;
+                        break;
+                    }
+                };
+                let Some(pos) = shape.offset(ir, world, fields[0], drops) else {
+                    fault = Some(String::from("arrayFromAssocs: index out of range"));
+                    aborted = true;
+                    break;
+                };
+                let Some(fresh) = copy_owned(ir, world, fields[1]) else {
+                    aborted = true;
+                    break;
+                };
+                let old = elems[pos as usize];
+                elems[pos as usize] = fresh;
+                world.arena.drop_ref(old);
+            }
+            world.arena.put_buf(assocs);
+            if aborted {
+                for r in &elems {
+                    world.arena.drop_ref(*r);
+                }
+                world.arena.put_buf(elems);
+                if let Some(why) = fault {
+                    latch_fault(ir, world, &why);
+                }
+                world.value_regs[dst] = None;
+                return;
+            }
+            let Some(bounds) = copy_owned(ir, world, bounds) else {
+                for r in &elems {
+                    world.arena.drop_ref(*r);
+                }
+                world.arena.put_buf(elems);
+                world.value_regs[dst] = None;
+                return;
+            };
+            world.value_regs[dst] = alloc_owned(ir, world, Value::Array { bounds, elems });
         }
         ArrayBounds => {
             // arrayBounds arr: a direct primitive read of the stored bounds
@@ -5646,6 +5808,7 @@ mod closure_dispatch_tests {
                     signal_ins: 0,
                 },
             })],
+            array_hole_frag: None,
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
         world.seat(&ir).unwrap();
@@ -5742,6 +5905,7 @@ mod closure_dispatch_tests {
                     },
                 }),
             ],
+            array_hole_frag: None,
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
         world.seat(&ir).unwrap();
@@ -5776,6 +5940,7 @@ mod value_track_tests {
             result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 16,
@@ -6597,6 +6762,7 @@ mod lazy_track_tests {
             result_reg,
             value_funcs: Vec::new(),
             fragments,
+            array_hole_frag: None,
             max_call_regs: 8,
             value_state: ValueLayout {
                 capacity: 64,

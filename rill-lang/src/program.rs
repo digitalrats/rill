@@ -1114,6 +1114,7 @@ mod program_value_tests {
             result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
@@ -1156,6 +1157,7 @@ mod program_value_tests {
             result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
@@ -1214,6 +1216,7 @@ mod program_value_tests {
             result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
@@ -1268,6 +1271,7 @@ mod program_value_tests {
             result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
@@ -1316,6 +1320,7 @@ mod program_value_tests {
             result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
