@@ -41,7 +41,7 @@ rill-lang has **no statements** — everything is an expression. `if` and `match
 are pure expressions that produce one value per tick, bindable by `name = ...`,
 passable to functions, embeddable in arithmetic/records, or used as `main`:
 
-```faust
+```haskell
 x = if flag then 1.0 else 2.0;
 y = match m of { Just v => v; Nothing => 0.0; };
 main = 0.5 * (if flag then 2.0 else 3.0);
@@ -60,7 +60,7 @@ and the value track reads them per tick via `ValueReadMainCell`. Therefore a
 runtime `Bool` derived from a parameter switches `if`/`match` behavior from tick
 to tick:
 
-```faust
+```haskell
 ?gate = 1.0;
 flag = gate > 0.5;              // runtime Bool, re-evaluated every tick
 main = if flag then 1.0 else 0.0;

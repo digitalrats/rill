@@ -186,7 +186,7 @@ stdin           :: InputStream String
 
 A complete program — build a memory stream, drain it, render the elements:
 
-```faust
+```haskell
 show_all acc x = concat_string acc (show_float x);
 
 main = do {
@@ -255,7 +255,7 @@ constants (0 params) from functions (1+ params); whether a definition is
 **shared** or **macro-instantiated** depends on its input channels — see
 [Free variables (CAF)](#free-variables-caf):
 
-```faust
+```haskell
 gain x = _ * x;    // function of one argument (x is a constant parameter)
 main   = gain 0.5; // apply gain to 0.5, producing a (1→1) signal block
 ```
@@ -265,7 +265,7 @@ identifiers after the function name, no parentheses. When a function is called
 with arguments, the arguments are substituted into the body via β-reduction —
 the result is an inlined expression with no runtime function dispatch:
 
-```faust
+```haskell
 // Source:
 sq x = _ * x;
 main = sq 0.5;
@@ -283,7 +283,7 @@ regardless of definition order.
 rill-lang uses **bracket-free juxtaposition** as its canonical calling
 convention — function name followed by space-separated arguments:
 
-```faust
+```haskell
 main = _ : lowpass 1000.0 0.7;
 main = lowpass _ 1000.0 0.7;     // signal as first-class argument
 main = sine 440.0 0.5 0.0;       // oscillator with freq, amp, phase
@@ -298,7 +298,7 @@ is canonical**. Each argument must be an atom (identifier, literal, `_`, `!`,
 **Signals are first-class arguments** in the unified calling model. A built-in
 doesn't require the signal on the left via `:`, you can pass it inline:
 
-```faust
+```haskell
 main = lowpass _ 1000.0 0.7;        // signal as first positional arg
 main = mixer _1 _2 _3 { gain: 0.8 }; // variadic signal args
 ```
@@ -314,7 +314,7 @@ keyword. Two syntaxes are supported:
 
 **Explicit braces** — definitions inside `{ ... }`, each terminated by `;`:
 
-```faust
+```haskell
 main = osc : filt where {
     osc  = sine 440.0 0.5 0.0;
     filt = _ : lowpass 1200.0 0.7;
@@ -325,7 +325,7 @@ main = osc : filt where {
 is a definition. The block starts at the column of the first definition and ends
 when indentation drops below that column or at EOF:
 
-```faust
+```haskell
 main = osc : filt where
     osc  = sine 440.0 0.5 0.0
     filt = _ : lowpass 1200.0 0.7
@@ -343,7 +343,7 @@ They are not visible to other top-level definitions or to the caller.
 `let` introduces a mutually-recursive binding group scoped to a single
 expression. Available in both brace and layout form, like `where`:
 
-```faust
+```haskell
 main = let g x = _ * x in g 0.5
 
 main = let { g x = _ * x; } in g 0.5
@@ -356,7 +356,7 @@ built-in arguments, or nested inside other `let` blocks.
 
 A program can have any number of top-level definitions:
 
-```faust
+```haskell
 gain = _ * 0.5;
 main  = gain;
 ```
@@ -372,7 +372,7 @@ shared-instance semantics. The compiler evaluates it **once** and every
 reference — including references from inside user-defined functions — sees the
 **same** instance:
 
-```faust
+```haskell
 osc  = sine 440.0 0.5 0.0;
 main = osc, osc;          // both channels feed the same shared oscillator
 ```
@@ -385,7 +385,7 @@ macro semantics and are re-instantiated at each reference site, exactly as
 > more times used to compile into N independent copies; it is now **1 shared
 > instance**:
 >
-> ```faust
+> ```haskell
 > osc = sine 440 0.5 0;
 > main = osc, osc;   // was 2 oscillators, now 1 shared
 > ```
@@ -411,7 +411,7 @@ Three consequences of the CAF model:
 `main` can declare input parameters — their names become slots in the compiled
 `param_map`, addressable by name from the control thread:
 
-```faust
+```haskell
 main cutoff res = _ : lowpass cutoff res;
 ```
 
@@ -427,7 +427,7 @@ not part of this branch.
 Built-ins that accept structured configuration use **record literals**
 `{ key: val }`:
 
-```faust
+```haskell
 main = mixer _1 _2 { buses: 0, master_vol: 0.8 };
 main = dry_wet _ wet { mix: 0.5 };
 main = eq_parametric _ { bands: [
@@ -496,7 +496,7 @@ So `+ ~ _` parses as `(+) ~ (_)`, and `_ * 2 , _` as `(_ * 2) , _`.
 
 ### Idioms
 
-```faust
+```haskell
 main = integrator;             // running sum: y[n] = x[n] + y[n-1]
 main = leaky_integrator 0.5;   // leaky integrator: y[n] = x[n] + 0.5·y[n-1]
 main = + ~ _;                  // short form for `integrator`
@@ -638,7 +638,7 @@ only on `rill-core`.
 Built-ins use the **unified argument model**: signals are first-class positional
 arguments, scalars follow, and configuration is passed as a record:
 
-```faust
+```haskell
 main = lowpass _ 1000.0 0.7;           // filter: signal, cutoff, resonance
 main = sine 440.0 0.5 0.0;             // oscillator: freq, amp, phase (no signal in)
 main = mixer _ ch2 ch3 { buses: 0, master_vol: 1.0 }; // variadic signal args + record
@@ -656,7 +656,7 @@ All built-ins are whole-buffer `BlockBuiltin`s: the built-in implements
 (filters, oscillators, integrators) lives inside the `Algorithm` implementation;
 the engine itself is purely block-level, which keeps every step SIMD-friendly.
 
-```faust
+```haskell
 main = _ : moog 500.0 0.5;   // recursive filter (state inside the built-in)
 ```
 
@@ -710,7 +710,7 @@ variable lookup occurs on the hot path.
 
 ### `param(name, default[, min, max])`
 
-```faust
+```haskell
 main = _ * param("gain", 0.5);
 ```
 
@@ -730,7 +730,7 @@ can appear anywhere a float literal would: in arithmetic expressions and also as
 a built-in argument, which lets you dynamically drive filter cutoffs, resonance,
 and mixer gains:
 
-```faust
+```haskell
 main = _ : lowpass param("cutoff", 1000.0, 20.0, 20000.0) 0.7;
 ```
 
@@ -741,7 +741,7 @@ audible "zipper" click. `smooth(x, ms)` is a native one-pole low-pass (one per
 call site) that slides its input value toward its output with the specified time
 constant:
 
-```faust
+```haskell
 main = _ * smooth(param("gain", 0.5, 0.0, 1.0), 10.0);
 ```
 
@@ -789,7 +789,7 @@ For more on the automation plumbing, see the [Automaton guide](world-of-automato
 rill-lang supports **late-binding parameter slots** with the `?name=default`
 syntax — a concise alternative to `param()`:
 
-```faust
+```haskell
 main = _ : lowpass ?cutoff=1000.0 ?resonance=0.7;
 main = sine ?freq=440.0 0.5 0.0;
 ```
@@ -806,7 +806,7 @@ values itself.
 
 Where-block definitions with parameters use **dot-notation namespacing**:
 
-```faust
+```haskell
 main = osc : filt where
     osc  = sine ?freq=440.0 0.5 0.0
     filt = _ : lowpass ?cutoff=1200.0 0.7
@@ -832,7 +832,7 @@ Both are RT-safe: one scalar per slot, read once per block, no locks.
 
 rill-lang programs can be **multi-channel** — N inputs, M outputs:
 
-```faust
+```haskell
 main = mixer _1 _2 _3 { buses: 2, master_vol: 1.0 };  // 3→2 (bus + master)
 main = dry_wet _ wet_signals { mix: 0.5 };          // 2→2
 ```
@@ -923,7 +923,7 @@ built-ins, and combinators. References to **closed CAFs** are the one exception 
 they are not inlined here, but lifted once at lowering and shared by every
 reference site (see [Free variables (CAF)](#free-variables-caf)):
 
-```faust
+```haskell
 // Before reduction:
 gain x = _ * x;
 main = gain 0.5;
@@ -1082,7 +1082,7 @@ is a detectable no-op (a build-budget bug), and the `growable-arena` feature
 (non-RT) grows the pool instead. `map`, `filter`, and `tail` preserve the
 shape; `length` needs none.
 
-```faust
+```haskell
 xs  = [1.0, 2.0, 3.0];          // List Float
 e   = list;                     // empty list
 ys  = cons 10.0 e;              // prepends; the list grows
@@ -1160,7 +1160,7 @@ A `data` declaration can take **type parameters**, and a `typeclass` can range
 over a type **constructor** (kind `* → *` or `* → * → *`) — higher-kinded
 polymorphism with compile-time resolution:
 
-```faust
+```haskell
 data Box a = { value: a };          // parameterized user record type
 
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
@@ -1196,7 +1196,7 @@ and registered in `TypeEnv::with_builtins()`, so a program never redeclares
 them but may add its own instances. Methods resolve at compile time by
 **inline** lowering — zero runtime dispatch, no dictionaries.
 
-```faust
+```haskell
 typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
 typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
@@ -1222,7 +1222,7 @@ The prelude also declares **`Kleisli`**, the free category over a monad (an
 arrow `a -> m b` inside the container `m`), and **`Arrow`**, the category of
 container morphisms:
 
-```faust
+```haskell
 data Kleisli m a b = { unKleisli: a -> m b };
 
 typeclass Arrow a where {
@@ -1265,7 +1265,7 @@ instance (Monad m) => Arrow (Kleisli m) where {
 - **`arr`/`first`/`compose` are end-to-end runnable** — the canonical program
   composes two arrows and applies the result:
 
-  ```faust
+  ```haskell
   apply k x = let u = k.unKleisli in u x;
   main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
       Just v => v; Nothing => 0.0;
@@ -1288,7 +1288,7 @@ its operands: `signal,signal` stays the block-diagram parallel composition;
 `value,value` builds a `Pair { first, second }`; a **mixed** `value , signal`
 is a compile error (one channel cannot live on both tracks):
 
-```faust
+```haskell
 main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
 main = (1.0, 2.0).first;  // -> Float(1.0)
 ```
@@ -1343,7 +1343,7 @@ plus a compiled body fragment). Closures capture their free variables **by
 value** — an environment snapshot at creation time — so
 `adder = fn n -> fn x -> x + n` binds `n` into the closure returned for `x`:
 
-```faust
+```haskell
 adder = fn n -> fn x -> x + n;   // a function returning a closure
 add2  = adder 2.0;               // partial application: a closure over `x`
 main  = add2 3.0;                // -> Float(5.0)

@@ -96,7 +96,7 @@ Streams are ordinary values: `InputStream a` and `OutputStream a`, generic in th
 element type, with the io-streams operation surface. `Nothing` means EOF on a
 read and close on a write.
 
-```faust
+```haskell
 fromList        :: List a -> IO (InputStream a)
 toList          :: InputStream a -> IO (List a)
 read            :: InputStream a -> IO (Maybe a)
@@ -113,7 +113,7 @@ stdin           :: InputStream String
 
 A complete program — drain a memory stream and render each element:
 
-```faust
+```haskell
 show_all acc x = concat_string acc (show_float x);
 main = do {
     xs <- fromList [1.0, 2.0, 3.0];
@@ -178,7 +178,7 @@ error). Trampolining the `bind` chain to remove the limit is a planned follow-up
 
 A program is a list of definitions ending in `;`. One must be named `main`.
 
-```faust
+```haskell
 gain x = x * 0.5;            // a one-argument function (juxtaposed args — no parens)
 main = 1.0 + gain 1.0;       // a pure value: Float(1.5)
 ```
@@ -188,7 +188,7 @@ main = 1.0 + gain 1.0;       // a pure value: Float(1.5)
 Function calls use **bracket-free juxtaposition** — space-separated arguments,
 no parentheses:
 
-```faust
+```haskell
 f g x = g (g x);             // juxtaposed
 main = f (\x -> x * 2.0) 3.0;
 ```
@@ -200,7 +200,7 @@ but juxtaposed is canonical.
 
 Records are written with **record literals** `{ key: val }`:
 
-```faust
+```haskell
 data Point = { x: Float, y: Float };
 p = Point { x: 2.0, y: 3.0 };
 main = p.x;                  // field projection -> Float(2.0)
@@ -238,7 +238,7 @@ newtype-style by passing the field value directly (`Box 3.0` ≡
 Complex values are pairs of values; the parallel combinator `,` builds them and
 `.first`/`.second` take them apart:
 
-```faust
+```haskell
 z = (complex 3.0 4.0, complex 2.0 0.0);
 main = norm (cmul z.first z.second);   // 6.0
 ```
@@ -277,7 +277,7 @@ passed by juxtaposition (e.g. `lowpass _ 1000.0 0.7`). Some built-ins accept
 variadic signal inputs — `mixer` takes any number of signals followed by a
 record:
 
-```faust
+```haskell
 main = mixer _ ch2 ch3 ch4 { buses: 4, master_vol: 1.0 };
 main = dry_wet _ wet { mix: 0.7 };
 main = eq_parametric _ { bands: [{ freq: 500.0, q: 2.0, gain_db: -3.0 }] };
@@ -293,7 +293,7 @@ Rust-implemented built-ins in the language, see *FFI (foreign functions)* below.
 
 `?name=default` creates a named parameter slot for a built-in's scalar argument:
 
-```faust
+```haskell
 main = lowpass _ ?cutoff=1000.0 0.7;
 ```
 
@@ -316,7 +316,7 @@ The signature is a curried arrow (`a -> b -> r`). Signal channels are typed
 `FixedBuffer f32`; scalar parameters use the scalar value types `Float` /
 `Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer f32)`:
 
-```faust
+```haskell
 foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
 foreign fn add    : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
 foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32;
@@ -325,7 +325,7 @@ foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32
 Parameters occupy positional argument slots in declaration order — the signal
 channel at slot 0, the scalar at slot 1:
 
-```faust
+```haskell
 foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
 main = gain _ 0.5;
 ```
@@ -339,7 +339,7 @@ as a foreign built-in.
 
 `SIGNAL_PRELUDE` ships the buffer family and the `Buffer` typeclass:
 
-```faust
+```haskell
 typeclass Buffer b where { }
 instance Buffer (FixedBuffer a) where { }
 instance Buffer (Tape f32) where { }
@@ -401,7 +401,7 @@ A tape loop is created with the `tape_loop` foreign constructor
 (`Int -> Tape f32`) and shared by the tape head builtins `write_head` /
 `read_head` (registered by `rill-sampler`). NAMED bindings share one buffer:
 
-```faust
+```haskell
 tape = tape_loop 1024;
 main = (write_head _ _ tape 0.5 0.3) , read_head tape 0.1;
 ```
@@ -455,7 +455,7 @@ inspected via `rill-analyzer`. Zero overhead when the feature is disabled.
 Beyond signals, a program can carry **values** — arena-paced, typed, and
 processed in the value-track phase:
 
-```faust
+```haskell
 data Point = { x: Float, y: Float };          // record type
 data Shape = Circle Float | Rect Float Float; // sum type
 newtype Hz  = Float;                          // distinct wrapper
@@ -507,7 +507,7 @@ default RT mode is a detectable no-op, not a per-container error).
 `insert` is overloaded by arity (Map 3-arg, Set 2-arg); `not` is a prefix
 builtin.
 
-```faust
+```haskell
 xs  = [1.0, 2.0, 3.0];            // List Float
 ys  = cons 10.0 (list);           // prepend; the list grows
 h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
@@ -539,7 +539,7 @@ infix `!`; note that `!` is also the bang marker in patterns — `f !x` forces
 The core vocabulary includes `bounds`, `elems`, `indices`, `assocs`, `update`,
 `accum`, and `ixmap` for reindexing:
 
-```faust
+```haskell
 b = Pair { first: 0, second: 2 };
 a = listArray b [10.0, 20.0, 30.0];
 main = a ! 1;                         // Float(20.0)
@@ -549,7 +549,7 @@ Mutable arrays live in `ST`: `STArray s i e` can be built and mutated inside a
 region, then frozen to `Array i e` with `runSTArray`. The region phantom `s`
 cannot escape — a use-after-free is a compile-time error.
 
-```faust
+```haskell
 main = let a = runSTArray (\s -> do {
     arr <- newArray (Pair { first: 0, second: 1 }) 0.0;
     writeArray arr 1 3.0;
@@ -564,7 +564,7 @@ main = let a = runSTArray (\s -> do {
 **inline** — `fmap` over a `List` compiles directly to the `map` builtin, with
 zero runtime dispatch:
 
-```faust
+```haskell
 data Box a = { value: a };
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 instance Functor List where { fmap g xs = map g xs; }
@@ -585,7 +585,7 @@ own instances. Methods resolve at compile time by **inline** lowering (zero
 runtime dispatch), and `instance Monad T` **auto-derives** `Applicative T` and
 `Functor T` (explicit instances always win):
 
-```faust
+```haskell
 typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
 typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
@@ -599,7 +599,7 @@ s`; `Monoid` for `List` (`append_list`), `String` (`concat_string`), `Float`,
 
 **Monad/IO interfaces:**
 
-```faust
+```haskell
 return :: a -> m a            // via Monad
 bind   :: m a -> (a -> m b) -> m b
 pure   :: a -> f a            // via Applicative
@@ -614,7 +614,7 @@ region is a compile-time error. Inside the region, `newSTRef`, `readSTRef`,
 argument, so it resolves by its *expected result type* — `mappend xs mempty`
 resolves `mempty` by the type of `xs`:
 
-```faust
+```haskell
 main = length (mappend [1.0, 2.0] mempty);   // List Float, mempty = list -> Int(2)
 main = mappend mempty 3.5;                    // Float, mempty = 0.0 -> Float(3.5)
 ```
@@ -623,7 +623,7 @@ Using `mempty` where its result type is unknown is a compile error.
 
 **`do`-notation** desugars to nested `bind` (Haskell `<-`):
 
-```faust
+```haskell
 mx = Just 1.0;
 my = Just 2.0;
 main = case (do { x <- mx; y <- my; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
@@ -643,7 +643,7 @@ The prelude also declares **`Kleisli`**, the free category over a monad (an
 arrow `a -> m b` inside the container `m`), and **`Arrow`**, the category of
 container morphisms:
 
-```faust
+```haskell
 data Kleisli m a b = { unKleisli: a -> m b };
 
 typeclass Arrow a where {
@@ -680,7 +680,7 @@ and `second`/`both`/`fan` fall back to the class defaults built from them.
 The `second` default body is written `= k (compose …)` — `k` is the parameter
 and the body is parenthesized.
 
-```faust
+```haskell
 apply k x = let u = k.unKleisli in u x;
 main = case (apply (compose (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
     Just v -> v; Nothing -> 0.0;
@@ -703,7 +703,7 @@ The `,` combinator doubles as a **channel tuple** — it unifies on the track of
 its operands. `value,value` builds a `Pair { first, second }`; a **mixed**
 `value , signal` is a compile error (one channel cannot live on both tracks):
 
-```faust
+```haskell
 main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
 main = (1.0, 2.0).first;  // -> Float(1.0)
 ```
@@ -715,7 +715,7 @@ arguments (`a (Pair b d) (Pair c d)` ≡ `a (b, d) (c, d)`).
 A **field projection is a first-class function value** — a projected closure
 can be applied directly, parenthesized or bare:
 
-```faust
+```haskell
 data Box = { f: Float -> Float };
 b = Box { f: \x -> x * 2.0 };
 main = (b.f) 3.0;         // parenthesized projection applied: Float(6.0)
@@ -734,7 +734,7 @@ to a `Value::Callable` (a by-value environment snapshot plus a compiled body
 fragment; eager, with no memo cell), and `ValueCallFunc` performs real runtime
 dispatch:
 
-```faust
+```haskell
 adder = \n -> \x -> x + n;   // a function returning a closure
 add2  = adder 2.0;               // partial application (currying)
 main  = add2 3.0;                // -> Float(5.0)
@@ -758,7 +758,7 @@ main   = twice double 3.0;       // -> Float(12.0)
 `if cond then a else b` and `case` are expressions on the value track. In an
 `IO` program they may choose between effects as well as values:
 
-```faust
+```haskell
 main = do {
     n <- read stdin;
     if (length n) > 0 then write (Just n) stdout else write (Just "empty") stdout;

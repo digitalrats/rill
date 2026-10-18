@@ -213,7 +213,7 @@ lowering. No new buffer syntax is added.
 A closed stateful top-level local referenced two or more times changes from N
 independent copies to 1 shared instance:
 
-```faust
+```haskell
 osc = sine 440 0.5 0;
 main = osc, osc;      // was 2 oscillators, now 1 shared
 ```

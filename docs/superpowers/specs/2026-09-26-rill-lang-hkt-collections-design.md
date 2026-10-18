@@ -196,7 +196,7 @@ struct TypeclassInfo {
 
 ## 3. Syntax
 
-```faust
+```haskell
 // types (juxta application, consistent with the DSL)
 data Box a = { value: a };                 // user parameterized type
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }

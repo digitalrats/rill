@@ -1940,7 +1940,7 @@ re-evaluated every tick. A runtime `Bool` — e.g. a main λ-parameter compared 
 a threshold and written via `SetParameter` — switches branches from block to
 block:
 
-```faust
+```haskell
 ?gate = 1.0;
 main = if gate > 0.5 then 1.0 else 0.0;
 ```

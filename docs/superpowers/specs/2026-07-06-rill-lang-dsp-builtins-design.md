@@ -30,7 +30,7 @@ built-ins run as an **opaque block step** (not feedback-legal).
 Built-ins take **constant params as args**; **signals flow via combinators**
 (Faust-style). A built-in reference has arity `(signal_ins → signal_outs)`:
 
-```faust
+```haskell
 process = _ : lowpass(1000.0, 0.7);          -- 1→1 biquad, params cutoff,Q
 process = _ : moog(800.0, 0.6) : _ * 0.5;    -- filter in a chain
 process = (_ , _) : mix2(0.5);               -- a 2→1 built-in

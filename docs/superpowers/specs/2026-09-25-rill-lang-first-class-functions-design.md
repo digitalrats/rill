@@ -167,7 +167,7 @@ run_closure(prog, closure_slot, args):
 
 ## 5. Syntax
 
-```faust
+```haskell
 double = fn x -> x * 2.0;           // lambda literal
 adder  = fn n -> fn x -> x + n;     // captures parent param n
 add2   = adder 2;                   // currying via closure
