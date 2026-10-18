@@ -8,7 +8,7 @@ use rill_core::traits::ProcessError;
 
 use crate::arena::{Arena, ArenaRef, ThunkState, Value};
 use crate::ir::{
-    BinArith, CmpOp, FragmentIr, LogicOp, UnOp, ValueBuiltinOp, ValueInstr, ValueTerm,
+    BinArith, CmpOp, FragmentIr, LogicOp, UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueTerm,
 };
 use crate::program::{
     RillProgram, StCell, StreamHandle, MAX_BUILTIN_CHANNELS, STREAM_HANDLE_TAG, WORLD_TOKEN,
@@ -136,34 +136,32 @@ pub(crate) fn run_value_tick<T: Transcendental, const BUF: usize>(
 /// (RC++); a store that MOVES a ref clears the source (`None`). Drops are
 /// deferred to the end of the track so a drop cannot free a slot mid-track
 /// that a later instruction reuses, and the release order is deterministic.
-pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
+/// Walk a run of value blocks: execute each block's instructions against the
+/// register base, then dispatch the block terminator. Owns no drops discipline
+/// and no register cleanup — callers drain drops above their own mark and
+/// manage register state. This is the single block-walker shared by the
+/// top-level value track and every fragment call.
+fn run_blocks<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
-) -> Result<(), ProcessError> {
-    // Move the block list out of `prog` so we can borrow `prog`'s value
-    // registers mutably while iterating (`mem::take` leaves an empty `Vec`
-    // behind — no allocation on the RT path). Drops queue on the shared,
-    // pre-sized `drops_scratch`, moved out ONCE here and threaded through the
-    // whole dispatch tree (`exec_value_instr` → `run_call` → ...) as a
-    // separate parameter, so every fragment at every nesting depth reuses the
-    // same reserved buffer — no allocation in the RT path. The mark/drain
-    // discipline keeps each frame's pending drops below its own mark.
-    let mut drops = std::mem::take(&mut prog.drops_scratch);
-    let mark = drops.len();
-    let blocks = std::mem::take(&mut prog.ir.value_blocks);
-    let mut cur = prog.ir.value_entry;
+    blocks: &[ValueBlock],
+    entry: usize,
+    base: usize,
+    drops: &mut Vec<ArenaRef>,
+) {
+    let mut cur = entry;
     loop {
         debug_assert!(
             cur < blocks.len(),
-            "value-track fall-off-the-end: block {cur} does not exist"
+            "run_blocks fall-off-the-end: block {cur} does not exist"
         );
         let Some(b) = blocks.get(cur) else { break };
         for i in &b.instrs {
-            exec_value_instr(prog, i, 0, &mut drops);
+            exec_value_instr(prog, i, base, drops);
         }
         cur = match b.term {
             ValueTerm::Fallthrough(n) => n,
             ValueTerm::Branch { cond, then, els } => {
-                if value_reg_is_true(prog, cond) {
+                if value_reg_is_true(prog, cond + base) {
                     then
                 } else {
                     els
@@ -175,7 +173,7 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
                 then,
                 els,
             } => {
-                if value_reg_ctor(prog, slot) == Some(ctor) {
+                if value_reg_ctor(prog, slot + base) == Some(ctor) {
                     then
                 } else {
                     els
@@ -184,6 +182,27 @@ pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
             ValueTerm::Halt => break,
         };
     }
+}
+
+/// Run the top-level value track to completion (one tick): walk
+/// [`RillProgram`]'s top-level blocks at base 0, then drain the deferred
+/// drops and surface the latched value error.
+///
+/// The block list is moved out of `prog` so we can borrow `prog`'s value
+/// registers mutably while iterating (`mem::take` leaves an empty `Vec`
+/// behind — no allocation on the RT path). Drops queue on the shared,
+/// pre-sized `drops_scratch`, moved out ONCE here and threaded through the
+/// whole dispatch tree (`exec_value_instr` → `run_call` → ...) as a
+/// separate parameter, so every fragment at every nesting depth reuses the
+/// same reserved buffer — no allocation in the RT path. The mark/drain
+/// discipline keeps each frame's pending drops below its own mark.
+pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+) -> Result<(), ProcessError> {
+    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let mark = drops.len();
+    let blocks = std::mem::take(&mut prog.ir.value_blocks);
+    run_blocks(prog, &blocks, prog.ir.value_entry, 0, &mut drops);
     prog.ir.value_blocks = blocks;
     for r in drops.drain(mark..) {
         prog.arena.drop_ref(r);
@@ -4838,42 +4857,7 @@ fn run_call<T: Transcendental, const BUF: usize>(
     //    on the threaded scratch above this call's mark and are drained below,
     //    so a nested dispatch's drops never collide.
     let drops_mark = drops.len();
-    let mut cur = frag.entry;
-    loop {
-        debug_assert!(
-            cur < frag.value_blocks.len(),
-            "fragment value-track fall-off-the-end: block {cur} does not exist"
-        );
-        let Some(b) = frag.value_blocks.get(cur) else {
-            break;
-        };
-        for i in &b.instrs {
-            exec_value_instr(prog, i, base, drops);
-        }
-        cur = match b.term {
-            ValueTerm::Fallthrough(n) => n,
-            ValueTerm::Branch { cond, then, els } => {
-                if value_reg_is_true(prog, cond + base) {
-                    then
-                } else {
-                    els
-                }
-            }
-            ValueTerm::BranchCtor {
-                slot,
-                ctor,
-                then,
-                els,
-            } => {
-                if value_reg_ctor(prog, slot + base) == Some(ctor) {
-                    then
-                } else {
-                    els
-                }
-            }
-            ValueTerm::Halt => break,
-        };
-    }
+    run_blocks(prog, &frag.value_blocks, frag.entry, base, drops);
     for r in drops.drain(drops_mark..) {
         prog.arena.drop_ref(r);
     }
