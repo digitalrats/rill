@@ -36,6 +36,32 @@ fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
     (prog, v)
 }
 
+/// Compile `src`, run one tick, and extract data on a thread with more stack.
+///
+/// Nested `ixmap` calls build deep lowering chains in debug builds, so the
+/// default libtest stack can overflow. Keep the program inside the thread (it
+/// is not `Send`) and extract plain data instead.
+fn with_output<R: Send>(
+    src: &str,
+    f: impl FnOnce(&RillProgram<f32, 256>, &Value) -> R + Send,
+) -> R {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn_scoped(scope, || {
+                let mut prog = compile::<f32>(src)
+                    .unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
+                prog.run_value()
+                    .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+                let v = output(&prog);
+                f(&prog, &v)
+            })
+            .expect("the compile thread must spawn")
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
+}
+
 /// The single value output of an already-run program.
 fn output(prog: &RillProgram<f32, 256>) -> Value {
     let outputs = prog.value_outputs();
@@ -324,6 +350,19 @@ fn array_update_and_accum_array_reject_out_of_range_association_cells() {
     );
 }
 
+#[test]
+fn accum_rejects_out_of_range_association_cells() {
+    let msg = fault(&format!(
+        "main = accum (\\ a -> \\ b -> a + b) {} [{}];",
+        m3(),
+        assoc(0, 3, 10.0)
+    ));
+    assert!(
+        msg.contains("out of range"),
+        "expected the clean out-of-range fault for an accum assoc, got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 2. Matrix construction and the immutable operations
 // ---------------------------------------------------------------------------
@@ -488,6 +527,19 @@ fn ixmap_with_shifted_bounds_reaches_the_source_cells_through_both_origins() {
 }
 
 #[test]
+fn ixmap_faults_when_the_index_map_leaves_the_source_bounds() {
+    let msg = fault(&format!(
+        "main = ixmap {} (\\ p -> Pair {{ first: 0, second: 3 }}) {};",
+        b2(0, 0, 0, 0),
+        m3()
+    ));
+    assert!(
+        msg.contains("out of range"),
+        "expected the clean out-of-range fault for an ixmap read, got: {msg}"
+    );
+}
+
+#[test]
 fn a_reindexed_matrix_is_indexable_and_remappable_without_a_binding() {
     // Composing the surface with itself at one call site: the accessor over an
     // `ixmap` result, and an `ixmap` over an `ixmap` result. Both are ordinary
@@ -500,12 +552,14 @@ fn a_reindexed_matrix_is_indexable_and_remappable_without_a_binding() {
         m3()
     );
     // Transposed (1,0) is the source's (0,1) = 2.0.
-    let (prog, v) = run(&format!("main = index {transposed} {};", cell(1, 0)));
-    match v {
-        Value::Float(f) => assert_eq!(f, 2.0),
-        other => panic!("expected a Float, got {other:?}"),
-    }
-    let _ = prog;
+    let value = with_output(
+        &format!("main = index {transposed} {};", cell(1, 0)),
+        |_prog, v| match v {
+            Value::Float(f) => *f,
+            other => panic!("expected a Float, got {other:?}"),
+        },
+    );
+    assert_eq!(value, 2.0);
 
     // `transpose . transpose` is the identity, read without ever binding the
     // intermediate array to a name.
@@ -515,8 +569,7 @@ fn a_reindexed_matrix_is_indexable_and_remappable_without_a_binding() {
         b = m3_bounds(),
         m = m3()
     );
-    let (prog, v) = run(&format!("main = {twice};"));
-    let (values, (low, high)) = matrix(&prog, &v);
+    let (values, (low, high)) = with_output(&format!("main = {twice};"), matrix);
     assert_eq!((low, high), ((0, 0), (2, 2)));
     assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
 }

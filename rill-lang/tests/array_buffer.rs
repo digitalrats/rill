@@ -1,7 +1,7 @@
 //! The `FixedBuffer` <-> `Array Int Float` bridge through the LANGUAGE surface.
 //!
-//! `arrayFromBuffer` copies a signal block into an `Int`-indexed immutable array
-//! (bounds `(0, len - 1)`); `bufferFromArray` copies an array back into a
+//! `arrayFromBuffer` snapshots a signal block into an `Int`-indexed immutable
+//! array (bounds `(0, len - 1)`); `bufferFromArray` copies an array back into a
 //! program buffer, zero-padding a short array to the live block and faulting
 //! cleanly on one that does not fit.
 //!
@@ -124,8 +124,8 @@ fn array_from_buffer_length_is_the_block_length() {
 #[test]
 fn array_from_buffer_copies_the_actual_samples() {
     // Compare against a DIRECTLY generated buffer: the array's element `i` must
-    // be the block's sample `i` (an `f32` widened to `f64`), so the bridge is
-    // a copy, not a re-synthesis or a shifted read.
+    // be the block's sample `i` (an `f32` widened to `f64`), so the bridge
+    // snapshots the current block without re-synthesis or a shifted read.
     let direct = run_buffer("main = sine 440.0 0.5 0.0;");
     let elems = run_elems("main = elems (arrayFromBuffer (sine 440.0 0.5 0.0));");
     assert_eq!(elems.len(), direct.len());

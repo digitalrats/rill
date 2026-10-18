@@ -425,4 +425,12 @@ fn structural_order_is_bounds_then_lexicographic_elements() {
     let narrower = matrix_expr(2, 2, &[1.0, 2.0, 3.0, 4.0]);
     let wider = matrix_expr(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     assert!(run_bool(&format!("main = {narrower} < {wider};")));
+
+    // Bounds-first disagrees with element-first here: bounds say (1x1) < (1x2),
+    // while lexicographic elements would sort [9] after [1,0].
+    let bounds_first = matrix_expr(1, 1, &[9.0]);
+    let elements_first = matrix_expr(1, 2, &[1.0, 0.0]);
+    assert!(run_bool(&format!(
+        "main = {bounds_first} < {elements_first};"
+    )));
 }
