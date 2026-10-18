@@ -205,3 +205,53 @@ fn bang_markers_lower_to_value_force() {
         1
     );
 }
+
+#[test]
+fn the_bang_marker_and_the_infix_index_operator_stay_distinct() {
+    // `!x` in a PATTERN is a strictness marker; `a ! i` in an EXPRESSION is the
+    // array accessor. Both appear in the same definition, so a parser or
+    // lowering pass that confused the two would either lose the force or fail
+    // to index.
+    //
+    // The SIGNATURE is what makes this a regression test. A signature-typed
+    // bang parameter is only typed on the closure path: inlining the body
+    // discards the parameter types and leaves the scalar numeric default, so
+    // `a` was typed `Float` and `a ! i` asked for `Ix Float`. Keeping the
+    // definition un-inlined (it must stay a closure anyway, because a bang
+    // parameter forces its argument on entry) is what carries
+    // `Array Int Float` into the body.
+    let src = "{-# MODE strict #-}\n\
+               at !a i :: Array Int Float -> Int -> Float = a ! i;\n\
+               main = at (listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1";
+    assert_eq!(run_strict(src).unwrap(), 20.0);
+    // The same definition in the lazy mode, where the call goes through the
+    // closure fragment instead of the strict inline path.
+    assert_eq!(
+        run(
+            "{-# MODE complete #-}\nat !a i :: Array Int Float -> Int -> Float = a ! i;\n\
+             main = at (listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 2"
+        )
+        .unwrap(),
+        30.0
+    );
+    // The parameter types must reach the body WITHOUT dropping the force: the
+    // sig-typed definition still lowers to exactly one WHNF force.
+    assert_eq!(
+        force_count(
+            "at !a i :: Array Int Float -> Int -> Float = a ! i;\n\
+             main = at (listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1"
+        ),
+        1,
+        "the signature must not cost the bang parameter its force"
+    );
+    // A non-array witness of the same class: a signature-typed bang parameter
+    // whose body projects a record field. Inlining again lost the `Pair` type.
+    assert_eq!(
+        run(
+            "f !p q :: Pair Int Float -> Float -> Float = p.second + q;\n\
+             main = f (Pair { first: 1, second: 2.0 }) 3.0"
+        )
+        .unwrap(),
+        5.0
+    );
+}
