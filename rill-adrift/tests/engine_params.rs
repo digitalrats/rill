@@ -2,11 +2,13 @@
 //!
 //! A `?name` control parameter is a slot the host writes through
 //! [`WorldState::set_param`](rill_lang::program::WorldState::set_param).
-//! On the single-run value surface the program is evaluated exactly once
-//! (inside `test_eval`), so the host cannot inject a value before that one
-//! internal run: only the DEFAULT-reading behavior survives here. The
-//! `set_param`-between-runs tests were Class 2 (no public re-run surface) and
-//! are removed (ledger: rill-adrift/tests/engine_params.rs).
+//! The helpers in this file drive the single-run value surface: `test_eval`
+//! seats a world and evaluates the entry exactly once, so only the
+//! DEFAULT-reading behavior is pinned here. The `set_param`-between-runs tests
+//! below were Class 2 when the value surface became single-run (there was no
+//! host re-run surface then). `ProgramRunner::run()` is repeatable now, so the
+//! runner path could re-express them; that is recorded test debt, not a gap in
+//! the world API (ledger: docs/superpowers/ledgers/2026-10-18-world-state.md).
 
 use rill_adrift::lang_builtins::full_ffi;
 use rill_adrift::rill_core::Params;
@@ -71,15 +73,19 @@ fn actor_param_default_reaches_a_block_builtin() {
     assert!(world.copy_buffer(r, &mut out));
     assert_eq!(out, [0.0; 64], "level default is 0.0 => silence");
     // The live-parameter half (write `set_param(level, 0.5)`, re-run, assert
-    // the amplitude) was Class 2: no re-run surface exists after the single
-    // internal run, so the host cannot inject the value mid-program.
+    // the amplitude) is not expressible through this single-run helper: `eval`
+    // seats the world and runs `test_eval` once. The runner path (`compile` +
+    // repeatable `ProgramRunner::run`) could support it; re-adding the test
+    // there is recorded debt (see the module doc).
 }
 
-// Class 2 removals (ledger: rill-adrift/tests/engine_params.rs):
+// Class 2 removals (ledger: docs/superpowers/ledgers/2026-10-18-world-state.md):
 // - actor_param_set_param_affects_output :: sole assertion is value-from-set-param
-//   between runs; no re-run surface :: delete
+//   between runs; no host re-run surface at removal time :: delete
 //   (the default-application half survives as `actor_param_default_applies`)
 // - actor_param_persists_across_ticks :: set_param + two value runs, cross-tick
-//   persistence; no re-run surface :: delete
+//   persistence; no host re-run surface at removal time :: delete
 // - actor_param_reaches_a_block_builtin :: set_param + re-run amplitude check;
 //   reduced to the default-silence half (`actor_param_default_reaches_a_block_builtin`)
+// Both deleted subjects are re-expressible on `ProgramRunner::run()` (repeatable
+// since the world-state migration); restoring them is test debt, not an API gap.

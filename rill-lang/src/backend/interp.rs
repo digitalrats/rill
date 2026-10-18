@@ -182,7 +182,7 @@ pub(crate) fn exec_entry<T: Transcendental, const BUF: usize>(
 /// surface the latched value error. Only the tests use this — the production
 /// path is [`exec_entry`].
 #[cfg(test)]
-pub(crate) fn run_main_fragment_for_tests<T: Transcendental, const BUF: usize>(
+pub(crate) fn run_main_blocks_for_tests<T: Transcendental, const BUF: usize>(
     ir: &Ir,
     world: &mut WorldState<T, BUF>,
 ) -> Result<(), ProcessError> {
@@ -5602,7 +5602,7 @@ mod value_track_tests {
         // Drive the value track directly (the full tick additionally clears
         // the per-tick registers at the end) so the registers and arena can be
         // inspected mid-tick.
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(world.value_regs[0], Some(0));
         let slot0 = world.arena.get(0).unwrap().clone();
         assert_eq!(slot0, crate::arena::Value::Int(42));
@@ -5628,7 +5628,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         let cell = world.value_regs[1].unwrap();
         let val = world.arena.get(cell).unwrap();
         assert_eq!(val, &crate::arena::Value::Int(7));
@@ -5656,7 +5656,7 @@ mod value_track_tests {
             2,
             0,
         );
-        let err = run_main_fragment_for_tests(&ir, &mut world)
+        let err = run_main_blocks_for_tests(&ir, &mut world)
             .expect_err("an unbound operand must latch a fault");
         assert!(
             format!("{err}").contains("unbound operand"),
@@ -5753,7 +5753,7 @@ mod value_track_tests {
             5,
             0,
         );
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         let get = |r: usize| {
             world
                 .arena
@@ -5944,7 +5944,7 @@ mod value_track_tests {
             2,
             0,
         );
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(
             world.arena.get(world.value_regs[0].unwrap()).unwrap(),
             &crate::arena::Value::Float(84.0)
@@ -5977,7 +5977,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         let payload = world.value_regs[2].unwrap();
         assert_eq!(
             world.arena.get(payload).unwrap(),
@@ -6017,7 +6017,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(world.value_regs[2], None);
     }
 
@@ -6077,7 +6077,7 @@ mod value_track_tests {
             6,
             0,
         );
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(
             world.value_regs[1], None,
             "ValueMove cleared the source reg"
@@ -6153,7 +6153,7 @@ mod value_track_tests {
             5,
             0,
         );
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(
             world.arena.get(world.value_regs[3].unwrap()).unwrap(),
             &crate::arena::Value::Float(0.0),
@@ -6458,7 +6458,7 @@ mod lazy_track_tests {
         );
         let bottom = world.arena.alloc(Value::Bottom).unwrap();
         world.value_regs[1] = Some(bottom);
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         let res = world.value_regs[2].unwrap();
         assert_eq!(
             world.arena.get(res).unwrap(),
@@ -6490,7 +6490,7 @@ mod lazy_track_tests {
         );
         let env = empty_env(&ir, &mut world);
         world.value_regs[0] = Some(env);
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         let res = world.value_regs[3].unwrap();
         assert_eq!(world.arena.get(res).unwrap(), &Value::Float(8.5), "7 + 1.5");
     }
@@ -6514,7 +6514,7 @@ mod lazy_track_tests {
         );
         let bottom = world.arena.alloc(Value::Bottom).unwrap();
         world.value_regs[0] = Some(bottom);
-        run_main_fragment_for_tests(&ir, &mut world).unwrap();
+        run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(
             world.arena.get(world.value_regs[1].unwrap()).unwrap(),
             &Value::Bottom

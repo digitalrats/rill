@@ -1,9 +1,10 @@
 //! Built-in factory contracts: whole-buffer built-ins callable from rill-lang.
 //!
-//! `BlockBuiltin` (`rill_core::Algorithm`, opaque whole-buffer) is the only
-//! built-in form. Concrete bindings live outside this crate (e.g. `rill-adrift`);
-//! the language owns the registry contract. Built-in SIGNATURES come from the FFI
-//! catalog (`foreign` declarations in `TypeEnv::foreign_sigs`); the
+//! Two built-in forms exist: `BlockBuiltin` (`rill_core::Algorithm`, opaque
+//! whole-buffer) and `MultichannelBlockBuiltin` (interleaved multi-channel).
+//! Concrete bindings live outside this crate (e.g. `rill-adrift`); the language
+//! owns the contract. Built-in SIGNATURES come from the FFI catalog (`foreign`
+//! declarations in `TypeEnv::foreign_sigs`); the
 //! [`ForeignRegistry`](crate::ffi::ForeignRegistry) holds only the Rust
 //! FACTORIES that build runtime instances.
 

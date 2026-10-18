@@ -15,9 +15,10 @@ of runtime state lives in a `WorldState`. A world is **seated** for an IR
 (`world.seat(&ir)`) before anything runs, and the executor takes the pair —
 `(ir, &mut world)` — never a program object.
 
-A program executes its value entry exactly ONCE — there is no public re-run
-surface. The `Ir` compiled by `compile_eval` is run once by `test_eval`, which
-leaves the run's single result in `world.result()`.
+`compile_eval` returns a pure-code `Ir`; `test_eval` seats a caller-owned world
+and evaluates the value entry once, leaving the run's result in
+`world.result()`. `ProgramRunner::run()` is repeatable: a host can `set_param`
+between runs (see *Dynamic parameters*).
 
 The interpreter is safe and allocation-free after warm-up: values live in a
 fixed, page-based arena, and a program that exceeds the budget reports a clean
@@ -28,12 +29,11 @@ unaffected when the JIT lands.
 > **Removed in the IO/streams core change (this branch).** `rill-lang` no longer
 > implements `Algorithm<T>`/`MultichannelAlgorithm<T>` for a compiled program;
 > there is no `process()`, no `ProgramEngine`, no `readInput`/`writeOutput`, and
-> no buffer-λ `main`. The old `compile_graph()` graph-execution entry point is
-> gone as well: what remains of graph compilation sits behind the off-by-default
-> `graph` feature (`rill_lang::graph`), does not build at this revision (its
-> `reconstruct.rs` still targets the removed `Par`/`Split`/`Cut` AST), and is not
-> built by the workspace gates. Programs express their I/O as streams inside the
-> program, not as buffers handed in from outside. See *Migrating* below.
+> no buffer-λ `main`. The `graph` module (`compile_graph()`,
+> `CompiledGraphEngine`) and its `graph` Cargo feature were removed entirely;
+> graph compilation is **deferred** to a separate follow-on, not shipped here.
+> Programs express their I/O as streams inside the program, not as buffers handed
+> in from outside. See *Migrating* below.
 
 ## Quick start: an IO program
 
@@ -113,8 +113,8 @@ assert_eq!(
 Signal-block built-ins (filters, oscillators, effects; see *Built-in functions*)
 lower to whole-buffer values: `main = sine …` evaluates to a `Value::Buffer`,
 inspected with `copy_buffer(result().unwrap(), &mut out)`. There is no
-signal-transform executor and no re-run surface — a program executes its entry
-exactly once.
+signal-transform executor: a value entry runs once per `test_eval`, while an IO
+program's `ProgramRunner::run()` is repeatable.
 
 ## Streams
 
@@ -198,9 +198,9 @@ error). Trampolining the `bind` chain to remove the limit is a planned follow-up
 | `impl Algorithm<T>` for a compiled program, `BlockBuiltin` driving it | Built-ins remain callable *inside* a program; there is no transform wrapper around a whole program |
 | `readInput` / `writeOutput` and indexed variants | `fromList` / `toList`, `read` / `write`, `connect`, `makeInputStream` / `makeOutputStream` |
 | Buffer-λ `main` (`main = _ * 0.5`) | `main : IO ()`; a value `main` remains valid for the pure-value tick |
-| `RillProgram`, `compile_with_ffi`, `compile_with_mode`, `compile_runner`, `compile_source_to_program` | `Ir` + `WorldState`: `compile_eval(defs, expr, mode)` → `test_eval(&ir, &mut world)`; `compile(src, ffi)` → `ProgramRunner` |
-| `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Not available here: the `graph` feature is off by default, the transform executor is gone, and the module does not build at this revision. Graph compilation is **deferred** with the graph follow-on |
-| Actor `?name=default` slots wired to a graph's `SetParameter` mailbox | `?name` slots still type-check and lower as dynamic built-in parameters; the graph-side mailbox wiring is not part of this branch |
+| The old program-object façade and its `compile_with_*` / `compile_runner` / `compile_source_to_program` variants | `Ir` + `WorldState`: `compile_eval(defs, expr, mode)` → `test_eval(&ir, &mut world)`; `compile(src, ffi)` → `ProgramRunner` |
+| `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Removed with the `graph` module and its Cargo feature; graph compilation is **deferred** with a separate follow-up |
+| Actor `?name=default` slots wired to a graph's `SetParameter` mailbox | `?name` slots still type-check and lower as dynamic built-in parameters; the graph-side mailbox wiring was removed with the `graph` module |
 
 ## The language in one screen
 
@@ -331,7 +331,8 @@ Names are stable and may be namespaced by a `where` block with dot notation
 form for the same idea; both coexist. Parameter slots are addressable
 programmatically by NAME through `WorldState::params_meta()` / `set_param()`; a
 `set_param` between two runs is what the second run observes. The graph-side
-`SetParameter` mailbox that consumed these names is not part of this branch.
+`SetParameter` mailbox that consumed these names was removed with the `graph`
+module.
 
 ## FFI (foreign functions)
 
@@ -388,16 +389,28 @@ instance Buffer (Tape f32) where { }
 Rust implementations are registered by name on `rill_lang::ffi::ForeignRegistry<T>`:
 
 ```rust
+use rill_core::memory::BufferAllocator;
 use rill_lang::ffi::ForeignRegistry;
 
 let mut ffi = ForeignRegistry::<f32>::new();
-ffi.register_block("gain", |params: &[f64], sample_rate: f32| {
-    // -> Box<dyn BlockBuiltin<f32>>  (a 1→1 block builtin)
-});
-ffi.register_multichannel_block("add", |ins: usize, params: &[f64], sample_rate: f32| {
-    // -> Box<dyn MultichannelBlockBuiltin<f32>>  (an N→M block builtin)
-});
-// `ffi` is handed to the world, which resolves `gain` at seat time.
+ffi.register_block(
+    "gain",
+    |params: &[f64], sample_rate: f32, alloc: Option<&mut BufferAllocator<f32>>| {
+        // Build and return `Box<dyn BlockBuiltin<f32>>` (a 1→1 block builtin);
+        // `alloc` sizes any buffers the builtin owns.
+        unimplemented!()
+    },
+);
+ffi.register_multichannel_block(
+    "add",
+    |ins: usize, params: &[f64], sample_rate: f32, alloc: Option<&mut BufferAllocator<f32>>| {
+        // Build and return `Box<dyn MultichannelBlockBuiltin<f32>>` (an N→M
+        // block builtin).
+        unimplemented!()
+    },
+);
+// `ffi` is handed to the world; each factory is called at seat time with the
+// program's scalar params and the world sample rate.
 let mut world = rill_lang::program::WorldState::<f32, 256>::new(
     rill_lang::program::WorldConfig { ffi: Some(ffi), ..Default::default() },
 );
@@ -467,9 +480,9 @@ let mut runner = compile_def::<f32>(&def).unwrap();
 runner.run().unwrap();
 ```
 
-The `serialization` feature no longer implies `graph`: `RillLangDef` and
-`compile_def` are the source-level contract; graph serialization (`GraphDef`) is
-gated behind `graph` + `serialization` and is not built by the workspace gates.
+The `serialization` feature covers the source-level contract only: `RillLangDef`
+and `compile_def`. The graph module (and its `GraphDef` serialization) was removed
+together with the `graph` feature.
 
 ## Debug infrastructure (`debug` feature)
 
@@ -824,7 +837,7 @@ registry), and the executor runs the pair `(ir, &mut world)`.
 
 Deferred to follow-on work: the Cranelift `jit` feature, trampolining the `bind`
 chain (removing the stack-depth limit), signal-transform execution over streams
-(the future audio plan), graph compilation repair, migrating the remaining rill
+(the future audio plan), graph compilation, migrating the remaining rill
 DSP primitives onto the FFI layer (the `foreign fn` mechanism itself is live —
 see *FFI*), a SIMD-aware IR, runtime typeclass dispatch, user-written `Eq`/`Ord`
 instances and hash-based containers, and `strict`/`complete` compiler modes.

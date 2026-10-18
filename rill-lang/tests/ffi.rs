@@ -593,7 +593,8 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
 #[test]
 fn ffi_sig_param_names_fallback_to_index_for_unknown() {
     // A builtin not in the name table gets index-based names (param0, param1…)
-    // so graph reconstruction still orders its scalar params.
+    // so host/tooling inspection sees stable index-based scalar names (neither
+    // lowering nor seat-time binding reads these names — both are positional).
     use rill_lang::ast::TypeExpr;
     use rill_lang::types::ffi::ffi_sig_from_typeexpr;
 

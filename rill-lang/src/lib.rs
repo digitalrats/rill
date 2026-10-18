@@ -6,9 +6,11 @@
 //! ([`WorldState::seat`]) and executed by the `(ir, world)` executor.
 //!
 //! Values are evaluated with [`compile_eval`] + [`test_eval`]; the
-//! `main : IO ()` executor is [`compile`] → [`ProgramRunner`]. A program
-//! executes exactly once to completion: running the entry fragment captures its
-//! result into [`WorldState::result`]. See the crate guide for language details.
+//! `main : IO ()` executor is [`compile`] → [`ProgramRunner`]. Runs are
+//! repeatable: each [`test_eval`] or [`ProgramRunner::run`] re-seats the world
+//! and captures the run's terminal value into [`WorldState::result`], so a
+//! `set_param` between runs is observed by the next one. See the crate guide
+//! for language details.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]

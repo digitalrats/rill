@@ -44,8 +44,8 @@ const BUF_SIZE: usize = 256;
 
 let system = ModularSystem::<BUF_SIZE>::new(ModularConfig::default());
 // Racks are launched from ModularSystemDef documents (serialization); each
-// rack's rill-lang `main : (String…) -> IO ()` program runs to completion on
-// its own thread through the IO runner.
+// rack's rill-lang `main : IO ()` program runs to completion on its own thread
+// through the IO runner.
 ```
 
 `launch` returns an error when a rack program does not compile

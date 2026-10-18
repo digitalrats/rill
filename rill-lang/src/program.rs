@@ -962,14 +962,15 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         }
     }
 
-    /// The result of the program's single run: the terminal arena ref captured
-    /// by [`exec_entry`](crate::backend::interp::exec_entry) into `main`.
+    /// The result of the program's most recent run: the terminal arena ref
+    /// captured by [`exec_entry`](crate::backend::interp::exec_entry) into
+    /// `main`.
     ///
-    /// A rill-lang program executes its entry fragment exactly ONCE, so this is
-    /// the program's one value-level result — the whole-buffer
-    /// (`Value::Buffer`) forms are inspected with
-    /// [`copy_buffer`](Self::copy_buffer). Returns `None` before the first run
-    /// or when the run produced no output register.
+    /// Each run replaces the previous run's terminal, so this is the latest
+    /// value-level result — the whole-buffer (`Value::Buffer`) forms are
+    /// inspected with [`copy_buffer`](Self::copy_buffer). Returns `None`
+    /// before the first run, after a re-seat, or when the run produced no
+    /// output register.
     pub fn result(&self) -> Option<crate::arena::ArenaRef> {
         self.main
     }
@@ -979,8 +980,17 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         &self.arena
     }
 
-    /// Forward initialisation to all built-in instances.
-    pub fn init(&mut self, sample_rate: f32) {
+    /// Forward initialisation to all single-channel block built-in instances
+    /// at the world's current
+    /// [`params.sample_rate`](rill_core::Params::sample_rate).
+    ///
+    /// `BuiltinInst::MultichannelBlock` has no `init` hook, so a
+    /// multichannel built-in keeps whatever state it was built with.
+    ///
+    /// The seat already initialises every block built-in, so this is only
+    /// needed to re-initialise after the host changed the rate.
+    pub fn init(&mut self) {
+        let sample_rate = self.params.sample_rate;
         for b in &mut self.builtins {
             match b {
                 BuiltinInst::Block(inst) => Algorithm::init(inst.as_mut(), sample_rate),
@@ -1014,9 +1024,14 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// state slots, per-tick registers, outputs, capture cells, deferred
     /// drops) so a mid-lifetime reset cannot exhaust the fixed arena.
     ///
-    /// `num_value_regs` is the IR's register count: it is the watermark the
+    /// `num_value_regs` is [`Ir::num_value_regs`]: it is the watermark the
     /// per-tick register store returns to after the value-track state is
     /// released.
+    ///
+    /// Kept `pub` rather than crate-private because it is the world's reset
+    /// capability (its only in-workspace caller is the world's own test
+    /// suite); a host-facing reset would more naturally take `&Ir` and read the
+    /// register count itself.
     pub fn reset(&mut self, num_value_regs: usize) {
         for b in &mut self.block_state {
             b.fill(T::ZERO);

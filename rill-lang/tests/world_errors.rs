@@ -49,7 +49,7 @@ fn an_unknown_builtin_compiles_but_fails_at_seat() {
         "the unknown built-in is a seat-time `Unsupported`, got: {err:?}"
     );
     assert!(
-        message.contains("mystery") && message.contains("not registered"),
+        message.contains("foreign built-in 'mystery' is not registered"),
         "expected the unresolvable-built-in message for `mystery`, got: {message}"
     );
 }
