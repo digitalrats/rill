@@ -156,7 +156,7 @@ Add `tests/categories.rs` (create) with:
 #[test]
 fn concat_map_splices_lists() {
     let mut prog = compile::<f32>(
-        "main = length (concat_map (fn x -> [x, x]) [1.0, 2.0]);"
+        "main = length (concat_map (\\x -> [x, x]) [1.0, 2.0]);"
     ).unwrap();
     // [1,1,2,2] -> 4
     let mut out = [0.0f32; 4];
@@ -277,15 +277,15 @@ instance Monoid List where { mempty = list; mappend a b = append_list a b; }
 
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
-    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+    fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); };
 }
 instance Functor Either a where {
-    fmap g e = match e of { Left x => Left x; Right y => Right (g y); };
+    fmap g e = case e of { Left x -> Left x; Right y -> Right (g y); };
 }
 
 instance Monad Maybe where {
     return x = Just x;
-    bind m f = match m of { Nothing => Nothing; Just x => f x; };
+    bind m f = case m of { Nothing -> Nothing; Just x -> f x; };
 }
 instance Monad List where {
     return x = cons x (list);
@@ -293,7 +293,7 @@ instance Monad List where {
 }
 instance Monad Either a where {
     return x = Right x;
-    bind e f = match e of { Left x => Left x; Right y => f y; };
+    bind e f = case e of { Left x -> Left x; Right y -> f y; };
 }
 "#;
 ```
@@ -333,7 +333,7 @@ Replace the inline `Def::Typeclass`/`Def::Instance` loop in `types/infer.rs` (ph
 ```rust
 #[test]
 fn builtin_functor_fmap_over_list() {
-    let mut prog = compile::<f32>("main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);").unwrap();
+    let mut prog = compile::<f32>("main = length (fmap (\\x -> x * 2.0) [1.0, 2.0, 3.0]);").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(), &rill_lang::arena::Value::Int(3));
@@ -342,7 +342,7 @@ fn builtin_functor_fmap_over_list() {
 #[test]
 fn builtin_functor_fmap_over_maybe() {
     let mut prog = compile::<f32>(
-        "main = match (fmap (fn x -> x + 1.0) (Just 1.0)) of { Nothing => 0.0; Just x => x; };"
+        "main = case (fmap (\\x -> x + 1.0) (Just 1.0)) of { Nothing -> 0.0; Just x -> x; };"
     ).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -526,7 +526,7 @@ Commit: `git add -A && git commit -m 'feat(rill-lang): multi-arg arity-0 methods
 fn monad_auto_derives_applicative_pure() {
     // `pure` for Maybe is derived from `instance Monad Maybe` (no explicit
     // Applicative Maybe in the prelude).
-    let mut prog = compile::<f32>("main = match (pure 5.0) of { Nothing => 0.0; Just x => x; };").unwrap();
+    let mut prog = compile::<f32>("main = case (pure 5.0) of { Nothing -> 0.0; Just x -> x; };").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
     assert_eq!(prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(), &rill_lang::arena::Value::Float(5.0));
@@ -535,7 +535,7 @@ fn monad_auto_derives_applicative_pure() {
 #[test]
 fn monad_auto_derives_functor_fmap() {
     let mut prog = compile::<f32>(
-        "main = match (fmap (fn x -> x * 10.0) (Just 2.0)) of { Nothing => 0.0; Just x => x; };"
+        "main = case (fmap (\\x -> x * 10.0) (Just 2.0)) of { Nothing -> 0.0; Just x -> x; };"
     ).unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[], &mut [&mut out]).unwrap();
@@ -548,8 +548,8 @@ fn monad_auto_derives_functor_fmap() {
 Parse two templates once and synthesize missing instances:
 
 ```rust
-const APPLICATIVE_FROM_MONAD: &str = r#"pure x = return x; ap mf mx = bind mf (fn f -> bind mx (fn x -> return (f x)));"#;
-const FUNCTOR_FROM_MONAD: &str = r#"fmap g x = bind x (fn y -> return (g y));"#;
+const APPLICATIVE_FROM_MONAD: &str = r#"pure x = return x; ap mf mx = bind mf (\f -> bind mx (\x -> return (f x)));"#;
+const FUNCTOR_FROM_MONAD: &str = r#"fmap g x = bind x (\y -> return (g y));"#;
 const FUNCTOR_FROM_APPLICATIVE: &str = r#"fmap g x = ap (pure g) x;"#;
 ```
 
@@ -595,11 +595,11 @@ Commit: `git add -A && git commit -m 'feat(rill-lang): auto-derive Applicative/F
 ```rust
 #[test]
 fn do_notation_binds_and_returns() {
-    // do { x <- mx; y <- my; pure (x + y) }  == bind mx (fn x -> bind my (fn y -> pure (x+y)))
+    // do { x <- mx; y <- my; pure (x + y) }  == bind mx (\x -> bind my (\y -> pure (x+y)))
     let src = r#"
         mx = Just 1.0;
         my = Just 2.0;
-        main = match (do { x <- mx; y <- my; pure (x + y); }) of { Nothing => 0.0; Just z => z; };
+        main = case (do { x <- mx; y <- my; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
     "#;
     let mut prog = compile::<f32>(src).unwrap();
     let mut out = [0.0f32; 4];
@@ -611,7 +611,7 @@ fn do_notation_binds_and_returns() {
 fn do_notation_let_and_bare_statement() {
     let src = r#"
         mx = Just 1.0;
-        main = match (do { x <- mx; let y = 2.0; 1.0; pure (x + y); }) of { Nothing => 0.0; Just z => z; };
+        main = case (do { x <- mx; let y = 2.0; 1.0; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
     "#;
     let mut prog = compile::<f32>(src).unwrap();
     let mut out = [0.0f32; 4];
@@ -630,8 +630,8 @@ In `parse_prefix`, add `Tok::KwDo => self.parse_do_block()`. Implementation:
 
 ```rust
 /// `do { stmt; stmt; expr }` — monadic sequencing. Desugared here to nested
-/// `bind e (fn x -> rest)` (Haskell `<-`), `let` statements to `Expr::Let`,
-/// and bare statement expressions to `bind e (fn _ -> rest)`.
+/// `bind e (\x -> rest)` (Haskell `<-`), `let` statements to `Expr::Let`,
+/// and bare statement expressions to `bind e (\_ -> rest)`.
 fn parse_do_block(&mut self) -> Result<Expr, CompileError> {
     let start = self.bump().span.start;   // consume `do`
     self.eat(&Tok::LBrace)?;

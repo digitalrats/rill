@@ -96,7 +96,7 @@ executes underneath. Old signal tests rewritten for the new model.'
 
 **Goal:** `main`'s inputs/outputs are `Value::Buffer`; signal programs run through the value track. The block track is dead code (present, unreferenced).
 
-**Memory model (user directive):** Buffer is an ORDINARY value type backed by the separate Tier-1 big-object memory (SP-4): `Value::Buffer(usize)` indexes a program-level `Vec<RegionHandle<T>>` carved from a `BufferAllocator` at build (program-lifetime static, RC). Buffer mutation is IN-PLACE and scoped by an ST region (`runST (fn s -> …)`); the phantom `s` prevents a mutated buffer from leaking. See `docs/superpowers/specs/2026-10-10-rill-lang-full-track-unification-design.md` §2.2.
+**Memory model (user directive):** Buffer is an ORDINARY value type backed by the separate Tier-1 big-object memory (SP-4): `Value::Buffer(usize)` indexes a program-level `Vec<RegionHandle<T>>` carved from a `BufferAllocator` at build (program-lifetime static, RC). Buffer mutation is IN-PLACE and scoped by an ST region (`runST (\s -> …)`); the phantom `s` prevents a mutated buffer from leaking. See `docs/superpowers/specs/2026-10-10-rill-lang-full-track-unification-design.md` §2.2.
 
 - [ ] **Step 1: Add `Value::Buffer`**
 

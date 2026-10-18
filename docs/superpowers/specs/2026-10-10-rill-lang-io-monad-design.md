@@ -49,7 +49,7 @@ closure, `run` leads the root fragment. `IoCapture`/`IoPlayback` are unchanged.
 - `runST : (forall s. ST s a) -> a` is a builtin signature (`builtin_sigs`,
   `ty.rs:541`); `data ST s a = { unST: a }` in `CATEGORY_PRELUDE`. Rank-N
   application + escape check in `infer_apply_impl`. Lowering desugars
-  `runST (fn s -> body)` to the body directly.
+  `runST (\s -> body)` to the body directly.
 - B3-2: signal expressions lower to `ValueBuffer*` value-track ops over
   `Value::Buffer(usize)` handles backed by a program-level `RegionHandle`
   buffer table. `process()` materializes inputs into the buffer table, leads
@@ -206,7 +206,7 @@ the runtime invokes it (like Haskell RTS invokes `main`).
 - **RT safety:** unchanged — one value track, no new allocation. `writeOutput`
   copies within the existing buffer table / external slices.
 - **`_` semantics:** a bare `_` still means "the program input" in `main` via
-  auto-desugar; inside explicit `fn i1 -> …` it is an ordinary name.
+  auto-desugar; inside explicit `\i1 -> …` it is an ordinary name.
 - **DSP purity:** a `Buffer -> Buffer` function's in-place mutation is hidden
   behind the leading IO action (ST-style); the type system never exposes a
   partially-mutated buffer.

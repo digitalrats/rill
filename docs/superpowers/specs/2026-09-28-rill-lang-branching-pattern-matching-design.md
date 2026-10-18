@@ -43,7 +43,7 @@ passable to functions, embeddable in arithmetic/records, or used as `main`:
 
 ```haskell
 x = if flag then 1.0 else 2.0;
-y = match m of { Just v => v; Nothing => 0.0; };
+y = case m of { Just v -> v; Nothing -> 0.0; };
 main = 0.5 * (if flag then 2.0 else 3.0);
 ```
 
@@ -105,11 +105,11 @@ atom/continuation, so `parse_expr` stops before it (verify `is_atom_start`).
 ### 3.2 `match`
 
 ```haskell
-match x of {
-    Circle r => r;                       // constructor pattern + bindings
-    0 => "zero"; _ => "other";           // literal + wildcard
-    Just (Left x) => x; _ => 0.0;        // nested pattern
-    n | n > 0 => 1.0; _ => 0.0;          // guard on a bound variable
+case x of {
+    Circle r -> r;                       // constructor pattern + bindings
+    0 -> "zero"; _ -> "other";           // literal + wildcard
+    Just (Left x) -> x; _ -> 0.0;        // nested pattern
+    n | n > 0 -> 1.0; _ -> 0.0;          // guard on a bound variable
 }
 ```
 
@@ -184,14 +184,14 @@ remains `Wire`.
   No interval analysis for `Int`/`Float`/`String`.
 - **Guarded arms do not count toward coverage** (a guard may fail at runtime).
   Under the strict totality rule a constructor covered only by a *guarded* arm
-  is **non-exhaustive**: `match Just 5.0 of { Just x | x > 10.0 => 1.0;
-  Nothing => 2.0; }` is a **compile error** — the `Just` constructor has no
+  is **non-exhaustive**: `case Just 5.0 of { Just x | x > 10.0 -> 1.0;
+  Nothing -> 2.0; }` is a **compile error** — the `Just` constructor has no
   unguarded arm (and no wildcard covers it).
 - **Runtime fallback (defense-in-depth):** the lowered match always ends in a
   fail block that latches `ProcessError` on a tick where no arm matches. Because
   compile-time totality guarantees a well-formed match has an unguarded
   fallback, this backstop is reachable in practice only when the scrutinee slot
-  is uninitialized — an unbound `_` wire scrutinee (`match _ of { … }`) has no
+  is uninitialized — an unbound `_` wire scrutinee (`case _ of { … }`) has no
   constructor tag to dispatch on — which yields `ProcessError`. (Covered by
   `match_over_unbound_wire_scrutinee_errors_at_runtime` in
   `tests/match_patterns.rs`.)
@@ -316,10 +316,10 @@ End-to-end (`tests/branching.rs`, `tests/match_patterns.rs`):
 - `if` from value-state feedback (`c = ~ (c + 1.0)`) switching across ticks
   without parameters.
 - `if` + runtime `match` together, driven by `SetParameter`:
-  `match (if g > 0.5 then Just 1.0 else Nothing) of { Just x => x; Nothing => 0.0; }`.
+  `case (if g > 0.5 then Just 1.0 else Nothing) of { Just x -> x; Nothing -> 0.0; }`.
 - Runtime `match` on non-resolvable scrutinees — the two repurposed tests
   (`tests/collections_list.rs:234`, `lower.rs:3861`) now compile and dispatch:
-  `match (head (filter ...)) of { ... }` → `Float(2.0)`; `match _ of { ... }`.
+  `case (head (filter ...)) of { ... }` → `Float(2.0)`; `case _ of { ... }`.
 
 Patterns: literal `Int`/`Float`/`Bool`/`String`; wildcard; `Var` binding whole
 value; nested `Just (Left x)`; `Bool` totality without wildcard.

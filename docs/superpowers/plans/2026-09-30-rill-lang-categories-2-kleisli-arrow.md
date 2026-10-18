@@ -4,7 +4,7 @@
 
 **Goal:** Ship `data Kleisli m a b = { unKleisli: a -> m b }`, a builtin `Arrow` typeclass (`arr`/`first`/`compose` + `second`/`both`/`fan` defaults), and `instance Monad m => Arrow (Kleisli m)` — the first **constraint-qualified instance** — all registered via `CATEGORY_PRELUDE`.
 
-**Architecture:** This sub-project first closes an **HKT gap** (`ValueTy::TyConApp` — applying a data-type *parameter* as a constructor, `m b` in `data K m a b = { f: a -> m b }`), unifies `,` (Par) as a **channel tuple** (`signal,signal` → parallel; `value,value` → `Pair`; mixed → error) with zero parser migration, adds **tuple types** `(b, d)` → `Pair b d`, **field-projection application** (`(k.unKleisli) p.first`), **constraint-qualified instances** (`instance (Monad m) => Arrow (Kleisli m)`) with head-arg binding + constraint discharge, **default methods** (instance body > default > error), and a **single-field record constructed newtype-style** (`Kleisli (fn x -> …)`). Kleisli/Arrow/instance live in `CATEGORY_PRELUDE`.
+**Architecture:** This sub-project first closes an **HKT gap** (`ValueTy::TyConApp` — applying a data-type *parameter* as a constructor, `m b` in `data K m a b = { f: a -> m b }`), unifies `,` (Par) as a **channel tuple** (`signal,signal` → parallel; `value,value` → `Pair`; mixed → error) with zero parser migration, adds **tuple types** `(b, d)` → `Pair b d`, **field-projection application** (`(k.unKleisli) p.first`), **constraint-qualified instances** (`instance (Monad m) => Arrow (Kleisli m)`) with head-arg binding + constraint discharge, **default methods** (instance body > default > error), and a **single-field record constructed newtype-style** (`Kleisli (\x -> …)`). Kleisli/Arrow/instance live in `CATEGORY_PRELUDE`.
 
 **Tech Stack:** Rust, no new external dependencies. Branch `feature/rill-lang-categories`.
 
@@ -176,8 +176,8 @@ This replaces the `slots` loop; regression: plain parameterized records (`data B
 fn hkt_data_field_applies_type_parameter() {
     let src = r#"
         data K m a b = { f: a -> m b };
-        k = K { f: fn x -> Just x };
-        main = match (k.f 3.0) of { Just v => v; Nothing => 0.0; };
+        k = K { f: \x -> Just x };
+        main = case (k.f 3.0) of { Just v -> v; Nothing -> 0.0; };
     "#;
     let mut prog = compile::<f32>(src).unwrap();
     let mut out = [0.0f32; 4];
@@ -339,7 +339,7 @@ fn field_projection_applies_as_function() {
     // `(b.f) 3.0` applies the projected closure.
     let src = r#"
         data Box = { f: Float -> Float };
-        b = Box { f: fn x -> x * 2.0 };
+        b = Box { f: \x -> x * 2.0 };
         main = (b.f) 3.0;
     "#;
     let mut prog = compile::<f32>(src).unwrap();
@@ -355,7 +355,7 @@ fn field_projection_applies_as_function() {
 
 ```rust
 /// Application of an arbitrary expression (not just a name) to arguments:
-/// `(k.unKleisli) p.first`, `(fn x -> x) 1.0`.
+/// `(k.unKleisli) p.first`, `(\x -> x) 1.0`.
 ApplyExpr {
     /// The callee expression (a closure-valued projection, lambda, …).
     callee: Box<Expr>,
@@ -769,16 +769,16 @@ fn constraint_instance_arr_over_kleisli() {
         }
         data Kleisli m a b = { unKleisli: a -> m b };
         instance (Monad m) => Arrow (Kleisli m) where {
-            arr f = Kleisli { unKleisli: fn x -> return (f x) };
+            arr f = Kleisli { unKleisli: \x -> return (f x) };
         }
-        main = match (unKleisli2 (arr (fn x -> x * 10.0))) of { Just v => v; Nothing => 0.0; };
+        main = case (unKleisli2 (arr (\x -> x * 10.0))) of { Just v -> v; Nothing -> 0.0; };
     "#;
     // NOTE: needs `unKleisli2` (projection+apply, Task 4) and Pair ctor (Task 2).
     // Simplest E2E: apply `arr`'s result via a helper.
 }
 ```
 
-Prefer a minimal E2E once Task 4/2 are in: define a top-level helper `apply k x = let u = k.unKleisli in u x;` and assert `apply (arr (fn x -> x * 2.0)) 3.0 == 6.0` for a `Maybe`-Kleisli. (The real Kleisli/Arrow live in the prelude in Task 8; this task validates the machinery with user-declared equivalents.)
+Prefer a minimal E2E once Task 4/2 are in: define a top-level helper `apply k x = let u = k.unKleisli in u x;` and assert `apply (arr (\x -> x * 2.0)) 3.0 == 6.0` for a `Maybe`-Kleisli. (The real Kleisli/Arrow live in the prelude in Task 8; this task validates the machinery with user-declared equivalents.)
 
 Run: `cargo test -p rill-lang --test arrow`.
 Commit: `git add -A && git commit -m 'feat(rill-lang): resolve constraint instances + default methods'`
@@ -787,7 +787,7 @@ Commit: `git add -A && git commit -m 'feat(rill-lang): resolve constraint instan
 
 ## Task 7: Single-field record constructed newtype-style
 
-**Problem:** the prelude instance writes `arr f = Kleisli (fn x -> …)` — a record constructor applied to the field VALUE, not a `{ … }` literal. Today `infer`/`lower` reject that (`"record constructor expects a record literal"`).
+**Problem:** the prelude instance writes `arr f = Kleisli (\x -> …)` — a record constructor applied to the field VALUE, not a `{ … }` literal. Today `infer`/`lower` reject that (`"record constructor expects a record literal"`).
 
 **Files:** `types/infer.rs`, `lower.rs`
 
@@ -798,7 +798,7 @@ Commit: `git add -A && git commit -m 'feat(rill-lang): resolve constraint instan
 fn single_field_record_newtype_style() {
     let src = r#"
         data Box = { f: Float -> Float };
-        b = Box (fn x -> x * 2.0);
+        b = Box (\x -> x * 2.0);
         main = 1.0;
     "#;
     let mut prog = compile::<f32>(src).unwrap();
@@ -812,8 +812,8 @@ fn single_field_record_newtype_style() {
 `infer_apply_impl` record-constructor arm (infer.rs:2205): when the record has exactly **one** field and the argument is NOT a `{ … }` record literal, treat it as the single field's value:
 
 ```rust
-// Single-field record constructed newtype-style: `Box (fn x -> …)` ≡
-// `Box { f: fn x -> … }`. Only valid for exactly one field.
+// Single-field record constructed newtype-style: `Box (\x -> …)` ≡
+// `Box { f: \x -> … }`. Only valid for exactly one field.
 if fields.len() == 1 && !matches!(&args[0], Expr::Record(..)) {
     let (fname, fty) = &fields[0];
     let vt = infer_const_value(ctx, &args[0])?;
@@ -890,7 +890,7 @@ Commit: `git add -A && git commit -m 'feat(rill-lang): typeclass default bodies 
 
 Append to `CATEGORY_PRELUDE` (ty.rs:263):
 
-```rill
+```haskell
 data Kleisli m a b = { unKleisli: a -> m b };
 
 typeclass Arrow a where {
@@ -898,17 +898,17 @@ typeclass Arrow a where {
     first: a b c -> a (Pair b d) (Pair c d);
     compose: a b c -> a c d -> a b d;
     second: a b c -> a (Pair d b) (Pair d c) =
-        compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first }));
+        compose (compose (arr (\p -> Pair { first: p.second, second: p.first })) (first k)) (arr (\p -> Pair { first: p.second, second: p.first }));
     both: a b c -> a d e -> a (Pair b d) (Pair c e) =
         compose (first f) (second g);
     fan: a b c -> a b d -> a b (Pair c d) =
-        compose (arr (fn x -> Pair { first: x, second: x })) (both f g);
+        compose (arr (\x -> Pair { first: x, second: x })) (both f g);
 }
 
 instance (Monad m) => Arrow (Kleisli m) where {
-    arr f = Kleisli (fn x -> return (f x));
-    first k = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
-    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+    arr f = Kleisli (\x -> return (f x));
+    first k = Kleisli (\p -> bind (k.unKleisli p.first) (\z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (\x -> bind (k1.unKleisli x) (\y -> k2.unKleisli y));
 }
 ```
 
@@ -925,8 +925,8 @@ instance (Monad m) => Arrow (Kleisli m) where {
 fn kleisli_arrow_end_to_end() {
     let src = r#"
         apply k x = let u = k.unKleisli in u x;
-        main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
-            Just v => v; Nothing => 0.0;
+        main = case (apply (compose (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
+            Just v -> v; Nothing -> 0.0;
         };
     "#;
     let mut prog = compile::<f32>(src).unwrap();
@@ -970,6 +970,6 @@ git add -A && git commit -m 'docs(rill-lang): Arrow, Kleisli, constraint instanc
 
 **Placeholder scan:** Task 6's E2E test is intentionally a user-declared equivalent (prelude lands in T9) — the concrete assert is written in Task 9. Default bodies are param-taking (T8) with the final prelude text in T9.
 
-**Type consistency:** `unKleisli: a -> m b` is `Func([Var(a)],[TyConApp(m,[Var(b)])])` everywhere (T1 data_field_vty, T6 signature_param_tys_conv, T9 prelude). `first` result `a (Pair b d) (Pair c d)` matches the prelude body's `Pair { first, second }` record (T2/T3/T9). `(b, d)` type sugar → `Pair b d` consistent with the Pair record's `first`/`second` fields. `Kleisli (fn x -> …)` newtype-style (T7) matches the prelude instance bodies (T9).
+**Type consistency:** `unKleisli: a -> m b` is `Func([Var(a)],[TyConApp(m,[Var(b)])])` everywhere (T1 data_field_vty, T6 signature_param_tys_conv, T9 prelude). `first` result `a (Pair b d) (Pair c d)` matches the prelude body's `Pair { first, second }` record (T2/T3/T9). `(b, d)` type sugar → `Pair b d` consistent with the Pair record's `first`/`second` fields. `Kleisli (\x -> …)` newtype-style (T7) matches the prelude instance bodies (T9).
 
 **Note on default-method params:** v1 typeclass methods resolve by inlining with params bound from call-site args (SP-1). Default bodies with params work through the same path (T6 Step 5 binds the default's params from the call). No runtime dispatch added.

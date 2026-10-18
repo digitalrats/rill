@@ -52,7 +52,7 @@ language's only execution mode.
 
 ### 1.1 `IO a` today is a container, not a State computation
 
-```rill
+```haskell
 data IO a = { unIO: a };
 instance Monad IO where {
     return x = IO { unIO: x };
@@ -112,13 +112,13 @@ rill-lang.
 
 ```
 data World;                            -- primitive world type (not constructible)
-IO a = fn w -> Pair a w                -- State monad; w : World
+IO a = \w -> Pair a w                -- State monad; w : World
 ```
 
 - `World` is a **primitive token** (like `State# RealWorld` in GHC): no
   constructors, no pattern matching; only the runtime creates the initial
   `realWorld` and discards the final one.
-- `return x = fn w -> (x, w)`; `bind m f = fn w -> let (a, w') = m w in (f a) w'`.
+- `return x = \w -> (x, w)`; `bind m f = \w -> let (a, w') = m w in (f a) w'`.
 - `runIO main` — the runtime applies `main` to `realWorld`, discards the
   final world. `main :: IO ()`.
 - **Effect = function of the token.** This is State, so it also provides the
@@ -188,7 +188,7 @@ programs is expressible in rill-lang:
 main = do
     stc  <- openStcPlayer file            -- a task: awaits ClockTick, emits regs
     lfo  <- spawnAutomaton lfo            -- green thread: interval, SetParameter
-    audio <- runStream (fn ins outs -> do
+    audio <- runStream (\ins outs -> do
         regs <- stc.step                    -- await next register block
         writeOutput outs (lofi (ay38910 1750000.0 regs) ...))
     return ()
@@ -279,7 +279,7 @@ lifetimes (6).
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ Language                                                   │
-│  IO a  = fn w -> Pair a w   (State over World token)       │
+│  IO a  = \w -> Pair a w   (State over World token)       │
 │  World = primitive token (runtime-created)                 │
 │  InputStream/OutputStream = channels in the World          │
 │  runStream, openInput/openOutput, newTape — IO primitives  │
@@ -300,7 +300,7 @@ lifetimes (6).
 ### 3.1 Components
 
 1. **`World` + `IO` as State** (`types/ty.rs` prelude, `parser.rs`, `infer.rs`,
-   `lower.rs`): `data World`, `IO a = fn w -> Pair a w`, `Monad IO` rewritten,
+   `lower.rs`): `data World`, `IO a = \w -> Pair a w`, `Monad IO` rewritten,
    `runIO`/`runStream` primitives.
 2. **Streams** (`lower.rs`, `program.rs`, `interp.rs`): `InputStream` /
    `OutputStream` values; `read`/`write` = channel ops.

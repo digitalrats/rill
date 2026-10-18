@@ -201,7 +201,7 @@ struct TypeclassInfo {
 data Box a = { value: a };                 // user parameterized type
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 instance Functor List where { fmap g xs = map g xs; }
-instance Functor Maybe where { fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); }; }
+instance Functor Maybe where { fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); }; }
 
 // collections
 xs = [1.0, 2.0, 3.0];       // List Float 3 (capacity from literal length)
@@ -210,9 +210,9 @@ ys = cons 10.0 e;           // List Float 4 (valid: 1 element ≤ 4)
 h  = head xs;               // Maybe Float: Just 1.0 / Nothing
 t  = tail xs;               // List Float 3 (capacity preserved)
 n  = length xs;             // Int
-z  = map (fn x -> x * 2.0) xs;   // List Float 3
-s  = fold (fn a b -> a + b) 0.0 xs;  // Float
-f  = filter (fn x -> x > 1.0) xs;    // List Float 3
+z  = map (\x -> x * 2.0) xs;   // List Float 3
+s  = fold (\a b -> a + b) 0.0 xs;  // Float
+f  = filter (\x -> x > 1.0) xs;    // List Float 3
 bad = cons 9.0 xs;          // runtime error: len 3 ≥ cap 3
 
 m  = { "a": 1.0, "b": 2.0 };         // Map String Float 2
@@ -227,7 +227,7 @@ b2 = member 1 s1;                    // Bool
 
 // scalars / logic / comparisons (value track only)
 tru  = true;                         // Bool
-cond = fn x -> x > 1.0 && x < 4.0;   // Bool (comparisons only in value position)
+cond = \x -> x > 1.0 && x < 4.0;   // Bool (comparisons only in value position)
 notx = not cond;                     // Bool (`not` is a prefix builtin; `!` stays wire-cut)
 
 // nullary constructors + match

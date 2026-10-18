@@ -51,7 +51,7 @@ signature *for* the language.
 
 **Syntax (carried arrows, parsed by the existing type parser):**
 
-```rill
+```haskell
 // SIGNAL_PRELUDE + user code
 foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
 foreign fn sine   : Float -> Float -> Float -> FixedBuffer f32;
@@ -89,7 +89,7 @@ provides the arity/param info that `BuiltinInstance` needs. No IR change.
 kind in rill today (a block of `BUF` samples, `n ≤ BUF` processed per tick), and
 there will not be another for some time. `Buffer` is its language-level type name.
 
-```rill
+```haskell
 typeclass Buffer b where { }      // skeleton; base ops come in later stages
 instance Buffer (FixedBuffer a);
 ```

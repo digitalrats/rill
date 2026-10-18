@@ -18,7 +18,7 @@ as values: `Value::Func(u32)` (an index into `Ir::value_funcs`), created by
 time). This supports `f = double; main = f 21.0` only when the call target is
 statically known. It does NOT support:
 
-1. **Lambda literals** — anonymous functions `fn x -> expr` as expressions.
+1. **Lambda literals** — anonymous functions `\x -> expr` as expressions.
 2. **Closures** — capturing free variables (including enclosing function
    parameters) at creation time.
 3. **Runtime dispatch** — calling a function value whose target is not known
@@ -64,7 +64,7 @@ enum Value {
 | Top-level variable in the same scope | by-value snapshot (same rule) |
 
 Scope is lexical: an inner lambda sees the outer function's parameters
-(`adder n = fn x -> x + n` — `n` is captured when the inner `fn` is created).
+(`adder n = \x -> x + n` — `n` is captured when the inner `fn` is created).
 At top level, a lambda captures same-level variables.
 
 ### 2.3 Signature typing
@@ -168,13 +168,13 @@ run_closure(prog, closure_slot, args):
 ## 5. Syntax
 
 ```haskell
-double = fn x -> x * 2.0;           // lambda literal
-adder  = fn n -> fn x -> x + n;     // captures parent param n
+double = \x -> x * 2.0;           // lambda literal
+adder  = \n -> \x -> x + n;     // captures parent param n
 add2   = adder 2;                   // currying via closure
-twice  = fn f x -> f (f x);         // HOF
-amp    = fn g x -> x * g;           // g: value, x: signal wire
+twice  = \f x -> f (f x);         // HOF
+amp    = \g x -> x * g;           // g: value, x: signal wire
 main   = amp 2.0 _;                 // wire-capture at the call site
-apply  = fn f x -> f x;
+apply  = \f x -> f x;
 ```
 
 - `fn` is a new keyword. `fn p1 p2 ... -> body` — juxtaposed params (no parens,
@@ -205,7 +205,7 @@ source → lexer (fn keyword) → parser (Lambda expr) → infer
 |---|---|---|
 | 1 | Signature typing | `ValueTy::Func(Vec, Vec)`, replace `Value::Func(u32)` → `Closure`, `ValueConstructClosure` |
 | 2 | FragmentIr + dispatch | `Ir::fragments`, `ValueCallFunc` real dispatch, temp cell-frame, static depth |
-| 3 | Lambda literals | lexer `fn`, parser `fn p -> body`, infer signature + capture set, lower to fragment |
+| 3 | Lambda literals | lexer `fn`, parser `\p -> body`, infer signature + capture set, lower to fragment |
 | 4 | Env capture | by-value snapshot of free variables incl. parent params; closure creation |
 | 5 | Currying + wires | partial application via closures; signal-wire args at call sites |
 | 6 | HOF + tests + docs | `map`/`twice`/`apply` combinators; integration tests; rill-lang.md |
@@ -218,12 +218,12 @@ language surface, 5–6 the first-class completeness.
 1. Lambda literal creates a `Value::Closure` with the right fragment.
 2. Closure captures a parent parameter by-value (snapshot); mutation of the
    original does not affect the closure (COW).
-3. `adder n = fn x -> x + n; add2 = adder 2; add2 3` → 5.
-4. HOF: `twice f x = f (f x); double = fn x -> x * 2.0; main = twice double 3`
+3. `adder n = \x -> x + n; add2 = adder 2; add2 3` → 5.
+4. HOF: `twice f x = f (f x); double = \x -> x * 2.0; main = twice double 3`
    → 12.
-5. Signal-wire arg: `amp = fn g x -> x * g; main = amp 2.0 _` → block × 2.0.
+5. Signal-wire arg: `amp = \g x -> x * g; main = amp 2.0 _` → block × 2.0.
 6. Partial application type-checked: `add 3` yields `Float → Float`.
-7. Recursion rejected: `f = fn x -> f x` → compile error.
+7. Recursion rejected: `f = \x -> f x` → compile error.
 8. Static depth: a deep non-recursive call chain compiles; the call stack is
    pre-allocated to the max path length.
 9. Regression: all existing tests stay green; zero clippy warnings.
@@ -236,7 +236,7 @@ language surface, 5–6 the first-class completeness.
 | `rill-lang/src/types/ty.rs` | `ValueTy::Func(Vec, Vec)`, `FuncSig` |
 | `rill-lang/src/ir.rs` | `ValueConstructClosure`, `ValueCallFunc` (real), `Ir::fragments`, `FragmentIr`, `FuncSig` |
 | `rill-lang/src/lexer.rs` | `fn` keyword |
-| `rill-lang/src/parser.rs` | `fn p -> body` lambda expression |
+| `rill-lang/src/parser.rs` | `\p -> body` lambda expression |
 | `rill-lang/src/types/infer.rs` | lambda signature + capture set inference |
 | `rill-lang/src/lower.rs` | fragment compilation, closure creation, call dispatch |
 | `rill-lang/src/backend/interp.rs` | `run_closure`, `ValueCallFunc` dispatch, temp cell-frame |

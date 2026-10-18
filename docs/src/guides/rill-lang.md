@@ -536,7 +536,7 @@ assert!(compile::<f32>("main = _ , _;").is_ok());
 
 A program selects its evaluation contract with a module pragma or an API key.
 
-```rill
+```haskell
 {-# MODE complete #-}
 from n = cons n (from (n + 1.0));
 ```
@@ -568,10 +568,10 @@ suspended as a lazy thunk, and strict points (arithmetic, comparison, pattern
 matching, output) force operands to WHNF. This makes infinite sequences
 productive:
 
-```rill
+```haskell
 {-# MODE complete #-}
 from n = cons n (from (n + 1.0));
-headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
+headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = headv (tail (tail (tail (from 10.0))));
 ```
 
@@ -592,11 +592,11 @@ A self-referential local definition (no λ-parameters) is a **thunk in a shared
 cell** in `complete` mode — recursion resolves through the cell, not inline, so
 a value can reference itself lazily:
 
-```rill
+```haskell
 {-# MODE complete #-}
 zipWith f xs ys = cons (f (headv xs) (headv ys)) (zipWith f (tail xs) (tail ys));
-headv xs = match (head xs) of { Nothing => 0.0; Just x => x };
-fibs = cons 0.0 (cons 1.0 (zipWith (fn a b -> a + b) fibs (tail fibs)));
+headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
+fibs = cons 0.0 (cons 1.0 (zipWith (\a b -> a + b) fibs (tail fibs)));
 main = headv (tail (tail (tail (tail fibs))));
 ```
 
@@ -1035,14 +1035,14 @@ phase of the interpreter (the signal track stays whole-buffer SIMD).
 | Construct | Meaning |
 |---|---|
 | `data Point = { x: Float, y: Float }` | record (product) type; construct `Point { x: 1.0, y: 2.0 }`, project `p.x` |
-| `data Shape = Circle Float \| Rect Float Float` | sum type with constructors; match with `match s of { Circle r => ...; Rect w h => ...; }` |
+| `data Shape = Circle Float \| Rect Float Float` | sum type with constructors; case with `case s of { Circle r -> ...; Rect w h -> ...; }` |
 | `type Angles = Float` | type synonym (pure substitution) |
 | `newtype Hz = Float` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
 | `Bool`, `String` | scalar value types (value track only); literals `true`/`false`, `"text"` |
 | `List a`, `Map k v`, `Set a` | builtin containers (**open** — grow up to the pre-allocated arena pool) |
 | `Maybe a`, `Pair a b`, `Either a b` | builtin data types: `Maybe a = Just a \| Nothing`, `Pair a b = { first, second }`, `Either a b = Left a \| Right b` |
 | `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Float where { show f = ...; }` |
-| `fn x -> x * 2.0` | first-class function (lambda literal); see below |
+| `\x -> x * 2.0` | first-class function (lambda literal); see below |
 | `f = double; main = f 21.0` | named function references (function values) |
 
 Value expressions: record/sum/newtype constructors, field projection `p.x`,
@@ -1089,9 +1089,9 @@ ys  = cons 10.0 e;              // prepends; the list grows
 h   = head xs;                  // Maybe Float: Just 1.0 / Nothing
 t   = tail xs;                  // List Float
 n   = length xs;                // Int
-z   = map (fn x -> x * 2.0) xs;           // List Float — function first
-s   = fold (fn a b -> a + b) 0.0 xs;      // Float
-f   = filter (fn x -> x > 1.0) xs;        // List Float
+z   = map (\x -> x * 2.0) xs;           // List Float — function first
+s   = fold (\a b -> a + b) 0.0 xs;      // Float
+f   = filter (\x -> x > 1.0) xs;        // List Float
 
 m  = { "a": 1.0, "b": 2.0 };   // Map String Float
 m1 = insert "a" 9.0 m;         // replace-on-duplicate
@@ -1134,7 +1134,7 @@ use rill_lang::compile;
 
 // fold (acc, elem) over map (x * 2) of [1.0, 2.0, 3.0] -> 12.0
 let mut prog = compile::<f32>(
-    "main = fold (fn a b -> a + b) 0.0 (map (fn x -> x * 2.0) [1.0, 2.0, 3.0]);",
+    "main = fold (\\a b -> a + b) 0.0 (map (\\x -> x * 2.0) [1.0, 2.0, 3.0]);",
 ).unwrap();
 prog.run_value().unwrap();
 assert_eq!(
@@ -1166,10 +1166,10 @@ data Box a = { value: a };          // parameterized user record type
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
-    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+    fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); };
 }
 
-main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
+main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
 ```
 
 - **Kinds** — three kinds in v1: `*` (types), `* → *` (unary constructors),
@@ -1212,8 +1212,8 @@ typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
   result type** (`mappend xs mempty` picks the instance by `xs`'s type). A bare
   `mempty` with an unknown expected type is a compile error.
 - **`do`-notation** — `do { x <- mx; let y = e; stmt; expr; }` desugars in the
-  parser to nested `bind` (`<-` → `bind e (fn x -> rest)`, `let` → `Expr::Let`,
-  bare statements → `bind e (fn _ -> rest)`); the final statement is the block's
+  parser to nested `bind` (`<-` → `bind e (\x -> rest)`, `let` → `Expr::Let`,
+  bare statements → `bind e (\_ -> rest)`); the final statement is the block's
   result. `a < -b` needs parentheses (`a < (-b)`).
 
 #### `Arrow` and `Kleisli`
@@ -1230,17 +1230,17 @@ typeclass Arrow a where {
     first:   a b c -> a (Pair b d) (Pair c d);
     compose: a b c -> a c d -> a b d;
     second:  a b c -> a (Pair d b) (Pair d c) =
-        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+        k (compose (compose (arr (\p -> Pair { first: p.second, second: p.first })) (first k)) (arr (\p -> Pair { first: p.second, second: p.first })));
     both:    a b c -> a d e -> a (Pair b d) (Pair c e) =
         f g (compose (first f) (second g));
     fan:     a b c -> a b d -> a b (Pair c d) =
-        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+        f g (compose (arr (\x -> Pair { first: x, second: x })) (both f g));
 }
 
 instance (Monad m) => Arrow (Kleisli m) where {
-    arr f        = Kleisli (fn x -> return (f x));
-    first k      = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
-    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+    arr f        = Kleisli (\x -> return (f x));
+    first k      = Kleisli (\p -> bind (k.unKleisli p.first) (\z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (\x -> bind (k1.unKleisli x) (\y -> k2.unKleisli y));
 }
 ```
 
@@ -1267,8 +1267,8 @@ instance (Monad m) => Arrow (Kleisli m) where {
 
   ```haskell
   apply k x = let u = k.unKleisli in u x;
-  main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
-      Just v => v; Nothing => 0.0;
+  main = case (apply (compose (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
+      Just v -> v; Nothing -> 0.0;
   };
   // -> Just 8.0, i.e. (3 + 1) * 2
   ```
@@ -1301,9 +1301,9 @@ the projected closure, and the bare `b.f 3.0` form works too (this is the
 shape the Kleisli instance bodies write — `k.unKleisli p.first`).
 
 A **single-field record** can be constructed newtype-style by passing the
-field value directly: `Kleisli (fn x -> …)` is exactly
-`Kleisli { unKleisli: fn x -> … }`. The prelude instance bodies use this
-shorthand (`arr f = Kleisli (fn x -> return (f x));`).
+field value directly: `Kleisli (\x -> …)` is exactly
+`Kleisli { unKleisli: \x -> … }`. The prelude instance bodies use this
+shorthand (`arr f = Kleisli (\x -> return (f x));`).
 
 Reserved names added by the prelude: the Arrow methods `arr`, `first`,
 `compose`, `second`, `both`, `fan`, and the data type `Kleisli` (alongside the
@@ -1337,14 +1337,14 @@ outputs, so a well-formed program never exhausts them in the default mode; the
 
 ### First-class functions and closures
 
-Functions are first-class values: a **lambda literal** `fn p1 p2 -> body` is a
+Functions are first-class values: a **lambda literal** `\p1 p2 -> body` is a
 function value, stored as a `Value::Closure` (a captured environment record
 plus a compiled body fragment). Closures capture their free variables **by
 value** — an environment snapshot at creation time — so
-`adder = fn n -> fn x -> x + n` binds `n` into the closure returned for `x`:
+`adder = \n -> \x -> x + n` binds `n` into the closure returned for `x`:
 
 ```haskell
-adder = fn n -> fn x -> x + n;   // a function returning a closure
+adder = \n -> \x -> x + n;   // a function returning a closure
 add2  = adder 2.0;               // partial application: a closure over `x`
 main  = add2 3.0;                // -> Float(5.0)
 ```
@@ -1354,12 +1354,12 @@ main  = add2 3.0;                // -> Float(5.0)
   `Float(7.0)`). Named λ-parameter definitions curry too
   (`add5 = add2 5.0`).
 - **Higher-order functions** — a lambda parameter can itself be a function:
-  `twice = fn f x -> f (f x); double = fn x -> x * 2.0; main = twice double 3.0`
+  `twice = \f x -> f (f x); double = \x -> x * 2.0; main = twice double 3.0`
   → `Float(12.0)`. Function values flow through records and projections, so a
   combinator can map over a fixed-shape container:
-  `pair_map = fn f p -> Pair { x: f p.x, y: f p.y }`.
+  `pair_map = \f p -> Pair { x: f p.x, y: f p.y }`.
 - **Signal-wire arguments** — a trailing `_` wire binds to the callee's LAST
-  parameter as a signal input: `amp = fn g x -> x * g; main = amp 2.0 _`
+  parameter as a signal input: `amp = \g x -> x * g; main = amp 2.0 _`
   scales the input block by `2.0` (positional wire-capture at the call site).
 - **Recursion is forbidden** — the acyclic contract requires every dispatch
   chain to terminate: a definition that (transitively) calls itself is rejected

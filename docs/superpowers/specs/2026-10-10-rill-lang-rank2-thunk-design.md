@@ -72,7 +72,7 @@ concatenating the closure's env fields with the argument refs into one Record.
 
 Add `TForall(Vec<String>, Box<TypeExpr>)` to `ast.rs::TypeExpr`:
 
-```rill
+```haskell
 id    : forall a. a -> a
 runST : (forall s. ST s a) -> a
 map   : forall a b. (a -> b) -> [a] -> [b]
@@ -96,7 +96,7 @@ before reduce).
 ### 2.3 `runST` — syntax sugar over a forall-typed function (rank-2 application)
 
 `runST : (forall s. ST s a) -> a`. **`runST` is NOT a special form.** The parser
-desugars `runST (fn s -> body)` into an ordinary call `Apply runST [fn s -> body]`
+desugars `runST (\s -> body)` into an ordinary call `Apply runST [\s -> body]`
 (the same pattern as `do {}` → `bind`). `runST` is a built-in function whose
 signature lives in the `TypeEnv` (not a `foreign fn` — FFI is for DSP algorithms
 and its signature conversion hits the `other` arm for `forall`).
@@ -124,7 +124,7 @@ established idiom.
 Class method signatures already use implicit quantification via the class
 variable. `forall` makes it explicit and adds value-polymorphism. `Kleisli m a b`
 and `Arrow (Kleisli m)` keep working. A polymorphic value function
-(`id2 = fn x -> x;` used at two types) now instantiates fresh each use.
+(`id2 = \x -> x;` used at two types) now instantiates fresh each use.
 
 ### 2.5 Compatibility risk
 
@@ -187,7 +187,7 @@ clone. This is codebase preparation for JIT and the track-unification tasks.
 ## 5. Testing
 
 - **Part A:** `forall` parses/renders; a polymorphic value function instantiates
-  fresh at two types; `runST (fn s -> 1.0)` runs to `1.0`; the two escape
+  fresh at two types; `runST (\s -> 1.0)` runs to `1.0`; the two escape
   bypasses from the one-point approach are rejected (chain through higher-id
   var; outer value binder named `s`).
 - **Part B:** the full `rill-lang` suite passes unchanged after the merge;

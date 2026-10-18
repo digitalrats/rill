@@ -4,7 +4,7 @@
 
 **Goal:** Unify rill-lang's signal and value tracks into one type system where a signal buffer is a first-class mutable value (`Buffer`), modelled as an ST-style effect monad with a phantom type `s`, and Faust operators / `:` become typeclass methods.
 
-**Architecture:** Introduce a `Buffer` typeclass (math = in-place mutation, implemented with scalar loops that LLVM auto-vectorizes), an `ST s a` effect monad with `runST (fn s -> body)` regions (one-point rank-2, check-escaping), and re-type signal processing as `Kleisli ST Buffer Buffer` arrows. `:` becomes a single overload (cons for `List`, seq for `Buffer`) dispatched through the existing `class_of_method` → `resolve_method` machinery. `Rate::Signal` as a distinct type-system rate is removed; the linear IR (`Instr`/`block_regs`/`run_block_mimo`) survives as the execution layer for `Buffer` operations. FFI (`foreign fn`, factories, `BlockBuiltin`/`Algorithm::process`) is unchanged. See `docs/superpowers/specs/2026-10-10-rill-lang-value-signal-unification-st-design.md`.
+**Architecture:** Introduce a `Buffer` typeclass (math = in-place mutation, implemented with scalar loops that LLVM auto-vectorizes), an `ST s a` effect monad with `runST (\s -> body)` regions (one-point rank-2, check-escaping), and re-type signal processing as `Kleisli ST Buffer Buffer` arrows. `:` becomes a single overload (cons for `List`, seq for `Buffer`) dispatched through the existing `class_of_method` → `resolve_method` machinery. `Rate::Signal` as a distinct type-system rate is removed; the linear IR (`Instr`/`block_regs`/`run_block_mimo`) survives as the execution layer for `Buffer` operations. FFI (`foreign fn`, factories, `BlockBuiltin`/`Algorithm::process`) is unchanged. See `docs/superpowers/specs/2026-10-10-rill-lang-value-signal-unification-st-design.md`.
 
 **Tech Stack:** Rust, crate `rill-lang` (+ `rill-core::memory::RegionHandle`), branch `feature/rill-lang-arrays`. No new external dependencies.
 
@@ -205,7 +205,7 @@ Expected: PASS.
 
 In `rill-lang/src/types/ty.rs`, replace the marker `typeclass Buffer b where { }` with:
 
-```rill
+```haskell
 typeclass Buffer b where {
     add:  b -> b -> ST ();
     sub:  b -> b -> ST ();
@@ -248,11 +248,11 @@ git commit -m 'feat(rill-lang): Buffer math scalar-loop implementations (in-plac
 
 > **Status: COMPLETE** via the rank-N sub-plan (`docs/superpowers/plans/2026-10-10-rill-lang-rank2-thunk.md`, Tasks R1-R3).
 > `runST` is now syntax sugar over a forall-typed built-in function: the parser
-> desugars `runST (fn s -> body)` → `Apply runST [lam]`; `runST` has signature
+> desugars `runST (\s -> body)` → `Apply runST [lam]`; `runST` has signature
 > `(forall s. ST s a) -> a` in `TypeEnv::builtin_sigs`; rank-N application in
 > `infer_apply_impl` rejects escaping automatically. Commits: R1 `049eec7`+`d84239d`,
 > R2 `5530fd9`, R3 `b487cc0`. Tests: `st_monad.rs`, `rank2_poly.rs` (inference-level;
-> the runtime `runST (fn s -> 1.0)` assertion is deferred to Task B3, where the
+> the runtime `runST (\s -> 1.0)` assertion is deferred to Task B3, where the
 > track unification lands).
 
 ---
@@ -403,7 +403,7 @@ Expected: FAIL (or passes if `Bin` still works — then make the test assert the
 
 In the prelude:
 
-```rill
+```haskell
 instance Buffer (FixedBuffer a) where {
     add x y = buffer_add x y;    -- builtin names wired to buffer_math::add_into
     sub x y = buffer_sub x y;
@@ -478,7 +478,7 @@ fn eval_main(src: &str) -> f32 {
 fn colon_on_list_is_cons() {
     // x : [y, z] == [x, y, z]; head of the result is x.
     // (complete mode: cons is LazyCons; head/tail work on Cons)
-    assert_eq!(eval_main("{-# MODE complete #-}\nmain = match (head (1.0 : [2.0, 3.0])) of { Nothing => 0.0; Just x => x };"), 1.0);
+    assert_eq!(eval_main("{-# MODE complete #-}\nmain = case (head (1.0 : [2.0, 3.0])) of { Nothing -> 0.0; Just x -> x };"), 1.0);
 }
 
 #[test]
@@ -506,7 +506,7 @@ Dispatch goes through the typeclass machinery: define a class `Colon a` (or reus
 
 - [ ] **Step 4: Add `:` methods to the prelude**
 
-```rill
+```haskell
 typeclass Colon a where {
     seq: a -> a -> a;    -- one method, two instances
 }
@@ -561,7 +561,7 @@ fn region_buffer_is_first_class_value() {
     // `buffer_alloc n` allocates a RegionHandle-backed buffer of `n` samples
     // (a new Buffer builtin, added alongside `instance Buffer (RegionHandle a)`
     // in this task).
-    let src = "{-# MODE complete #-}\nmain = match (head [buffer_alloc 1024.0, buffer_alloc 2048.0]) of { Nothing => 0.0; Just x => 1.0 };";
+    let src = "{-# MODE complete #-}\nmain = case (head [buffer_alloc 1024.0, buffer_alloc 2048.0]) of { Nothing -> 0.0; Just x -> 1.0 };";
     let mut p = rill_lang::compile_graph::<f32, 256>(src, &rill_lang::ffi::ForeignRegistry::<f32>::default(), 44100.0).unwrap();
     let mut out = [0.0f32; 1];
     let _ = MultichannelAlgorithm::process(&mut p, &[], &mut [&mut out]);

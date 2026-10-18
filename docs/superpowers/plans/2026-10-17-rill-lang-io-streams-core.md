@@ -72,7 +72,7 @@ fn opaque_type_is_nameable_but_not_constructible() {
 }
 #[test]
 fn opaque_type_has_no_projection_or_patterns() {
-    // ty_of("data W; main = case (undefined: W) of { _ => 1.0 };") -> err (no ctors)
+    // ty_of("data W; main = case (undefined: W) of { _ -> 1.0 };") -> err (no ctors)
     // projection on an opaque value -> err
 }
 ```
@@ -154,8 +154,8 @@ instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
 instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
 instance Monoid List where { mempty = list; mappend a b = append_list a b; }
 instance Functor List where { fmap g xs = map g xs; }
-instance Functor Maybe where { fmap g m = case m of { Nothing => Nothing; Just x => Just (g x); }; }
-instance Monad Maybe where { return x = Just x; bind m f = case m of { Nothing => Nothing; Just x => f x; }; }
+instance Functor Maybe where { fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); }; }
+instance Monad Maybe where { return x = Just x; bind m f = case m of { Nothing -> Nothing; Just x -> f x; }; }
 instance Monad List where { return x = cons x (list); bind xs f = concat_map f xs; }
 instance Monad (ST s) where {
     return x = ST { unST: \s -> Pair { first: s, second: x } };

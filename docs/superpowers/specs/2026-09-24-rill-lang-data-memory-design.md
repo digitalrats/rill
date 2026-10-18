@@ -145,9 +145,9 @@ h  = Hz 440.0;                      // newtype constructor
 f  = hz_to_f h;                     // newtype unwrap (automatic where Float expected)
 v  = area s;                        // pattern matching:
 
-area x = match x of {
-    Circle r    => 3.14159 * r * r;
-    Rect w h    => w * h;
+area x = case x of {
+    Circle r    -> 3.14159 * r * r;
+    Rect w h    -> w * h;
 };
 ```
 
