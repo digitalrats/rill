@@ -1967,6 +1967,7 @@ fn pooled_array_elems_of<T: Transcendental, const BUF: usize>(
     } {
         out.extend_from_slice(elems);
     }
+    debug_assert_eq!(out.len(), len, "pooled array elems length mismatch");
     Some(out)
 }
 
