@@ -5,10 +5,11 @@
 //! typechecker (constrained-def dispatch is a later task), so an unconstrained
 //! body must keep compiling.
 
-use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::lexer::tokenize;
 use rill_lang::parser::parse;
 use rill_lang::render::render;
+use rill_lang::test_eval;
 
 fn program(src: &str) -> rill_lang::ast::Program {
     let toks = tokenize(src).unwrap();
@@ -45,10 +46,15 @@ main = 1.0;"#;
 fn constrained_signature_does_not_break_typechecking() {
     // The constraint is recorded but not enforced yet; the body is an ordinary
     // unconstrained function and must compile and run.
-    let mut prog = compile::<f32>("f x :: Ix i => Float -> Float = x; main = f 1.0;")
+    let src = "f x :: Ix i => Float -> Float = x; main = f 1.0;";
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
         .expect("a constrained signature must not break compilation");
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let v = prog.result().expect("the run must produce a single result");
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(1.0)

@@ -618,28 +618,32 @@ struct Lowerer<'a> {
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
     /// main λ-parameter cells: name → persistent cell index. These are NOT
-    /// per-tick value bindings — the cells are allocated once at program
+    /// per-run value bindings — the cells are allocated once at program
     /// construction ([`Ir::num_main_cells`]), so `SetParameter` writes persist
-    /// across ticks. Block-track reads materialise the cell's float via
+    /// across runs. Block-track reads materialise the cell's float via
     /// [`ValueInstr::ValueBufferMainCellRead`]; value-track reads via `ValueReadMainCell`.
     main_cell_locals: HashMap<String, usize>,
     sample_rate: f32,
-    /// Value-track blocks, executed once per tick (see `run_value_track`).
+    /// Value-track blocks, executed once per run by
+    /// [`run_entry`](crate::backend::interp::run_entry) (see
+    /// [`Ir::value_blocks`](crate::ir::Ir)).
     value_blocks: Vec<ValueBlock>,
     /// The block currently being appended to.
     cur_value_block: usize,
     /// Entry block of the program's value track (always 0).
     value_entry: usize,
-    /// Next value register index (SSA value registers are per-tick scratch).
+    /// Next value register index (SSA value registers are per-run scratch).
     next_value_reg: usize,
     /// Fresh type-variable counter (for `signature_param_tys_conv` in the
     /// typeclass method-call lowering, which threads expected types).
     next_tyvar: u32,
-    /// Value registers holding the program's value outputs (value-channel main).
+    /// Value registers holding the program's value outputs (value-channel
+    /// entry). `[0]` becomes [`Ir::result_reg`](crate::ir::Ir) at the end of
+    /// lowering.
     value_regs_out: Vec<usize>,
     /// Static value type of each value output, parallel to [`Self::value_regs_out`].
     /// The arena-capacity heuristic needs it: a compound output (record/sum/
-    /// newtype) pins its whole subtree across ticks, so the bound must account
+    /// newtype) pins its whole subtree across runs, so the bound must account
     /// for the output's subtree size, not just one slot per channel.
     value_out_tys: Vec<ValueTy>,
     /// Static types of every container-typed value subexpression (`List`,
@@ -656,7 +660,7 @@ struct Lowerer<'a> {
     value_funcs: Vec<crate::ir::ValueFunc>,
     /// Scope stack of value locals: name → (value reg, value type). Match-arm
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
-    /// per-tick value registers — a `Ref` to one returns the register directly.
+    /// per-run value registers — a `Ref` to one returns the register directly.
     value_locals: Vec<HashMap<String, (usize, ValueTy)>>,
     /// Statically-known constructor of each value local, parallel to the scope
     /// stack [`Self::value_locals`]: a method param bound to `Just 1.0` records
@@ -7668,7 +7672,21 @@ pub fn lower_with_cafs_mode(
     cafs: &HashSet<String>,
     mode: Mode,
 ) -> Result<Ir, CompileError> {
-    lower_program_with_channels(tp, sample_rate, cafs, mode, 0, None)
+    lower_with_cafs_mode_entry(tp, sample_rate, cafs, mode, "main")
+}
+
+/// Like [`lower_with_cafs_mode`], with an explicit entry name. The entry
+/// definition supplies the program's single value result; upstream,
+/// [`infer_program_with_entry`](crate::types::infer::infer_program_with_entry)
+/// derived `tp.process_ty` from the same name.
+pub(crate) fn lower_with_cafs_mode_entry(
+    tp: &TypedProgram,
+    sample_rate: f32,
+    cafs: &HashSet<String>,
+    mode: Mode,
+    entry: &str,
+) -> Result<Ir, CompileError> {
+    lower_program_with_channels(tp, sample_rate, cafs, mode, 0, None, entry)
 }
 
 /// Like [`lower_with_cafs_mode`], with an explicit program input- and
@@ -7682,11 +7700,16 @@ pub fn lower_program_with_channels(
     mode: Mode,
     input_channels: usize,
     output_channels: Option<usize>,
+    entry: &str,
 ) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
     let main = program
-        .main_def()
-        .ok_or_else(|| CompileError::Unsupported("program must have a `main` definition".into()))?;
+        .defs
+        .iter()
+        .find(|d| d.name() == entry)
+        .ok_or_else(|| {
+            CompileError::Unsupported(format!("program must have a `{entry}` definition"))
+        })?;
 
     let mut defs: HashMap<String, Def> = HashMap::new();
     for d in &program.defs {
@@ -7904,6 +7927,12 @@ pub fn lower_program_with_channels(
     // as `Float(0.0)` once it travels through a closure cell (see
     // `Ir::main_io_unit`).
     let main_io_unit = main_result_is_io_unit(&tp.process_ty.vty);
+    // The program's single result register: where the entry body's value
+    // landed. `lw.value_regs_out[0]` — architecturally there are no signal
+    // programs (no output channels), so the result is exactly one register
+    // (buffer results are `Value::Buffer(idx)` arena values). The 7815 check
+    // guarantees at least one output exists.
+    let result_reg = lw.value_regs_out.first().copied().unwrap_or(0);
     Ok(Ir {
         main_io_unit,
         num_inputs,
@@ -7919,7 +7948,7 @@ pub fn lower_program_with_channels(
         value_blocks: std::mem::take(&mut lw.value_blocks),
         value_entry: lw.value_entry,
         num_value_regs: lw.next_value_reg,
-        value_output_regs: lw.value_regs_out,
+        result_reg,
         value_funcs: lw.value_funcs,
         fragments: lw.fragments,
         max_call_regs,
@@ -8397,8 +8426,7 @@ mod tests {
             "Circle is the first declared ctor of Shape (index 0)"
         );
         assert_eq!(
-            ir.value_output_regs,
-            vec![2],
+            ir.result_reg, 2,
             "output must be the Circle arm's payload reg (r), not Rect's w"
         );
     }

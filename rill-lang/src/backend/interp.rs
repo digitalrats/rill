@@ -43,81 +43,106 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Run one whole-buffer value tick: execute the per-tick value track
-/// (whole-buffer `Value::Buffer` ops + value ops) and publish its outputs.
-/// Returns a `ProcessError` when the value track latched one (a collection
-/// capacity overflow — a user error, not a build bug).
+/// Run a program: execute its top-level value track at base 0 once to
+/// completion and capture the result register into [`prog.main`].
 ///
-/// The tick length is [`BUF`]: the whole-buffer value operations fill a full
+/// This is the single execution mode of a rill-lang program. It evaluates ALL
+/// of the program's value-level semantics (whole-buffer `Value::Buffer` ops,
+/// value ops, effectful `IO` actions built as values) by walking the top-level
+/// track — the program's own `value_blocks` at base 0, exactly like a fragment
+/// body but WITHOUT a call frame. There is NO env record, NO `run_call`, NO
+/// fragment wrapper: the entry is a plain top-level value-track binding, and
+/// architecturally the language has no signal programs (0/1-argument lambdas
+/// only) — the run is one block-walk that ends at the entry's terminal. There
+/// is NO per-block signal tick loop: the walk runs once to its terminal and
+/// the result register is captured into [`prog.main`](RillProgram::main).
+/// Returns a `ProcessError` when the run latched one (a collection capacity
+/// overflow — a user error, not a build bug).
+///
+/// The run length is [`BUF`]: the whole-buffer value operations fill a full
 /// block, and the value state reads (`smooth`, delay lines) read `block_len`,
 /// so it must equal the length the block was written with.
-pub(crate) fn run_value_tick<T: Transcendental, const BUF: usize>(
+pub(crate) fn run_entry<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) -> Result<(), ProcessError> {
     push_builtin_params(prog);
     prog.block_len = BUF;
 
-    // Release the previous tick's value outputs BEFORE this tick allocates.
-    // A value output pins its whole subtree across ticks (the output keeps the
-    // root at rc >= 1), and a closure output additionally pins its captured env
-    // record — so the old tree must be freed before the new tick's allocations
-    // can reuse its slots (the build-time capacity bound assumes at most one
-    // tick's live set at a time). The output is re-stored at tick end.
-    for out in &mut prog.value_outputs {
-        if let Some(r) = out.take() {
-            prog.arena.drop_ref(r);
-        }
+    // Release the previous run's captured `prog.main` BEFORE this run
+    // allocates. The captured terminal pins its whole subtree across runs (the
+    // root is kept at rc >= 1), and a closure result additionally pins its
+    // captured env record — so the old tree must be freed before this run's
+    // allocations can reuse its slots (the build-time capacity bound assumes
+    // at most one run's live set at a time). The new terminal is captured at
+    // run end.
+    if let Some(r) = prog.main.take() {
+        prog.arena.drop_ref(r);
     }
 
-    // Value-track phase (per-tick): allocate/free the program's values. A
-    // latched value error (a collection capacity overflow) is propagated only
-    // AFTER the tick-end cleanup below — the registers, block-state swap and
-    // output release all still run, so a repeatedly erroring program cannot
-    // leak the fixed arena or desync its feedback state.
-    let value_res = run_value_track(prog);
+    // Value-track phase (this run): walk the program's own top-level blocks at
+    // base 0 — no env record, no call frame, no per-call unwind. The entry is
+    // a 0-argument constant-like binding (architecturally lambdas have only
+    // 0/1 args), so there is no frame to reserve for it: the top-level
+    // registers occupy `0..num_value_regs` and the watermark is pinned there so
+    // nested fragment calls (function dispatch inside the track) reserve their
+    // scratch ABOVE the top-level registers, unwinding back to this ceiling.
+    // The blocks are `mem::take`n out of `Ir` (an empty vec swap, no
+    // allocation) so `prog` can be borrowed mutably during the walk. A latched
+    // value error (a collection capacity overflow) is propagated only AFTER the
+    // run-end cleanup below — the registers, block-state swap and terminal
+    // release all still run, so a repeatedly erroring program cannot leak the
+    // fixed arena or desync its feedback state.
+    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let drops_mark = drops.len();
+    prog.value_regs_top = prog.ir.num_value_regs;
+    let entry = prog.ir.value_entry;
+    let blocks = std::mem::take(&mut prog.ir.value_blocks);
+    run_blocks(prog, &blocks, entry, 0, &mut drops);
+    prog.ir.value_blocks = blocks;
+    let value_res = match prog.value_error.take() {
+        Some(err) => Err(err),
+        None => Ok(()),
+    };
 
     // Apply the block-level feedback shadow copy (double-buffer swap).
     prog.swap_block_state();
 
-    // Copy the value outputs (one per value output channel) into the program's
-    // stable `value_outputs` store. Each output is forced to WHNF first (a
-    // lazy output register holding a thunk materializes its head) and then
-    // copied (rc++) so it survives the register clear below; the previous
-    // tick's output was already released at the start of this tick (see above)
-    // so nothing leaks across ticks. `clear_value_regs` then drops the
-    // register's refs (the per-tick scratch) while the output refs remain live.
-    let mut drops = std::mem::take(&mut prog.drops_scratch);
-    let drops_mark = drops.len();
-    let output_regs = std::mem::take(&mut prog.ir.value_output_regs);
-    for (i, &r) in output_regs.iter().enumerate() {
-        if let Some(Some(v)) = prog.value_regs.get(r).copied() {
-            let head = force(prog, v, &mut drops);
-            if let Some(prev) = prog.value_outputs[i].take() {
-                prog.arena.drop_ref(prev);
-            }
-            if let Ok(c) = prog.arena.copy(head) {
-                prog.value_outputs[i] = Some(c);
-            }
+    // Capture the run's terminal into `prog.main`: `value_regs[result_reg]`
+    // holds the entry body's value (owned by the register slot). Copy it out
+    // (a fresh owner via `copy`), force it to WHNF (a lazy terminal register
+    // holding a thunk materializes its head here) and copy the head (rc++) so
+    // it survives the register clear below. The previous terminal was already
+    // released at the start of this run (see above), so nothing leaks across
+    // runs.
+    let result: Option<ArenaRef> = match prog.value_regs.get(prog.ir.result_reg).copied().flatten()
+    {
+        Some(sr) => copy_owned(prog, sr),
+        None => None,
+    };
+    if let Some(r) = result {
+        let head = force(prog, r, &mut drops);
+        if let Ok(c) = prog.arena.copy(head) {
+            prog.main = Some(c);
         }
+        prog.arena.drop_ref(r);
     }
-    prog.ir.value_output_regs = output_regs;
     for r in drops.drain(drops_mark..) {
         prog.arena.drop_ref(r);
     }
     prog.drops_scratch = drops;
 
-    // A resource exhaustion can be latched DURING output forcing (a lazy
-    // output register recurses past `max_call_regs` / the arena pool while its
-    // head is materialized here, after `run_value_track` already returned).
-    // Surface it as the tick's error instead of a silent `Bottom`.
+    // A resource exhaustion can be latched DURING terminal forcing (a lazy
+    // terminal register recurses past `max_call_regs` / the arena pool while
+    // its head is materialized here, after the fragment already returned).
+    // Surface it as the run's error instead of a silent `Bottom`.
     let latched: Option<Result<(), ProcessError>> = match &value_res {
         Ok(()) => prog.value_error.take().map(Err),
         Err(_) => None,
     };
 
-    // Release this tick's per-tick value registers now that the value outputs
-    // have been read (they were copied above). The value-state is NOT cleared:
-    // it is the 1-tick delay store, and `ValueStateWrite` already drops the
+    // Release this run's per-run value registers now that the terminal has
+    // been read (it was copied above). The value-state is NOT cleared: it is
+    // the run-to-run delay store, and `ValueStateWrite` already drops the
     // previous ref when overwriting a slot.
     prog.clear_value_regs();
     match latched {
@@ -126,7 +151,38 @@ pub(crate) fn run_value_tick<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Execute the per-tick value track: walk the program's value-track blocks from
+/// Test-visible top-level-track driver: run the program's own value blocks at
+/// base 0 WITHOUT `run_entry`'s run-end behavior (no register clear, no
+/// `prog.main` capture).
+///
+/// The interpreter's internal tests drive the program's own registers directly
+/// (seeding `prog.value_regs`, asserting on `arena.get(0)`-style absolute
+/// slots), so they need the raw top-level block walk previously provided by
+/// the deleted `run_value_track`. `mem::take` the blocks out of `Ir` (an empty
+/// vec swap, no allocation) so `prog` can be borrowed mutably while walking;
+/// drain drops and surface the latched value error. Only the tests use this —
+/// the production path is [`run_entry`].
+#[cfg(test)]
+pub(crate) fn run_main_fragment_for_tests<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+) -> Result<(), ProcessError> {
+    let mut drops = std::mem::take(&mut prog.drops_scratch);
+    let mark = drops.len();
+    let entry = prog.ir.value_entry;
+    let blocks = std::mem::take(&mut prog.ir.value_blocks);
+    run_blocks(prog, &blocks, entry, 0, &mut drops);
+    prog.ir.value_blocks = blocks;
+    for r in drops.drain(mark..) {
+        prog.arena.drop_ref(r);
+    }
+    prog.drops_scratch = drops;
+    if let Some(err) = prog.value_error.take() {
+        return Err(err);
+    }
+    Ok(())
+}
+
+/// Execute the value track: walk the program's value-track blocks from
 /// the entry block, following each block's terminator, allocating and freeing
 /// values in the program's fixed arena.
 ///
@@ -184,39 +240,6 @@ fn run_blocks<T: Transcendental, const BUF: usize>(
     }
 }
 
-/// Run the top-level value track to completion (one tick): walk
-/// [`RillProgram`]'s top-level blocks at base 0, then drain the deferred
-/// drops and surface the latched value error.
-///
-/// The block list is moved out of `prog` so we can borrow `prog`'s value
-/// registers mutably while iterating (`mem::take` leaves an empty `Vec`
-/// behind — no allocation on the RT path). Drops queue on the shared,
-/// pre-sized `drops_scratch`, moved out ONCE here and threaded through the
-/// whole dispatch tree (`exec_value_instr` → `run_call` → ...) as a
-/// separate parameter, so every fragment at every nesting depth reuses the
-/// same reserved buffer — no allocation in the RT path. The mark/drain
-/// discipline keeps each frame's pending drops below its own mark.
-pub(crate) fn run_value_track<T: Transcendental, const BUF: usize>(
-    prog: &mut RillProgram<T, BUF>,
-) -> Result<(), ProcessError> {
-    let mut drops = std::mem::take(&mut prog.drops_scratch);
-    let mark = drops.len();
-    let blocks = std::mem::take(&mut prog.ir.value_blocks);
-    run_blocks(prog, &blocks, prog.ir.value_entry, 0, &mut drops);
-    prog.ir.value_blocks = blocks;
-    for r in drops.drain(mark..) {
-        prog.arena.drop_ref(r);
-    }
-    prog.drops_scratch = drops;
-    // The value-error latch: a collection op (e.g. `cons` past capacity) sets
-    // it and the tick fails with a user-facing `ProcessError` rather than a
-    // silent `None` (that channel is reserved for build-time arena exhaustion).
-    if let Some(err) = prog.value_error.take() {
-        return Err(err);
-    }
-    Ok(())
-}
-
 /// Run a program's `main : IO ()` to completion against the realized
 /// [`WorldState`](crate::program::WorldState).
 ///
@@ -233,13 +256,13 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) -> Result<(), ProcessError> {
     // Run one value-track pass with no signal outputs: `main`'s value (the IO
-    // action) lands in `value_outputs[0]`.
-    run_value_tick(prog)?;
+    // action) lands in `prog.main`.
+    run_entry(prog)?;
 
     let mut drops = std::mem::take(&mut prog.drops_scratch);
     let mark = drops.len();
     let mut applied = false;
-    if let Some(action) = prog.value_outputs.first().copied().flatten() {
+    if let Some(action) = prog.main {
         let action = force(prog, action, &mut drops);
         // `IO a = { unIO: World -> Pair World a }`: field 0 is the computation.
         let un_io = match prog.arena.get(action) {
@@ -313,7 +336,7 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
 /// Latch a value-track resource exhaustion as a user-facing `ProcessError`
 /// (the plan's contract: exhaustion is a latched error, RT-safe — one `Option`
 /// write, no panic, no silent `None`). The first latch wins; later exhaustions
-/// are no-ops. `run_value_track` returns the latched error at tick end.
+/// are no-ops. The modern runner takes the latched error at run end.
 fn latch_exhaustion<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     what: &'static str,
@@ -4778,6 +4801,10 @@ fn finish_region<T: Transcendental, const BUF: usize>(prog: &mut RillProgram<T, 
 /// result ref (`None` when the fragment declares no output register); `None`
 /// when the caller wants the result purely via the return (the lazy forcing
 /// path memoizes the returned ref).
+///
+/// Every call unwinds its scratch and cells on return — there is no
+/// `no_unwind` path. The top-level entry is NOT a call: [`run_entry`] walks the
+/// program's own value blocks directly, so the flag has no site here.
 fn run_call<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
     frag: &std::sync::Arc<FragmentIr>,
@@ -4876,8 +4903,10 @@ fn run_call<T: Transcendental, const BUF: usize>(
     // 6. Drain the scratch slice (dropping every fragment-local register's
     //    counted ref — value args and body temps own arena slots, so removing
     //    the slots without `drop_ref` would leak them on EVERY call and exhaust
-    //    the fixed arena across ticks), unwind the watermark, release the
-    //    capture cells, and restore the caller's frame.
+    //    the fixed arena across runs), unwind the watermark, release the
+    //    capture cells, and restore the caller's frame. There is no
+    //    `no_unwind` path — the top-level entry is walked directly by
+    //    `run_entry` (not via `run_call`), so every call here unwinds fully.
     for i in base..prog.value_regs_top {
         if let Some(r) = prog.value_regs[i].take() {
             prog.arena.drop_ref(r);
@@ -5209,6 +5238,7 @@ fn apply_bin_slice<T: Transcendental>(op: BinArith, a: &[T], b: &[T], out: &mut 
 
 #[cfg(test)]
 mod closure_dispatch_tests {
+    use crate::backend::interp::run_entry;
     use crate::ir::{FragmentIr, FuncSig, Ir, ValueBlock, ValueInstr, ValueLayout, ValueTerm};
     use crate::program::RillProgram;
 
@@ -5243,7 +5273,7 @@ mod closure_dispatch_tests {
             }],
             value_entry: 0,
             num_value_regs: 3,
-            value_output_regs: vec![2],
+            result_reg: 2,
             value_funcs: Vec::new(),
             max_call_regs: 2,
             value_state: ValueLayout {
@@ -5273,8 +5303,8 @@ mod closure_dispatch_tests {
             })],
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);
-        prog.run_value().unwrap();
-        let v = prog.value_outputs()[0].unwrap();
+        run_entry(&mut prog).unwrap();
+        let v = prog.result().unwrap();
         assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(7));
     }
 
@@ -5315,7 +5345,7 @@ mod closure_dispatch_tests {
             }],
             value_entry: 0,
             num_value_regs: 4,
-            value_output_regs: vec![2],
+            result_reg: 2,
             value_funcs: Vec::new(),
             max_call_regs: 2,
             value_state: ValueLayout {
@@ -5369,8 +5399,8 @@ mod closure_dispatch_tests {
             ],
         };
         let mut prog = RillProgram::<f32, 256>::new(ir);
-        prog.run_value().unwrap();
-        let v = prog.value_outputs()[0].expect("the lazy call must produce a value");
+        run_entry(&mut prog).unwrap();
+        let v = prog.result().expect("the lazy call must produce a value");
         assert_eq!(prog.arena().get(v).unwrap(), &crate::arena::Value::Int(9));
     }
 }
@@ -5397,7 +5427,7 @@ mod value_track_tests {
             value_blocks,
             value_entry,
             num_value_regs,
-            value_output_regs: Vec::new(),
+            result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
             max_call_regs: 0,
@@ -5432,7 +5462,7 @@ mod value_track_tests {
         // Drive the value track directly (the full tick additionally clears
         // the per-tick registers at the end) so the registers and arena can be
         // inspected mid-tick.
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(prog.value_regs[0], Some(0));
         let slot0 = prog.arena.get(0).unwrap().clone();
         assert_eq!(slot0, crate::arena::Value::Int(42));
@@ -5458,7 +5488,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         let cell = prog.value_regs[1].unwrap();
         let val = prog.arena.get(cell).unwrap();
         assert_eq!(val, &crate::arena::Value::Int(7));
@@ -5486,7 +5516,8 @@ mod value_track_tests {
             2,
             0,
         );
-        let err = run_value_track(&mut prog).expect_err("an unbound operand must latch a fault");
+        let err = run_main_fragment_for_tests(&mut prog)
+            .expect_err("an unbound operand must latch a fault");
         assert!(
             format!("{err}").contains("unbound operand"),
             "expected the effect-fault message, got: {err}"
@@ -5495,9 +5526,9 @@ mod value_track_tests {
     }
 
     #[test]
-    fn value_state_persists_one_tick() {
-        // Value-state is a 1-tick delayed value: what tick 1 writes into slot 0
-        // must be readable in tick 2. The read runs before the write, so slot 1
+    fn value_state_persists_one_run() {
+        // Value-state is a 1-run delayed value: what run 1 writes into slot 0
+        // must be readable in run 2. The read runs before the write, so slot 1
         // latches whatever the read saw; asserting it proves the delay.
         let mut prog = prog_with(
             vec![ValueBlock {
@@ -5513,9 +5544,9 @@ mod value_track_tests {
             2,
             2,
         );
-        prog.run_value().unwrap();
-        // Tick 1: the read saw the empty state (0.0); slot 0 was then written 7
-        // and must survive until the next tick.
+        run_entry(&mut prog).unwrap();
+        // Run 1: the read saw the empty state (0.0); slot 0 was then written 7
+        // and must survive until the next run.
         assert_eq!(
             prog.arena.get(prog.value_state[0].unwrap()).unwrap(),
             &crate::arena::Value::Int(7)
@@ -5524,8 +5555,8 @@ mod value_track_tests {
             prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
             &crate::arena::Value::Float(0.0)
         );
-        prog.run_value().unwrap();
-        // Tick 2: the read saw tick 1's 7 (the 1-tick delay) and latched it
+        run_entry(&mut prog).unwrap();
+        // Run 2: the read saw run 1's 7 (the 1-run delay) and latched it
         // into slot 1.
         assert_eq!(
             prog.arena.get(prog.value_state[1].unwrap()).unwrap(),
@@ -5534,10 +5565,12 @@ mod value_track_tests {
     }
 
     #[test]
-    fn value_regs_are_cleared_per_tick() {
-        // Value registers are per-tick scratch: after a tick they must be
-        // cleared and their refs released, so a multi-tick value program cannot
-        // exhaust the fixed arena (one leaked slot per register per tick).
+    fn value_regs_are_cleared_per_run() {
+        // Value registers are per-run scratch: after a run they must be
+        // cleared and their refs released, so a repeated-run value program
+        // cannot exhaust the fixed arena (one leaked slot per register per
+        // run). The run's result is captured into `prog.main` (a fresh owner
+        // held across runs), so exactly one slot stays live.
         let mut prog = prog_with(
             vec![ValueBlock {
                 instrs: vec![
@@ -5550,12 +5583,16 @@ mod value_track_tests {
             2,
             0,
         );
-        prog.run_value().unwrap();
+        run_entry(&mut prog).unwrap();
         assert_eq!(prog.value_regs[0], None);
         assert_eq!(prog.value_regs[1], None);
-        assert_eq!(prog.arena.live(), 0);
-        prog.run_value().unwrap();
-        assert_eq!(prog.arena.live(), 0, "second tick leaks nothing");
+        assert_eq!(
+            prog.arena.live(),
+            1,
+            "only the captured result survives the run"
+        );
+        run_entry(&mut prog).unwrap();
+        assert_eq!(prog.arena.live(), 1, "second run leaks nothing");
     }
 
     #[test]
@@ -5576,7 +5613,7 @@ mod value_track_tests {
             5,
             0,
         );
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         let get = |r: usize| prog.arena.get(prog.value_regs[r].unwrap()).unwrap().clone();
         assert_eq!(get(2), crate::arena::Value::Float(5.0), "3 + 2.0");
         assert_eq!(get(3), crate::arena::Value::Float(10.0), "2.0 * 5.0");
@@ -5761,7 +5798,7 @@ mod value_track_tests {
             2,
             0,
         );
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(
             prog.arena.get(prog.value_regs[0].unwrap()).unwrap(),
             &crate::arena::Value::Float(84.0)
@@ -5794,7 +5831,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         let payload = prog.value_regs[2].unwrap();
         assert_eq!(
             prog.arena.get(payload).unwrap(),
@@ -5834,7 +5871,7 @@ mod value_track_tests {
             3,
             0,
         );
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(prog.value_regs[2], None);
     }
 
@@ -5894,7 +5931,7 @@ mod value_track_tests {
             6,
             0,
         );
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(prog.value_regs[1], None, "ValueMove cleared the source reg");
         assert_eq!(prog.value_regs[2], None, "ValueMove cleared the source reg");
         assert_eq!(
@@ -5964,7 +6001,7 @@ mod value_track_tests {
             5,
             0,
         );
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(
             prog.arena.get(prog.value_regs[3].unwrap()).unwrap(),
             &crate::arena::Value::Float(0.0),
@@ -6134,7 +6171,7 @@ mod lazy_track_tests {
     fn prog_with(
         value_blocks: Vec<ValueBlock>,
         num_value_regs: usize,
-        value_output_regs: Vec<usize>,
+        result_reg: usize,
         fragments: Vec<Arc<FragmentIr>>,
     ) -> RillProgram<f32, 256> {
         let ir = Ir {
@@ -6148,7 +6185,7 @@ mod lazy_track_tests {
             value_blocks,
             value_entry: 0,
             num_value_regs,
-            value_output_regs,
+            result_reg,
             value_funcs: Vec::new(),
             fragments,
             max_call_regs: 8,
@@ -6189,7 +6226,7 @@ mod lazy_track_tests {
         // Force an Unforced thunk whose body produces Int(7): the first force
         // runs the body and memoizes the result in the cell; the second force
         // returns the SAME head ref without re-running the body.
-        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let mut prog = prog_with(Vec::new(), 2, 0, vec![const7_fragment()]);
         let (t, cell) = alloc_thunk(&mut prog, ThunkState::Unforced);
         let mut drops = Vec::new();
         let r1 = force(&mut prog, t, &mut drops);
@@ -6207,7 +6244,7 @@ mod lazy_track_tests {
     fn force_black_hole_is_bottom() {
         // A cell already in `Forcing` (the thunk was re-entered while forcing)
         // is a black hole: forcing yields bottom and the cell memoizes it.
-        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let mut prog = prog_with(Vec::new(), 2, 0, vec![const7_fragment()]);
         let (t, cell) = alloc_thunk(&mut prog, ThunkState::Forcing);
         let mut drops = Vec::new();
         let b = force(&mut prog, t, &mut drops);
@@ -6228,7 +6265,7 @@ mod lazy_track_tests {
         // Force a thunk, share the thunk VALUE (rc++ on the same slot — the
         // memo cell is shared, not copied), force the copy: the memoized ref
         // is returned and the cell's rc stays 1.
-        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let mut prog = prog_with(Vec::new(), 2, 0, vec![const7_fragment()]);
         let (t, cell) = alloc_thunk(&mut prog, ThunkState::Unforced);
         let mut drops = Vec::new();
         let r1 = force(&mut prog, t, &mut drops);
@@ -6258,12 +6295,12 @@ mod lazy_track_tests {
                 term: ValueTerm::Halt,
             }],
             3,
-            Vec::new(),
+            0,
             Vec::new(),
         );
         let bottom = prog.arena.alloc(Value::Bottom).unwrap();
         prog.value_regs[1] = Some(bottom);
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         let res = prog.value_regs[2].unwrap();
         assert_eq!(
             prog.arena.get(res).unwrap(),
@@ -6290,12 +6327,12 @@ mod lazy_track_tests {
                 term: ValueTerm::Halt,
             }],
             4,
-            Vec::new(),
+            0,
             vec![const7_fragment()],
         );
         let env = empty_env(&mut prog);
         prog.value_regs[0] = Some(env);
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         let res = prog.value_regs[3].unwrap();
         assert_eq!(prog.arena.get(res).unwrap(), &Value::Float(8.5), "7 + 1.5");
     }
@@ -6314,12 +6351,12 @@ mod lazy_track_tests {
                 term: ValueTerm::Halt,
             }],
             3,
-            Vec::new(),
+            0,
             Vec::new(),
         );
         let bottom = prog.arena.alloc(Value::Bottom).unwrap();
         prog.value_regs[0] = Some(bottom);
-        run_value_track(&mut prog).unwrap();
+        run_main_fragment_for_tests(&mut prog).unwrap();
         assert_eq!(
             prog.arena.get(prog.value_regs[1].unwrap()).unwrap(),
             &Value::Bottom
@@ -6358,7 +6395,7 @@ mod lazy_track_tests {
                 signal_ins: 0,
             },
         });
-        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![frag0, const7_fragment()]);
+        let mut prog = prog_with(Vec::new(), 2, 0, vec![frag0, const7_fragment()]);
         let (t, cell) = alloc_thunk(&mut prog, ThunkState::Unforced);
         let mut drops = Vec::new();
         let r = force(&mut prog, t, &mut drops);
@@ -6374,9 +6411,9 @@ mod lazy_track_tests {
     }
 
     #[test]
-    fn value_output_copy_forces_raw_thunk() {
-        // A lazy output register (a raw thunk, never explicitly forced) is
-        // forced to WHNF by the tick-end output copy.
+    fn result_capture_forces_raw_thunk() {
+        // A lazy result register (a raw thunk, never explicitly forced) is
+        // forced to WHNF by the run-end result capture.
         let mut prog = prog_with(
             vec![ValueBlock {
                 instrs: vec![ValueInstr::ValueLazy {
@@ -6387,19 +6424,19 @@ mod lazy_track_tests {
                 term: ValueTerm::Halt,
             }],
             2,
-            vec![1],
+            1,
             vec![const7_fragment()],
         );
         let env = empty_env(&mut prog);
         prog.value_regs[0] = Some(env);
-        prog.run_value().unwrap();
-        let v = prog.value_outputs()[0].unwrap();
+        run_entry(&mut prog).unwrap();
+        let v = prog.result().expect("the run must capture a result");
         assert_eq!(
             prog.arena().get(v).unwrap(),
             &Value::Int(7),
-            "the output copy forces the lazy output to WHNF"
+            "the result capture forces the lazy result to WHNF"
         );
-        assert_eq!(prog.arena.live(), 1, "only the output survives the tick");
+        assert_eq!(prog.arena.live(), 1, "only the result survives the run");
     }
 
     /// The shared self-referential body: reads capture cell 0 (the thunk's own
@@ -6430,7 +6467,7 @@ mod lazy_track_tests {
         // must yield bottom, not hang. The COW copy shares the memo cell (cell
         // rc > 1), so this also exercises the shared-cell mutation path that
         // used to debug-assert on rc == 1.
-        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![self_ref_fragment()]);
+        let mut prog = prog_with(Vec::new(), 2, 0, vec![self_ref_fragment()]);
         let env = prog.arena.alloc(Value::Record(vec![])).unwrap();
         let cell = prog
             .arena
@@ -6471,7 +6508,7 @@ mod lazy_track_tests {
         // Two thunk VALUES sharing one memo cell (the STG update-frame shape):
         // forcing either must not assert on the cell's rc and both see the
         // memoized result.
-        let mut prog = prog_with(Vec::new(), 2, Vec::new(), vec![const7_fragment()]);
+        let mut prog = prog_with(Vec::new(), 2, 0, vec![const7_fragment()]);
         let env = prog.arena.alloc(Value::Record(vec![])).unwrap();
         let cell = prog
             .arena

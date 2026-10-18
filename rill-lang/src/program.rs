@@ -1,10 +1,11 @@
 //! `RillProgram<T, BUF>` — a compiled rill-lang program.
 //!
-//! It owns its IR, schedule, and pre-allocated state. The program is executed
-//! either by [`run_value`](RillProgram::run_value) (one whole-buffer value
-//! tick, the retained pure-value path) or by the
-//! [`ProgramRunner`](crate::program_runner::ProgramRunner) (which runs
-//! `main : IO ()` to completion). Neither path allocates after warm-up.
+//! It owns its IR, schedule, and pre-allocated state. A program is executed
+//! once to completion: its entry fragment runs and the terminal register is
+//! captured into [`RillProgram::main`] (inspected with
+//! [`result`](RillProgram::result)). The
+//! [`ProgramRunner`](crate::program_runner::ProgramRunner) runs `main : IO ()`
+//! through this same path. Nothing allocates after warm-up.
 
 use crate::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::buffer::TapeRing;
@@ -244,9 +245,12 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// fragment dispatch). Pre-sized at construction; used as a stack (nested
     /// dispatches append above the caller's mark and drain on return).
     pub(crate) drops_scratch: Vec<crate::arena::ArenaRef>,
-    /// Value outputs of the last processed tick: one counted arena ref per
-    /// value output channel, held across ticks (see [`value_outputs`](Self::value_outputs)).
-    pub(crate) value_outputs: Vec<Option<crate::arena::ArenaRef>>,
+    /// The run's terminal register: the result of executing the program's
+    /// entry fragment once. Set at run end by
+    /// [`run_entry`](crate::backend::interp::run_entry) (see
+    /// [`result`](Self::result)); released at the start of the next run and by
+    /// [`reset`](Self::reset).
+    pub(crate) main: Option<crate::arena::ArenaRef>,
     /// Runtime value-track error (capacity overflow), set by a collection op
     /// and consumed at the end of the value phase. Cleared each tick.
     pub(crate) value_error: Option<ProcessError>,
@@ -568,7 +572,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let cell_stack = Vec::new();
         let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
         let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
-        let value_outputs = vec![None; ir.value_output_regs.len()];
         Self {
             ir,
             block_state,
@@ -589,7 +592,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             frag_cells,
             frag_cells_base: 0,
             drops_scratch,
-            value_outputs,
+            main: None,
             value_error: None,
             regions: Vec::new(),
             st_cells: Vec::new(),
@@ -694,7 +697,6 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         let cell_stack = Vec::new();
         let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
         let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
-        let value_outputs = vec![None; ir.value_output_regs.len()];
         Ok(Self {
             ir,
             block_state,
@@ -715,7 +717,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             frag_cells,
             frag_cells_base: 0,
             drops_scratch,
-            value_outputs,
+            main: None,
             value_error: None,
             regions: Vec::new(),
             st_cells: Vec::new(),
@@ -825,20 +827,20 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
                 .sum::<usize>()
     }
 
-    /// Release this tick's per-tick value registers.
+    /// Release this run's per-run value registers.
     ///
-    /// Value registers are per-tick scratch: every occupied register holds a
-    /// counted arena ref that must be released before the next tick (otherwise
-    /// a multi-tick value program leaks one slot per register per tick and
-    /// exhausts the fixed arena). Called at the very end of a tick, after the
-    /// value outputs have been read. Only the program's own registers
-    /// (`0..ir.num_value_regs`) are cleared — the pre-allocated call scratch
-    /// is drained by `run_call` on every dispatch return, so its slots are
-    /// already `None`.
+    /// Value registers are per-run scratch: every occupied register holds a
+    /// counted arena ref that must be released before the next run (otherwise
+    /// a repeated-run value program leaks one slot per register per run and
+    /// exhausts the fixed arena). Called at the very end of a run, after the
+    /// result has been captured into `prog.main`. Only the program's own
+    /// registers (`0..ir.num_value_regs`) are cleared — the pre-allocated call
+    /// scratch is drained by `run_call` on every dispatch return, so its slots
+    /// are already `None`.
     pub(crate) fn clear_value_regs(&mut self) {
         debug_assert!(
             self.value_regs_top == self.ir.num_value_regs,
-            "call scratch watermark not unwound at tick end"
+            "call scratch watermark not unwound at run end"
         );
         for r in self.value_regs.iter_mut().take(self.ir.num_value_regs) {
             if let Some(r) = r.take() {
@@ -940,13 +942,16 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         &self.params_meta
     }
 
-    /// Value outputs of the last processed tick, one per value output channel.
+    /// The result of the program's single run: the terminal arena ref captured
+    /// by [`run_entry`](crate::backend::interp::run_entry) into [`Self::main`].
     ///
-    /// Each entry is a counted arena ref (an independent owner of the slot): it
-    /// survives until the next `process` tick, after which it is replaced. An
-    /// empty value-output program (signal-only `main`) yields an empty slice.
-    pub fn value_outputs(&self) -> &[Option<crate::arena::ArenaRef>] {
-        &self.value_outputs
+    /// A rill-lang program executes its entry fragment exactly ONCE, so this is
+    /// the program's one value-level result — the whole-buffer
+    /// (`Value::Buffer`) forms are inspected with
+    /// [`copy_buffer`](Self::copy_buffer). Returns `None` before the first run
+    /// or when the run produced no output register.
+    pub fn result(&self) -> Option<crate::arena::ArenaRef> {
+        self.main
     }
 
     /// Access to the value arena, for inspecting output values (tests, tooling).
@@ -964,33 +969,13 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         }
     }
 
-    /// Run one whole-buffer value tick.
+    /// Copy the samples of a whole-buffer run result into `dst`.
     ///
-    /// This is the retained pure-value execution path: it evaluates the
-    /// program's value track for a full [`BUF`]-sample tick, applies the
-    /// block-feedback swap, and republishes [`value_outputs`](Self::value_outputs).
-    /// No external signal buffers are read or written — a whole-buffer
-    /// (`Value::Buffer`) output is inspected with
-    /// [`copy_output_samples`](Self::copy_output_samples).
-    ///
-    /// A latched value-track error (a collection/arena capacity overflow, a
-    /// stream fault) is returned as a [`ProcessError`] after the tick-end
-    /// cleanup, so a repeatedly failing program cannot leak the arena.
-    pub fn run_value(&mut self) -> Result<(), ProcessError> {
-        crate::backend::interp::run_value_tick(self)
-    }
-
-    /// Copy the samples of value output `i` into `dst` when that output is a
-    /// whole-buffer value.
-    ///
-    /// Returns `true` when `dst` was filled (up to `dst.len()` or the tick
-    /// length, whichever is smaller); `false` when the output is not a buffer
-    /// (a scalar/list/record value) or `i` is out of range. Intended for tests
+    /// Returns `true` when `dst` was filled (up to `dst.len()` or the run
+    /// length, whichever is smaller); `false` when `r` is not a buffer value
+    /// (a scalar/list/record value) or its buffer is gone. Intended for tests
     /// and tooling that inspect the retained buffer path.
-    pub fn copy_output_samples(&self, i: usize, dst: &mut [T]) -> bool {
-        let Some(Some(r)) = self.value_outputs.get(i).copied() else {
-            return false;
-        };
+    pub fn copy_buffer(&self, r: crate::arena::ArenaRef, dst: &mut [T]) -> bool {
         let Some(Value::Buffer(idx)) = self.arena.get(r) else {
             return false;
         };
@@ -1040,11 +1025,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             }
             *r = None;
         }
-        for r in &mut self.value_outputs {
-            if let Some(r) = r {
-                self.arena.drop_ref(*r);
-            }
-            *r = None;
+        if let Some(r) = self.main.take() {
+            self.arena.drop_ref(r);
         }
         for frame in &mut self.cell_stack {
             for (_, r) in frame {
@@ -1086,7 +1068,7 @@ mod program_value_tests {
             value_blocks: Vec::new(),
             value_entry: 0,
             num_value_regs: 0,
-            value_output_regs: Vec::new(),
+            result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
             max_call_regs: 0,
@@ -1117,7 +1099,7 @@ mod program_value_tests {
             value_blocks: Vec::new(),
             value_entry: 0,
             num_value_regs: 0,
-            value_output_regs: Vec::new(),
+            result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
             max_call_regs: 0,

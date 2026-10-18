@@ -4,11 +4,11 @@
 
 **Goal:** Finish `feature/rill-lang-arrays` by unifying every execution path into one `run_blocks`/`force` mechanism, making `main : IO ()` a STATIC typing rule — the only legal program form behind a single ForeignRegistry-only `compile` — and migrating the value-test surface onto an expression evaluator (`test_eval`) with full arena + buffer observability.
 
-**Architecture:** (1) extract the duplicated top-level/fragment block-walk into one `run_blocks` walker; run the top-level track as the program's entry fragment at base 0 through the same `run_call`-family entry with a no-unwind frame flag, capturing the terminal register into the single `RillProgram::result: Option<ArenaRef>` field; fold the eager/lazy/effect call sites into `force` as the one execution point (borrowed head return; `force_owned` as the standard adapter). The main fragment is assembled in `lower.rs` as `Ir::main_fragment: Arc<FragmentIr>` with `output_value_regs = lw.value_regs_out`; its blocks are the lowered top-level blocks (one lowering, `ir.value_blocks` stays for `max_drops` accounting and inspection — no duplication on the RT path); `RillProgram::build` takes the `Arc`. **Deletion in Task 2 (no shim):** `value_outputs` (field, `value_outputs()`, `copy_output_samples()`, `run_value()`, per-tick copy loops) and `Ir::value_output_regs` are removed outright; observable data lives only in State — the arena (`prog.main`/`result()`), `buffers`, and `WorldState`. `run_main_io` reads `prog.main` (`main` as a Reader over `State RealWorld`: unIO → World-token apply → pair force). (2) Drop the `main : (String…) -> IO ()` launch-argument machinery (main cells, `ValueReadMainCell`/`ValueBufferMainCellRead`, the String special-case in inference); the compiler's PROGRAM surface treats `main` as a free variable constrained to a value of type `IO ()` at the compile entry (Hindley–Milner erasure: types exist only during compilation, so the check is a compile-time gate keyed to the entry-name parameter `"main"`, never a runtime latch); a value-`main` (Float/Record/Buffer/…) is ill-typed in the compile front-end. Infer itself is blind to `main` — it types all top-level defs and returns their scheme map. (3) Replace the six compile entry points with one `compile::<T, BUF>(src, &ForeignRegistry<T>, sr) -> ProgramRunner` whose entry gate enforces the `IO ()` unification; the eval surface is `test_eval::<T, BUF>(defs, expr, &ForeignRegistry<T>, sr)` — it evaluates the EXPRESSION given to it, synthesizing the entry under a non-`main` name (the `IO ()` rule fires only when the entry is literally named `main`), so `main` has exactly one meaning compiler-wide and the evaluator never selects `main` as an entry — a def named `main` in `defs` is a plain binding. Delete the legacy builtin `Registry`, `register_core_dsp_builtins`, and the dead `graph` module. (4) Migrate all value/buffer tests to the evaluator (`eval_run` + `result()` + `copy_buffer(r, dst)`) and the runner tests to the new `compile`; buffer samples are read through `copy_buffer`, which resolves the arena ref → `Value::Buffer(idx)` → the separate `buffers: Vec<RegionHandle<T>>` table (buffer data is NOT stored in the arena).
+**Architecture:** (1) extract the duplicated top-level/fragment block-walk into one `run_blocks` walker; run the top-level value track (`Ir::value_blocks`/`value_entry`/`num_value_regs`) once at base 0 through that same walker, capturing the single terminal register (`Ir::result_reg` = `lw.value_regs_out[0]`) into the `RillProgram::main: Option<ArenaRef>` field; fold the eager/lazy/effect call sites into `force` as the one execution point (borrowed head return; `force_owned` as the standard adapter). **The entry is a plain top-level value-track binding — NOT a `main_fragment` wrapper and NOT a `run_call` frame:** `run_entry` runs the top-level blocks directly (`run_blocks` at base 0, no env record, no fragment, no `no_unwind` flag) and force+copy-captures `value_regs[result_reg]` into `prog.main`. Architecturally the language has only 0/1-argument lambdas and **no signal programs** — the `has_value_out`/`outs` split in `lower.rs` is a legacy remnant; every program is a value program whose result is one register (buffer results are `Value::Buffer(idx)` arena values, not channels). **Deletion in Task 2 (no shim):** `value_outputs` (field, `value_outputs()`, `copy_output_samples()`, `run_value()`, per-tick copy loops) and `Ir::value_output_regs` are removed outright; observable data lives only in State — the arena (`prog.main`/`result()`), `buffers`, and `WorldState`. `run_main_io` reads `prog.main` (`main` as a Reader over `State RealWorld`: unIO → World-token apply → pair force). (2) Drop the `main : (String…) -> IO ()` launch-argument machinery (main cells, `ValueReadMainCell`/`ValueBufferMainCellRead`, the String special-case in inference); the compiler's PROGRAM surface treats `main` as a free variable constrained to a value of type `IO ()` at the compile entry (Hindley–Milner erasure: types exist only during compilation, so the check is a compile-time gate keyed to the entry-name parameter `"main"`, never a runtime latch); a value-`main` (Float/Record/Buffer/…) is ill-typed in the compile front-end. Infer itself is blind to `main` — it types all top-level defs and returns their scheme map. (3) Replace the six compile entry points with one `compile::<T, BUF>(src, &ForeignRegistry<T>, sr) -> ProgramRunner` whose entry gate enforces the `IO ()` unification; the eval surface is `test_eval::<T, BUF>(defs, expr, &ForeignRegistry<T>, sr)` — it evaluates the EXPRESSION given to it, synthesizing the entry under a non-`main` name (the `IO ()` rule fires only when the entry is literally named `main`), so `main` has exactly one meaning compiler-wide and the evaluator never selects `main` as an entry — a def named `main` in `defs` is a plain binding. Delete the legacy builtin `Registry`, `register_core_dsp_builtins`, and the dead `graph` module. (4) Migrate all value/buffer tests to the evaluator (`eval_run` + `result()` + `copy_buffer(r, dst)`) and the runner tests to the new `compile`; buffer samples are read through `copy_buffer`, which resolves the arena ref → `Value::Buffer(idx)` → the separate `buffers: Vec<RegionHandle<T>>` table (buffer data is NOT stored in the arena).
 
 **Ordering principle:** Rust has no function overloading, so `compile_runner` → `compile` renaming and the deletion of `compile`/`compile_with*`/`compile_with_ffi*` are atomic with the migration of every consumer. The sequence is therefore: interpreter unification and `main`-simplification first (all tests still green on the old entries) → add `test_eval` next to the old entries → migrate value tests to `test_eval` → only then rename `compile_runner` → `compile`, delete the legacy entries, and migrate the last runner files together → delete `Registry`/graph → sweep docs.
 
-**Test-deletion policy (user decision 2026-10-18):** deleting parts of `Ir`/the program surface touches value and signal programs. No compat shims. Tests split into classes: **Class 1** — accessor-only breakage (`run_value()`→`eval_run()`, `value_outputs()[0]`→`result()`, `copy_output_samples(0,dst)`→`copy_buffer(result().unwrap(),dst)`); migrate mechanically in the same commit as the deletion, suite stays green. **Class 2** — channel-semantics breakage (multi-channel `copy_output_samples(1,…)`, `value_outputs().len()`): rewrite mechanically onto the new API so the file still *compiles*, then either `#[ignore]` with a reason naming the re-enabling task (`"…; re-expressed in task N"` — the project precedent at `func_values.rs:14`), or **delete outright when the test is fully inapplicable and its functionality cannot be restored** (user-approved). Every ignored/deleted test is recorded in the ledger (file, test, cause, resolving task).
+**Test-deletion policy (user decision 2026-10-18):** deleting parts of `Ir`/the program surface touches value and signal programs. No compat shims. Tests split into classes: **Class 1** — breakage fixed by the migration rule (`compile(src)` value tests → `test_eval(defs, expr)` + `result()`, `copy_output_samples(0,dst)`→`copy_buffer(result().unwrap(),dst)`); migrate mechanically in the same commit as the deletion, suite stays green. **Class 2** — channel-semantics/multi-tick breakage (multi-channel `copy_output_samples(1,…)`, `value_outputs().len()`, multi-tick `set_param`-persistence with no re-run surface): rewrite mechanically onto the new API so the file still *compiles*, then either `#[ignore]` with a reason naming the re-enabling task (`"…; re-expressed in task N"` — the project precedent at `func_values.rs:14`), or **delete outright when the test is fully inapplicable and its functionality cannot be restored** (user-approved). Every ignored/deleted test is recorded in the ledger (file, test, cause, resolving task).
 
 **Tech Stack:** Rust, `rill-lang` (~18-crate workspace), `rill-core` (`Arena`/`RegionHandle`/`Transcendental`), git-flow (`feature/rill-lang-arrays`).
 
@@ -23,7 +23,7 @@
 - Gate for every task: `cargo test -p rill-lang --features dsp` green; `cargo clippy -p rill-lang --lib --tests` zero warnings; `cargo fmt --check`. Commits on `feature/rill-lang-arrays` in **single quotes** (`git commit -m '…'`).
 - **`main : IO ()` is a STATIC typing rule, not a runtime latch.** Hindley–Milner erasure: types exist only during compilation — after `lower` no type information survives into the program, so the check must happen at compile time or nowhere. **Infer is blind to `main`**: it types all top-level defs and outputs their scheme map; no `main`-existence requirement, no retry-against-`IO ()`, no `process_ty`. The `IO ()` gate lives in the compile entry (entry-name parameter, default `"main"`), enforced via `ir.main_io_unit`; a value-`main` (`main = 1.0 + 2.0`, `main = Point { … }`, `main = sine …`) is ill-typed in the compile front-end and fails there.
 - **The eval surface `test_eval` never spells `main` as an entry.** Its input is `(defs, expr)`: an optional definitions/declarations context and the expression to evaluate. The entry is synthesized under an internal non-`main` name (a reserved marker that cannot collide with user identifiers), so the `IO ()` rule does not apply — the expression may be Float/Int/Bool/String/Record/Sum/Newtype/Callable/Cons/List/Array/Buffer, evaluated to WHNF and inspected via `arena()`. A def literally named `main` in `defs` is a plain binding (`main = 42` → the map carries `main`, usable from `expr`); only the compile front-end gives `main` entry semantics. This is an expression evaluator, not a program front-end; `main` retains exactly one interpretation compiler-wide.
-- The program surface has exactly one output field: `RillProgram::result: Option<ArenaRef>` (the terminal value of the entry fragment after the last run). `value_outputs`, `run_value()`, `copy_output_samples()` are removed from the public API and replaced by `eval_run()`/`result()`/`copy_buffer(r, dst)`.
+- The program surface has exactly one output field: `RillProgram::result: Option<ArenaRef>` (the terminal value of the entry fragment after the last run). `value_outputs`, `run_value()`, `copy_output_samples()` are removed from the public API and replaced by `result()`/`copy_buffer(r, dst)` (via the `test_eval` entry — no `eval_run`, no public re-run surface).
 - Buffer samples live in `RillProgram::buffers: Vec<RegionHandle<T>>` + `block_len` — never in the arena (the arena holds only `Value::Buffer(idx)`).
 - No parser/AST/prelude changes beyond the pre-plan KwMain step (commit `6fe3310`: `main` lexes as an ordinary identifier; no parser-level `main` requirement — the entry name is a compile-time pipeline parameter). IR keeps top-level blocks; the entry-fragment view is a wiring decision at program assembly. `--features graph` is pre-existing broken and the whole graph path is deleted (it references the nonexistent `program_engine`); `graph_partition` stays dead.
 - Builtin `Registry<T>` (`src/builtin.rs`) and `register_core_dsp_builtins` (`src/register.rs:280`) are deleted after consumers migrate; `ForeignRegistry` is the only factory registry.
@@ -39,7 +39,7 @@
 1. **Non-`IO ()` mains are ill-typed at the compile front-end** — `compile::<f32, 256>("main = 1.0 + 2.0", …)` returns `Err` (the `IO ()` gate on the compile entry, keyed to the entry-name parameter). Infer itself is blind to `main` (it types all defs and returns the scheme map), so the rejection lives in the compile entry, not in `infer`. Pinned in Task 14.
 2. **Deep non-tail recursion** must produce the same result after the `run_blocks`/`force` unification as before (behavior parity, not stack safety — stack safety is the deferred trampoline step). Pinned in Task 1.
 3. **`copy_buffer` on a non-buffer ref** must return `false` (not panic): the arena ref is a `Float`/`Record`/dangling — no `buffers` lookup crash. Pinned in Task 11.
-4. **Repeated `eval_run()` ticks** must not exhaust the fixed arena for multi-tick value programs (`live < capacity` invariant, "value output survives across ticks" semantics). Pinned in Task 11.
+4. **Repeated runs must not exhaust the fixed arena** (`live < capacity` invariant, "value output survives across runs" semantics). Pinned in Task 11 — multi-run value tests are Class 2 (no public re-run surface; `set_param` between runs needs the param surface, decided per test in the ledger).
 5. **`main = do { …; return () }` and effect-final `main = do { write … stdout }`** still run to completion through the new `compile`+`run`, with the `IO ()` payload contract enforced (non-`()` main results rejected). Pinned in Task 14.
 
 ---
@@ -48,22 +48,22 @@
 
 **Interpreter core (`src/backend/interp.rs`):**
 - `run_blocks(prog, blocks: &[ValueBlock], entry, base, drops)` — the one block-walker (§1). Consumed by `run_call`'s body phase and by the main-fragment runner.
-- `run_value_tick` (existing, `interp.rs:54`) — stays as the per-tick orchestration: push params → release previous `prog.main` → run the main fragment (no-unwind) → `swap_block_state` → force+copy the terminal into `prog.main` → clear registers. The multi-output copy loop (interp.rs:89-107) collapses to the single `prog.main` capture.
+- `run_entry` (renamed from the existing `run_value_tick` orchestration, `interp.rs:54`) — the single run-and-capture executed by BOTH the runner path (`run_value_tick`'s role) and `test_eval`: push params → release previous `prog.main` → run the top-level value track directly (`run_blocks(prog, &ir.value_blocks, ir.value_entry, 0, drops)`; `ir.value_blocks` `mem::take`/restored for the borrow) → `swap_block_state` → force+copy `value_regs[ir.result_reg]` into `prog.main` → clear registers. No `run_call`, no env record, no fragment wrapper, no `no_unwind` — the entry is a plain value-track binding. The multi-output copy loop (interp.rs:89-107) collapses to the single `prog.main` capture. `run_tick` is DELETED as a name (not renamed), and no public `eval_run` exists.
 - `run_value_track` (existing, `interp.rs:199`) — DELETED in Task 2; its ~40-line loop becomes `run_blocks`.
 - `run_main_io` (existing, `interp.rs:232`) — reads `prog.main` instead of `value_outputs.first()` (`main` as a Reader over `State RealWorld`).
-- `run_call` (existing, `interp.rs:4762`) — body-walk replaced by `run_blocks`; gains the `no_unwind: bool` frame flag.
+- `run_call` (existing, `interp.rs:4762`) — body-walk replaced by `run_blocks`; NO `no_unwind` flag (the entry no longer routes through `run_call`, so the flag is deleted).
 - `force` (existing, `interp.rs:4932`) — the single execution entry (borrowed head return); eager apply folded in; `ValueCallLazy` callee-kind special case preserved; `force_owned` (`interp.rs:3311`) becomes the standard owned adapter.
 - `apply_callable` (`interp.rs:3255`) + `ArgsSource` (`interp.rs:3224`) — rewritten against the unified entry.
 
-**`src/program.rs` (RillProgram):** add `main: Option<ArenaRef>`; remove `value_outputs` field (Task 2), `run_value()`/`value_outputs()`/`copy_output_samples()` (Task 2, replaced by `eval_run()`/`result()`/`copy_buffer(r, dst)`), `main_cells` machinery (Task 3). `new_with` becomes ForeignRegistry-only (Task 5). `arena()`, params surface, `inject_stdin`, `init`, `reset` stay.
+**`src/program.rs` (RillProgram):** add `main: Option<ArenaRef>`; remove `value_outputs` field (Task 2), `run_value()`/`value_outputs()`/`copy_output_samples()` (Task 2, replaced by `result()`/`copy_buffer(r, dst)`; **no `eval_run`**), `main_cells` machinery (Task 3). `new_with` becomes ForeignRegistry-only (Task 5). `arena()`, params surface, `inject_stdin`, `init`, `reset` stay.
 
 **`src/program_runner.rs`:** `set_args` removed (Task 3); `run`/`set_stdin`/`stdout`/`stderr`/`program`/`program_mut` stay.
 
 **`src/lib.rs`:** delete `compile`, `compile_with_mode`, `compile_with`, `compile_with_mode_with`, `compile_with_ffi`, `compile_with_ffi_mode` (Task 14); rename `compile_runner` → `compile::<T, BUF>(src, &ForeignRegistry<T>, sr) -> ProgramRunner` (Complete mode default, IO-enforced); add `test_eval::<T, BUF>` (Strict default) and `test_eval_with_mode::<T, BUF>` (Task 5); `compile_source_to_program` becomes ForeignRegistry-only. Prelude exports updated.
 
-**`src/ir.rs`:** Task 2 removes `value_output_regs` (`ir.rs:924`) — the main fragment carries the output (`Ir::main_fragment: Arc<FragmentIr>` with `FragmentIr::output_value_regs`, `ir.rs:822`). Task 3 removes `num_main_cells` (`ir.rs:916`). Keep `main_io_unit` (`ir.rs:900`).
+**`src/ir.rs`:** Task 2 removes `value_output_regs` (`ir.rs:924`) and `main_fragment` (`ir.rs:944`) — the top-level value track (`value_blocks`/`value_entry`/`num_value_regs`) stays as the program's single execution surface, plus one `result_reg: usize` (the register where the entry body's value landed = `lw.value_regs_out[0]`). `FragmentIr::output_value_regs` (per-fragment result view, `ir.rs:822`) stays — it remains the result-extraction mechanism for function fragments. Task 3 removes `num_main_cells` (`ir.rs:916`). Keep `main_io_unit` (`ir.rs:900`).
 
-**`src/lower.rs`:** Task 2 builds `Ir::main_fragment` (output_value_regs = `lw.value_regs_out`). Task 3 removes main-cell binding (`lower.rs:7758-7763`); the value-out/signal-out split collapses to the single value result; `main_result_is_io_unit` (`lower.rs:244`) drops the `Thunk` arm. `lower_program_with_channels` (`7686-7689`) replaces `program.main_def()` with an entry-name parameter (compile: `"main"`, test_eval: the internal marker) and reads the entry's scheme from `TypedProgram::def_schemes` instead of `process_ty` (`7780` `has_value_out`, `7906` `main_io_unit`).
+**`src/lower.rs`:** Task 2 sets `Ir::result_reg = lw.value_regs_out[0]` (the single value-result register; no main fragment wrapper). Task 3 removes main-cell binding (`lower.rs:7758-7763`); the value-out/signal-out split collapses to the single value result (architecturally there are no signal programs — the block-track `outs` branch at `7780` is a legacy remnant to be removed with the channel semantics); `main_result_is_io_unit` (`lower.rs:244`) drops the `Thunk` arm. `lower_program_with_channels` (`7686-7689`) replaces `program.main_def()` with an entry-name parameter (compile: `"main"`, test_eval: the internal marker) and reads the entry's scheme from `TypedProgram::def_schemes` instead of `process_ty` (`7780` `has_value_out`, `7906` `main_io_unit`).
 
 **`src/types/infer.rs`:** remove the `main` → `String` λ-parameter special-cases (`infer.rs:2176-2178`, `2213-2217`, `2265-2267`); DELETE the `main` retry-against-`IO ()` (`2259-2276`) — infer is blind to `main`, the monad of a real `main` is fixed by concrete `do` actions, and `main = return ()` is meaningless. Replace `TypedProgram::process_ty` (`infer.rs:26`, `2037`) with `def_schemes: HashMap<String, Scheme>` (the full top-level scheme map); drop the `main`-existence error (`1931-1938`) and the arity check (`1946-1953`).
 
@@ -130,58 +130,59 @@ git commit -m 'refactor(rill-lang): extract shared run_blocks block walker'
 
 ---
 
-### Task 2: Program as main fragment — no-unwind mode, `prog.main` capture, value-output surface deleted
+### Task 2: Single `run_entry` — direct top-level-track run, `prog.main` capture, value-output surface deleted, `test_eval` entry
 
 **Files:**
-- Modify: `rill-lang/src/backend/interp.rs` (`run_value_tick` 54-127, `run_value_track` 199-218, `run_call` 4762+, `run_main_io` 232-302, internal tests 5246/5318/5400/6137/6151)
-- Modify: `rill-lang/src/program.rs` (`value_outputs` field 249, accessors 948/979/990, `run_value` 980, `copy_output_samples`, ticks)
-- Modify: `rill-lang/src/ir.rs` (`Ir::value_output_regs` 924 deleted; `Ir::main_fragment: Arc<FragmentIr>` added; `FragmentIr::output_value_regs` 822 stays)
-- Modify: `rill-lang/src/lower.rs` (`value_output_regs: lw.value_regs_out` 7922 → build the main fragment; test 8400)
-- Modify: `rill-lang/src/lib.rs` (doc example 71-73), `rill-lang/src/serde_def.rs` (test 49-53), `rill-lang/tests/*` migration (~29 files, see test-deletion policy), `rill-adrift/tests/*` (3 files), `rill-lang/README.md`
+- Modify: `rill-lang/src/backend/interp.rs` (`run_value_tick` 54-127, `run_value_track` 199-218, `run_call` 4762+, `run_main_io` 232-302, internal tests)
+- Modify: `rill-lang/src/program.rs` (`value_outputs` field 249, accessors `value_outputs()`/`run_value()`/`copy_output_samples()`, ticks, reset)
+- Modify: `rill-lang/src/ir.rs` (`Ir::value_output_regs` 924 deleted; `Ir::main_fragment` 944 deleted; `Ir::result_reg: usize` added; `FragmentIr::output_value_regs` 822 stays)
+- Modify: `rill-lang/src/lower.rs` (`value_output_regs: lw.value_regs_out` 7922 → `result_reg` = its `[0]`; test 8400; entry-def lookup)
+- Modify: `rill-lang/src/types/infer.rs` (entry-name scheme lookup 1931-1938)
+- Modify: `rill-lang/src/lib.rs` (`test_eval`/`test_eval_with_mode` entries, doc example 71-73), `rill-lang/src/serde_def.rs` (test 49-53), `rill-lang/tests/*` migration (~29 files, see test-deletion policy), `rill-adrift/tests/*` (3 files), `rill-lang/README.md`
 - Tests deleted/ignored per the test-deletion policy, recorded in the ledger.
 
 **Interfaces:**
 - Consumes: `run_blocks` from Task 1.
-- Produces: `prog.main: Option<ArenaRef>` field; `run_call(…, no_unwind: bool)`; main fragment executed at base 0 with empty env through the `run_call`-family entry. `value_outputs` (field + `value_outputs()` + `copy_output_samples()` + `run_value()`) and `Ir::value_output_regs` are **deleted, not shimmed**; the capture is one force+copy of the main fragment's `output_value_regs[0]` into `prog.main`. The `mem::take(&mut prog.ir.value_output_regs)` hack (interp.rs:91/103) disappears with the field.
-- Test migration in this task is accessor-level only (`run_value`→`eval_run`, `value_outputs()[0]`→`result()`, `copy_output_samples(0,dst)`→`copy_buffer(result().unwrap(),dst)`); the `compile` → `test_eval` move stays later (Tasks 6-12), since `compile` still accepts value-`main` until Task 14's IO gate.
+- Produces: `prog.main: Option<ArenaRef>` field; `Ir::result_reg: usize` (the register where the entry body's value landed). `run_entry` = direct `run_blocks(prog, &ir.value_blocks, ir.value_entry, 0, drops)` at base 0 (no env record, no fragment wrapper, no `run_call`) + force+copy of `value_regs[result_reg]` into `prog.main`. `value_outputs` (field + `value_outputs()` + `copy_output_samples()` + `run_value()`) and `Ir::value_output_regs` are **deleted, not shimmed**. `eval_run()` is NOT added. Exactly two execution ways: `run_main_io` (ProgramRunner) and `test_eval(&_with_mode)`.
+- `test_eval(defs, expr, ffi, sample_rate)` reuses the existing compiler: builds `"{defs}\n__rill_eval = ({expr});"` and compiles through the same `compile_to_ir`-family pipeline with the entry name threaded to infer (scheme lookup) and lower (entry-def lookup). `main` stays strictly `main :: IO ()` — the marker is never `main`, so no value-`main` exists anywhere. `main` inside `defs` is a plain binding.
+- Test migration in this task goes directly to `test_eval(defs, expr)` + `result()` (Class 1 mechanical: `compile(src)` value tests split into `main = expr` → `defs` + `expr`; `run_value()`→`test_eval`; `value_outputs()[0]`→`result()`; `copy_output_samples(0,dst)`→`copy_buffer(result().unwrap(),dst)`). `compile` still accepts value-`main` until Task 14's IO gate, but tests no longer use it for values.
 
-- [ ] **Step 1: Add the main-fragment view in `lower.rs`**
+- [ ] **Step 1: Add `Ir::result_reg` in `lower.rs` + entry-name lookup**
 
-At the end of program lowering (`lower.rs:7922`), instead of `value_output_regs: lw.value_regs_out`, build `Ir::main_fragment: Arc<FragmentIr>`:
-- `blocks`/`entry`/`num_value_regs` reuse the top-level values (blocks shared/cloned once at build — build-time, not RT), `output_value_regs = lw.value_regs_out` (the single value-out path; for signal-out programs this is the `outs` set, still one capture of the first), `sig` as a no-arg `IO ()` entry.
-- Delete `Ir::value_output_regs`. `RillProgram::build` takes `main_fragment: Arc<FragmentIr>` and stores it; `ir.value_blocks`/`num_value_regs` stay for `max_drops`/`max_frag_cells` accounting and inspection. Keep `ir.main_io_unit` (Task 14 gate input).
-- Update the `lower.rs:8400` test to read the fragment's `output_value_regs`.
+At the end of program lowering (`lower.rs:7922`), instead of `value_output_regs: lw.value_regs_out`, set `Ir::result_reg: lw.value_regs_out[0]` (the single register where the entry body's value landed; guaranteed non-empty by the 7815 check; `[0]` because architecturally there are no signal programs — buffer results are `Value::Buffer(idx)` arena values).
+- Replace the `program.main_def()` requirement (7687-7689) with an entry-name parameter (`"main"` default; the marker for test_eval): look the entry def up by name in `program.defs`. Main-cell binding (7758-7763) only applies when the entry is literally `main` (compile path); the marker entry has no λ-params.
+- Delete `Ir::value_output_regs` and `Ir::main_fragment`. `ir.value_blocks`/`num_value_regs` stay as the program's single execution surface (`max_drops`/`max_frag_cells` accounting and inspection). Keep `ir.main_io_unit` (Task 14 gate input).
+- Update the `lower.rs:8400` test to read `ir.result_reg` instead of the fragment's `output_value_regs`.
 
-- [ ] **Step 2: Add `no_unwind` to `run_call`**
+- [ ] **Step 2: Rewrite the tick as the shared `run_entry`; delete the value-output surface**
 
-Add `no_unwind: bool` to `run_call`'s signature (existing call sites pass `false`). When `true`, skip step 6's register/cell drain (lines 4897-4906) — the caller owns cleanup.
+The `no_unwind` flag is NOT added to `run_call` (the entry no longer routes through it — `run_call`'s signature is untouched; all dispatch sites keep their existing `false` behavior... and the dregs of the old design are removed by this step's rewrite).
 
-- [ ] **Step 3: Rewrite `run_value_tick`'s track phase and capture; delete the value-output surface**
+Replace the `run_value_track` call + multi-output copy loop with: release old `prog.main` before the run (the current `value_outputs` release loop collapses to releasing `prog.main`), then run the top-level value track directly: `let blocks = std::mem::take(&mut prog.ir.value_blocks); run_blocks(prog, &blocks, prog.ir.value_entry, 0, drops); prog.ir.value_blocks = blocks;`, `swap_block_state`, then force `value_regs[ir.result_reg]` → `copy`-owned into `prog.main`, clear registers, keep the latched-`value_error` ordering exactly. Name this `pub(crate) fn run_entry` (DELETE `run_tick` as a name — not renamed, and NO public `eval_run`). Delete `run_value_track` (its raw-walk role for internal tests is served by the existing `run_main_fragment_for_tests`, repointed at `ir.value_blocks`/`ir.value_entry`). Delete the `value_outputs` field (`program.rs:249`), its sizing at `program.rs:571/697`, the accessors (`value_outputs()`/`run_value()`/`copy_output_samples()`). Watch the interp.rs internal tests that construct `value_output_regs`/`main_fragment` — remove those fields from the `Ir` literals and migrate `prog.run_value()` + `prog.value_outputs()` reads to `run_entry` + `prog.main`/`result()`.
 
-Replace the `run_value_track` call + multi-output copy loop with: release old `prog.main` before the run (the current `value_outputs` release loop, interp.rs:66-70, collapses to releasing `prog.main`), run the main fragment at base 0 with an empty env record and `no_unwind: true`, `swap_block_state`, then force `output_value_regs[0]` → `copy`-owned into `prog.main` (replacing interp.rs:89-107), clear registers, keep the latched-`value_error` ordering exactly. Delete `run_value_track`. Delete the `value_outputs` field (`program.rs:249`), its sizing at `program.rs:571/697`, the accessors (`948/979/990`), `run_value()` (`program.rs:980` — renamed to `eval_run()`), and `copy_output_samples()`. Watch the interp.rs internal tests (5246/5318/5400/6137/6151) that construct `value_output_regs` — remove the field from those `Ir` literals.
+- [ ] **Step 4: Add `result`/`copy_buffer` + the `test_eval` entries**
 
-- [ ] **Step 4: Add `eval_run`/`result`/`copy_buffer`**
-
-Rename the per-tick runner to the public `eval_run()`; add `result() -> Option<ArenaRef>` (= `prog.main`) and `copy_buffer(r, dst) -> bool` (resolve `Value::Buffer(idx)`, copy `min(dst.len(), block_len)` from `buffers[idx]`, `false` on non-buffer/dangling/out-of-range). These are needed immediately for the test migration; the `test_eval` entry itself still arrives in Task 5.
+Add to `RillProgram`: `result() -> Option<ArenaRef>` (= `prog.main`) and `copy_buffer(r, dst) -> bool` (resolve `Value::Buffer(idx)`, copy `min(dst.len(), block_len)` from `buffers[idx]`, `false` on non-buffer/dangling/out-of-range). In `lib.rs`:
+- `test_eval<T: Transcendental, const BUF: usize>(defs: &str, expr: &str, ffi: &ForeignRegistry<T>, sample_rate: f32) -> Result<RillProgram<T, BUF>, CompileError>` (Strict default, pragma overrides) and `test_eval_with_mode`. Build `"{defs}\n__rill_eval = ({expr});"`, compile via the entry-name pipeline, assemble via `new_with` (foreign-only), run via `run_entry`, return the program with `prog.main` set; a run `ProcessError` maps to `CompileError::Unsupported("eval run failed: …")`.
 
 - [ ] **Step 5: Repoint `run_main_io`**
 
-Change `run_main_io` to read `prog.main` (not `value_outputs.first()`), keeping the `unIO` projection → World-token apply → pair-force → `main : IO ()` payload contract exactly. `main` is a Reader over `State RealWorld` — this is where the reader is applied.
+Change `run_main_io` to call `run_entry` and read `prog.main` (not `value_outputs.first()`), keeping the `unIO` projection → World-token apply → pair-force → `main : IO ()` payload contract exactly. `main` is a Reader over `State RealWorld` — this is where the reader is applied.
 
 - [ ] **Step 6: Migrate the tests in the same commit (test-deletion policy)**
 
-Per the policy: **Class 1** — mechanical swap in place: `run_value()`→`eval_run()`, `value_outputs()[0].unwrap()`→`result().unwrap()`, `copy_output_samples(0,dst)`→`copy_buffer(result().unwrap(),dst)` across `tests/` (collections_*, data_*, array_*, st_*, typeclass, lazy_mode, thunk_unify, smooth, main_cells, currying_wires, ix, arrow, hof, func_values, …), `serde_def.rs` test 49-53, `lib.rs` doc example, `rill-adrift/tests/` (lang_builtins.rs, lang_builtins_stress.rs, engine_params.rs), `README.md`. **Class 2** — rewrite to compile against the new API, then `#[ignore = "…; re-expressed in task N"]` or delete-with-ledger-record where fully inapplicable (precedents: `func_values.rs:14` already ignored; multi-channel `copy_output_samples(1,…)` at `ffi.rs:1331`/`currying_wires.rs:92`, `value_outputs().len()` at `func_values.rs:27`/`caf_free_variables.rs:95/141`).
+Per the policy: **Class 1** — `compile(src)` value tests split into `test_eval(defs, expr)` where `defs` = everything except `main = expr` and `expr` = `main`'s body; `run_value()`/`value_outputs()[0]` → `result()` (via the `test_eval` return), `copy_output_samples(0,dst)`→`copy_buffer(result().unwrap(),dst)` across `tests/` (collections_*, data_*, array_*, st_*, typeclass, lazy_mode, thunk_unify, smooth, main_cells, currying_wires, ix, arrow, hof, func_values, …), `serde_def.rs` test 49-53, `lib.rs` doc example, `rill-adrift/tests/` (lang_builtins.rs, lang_builtins_stress.rs, engine_params.rs), `README.md`. **Class 2** — rewrite to compile against the new API, then `#[ignore = "…; re-expressed in task N"]` or delete-with-ledger-record where fully inapplicable (precedents: `func_values.rs:14` already ignored; multi-channel `copy_output_samples(1,…)` at `ffi.rs:1331`/`currying_wires.rs:92`, `value_outputs().len()` at `func_values.rs:27`/`caf_free_variables.rs:95/141`; multi-tick `set_param`-persistence value tests need a re-run surface that no longer exists → `#[ignore]` with the resolving task).
 
 - [ ] **Step 7: Run the full suite**
 
 Run: `cargo test -p rill-lang --features dsp && cargo test -p rill-adrift`
-Expected: green (behavior parity; migrated tests exercised via the new API; Class 2 ignored/deleted as recorded).
+Expected: green (behavior parity; migrated tests exercised via `test_eval` + `result()`; Class 2 ignored/deleted as recorded).
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add rill-lang/src rill-lang/tests rill-lang/README.md rill-adrift/tests
-git commit -m 'refactor(rill-lang): run main as a no-unwind fragment, capture prog.main; delete value-output surface'
+git commit -m 'refactor(rill-lang): single run_entry; capture prog.main; test_eval entry; delete value-output surface'
 ```
 
 ---
@@ -267,47 +268,40 @@ git commit -m 'refactor(rill-lang): force is the single execution point, borrowe
 
 ---
 
-### Task 5: ForeignRegistry-only `RillProgram::new_with` + `test_eval` entry
+### Task 5: ForeignRegistry-only `RillProgram::new_with`
 
 **Files:**
 - Modify: `rill-lang/src/program.rs` (`new_with` 609-616, `new_with_resources` 622-630, `build` 632+)
-- Modify: `rill-lang/src/lib.rs` (new `test_eval` entries; `compile_*` callers of `new_with`)
+- Modify: `rill-lang/src/lib.rs` (all `compile_*` callers of `new_with`)
 - Modify: `rill-lang/tests/ffi_extended.rs` (the `run_spectral` helper uses `new_with` directly)
 
 **Interfaces:**
-- Consumes: `RillProgram` internals from Tasks 2-3 (including `eval_run`/`result`/`copy_buffer`, already added in Task 2).
-- Produces:
-  - `RillProgram::new_with(ir: Ir, ffi: &ForeignRegistry<T>, sample_rate: f32) -> Result<Self, CompileError>` — builtins resolve from `foreign` only; an unresolvable name is a `CompileError`. `new_with_resources` keeps its `ResourceRegistry` param but becomes ffi-only (sole current user is the dead graph path; kept for tape until Task 13 decides).
-  - `pub fn test_eval<T: Transcendental, const BUF: usize>(defs: &str, expr: &str, ffi: &ForeignRegistry<T>, sample_rate: f32) -> Result<RillProgram<T, BUF>, CompileError>` — compiles `defs` as the definitions context and `expr` as the entry (synthesized under an internal non-`main` marker; the `IO ()` rule never fires), Strict default, pragma overrides.
-  - `pub fn test_eval_with_mode<T, const BUF>(defs: &str, expr: &str, ffi: &ForeignRegistry<T>, sample_rate: f32, mode: Mode) -> …`.
+- Consumes: `RillProgram` internals from Tasks 2-3 (including `result`/`copy_buffer`, already added in Task 2).
+- Produces: `RillProgram::new_with(ir: Ir, ffi: &ForeignRegistry<T>, sample_rate: f32) -> Result<Self, CompileError>` — builtins resolve from `foreign` only; an unresolvable name is a `CompileError`. `new_with_resources` keeps its `ResourceRegistry` param but becomes ffi-only (sole current user is the dead graph path; kept for tape until Task 13 decides). The `test_eval` entry ALREADY exists from Task 2 (compiles defs + marker-expr through the existing entry-name pipeline and returns the run program).
 
 - [ ] **Step 1: Resign `new_with`/`build` to foreign-only**
 
-Drop `registry: &Registry<T>` from `new_with`/`build`/`build_builtin`; resolve from `foreign` only. Update every in-tree caller (`lib.rs` `compile_with*`/`compile_runner`, `tests/ffi_extended.rs::run_spectral`) to the new signature at once.
+Drop `registry: &Registry<T>` from `new_with`/`build`/`build_builtin`; resolve from `foreign` only. Update every in-tree caller (`lib.rs` `compile_with*`/`compile_runner`, `tests/ffi_extended.rs::run_spectral`) to the new signature at once. `test_eval`/`test_eval_with_mode` (Task 2) already assemble via `new_with(ir, ffi, sr)`.
 
-- [ ] **Step 2: Add the `test_eval` entries**
+- [ ] **Step 2: Write the eval-entry test** (moved from Task 5's old Step 3; the entry already exists from Task 2)
 
-`test_eval`/`test_eval_with_mode` build `defs [+ internal entry = expr]` and compile via the FFI-only pipeline, returning `RillProgram` directly. (`eval_run`/`result`/`copy_buffer` already exist from Task 2; `run_value_tick` is already `run_tick` by then.)
-
-- [ ] **Step 3: Write the eval-entry test**
-
-`tests/eval_entry.rs` (entry synthesized as a non-`main` def; `main` in defs is a plain binding):
-- `test_eval("", "1.0 + 2.0", &ForeignRegistry::new(), 44100.0)` → `eval_run()` → `arena().get(result().unwrap()) == Float(3.0)`.
+`tests/eval_entry.rs` — `test_eval` reuses the compiler, so the pre-Task-3 cases are:
+- `test_eval("", "1.0 + 2.0", &ForeignRegistry::new(), 44100.0)` → `result()` → `Float(3.0)`.
 - Structure: `data Point = { x: Float, y: Float }` defs + `Point { x: 2.0, y: 3.0 }` expr → `Value::Record(_)` via `result()`.
 - Mode: `test_eval_with_mode(…, …, Mode::Complete)` on a recursive `countup` → `Float(3.0)`.
-- Multi-tick: `expr = ?gain` with `set_param` between `eval_run()`s → persists.
 - Plain binding: `test_eval("main = 42", "main * 2.0", …)` → `Float(84.0)` — `main` in defs is inert outside the compile front-end.
+- Multi-tick `?gain` + `set_param` between runs is Class 2 (no re-run surface on `test_eval`; `set_param` needs the returned program's params, valid before the single internal run) — ledger the resolve task.
 
-- [ ] **Step 4: Suite gate**
+- [ ] **Step 3: Suite gate**
 
 Run: `cargo test -p rill-lang --features dsp`
 Expected: green (old entries still present and untouched).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add rill-lang/src/lib.rs rill-lang/src/program.rs rill-lang/tests/ffi_extended.rs rill-lang/tests/eval_entry.rs
-git commit -m 'feat(rill-lang): test_eval entry + eval_run/result/copy_buffer; FFI-only new_with'
+git commit -m 'feat(rill-lang): FFI-only new_with; eval-entry test suite'
 ```
 
 ---
@@ -318,12 +312,14 @@ git commit -m 'feat(rill-lang): test_eval entry + eval_run/result/copy_buffer; F
 - Create: `rill-lang/tests/common/mod.rs`
 
 **Interfaces:**
-- Produces, for use by Tasks 7-11 (helpers keep the current `src`-form, splitting it internally):
-  - `fn eval<T: Transcendental, const BUF: usize>(src: &str, ffi: &ForeignRegistry<T>, sample_rate: f32) -> RillProgram<T, BUF>` — parses `src`, separates the `main`-less defs from `main`'s body (the classic `main = expr` value test becomes `defs` + `expr`), and calls `test_eval(defs, expr, ffi, sr)`; panics with a message on compile error (mirrors existing helpers).
+- Produces, for use by Tasks 7-12:
+  - `fn eval<T: Transcendental, const BUF: usize>(src: &str, ffi: &ForeignRegistry<T>, sample_rate: f32) -> RillProgram<T, BUF>` — splits the classic `main = expr` source into `defs` + `expr` and calls `test_eval(defs, expr, ffi, sr)`; panics with a message on compile error (mirrors existing helpers).
   - `fn eval_mode<T, const BUF>(src: &str, ffi: &ForeignRegistry<T>, sr: f32, mode: Mode) -> RillProgram<T, BUF>` — same split with an explicit `mode`.
-  - `fn run_tick<T, const BUF>(prog: &mut RillProgram<T, BUF>) -> Result<(), ProcessError>` — thin `eval_run` wrapper.
   - `fn out_value<T, const BUF>(prog: &RillProgram<T, BUF>) -> Value` — debug clone of `arena().get(result().unwrap())`.
-  - `fn buffers<T, const BUF>(prog: &mut RillProgram<T, BUF>, dst: &mut [T]) -> bool` — runs one tick, gets `result()`, `copy_buffer`s.
+  - `fn buffers<T, const BUF>(prog: &RillProgram<T, BUF>, dst: &mut [T]) -> bool` — `result()`, then `copy_buffer`.
+  - Note: NO `run_tick` helper (deleted per user directive, no public re-run surface); `test_eval` returns an ALREADY-RUN program, so `out_value`/`buffers` read `result()` directly.
+
+**Migration rule for the helpers' split:** parse the source, separate everything except `main`'s binding into `defs` and `main`'s body into `expr` (the classic `main = expr` value test form). `main` in the source is a plain binding; the entry is the synthesized marker.
 
 - [ ] **Step 1: Write `tests/common/mod.rs`** exactly as specified.
 - [ ] **Step 2: Smoke-use it in `tests/array_storage.rs`** (largest helper user) to prove it compiles against the new API.
@@ -342,8 +338,8 @@ git commit -m 'test(rill-lang): shared eval-entry test helpers'
 - Modify: `tests/bool_values.rs`, `tests/branching.rs`, `tests/arrow.rs`, `tests/atan2_lang_op.rs`, `tests/bang_patterns.rs`, `tests/head_arg_dispatch.rs`, `tests/sig_typed_params.rs`
 
 **Migration rule (applies to all value tests):**
-- `compile::<f32>(src)` → `eval(src, &ForeignRegistry::<f32>::new(), 44100.0)`; `compile_with_ffi::<f32>(src, ffi, sr)` → `eval(src, ffi, sr)`; `compile_with_mode::<f32>(src, Mode::X)` → `eval_mode(src, …, sr, Mode::X)`.
-- `prog.run_value()` → `prog.eval_run()` (or `run_tick`).
+- `compile::<f32>(src)` → `eval(src, &ForeignRegistry::<f32>::new(), 44100.0)`; `compile_with_ffi::<f32>(src, ffi, sr)` → `eval(src, ffi, sr)`; `compile_with_mode::<f32>(src, Mode::X)` → `eval_mode(src, …, sr, Mode::X)`. The `eval` helpers split the classic `main = expr` source into `defs` + `expr` and call `test_eval` (Task 6).
+- `prog.run_value()` → no longer exists — `test_eval`/`eval` returns an ALREADY-RUN program.
 - `prog.value_outputs()[0].unwrap()` → `prog.result().unwrap()`.
 - Structural asserts on `arena().get(v)` stay byte-for-byte identical.
 - Delete now-dead imports (`compile`, `compile_with`, `compile_with_ffi`, `builtin::Registry`).
@@ -390,7 +386,7 @@ git commit -m 'test(rill-lang): migrate structural value tests to test_eval'
 **Files:**
 - Modify: `tests/collections_list.rs`, `tests/collections_map_set.rs`, `tests/collections_maybe_either.rs`, `tests/collections_capacity.rs`, `tests/lazy_mode.rs`, `tests/thunk_unify.rs`, `tests/constrained_defs.rs`, `tests/constrained_signatures.rs`, `tests/hkt_typeclass.rs`, `tests/typeclass.rs`, `tests/integration.rs`
 
-**Migration rule:** as Task 7; `Mode::Complete` calls → `eval_mode(…, Mode::Complete)`. Multi-tick arena-survival asserts ("survives across ticks", `live < capacity`) keep working via `eval_run()` — the per-run release/capture semantics are identical to `run_value`.
+**Migration rule:** as Task 7; `Mode::Complete` calls → `eval_mode(…, Mode::Complete)`. Multi-run arena-survival asserts ("survives across runs", `live < capacity`) are Class 2 — the returned program is already run; a re-run needs the internal `run_entry`, decided per test in the ledger.
 
 - [ ] **Step 1: Migrate the eleven files.**
 - [ ] **Step 2: Run the migrated files only**
@@ -415,7 +411,7 @@ git commit -m 'test(rill-lang): migrate collections/lazy tests to test_eval'
 **Migration rule for buffer asserts:**
 - Value reads as Task 7.
 - `prog.copy_output_samples(0, &mut out)` → `let r = prog.result().unwrap(); assert!(prog.copy_buffer(r, &mut out));`
-- `main_cells.rs`/`st_real.rs` param modulation + multi-tick: `set_param` between `eval_run()`s; keep cell-persistence semantics.
+- `main_cells.rs`/`st_real.rs` param modulation + multi-tick: Class 2 — `set_param` between runs needs a re-run surface; decide per test in the ledger (a single-run equivalence exists where the program's own params are set before the one internal run).
 - One test asserts Review Focus 3: `copy_buffer` on a `result()` that is a `Float` returns `false`.
 
 - [ ] **Step 1: Migrate the eight files** by the rule.
@@ -564,9 +560,9 @@ git commit -m 'feat(rill-lang): unified ForeignRegistry-only compile; IO()-gate;
 - Modify: `rill-lang/src/program.rs`
 
 **Interfaces:**
-- Produces the final public surface: `main` (field), `eval_run()`, `result()`, `copy_buffer()`, `arena()`, `set_param`/`param`/`params_meta`/`param_index`, `init`, `reset`, `inject_stdin`. Since the value-output surface was already deleted in Task 2, this task is a confirmation + straggler sweep: `run_tick` stays private (exposed only via `eval_run`), and any internal test/doc that still reaches the removed surface is migrated.
+- Produces the final public surface: `main` (field), `result()`, `copy_buffer()`, `arena()`, `set_param`/`param`/`params_meta`/`param_index`, `init`, `reset`, `inject_stdin`. Since the value-output surface was already deleted in Task 2, this task is a confirmation + straggler sweep: `run_entry` stays `pub(crate)` (internal shared run — no public re-run surface), and any internal test/doc that still reaches the removed surface is migrated.
 
-- [ ] **Step 1: Confirm the surface is final** — `value_outputs`, `run_value()`, `value_outputs()`, `copy_output_samples()` must not exist anywhere; `run_tick` private. Remove any stragglers (internal tests, doc examples).
+- [ ] **Step 1: Confirm the surface is final** — `value_outputs`, `run_value()`, `value_outputs()`, `copy_output_samples()`, `eval_run` must not exist anywhere; `run_entry` crate-private. Remove any stragglers (internal tests, doc examples).
 - [ ] **Step 2: Full suite gate**
 
 Run: `cargo test -p rill-lang --features dsp && cargo test -p rill-adrift`
@@ -576,7 +572,7 @@ Expected: green — proves no test still uses the removed API.
 
 ```bash
 git add rill-lang/src/program.rs
-git commit -m 'refactor(rill-lang): final RillProgram surface — eval_run/result/copy_buffer only'
+git commit -m 'refactor(rill-lang): final RillProgram surface — result/copy_buffer only'
 ```
 
 ---

@@ -3,6 +3,7 @@
 
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
+use rill_lang::test_eval;
 
 fn ffi() -> ForeignRegistry<f32> {
     let mut ffi = ForeignRegistry::<f32>::new();
@@ -11,16 +12,26 @@ fn ffi() -> ForeignRegistry<f32> {
     ffi
 }
 
+/// Compile `src` against `ffi` and RUN it once (the single-run value surface),
+/// returning the already-run program.
+fn run_value(ffi: &ForeignRegistry<f32>, src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    test_eval::<f32, 256>(defs, expr, ffi, 44100.0).unwrap()
+}
+
 #[test]
 fn partial_application_is_first_class() {
     // fp = onepole 200.0 0.7 : Buffer -> Buffer; mapping it over the program's
     // input list compiles and runs (a signal-arrow typing would have arity
     // 1->1 and fail the value-track map application).
     let src = r#"fp = onepole 200.0 0.7; main = fp (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi(), 44100.0).unwrap();
+    let prog = run_value(&ffi(), src);
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    let r = prog.result().expect("whole-buffer result expected");
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(out.iter().all(|v| v.is_finite()));
 }
 
@@ -29,11 +40,12 @@ fn partial_application_matches_direct_call() {
     // fp i1 === onepole 200.0 0.7 i1.
     let direct = r#"main = onepole 200.0 0.7 (square 0.0 1.0 0.0);"#;
     let via_fp = r#"fp = onepole 200.0 0.7; main = fp (square 0.0 1.0 0.0);"#;
+    let reg = ffi();
     let run = |src: &str| -> Vec<f32> {
-        let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi(), 44100.0).unwrap();
+        let prog = run_value(&reg, src);
         let mut out = [0.0f32; 64];
-        prog.run_value().unwrap();
-        assert!(prog.copy_output_samples(0, &mut out));
+        let r = prog.result().expect("whole-buffer result expected");
+        assert!(prog.copy_buffer(r, &mut out));
         out.to_vec()
     };
     let a = run(direct);

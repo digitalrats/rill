@@ -1,6 +1,19 @@
 //! Kind polymorphism: typeclasses over type constructors (Functor/Foldable).
 
 use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
+
+/// Compile `src` (which must bind `main` to the evaluated expression) and RUN
+/// it once on the single-run value surface, returning the already-run program.
+fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+}
 
 #[test]
 fn fmap_over_maybe_matches() {
@@ -9,9 +22,8 @@ fn fmap_over_maybe_matches() {
         instance Functor Maybe where { fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); }; }
         main = case (fmap (\x -> x + 1.0) (Just 1.0)) of { Nothing -> 0.0; Just x -> x; };
     ";
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(2.0)
@@ -25,9 +37,8 @@ fn fmap_over_list_is_compile_time_inlined() {
         instance Functor List where { fmap g xs = map g xs; }
         main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0, 4.0]);
     ";
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(4)
@@ -91,9 +102,8 @@ fn foldable_over_list() {
         instance Foldable List where { foldr f z xs = fold f z xs; }
         main = foldr (\a -> \b -> a + b) 0.0 [1.0, 2.0, 3.0];
     ";
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(6.0)
@@ -108,9 +118,8 @@ fn fmap_over_user_parameterized_data() {
         instance Functor Box where { fmap g b = Box { value: g b.value }; }
         main = (fmap (\x -> x * 10.0) (Box { value: 3.0 })).value;
     ";
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(30.0)

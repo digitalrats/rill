@@ -1,16 +1,26 @@
 //! rill-lang builtin chains and parameter folding on the retained value path.
 
 use rill_adrift::lang_builtins::full_ffi;
-use rill_lang::compile_with_ffi;
+use rill_lang::test_eval;
 
 const BUF: usize = 256;
 
+/// Evaluate `src` against rill-adrift's FFI registry and return the single
+/// whole-buffer result (`test_eval` compiles `main = <expr>` and runs it once).
 fn run(src: &str) -> Vec<f32> {
-    let mut prog = compile_with_ffi::<f32>(src, &full_ffi::<f32>(), 48_000.0)
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = full_ffi::<f32>();
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 48_000.0)
         .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = vec![0.0f32; BUF];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(
+        prog.copy_buffer(r, &mut out),
+        "program must produce a buffer output"
+    );
     out
 }
 

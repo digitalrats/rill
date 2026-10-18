@@ -1733,7 +1733,7 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
     Ok(())
 }
 
-/// Back-compat: infer with no built-ins.
+/// Back-compat: infer with no built-ins and `main` as the entry name.
 pub fn infer_program(program: &Program, mode: Mode) -> Result<TypedProgram, CompileError> {
     infer_program_with(program, mode)
 }
@@ -1746,6 +1746,19 @@ pub fn infer_program(program: &Program, mode: Mode) -> Result<TypedProgram, Comp
 /// to all bodies. `mode` is carried onto the returned [`TypedProgram`]; the
 /// strict/complete distinction gates later pipeline stages (reduce, lower).
 pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram, CompileError> {
+    infer_program_with_entry(program, mode, "main")
+}
+
+/// Infer a program with an explicit entry name.
+///
+/// The entry definition (by default `main`, or an internal marker for
+/// [`test_eval`](crate::test_eval) evaluations) supplies the program's process
+/// type. All other behaviour is identical to [`infer_program_with`].
+pub fn infer_program_with_entry(
+    program: &Program,
+    mode: Mode,
+    entry: &str,
+) -> Result<TypedProgram, CompileError> {
     // Build the type environment in two phases so declaration ORDER does not
     // matter. Phase 1 registers the pure name-mapping declarations (synonyms,
     // newtypes, typeclasses, instances); phase 2 resolves data-type
@@ -1930,10 +1943,10 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
 
     let main_scheme = ctx
         .defs
-        .get("main")
+        .get(entry)
         .cloned()
         .ok_or_else(|| CompileError::Type {
-            msg: "program must contain a `main` definition".into(),
+            msg: format!("program must contain a `{entry}` definition"),
             span: Span::new(0, 0),
         })?;
 

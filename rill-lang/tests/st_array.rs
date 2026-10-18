@@ -6,21 +6,57 @@
 //! Every flat-size and offset computation lives in the LANGUAGE here — the
 //! `Ix` class lands in a later task — so the primitives stay type-agnostic and
 //! the tests pass literal flat sizes. The whole pipeline (infer → reduce →
-//! lower → interpreter) is driven through `compile`.
+//! lower → interpreter) is driven through `compile`/`test_eval`.
 
 use rill_lang::arena::{ArenaRef, Value};
 use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::program::RillProgram;
+use rill_lang::test_eval;
 
-/// The single value output of an already-run program.
+/// Split `src` at the `main = ` binding into `(defs, expr)` for the eval
+/// surface: `main` is not special inside `test_eval`'s defs, so the entry
+/// expression is passed separately (and its trailing `;` dropped).
+fn split_main(src: &str) -> (&str, &str) {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    (defs, expr.trim().trim_end_matches(';'))
+}
+
+/// Compile `src`, run it once, and return the program and its single result.
+fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
+    let (defs, expr) = split_main(src);
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
+        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let v = output(&prog);
+    (prog, v)
+}
+
+/// The single run result of an already-run program.
 fn output(prog: &RillProgram<f32, 256>) -> Value {
-    let outputs = prog.value_outputs();
-    assert_eq!(outputs.len(), 1, "expected exactly one value output");
-    let v = outputs[0].expect("the value output must be bound");
+    let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
-        .expect("the output ref must resolve")
+        .expect("the result ref must resolve")
         .clone()
+}
+
+/// Run `src` expecting a clean latched runtime fault, and return its detail.
+///
+/// A latched fault surfaces from `test_eval` as
+/// `CompileError::Unsupported("eval run failed: …")` with the `ProcessError`
+/// text preserved inside the string; a panic in the interpreter fails this
+/// helper outright.
+fn fault(src: &str) -> String {
+    let (defs, expr) = split_main(src);
+    let ffi = ForeignRegistry::<f32>::new();
+    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+        Ok(_) => panic!("expected a runtime fault, but the program ran\nsrc:\n{src}"),
+        Err(rill_lang::CompileError::Unsupported(msg)) => msg,
+        Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
+    }
 }
 
 /// The two field VALUES of a `Pair` record output, resolved through the arena.
@@ -66,9 +102,8 @@ fn starray_read_write_modify_inside_a_region() {
            second: runST (\\s -> do {{ a <- {new}; modifyArrayFlat a 2 (\\x -> x + 1.0); readArrayFlat a 2 }}) \
          }};"
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
-    let (written, modified) = pair_values(&prog, &output(&prog));
+    let (prog, v) = run(&src);
+    let (written, modified) = pair_values(&prog, &v);
     assert_eq!(written, Value::Float(42.0), "writeArrayFlat stores");
     assert_eq!(
         modified,
@@ -98,10 +133,8 @@ fn starray_bounds_and_elems_read_the_whole_cell() {
          }});",
         new_array_0_to_2("7.0")
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
-    let out = output(&prog);
-    let (bounds, elems) = pair_values(&prog, &out);
+    let (prog, v) = run(&src);
+    let (bounds, elems) = pair_values(&prog, &v);
     let (lo, hi) = pair_values(&prog, &bounds);
     assert_eq!(lo, Value::Int(0), "the lower bound reads back");
     assert_eq!(hi, Value::Int(2), "the upper bound reads back");
@@ -127,10 +160,8 @@ fn runst_array_freezes_to_an_immutable_array() {
          }});",
         new_array_0_to_2("1.0")
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
-    let out = output(&prog);
-    let (bounds, elems) = array_parts(&out);
+    let (prog, v) = run(&src);
+    let (bounds, elems) = array_parts(&v);
 
     let values: Vec<f64> = elems
         .iter()
@@ -164,9 +195,8 @@ fn frozen_array_is_usable_after_the_region_closes() {
          }}));",
         new_array_0_to_2("0.0")
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
-    let (len, last) = pair_values(&prog, &output(&prog));
+    let (prog, v) = run(&src);
+    let (len, last) = pair_values(&prog, &v);
     assert_eq!(len, Value::Int(3), "the frozen array's flat length");
     assert_eq!(last, Value::Float(30.0), "the frozen last element");
 }
@@ -195,10 +225,8 @@ fn freeze_keeps_the_element_claims_balanced() {
          }});",
         new_array_0_to_2("0.0")
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
-    let out = output(&prog);
-    let (bounds, elems) = array_parts(&out);
+    let (prog, v) = run(&src);
+    let (bounds, elems) = array_parts(&v);
     assert_eq!(elems.len(), 3, "all three elements survive the freeze");
     for (i, e) in elems.iter().enumerate() {
         assert_eq!(
@@ -267,11 +295,7 @@ fn starray_flat_index_out_of_range_is_a_clean_fault() {
         "{{-# MODE complete #-}}\nmain = runST (\\s -> do {{ a <- {}; readArrayFlat a 3 }});",
         new_array_0_to_2("1.0")
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    let err = prog
-        .run_value()
-        .expect_err("an out-of-range read must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = fault(&src);
     assert!(
         msg.contains("readArrayFlat") && msg.contains("out of range"),
         "expected the out-of-range fault, got: {msg}"
@@ -285,11 +309,7 @@ fn starray_negative_flat_size_is_a_clean_fault() {
     // result is a plain element, not an array escaping its region) and the
     // allocation is what faults.
     let src = "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 0 }) -1 1.0; readArrayFlat a 0 });";
-    let mut prog = compile::<f32>(src).expect("the program must compile");
-    let err = prog
-        .run_value()
-        .expect_err("a negative flat size must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = fault(src);
     assert!(
         msg.contains("newArrayFlat") && msg.contains("negative"),
         "expected the negative-size fault, got: {msg}"
@@ -306,11 +326,7 @@ fn starray_size_beyond_the_arena_capacity_is_a_clean_fault() {
                a <- newArrayFlat (Pair { first: 0, second: 999999 }) 1000000 1.0; \
                readArrayFlat a 0 \
              });";
-    let mut prog = compile::<f32>(src).expect("the program must compile");
-    let err = prog
-        .run_value()
-        .expect_err("an over-capacity flat size must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = fault(src);
     assert!(
         msg.contains("newArrayFlat") && msg.contains("capacity"),
         "expected the over-capacity fault, got: {msg}"

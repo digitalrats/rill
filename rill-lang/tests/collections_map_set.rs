@@ -1,15 +1,26 @@
 //! End-to-end Map/Set tests: insert/lookup/member with structural ordering.
 
 use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
+
+/// Compile `src` against an empty foreign registry and RUN it once (the
+/// single-run value surface), returning the already-run program.
+fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+}
 
 #[test]
 fn map_insert_lookup_member() {
-    let mut prog = compile::<f32>(
+    let prog = run(
         r#"m = { "a": 1.0, "b": 2.0 }; main = case (lookup "a" m) of { Nothing -> 0.0; Just x -> x; };"#,
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    );
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(1.0)
@@ -18,9 +29,8 @@ fn map_insert_lookup_member() {
 
 #[test]
 fn set_member_after_insert() {
-    let mut prog = compile::<f32>("s = insert 5 (empty_set); main = member 5 s;").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("s = insert 5 (empty_set); main = member 5 s;");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Bool(true)
@@ -32,10 +42,8 @@ fn tail_and_filter_preserve_capacity() {
     // `tail` drops the head (2.0 and 3.0 survive), `filter` keeps the elements
     // satisfying the predicate (both do), so the length is 2 — the point is
     // that tail/filter work end-to-end and preserve the source capacity.
-    let mut prog =
-        compile::<f32>(r"main = length (filter (\x -> x > 1.0) (tail [1.0, 2.0, 3.0]));").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(r"main = length (filter (\x -> x > 1.0) (tail [1.0, 2.0, 3.0]));");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(2)
@@ -46,10 +54,8 @@ fn tail_and_filter_preserve_capacity() {
 fn map_insert_new_key_grows_past_literal_entries() {
     // Open collections: inserting a NEW key past the former literal capacity is
     // no longer a runtime error — the map grows.
-    let mut prog =
-        compile::<f32>("m = { \"a\": 1.0 }; main = length (insert \"b\" 2.0 m);").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("m = { \"a\": 1.0 }; main = length (insert \"b\" 2.0 m);");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(2)
@@ -60,10 +66,8 @@ fn map_insert_new_key_grows_past_literal_entries() {
 fn map_replace_on_duplicate_does_not_overflow() {
     // Replacing an existing key keeps the length AT the capacity bound: it must
     // NOT error (only a NEW key past capacity overflows).
-    let mut prog =
-        compile::<f32>("m = insert \"a\" 2.0 { \"a\": 1.0 }; main = member \"a\" m;").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("m = insert \"a\" 2.0 { \"a\": 1.0 }; main = member \"a\" m;");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Bool(true)
@@ -74,10 +78,8 @@ fn map_replace_on_duplicate_does_not_overflow() {
 fn set_insert_duplicate_does_not_overflow() {
     // The first insert fills the cap-1 set; the duplicate insert must be a
     // no-op, not an overflow.
-    let mut prog =
-        compile::<f32>("s = insert 5 (insert 5 (empty_set)); main = member 5 s;").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("s = insert 5 (insert 5 (empty_set)); main = member 5 s;");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Bool(true)
@@ -85,41 +87,11 @@ fn set_insert_duplicate_does_not_overflow() {
 }
 
 #[test]
-fn tail_shared_source_elements_survive_across_ticks() {
-    // The CAF `l = [1.0, 2.0]` is rebuilt each tick; `main = cons 9.0 (tail l)`
-    // is [9.0, 2.0], sharing l's tail element 2.0. Tail must recount (RC++) the
-    // kept element and leave the removed head's slot untouched — a tail that
-    // freed the head mid-tick would recycle its slot for 9.0 and dangle the
-    // still-live source list, corrupting the pinned output on the next tick.
-    let mut prog = compile::<f32>("l = [1.0, 2.0]; main = cons 9.0 (tail l);").unwrap();
-    for tick in 0..3 {
-        prog.run_value().unwrap();
-        let v = prog.value_outputs()[0].unwrap();
-        match prog.arena().get(v).unwrap() {
-            rill_lang::arena::Value::List { elems, .. } => {
-                assert_eq!(
-                    prog.arena().get(elems[0]).unwrap(),
-                    &rill_lang::arena::Value::Float(9.0),
-                    "tick {tick}: consed head must survive"
-                );
-                assert_eq!(
-                    prog.arena().get(elems[1]).unwrap(),
-                    &rill_lang::arena::Value::Float(2.0),
-                    "tick {tick}: tail's kept element must survive the tick-end clear"
-                );
-            }
-            other => panic!("tick {tick}: expected a List, got {other:?}"),
-        }
-    }
-}
-
-#[test]
 fn map_literal_entries_are_sorted_regardless_of_write_order() {
     // Out-of-order multi-key literals must be normalised to sorted order so the
     // binary-search invariant of insert/lookup/member holds.
-    let mut prog = compile::<f32>("main = member \"a\" { \"b\": 1.0, \"a\": 2.0 };").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = member \"a\" { \"b\": 1.0, \"a\": 2.0 };");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Bool(true),
@@ -144,11 +116,8 @@ fn func_key_is_compile_error() {
 #[test]
 fn compound_data_key_is_accepted() {
     // A List key is a concrete data type with a derived Ord instance.
-    let mut prog =
-        compile::<f32>("k = [1, 2]; m = insert k 1.0 (empty_map); main = length [1.0, 2.0];")
-            .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("k = [1, 2]; m = insert k 1.0 (empty_map); main = length [1.0, 2.0];");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(2)
@@ -159,12 +128,9 @@ fn compound_data_key_is_accepted() {
 fn newtype_key_has_derived_ord() {
     // spec §2.5 derives Eq/Ord for newtypes by their inner: a Map keyed by Hz
     // must compile (the runtime value_cmp unwraps newtypes).
-    let mut prog = compile::<f32>(
-        "newtype Hz = Float; k = Hz 440.0; m = insert k 1.0 (empty_map); main = length [1.0];",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog =
+        run("newtype Hz = Float; k = Hz 440.0; m = insert k 1.0 (empty_map); main = length [1.0];");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(1)
@@ -175,17 +141,15 @@ fn newtype_key_has_derived_ord() {
 fn length_of_map_and_set() {
     // The IR doc says Length covers list/set/map — Map and Set must report
     // their entry counts, not silently return 0.
-    let mut prog = compile::<f32>("main = length { \"a\": 1.0, \"b\": 2.0 };").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = length { \"a\": 1.0, \"b\": 2.0 };");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(2)
     );
 
-    let mut prog = compile::<f32>("main = length (insert 1.0 (insert 2.0 (empty_set)));").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = length (insert 1.0 (insert 2.0 (empty_set)));");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(2)
@@ -196,12 +160,10 @@ fn length_of_map_and_set() {
 fn map_literal_value_type_matches_lookup() {
     // A Float-valued map literal: lookup must yield the entry's value in the
     // Just arm.
-    let mut prog = compile::<f32>(
+    let prog = run(
         r#"main = case (lookup "a" { "a": 1.0, "b": 2.0 }) of { Nothing -> 0.0; Just x -> x; };"#,
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    );
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(1.0)
@@ -212,12 +174,10 @@ fn map_literal_value_type_matches_lookup() {
 fn map_literal_value_type_is_actual_entry_type() {
     // The map literal's value type must be the ACTUAL entry type (a record),
     // not a pinned Float: projecting the looked-up record's field works.
-    let mut prog = compile::<f32>(
+    let prog = run(
         r#"data P = { x: Float, y: Float }; main = case (lookup "a" { "a": P { x: 1.0, y: 2.0 } }) of { Nothing -> 0.0; Just p -> p.x; };"#,
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    );
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(1.0)

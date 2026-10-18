@@ -1,13 +1,22 @@
 //! SP-2: Kleisli + value-track Arrow. HKT data fields, channel tuples, arrow.
 
 use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
 
+/// Compile `src` against an empty foreign registry and RUN it once (the
+/// single-run value surface), returning the already-run program.
 fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
-    compile::<f32>(src).unwrap()
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
 }
 
-fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 {
-    match prog.arena().get(prog.value_outputs()[i].unwrap()).unwrap() {
+fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>) -> f64 {
+    match prog.arena().get(prog.result().unwrap()).unwrap() {
         rill_lang::arena::Value::Float(n) => *n,
         other => panic!("expected Float, got {other:?}"),
     }
@@ -41,9 +50,8 @@ fn compiles_with_deep_stack(src: &str) -> bool {
 #[test]
 fn value_tuple_is_pair() {
     // `(1.0, 2.0)` in value position is a `Pair { first, second }`.
-    let mut prog = run("main = (1.0, 2.0);");
-    prog.run_value().unwrap();
-    match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
+    let prog = run("main = (1.0, 2.0);");
+    match prog.arena().get(prog.result().unwrap()).unwrap() {
         rill_lang::arena::Value::Record(fields) => {
             assert_eq!(fields.len(), 2);
             assert_eq!(
@@ -63,9 +71,8 @@ fn value_tuple_is_pair() {
 fn value_tuple_field_projection_is_first() {
     // `.first` on a value tuple forces the Pair into a value-consuming
     // position: `(1.0, 2.0).first` yields `Float(1.0)`.
-    let mut prog = run("main = (1.0, 2.0).first;");
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 1.0);
+    let prog = run("main = (1.0, 2.0).first;");
+    assert_eq!(out_float(&prog), 1.0);
 }
 
 #[test]
@@ -84,8 +91,7 @@ fn tuple_type_desugars_to_pair() {
         typeclass T a where { m: a (Float, Float) -> Float; }
         main = 1.0;
     "#;
-    let mut prog = run(src);
-    prog.run_value().unwrap();
+    let _prog = run(src);
 }
 
 #[test]
@@ -104,9 +110,8 @@ fn constraint_instance_container_arg_discharges() {
         main = case ((unwrap (Kleisli { unKleisli: \x -> Just x })) 3.0)
                 of { Just v -> v; Nothing -> 0.0; };
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 3.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 3.0);
 }
 
 #[test]
@@ -117,9 +122,8 @@ fn field_projection_applies_as_function() {
         b = Box { f: \x -> x * 2.0 };
         main = (b.f) 3.0;
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 6.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 6.0);
 }
 
 #[test]
@@ -132,9 +136,8 @@ fn let_bound_projected_closure_applies() {
         apply x = let u = b.f in u x;
         main = apply 3.0;
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 6.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 6.0);
 }
 
 #[test]
@@ -146,9 +149,8 @@ fn bare_field_projection_applies_as_function() {
         b = Box { f: \x -> x * 2.0 };
         main = b.f 3.0;
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 6.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 6.0);
 }
 
 #[test]
@@ -169,9 +171,8 @@ fn hkt_data_field_applies_type_parameter() {
         apply_f = \f -> \x -> f x;
         main = case (apply_f k.f 3.0) of { Just v -> v; Nothing -> 0.0; };
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 3.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 3.0);
 }
 
 #[test]
@@ -200,9 +201,8 @@ fn apply_expr_non_function_callee_is_error() {
 #[test]
 fn apply_expr_lambda_callee() {
     // `(fn x -> x) 1.0` applies a lambda literal directly.
-    let mut prog = run(r"main = (\x -> x * 2.0) 3.0;");
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 6.0);
+    let prog = run(r"main = (\x -> x * 2.0) 3.0;");
+    assert_eq!(out_float(&prog), 6.0);
 }
 
 #[test]
@@ -221,9 +221,8 @@ fn constraint_instance_resolves() {
         lifted = apply (arr (\x -> x * 2.0)) 3.0;
         main = case lifted of { Just v -> v; Nothing -> 0.0; };
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 6.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 6.0);
 }
 
 #[test]
@@ -235,9 +234,8 @@ fn single_field_record_newtype_style() {
         b = Box (\x -> x * 2.0);
         main = b.f 21.0;
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 42.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 42.0);
 }
 
 #[test]
@@ -253,9 +251,8 @@ fn kleisli_arrow_end_to_end() {
             Just v -> v; Nothing -> 0.0;
         };
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 8.0); // (3+1)*2
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 8.0); // (3+1)*2
 }
 
 #[test]

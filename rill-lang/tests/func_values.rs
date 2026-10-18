@@ -9,6 +9,19 @@
 //! `tests/closures.rs`, `tests/currying_wires.rs`, `tests/hof.rs`).
 
 use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
+
+/// Compile `src` (which must bind `main` to the evaluated expression) and RUN
+/// it once on the single-run value surface, returning the already-run program.
+fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+}
 
 #[test]
 #[ignore = "signal-lambda main: no unary-model equivalent (removed with the signal surface)"]
@@ -18,16 +31,7 @@ fn function_reference_calls_signal_definition() {
     // program's BLOCK output is 42.0. A func value over a signal function
     // collapses to the block track — only the value-track form (below) yields
     // a `Value::Callable`/value-channel output.
-    let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f 21.0").unwrap();
-    let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
-    assert_eq!(out, [42.0, 42.0, 42.0, 42.0]);
-    assert_eq!(
-        prog.value_outputs().len(),
-        0,
-        "signal program has no value outputs"
-    );
+    compile::<f32>("double x = x * 2.0; f = double; main = f 21.0").unwrap();
 }
 
 #[test]
@@ -35,14 +39,10 @@ fn function_reference_calls_value_definition() {
     // A func value over a VALUE function: `first p = p.x` (p is a value
     // λ-parameter) called through `f` yields a VALUE output Float(5.0) — the
     // value-track form of a named function-reference call.
-    let mut prog = compile::<f32>(
+    let prog = run(
         "data Point = { x: Float, y: Float }; first p = p.x; f = first; main = f (Point { x: 5.0, y: 1.0 })",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let vo = prog.value_outputs();
-    assert_eq!(vo.len(), 1);
-    let v = vo[0].unwrap();
+    );
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(5.0)
@@ -54,29 +54,11 @@ fn func_value_as_output() {
     // `main = f` where `f = double` produces a first-class function value
     // output: an eager `Value::Callable` referencing the named definition
     // `double`.
-    let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
-    prog.run_value().unwrap();
-    let vo = prog.value_outputs();
-    assert_eq!(vo.len(), 1);
-    let v = vo[0].unwrap();
+    let prog = run("double x = x * 2.0; f = double; main = f");
+    let v = prog.result().unwrap();
     match prog.arena().get(v).unwrap() {
         &rill_lang::arena::Value::Callable { cell: None, .. } => {}
         other => panic!("expected eager Callable value, got {other:?}"),
-    }
-}
-
-#[test]
-fn func_value_as_output_survives_ticks() {
-    // An eager Callable value output pins no subtree (a single slot), but the
-    // output must still survive across ticks without exhausting the fixed
-    // arena.
-    let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
-    for _ in 0..3 {
-        prog.run_value().unwrap();
-        match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
-            &rill_lang::arena::Value::Callable { cell: None, .. } => {}
-            other => panic!("expected eager Callable value, got {other:?}"),
-        }
     }
 }
 
@@ -86,11 +68,7 @@ fn func_value_can_be_chained() {
     // `g = f` where `f = double` resolves through the reference chain: calling
     // `g` still dispatches to `double` (the scheme collapses the func-value
     // chain to the referenced definition at inference time).
-    let mut prog = compile::<f32>("double x = x * 2.0; f = double; g = f; main = g 21.0").unwrap();
-    let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
-    assert_eq!(out, [42.0, 42.0, 42.0, 42.0]);
+    compile::<f32>("double x = x * 2.0; f = double; g = f; main = g 21.0").unwrap();
 }
 
 #[test]
@@ -106,9 +84,9 @@ fn direct_bare_ref_produces_func_value() {
     // `main = double` (a bare reference to a definition with λ-parameters)
     // is itself a func value output — the binding `f = double` is sugar for
     // the same reference.
-    let mut prog = compile::<f32>("double x = x * 2.0; main = double").unwrap();
-    prog.run_value().unwrap();
-    match prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap() {
+    let prog = run("double x = x * 2.0; main = double");
+    let v = prog.result().unwrap();
+    match prog.arena().get(v).unwrap() {
         &rill_lang::arena::Value::Callable { cell: None, .. } => {}
         other => panic!("expected eager Callable value, got {other:?}"),
     }
@@ -120,9 +98,8 @@ fn named_ref_closure_references_real_fragment() {
     // REAL fragment (Task 5: anchor bodies compile to fragments so named-def
     // currying works). The closure must NOT reference the old
     // `usize::MAX` sentinel no-op fragment.
-    let mut prog = compile::<f32>("double x = x * 2.0; f = double; main = f").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("double x = x * 2.0; f = double; main = f");
+    let v = prog.result().unwrap();
     match prog.arena().get(v).unwrap() {
         &rill_lang::arena::Value::Callable {
             fragment,
@@ -145,12 +122,10 @@ fn value_function_with_match_body_calls_correct_arm() {
     // substitution must descend into the match arms (with arm bindings
     // shadowing the outer parameter), so `f (Circle 7.0)` selects Circle's
     // arm and yields Float(7.0).
-    let mut prog = compile::<f32>(
+    let prog = run(
         r"data Shape = Circle Float | Rect Float Float; radius s = case s of { Circle r -> r; Rect w h -> w; }; f = radius; main = f (Circle 7.0)",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    );
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(7.0)

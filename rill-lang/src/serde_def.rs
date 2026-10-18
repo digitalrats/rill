@@ -46,9 +46,9 @@ mod tests {
 
         let def = RillLangDef::new("sum", "main = 1.0 + 2.0");
         let mut prog = compile_def::<f32>(&def).unwrap();
-        prog.run_value().unwrap();
+        crate::backend::interp::run_entry(&mut prog).unwrap();
         assert_eq!(
-            prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+            prog.arena().get(prog.result().unwrap()).unwrap(),
             &Value::Float(3.0)
         );
     }

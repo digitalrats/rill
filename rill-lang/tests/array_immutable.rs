@@ -16,27 +16,29 @@
 //! This target asserts the SHAPES (`2-D` bounds/elements through the surface)
 //! and the fault surface those targets do not cover.
 
-use rill_core::traits::ProcessError;
 use rill_lang::arena::{ArenaRef, Value};
-use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::program::RillProgram;
+use rill_lang::test_eval;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Compile `src`, run one tick, and return the program (and its single value
-/// output).
+/// Compile `src`, run it once, and return the program (and its single result).
 fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
-    let mut prog =
-        compile::<f32>(src).unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
-    prog.run_value()
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
         .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let v = output(&prog);
     (prog, v)
 }
 
-/// Compile `src`, run one tick, and extract data on a thread with more stack.
+/// Compile `src`, run it once, and extract data on a thread with more stack.
 ///
 /// Nested `ixmap` calls build deep lowering chains in debug builds, so the
 /// default libtest stack can overflow. Keep the program inside the thread (it
@@ -49,9 +51,12 @@ fn with_output<R: Send>(
         std::thread::Builder::new()
             .stack_size(16 << 20)
             .spawn_scoped(scope, || {
-                let mut prog = compile::<f32>(src)
-                    .unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
-                prog.run_value()
+                let (defs, expr) = src
+                    .rsplit_once("main = ")
+                    .expect("the source must bind `main` to the evaluated expression");
+                let expr = expr.trim().trim_end_matches(';');
+                let ffi = ForeignRegistry::<f32>::new();
+                let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
                     .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
                 let v = output(&prog);
                 f(&prog, &v)
@@ -62,28 +67,31 @@ fn with_output<R: Send>(
     })
 }
 
-/// The single value output of an already-run program.
+/// The single run result of an already-run program.
 fn output(prog: &RillProgram<f32, 256>) -> Value {
-    let outputs = prog.value_outputs();
-    assert_eq!(outputs.len(), 1, "expected exactly one value output");
-    let v = outputs[0].expect("the value output must be bound");
+    let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
-        .expect("the output ref must resolve")
+        .expect("the result ref must resolve")
         .clone()
 }
 
 /// Run `src` expecting the latched value-track fault, and return its detail.
 ///
-/// A panic in the interpreter fails this helper outright (the harness reports
-/// the panic), so every caller doubles as the "clean error, never a panic"
-/// assertion.
+/// A latched fault surfaces from [`test_eval`] as
+/// `CompileError::Unsupported("eval run failed: …")` with the `ProcessError`
+/// text preserved inside the string; a panic in the interpreter fails this
+/// helper outright (the harness reports the panic), so every caller doubles as
+/// the "clean error, never a panic" assertion.
 fn fault(src: &str) -> String {
-    let mut prog =
-        compile::<f32>(src).unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
-    match prog.run_value() {
-        Ok(()) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
-        Err(ProcessError::Processing(msg)) => msg,
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+        Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
+        Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
     }
 }

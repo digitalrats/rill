@@ -21,15 +21,16 @@
 //! the ST/buffer bridge (`tests/st_array.rs`, `tests/array_buffer.rs`).
 
 use rill_lang::arena::{ArenaRef, Value};
-use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::program::RillProgram;
+use rill_lang::test_eval;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Compile `src`, run one tick, and hand the program plus its single value
-/// output to `f` — all on a thread with a generous stack.
+/// Compile `src`, run it once, and hand the program plus its single result to
+/// `f` — all on a thread with a generous stack.
 ///
 /// # Why the dedicated thread
 ///
@@ -53,9 +54,12 @@ fn with_output<R: Send>(
         std::thread::Builder::new()
             .stack_size(16 << 20)
             .spawn_scoped(scope, || {
-                let mut prog = compile::<f32>(src)
-                    .unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
-                prog.run_value()
+                let (defs, expr) = src
+                    .rsplit_once("main = ")
+                    .expect("the source must bind `main` to the evaluated expression");
+                let expr = expr.trim().trim_end_matches(';');
+                let ffi = ForeignRegistry::<f32>::new();
+                let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
                     .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
                 let v = output(&prog);
                 f(&prog, &v)
@@ -93,14 +97,12 @@ fn assocs_of(src: &str) -> Vec<((i64, i64), f64)> {
     with_output(src, assoc_pairs)
 }
 
-/// The single value output of an already-run program.
+/// The single run result of an already-run program.
 fn output(prog: &RillProgram<f32, 256>) -> Value {
-    let outputs = prog.value_outputs();
-    assert_eq!(outputs.len(), 1, "expected exactly one value output");
-    let v = outputs[0].expect("the value output must be bound");
+    let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
-        .expect("the output ref must resolve")
+        .expect("the result ref must resolve")
         .clone()
 }
 

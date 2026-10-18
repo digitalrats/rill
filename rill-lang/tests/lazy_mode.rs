@@ -1,6 +1,29 @@
 use rill_lang::mode::Mode;
 use rill_lang::{compile, compile_with_mode};
 
+/// Compile and run `src` in complete (lazy) mode through the single-run value
+/// surface, returning the program plus its result ref.
+///
+/// `src` must bind `main = <expr>` (the last `main = ` wins); the body is
+/// evaluated by [`test_eval_with_mode`] and read with [`RillProgram::result`].
+fn eval_complete(
+    src: &str,
+) -> (
+    rill_lang::program::RillProgram<f32, 256>,
+    rill_lang::arena::ArenaRef,
+) {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim_end_matches(';').trim();
+    let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
+    let prog =
+        rill_lang::test_eval_with_mode::<f32, 256>(defs, expr, &ffi, 44_100.0, Mode::Complete)
+            .expect("the program must compile and run");
+    let v = prog.result().expect("the run must produce a result");
+    (prog, v)
+}
+
 #[test]
 fn recursion_rejected_in_strict() {
     assert!(compile::<f32>("a = a; main = a").is_err());
@@ -58,10 +81,7 @@ main = (\a -> \b -> a + b) 5.0 2.0";
 fn complete_recursive_countup_runtime() {
     // End-to-end recursion: countup 0 -> 3 (terminates, returns 3.0).
     let src = "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0)\nmain = countup 0.0";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 3.0, "countup 0 should yield 3.0"),
         other => panic!("expected Float(3.0), got {other:?}"),
@@ -76,10 +96,7 @@ fn complete_from_infinite_cons() {
 from n = cons n (from (n + 1.0));
 headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = headv (tail (tail (tail (from 10.0))));";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
             assert_eq!(*x, 13.0, "from 10, third tail head -> 13.0")
@@ -120,10 +137,7 @@ main = headv (cons 1.0 (list))";
 #[test]
 fn complete_from_produce_cons() {
     let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nmain = from 10.0;";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
@@ -138,10 +152,7 @@ fn complete_from_produce_cons() {
 #[test]
 fn complete_lazy_cons_finite() {
     let src = "{-# MODE complete #-}\nmain = cons 10.0 (list);";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
@@ -156,10 +167,7 @@ fn complete_lazy_cons_finite() {
 #[test]
 fn complete_from_head() {
     let src = "{-# MODE complete #-}\nfrom n = cons n (from (n + 1.0));\nmain = head (from 10.0);";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Sum(0, payload) => {
             assert_eq!(
@@ -174,10 +182,7 @@ fn complete_from_head() {
 #[test]
 fn complete_def_cons_no_recursion() {
     let src = "{-# MODE complete #-}\ngen n = cons n (list);\nmain = gen 10.0;";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
@@ -197,10 +202,7 @@ fn value_track_minus_and_negative_literal() {
     let src = r"{-# MODE complete #-}
 sub n = cons (n - 1.0) (list);
 main = case (head (sub -2.0)) of { Nothing -> 0.0; Just x -> x };";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, -3.0, "-2.0 - 1.0 = -3.0"),
         other => panic!("expected Float(-3.0), got {other:?}"),
@@ -211,10 +213,7 @@ main = case (head (sub -2.0)) of { Nothing -> 0.0; Just x -> x };";
 fn complete_countdown_with_minus() {
     // Canonical recursion now that value-track `-` works: countdown 3 -> 0.
     let src = "{-# MODE complete #-}\ncountdown n = if n == 0.0 then 0.0 else countdown (n - 1.0);\nmain = countdown 3.0;";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "countdown 3 -> 0.0"),
         other => panic!("expected Float(0.0), got {other:?}"),
@@ -227,10 +226,7 @@ fn complete_mutual_recursion_runtime() {
     // fragment captures odd's CELL (not a recompiled closure), so the graph
     // compiles exactly once and both closures are filled before any call.
     let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 4.0;";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "even 4 -> 1.0"),
         other => panic!("expected Float(1.0), got {other:?}"),
@@ -246,10 +242,7 @@ fn complete_nth_with_list_param_recursive() {
 from n = cons n (from (n + 1.0));
 nth xs k = if k == 0.0 then case (head xs) of { Nothing -> 0.0; Just x -> x } else nth (tail xs) (k - 1.0);
 main = nth (from 10.0) 2.0;";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
             assert_eq!(*x, 12.0, "nth 2 (from 10) -> 12.0")
@@ -266,10 +259,7 @@ fn complete_take_self_recursive_list() {
 from n = cons n (from (n + 1.0));
 take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (n - 1.0) (tail xs));
 main = take 2.0 (from 10.0);";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
@@ -289,10 +279,7 @@ fn complete_let_binding_is_lazy_thunk() {
 from n = cons n (from (n + 1.0));
 headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = let xs = from 10.0 in headv (tail (tail xs));";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
             assert_eq!(*x, 12.0, "let xs = from 10; headv (tail tail xs) -> 12.0")
@@ -307,10 +294,7 @@ fn complete_fibs_self_referential_local() {
     // `fibs = cons 0.0 (cons 1.0 fibs)` — recursion resolves through the cell,
     // not inline.
     let src = "{-# MODE complete #-}\nfibs = cons 0.0 (cons 1.0 fibs);\nmain = fibs;";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
@@ -331,10 +315,7 @@ fn complete_fibs_zipwith_infinite() {
 zipWith f xs ys = if case (head xs) of { Nothing -> 1.0; Just x -> x } == 999.0 then list else cons (f (case (head xs) of { Nothing -> 0.0; Just x -> x }) (case (head ys) of { Nothing -> 0.0; Just x -> x })) (zipWith f (tail xs) (tail ys));
 fibs = cons 0.0 (cons 1.0 (zipWith (\a -> \b -> a + b) fibs (tail fibs)));
 main = case (head (tail (tail (tail (tail fibs))))) of { Nothing -> 0.0; Just x -> x };";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => {
             assert_eq!(*x, 3.0, "fibs[4] -> 3.0")
@@ -349,10 +330,7 @@ fn complete_repeat_take() {
 repeat x = cons x (repeat x);
 take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (n - 1.0) (tail xs));
 main = take 3.0 (repeat 42.0);";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
@@ -370,10 +348,7 @@ fn complete_iterate_take() {
 iterate f x = cons x (iterate f (f x));
 take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (n - 1.0) (tail xs));
 main = take 4.0 (iterate (\x -> x + 1.0) 0.0);";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
@@ -391,10 +366,7 @@ fn complete_bottom_propagates_not_hang() {
     let src = r"{-# MODE complete #-}
 a = a;
 main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x };";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Bottom => {}
         other => panic!("expected Bottom, got {other:?}"),
@@ -404,10 +376,7 @@ main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x };";
 #[test]
 fn complete_mutual_recursion_evens_odd() {
     let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 5.0;";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "even 5 -> 0.0"),
         other => panic!("expected Float(0.0), got {other:?}"),
@@ -422,10 +391,7 @@ fn complete_shared_thunk_forced_once() {
 from n = cons n (from (n + 1.0));
 headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = headv (let x = from 10.0 in x);";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 10.0, "shared let thunk -> 10.0"),
         other => panic!("expected Float(10.0), got {other:?}"),
@@ -441,10 +407,7 @@ fn mutual_recursion_in_branch_arm_false() {
 even n = if n == 0.0 then 1.0 else odd (n - 1.0);
 odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
 main = if 1.0 == 2.0 then even 4.0 else even 3.0;"#;
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "false arm: even 3 -> 0.0"),
         other => panic!("expected Float(0.0), got {other:?}"),
@@ -457,10 +420,7 @@ fn mutual_recursion_in_branch_arm_true() {
 even n = if n == 0.0 then 1.0 else odd (n - 1.0);
 odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
 main = if 1.0 == 1.0 then even 4.0 else even 3.0;"#;
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "true arm: even 4 -> 1.0"),
         other => panic!("expected Float(1.0), got {other:?}"),
@@ -475,10 +435,7 @@ fn mutual_local_recursion_is_bottom() {
 a = b;
 b = a;
 main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x }";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let _ = prog.run_value();
-    let v = prog.value_outputs()[0].unwrap();
+    let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Bottom => {}
         other => panic!("expected Bottom, got {other:?}"),
@@ -489,19 +446,20 @@ main = case (head (cons (1.0 + a) (list))) of { Nothing -> 0.0; Just x -> x }";
 fn deep_recursion_is_latched_error_not_panic() {
     // I1 regression: a deep-but-finite recursion exceeds the pre-allocated
     // call-scratch/arena, which must surface as a latched ProcessError (plan
-    // §10), not a debug panic or a silent `None`/`Bottom`.
+    // §10), not a debug panic or a silent `None`/`Bottom`. Under the single-run
+    // surface the latched error surfaces as `CompileError::Unsupported`.
     let src = "{-# MODE complete #-}\ncountdown n = if n == 0.0 then 0.0 else countdown (n - 1.0)\nmain = countdown 2000.0";
-    let mut prog =
-        rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
-    let r = prog.run_value();
-    match r {
-        Ok(()) => panic!("deep recursion must exhaust the pre-allocated budget and latch an error"),
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                msg.contains("exhausted"),
-                "exhaustion error expected, got: {msg}"
-            );
-        }
-    }
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
+    let err =
+        rill_lang::test_eval_with_mode::<f32, 256>(defs, expr, &ffi, 44_100.0, Mode::Complete)
+            .err()
+            .expect("deep recursion must exhaust the pre-allocated budget and latch an error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("exhausted"),
+        "exhaustion error expected, got: {msg}"
+    );
 }

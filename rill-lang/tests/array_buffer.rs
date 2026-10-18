@@ -10,32 +10,36 @@
 //! directly-generated buffer, not just against each other, so a bridge that
 //! mangles both directions symmetrically cannot pass.
 
-use rill_core::traits::ProcessError;
 use rill_lang::arena::Value;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::program::RillProgram;
 use rill_lang::register;
+use rill_lang::test_eval;
 
 /// The block length the bridge operates on (the program's `BUF_SIZE`).
 const BLOCK: usize = 256;
 
 /// Compile `src` against the foreign generator registry (the buffer generators
-/// `sine`/`square` are FFI builtins).
-fn buffer_program(src: &str) -> RillProgram<f32, 256> {
+/// `sine`/`square` are FFI builtins), run it once, and return the already-run
+/// program.
+fn run(src: &str) -> RillProgram<f32, 256> {
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_generators(&mut ffi);
-    rill_lang::compile_with_ffi::<f32>(src, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"))
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
+        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"))
 }
 
 /// Run `src` and return the live block of its single BUFFER output.
 fn run_buffer(src: &str) -> Vec<f32> {
-    let mut prog = buffer_program(src);
-    prog.run_value()
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = run(src);
+    let r = prog.result().expect("whole-buffer result expected");
     let mut got = [0.0f32; BLOCK];
     assert!(
-        prog.copy_output_samples(0, &mut got),
+        prog.copy_buffer(r, &mut got),
         "the output of `{src}` must be a buffer"
     );
     got.to_vec()
@@ -43,22 +47,25 @@ fn run_buffer(src: &str) -> Vec<f32> {
 
 /// Run `src` expecting a clean latched fault, returning its detail.
 fn fault(src: &str) -> String {
-    let mut prog = buffer_program(src);
-    match prog.run_value() {
-        Ok(()) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
-        Err(ProcessError::Processing(msg)) => msg,
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register::register_foreign_generators(&mut ffi);
+    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+        Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
+        Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
     }
 }
 
-/// The single value output of an already-run program.
+/// The single run result of an already-run program.
 fn output(prog: &RillProgram<f32, 256>) -> Value {
-    let outputs = prog.value_outputs();
-    assert_eq!(outputs.len(), 1, "expected exactly one value output");
-    let v = outputs[0].expect("the value output must be bound");
+    let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
-        .expect("the output ref must resolve")
+        .expect("the result ref must resolve")
         .clone()
 }
 
@@ -78,9 +85,7 @@ fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
 
 /// The `Float` payloads of the single `List` value output of `src`.
 fn run_elems(src: &str) -> Vec<f64> {
-    let mut prog = buffer_program(src);
-    prog.run_value()
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = run(src);
     match output(&prog) {
         Value::List { elems } => elems
             .iter()
@@ -100,8 +105,7 @@ fn run_elems(src: &str) -> Vec<f64> {
 #[test]
 fn array_from_buffer_is_zero_indexed_over_the_live_block() {
     // The bounds are `(0, len - 1)`: the whole block, no offset.
-    let mut prog = buffer_program("main = bounds (arrayFromBuffer (sine 440.0 0.5 0.0));");
-    prog.run_value().expect("the program must run");
+    let prog = run("main = bounds (arrayFromBuffer (sine 440.0 0.5 0.0));");
     let (lo, hi) = pair_values(&prog, &output(&prog));
     assert_eq!(lo, Value::Int(0), "the first sample is index 0");
     assert_eq!(
@@ -147,11 +151,8 @@ fn array_from_buffer_indexes_both_bounds_through_the_accessor() {
     // `! 0` and `! 255` are the two ends of the bridged array; both must equal
     // the corresponding block samples.
     let direct = run_buffer("main = sine 440.0 0.5 0.0;");
-    let mut prog = buffer_program(
-        "main = (\\ b -> Pair { first: (arrayFromBuffer b) ! 0, \
-          second: (arrayFromBuffer b) ! 255 }) (sine 440.0 0.5 0.0);",
-    );
-    prog.run_value().expect("the program must run");
+    let prog = run("main = (\\ b -> Pair { first: (arrayFromBuffer b) ! 0, \
+          second: (arrayFromBuffer b) ! 255 }) (sine 440.0 0.5 0.0);");
     let (first, last) = pair_values(&prog, &output(&prog));
     assert_eq!(first, Value::Float(f64::from(direct[0])));
     assert_eq!(last, Value::Float(f64::from(direct[BLOCK - 1])));

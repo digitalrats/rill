@@ -1,6 +1,7 @@
 //! SP-3a: FFI layer — foreign fn declarations + FixedBuffer/Buffer types.
 
-use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
 use rill_lang::types::ty::TypeEnv;
 
 #[test]
@@ -29,8 +30,18 @@ fn buffer_typeclass_registers_from_signal_prelude() {
         typeclass UsesBuffer a where { use_buf: FixedBuffer a -> FixedBuffer a; }
         main = 1.0;
     "#;
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
+    // Compile + single run must succeed: the SIGNAL_PRELUDE parses, registers,
+    // and the instance kind-checks, and `main = 1.0` runs to a Float(1.0).
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    assert_eq!(
+        prog.arena().get(prog.result().unwrap()).unwrap(),
+        &rill_lang::arena::Value::Float(1.0)
+    );
 }
 
 #[test]
@@ -369,10 +380,14 @@ fn foreign_fn_runs_end_to_end() {
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert_eq!(out, [0.5, 0.5, 0.5, 0.5]);
 }
 
@@ -840,10 +855,14 @@ fn analog_moog_ffi_end_to_end() {
     register_foreign_model(&mut ffi);
 
     let src = r#"main = analog_moog 500.0 0.7 (square 0.0 1.0 0.0)"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "analog_moog output must be finite, got {out:?}"
@@ -869,10 +888,14 @@ fn eq_parametric_ffi_end_to_end() {
     let src = r#"
         main = eq_parametric { bands: [ { freq: 1000.0, q: 1.0, gain_db: 0.0, band_type: 0.0 } ] } (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "eq_parametric output must be finite, got {out:?}"
@@ -939,10 +962,14 @@ fn digital_effects_ffi_end_to_end() {
     let src = r#"
         main = delay 0.1 0.3 0.5 (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     // Fresh delay line: wet = 0, so the first block is the dry path at mix 0.5.
     assert!(
         (out[0] - 0.5).abs() < 1e-6,
@@ -964,10 +991,14 @@ fn digital_effects_distortion_runs() {
     let src = r#"
         main = distortion 2.0 1.0 (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     // Soft-clip: tanh(2.0) with output gain 1.0.
     let expected = 2.0f32.tanh();
     assert!(
@@ -977,56 +1008,12 @@ fn digital_effects_distortion_runs() {
     );
 }
 
-#[cfg(feature = "dsp")]
-#[test]
-#[ignore = "deferred: FFI scalar-as-value (?t from mailbox)"]
-fn digital_effects_delay_live_param_reaches_algorithm() {
-    // Regression: the FFI wrapper's `set_param` must route a live SetParameter
-    // into the algorithm. Empty `BlockBuiltin` impls silently dropped it, so
-    // `main t = _ : delay t 0.0 1.0` ran at the clamped minimum forever.
-    // `t` is a main λ-param → param_bindings (0, 0); mix = 1.0 makes the
-    // output pure wet, so the output equals the delayed tap.
-    use rill_core::traits::ParamValue;
-    use rill_lang::ffi::ForeignRegistry;
-    use rill_lang::register::register_foreign_digital_effects;
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    register_foreign_digital_effects(&mut ffi);
-    rill_lang::register::register_foreign_generators(&mut ffi);
-
-    let src = r#"
-        main = delay ?t 0.0 1.0 (square 0.0 1.0 0.0);
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-
-    // Default t = 0.0 clamps to 0.01 s → 441 samples at 44.1 kHz.
-    let t_idx = prog.param_index("t").expect("param `t`");
-    assert_eq!(t_idx, 0);
-
-    // Fill the delay line (3 blocks of 256 = 768 samples > 441).
-    let mut out = [0.0f32; 256];
-    for _ in 0..3 {
-        prog.run_value().unwrap();
-        assert!(prog.copy_output_samples(0, &mut out));
-    }
-    // The wet tap 441 samples back reads a written region: pure wet output.
-    assert!(
-        (out[0] - 1.0).abs() < 1e-6,
-        "wet tap at default delay: out[0]={}",
-        out[0]
-    );
-
-    // Lengthen the delay via SetParameter → the tap moves to a never-written
-    // region of the delay line → the pure-wet output drops to 0.0.
-    prog.set_param(t_idx, ParamValue::Float(0.3));
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
-    assert!(
-        out[0].abs() < 1e-6,
-        "after SetParameter(t, 0.3) the tap must move: out[0]={}",
-        out[0]
-    );
-}
+// NOTE — DELETED (Class 2, re-run surface removed):
+//   digital_effects_delay_live_param_reaches_algorithm — a regression pinning
+//   that the FFI wrapper's `set_param` routes a live SetParameter
+//   (`delay ?t 0.0 1.0`) into the algorithm across 3+ ticks. `test_eval` runs
+//   exactly once and cannot inject a parameter, so both the default-delay tap
+//   and the SetParameter(t, 0.3) re-tick assertions are unrepresentable.
 
 #[cfg(feature = "dsp")]
 #[test]
@@ -1041,10 +1028,14 @@ fn digital_effects_limiter_runs() {
     let src = r#"
         main = limiter (-6.0) 0.1 (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     // Lookahead warm-up: the limiter passes the first `lookahead_samples` (220)
     // unchanged, so the 4-sample block is a passthrough.
     assert_eq!(out, [1.0, 1.0, 1.0, 1.0]);
@@ -1064,10 +1055,14 @@ fn generators_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = sine 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     // Sine at t=0, amp 1.0, phase 0.0: starts at 0.0 and rises.
     assert_eq!(out[0], 0.0);
     // Sample 1 must follow sin(2π·f·n/sr + phase) — the oscillator's actual
@@ -1093,10 +1088,14 @@ fn saw_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = saw 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         (out[0] + 1.0).abs() < 1e-6,
         "saw at phase 0 must be -amp: out[0]={}",
@@ -1117,10 +1116,14 @@ fn square_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = square 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         (out[0] - 1.0).abs() < 1e-6,
         "square at phase 0 must be +amp: out[0]={}",
@@ -1140,10 +1143,14 @@ fn triangle_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = triangle 440.0 1.0 0.0;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         (out[0] - 1.0).abs() < 1e-6,
         "triangle at phase 0 must be +amp: out[0]={}",
@@ -1165,10 +1172,14 @@ fn noise_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = noise 1.0 0.5;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().any(|&s| s != 0.0),
         "noise must produce non-zero samples, got all zeros"
@@ -1188,10 +1199,14 @@ fn leaky_integrator_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = leaky_integrator 0.5 (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     let expected = [1.0, 1.5, 1.75, 1.875];
     assert!(
         out.iter()
@@ -1218,10 +1233,14 @@ fn lowpass_ffi_end_to_end() {
     rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"main = lowpass 1000.0 0.7 (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().all(|s| s.is_finite()),
         "lowpass output must be finite, got {out:?}"
@@ -1246,10 +1265,14 @@ fn biquad_ffi_end_to_end() {
     rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r#"main = biquad 0.0 1000.0 0.7 0.0 (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().all(|s| s.is_finite()),
         "biquad output must be finite, got {out:?}"
@@ -1273,10 +1296,14 @@ fn integrator_ffi_end_to_end() {
     register_foreign_generators(&mut ffi);
 
     let src = r#"main = integrator (square 0.0 1.0 0.0);"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert_eq!(out, [1.0, 2.0, 3.0, 4.0]);
 }
 
@@ -1289,51 +1316,32 @@ fn tape_loop_read_head_compiles_and_runs() {
     // (a `Buffer` family member); `read_head` takes it as its resource param.
     // The plan's Task 11 smoke: `main = read_head (tape_loop 1024) 0.1;`
     // compiles, builds a shared tape cell, and runs finite.
-    use rill_lang::ffi::ForeignRegistry;
     use rill_sampler::tape::lang::register_tape_ffi;
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_tape_ffi(&mut ffi);
 
     let src = r#"main = read_head (tape_loop 1024) 0.1;"#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "read_head on a fresh tape must be finite, got {out:?}"
     );
 }
 
-#[test]
-#[ignore = "resource/tape deferred: architectural issues"]
-fn inline_tape_loop_calls_are_distinct_tapes() {
-    // Two INLINE `tape_loop <capacity>` occurrences are DISTINCT tapes (each
-    // constructor call allocates a fresh cell). Two read heads on two inline
-    // `tape_loop 8` calls read different buffers, so writing nothing to either
-    // must read zero — and critically the single-writer invariant is preserved:
-    // each inline tape gets its own writer, never two writers on one buffer.
-    use rill_lang::ffi::ForeignRegistry;
-    use rill_sampler::tape::lang::register_tape_ffi;
-
-    let mut ffi = ForeignRegistry::<f32>::new();
-    register_tape_ffi(&mut ffi);
-
-    let src = r#"
-        main = read_head (tape_loop 8) 0.1, read_head (tape_loop 8) 0.1;
-    "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
-    let mut o1 = [0.0f32; 8];
-    let mut o2 = [1.0f32; 8];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut o1));
-    assert!(prog.copy_output_samples(1, &mut o2));
-    assert!(
-        o1.iter().all(|v| *v == 0.0) && o2.iter().all(|v| *v == 0.0),
-        "fresh inline tapes must read zeros, got {o1:?} and {o2:?}"
-    );
-}
+// NOTE — DELETED (Class 2, multi-channel):
+//   inline_tape_loop_calls_are_distinct_tapes — `main = read_head (tape_loop
+//   8) 0.1, read_head (tape_loop 8) 0.1;` is a two-output program read through
+//   `copy_output_samples(1, …)`. The at-most-one-output model has no
+//   equivalent; the distinct-tape invariant it pinned is no longer observable
+//   through the single-run surface.
 
 #[test]
 #[ignore = "resource/tape deferred: architectural issues"]
@@ -1436,10 +1444,14 @@ fn eq_parametric_ffi_two_bands() {
             { freq: 3000.0, q: 1.0, gain_db: -3.0, band_type: 4.0 }
         ] } (square 0.0 1.0 0.0);
     "#;
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "2-band eq_parametric output must be finite, got {out:?}"

@@ -4,32 +4,54 @@
 //! (`arrayFromBuffer` / `bufferFromArray`).
 //!
 //! These tests drive the whole pipeline (infer → reduce → lower → interpreter)
-//! through `compile`, asserting the resulting value outputs and the latched
+//! through `test_eval`, asserting the resulting run result and the latched
 //! fault channel for out-of-range flat indices.
 
 use rill_lang::arena::{ArenaRef, Value};
-use rill_lang::compile;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::program::RillProgram;
 use rill_lang::register;
+use rill_lang::test_eval;
 
-/// Compile `src`, run one tick, and return the single value output's arena
-/// value (cloned out of the program's arena).
-fn run_value_output(src: &str) -> Value {
-    let mut prog = compile::<f32>(src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
-    output(&prog)
+/// Compile `src`, run it once via [`test_eval`] against an empty foreign
+/// registry, and return the already-run program.
+fn run(src: &str) -> RillProgram<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
+        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"))
 }
 
-/// The single value output of an already-run program.
+/// Compile `src`, run it once, and return the single run result's arena value
+/// (cloned out of the program's arena).
+fn run_value_output(src: &str) -> Value {
+    output(&run(src))
+}
+
+/// The single run result of an already-run program.
 fn output(prog: &RillProgram<f32, 256>) -> Value {
-    let outputs = prog.value_outputs();
-    assert_eq!(outputs.len(), 1, "expected exactly one value output");
-    let v = outputs[0].expect("the value output must be bound");
+    let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
-        .expect("the output ref must resolve")
+        .expect("the result ref must resolve")
         .clone()
+}
+
+/// Run `src` expecting the latched value-track fault, returning its detail.
+fn fault(src: &str) -> String {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+        Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
+        Err(rill_lang::CompileError::Unsupported(msg)) => msg,
+        Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
+    }
 }
 
 /// The two field refs of a `Pair` record output.
@@ -68,6 +90,38 @@ fn list_floats(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<f64> {
 /// `[10.0, 20.0, 30.0]`.
 const ARR_0_TO_2: &str = "(arrayFromList (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0])";
 
+/// Run a buffer-bridge program against the foreign generator registry (the
+/// `square` generator is an FFI builtin) and return its live block.
+fn run_buffer(src: &str) -> Vec<f32> {
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register::register_foreign_generators(&mut ffi);
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
+        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let r = prog.result().expect("whole-buffer result expected");
+    let mut got = [0.0f32; 256];
+    assert!(prog.copy_buffer(r, &mut got), "the output must be a buffer");
+    got.to_vec()
+}
+
+/// Run a buffer-bridge program expecting a latched fault, returning its detail.
+fn buffer_fault(src: &str) -> String {
+    let mut ffi = ForeignRegistry::<f32>::new();
+    register::register_foreign_generators(&mut ffi);
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+        Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
+        Err(rill_lang::CompileError::Unsupported(msg)) => msg,
+        Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
+    }
+}
+
 #[test]
 fn array_from_list_bounds_and_elems_read_back() {
     // Build an array and read both halves back through the primitives: the
@@ -75,8 +129,7 @@ fn array_from_list_bounds_and_elems_read_back() {
     let src = format!(
         "main = (\\arr -> Pair {{ first: arrayBounds arr, second: arrayElems arr }}) {ARR_0_TO_2};"
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
+    let prog = run(&src);
 
     let out = output(&prog);
     let (bounds, elems) = pair_values(&prog, &out);
@@ -105,11 +158,7 @@ fn array_index_flat_out_of_range_is_a_clean_fault() {
     // Out-of-range flat indices take the latched fault channel: a
     // `ProcessError`, never a panic (design §Fault policy).
     let src = format!("main = arrayIndexFlat {ARR_0_TO_2} 3;");
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    let err = prog
-        .run_value()
-        .expect_err("an out-of-range flat index must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = fault(&src);
     assert!(
         msg.contains("arrayIndexFlat") && msg.contains("out of range"),
         "expected the out-of-range fault, got: {msg}"
@@ -123,8 +172,7 @@ fn array_update_returns_a_new_array_and_leaves_the_original_unchanged() {
     let src = format!(
         "main = (\\arr -> Pair {{ first: arrayElems (arrayUpdate arr [Pair {{ first: 1, second: 99.0 }}]), second: arrayElems arr }}) {ARR_0_TO_2};"
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
+    let prog = run(&src);
 
     let out = output(&prog);
     let (updated, original) = pair_values(&prog, &out);
@@ -145,8 +193,7 @@ fn array_accum_returns_a_new_array_and_leaves_the_original_unchanged() {
     let src = format!(
         "main = (\\arr -> Pair {{ first: arrayElems (arrayAccum arr (\\a -> \\b -> a + b) [Pair {{ first: 1, second: 5.0 }}]), second: arrayElems arr }}) {ARR_0_TO_2};"
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
+    let prog = run(&src);
 
     let out = output(&prog);
     let (accumulated, original) = pair_values(&prog, &out);
@@ -167,11 +214,7 @@ fn array_update_out_of_range_is_a_clean_fault() {
     let src = format!(
         "main = arrayElems (arrayUpdate {ARR_0_TO_2} [Pair {{ first: 7, second: 99.0 }}]);"
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    let err = prog
-        .run_value()
-        .expect_err("an out-of-range flat update must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = fault(&src);
     assert!(
         msg.contains("arrayUpdate") && msg.contains("out of range"),
         "expected the out-of-range fault, got: {msg}"
@@ -183,11 +226,7 @@ fn array_accum_out_of_range_is_a_clean_fault() {
     let src = format!(
         "main = arrayElems (arrayAccum {ARR_0_TO_2} (\\a -> \\b -> a + b) [Pair {{ first: 5, second: 1.0 }}]);"
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    let err = prog
-        .run_value()
-        .expect_err("an out-of-range flat accumulate must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = fault(&src);
     assert!(
         msg.contains("arrayAccum") && msg.contains("out of range"),
         "expected the out-of-range fault, got: {msg}"
@@ -200,8 +239,7 @@ fn array_update_keeps_the_last_association_for_a_duplicate_offset() {
     let src = format!(
         "main = arrayElems (arrayUpdate {ARR_0_TO_2} [Pair {{ first: 1, second: 99.0 }}, Pair {{ first: 1, second: 77.0 }}]);"
     );
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
+    let prog = run(&src);
     assert_eq!(
         list_floats(&prog, &output(&prog)),
         vec![10.0, 77.0, 30.0],
@@ -218,11 +256,7 @@ fn array_from_list_with_a_cons_built_list_is_a_clean_fault() {
     // this is the path that actually runs.)
     let src = "{-# MODE complete #-}\n\
                main = length (arrayFromList (Pair { first: 0, second: 2 }) (1.0 : 2.0 : []));";
-    let mut prog = compile::<f32>(src).expect("the program must compile");
-    let err = prog
-        .run_value()
-        .expect_err("a cons-built list operand must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = fault(src);
     assert!(
         msg.contains("arrayFromList") && msg.contains("expected a list of elements"),
         "expected the cons-built-list fault, got: {msg}"
@@ -237,8 +271,7 @@ fn empty_array_has_the_empty_range_bounds_and_no_elements() {
     let empty = "(arrayFromList (Pair { first: 0, second: -1 }) [])";
     let src =
         format!("main = (\\arr -> Pair {{ first: arrayBounds arr, second: length arr }}) {empty};");
-    let mut prog = compile::<f32>(&src).expect("the program must compile");
-    prog.run_value().expect("the program must run");
+    let prog = run(&src);
     let (bounds, len) = pair_values(&prog, &output(&prog));
     let (lo, hi) = pair_values(&prog, &bounds);
     // `arrayFromList` stores the bounds value VERBATIM, so the empty range
@@ -251,37 +284,19 @@ fn empty_array_has_the_empty_range_bounds_and_no_elements() {
     assert_eq!(hi, Value::Int(-1), "the empty upper bound reads back");
     assert_eq!(len, Value::Int(0), "the empty array has no elements");
 
-    let mut index = compile::<f32>(&format!("main = arrayIndexFlat {empty} 0;"))
-        .expect("the program must compile");
-    let err = index
-        .run_value()
-        .expect_err("indexing an empty array must be a clean fault");
+    let msg = fault(&format!("main = arrayIndexFlat {empty} 0;"));
     assert!(
-        format!("{err}").contains("out of range"),
-        "expected the out-of-range fault, got: {err}"
+        msg.contains("out of range"),
+        "expected the out-of-range fault, got: {msg}"
     );
-}
-
-/// Compile a signal program against the generator registry (needed for the
-/// `FixedBuffer` operand of the buffer bridge).
-fn buffer_program(src: &str) -> RillProgram<f32, 256> {
-    let mut ffi = ForeignRegistry::<f32>::new();
-    register::register_foreign_generators(&mut ffi);
-    rill_lang::compile_with_ffi::<f32>(src, &ffi, 44_100.0).expect("the program must compile")
 }
 
 #[test]
 fn buffer_from_array_zero_pads_a_short_array() {
     // A three-element array bridged into a buffer fills the FIRST three samples
     // of the live block and zeroes the rest, so the output is deterministic.
-    let mut prog = buffer_program(
+    let got = run_buffer(
         "main = bufferFromArray (arrayFromList (Pair { first: 0, second: 2 }) [1.5, 2.5, 3.5]);",
-    );
-    prog.run_value().expect("the program must run");
-    let mut got = [1.0f32; 256];
-    assert!(
-        prog.copy_output_samples(0, &mut got),
-        "the bridged output must be a buffer"
     );
     assert_eq!(&got[..3], &[1.5, 2.5, 3.5], "the array fills the head");
     assert!(
@@ -300,11 +315,7 @@ fn buffer_from_array_rejects_an_array_longer_than_the_buffer() {
         "main = bufferFromArray (arrayFromList (Pair {{ first: 0, second: 299 }}) [{}]);",
         elems.join(", ")
     );
-    let mut prog = buffer_program(&src);
-    let err = prog
-        .run_value()
-        .expect_err("an oversized array must be a clean runtime error");
-    let msg = format!("{err}");
+    let msg = buffer_fault(&src);
     assert!(
         msg.contains("bufferFromArray") && msg.contains("capacity"),
         "expected the capacity fault, got: {msg}"
@@ -315,23 +326,7 @@ fn buffer_from_array_rejects_an_array_longer_than_the_buffer() {
 fn buffer_bridge_roundtrip_preserves_contents() {
     // `bufferFromArray (arrayFromBuffer b)` must equal `b`: the bridge copies
     // out and back without disturbing the samples.
-    let mut direct = buffer_program("main = square 0.0 0.5 0.0;");
-    direct.run_value().expect("the direct program must run");
-    let mut expected = [0.0f32; 256];
-    assert!(
-        direct.copy_output_samples(0, &mut expected),
-        "the direct program's output must be a buffer"
-    );
-
-    let mut roundtrip =
-        buffer_program("main = bufferFromArray (arrayFromBuffer (square 0.0 0.5 0.0));");
-    roundtrip
-        .run_value()
-        .expect("the roundtrip program must run");
-    let mut got = [0.0f32; 256];
-    assert!(
-        roundtrip.copy_output_samples(0, &mut got),
-        "the roundtrip program's output must be a buffer"
-    );
-    assert_eq!(got, expected, "the bridge must preserve every sample");
+    let direct = run_buffer("main = square 0.0 0.5 0.0;");
+    let roundtrip = run_buffer("main = bufferFromArray (arrayFromBuffer (square 0.0 0.5 0.0));");
+    assert_eq!(roundtrip, direct, "the bridge must preserve every sample");
 }

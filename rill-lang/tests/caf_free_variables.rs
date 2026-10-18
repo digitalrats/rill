@@ -1,17 +1,19 @@
 //! CAF (closed top-level definition) free-variable integration tests.
 //!
 //! Behavioral, end-to-end coverage of closed top-level definitions through the
-//! public `compile_with` entry point. The core property under test: a closed
+//! public `test_eval` entry point. The core property under test: a closed
 //! top-level stateful definition referenced from two places lowers to ONE
 //! shared instance, and its observable state is shared across every reference.
+//! On the single-run surface the discriminator is a harness-owned call counter:
+//! exactly one instance must run per evaluation of the program.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use rill_core::traits::{Algorithm, ProcessResult};
 use rill_lang::builtin::BlockBuiltin;
-use rill_lang::builtin::Registry;
-use rill_lang::{compile, compile_with};
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::{compile, test_eval};
 
 /// A real block oscillator (0 signal in, 1 out; params freq/amp/phase) whose
 /// phase accumulates per sample.
@@ -63,9 +65,9 @@ impl BlockBuiltin<f32> for SineOsc {}
 
 /// Registry with a real `sine` block builtin, returning the shared call counter
 /// alongside the registry.
-fn sine_registry() -> (Registry<f32>, Arc<AtomicUsize>) {
+fn sine_registry() -> (ForeignRegistry<f32>, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
-    let mut registry = Registry::<f32>::new();
+    let mut registry = ForeignRegistry::<f32>::new();
     let shared = calls.clone();
     registry.register_block("sine", move |params, sample_rate, _alloc| {
         Box::new(SineOsc::new(params, sample_rate, shared.clone()))
@@ -73,49 +75,39 @@ fn sine_registry() -> (Registry<f32>, Arc<AtomicUsize>) {
     (registry, calls)
 }
 
-/// `osc = sine 440.0 0.5 0.0; main = osc` must
-/// run exactly ONE oscillator instance per tick.
+/// `osc = sine 440.0 0.5 0.0; main = osc` must run exactly ONE oscillator
+/// instance per evaluation.
 ///
 /// The unary value model removed the multi-channel `,` merge, so the program
-/// exposes ONE output channel fed by the single shared CAF. The call
-/// counter must advance by exactly one per tick — a duplicated or un-shared
-/// build (extra `osc` instances) would advance by more. `ch0 == ch1` (the old
-/// cross-channel agreement check) had no second channel to compare against and
-/// is dropped; the call counter is the real sharing/duplication discriminator.
+/// exposes ONE output channel fed by the single shared CAF. The call counter
+/// must advance by exactly one — a duplicated or un-shared build (extra `osc`
+/// instances) would advance by more. `ch0 == ch1` (the old cross-channel
+/// agreement check) had no second channel to compare against and is dropped;
+/// the call counter is the real sharing/duplication discriminator.
+///
+/// The original second-tick half (phase advancing across re-runs) is gone with
+/// the multi-tick surface: the single-run model evaluates the program exactly
+/// once, so only the one-instance-per-evaluation guarantee survives here.
 #[test]
 fn shared_oscillator_runs_one_instance_per_tick() {
-    let (registry, calls) = sine_registry();
-    let mut prog = compile_with::<f32>("osc = sine 440.0 0.5 0.0; main = osc", &registry, 44100.0)
+    let (ffi, calls) = sine_registry();
+    let prog = test_eval::<f32, 256>("osc = sine 440.0 0.5 0.0;", "osc", &ffi, 44100.0)
         .expect("program with a shared CAF compiles");
 
-    // Value model: a program has ONE value output. The old two-channel
-    // `osc , osc` merge reduced to the single generator output.
+    // Value model: a program has ONE value output — the single generator.
+    let r = prog.result().expect("whole-buffer result expected");
     let mut ch0 = [0.0f32; 8];
-    prog.run_value().expect("first tick");
-    assert_eq!(prog.value_outputs().len(), 1);
-    assert!(prog.copy_output_samples(0, &mut ch0));
+    assert!(prog.copy_buffer(r, &mut ch0));
 
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
-        "one shared sine instance must run once per tick"
+        "one shared sine instance must run once per evaluation"
     );
-
-    // A second tick continues the shared phase; the samples must differ from
-    // the first block (proving the accumulator advances) while still running
-    // exactly one instance.
-    let mut ch0b = [0.0f32; 8];
-    prog.run_value().expect("second tick");
-    assert!(prog.copy_output_samples(0, &mut ch0b));
-
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_ne!(
-        ch0, ch0b,
-        "the shared phase accumulator advances across ticks"
+    assert!(
+        ch0.iter().any(|v| *v != 0.0),
+        "the shared sine must produce a non-zero signal"
     );
-    // The old `ch0 == ch1` cross-channel consistency assertion is dropped: the
-    // `,` merge that produced a second agreeing channel no longer exists in the
-    // unary model. The call-count assertions above carry the sharing guarantee.
 }
 
 /// A user-defined function can capture a free variable of a closed CAF.
@@ -123,23 +115,26 @@ fn shared_oscillator_runs_one_instance_per_tick() {
 /// `voice gain = osc * gain` references the closed CAF `osc` and applies a
 /// scalar gain to the shared phase. The single output channel carries one voice
 /// (`voice 0.5`), and the captured CAF must lower to exactly ONE sine instance
-/// (the call counter advances by one per tick).
+/// (the call counter advances by one).
 ///
 /// The two merged voices of the original `main = voice 0.5 , voice 0.7` collapse
 /// into the value model's single output: they now sum into one buffer and the
 /// old per-channel gain ratio assertion cannot survive (see inline comment).
 #[test]
 fn user_function_captures_shared_free_variable() {
-    let (registry, calls) = sine_registry();
-    let src = "osc = sine 440.0 0.5 0.0; voice gain = osc * gain; main = voice 0.5";
-    let mut prog = compile_with::<f32>(src, &registry, 44100.0)
-        .expect("user function capturing a CAF compiles");
+    let (ffi, calls) = sine_registry();
+    let prog = test_eval::<f32, 256>(
+        "osc = sine 440.0 0.5 0.0; voice gain = osc * gain;",
+        "voice 0.5",
+        &ffi,
+        44100.0,
+    )
+    .expect("user function capturing a CAF compiles");
 
     // Value model: one value output.
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 8];
-    prog.run_value().expect("tick");
-    assert_eq!(prog.value_outputs().len(), 1);
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
 
     assert_eq!(
         calls.load(Ordering::SeqCst),

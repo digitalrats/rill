@@ -19,10 +19,15 @@ fn atan2_over_buffers_is_elementwise() {
     // `atan2 a b : Buffer` is a curried value function over buffers
     // (elementwise). Feeding a known constant pair: (1.0, 1.0) → π/4.
     let src = format!("main = atan2 ({DC_ONE}) ({DC_ONE});");
-    let mut prog = rill_lang::compile_with_ffi::<f32>(&src, &ffi(), 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ffi();
+    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     let expect = std::f32::consts::FRAC_PI_4;
     assert!(
         (out[0] - expect).abs() < 1e-4,

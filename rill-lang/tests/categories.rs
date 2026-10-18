@@ -1,21 +1,29 @@
 //! Built-in category typeclasses: `Functor`, `Applicative`, `Monad`, `Monoid`
 //! registered via the language prelude, with compile-time inline resolution.
 
-use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
 
+/// Compile `src` against an empty foreign registry and RUN it once (the
+/// single-run value surface), returning the already-run program.
 fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
-    compile::<f32>(src).unwrap()
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
 }
 
-fn out_int(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> i64 {
-    match prog.arena().get(prog.value_outputs()[i].unwrap()).unwrap() {
+fn out_int(prog: &rill_lang::program::RillProgram<f32, 256>) -> i64 {
+    match prog.arena().get(prog.result().unwrap()).unwrap() {
         rill_lang::arena::Value::Int(n) => *n,
         other => panic!("expected Int, got {other:?}"),
     }
 }
 
-fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 {
-    match prog.arena().get(prog.value_outputs()[i].unwrap()).unwrap() {
+fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>) -> f64 {
+    match prog.arena().get(prog.result().unwrap()).unwrap() {
         rill_lang::arena::Value::Float(n) => *n,
         other => panic!("expected Float, got {other:?}"),
     }
@@ -23,93 +31,81 @@ fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>, i: usize) -> f64 
 
 #[test]
 fn functor_fmap_over_list() {
-    let mut prog = run(r"main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0]);");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 3);
+    let prog = run(r"main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0]);");
+    assert_eq!(out_int(&prog), 3);
 }
 
 #[test]
 fn functor_fmap_over_maybe() {
-    let mut prog =
+    let prog =
         run(r"main = case (fmap (\x -> x + 1.0) (Just 1.0)) of { Nothing -> 0.0; Just x -> x; };");
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 2.0);
+    assert_eq!(out_float(&prog), 2.0);
 }
 
 #[test]
 fn concat_map_splices_lists() {
-    let mut prog = run(r"main = length (concat_map (\x -> [x, x]) [1.0, 2.0]);");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 4);
+    let prog = run(r"main = length (concat_map (\x -> [x, x]) [1.0, 2.0]);");
+    assert_eq!(out_int(&prog), 4);
 }
 
 #[test]
 fn append_list_and_concat_string() {
-    let mut prog = run("main = length (append_list [1.0, 2.0] [3.0, 4.0, 5.0]);");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 5);
+    let prog = run("main = length (append_list [1.0, 2.0] [3.0, 4.0, 5.0]);");
+    assert_eq!(out_int(&prog), 5);
 }
 
 #[test]
 fn monad_bind_maybe_short_circuits_nothing() {
     // bind (Nothing) f = Nothing
-    let mut prog = run(
+    let prog = run(
         r"main = case (bind (Nothing) (\x -> Just (x + 1.0))) of { Nothing -> 0.0; Just x -> x; };",
     );
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 0.0);
+    assert_eq!(out_float(&prog), 0.0);
 }
 
 #[test]
 fn monad_bind_maybe_chains() {
-    let mut prog = run(
+    let prog = run(
         r"main = case (bind (Just 1.0) (\x -> Just (x + 2.0))) of { Nothing -> 0.0; Just x -> x; };",
     );
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 3.0);
+    assert_eq!(out_float(&prog), 3.0);
 }
 
 #[test]
 fn monad_bind_list_concat() {
-    let mut prog = run(r"main = length (bind [1.0, 2.0] (\x -> [x, x]));");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 4);
+    let prog = run(r"main = length (bind [1.0, 2.0] (\x -> [x, x]));");
+    assert_eq!(out_int(&prog), 4);
 }
 
 #[test]
 fn monoid_mappend_float() {
-    let mut prog = run("main = mappend 1.5 2.5;");
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 4.0);
+    let prog = run("main = mappend 1.5 2.5;");
+    assert_eq!(out_float(&prog), 4.0);
 }
 
 #[test]
 fn monoid_mappend_list() {
-    let mut prog = run("main = length (mappend [1.0] [2.0, 3.0]);");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 3);
+    let prog = run("main = length (mappend [1.0] [2.0, 3.0]);");
+    assert_eq!(out_int(&prog), 3);
 }
 
 #[test]
 fn monoid_mempty_right_identity() {
     // mempty is nullary: the selector argument's type picks the instance.
-    let mut prog = run("main = length (mappend [1.0, 2.0] mempty);");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 2);
+    let prog = run("main = length (mappend [1.0, 2.0] mempty);");
+    assert_eq!(out_int(&prog), 2);
 }
 
 #[test]
 fn monoid_mempty_left_identity() {
-    let mut prog = run("main = length (mappend mempty [1.0, 2.0]);");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 2);
+    let prog = run("main = length (mappend mempty [1.0, 2.0]);");
+    assert_eq!(out_int(&prog), 2);
 }
 
 #[test]
 fn monoid_mempty_float() {
-    let mut prog = run("main = mappend mempty 3.5;");
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 3.5);
+    let prog = run("main = mappend mempty 3.5;");
+    assert_eq!(out_float(&prog), 3.5);
 }
 
 #[test]
@@ -120,28 +116,25 @@ fn applicative_pure_auto_derived_from_monad() {
     let src = r"
         main = case (bind (Just 1.0) (\x -> pure x)) of { Nothing -> 0.0; Just z -> z; };
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 1.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 1.0);
 }
 
 #[test]
 fn functor_fmap_auto_derived_from_monad() {
     // `Functor Maybe` is explicit in the prelude, but `fmap` for List is also
     // explicit; verify a Monad-derived Functor path works for a user check.
-    let mut prog =
+    let prog =
         run(r"main = case (fmap (\x -> x * 10.0) (Just 2.0)) of { Nothing -> 0.0; Just x -> x; };");
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 20.0);
+    assert_eq!(out_float(&prog), 20.0);
 }
 
 #[test]
 fn explicit_instance_wins_over_derived() {
     // The prelude's explicit `instance Functor List` (fmap = map) must win over
     // any derived Functor — verify the list fmap still works.
-    let mut prog = run(r"main = length (fmap (\x -> x) [1.0, 2.0, 3.0]);");
-    prog.run_value().unwrap();
-    assert_eq!(out_int(&prog, 0), 3);
+    let prog = run(r"main = length (fmap (\x -> x) [1.0, 2.0, 3.0]);");
+    assert_eq!(out_int(&prog), 3);
 }
 
 #[test]
@@ -151,9 +144,8 @@ fn do_notation_binds_and_returns() {
         my = Just 2.0;
         main = case (do { x <- mx; y <- my; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 3.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 3.0);
 }
 
 #[test]
@@ -162,7 +154,6 @@ fn do_notation_let_and_bare_statement() {
         mx = Just 1.0;
         main = case (do { x <- mx; let y = 2.0; Just 0.0; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
     ";
-    let mut prog = run(src);
-    prog.run_value().unwrap();
-    assert_eq!(out_float(&prog, 0), 3.0);
+    let prog = run(src);
+    assert_eq!(out_float(&prog), 3.0);
 }

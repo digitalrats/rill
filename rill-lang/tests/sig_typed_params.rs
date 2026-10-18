@@ -10,13 +10,17 @@
 //! could not type-check, and a `Float` scheme contradicted an `Int`-typed body.
 
 use rill_lang::arena::Value;
-use rill_lang::compile;
 
-/// Compile and run `src`, returning `main`'s value.
+/// Compile and evaluate the `main` expression of `src` in a single run,
+/// returning its value.
 fn run_value(src: &str) -> Value {
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
+    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let v = prog.result().expect("the run must produce a single result");
     prog.arena().get(v).unwrap().clone()
 }
 

@@ -1,9 +1,12 @@
 //! # rill-lang
 //!
 //! A Faust-style functional streaming DSL that compiles to a runnable
-//! [`RillProgram`]: either the retained pure-value execution path
-//! ([`RillProgram::run_value`]) or the `main : IO ()` executor
-//! ([`ProgramRunner`]). See the crate guide for language details.
+//! [`RillProgram`]. A program executes exactly once to completion: running the
+//! program's entry fragment captures its result into
+//! [`RillProgram::result`]. Values are evaluated through
+//! [`test_eval`](crate::test_eval) / [`compile`](crate::compile) — the
+//! `main : IO ()` executor is [`ProgramRunner`]). See the crate guide for
+//! language details.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -60,19 +63,16 @@ use crate::mode::Mode;
 
 /// Compile rill-lang source into a runnable [`RillProgram`] for scalar type `T`.
 ///
-/// Uses the runtime-safe default block size (`BUF = 256`); a value tick runs
-/// one full block.
+/// Uses the runtime-safe default block size (`BUF = 256`). Compiling does not
+/// execute the program; evaluate a value expression with
+/// [`test_eval`] and inspect the run result with
+/// [`RillProgram::result`].
 ///
 /// ```
 /// use rill_lang::compile;
 ///
-/// // A value-typed `main` is the program's single value output.
-/// let mut prog = compile::<f32>("main = 1.0 + 2.0").unwrap();
-/// prog.run_value().unwrap();
-/// assert_eq!(
-///     prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
-///     &rill_lang::arena::Value::Float(3.0)
-/// );
+/// let prog = compile::<f32>("main = 1.0 + 2.0").unwrap();
+/// // `main` is the program's entry: its value is the single run result.
 /// ```
 pub fn compile<T: Transcendental>(src: &str) -> Result<RillProgram<T, 256>, CompileError> {
     compile_with_mode::<T>(src, Mode::Strict)
@@ -141,6 +141,68 @@ pub fn compile_with_ffi_mode<T: Transcendental>(
     RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
 }
 
+/// Evaluate a value expression against a set of definitions, returning the
+/// already-run program.
+///
+/// This is the value-evaluation surface of rill-lang: `expr` is compiled as a
+/// fresh entry definition in the context of `defs` and run once to completion.
+/// The run result is captured into the returned program's
+/// [`RillProgram::result`]; whole-buffer values are copied with
+/// [`RillProgram::copy_buffer`].
+///
+/// Compilation is the SAME pipeline as [`compile`]: the source
+/// `"{defs}\n__rill_eval = ({expr});"` is parsed, inferred and lowered with the
+/// internal `__rill_eval` marker as the entry name. `main` is not special here:
+/// a `main` binding inside `defs` is an ordinary value definition, so
+/// `test_eval::<f32, 256>("main = 42.0", "main * 2.0", …)` evaluates to
+/// `Float(84.0)`.
+///
+/// A run latching a [`ProcessError`](rill_core::traits::ProcessError) (a
+/// collection/arena capacity overflow) surfaces as
+/// `CompileError::Unsupported`.
+///
+/// ```
+/// use rill_lang::{test_eval, ffi::ForeignRegistry};
+///
+/// let ffi = ForeignRegistry::<f32>::new();
+/// let prog = test_eval::<f32, 256>("", "1.0 + 2.0", &ffi, 44_100.0).unwrap();
+/// let r = prog.result().unwrap();
+/// assert_eq!(
+///     prog.arena().get(r).unwrap(),
+///     &rill_lang::arena::Value::Float(3.0)
+/// );
+/// ```
+pub fn test_eval<T: Transcendental, const BUF: usize>(
+    defs: &str,
+    expr: &str,
+    ffi: &crate::ffi::ForeignRegistry<T>,
+    sample_rate: f32,
+) -> Result<RillProgram<T, BUF>, CompileError> {
+    test_eval_with_mode::<T, BUF>(defs, expr, ffi, sample_rate, Mode::Strict)
+}
+
+/// Like [`test_eval`], under an explicit evaluation mode (`Strict` by default;
+/// the file's `{-# MODE … #-}` pragma inside `defs` overrides the API key).
+pub fn test_eval_with_mode<T: Transcendental, const BUF: usize>(
+    defs: &str,
+    expr: &str,
+    ffi: &crate::ffi::ForeignRegistry<T>,
+    sample_rate: f32,
+    mode: Mode,
+) -> Result<RillProgram<T, BUF>, CompileError> {
+    // The internal entry marker is a valid identifier (`__rill_eval`); a defs
+    // that defines the same name is a user error (last-wins — the appended
+    // entry shadows it).
+    const EVAL_ENTRY: &str = "__rill_eval";
+    let src = format!("{defs}\n{EVAL_ENTRY} = ({expr});");
+    let ir = compile_to_ir_entry(&src, sample_rate, mode, EVAL_ENTRY)?;
+    let registry = Registry::<T>::new();
+    let mut prog = RillProgram::<T, BUF>::new_with(ir, &registry, sample_rate, Some(ffi))?;
+    crate::backend::interp::run_entry(&mut prog)
+        .map_err(|e| CompileError::Unsupported(format!("eval run failed: {e}")))?;
+    Ok(prog)
+}
+
 /// Compile rill-lang source into a [`ProgramRunner`] — the executor of
 /// `main : (String…) -> IO ()`.
 ///
@@ -193,8 +255,15 @@ fn compile_source_to_program<T: Transcendental, const BUF: usize>(
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-    let ir =
-        lower::lower_program_with_channels(&typed, sample_rate, &typed.cafs, typed.mode, 0, None)?;
+    let ir = lower::lower_program_with_channels(
+        &typed,
+        sample_rate,
+        &typed.cafs,
+        typed.mode,
+        0,
+        None,
+        "main",
+    )?;
     // No external resource registry is supplied: every resource-backed built-in
     // must resolve to a `tape_loop` declaration in the source.
     for bi in &ir.builtins {
@@ -223,18 +292,37 @@ fn apply_api_mode(program: &mut crate::ast::Program, api_mode: Mode) {
 /// The shared source-compile pipeline: tokenize → parse → resource extraction
 /// → mode resolution → infer → reduce → lower. The effective mode (pragma or
 /// API key) is threaded onto the [`TypedProgram`](types::infer::TypedProgram).
+///
+/// `entry` names the definition whose value is the program's single result
+/// (compile entries use `"main"`; [`test_eval`] uses an internal marker).
 fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileError> {
+    compile_to_ir_entry(src, sample_rate, mode, "main")
+}
+
+/// Like [`compile_to_ir`], with an explicit entry name.
+///
+/// The entry def supplies the program's process type (inference) and its value
+/// result (lowering): the whole pipeline treats `main` and `test_eval`'s
+/// internal marker identically. `main` is used for the runner path; the marker
+/// never triggers infer's literal-`main` special cases (String launch args, the
+/// `IO ()` retry), so a value expression evaluates as a plain binding.
+fn compile_to_ir_entry(
+    src: &str,
+    sample_rate: f32,
+    mode: Mode,
+    entry: &str,
+) -> Result<Ir, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let (mut program, tape_decls) = extract_resources(&program)?;
     apply_api_mode(&mut program, mode);
-    let mut typed = types::infer::infer_program(&program, program.mode)?;
+    let mut typed = types::infer::infer_program_with_entry(&program, program.mode, entry)?;
     typed.tape_decls = tape_decls
         .iter()
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-    lower::lower_with_cafs_mode(&typed, sample_rate, &typed.cafs, typed.mode)
+    lower::lower_with_cafs_mode_entry(&typed, sample_rate, &typed.cafs, typed.mode, entry)
 }
 
 /// A named resource declaration (e.g. a tape loop) from the DSL.

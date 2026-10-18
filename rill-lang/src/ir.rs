@@ -13,7 +13,8 @@ use crate::builtin::BuiltinKind;
 /// A register index into the per-sample scratch file.
 pub type Reg = usize;
 
-/// A register index into the per-tick value register file.
+/// A register index into the value-register scratch file (cleared at the end
+/// of each run).
 pub type ValueReg = usize;
 
 /// A slot index into the persistent state vector.
@@ -313,8 +314,9 @@ pub enum ValueTerm {
     Halt,
 }
 
-/// A per-tick value instruction. Executed once per block in the value-track
-/// phase, alongside the whole-buffer block instructions.
+/// A value instruction. Runs in the value-track phase of the program's single
+/// execution (the entry fragment body), operating on value registers and the
+/// fixed arena.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueInstr {
     /// Push a scope frame onto the runtime cell stack.
@@ -607,8 +609,9 @@ pub enum ValueInstr {
         /// Boolean operand value register.
         src: usize,
     },
-    /// Latch a `ProcessError::Processing` for this tick (runtime match
-    /// non-exhaustive). The tick fails at the end of `run_value_track`.
+    /// Latch a `ProcessError::Processing` for this run (runtime match
+    /// non-exhaustive). The run fails when the latch is consumed by the
+    /// entry-fragment runner.
     ValueSetError,
     /// Move an arena ref between registers (`dst = src; src = None`) — an
     /// ownership transfer used at control-flow join points.
@@ -844,7 +847,10 @@ pub struct StateLayout {
     pub block_state_slots: usize,
     /// Length (in samples) of each delay line.
     pub delay_lens: Vec<usize>,
-    /// Number of program outputs.
+    /// Number of program outputs. At most one: architecturally there are no
+    /// signal programs (no output channels), so this is at most 1 — the
+    /// program's single result is `Ir::result_reg`. Kept behind the channel
+    /// legacy until Task 3 (single-input/single-output IR shape).
     pub num_outputs: usize,
 }
 
@@ -898,9 +904,14 @@ pub struct Ir {
     /// This static flag resolves the ambiguity — the erased unit encoding is
     /// accepted only when `main` is typed `IO ()`.
     pub main_io_unit: bool,
-    /// Number of program inputs (0 or 1 for MVP).
+    /// Number of program inputs. At most one: architecturally there are no
+    /// signal programs (no input channels) and lambdas take 0 or 1 arguments,
+    /// so this is `0` or `1`.
     pub num_inputs: usize,
-    /// Number of program outputs.
+    /// Number of program outputs. At most one: architecturally there are no
+    /// signal programs (no output channels) — the program's single result is
+    /// [`Ir::result_reg`]. Kept behind the channel legacy until Task 3
+    /// (single-input/single-output IR shape).
     pub num_outputs: usize,
     /// Persistent state layout.
     pub state: StateLayout,
@@ -914,14 +925,24 @@ pub struct Ir {
     /// are the first `num_main_cells` entries of [`Ir::params`] — `set_param`
     /// on the program writes into the cell for exactly these indices.
     pub num_main_cells: usize,
-    /// Value-track blocks (per-tick), see `run_value_track`.
+    /// Top-level value-track blocks: the program's single execution surface,
+    /// executed once per run by [`run_entry`](crate::backend::interp::run_entry)
+    /// directly (an ordinary top-level binding run at base 0 — no fragment
+    /// wrapper, no `run_call` frame). Kept here for `max_drops`/`max_frag_cells`
+    /// accounting, inspection, and the run itself.
     pub value_blocks: Vec<ValueBlock>,
-    /// Entry block of the value track.
+    /// Entry block of the top-level value track.
     pub value_entry: usize,
     /// Number of value registers required.
     pub num_value_regs: usize,
-    /// Value registers holding program outputs.
-    pub value_output_regs: Vec<usize>,
+    /// The register where the entry body's value landed: the program's single
+    /// result. Set at lower time (`lw.value_regs_out[0]`) and captured by
+    /// [`run_entry`](crate::backend::interp::run_entry) — which forces it to
+    /// WHNF and copies it into [`RillProgram::main`](crate::program::RillProgram).
+    /// Architecturally there are no signal programs (no output channels): every
+    /// program is a value program whose result is one register — buffer results
+    /// are `Value::Buffer(idx)` arena values, not channels.
+    pub result_reg: usize,
     /// Named function values referenced by [`ValueInstr::ValueCallFunc`].
     pub value_funcs: Vec<ValueFunc>,
     /// Compiled function bodies, indexed by [`ValueInstr::ValueMakeClosure`]'s

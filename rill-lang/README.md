@@ -8,7 +8,11 @@ one of two paths:
 | Path | Entry point | What runs |
 |---|---|---|
 | **Program executor** | `compile_runner` → `ProgramRunner` | `main : (String…) -> IO ()`, run to completion against a realized `World` (memory streams + stdio) |
-| **Pure-value tick** | `compile` / `compile_with` / `compile_with_ffi` → `RillProgram::run_value` | One value-track tick; the result is read from `RillProgram::value_outputs()` |
+| **Single-run value eval** | `test_eval` / `test_eval_with_mode` | Evaluate one expression to WHNF against a `defs` context; the result is read from `RillProgram::result()` (`copy_buffer(r, dst)` for whole-buffer results) |
+
+A program executes its value entry exactly ONCE — there is no public re-run
+surface. The `RillProgram` returned by `test_eval` carries the run's single
+result in `main`/`result()`.
 
 The interpreter is safe and allocation-free after warm-up: values live in a
 fixed, page-based arena, and a program that exceeds the budget reports a clean
@@ -62,33 +66,38 @@ does not type-check: fix the monad with a preceding effect (as above) or with a
 | Function | Produces | Use |
 |---|---|---|
 | `compile_runner(src, &registry, sample_rate)` | `ProgramRunner<T, BUF>` | The executor for `main : IO ()` programs; compiles in `Complete` (lazy) mode unless the source has a mode pragma |
-| `compile(src)` | `RillProgram<T, 256>` | Pure-value tick, strict mode, no built-in registry |
-| `compile_with(src, &registry, sample_rate)` | `RillProgram<T, 256>` | Pure-value tick with the DSP built-in registry |
-| `compile_with_ffi(src, &ffi, sample_rate)` | `RillProgram<T, 256>` | Pure-value tick with a foreign-function registry |
-| `RillProgram::run_value()` | `Result<(), ProcessError>` | Run one value tick; read outputs from `value_outputs()` |
+| `compile(src)` | `RillProgram<T, 256>` | Compiles a value-`main` program without running it (still accepts value-`main` until the `IO ()` gate; do not run) |
+| `compile_with_ffi(src, &ffi, sample_rate)` | `RillProgram<T, 256>` | Compiles against a foreign-function registry without running |
+| `test_eval(defs, expr, &ffi, sample_rate)` | `RillProgram<T, 256>` | Evaluate `expr` (strict mode) against the `defs` context and RUN it once; read the result with `result()` / `copy_buffer(r, dst)` |
+| `test_eval_with_mode(defs, expr, &ffi, sample_rate, mode)` | `RillProgram<T, 256>` | Same, under an explicit evaluation mode |
+| `RillProgram::result()` | `Option<ArenaRef>` | The single run's result ref |
+| `RillProgram::copy_buffer(r, dst)` | `bool` | Copy a whole-buffer result (`Value::Buffer`) into `dst`; `false` on non-buffer refs |
 
 ### The pure-value path
 
-`compile` builds a program whose `main` is evaluated as a single value-track
-tick. This is the path for pure computation — collections, records, closures,
-typeclass methods — without I/O:
+`test_eval` builds `"{defs}\n__rill_eval = ({expr});"` and compiles it through
+the same pipeline as any program — `defs` carries the program's top-level
+bindings, `expr` the expression to evaluate. The entry marker is internal
+(never `main`), so `main` in `defs` is an ordinary binding. This is the path for
+pure computation — collections, records, closures, typeclass methods — without
+I/O:
 
 ```rust
-use rill_lang::{arena::Value, compile};
+use rill_lang::{arena::Value, ffi::ForeignRegistry, test_eval};
 
-let mut prog = compile::<f32>("main = 1.0 + 2.0").unwrap();
-prog.run_value().unwrap();
+let ffi = ForeignRegistry::<f32>::new();
+let prog = test_eval::<f32, 256>("", "1.0 + 2.0", &ffi, 44_100.0).unwrap();
 assert_eq!(
-    prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+    prog.arena().get(prog.result().unwrap()).unwrap(),
     &Value::Float(3.0),
 );
 ```
 
-A value-typed `main` is the program's single value output; `run_value` may be
-called repeatedly. Signal-block built-ins (filters, oscillators, effects; see
-*Built-in functions*) still parse, type-check and lower, and their Rust
-implementations are still registered, but there is no signal-transform executor
-wired to them in this branch.
+Signal-block built-ins (filters, oscillators, effects; see *Built-in functions*)
+lower to whole-buffer values: `main = sine …` evaluates to a `Value::Buffer`,
+inspected with `copy_buffer(result().unwrap(), &mut out)`. There is no
+signal-transform executor and no re-run surface — a program executes its entry
+exactly once.
 
 ## Streams
 
@@ -255,8 +264,8 @@ which this branch does not provide.
 ## Built-in functions
 
 rill-lang supports calling stateful DSP/model built-ins from
-`rill-core-dsp`/`rill-core-model`/`rill-fft` via `compile_with(src, &registry,
-sample_rate)`.
+`rill-core-dsp`/`rill-core-model`/`rill-fft` via a `ForeignRegistry` handed to
+`test_eval` (or to the compile-only `compile_with_ffi`).
 
 | Category | Builtins | Feature |
 |---|---|---|
@@ -368,14 +377,15 @@ ffi.register_block("gain", |params: &[f64], sample_rate: f32| {
 ffi.register_multichannel_block("add", |ins: usize, params: &[f64], sample_rate: f32| {
     // -> Box<dyn MultichannelBlockBuiltin<f32>>  (an N→M block builtin)
 });
-let prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+let prog = rill_lang::test_eval::<f32, 256>("", "gain _ 0.5", &ffi, 44100.0).unwrap();
 ```
 
 `register_block` registers a single-channel (1→1) built-in;
 `register_multichannel_block` an N→M one — the runtime dispatches by the
-`BuiltinInst` variant. `compile_with_ffi` compiles source against the registry,
-returning `RillProgram<T, 256>`. A foreign call whose name is not registered
-fails at `RillProgram::build` with `foreign built-in '...' is not registered`.
+`BuiltinInst` variant. `test_eval` compiles against the registry and runs the
+expression once, returning `RillProgram<T, BUF>`. A foreign call whose name is
+not registered fails at `RillProgram::build` with `foreign built-in '...' is
+not registered`.
 
 ### The builtin catalog
 

@@ -3,12 +3,17 @@
 //! spectraldelay, convolver, lofi, ay38910).
 
 use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
 
 fn run1(ffi: &ForeignRegistry<f32>, src: &str) -> [f32; 4] {
-    let mut prog = rill_lang::compile_with_ffi::<f32>(src, ffi, 44100.0).unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 256>(defs, expr, ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    let r = prog.result().expect("whole-buffer result expected");
+    assert!(prog.copy_buffer(r, &mut out));
     out
 }
 
@@ -46,21 +51,14 @@ fn sampler_ffi_end_to_end() {
 /// tick length equals their window size, so the program is built at
 /// [`BUF`] = 64 rather than the default 256.
 fn run_spectral(ffi: &ForeignRegistry<f32>, src: &str) -> [f32; 64] {
-    let src = src.to_string();
-    let toks = rill_lang::lexer::tokenize(&src).unwrap();
-    let ast = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
-    let typed = rill_lang::types::infer::infer_program(&ast, ast.mode).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
-    let mut prog = rill_lang::RillProgram::<f32, 64>::new_with(
-        ir,
-        &rill_lang::Registry::<f32>::new(),
-        44100.0,
-        Some(ffi),
-    )
-    .unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = test_eval::<f32, 64>(defs, expr, ffi, 44100.0).unwrap();
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    let r = prog.result().expect("whole-buffer result expected");
+    assert!(prog.copy_buffer(r, &mut out));
     out
 }
 

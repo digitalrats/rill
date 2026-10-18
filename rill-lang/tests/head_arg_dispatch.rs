@@ -20,15 +20,20 @@ fn env_of(src: &str) -> TypeEnv {
     infer_program(&prog, Mode::Strict).unwrap().type_env
 }
 
-/// Compile and run `src`, returning `main`'s numeric value.
+/// Compile and evaluate the `main` expression of `src` in a single run,
+/// returning its numeric value.
 ///
 /// Value arithmetic preserves the `Int` track (an `Int` operand stays `Int`),
 /// so an instance body that adds projected integer fields yields `Int` while a
 /// float-literal body yields `Float`; both are compared as `f64`.
 fn run(src: &str) -> f64 {
-    let mut prog = rill_lang::compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
+    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v) {
         Some(rill_lang::arena::Value::Float(x)) => *x,
         Some(rill_lang::arena::Value::Int(i)) => *i as f64,

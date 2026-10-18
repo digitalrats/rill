@@ -5,6 +5,19 @@
 //! arena values).
 
 use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::test_eval;
+
+/// Compile `src` (which must bind `main` to the evaluated expression) and RUN
+/// it once on the single-run value surface, returning the already-run program.
+fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+}
 
 #[test]
 fn typeclass_method_resolves_at_compile_time() {
@@ -17,11 +30,8 @@ fn typeclass_method_resolves_at_compile_time() {
         instance Show Float where { show f = f; }
         main = show 1.0;
     "#;
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let vo = prog.value_outputs();
-    assert_eq!(vo.len(), 1);
-    let v = vo[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(1.0));
 }
@@ -37,11 +47,8 @@ fn typeclass_selects_instance_by_argument_type() {
         instance Show Int where { show f = 2.5; }
         main = show 1;
     "#;
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let vo = prog.value_outputs();
-    assert_eq!(vo.len(), 1);
-    let v = vo[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(2.5));
 }
@@ -192,9 +199,8 @@ fn user_def_shadows_builtin_eq_ord_method_names() {
         lt = \a -> \b -> a * b;
         main = lt 2.0 3.0;
     ";
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(6.0)

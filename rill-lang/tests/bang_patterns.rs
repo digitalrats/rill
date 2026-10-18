@@ -25,9 +25,16 @@ fn run_strict(src: &str) -> Result<f64, String> {
 }
 
 fn run_with(src: &str, mode: Mode) -> Result<f64, String> {
-    let mut prog = rill_lang::compile_with_mode::<f32>(src, mode).map_err(|e| e.to_string())?;
-    prog.run_value().map_err(|e| e.to_string())?;
-    let v = prog.value_outputs()[0].ok_or("no value output")?;
+    // Split the source at the `main` binding: everything before it is `defs`,
+    // the `main` body is the evaluated expression (`test_eval` compiles the
+    // body as a fresh entry and runs it once).
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
+    let prog = rill_lang::test_eval_with_mode::<f32, 256>(defs, expr, &ffi, 44_100.0, mode)
+        .map_err(|e| e.to_string())?;
+    let v = prog.result().ok_or("no value output")?;
     match prog.arena().get(v) {
         Some(rill_lang::arena::Value::Float(x)) => Ok(*x),
         other => Err(format!("expected Float, got {other:?}")),
