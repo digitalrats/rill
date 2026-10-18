@@ -7,6 +7,8 @@
 //! [`ProgramRunner`](crate::program_runner::ProgramRunner) runs `main : IO ()`
 //! through this same path. Nothing allocates after warm-up.
 
+use std::collections::HashMap;
+
 use crate::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::buffer::TapeRing;
 use rill_core::buffer::{FixedBuffer, SharedCell};
@@ -22,6 +24,13 @@ use crate::ir::{BuiltinInstance, Ir, ParamDef, ValueBlock};
 ///
 /// Used for stack scratch storage in the interpreter's foreign-block path.
 pub(crate) const MAX_BUILTIN_CHANNELS: usize = 8;
+
+/// The reserved parameter name behind the `?sample_rate` read.
+///
+/// It is **not** a named entry of [`rill_core::Params::parameters`]: the
+/// dedicated [`rill_core::Params::sample_rate`] field owns the value, so a seat
+/// never seeds the name and a write goes to the field.
+pub(crate) const SAMPLE_RATE_PARAM: &str = "sample_rate";
 
 /// Tag distinguishing a stream handle from an `ST` region/cell handle in the
 /// shared `Value::Opaque(u32)` payload space. Stream handles occupy the high
@@ -163,9 +172,11 @@ pub struct WorldConfig<T: Transcendental> {
     pub ffi: Option<crate::ffi::ForeignRegistry<T>>,
     /// The world's parameter bag (`sample_rate` + named parameters).
     ///
-    /// The positional parameter store is still what the interpreter reads;
-    /// this field carries the caller's intended seed until the parameter store
-    /// itself becomes [`rill_core::Params`].
+    /// This is the **initial state** the world is created with: the seat seeds
+    /// the program's declared parameter defaults only where the bag carries no
+    /// value yet, so a caller-supplied entry survives seating. The sample rate
+    /// is pre-seeded on [`Params::sample_rate`](rill_core::Params::sample_rate)
+    /// (default `0.0` = "not a signal program").
     pub params: rill_core::Params,
 }
 
@@ -217,12 +228,23 @@ pub struct WorldState<T: Transcendental, const BUF: usize> {
     pub(crate) block_len: usize,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
     pub(crate) builtins: Vec<BuiltinInst<T>>,
-    /// Current parameter values, indexed by [`Ir::params`].
-    pub(crate) params: Vec<ParamValue>,
-    /// Dirty flags: true when a param was changed since last push.
+    /// The world's parameter store: `sample_rate` (the field owns `?sample_rate`)
+    /// plus the named parameter map. Addressed **by name** only —
+    /// [`set_param`](Self::set_param) writes here, [`param`](Self::param) reads
+    /// here, and the value track resolves its IR parameter declarations to
+    /// these names at run time.
+    pub params: rill_core::Params,
+    /// Dirty flags: true when a parameter was changed since the last push to
+    /// the bound built-in. Parallel to [`Ir::params`](crate::ir::Ir::params).
     pub(crate) params_dirty: Vec<bool>,
-    /// Parameter metadata (name, default, range).
+    /// Parameter declarations (name, default, range), sourced from the IR at
+    /// seat.
     pub(crate) params_meta: Vec<ParamDef>,
+    /// Name → index into [`Self::params_meta`] / [`Self::params_dirty`], built
+    /// at seat. The runtime store is the name-keyed [`Self::params`]; this only
+    /// maps a declared name back to its IR declaration (for the range clamp and
+    /// the built-in push dirt).
+    pub(crate) param_names: HashMap<String, usize>,
     /// Value arena (fixed capacity from IR).
     pub(crate) arena: Arena<Value>,
     /// Per-tick value registers. The store is pre-sized to
@@ -288,6 +310,9 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// parameter store, arena) is filled in by [`seat`](Self::seat); a world
     /// built here alone is the degenerate zero-program world.
     pub fn new(config: WorldConfig<T>) -> Self {
+        // The config's parameter bag is the world's initial state; the seat
+        // seeds declared defaults only where it carries no value.
+        let params = config.params.clone();
         Self {
             config,
             streams: vec![
@@ -307,9 +332,10 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
             buffers: Vec::new(),
             block_len: 0,
             builtins: Vec::new(),
-            params: Vec::new(),
+            params,
             params_dirty: Vec::new(),
             params_meta: Vec::new(),
+            param_names: HashMap::new(),
             arena: Arena::with_capacity(0),
             value_regs: Vec::new(),
             value_regs_top: 0,
@@ -365,8 +391,11 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// re-sized to the new IR, the value-track bookkeeping is cleared, and the
     /// console/stdout/stderr state is left untouched. Seating the same IR twice
     /// yields the same layout, but a re-seat invalidates value refs from an
-    /// earlier run (`result()` returns `None` afterwards) and re-seeds the
-    /// declared parameter defaults.
+    /// earlier run (`result()` returns `None` afterwards). Declared parameter
+    /// **defaults** are seeded only where the world's bag has no value yet, so
+    /// a pre-seeded parameter survives; `sample_rate` is never seeded from a
+    /// declaration (the field owns it) — the `sample_rate` argument seeds the
+    /// field.
     pub fn seat(
         &mut self,
         ir: &Ir,
@@ -431,6 +460,11 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         self.delays = delays;
         self.builtins = builtins;
         self.fill_layout(ir);
+        // Transitional: the seat's `sample_rate` argument is the world's rate
+        // seed (the public compile/eval entries still take one). Once the
+        // caller owns the world outright it pre-seeds
+        // `world.params.sample_rate` and the seat takes only `&Ir`.
+        self.params.sample_rate = sample_rate;
         Ok(())
     }
 
@@ -456,14 +490,42 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         self.block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
         self.block_len = 0;
         self.buffers = Self::alloc_buffers(ir);
+        // Parameter declarations come from the IR; the VALUES live in the
+        // world's name-addressed bag and are seeded **absent-only**, so a
+        // caller's pre-seed (world creation or `set_param` before seat) is the
+        // world's initial state and survives seating.
         self.params_meta = ir.params.clone();
-        let params: Vec<ParamValue> = ir
+        self.param_names = ir
             .params
             .iter()
-            .map(|p| ParamValue::Float(p.default as f32))
+            .enumerate()
+            .map(|(idx, def)| (def.name.clone(), idx))
             .collect();
-        self.params_dirty = vec![false; params.len()];
-        self.params = params;
+        self.params_dirty = vec![false; ir.params.len()];
+        for (idx, def) in ir.params.iter().enumerate() {
+            if def.name == SAMPLE_RATE_PARAM {
+                // The `sample_rate` field owns the rate: it is never a named
+                // entry and never seeded from a declaration.
+                continue;
+            }
+            match self.params.parameters.entry(def.name.clone()) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(ParamValue::Float(def.default as f32));
+                }
+                // A pre-supplied value outranks the declared default: it is an
+                // explicit initial state, so it must also reach a built-in
+                // bound to this parameter at the first run. The declaration is
+                // only known now, so this is where the range clamp applies to a
+                // value written before the seat; in-range values are unchanged.
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    let current = slot.get().clone();
+                    *slot.get_mut() = clamp_param_value(def, current);
+                    if let Some(dirty) = self.params_dirty.get_mut(idx) {
+                        *dirty = true;
+                    }
+                }
+            }
+        }
         // The arena is sized EXACTLY from the IR's build-time capacity bound
         // (computed during lowering); the page door appends pages only when a
         // run outgrows it and the world's `growable` policy allows it.
@@ -532,6 +594,34 @@ fn max_frag_cells(ir: &Ir) -> usize {
         .iter()
         .map(|f| f.num_capture_cells)
         .sum::<usize>()
+}
+
+/// Clamp a parameter value against its declared range.
+///
+/// `Float` is clamped directly. `Int` is clamped in `f64` and truncated back to
+/// an integer, then nudged one step inside the range when a fractional bound
+/// would leave it outside — so an integer value always ends up in `[min, max]`.
+/// Every other variant carries no numeric range and passes through unchanged.
+///
+/// This is the single clamp used by both `set_param` (after the seat supplied
+/// the declaration) and the seat itself (a pre-seat `set_param` could not know
+/// the range, so `fill_layout` clamps the caller's initial state). An in-range
+/// value is returned unchanged, so clamping never rewrites a legitimate value.
+fn clamp_param_value(def: &ParamDef, value: ParamValue) -> ParamValue {
+    match value {
+        ParamValue::Float(v) => ParamValue::Float((v as f64).clamp(def.min, def.max) as f32),
+        ParamValue::Int(v) => {
+            let clamped = (v as f64).clamp(def.min, def.max);
+            let mut i = clamped as i32;
+            if (i as f64) < def.min {
+                i = i.saturating_add(1);
+            } else if (i as f64) > def.max {
+                i = i.saturating_sub(1);
+            }
+            ParamValue::Int(i)
+        }
+        other => other,
+    }
 }
 
 /// Upper bound on the shared deferred-drop scratch: the deepest call stack
@@ -921,17 +1011,12 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         self.world.clear_value_regs(self.ir.num_value_regs);
     }
 
-    /// Index of a named parameter, if present.
-    pub fn param_index(&self, name: &str) -> Option<usize> {
-        self.world.param_index(name)
-    }
-
-    /// Set a parameter by index. RT-safe (plain store).
+    /// Set a parameter by name. RT-safe (map store + flag).
     ///
-    /// The `params` store is kept in sync for readback (`param`) and for
-    /// pushing dynamic built-in parameter bindings.
-    pub fn set_param(&mut self, idx: usize, value: ParamValue) {
-        self.world.set_param(idx, value);
+    /// The world's bag is kept in sync for readback (`param`) and is what the
+    /// value track and bound built-ins read at run time.
+    pub fn set_param(&mut self, name: &str, value: ParamValue) {
+        self.world.set_param(name, value);
     }
 
     /// Replace the console input (`stdin`) lines and rewind the stream cursor.
@@ -945,9 +1030,9 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         self.world.inject_stdin(lines);
     }
 
-    /// Current value of a parameter by index.
-    pub fn param(&self, idx: usize) -> ParamValue {
-        self.world.param(idx)
+    /// Current value of a parameter by name.
+    pub fn param(&self, name: &str) -> Option<ParamValue> {
+        self.world.param(name)
     }
 
     /// Metadata for all parameters (name, default, range).
@@ -1030,35 +1115,80 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         }
     }
 
-    /// Index of a named parameter, if present.
-    pub fn param_index(&self, name: &str) -> Option<usize> {
-        self.params_meta.iter().position(|p| p.name == name)
-    }
-
-    /// Set a parameter by index. RT-safe (plain store).
+    /// Set a parameter by name. RT-safe for a declared name: an in-place map
+    /// write plus a dirty flag.
     ///
-    /// The `params` store is kept in sync for readback (`param`) and for
-    /// pushing dynamic built-in parameter bindings.
-    pub fn set_param(&mut self, idx: usize, value: ParamValue) {
-        if let Some(def) = self.params_meta.get(idx) {
-            let clamped = match &value {
-                ParamValue::Float(v) => {
-                    ParamValue::Float((*v as f64).clamp(def.min, def.max) as f32)
-                }
-                ParamValue::Int(v) if *v as f64 >= def.min && (*v as f64) <= def.max => value,
-                _ => value,
+    /// The value is clamped against the parameter's seated declaration range
+    /// (`Float` and `Int` alike); an undeclared name is stored as-is.
+    /// `"sample_rate"` is the world's
+    /// [`Params::sample_rate`](rill_core::Params::sample_rate) field, not a
+    /// named map entry.
+    ///
+    /// **Allocation:** the only allocating case is an *undeclared* name, whose
+    /// key is not in the map yet (it needs a fresh `String` and may grow the
+    /// map). Every declared name was pre-seeded by the seat, so the live
+    /// parameter path — which only ever addresses declared names — rewrites the
+    /// existing entry in place.
+    pub fn set_param(&mut self, name: &str, value: ParamValue) {
+        if name == SAMPLE_RATE_PARAM {
+            let rate = match &value {
+                ParamValue::Float(v) => *v as f64,
+                ParamValue::Int(v) => *v as f64,
+                _ => return,
             };
-            self.params[idx] = clamped.clone();
-            if let Some(d) = self.params_dirty.get_mut(idx) {
-                *d = true;
+            self.params.sample_rate = rate as f32;
+            if let Some(&idx) = self.param_names.get(name) {
+                if let Some(dirty) = self.params_dirty.get_mut(idx) {
+                    *dirty = true;
+                }
+            }
+            return;
+        }
+        let clamped = match self
+            .param_names
+            .get(name)
+            .and_then(|&i| self.params_meta.get(i))
+        {
+            Some(def) => clamp_param_value(def, value),
+            None => value,
+        };
+        match self.params.parameters.get_mut(name) {
+            Some(slot) => *slot = clamped,
+            // Every declared name is seeded by `fill_layout`, so a miss is
+            // necessarily an undeclared name: insert it (the allocating case).
+            None => {
+                self.params.parameters.insert(name.to_string(), clamped);
+            }
+        }
+        if let Some(&idx) = self.param_names.get(name) {
+            if let Some(dirty) = self.params_dirty.get_mut(idx) {
+                *dirty = true;
             }
         }
     }
 
-    /// Current value of a parameter by index.
-    pub fn param(&self, idx: usize) -> ParamValue {
+    /// Current value of a parameter by name.
+    ///
+    /// `"sample_rate"` always resolves to the world's rate field; every other
+    /// name is looked up in the named map, so an undeclared name is `None`.
+    pub fn param(&self, name: &str) -> Option<ParamValue> {
+        if name == SAMPLE_RATE_PARAM {
+            return Some(ParamValue::Float(self.params.sample_rate));
+        }
+        self.params.parameters.get(name).cloned()
+    }
+
+    /// The runtime value of a parameter declared in the IR, resolved **by
+    /// name**: `"sample_rate"` reads [`Params::sample_rate`], everything else
+    /// the named map (an absent entry reads as `Float(0.0)`, the historical
+    /// unset-parameter default).
+    pub(crate) fn param_value(&self, name: &str) -> ParamValue {
+        if name == SAMPLE_RATE_PARAM {
+            return ParamValue::Float(self.params.sample_rate);
+        }
         self.params
-            .get(idx)
+            .parameters
+            .get(name)
             .cloned()
             .unwrap_or(ParamValue::Float(0.0))
     }
@@ -1239,6 +1369,177 @@ mod program_value_tests {
         let prog = RillProgram::<f32, 256>::new(ir);
         assert_eq!(prog.world.arena.capacity(), 4);
         assert_eq!(prog.world.value_state.len(), 2);
+    }
+
+    #[test]
+    fn seat_marks_a_preseeded_param_pending_for_the_builtin_push() {
+        // A value supplied BEFORE the seat must reach a built-in bound to that
+        // parameter: the built-in is constructed from the IR defaults, so the
+        // seat marks every pre-supplied parameter dirty and the next run pushes
+        // it (`push_builtin_params`). Without this, a pre-seeded world would
+        // read the new value through `?name` but the bound built-in would keep
+        // its constructed default.
+        let ir = Ir {
+            main_io_unit: false,
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: vec![ParamDef {
+                name: "level".to_string(),
+                default: 0.0,
+                min: f64::NEG_INFINITY,
+                max: f64::INFINITY,
+            }],
+            value_blocks: Vec::new(),
+            value_entry: 0,
+            num_value_regs: 0,
+            result_reg: 0,
+            value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            max_call_regs: 0,
+            value_state: ValueLayout {
+                capacity: 4,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+        };
+        let ffi = crate::ffi::ForeignRegistry::<f32>::new();
+
+        let mut preseeded = WorldState::<f32, 256>::new(WorldConfig::default());
+        preseeded.set_param("level", ParamValue::Float(0.5));
+        preseeded.seat(&ir, &ffi, 44_100.0).expect("seat");
+        assert_eq!(preseeded.param("level"), Some(ParamValue::Float(0.5)));
+        assert!(
+            preseeded.params_dirty[0],
+            "a pre-supplied value is an initial state and must be pushed"
+        );
+
+        let mut defaulted = WorldState::<f32, 256>::new(WorldConfig::default());
+        defaulted.seat(&ir, &ffi, 44_100.0).expect("seat");
+        assert_eq!(defaulted.param("level"), Some(ParamValue::Float(0.0)));
+        assert!(
+            !defaulted.params_dirty[0],
+            "a seeded default already matches the built-in's construction"
+        );
+        assert_eq!(
+            defaulted.params.sample_rate, 44_100.0,
+            "the seat argument seeds the rate field"
+        );
+    }
+
+    #[test]
+    fn set_param_clamps_to_the_declared_range() {
+        let ir = Ir {
+            main_io_unit: false,
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: vec![ParamDef {
+                name: "cutoff".to_string(),
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+            }],
+            value_blocks: Vec::new(),
+            value_entry: 0,
+            num_value_regs: 0,
+            result_reg: 0,
+            value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            max_call_regs: 0,
+            value_state: ValueLayout {
+                capacity: 4,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+        };
+        let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+        world
+            .seat(&ir, &crate::ffi::ForeignRegistry::<f32>::new(), 44_100.0)
+            .expect("seat");
+
+        world.set_param("cutoff", ParamValue::Float(9.0));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Float(2.0)));
+        world.set_param("cutoff", ParamValue::Float(-9.0));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Float(0.0)));
+        // Integers are clamped too: an out-of-range `Int` must not slip past
+        // the range, while an in-range one keeps its variant and value.
+        world.set_param("cutoff", ParamValue::Int(9));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Int(2)));
+        world.set_param("cutoff", ParamValue::Int(-9));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Int(0)));
+        world.set_param("cutoff", ParamValue::Int(1));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Int(1)));
+        // An undeclared name is stored as-is (no declaration to clamp against).
+        world.set_param("other", ParamValue::Float(9.0));
+        assert_eq!(world.param("other"), Some(ParamValue::Float(9.0)));
+    }
+
+    #[test]
+    fn seat_clamps_a_preseeded_param_to_the_declared_range() {
+        // A value supplied before the seat cannot be clamped — the declaration
+        // is not known yet — so `fill_layout` applies the clamp when it meets
+        // the caller's entry. An in-range pre-seed is the identity and stays
+        // untouched; an out-of-range one is pulled into the declared range.
+        let ir = Ir {
+            main_io_unit: false,
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: vec![ParamDef {
+                name: "level".to_string(),
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+            }],
+            value_blocks: Vec::new(),
+            value_entry: 0,
+            num_value_regs: 0,
+            result_reg: 0,
+            value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            max_call_regs: 0,
+            value_state: ValueLayout {
+                capacity: 4,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+        };
+        let ffi = crate::ffi::ForeignRegistry::<f32>::new();
+
+        let mut out_of_range = WorldState::<f32, 256>::new(WorldConfig::default());
+        out_of_range.set_param("level", ParamValue::Float(9.0));
+        out_of_range.seat(&ir, &ffi, 44_100.0).expect("seat");
+        assert_eq!(
+            out_of_range.param("level"),
+            Some(ParamValue::Float(2.0)),
+            "the seated declaration range applies to a pre-seat value"
+        );
+        assert!(
+            out_of_range.params_dirty[0],
+            "a clamped pre-supplied value is still an initial state and must be pushed"
+        );
+
+        let mut in_range = WorldState::<f32, 256>::new(WorldConfig::default());
+        in_range.set_param("level", ParamValue::Float(0.25));
+        in_range.seat(&ir, &ffi, 44_100.0).expect("seat");
+        assert_eq!(
+            in_range.param("level"),
+            Some(ParamValue::Float(0.25)),
+            "clamping an in-range pre-seed is the identity"
+        );
     }
 
     #[test]

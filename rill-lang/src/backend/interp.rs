@@ -22,6 +22,21 @@ pub(crate) fn param_to_f64(pv: &rill_core::traits::ParamValue) -> f64 {
     }
 }
 
+/// The runtime value of the parameter declared at `idx` in
+/// [`Ir::params`](crate::ir::Ir::params), resolved **by name**: the IR keeps a
+/// positional declaration table (name, default, range), but the value store is
+/// the world's name-addressed [`rill_core::Params`]. `"sample_rate"` reads the
+/// rate field; every other name reads the named map.
+pub(crate) fn param_at<T: Transcendental, const BUF: usize>(
+    prog: &RillProgram<T, BUF>,
+    idx: usize,
+) -> f64 {
+    match prog.ir.params.get(idx) {
+        Some(def) => param_to_f64(&prog.world.param_value(&def.name)),
+        None => 0.0,
+    }
+}
+
 pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
     prog: &mut RillProgram<T, BUF>,
 ) {
@@ -33,7 +48,10 @@ pub(crate) fn push_builtin_params<T: Transcendental, const BUF: usize>(
             if !prog.world.params_dirty[param_idx] {
                 continue;
             }
-            let v = prog.world.params[param_idx].clone();
+            // `param_bindings` stays `(arg_pos, param_idx)` (an IR shape — the
+            // positional slot of the built-in argument); the VALUE is read by
+            // the declared name from the world's bag.
+            let v = prog.world.param_value(&prog.ir.params[param_idx].name);
             prog.world.params_dirty[param_idx] = false;
             match &mut prog.world.builtins[instance] {
                 crate::program::BuiltinInst::Block(b) => b.set_param(arg_pos, &v),
@@ -1594,7 +1612,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Opaque(*handle));
         }
         ValueInstr::ValueReadParam { dst, idx } => {
-            let v = param_to_f64(&prog.world.params[*idx]);
+            let v = param_at(prog, *idx);
+            prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Float(v));
+        }
+        ValueInstr::ValueReadSampleRate { dst } => {
+            let v = prog.world.params.sample_rate as f64;
             prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Float(v));
         }
         ValueInstr::ValueConstString { dst, value } => {
@@ -1900,7 +1922,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueBufferParamRead { dst, idx } => {
             let n = prog.world.block_len;
-            let v = T::from_f64(param_to_f64(&prog.world.params[*idx]));
+            let v = T::from_f64(param_at(prog, *idx));
             let di = buffer_index(prog, *dst, base);
             prog.world.buffers[di].with_data_mut(|b| b[..n].fill(v));
             prog.world.value_regs[*dst + base] = alloc_owned(prog, Value::Buffer(di));

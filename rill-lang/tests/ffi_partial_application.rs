@@ -68,7 +68,7 @@ fn partial_application_keeps_scalars_folded() {
     // The compile pipeline reduces before lowering: `fp` is inlined at its use
     // site, so `main = fp (…)` is an ordinary buffer application.
     typed.program = rill_lang::reduce::reduce(&typed.program);
-    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = lower_with_cafs(&typed, &typed.cafs).unwrap();
     let bi = ir
         .builtins
         .iter()

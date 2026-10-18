@@ -231,7 +231,7 @@ fn foreign_fn_lowers_to_callblock() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = lower_with_cafs(&typed, &typed.cafs).unwrap();
     let gain = ir
         .builtins
         .iter()
@@ -509,7 +509,7 @@ fn combinator_sugar_lowers_positionally() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = lower_with_cafs(&typed, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "onepole").unwrap();
     assert_eq!(bi.signal_ins, 1);
     assert_eq!(bi.params, vec![200.0, 0.7]);
@@ -685,7 +685,7 @@ fn record_param_flattens_schema_fields() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, &typed.cafs).unwrap();
     let bi = ir
         .builtins
         .iter()
@@ -709,7 +709,7 @@ fn record_param_missing_fields_use_zero_defaults() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "cfg").unwrap();
     assert_eq!(bi.params, vec![1.5, 0.0]);
 }
@@ -743,7 +743,7 @@ fn resource_param_wires_tape_ref() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, &typed.cafs).unwrap();
     let bi = ir.builtins.iter().find(|b| b.name == "read_head").unwrap();
     assert_eq!(bi.resource.as_deref(), Some("tape_0"));
     assert_eq!(bi.params, vec![0.1]);
@@ -810,7 +810,7 @@ fn record_default_ffi_applies() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, &typed.cafs).unwrap();
     let bi = ir
         .builtins
         .iter()
@@ -830,7 +830,7 @@ fn band_list_flattens_band_fields() {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, &typed.cafs).unwrap();
     let bi = ir
         .builtins
         .iter()

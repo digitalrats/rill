@@ -21,8 +21,7 @@ fn compile_ir(src: &str, mode: Mode) -> Ir {
     let mut typed = rill_lang::types::infer::infer_program_with(&program, mode).expect("infer");
     typed.program =
         rill_lang::reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-    rill_lang::lower::lower_with_cafs_mode(&typed, 44_100.0, &typed.cafs, typed.mode)
-        .expect("lower")
+    rill_lang::lower::lower_with_cafs_mode(&typed, &typed.cafs, typed.mode).expect("lower")
 }
 
 #[test]

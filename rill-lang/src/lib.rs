@@ -88,8 +88,13 @@ pub fn compile_with_mode<T: Transcendental>(
     src: &str,
     mode: Mode,
 ) -> Result<RillProgram<T, 256>, CompileError> {
-    let ir = compile_to_ir(src, 44_100.0, mode)?;
-    Ok(RillProgram::<T, 256>::new(ir))
+    let ir = compile_to_ir(src, mode)?;
+    let mut prog = RillProgram::<T, 256>::new(ir);
+    // This entry takes no sample rate: its world starts at the legacy default
+    // (44.1 kHz), so a `smooth` program keeps the rate it was previously baked
+    // with. A caller that owns the world pre-seeds its own rate.
+    prog.world.params.sample_rate = 44_100.0;
+    Ok(prog)
 }
 
 /// Compile with a built-in registry and a sample rate. Uses the default block
@@ -111,7 +116,7 @@ pub fn compile_with_mode_with<T: Transcendental>(
     sample_rate: f32,
     mode: Mode,
 ) -> Result<RillProgram<T, 256>, CompileError> {
-    let ir = compile_to_ir(src, sample_rate, mode)?;
+    let ir = compile_to_ir(src, mode)?;
     RillProgram::<T, 256>::new_with(ir, registry, sample_rate, None)
 }
 
@@ -136,7 +141,7 @@ pub fn compile_with_ffi_mode<T: Transcendental>(
     sample_rate: f32,
     mode: Mode,
 ) -> Result<RillProgram<T, 256>, CompileError> {
-    let ir = compile_to_ir(src, sample_rate, mode)?;
+    let ir = compile_to_ir(src, mode)?;
     let registry = Registry::<T>::new();
     RillProgram::<T, 256>::new_with(ir, &registry, sample_rate, Some(ffi))
 }
@@ -195,7 +200,7 @@ pub fn test_eval_with_mode<T: Transcendental, const BUF: usize>(
     // entry shadows it).
     const EVAL_ENTRY: &str = "__rill_eval";
     let src = format!("{defs}\n{EVAL_ENTRY} = ({expr});");
-    let ir = compile_to_ir_entry(&src, sample_rate, mode, EVAL_ENTRY)?;
+    let ir = compile_to_ir_entry(&src, mode, EVAL_ENTRY)?;
     let registry = Registry::<T>::new();
     let mut prog = RillProgram::<T, BUF>::new_with(ir, &registry, sample_rate, Some(ffi))?;
     crate::backend::interp::run_entry(&mut prog)
@@ -255,15 +260,7 @@ fn compile_source_to_program<T: Transcendental, const BUF: usize>(
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-    let ir = lower::lower_program_with_channels(
-        &typed,
-        sample_rate,
-        &typed.cafs,
-        typed.mode,
-        0,
-        None,
-        "main",
-    )?;
+    let ir = lower::lower_program_with_channels(&typed, &typed.cafs, typed.mode, 0, None, "main")?;
     // No external resource registry is supplied: every resource-backed built-in
     // must resolve to a `tape_loop` declaration in the source.
     for bi in &ir.builtins {
@@ -295,8 +292,8 @@ fn apply_api_mode(program: &mut crate::ast::Program, api_mode: Mode) {
 ///
 /// `entry` names the definition whose value is the program's single result
 /// (compile entries use `"main"`; [`test_eval`] uses an internal marker).
-fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileError> {
-    compile_to_ir_entry(src, sample_rate, mode, "main")
+fn compile_to_ir(src: &str, mode: Mode) -> Result<Ir, CompileError> {
+    compile_to_ir_entry(src, mode, "main")
 }
 
 /// Like [`compile_to_ir`], with an explicit entry name.
@@ -305,12 +302,7 @@ fn compile_to_ir(src: &str, sample_rate: f32, mode: Mode) -> Result<Ir, CompileE
 /// pipeline treats `main` and `test_eval`'s internal marker identically.
 /// `main` is used for the runner path; the marker evaluates a plain value
 /// expression as an ordinary binding.
-fn compile_to_ir_entry(
-    src: &str,
-    sample_rate: f32,
-    mode: Mode,
-    entry: &str,
-) -> Result<Ir, CompileError> {
+fn compile_to_ir_entry(src: &str, mode: Mode, entry: &str) -> Result<Ir, CompileError> {
     let tokens = lexer::tokenize(src)?;
     let program = parser::parse(&tokens, src.as_bytes())?;
     let (mut program, tape_decls) = extract_resources(&program)?;
@@ -321,7 +313,7 @@ fn compile_to_ir_entry(
         .map(|d| (d.name.clone(), d.capacity))
         .collect();
     typed.program = reduce::reduce_with_cafs_mode(&typed.program, &typed.cafs, typed.mode);
-    lower::lower_with_cafs_mode_entry(&typed, sample_rate, &typed.cafs, typed.mode, entry)
+    lower::lower_with_cafs_mode_entry(&typed, &typed.cafs, typed.mode, entry)
 }
 
 /// A named resource declaration (e.g. a tape loop) from the DSL.
@@ -462,7 +454,7 @@ mod ir_tests {
         let program = parser::parse(&tokens, src.as_bytes()).unwrap();
         let mut typed = types::infer::infer_program_with(&program, program.mode).unwrap();
         typed.program = reduce::reduce(&typed.program);
-        let ir = lower::lower_with(&typed, 44100.0).unwrap();
+        let ir = lower::lower_with(&typed).unwrap();
         assert!(
             ir.num_outputs > 0,
             "the signal program must produce an output channel"

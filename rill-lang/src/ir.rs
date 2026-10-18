@@ -529,11 +529,26 @@ pub enum ValueInstr {
         value: bool,
     },
     /// Read a named parameter slot as a Float value.
+    ///
+    /// The IR index selects a NAME in [`Ir::params`]; the run-time store is the
+    /// world's name-addressed [`rill_core::Params`]. `"sample_rate"` reads
+    /// [`Params::sample_rate`](rill_core::Params::sample_rate) (the field), so
+    /// `?sample_rate` never lives in the named map.
     ValueReadParam {
         /// Destination value register.
         dst: usize,
         /// Index into [`Ir::params`].
         idx: usize,
+    },
+    /// Read the world's sample rate as a Float value.
+    ///
+    /// Executes to `Value::Float(world.params.sample_rate as f64)`. The
+    /// `smooth` operator uses it to compute its one-pole coefficient at run
+    /// time (the compiler never sees a sample rate); user-level `?sample_rate`
+    /// resolves to the same field through [`ValueInstr::ValueReadParam`].
+    ValueReadSampleRate {
+        /// Destination value register.
+        dst: usize,
     },
     /// The unit value `()` (`Value::Void`).
     ValueConstVoid {

@@ -195,7 +195,7 @@ fn force_count(src: &str) -> usize {
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = rill_lang::lower::lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = rill_lang::lower::lower_with_cafs(&typed, &typed.cafs).unwrap();
     value_force_count(&ir)
 }
 

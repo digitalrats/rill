@@ -49,7 +49,7 @@ fn atan2_in_value_position_lowers_to_buffer_bin() {
     let toks = rill_lang::lexer::tokenize(&src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode).unwrap();
-    let ir = lower_with_cafs(&typed, 44100.0, &typed.cafs).unwrap();
+    let ir = lower_with_cafs(&typed, &typed.cafs).unwrap();
     assert!(
         ir.value_blocks
             .iter()

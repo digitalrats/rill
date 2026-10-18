@@ -193,6 +193,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueConstVoid { .. }
             | ValueInstr::ValueConstOpaque { .. }
             | ValueInstr::ValueReadParam { .. }
+            | ValueInstr::ValueReadSampleRate { .. }
             | ValueInstr::ValueConstString { .. }
             | ValueInstr::ValueListLit { .. }
             | ValueInstr::ValueMapLit { .. }
@@ -613,7 +614,6 @@ struct Lowerer<'a> {
     builtins: Vec<BuiltinInstance>,
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
-    sample_rate: f32,
     /// Value-track blocks, executed once per run by
     /// [`run_entry`](crate::backend::interp::run_entry) (see
     /// [`Ir::value_blocks`](crate::ir::Ir)).
@@ -825,6 +825,129 @@ impl<'a> Lowerer<'a> {
 
     fn emit_value(&mut self, i: ValueInstr) {
         self.value_blocks[self.cur_value_block].instrs.push(i);
+    }
+
+    /// Emit the runtime one-pole smoother over the Buffer register `x` and
+    /// return the output Buffer register.
+    ///
+    /// `smooth x ms` is `y = prev + a·(x − prev)` where `prev` is the site's
+    /// block-feedback slot and `a` is computed per run (see
+    /// [`Self::emit_smooth_coef`]) — the compiler never needs a sample rate.
+    fn emit_smooth(&mut self, x: usize, ms: f64) -> usize {
+        let acoef = self.emit_smooth_coef(ms);
+        let slot = self.block_state_slots;
+        self.block_state_slots += 1;
+        let prev = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
+        let diff = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: diff,
+            op: BinArith::Sub,
+            a: x,
+            b: prev,
+        });
+        let scaled = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: scaled,
+            op: BinArith::Mul,
+            a: acoef,
+            b: diff,
+        });
+        let y = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: y,
+            op: BinArith::Add,
+            a: prev,
+            b: scaled,
+        });
+        self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
+        y
+    }
+
+    /// Emit the smoother coefficient `a` as a whole-block buffer constant,
+    /// computed **at run time** from the world's sample rate:
+    /// `a = 1 − exp(−1 / max((ms/1000)·sr, 0))` — the formula the compiler used
+    /// to bake in f64 at build time.
+    ///
+    /// Guards: `ms <= 0` bakes `a = 1` (a static property of the call). A
+    /// non-positive rate must yield the same identity, and the rate is only
+    /// known at run time, so the *denominator* is clamped at zero in the
+    /// emitted sequence: at `sr == 0` the denominator is `0`, `-1/0 = −∞`,
+    /// `exp(−∞) = 0`, so `a = 1` exactly; at `sr < 0` the clamp turns the
+    /// negative denominator into the same `0`, instead of
+    /// `-1/den > 0 → exp(+240) → −inf → a = −inf`. No NaN or infinity escapes
+    /// into the output. The rate itself is read from the world's
+    /// `Params::sample_rate` field through [`ValueInstr::ValueReadSampleRate`],
+    /// the same field `?sample_rate` resolves to.
+    fn emit_smooth_coef(&mut self, ms: f64) -> usize {
+        let dst = self.fresh_value_reg();
+        if ms <= 0.0 {
+            self.emit_value(ValueInstr::ValueBufferConst { dst, value: 1.0 });
+            return dst;
+        }
+        let sr = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueReadSampleRate { dst: sr });
+        let sr_buf = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferFill {
+            dst: sr_buf,
+            src: sr,
+        });
+        let tau = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: tau,
+            value: ms / 1000.0,
+        });
+        let tau_sr = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: tau_sr,
+            op: BinArith::Mul,
+            a: tau,
+            b: sr_buf,
+        });
+        // `max((ms/1000)·sr, 0)`: a non-positive rate degenerates to the
+        // `sr == 0` identity instead of overflowing `exp`.
+        let zero = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: zero,
+            value: 0.0,
+        });
+        let den = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: den,
+            op: BinArith::Max,
+            a: tau_sr,
+            b: zero,
+        });
+        let neg_one = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: neg_one,
+            value: -1.0,
+        });
+        let inv = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: inv,
+            op: BinArith::Div,
+            a: neg_one,
+            b: den,
+        });
+        let decay = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferUn {
+            dst: decay,
+            op: UnOp::Exp,
+            src: inv,
+        });
+        let one = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: one,
+            value: 1.0,
+        });
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst,
+            op: BinArith::Sub,
+            a: one,
+            b: decay,
+        });
+        dst
     }
 
     /// Wrap an already-emitted primitive effect closure in the `ST s a` record
@@ -1941,44 +2064,7 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
-                    let sr = self.sample_rate as f64;
-                    let a = if ms <= 0.0 {
-                        1.0
-                    } else {
-                        let tau = ms / 1000.0;
-                        1.0 - (-1.0 / (tau * sr)).exp()
-                    };
-                    let slot = self.block_state_slots;
-                    self.block_state_slots += 1;
-                    let prev = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
-                    let diff = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: diff,
-                        op: BinArith::Sub,
-                        a: x,
-                        b: prev,
-                    });
-                    let acoef = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferConst {
-                        dst: acoef,
-                        value: a,
-                    });
-                    let scaled = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: scaled,
-                        op: BinArith::Mul,
-                        a: acoef,
-                        b: diff,
-                    });
-                    let y = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: y,
-                        op: BinArith::Add,
-                        a: prev,
-                        b: scaled,
-                    });
-                    self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
+                    let y = self.emit_smooth(x, ms);
                     return Ok((y, ValueTy::Buffer));
                 }
                 // Unary math over a Buffer (`abs _`, `sin i1`): a Buffer-typed operand
@@ -6595,45 +6681,7 @@ impl<'a> Lowerer<'a> {
                     let x_regs = self.lower(&call_args[0], args)?;
                     let x = x_regs[0];
                     let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
-                    let sr = self.sample_rate as f64;
-                    let a = if ms <= 0.0 {
-                        1.0
-                    } else {
-                        let tau = ms / 1000.0;
-                        1.0 - (-1.0 / (tau * sr)).exp()
-                    };
-                    let slot = self.block_state_slots;
-                    self.block_state_slots += 1;
-                    let prev = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
-                    let diff = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: diff,
-                        op: BinArith::Sub,
-                        a: x,
-                        b: prev,
-                    });
-                    let acoef = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferConst {
-                        dst: acoef,
-                        value: a,
-                    });
-                    let scaled = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: scaled,
-                        op: BinArith::Mul,
-                        a: acoef,
-                        b: diff,
-                    });
-                    let y = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: y,
-                        op: BinArith::Add,
-                        a: prev,
-                        b: scaled,
-                    });
-                    self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
-                    return Ok(vec![y]);
+                    return Ok(vec![self.emit_smooth(x, ms)]);
                 }
                 // A data constructor in a signal position is a type error: value
                 // expressions lower on the value track (see `lower_value`).
@@ -7620,24 +7668,24 @@ fn const_f64(e: &Expr) -> Option<f64> {
     }
 }
 
-/// Back-compat: lower with a default sample rate of 44.1 kHz.
+/// Lower a fully type-checked program into IR (the plain entry).
+///
+/// Lowering takes **no sample rate**: `?sample_rate` and the `smooth`
+/// coefficient read the world's `Params::sample_rate` at run time, so the
+/// compiler never sees a rate.
 pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
-    lower_with(tp, 44_100.0)
+    lower_with(tp)
 }
 
-/// Lower a fully type-checked program into IR at the given sample rate.
-pub fn lower_with(tp: &TypedProgram, sample_rate: f32) -> Result<Ir, CompileError> {
-    lower_with_cafs(tp, sample_rate, &HashSet::new())
+/// Like [`lower`] (retained as the named entry point).
+pub fn lower_with(tp: &TypedProgram) -> Result<Ir, CompileError> {
+    lower_with_cafs(tp, &HashSet::new())
 }
 
 /// Like [`lower_with`], but treats the given names as closed CAFs that are
 /// lifted once and shared across reference sites.
-pub fn lower_with_cafs(
-    tp: &TypedProgram,
-    sample_rate: f32,
-    cafs: &HashSet<String>,
-) -> Result<Ir, CompileError> {
-    lower_with_cafs_mode(tp, sample_rate, cafs, tp.mode)
+pub fn lower_with_cafs(tp: &TypedProgram, cafs: &HashSet<String>) -> Result<Ir, CompileError> {
+    lower_with_cafs_mode(tp, cafs, tp.mode)
 }
 
 /// Like [`lower_with_cafs`], carrying the evaluation mode. The mode gates
@@ -7647,11 +7695,10 @@ pub fn lower_with_cafs(
 /// register).
 pub fn lower_with_cafs_mode(
     tp: &TypedProgram,
-    sample_rate: f32,
     cafs: &HashSet<String>,
     mode: Mode,
 ) -> Result<Ir, CompileError> {
-    lower_with_cafs_mode_entry(tp, sample_rate, cafs, mode, "main")
+    lower_with_cafs_mode_entry(tp, cafs, mode, "main")
 }
 
 /// Like [`lower_with_cafs_mode`], with an explicit entry name. The entry
@@ -7660,12 +7707,11 @@ pub fn lower_with_cafs_mode(
 /// recorded the entry's scheme in `tp.def_schemes`, which this function reads.
 pub(crate) fn lower_with_cafs_mode_entry(
     tp: &TypedProgram,
-    sample_rate: f32,
     cafs: &HashSet<String>,
     mode: Mode,
     entry: &str,
 ) -> Result<Ir, CompileError> {
-    lower_program_with_channels(tp, sample_rate, cafs, mode, 0, None, entry)
+    lower_program_with_channels(tp, cafs, mode, 0, None, entry)
 }
 
 /// Like [`lower_with_cafs_mode`], with an explicit program input- and
@@ -7674,7 +7720,6 @@ pub(crate) fn lower_with_cafs_mode_entry(
 /// retained value path.
 pub fn lower_program_with_channels(
     tp: &TypedProgram,
-    sample_rate: f32,
     cafs: &HashSet<String>,
     mode: Mode,
     input_channels: usize,
@@ -7717,7 +7762,6 @@ pub fn lower_program_with_channels(
         builtins: Vec::new(),
         params: Vec::new(),
         param_names: HashMap::new(),
-        sample_rate,
         value_blocks: vec![ValueBlock::default()],
         cur_value_block: 0,
         value_entry: 0,
@@ -7962,7 +8006,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        lower_with_cafs(&tp, 44_100.0, &tp.cafs).unwrap()
+        lower_with_cafs(&tp, &tp.cafs).unwrap()
     }
 
     #[test]
@@ -8006,7 +8050,6 @@ mod tests {
             builtins: Vec::new(),
             params: Vec::new(),
             param_names: HashMap::new(),
-            sample_rate: 44_100.0,
             value_blocks: vec![ValueBlock::default()],
             cur_value_block: 0,
             value_entry: 0,
@@ -8205,7 +8248,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
@@ -8233,7 +8276,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
@@ -8262,7 +8305,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
@@ -8296,7 +8339,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
