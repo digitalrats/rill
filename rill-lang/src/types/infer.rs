@@ -55,7 +55,7 @@ pub struct TypedProgram {
     /// the AST before inference (see [`crate::lib::extract_resources`]). Lowering
     /// resolves a resource param's `Ref(name)` against these to assign the
     /// tape INDEX; a `Ref` absent from the map stays a name-based resource
-    /// binding (the graph duplex path's externally-shared registry).
+    /// binding, which seating rejects as an undeclared resource.
     pub tape_decls: Vec<(String, usize)>,
     /// Span (`start`, `end`) of every `runST` / `runSTArray` application whose
     /// body is a real `ST s a` computation → the region's result type (`a` for
@@ -5534,7 +5534,7 @@ fn infer_apply_impl(
             // non-all-default records. An all-default record is optional
             // (mirrors legacy `BuiltinSig::min_args`). A call may omit a
             // TRAILING run of required Signal slots — those are fed by the
-            // combinator (the graph-reconstruct `(_, _) :> mixer` style emits
+            // combinator (the `(_, _) :> mixer` style emits
             // no signal call args) — but omitting a scalar/record is an arity
             // error.
             let required_params: Vec<crate::types::ffi::FfiParam> = sig
@@ -5591,7 +5591,7 @@ fn infer_apply_impl(
             let mut signal_ins = 0usize;
             let mut pos = 0usize;
             // Trailing signal slots with no explicit call arg: either a
-            // combinator-fed channel (the graph-reconstruct `(_, _) :> node`
+            // combinator-fed channel (the `(_, _) :> node`
             // style feeds signals via Merge, so the FFI Apply carries only the
             // scalar params) or a first-class partial application (`map (onepole
             // 200.0 0.7) buffers` — the scalars fold at build, the missing
@@ -5738,7 +5738,7 @@ fn infer_apply_impl(
             }
             // A trailing run of omitted Signal slots (no explicit wire call
             // args) is either a combinator-fed channel (the legacy
-            // graph-reconstruct `(_, _) :> node` style) or a first-class
+            // `(_, _) :> node` style) or a first-class
             // partial application (`map (onepole 200.0 0.7) buffers` — the
             // scalars fold at build, the Buffer remains). After the
             // combinator-sugar pass appends wires for direct combinator

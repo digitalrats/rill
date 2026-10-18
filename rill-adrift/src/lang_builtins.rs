@@ -2,39 +2,8 @@
 
 use rill_core::math::Transcendental;
 
-/// Build a complete builtin registry: DSP primitives, oscillators, EQ, and
-/// optionally FFT and sampler nodes.
-///
-/// Legacy `Registry` path (no runtime consumer): use [`full_ffi`] for the
-/// factories a world resolves at seat. Retained until the legacy registry is
-/// deleted.
-pub fn full_registry<T: Transcendental + 'static>() -> rill_lang::builtin::Registry<T> {
-    let mut reg = rill_lang::builtin::Registry::new();
-
-    // Always available
-    rill_lang::register::register_core_dsp_builtins(&mut reg);
-
-    // Feature-gated
-    #[cfg(feature = "fft")]
-    rill_fft::register::register_lang_builtins(&mut reg);
-    #[cfg(feature = "sampler")]
-    rill_sampler::register::register_lang_builtins(&mut reg);
-
-    reg
-}
-
-/// Build a lofi-capable registry (concrete `f32`).
-///
-/// Legacy `Registry` path — see [`full_registry`].
-#[cfg(feature = "lofi")]
-pub fn full_registry_f32() -> rill_lang::builtin::Registry<f32> {
-    let mut reg = full_registry::<f32>();
-    rill_lofi::register::register_lang_builtins(&mut reg);
-    reg
-}
-
-/// Build a complete FFI factory registry: the migrated DSP/effect/EQ builtins
-/// plus the feature-gated fft/sampler factories. Hand it to
+/// Build a complete FFI factory registry: the DSP/effect/EQ builtins plus the
+/// feature-gated fft/sampler factories. Hand it to
 /// [`compile`](rill_lang::compile) (it becomes the world's registry) or to the
 /// `WorldConfig` of a world driven by [`compile_eval`](rill_lang::compile_eval)
 /// + [`test_eval`](rill_lang::test_eval).

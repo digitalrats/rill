@@ -26,9 +26,6 @@ pub mod builtins;
 pub mod error;
 /// FFI factory registry: foreign-declared builtins' Rust implementations.
 pub mod ffi;
-/// Graph IR formation: [`GraphSpec`](graph::GraphSpec) → the graph engine.
-#[cfg(feature = "graph")]
-pub mod graph;
 pub mod ir;
 pub mod lexer;
 pub mod lower;
@@ -57,7 +54,7 @@ pub use program::{WorldConfig, WorldState};
 pub use program_runner::{run_on_stack, ProgramRunner};
 pub use serde_def::{compile_def, RillLangDef};
 
-pub use builtin::{BuiltinKind, Registry};
+pub use builtin::BuiltinKind;
 
 use rill_core::math::Transcendental;
 
@@ -239,9 +236,8 @@ pub struct ResourceDecl {
 /// `name = TapeLoop <capacity>`) resource declarations, returning the remaining
 /// signal program plus the declarations.
 ///
-/// The `TapeLoop` spelling is kept for the graph-duplex path
-/// (`graph/compile.rs::render_recording` still emits it against the
-/// externally-shared `ResourceRegistry`); the DSL path uses `tape_loop`.
+/// The `TapeLoop` spelling is accepted as a legacy alias for `tape_loop`; the
+/// DSL path uses `tape_loop`.
 fn extract_resources(
     program: &crate::ast::Program,
 ) -> Result<(crate::ast::Program, Vec<ResourceDecl>), CompileError> {

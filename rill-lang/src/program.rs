@@ -424,22 +424,15 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         // Carve the delay sites first so the allocator is available to
         // built-in factories below.
         let (delays, mut allocator) = Self::alloc_delays(ir);
-        // The world owns exactly one factory registry (its `ffi`), so the
-        // legacy rill-core `Registry` is empty and an external resource
-        // registry (`resources`) is never supplied: a name-based resource
-        // binding is rejected on the source path (`compile`), and the tape path
-        // resolves by index.
-        let legacy = crate::builtin::Registry::<T>::new();
-        let mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>> = None;
         // Build every built-in before committing anything, so a failed seat
-        // leaves the previous seat's state intact.
+        // leaves the previous seat's state intact. The world's `ffi` registry is
+        // the only factory surface; a name-based resource binding is rejected on
+        // the source path (`compile`), and the tape path resolves by index.
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
             builtins.push(build_builtin(
                 bi,
-                &legacy,
                 self.config.ffi.as_ref(),
-                &mut resources,
                 &tapes,
                 sample_rate,
                 Some(&mut allocator),
@@ -692,38 +685,27 @@ impl<T: Transcendental> RegionDelay<T> {
 }
 
 /// Build a single runtime built-in instance for `bi`, resolving the factory
-/// from the legacy rill-core `Registry` or the FFI `ForeignRegistry`.
+/// from the world's FFI [`ForeignRegistry`](crate::ffi::ForeignRegistry).
 ///
 /// The runtime `BuiltinInst` variant is selected by the registered FACTORY KIND,
-/// not by the signal arity: a `Block` factory (legacy or FFI) builds the
-/// `Block` variant even for a multi-channel arity — the interpreter's
-/// interleaved `Block` path serves those channels. Selecting by arity instead
-/// routed a multi-channel `Block` factory into `build_multichannel_block`,
-/// which has no matching variant and `.expect` panics.
+/// not by the signal arity: a `Block` factory builds the `Block` variant even
+/// for a multi-channel arity — the interpreter's interleaved `Block` path serves
+/// those channels. Selecting by arity instead routed a multi-channel `Block`
+/// factory into `build_multichannel_block`, which has no matching variant and
+/// `.expect` panics.
 fn build_builtin<T: Transcendental>(
     bi: &BuiltinInstance,
-    registry: &crate::builtin::Registry<T>,
     foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    resources: &mut Option<&mut rill_core::buffer::ResourceRegistry<T>>,
     tapes: &[SharedCell<T>],
     sample_rate: f32,
     allocator: Option<&mut BufferAllocator<T>>,
 ) -> Result<BuiltinInst<T>, CompileError> {
-    let legacy_kind = registry.kind(&bi.name);
-    let ffi_kind = foreign.and_then(|f| f.kind(&bi.name));
-    let kind = legacy_kind.or(ffi_kind);
-    // A resource-backed factory resolves its named resource through the
-    // resource branch, as does any built-in carrying a resource binding.
-    let is_resource = legacy_kind.is_some_and(|k| {
-        matches!(
-            k,
-            BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
-        )
-    }) || bi.resource.is_some();
-    // An FFI resource factory resolves its shared cell by tape index (the new
-    // `tape_loop` path) instead of a name against an external registry.
+    let kind = foreign.and_then(|f| f.kind(&bi.name));
+    // A resource factory resolves its shared cell by tape index (the
+    // `tape_loop` path); a built-in carrying a resource binding is routed to
+    // the resource branch as well.
     let ffi_is_resource = bi.tape_index.is_some()
-        || ffi_kind.is_some_and(|k| {
+        || kind.is_some_and(|k| {
             matches!(
                 k,
                 BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
@@ -736,18 +718,16 @@ fn build_builtin<T: Transcendental>(
         ),
         CompileError,
     > {
-        // A name-based resource binding (`bi.resource = Some(name)`) with no
-        // external registry means the source referenced a tape name that was
-        // never declared (`tape = tape_loop <capacity>`) and no registry was
-        // supplied — report the real cause instead of the index-based
+        // A name-based resource binding (`bi.resource = Some(name)`) has no
+        // external registry: the DSL resolves tapes by index
+        // (`tape = tape_loop <capacity>`), so the name references a tape that
+        // was never declared. Report the real cause instead of the index-based
         // fallthrough error.
         if let Some(name) = &bi.resource {
-            if resources.is_none() {
-                return Err(CompileError::Unsupported(format!(
-                    "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>` or pass a registry)",
-                    bi.name, name
-                )));
-            }
+            return Err(CompileError::Unsupported(format!(
+                "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>`)",
+                bi.name, name
+            )));
         }
         let idx = bi.tape_index.ok_or_else(|| {
             CompileError::Unsupported(format!(
@@ -768,43 +748,7 @@ fn build_builtin<T: Transcendental>(
         Some(
             BuiltinFactoryKind::MultichannelBlock | BuiltinFactoryKind::ResourceMultichannelBlock,
         ) => {
-            let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(entry) =
-                registry.get(&bi.name)
-            {
-                if is_resource {
-                    let res = bi.resource.as_deref().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource name",
-                            bi.name
-                        ))
-                    })?;
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_multichannel_block(
-                            bi.signal_ins,
-                            &bi.params,
-                            sample_rate,
-                            reg,
-                            res,
-                            allocator,
-                        )
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
-                                bi.name
-                            ))
-                        })?
-                } else {
-                    entry
-                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate, allocator)
-                        .expect("registry build_multichannel_block failed")
-                }
-            } else if let Some(ffi) = foreign {
+            let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(ffi) = foreign {
                 if ffi_is_resource {
                     let (w, r) = resolve_tape(bi)?;
                     ffi.build_resource_multichannel_block(
@@ -847,34 +791,7 @@ fn build_builtin<T: Transcendental>(
             Ok(BuiltinInst::MultichannelBlock(b))
         }
         Some(BuiltinFactoryKind::Block | BuiltinFactoryKind::ResourceBlock) | None => {
-            let mut b: Box<dyn BlockBuiltin<T>> = if let Some(entry) = registry.get(&bi.name) {
-                if is_resource {
-                    let res = bi.resource.as_deref().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource name",
-                            bi.name
-                        ))
-                    })?;
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_block(&bi.params, sample_rate, reg, res, allocator)
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
-                                bi.name
-                            ))
-                        })?
-                } else {
-                    entry
-                        .build_block(&bi.params, sample_rate, allocator)
-                        .expect("registry build_block failed for block builtin")
-                }
-            } else if let Some(ffi) = foreign {
+            let mut b: Box<dyn BlockBuiltin<T>> = if let Some(ffi) = foreign {
                 if ffi_is_resource {
                     let (w, r) = resolve_tape(bi)?;
                     ffi.build_resource_block(&bi.name, &bi.params, sample_rate, w, r, allocator)

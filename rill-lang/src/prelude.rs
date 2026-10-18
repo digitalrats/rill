@@ -4,7 +4,7 @@
 //! use rill_lang::prelude::*;
 //! ```
 
-pub use crate::builtin::{BuiltinKind, Registry};
+pub use crate::builtin::BuiltinKind;
 pub use crate::compile;
 pub use crate::compile_eval;
 pub use crate::error::{CompileError, Span};

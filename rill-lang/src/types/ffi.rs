@@ -1,8 +1,8 @@
 //! FFI signature descriptors: the language-side contract for foreign builtins.
 //!
 //! A `foreign name : TypeExpr;` declaration is converted into an [`FfiSig`]
-//! — a flat list of parameter descriptors consumed by inference, lowering and
-//! graph reconstruction. `FixedBuffer a` is the signal-channel type; scalars are
+//! — a flat list of parameter descriptors consumed by inference and lowering.
+//! `FixedBuffer a` is the signal-channel type; scalars are
 //! compile-time params; `Tape a` is a shared-buffer resource handle.
 
 use crate::ast::TypeExpr;
@@ -32,8 +32,8 @@ pub struct FfiSig {
     pub params: Vec<FfiParam>,
     /// Number of signal output channels (result `FixedBuffer`s).
     pub signal_outs: usize,
-    /// Display names of the scalar params in declaration order (graph
-    /// reconstruction orders a node's params by these). Filled from the
+    /// Display names of the scalar params in declaration order (host tooling
+    /// addresses a built-in's scalar params by these names). Filled from the
     /// catalog-backed name table ([`foreign_param_names`]); a name absent from
     /// the table falls back to index names (`param0`, `param1`, …).
     pub param_names: Vec<String>,
@@ -92,8 +92,7 @@ pub(crate) fn foreign_record_defaults(type_name: &str, field_name: &str) -> Opti
 
 /// The catalog-backed scalar-param display names, mirroring the legacy
 /// `BuiltinSig::param_names` registrations (verified against each crate's
-/// `with_names` calls). Graph reconstruction consumes these to match GraphSpec
-/// node params to FFI arg positions by name.
+/// `with_names` calls).
 ///
 /// A name missing from this table falls back to index names in
 /// [`ffi_sig_from_typeexpr`].

@@ -66,8 +66,8 @@ impl Algorithm<f32> for SineOsc {
 
 impl BlockBuiltin<f32> for SineOsc {}
 
-/// Registry with a real `sine` block builtin, returning the shared call counter
-/// alongside the registry.
+/// A `ForeignRegistry` with a real `sine` block builtin, returning the shared
+/// call counter alongside the registry.
 fn sine_registry() -> (ForeignRegistry<f32>, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut registry = ForeignRegistry::<f32>::new();

@@ -3,7 +3,7 @@
 use rill_core::math::Transcendental;
 use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::{ParamValue, ProcessResult};
-use rill_lang::builtin::{BlockBuiltin, Registry};
+use rill_lang::builtin::BlockBuiltin;
 
 fn pv_f32(v: &ParamValue) -> f32 {
     match v {
@@ -104,34 +104,8 @@ impl<T: Transcendental> BlockBuiltin<T> for ConvolverBuiltin<T> {
     }
 }
 
-/// Register FFT processing builtins in the rill-lang registry.
-pub fn register_fft_builtins<T: Transcendental>(reg: &mut Registry<T>) {
-    reg.register_block("spectralgate", |p, _sr, _alloc| {
-        let mut gate = crate::effects::spectral_gate::SpectralGate::<T, 64>::new();
-        gate.set_threshold(T::from_f64(p[0]));
-        gate.set_ratio(p[1] as f32);
-        Box::new(SpectralGateBuiltin { inner: gate })
-    });
-    reg.register_block("spectraldelay", |p, _sr, _alloc| {
-        let mut delay = crate::effects::spectral_delay::SpectralDelay::<T, 64, 16>::new();
-        delay.set_mix(p[0] as f32);
-        delay.set_feedback(p[1] as f32);
-        Box::new(SpectralDelayBuiltin { inner: delay })
-    });
-    reg.register_block("convolver", |p, _sr, _alloc| {
-        let ir_gain = p[0] as f32;
-        let mix = p[1] as f32;
-        let conv = crate::partitioned_conv::PartitionedConvolver::<T, 64>::new(4096);
-        Box::new(ConvolverBuiltin {
-            inner: conv,
-            ir_gain,
-            mix,
-        })
-    });
-}
-
 /// Register the FFT builtins (spectralgate/spectraldelay/convolver) as FFI
-/// factories. Call this on the `ForeignRegistry` you pass to `compile_with_ffi`.
+/// factories. Call this on the `ForeignRegistry` you pass to `compile`.
 pub fn register_foreign_fft<T: Transcendental + 'static>(
     ffi: &mut rill_lang::ffi::ForeignRegistry<T>,
 ) {

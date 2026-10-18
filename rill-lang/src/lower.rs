@@ -739,7 +739,7 @@ struct Lowerer<'a> {
     /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
     /// the AST. A resource param's `Ref(name)` resolves to the capacity here to
     /// assign a tape index; a `Ref` NOT present stays a name-based resource
-    /// binding (the graph duplex path's externally-shared registry).
+    /// binding, which seating rejects as an undeclared resource.
     tape_decls: HashMap<String, usize>,
     /// Span (`start`, `end`) of every real-`ST` `runST` application → the
     /// region's payload type `a`, from inference. Lowering has no substitution,
@@ -6718,9 +6718,9 @@ impl<'a> Lowerer<'a> {
                                     let src = if pos >= call_args.len() {
                                         // Combinator-fed signal: no explicit
                                         // call arg — bind the next wiring
-                                        // register (the graph-reconstruct
-                                        // `(_, _) :> dry_wet` style feeds the
-                                        // channels via the combinator).
+                                        // register (the `(_, _) :> dry_wet`
+                                        // style feeds the channels via the
+                                        // combinator).
                                         if signal_index >= args.len() {
                                             return Err(CompileError::Type {
                                                 msg: format!(
@@ -6769,9 +6769,8 @@ impl<'a> Lowerer<'a> {
                                     signal_index += end.saturating_sub(pos);
                                     // Any remaining wiring registers are the
                                     // combinator-fed signal channels (the
-                                    // graph-reconstruct `(_, _) :> mixer` style
-                                    // feeds the channels via `Merge`, not as
-                                    // explicit call args).
+                                    // `(_, _) :> mixer` style feeds the channels
+                                    // via `Merge`, not as explicit call args).
                                     while signal_index < args.len() {
                                         signal_srcs.push(args[signal_index]);
                                         signal_index += 1;
@@ -6958,8 +6957,8 @@ impl<'a> Lowerer<'a> {
                                     // new DSL path resolves both to a tape INDEX
                                     // (the program's `Vec<SharedCell>`); a `Ref`
                                     // absent from the declared-tape map stays a
-                                    // name-based resource binding (the graph
-                                    // duplex path's externally-shared registry).
+                                    // name-based resource binding, which seating
+                                    // rejects as an undeclared resource.
                                     match &call_args[pos] {
                                         Expr::Ref(res_name, _) => {
                                             match self.tape_decls.get(res_name.as_str()) {

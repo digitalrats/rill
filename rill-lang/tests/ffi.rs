@@ -546,8 +546,7 @@ fn builtin_catalog_registers_record_data_types() {
 #[test]
 fn ffi_sig_param_names_filled_from_catalog_table() {
     // The name table (mirroring legacy `BuiltinSig::param_names`) supplies
-    // display names for scalar params in declaration order — reconstruct
-    // consumes them to order GraphSpec node params.
+    // display names for scalar params in declaration order.
     use rill_lang::ast::TypeExpr;
     use rill_lang::types::ffi::ffi_sig_from_typeexpr;
 
@@ -912,7 +911,7 @@ fn eq_parametric_ffi_end_to_end() {
 fn foreign_param_names_never_fallback_to_index_for_catalog() {
     // Follow-up C: every catalog builtin with scalar params must have real
     // display names — a missed `foreign_param_names` entry would silently fall
-    // back to param0/param1 and corrupt graph reconstruction's param ordering.
+    // back to param0/param1 and corrupt the param ordering.
     use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 
     let env = TypeEnv::with_builtins();
