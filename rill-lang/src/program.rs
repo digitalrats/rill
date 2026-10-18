@@ -130,6 +130,55 @@ impl StreamHandle {
     }
 }
 
+/// Caller-supplied configuration for a [`WorldState`].
+///
+/// The config carries **policy and external wiring only — no storage sizes**.
+/// Every structural size is read from the compiled [`Ir`] at
+/// [`seat`](WorldState::seat) time (the register store from
+/// `ir.num_value_regs + ir.max_call_regs`, block state from
+/// `ir.state.block_state_slots`, the buffer table from `ir.num_buffers`, the
+/// arena from `ir.value_state.capacity`), so a world can never be sized by a
+/// guess that disagrees with the program it runs.
+///
+/// [`Default`] carries the caller-independent policy: arena growth follows the
+/// `growable-arena` crate feature, no FFI registry is attached, and the
+/// parameter bag is empty.
+pub struct WorldConfig<T: Transcendental> {
+    /// Whether the value arena and its payload-buffer pool may append pages
+    /// when a run outgrows the IR's build-time bound.
+    ///
+    /// `false` keeps the bound hard: an overrun latches a `ProcessError`
+    /// (RT-safe). `true` is the non-RT interpreter policy (a long-running
+    /// world does not fail on a program that merely exceeds its build-time
+    /// estimate). The default follows the `growable-arena` crate feature, so a
+    /// default-config world behaves exactly as the feature-gated build did
+    /// before the policy became per-world.
+    pub growable: bool,
+    /// The built-in factory registry as a world-owned value.
+    ///
+    /// Built-in resolution moves onto this field when the world takes
+    /// ownership of the registry; until then [`WorldState::seat`] still
+    /// receives the registry as an argument, and this field only records the
+    /// caller's configuration.
+    pub ffi: Option<crate::ffi::ForeignRegistry<T>>,
+    /// The world's parameter bag (`sample_rate` + named parameters).
+    ///
+    /// The positional parameter store is still what the interpreter reads;
+    /// this field carries the caller's intended seed until the parameter store
+    /// itself becomes [`rill_core::Params`].
+    pub params: rill_core::Params,
+}
+
+impl<T: Transcendental> Default for WorldConfig<T> {
+    fn default() -> Self {
+        Self {
+            growable: cfg!(feature = "growable-arena"),
+            ffi: None,
+            params: rill_core::Params::default(),
+        }
+    }
+}
+
 /// The runtime realization of `realWorld`: **all** mutable runtime state.
 ///
 /// `main : IO ()` threads the opaque `World` token for ordering only; the state
@@ -142,6 +191,8 @@ impl StreamHandle {
 /// (`stdout`/`stderr`) so tests and drivers can assert on it, and injects the
 /// console input (`stdin`).
 pub struct WorldState<T: Transcendental, const BUF: usize> {
+    /// The caller-supplied configuration this world was created with.
+    pub(crate) config: WorldConfig<T>,
     /// The memory-stream table. A stream handle's payload indexes this table
     /// (offset by [`STREAM_HANDLE_TAG`]); slots 0, 1 and 2 are
     /// `stdout`/`stderr`/`stdin`.
@@ -234,10 +285,11 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// The table order fixes the stdio handle slots: 0 = `stdout`
     /// (`STDOUT_HANDLE`), 1 = `stderr` (`STDERR_HANDLE`), 2 = `stdin`
     /// (`STDIN_HANDLE`). The IR-derived state (delays, buffers, registers,
-    /// parameter store, arena) is filled in by `RillProgram::build`; a world
+    /// parameter store, arena) is filled in by [`seat`](Self::seat); a world
     /// built here alone is the degenerate zero-program world.
-    pub fn new() -> Self {
+    pub fn new(config: WorldConfig<T>) -> Self {
         Self {
+            config,
             streams: vec![
                 StreamHandle::Stdout,
                 StreamHandle::Stderr,
@@ -272,11 +324,231 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
             st_cells: Vec::new(),
         }
     }
+
+    /// The configuration this world was created with.
+    pub fn config(&self) -> &WorldConfig<T> {
+        &self.config
+    }
+
+    /// Number of pre-allocated value registers: the program's own registers
+    /// (`ir.num_value_regs`) plus the function-call scratch
+    /// (`ir.max_call_regs`). Exposed for layout inspection (tests, tooling).
+    pub fn value_regs_len(&self) -> usize {
+        self.value_regs.len()
+    }
+
+    /// Number of block-feedback slots (`ir.state.block_state_slots`).
+    pub fn block_state_len(&self) -> usize {
+        self.block_state.len()
+    }
+
+    /// Number of program-level signal buffers (`ir.num_buffers`).
+    pub fn buffers_len(&self) -> usize {
+        self.buffers.len()
+    }
+
+    /// Seat this world for `ir`: assemble every structural table the program
+    /// needs, resolving built-ins against `foreign`.
+    ///
+    /// The seat is the code-meets-memory boundary. It reads **only** the IR's
+    /// layout (register store, block state, buffer table, tapes, delay sites,
+    /// arena capacity, parameter declarations) and applies the world's
+    /// [`growable`](WorldConfig::growable) memory policy; no storage size comes
+    /// from configuration. An unresolvable built-in name is a [`CompileError`]
+    /// here — before any run can reach an effect.
+    ///
+    /// An empty legacy [`Registry`](crate::builtin::Registry) is used: the
+    /// public seat resolves built-ins from `foreign` only (the legacy registry
+    /// survives on [`RillProgram::new_with`] until it is deleted).
+    ///
+    /// Re-seating is supported: the structural tables (and the arena) are
+    /// re-sized to the new IR, the value-track bookkeeping is cleared, and the
+    /// console/stdout/stderr state is left untouched. Seating the same IR twice
+    /// yields the same layout, but a re-seat invalidates value refs from an
+    /// earlier run (`result()` returns `None` afterwards) and re-seeds the
+    /// declared parameter defaults.
+    pub fn seat(
+        &mut self,
+        ir: &Ir,
+        foreign: &crate::ffi::ForeignRegistry<T>,
+        sample_rate: f32,
+    ) -> Result<(), CompileError> {
+        self.seat_with(
+            ir,
+            &crate::builtin::Registry::<T>::new(),
+            Some(foreign),
+            None,
+            sample_rate,
+        )
+    }
+
+    /// The seat implementation shared with the legacy [`RillProgram`]
+    /// constructors, which still resolve built-ins against a caller-supplied
+    /// [`Registry`](crate::builtin::Registry) and may pass a resource registry.
+    ///
+    /// `foreign` stays `Option` so `new_with(…, None)` keeps reporting an
+    /// unresolved name as "unknown built-in" exactly as before.
+    pub(crate) fn seat_with(
+        &mut self,
+        ir: &Ir,
+        registry: &crate::builtin::Registry<T>,
+        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
+        mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+        sample_rate: f32,
+    ) -> Result<(), CompileError> {
+        // One shared cell per `tape_loop <capacity>` call (indexed by
+        // `BuiltinInstance::tape_index`). Tape heads referencing the same index
+        // get writer/reader handles over the same cell. The cells are local to
+        // assembly: the handles the heads hold are `Rc` clones into these
+        // cells and keep the buffers alive, so the program itself stays `Send`.
+        let tapes: Vec<SharedCell<T>> = ir
+            .tapes
+            .iter()
+            .map(|&cap| {
+                let tape = rill_core::buffer::TapeLoop::<T>::new(cap).ok_or_else(|| {
+                    CompileError::Unsupported(format!("tape_loop capacity must be > 0 (got {cap})"))
+                })?;
+                Ok(SharedCell::new(Box::new(tape)))
+            })
+            .collect::<Result<_, CompileError>>()?;
+        // Carve the delay sites first so the allocator is available to
+        // built-in factories below.
+        let (delays, mut allocator) = Self::alloc_delays(ir);
+        // Build every built-in before committing anything, so a failed seat
+        // leaves the previous seat's state intact.
+        let mut builtins = Vec::with_capacity(ir.builtins.len());
+        for bi in &ir.builtins {
+            builtins.push(build_builtin(
+                bi,
+                registry,
+                foreign,
+                &mut resources,
+                &tapes,
+                sample_rate,
+                Some(&mut allocator),
+            )?);
+        }
+        self.delays = delays;
+        self.builtins = builtins;
+        self.fill_layout(ir);
+        Ok(())
+    }
+
+    /// Size the IR-derived structural tables (everything the seat owns except
+    /// the tapes, delay sites and built-in instances built from the
+    /// allocator).
+    fn fill_layout(&mut self, ir: &Ir) {
+        // A seat (re)defines the whole value track. Refs from an earlier
+        // seat/run belong to the arena replaced below, so the bookkeeping is
+        // cleared wholesale instead of ref-by-ref.
+        self.main = None;
+        self.value_error = None;
+        self.value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
+        self.value_regs_top = ir.num_value_regs;
+        self.value_state = vec![None; ir.value_state.value_state_slots];
+        self.cell_stack.clear();
+        self.frag_cells = Vec::with_capacity(max_frag_cells(ir));
+        self.frag_cells_base = 0;
+        self.drops_scratch = Vec::with_capacity(max_drops(ir));
+        self.regions.clear();
+        self.st_cells.clear();
+        self.block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        self.block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        self.block_len = 0;
+        self.buffers = Self::alloc_buffers(ir);
+        self.params_meta = ir.params.clone();
+        let params: Vec<ParamValue> = ir
+            .params
+            .iter()
+            .map(|p| ParamValue::Float(p.default as f32))
+            .collect();
+        self.params_dirty = vec![false; params.len()];
+        self.params = params;
+        // The arena is sized EXACTLY from the IR's build-time capacity bound
+        // (computed during lowering); the page door appends pages only when a
+        // run outgrows it and the world's `growable` policy allows it.
+        let mut arena = Arena::with_capacity(ir.value_state.capacity);
+        arena.pool = BufferPool::new(ir.value_state.buffer_budget, self.config.growable);
+        self.arena = arena;
+    }
+
+    /// Carve the program-level buffer table out of a fresh region allocator:
+    /// one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers` (each
+    /// `Value::Buffer` index). Chunk capacity is `BUF` rounded up to a power of
+    /// two, so every handle fits within a single chunk (non-spanning). Memory
+    /// is static with program lifetime (SP-4 Tier-1); a tick never touches the
+    /// allocator.
+    fn alloc_buffers(ir: &Ir) -> Vec<RegionHandle<T>> {
+        let n = ir.num_buffers;
+        if n == 0 {
+            return Vec::new();
+        }
+        let chunk_cap = BUF.max(1).next_power_of_two();
+        let mut allocator = BufferAllocator::new(n * BUF, chunk_cap, T::ZERO);
+        (0..n)
+            .map(|_| {
+                allocator
+                    .allocate(BUF)
+                    .expect("buffer table carve exceeds build-time budget")
+            })
+            .collect()
+    }
+
+    /// Carve the `@` delay sites out of a fresh region allocator.
+    ///
+    /// The allocator is sized from the sum of delay lengths; its chunk capacity
+    /// is the largest delay length rounded up to a power of two, so every
+    /// handle fits within a single chunk (non-spanning). The allocator grows
+    /// on demand at build time.
+    fn alloc_delays(ir: &Ir) -> (Vec<RegionDelay<T>>, BufferAllocator<T>) {
+        let total: usize = ir.state.delay_lens.iter().sum();
+        let max_delay = ir.state.delay_lens.iter().copied().max().unwrap_or(1);
+        let chunk_cap = max_delay.max(1).next_power_of_two();
+        let mut allocator = BufferAllocator::new(total.max(1), chunk_cap, T::ZERO);
+        let delays = ir
+            .state
+            .delay_lens
+            .iter()
+            .map(|&l| {
+                let buf = allocator.allocate(l).unwrap_or_else(|| {
+                    allocator.grow(T::ZERO);
+                    allocator
+                        .allocate(l)
+                        .expect("allocator must satisfy a delay request after growth")
+                });
+                RegionDelay::new(buf)
+            })
+            .collect();
+        (delays, allocator)
+    }
+}
+
+/// Upper bound on the shared fragment capture-cell store: the worst-case call
+/// stack holds one frame per fragment (recursion is rejected), and each frame
+/// needs at most its fragment's capture cells, so the sum over all fragments
+/// bounds the deepest nesting.
+fn max_frag_cells(ir: &Ir) -> usize {
+    ir.fragments
+        .iter()
+        .map(|f| f.num_capture_cells)
+        .sum::<usize>()
+}
+
+/// Upper bound on the shared deferred-drop scratch: the deepest call stack
+/// queues at most one drop per value instruction of each frame, so the sum over
+/// the main track and every fragment's instructions is a strict bound.
+fn max_drops(ir: &Ir) -> usize {
+    let instrs = |b: &ValueBlock| b.instrs.len();
+    ir.value_blocks.iter().map(instrs).sum::<usize>()
+        + ir.fragments
+            .iter()
+            .map(|f| f.value_blocks.iter().map(instrs).sum::<usize>())
+            .sum::<usize>()
 }
 
 impl<T: Transcendental, const BUF: usize> Default for WorldState<T, BUF> {
     fn default() -> Self {
-        Self::new()
+        Self::new(WorldConfig::default())
     }
 }
 
@@ -577,33 +849,12 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
     /// and builds the execution schedule. Built-ins are NOT instantiated — use
     /// [`new_with`](Self::new_with) if the IR references built-in functions.
     pub fn new(ir: Ir) -> Self {
-        let mut world = WorldState::new();
-        world.block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        world.block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let (delays, _allocator) = Self::alloc_delays(&ir);
+        let mut world = WorldState::<T, BUF>::new(WorldConfig::default());
+        // Built-ins are not instantiated here, so the delay sites need no
+        // allocator hand-off to the factories below (`seat` does that).
+        let (delays, _allocator) = WorldState::<T, BUF>::alloc_delays(&ir);
         world.delays = delays;
-        world.buffers = Self::alloc_buffers(&ir);
-        world.params_meta = ir.params.clone();
-        let params: Vec<ParamValue> = ir
-            .params
-            .iter()
-            .map(|p| ParamValue::Float(p.default as f32))
-            .collect();
-        world.params_dirty = vec![false; params.len()];
-        world.params = params;
-        let mut arena = Arena::with_capacity(ir.value_state.capacity);
-        arena.pool = BufferPool::new(
-            ir.value_state.buffer_budget,
-            cfg!(feature = "growable-arena"),
-        );
-        world.arena = arena;
-        // Pre-allocate the value-register store: the program's own registers
-        // plus the function-call scratch (see `Ir::max_call_regs`).
-        world.value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
-        world.value_regs_top = ir.num_value_regs;
-        world.value_state = vec![None; ir.value_state.value_state_slots];
-        world.frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
-        world.drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
+        world.fill_layout(&ir);
         Self { ir, world }
     }
 
@@ -643,148 +894,17 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         ir: Ir,
         registry: &crate::builtin::Registry<T>,
         sample_rate: f32,
-        mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
+        resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
         foreign: Option<&crate::ffi::ForeignRegistry<T>>,
     ) -> Result<Self, CompileError> {
-        // Allocate one shared cell per `tape_loop <capacity>` call (indexed by
-        // `BuiltinInstance::tape_index`). Tape heads referencing the same index
-        // get writer/reader handles over the same cell. The cells are LOCAL to
-        // assembly: the `SharedWriter`/`SharedReader` handles held by the tape
-        // heads are `Rc` clones into these cells and keep the buffers alive,
-        // so the program itself stays `Send` (rill buffers are single-threaded
-        // and must not be transferred between threads).
-        let tapes: Vec<SharedCell<T>> = ir
-            .tapes
-            .iter()
-            .map(|&cap| {
-                let tape = rill_core::buffer::TapeLoop::<T>::new(cap).ok_or_else(|| {
-                    CompileError::Unsupported(format!("tape_loop capacity must be > 0 (got {cap})"))
-                })?;
-                Ok(SharedCell::new(Box::new(tape)))
-            })
-            .collect::<Result<_, CompileError>>()?;
-        // Carve the delay sites first so the allocator is available to
-        // built-in factories below.
-        let mut world = WorldState::new();
-        let (delays, mut allocator) = Self::alloc_delays(&ir);
-        world.delays = delays;
-        world.builtins.reserve(ir.builtins.len());
-        for bi in &ir.builtins {
-            let b = build_builtin(
-                bi,
-                registry,
-                foreign,
-                &mut resources,
-                &tapes,
-                sample_rate,
-                Some(&mut allocator),
-            )?;
-            world.builtins.push(b);
-        }
-
-        world.block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        world.block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        world.buffers = Self::alloc_buffers(&ir);
-        world.params_meta = ir.params.clone();
-        let params: Vec<ParamValue> = ir
-            .params
-            .iter()
-            .map(|p| ParamValue::Float(p.default as f32))
-            .collect();
-        world.params_dirty = vec![false; params.len()];
-        world.params = params;
-        let mut arena = Arena::with_capacity(ir.value_state.capacity);
-        arena.pool = BufferPool::new(
-            ir.value_state.buffer_budget,
-            cfg!(feature = "growable-arena"),
-        );
-        world.arena = arena;
-        // Pre-allocate the value-register store: the program's own registers
-        // plus the function-call scratch (see `Ir::max_call_regs`).
-        world.value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
-        world.value_regs_top = ir.num_value_regs;
-        world.value_state = vec![None; ir.value_state.value_state_slots];
-        world.frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
-        world.drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
+        let mut world = WorldState::<T, BUF>::new(WorldConfig::default());
+        world.seat_with(&ir, registry, foreign, resources, sample_rate)?;
         Ok(Self { ir, world })
     }
 
     /// Swap the double-buffered block feedback state at the end of a tick.
     pub(crate) fn swap_block_state(&mut self) {
         self.world.swap_block_state();
-    }
-
-    /// Carve the program-level buffer table out of a fresh region allocator:
-    /// one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers` (each
-    /// `Value::Buffer` index). Chunk capacity is `BUF`
-    /// rounded up to a power of two, so every handle fits within a single chunk
-    /// (non-spanning). Memory is static with program lifetime (SP-4 Tier-1);
-    /// a tick never touches the allocator.
-    fn alloc_buffers(ir: &Ir) -> Vec<RegionHandle<T>> {
-        let n = ir.num_buffers;
-        if n == 0 {
-            return Vec::new();
-        }
-        let chunk_cap = BUF.max(1).next_power_of_two();
-        let mut allocator = BufferAllocator::new(n * BUF, chunk_cap, T::ZERO);
-        (0..n)
-            .map(|_| {
-                allocator
-                    .allocate(BUF)
-                    .expect("buffer table carve exceeds build-time budget")
-            })
-            .collect()
-    }
-
-    /// Carve the `@` delay sites out of a fresh region allocator.
-    ///
-    /// The allocator is sized from the sum of delay lengths; its chunk capacity
-    /// is the largest delay length rounded up to a power of two, so every
-    /// handle fits within a single chunk (non-spanning). The allocator grows
-    /// on demand at build time.
-    fn alloc_delays(ir: &Ir) -> (Vec<RegionDelay<T>>, BufferAllocator<T>) {
-        let total: usize = ir.state.delay_lens.iter().sum();
-        let max_delay = ir.state.delay_lens.iter().copied().max().unwrap_or(1);
-        let chunk_cap = max_delay.max(1).next_power_of_two();
-        let mut allocator = BufferAllocator::new(total.max(1), chunk_cap, T::ZERO);
-        let delays = ir
-            .state
-            .delay_lens
-            .iter()
-            .map(|&l| {
-                let buf = allocator.allocate(l).unwrap_or_else(|| {
-                    allocator.grow(T::ZERO);
-                    allocator
-                        .allocate(l)
-                        .expect("allocator must satisfy a delay request after growth")
-                });
-                RegionDelay::new(buf)
-            })
-            .collect();
-        (delays, allocator)
-    }
-
-    /// Upper bound on the shared fragment capture-cell store: the worst-case
-    /// call stack holds one frame per fragment (recursion is rejected), and
-    /// each frame needs at most its fragment's capture cells, so the sum over
-    /// all fragments bounds the deepest nesting.
-    fn max_frag_cells(ir: &Ir) -> usize {
-        ir.fragments
-            .iter()
-            .map(|f| f.num_capture_cells)
-            .sum::<usize>()
-    }
-
-    /// Upper bound on the shared deferred-drop scratch: the deepest call stack
-    /// queues at most one drop per value instruction of each frame, so the sum
-    /// over the main track and every fragment's instructions is a strict bound.
-    fn max_drops(ir: &Ir) -> usize {
-        let instrs = |b: &ValueBlock| b.instrs.len();
-        ir.value_blocks.iter().map(instrs).sum::<usize>()
-            + ir.fragments
-                .iter()
-                .map(|f| f.value_blocks.iter().map(instrs).sum::<usize>())
-                .sum::<usize>()
     }
 
     /// Release this run's per-run value registers.
