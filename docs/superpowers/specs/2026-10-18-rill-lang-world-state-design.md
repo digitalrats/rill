@@ -1,6 +1,6 @@
 # rill-lang: WorldState as the single execution state — external world, IR/world separation
 
-Status: design (awaiting builder check)
+Status: design (builder check complete — awaiting user approval)
 Date: 2026-10-18
 Branch: `feature/rill-lang-arrays`
 Related:
@@ -125,6 +125,26 @@ foundation for rill-analyzer introspection of the live world.
    a separate spec + plan **on top of** the in-flight single-run plan; the
    remaining tasks of that plan are re-expressed against this architecture
    (most notably its `test_eval`/`RillProgram`/runner surface).
+9. **The params map is `rill_core::Params` — no new type.** The world's
+   named-value map is literally the existing `Params` (`param.rs:433`):
+   `sample_rate: f32` field + `parameters: HashMap<String, ParamValue>`, with
+   `get`/`insert`/`remove`/`contains`/`get_f32`, and its companion
+   `ParameterWrite` trait (`write_parameter(name, value)` /
+   `read_parameter(name)`). `Params` is the **shared param bag of the whole
+   ecosystem**, not a rill-lang invention: the identical type feeds
+   `GraphBuilder::add_node(type, &Params)` (`graph/builder.rs:91`), graph
+   serialization (`HashMap<String, ParamValue>`), and
+   `AutomatonFactory::construct(id, &Params, &ServoTarget)` and `spawn_async`
+   (rill-patchbay `automaton/factory.rs`); automatons step on `ParamValue`s
+   (`step(current: &ParamValue, …) -> ParamValue`) and servos emit
+   `CommandEnum::SetParameter { anchor, parameter: ParameterId, value }`.
+   As the user notes, `Params` was designed to work in tandem with the actor
+   model — the same model the `?name` DSL syntax came from. The world owns a
+   `Params`; `?name` reads and `set_param` writes it **by name**;
+   `param_index` (index plumbing) is gone. `?sample_rate` is the
+   `Params::sample_rate` field, not a separate world record and not a compile
+   parameter — a signal-aware world carries it, a world running no signal
+   program never touches it.
 
 ## The shape of the change
 
@@ -148,10 +168,12 @@ compile(defs…) ──▶ Ir (pure code; no runtime state)      ──▶ seat+
   (`Arena<Value>`), `value_regs`/`value_regs_top`, `block_state`/
   `block_state_next` (`FixedBuffer<T, BUF>`), `delays`, `buffers`
   (`Vec<RegionHandle<T>>`), `block_len`, `builtins: Vec<BuiltinInst<T>>` (the
-  instantiated runtime objects), `params`/`params_dirty`, `value_state`,
-  `cell_stack`, `frag_cells`/`frag_cells_base`, `drops_scratch`, `main`
-  (the captured result ref), `value_error`, `regions`, `st_cells`, streams/
-  stdio — **and the `ffi: ForeignRegistry<T>`** it resolves built-ins from.
+  instantiated runtime objects), `params: rill_core::Params` (`sample_rate` +
+  `HashMap<String, ParamValue>`, values only) alongside `params_dirty`,
+  `value_state`, `cell_stack`, `frag_cells`/`frag_cells_base`,
+  `drops_scratch`, `main` (the captured result ref), `value_error`, `regions`,
+  `st_cells`, streams/ stdio — **and the `ffi: ForeignRegistry<T>`** it
+  resolves built-ins from.
 
   `BUF` stays a const generic on the world because `block_state` uses
   `FixedBuffer<T, BUF>` (RT-safe fixed-size feedback); the *rest* of the world
@@ -168,7 +190,7 @@ fn seat(&mut self, ir: &Ir) -> Result<(), CompileError>
 ```
 
 What seat does is exactly today's `RillProgram::build` (`program.rs:627`), with
-two differences driven by the user's decisions:
+three differences driven by the user's decisions:
 
 1. **The arena is not sized from the IR.** Instead of
    `Arena::with_capacity(ir.value_state.capacity)` the world's arena starts at
@@ -181,6 +203,15 @@ two differences driven by the user's decisions:
    `foreign: Option<…>`; the legacy `Registry` path disappears with the in-flight
    plan's Task 14 deletion. An unresolvable built-in name is a `CompileError` at
    seat time (there is no registry at compile time anymore).
+3. **Params seed the world's `Params` by name — external pre-seed survives.**
+   `Ir::params` holds the *declarations* (`ParamDef`: name, default, min/max;
+   conflicting redeclaration is a compile-time error at `intern_param`,
+   `lower.rs:7104`). Seat walks them: a name already present in
+   `world.params.parameters` is **left untouched** (the caller pre-seeded it —
+   that is initial-state injection); a name absent from the map is inserted
+   with the declaration's default. `?name` reads and `set_param` writes
+   `world.params` by name at run time; `?sample_rate` reads
+   `world.params.sample_rate`.
 
 The *structural* tables are NOT guesses and are NOT world-config: `value_regs`
 is sized `ir.num_value_regs + ir.max_call_regs`, `block_state` is sized
@@ -202,7 +233,10 @@ builder decision (see *Left to the builder*).
   the world: push builtin params, set `block_len`, release the previous result
   ref, walk `ir.value_blocks` at base 0 (`run_blocks`), swap block state, force
   `value_regs[result_reg]` into `world.main`, drain drops, latch
-  `world.value_error`.
+  `world.value_error`. `ValueReadParam` (`interp.rs:1562`) no longer reads
+  `prog.params[idx]` — it resolves **by name** through `world.params`
+  (`read_parameter`/`get`), so a `set_param` written between two runs in the
+  same world is what the next run reads.
 - `run_main_io(ir, &mut world)` — today's `run_main_io` (`interp.rs:255`) moved
   onto the world: `exec_entry`, then the `unIO` projection, `WORLD_TOKEN`
   application, pair-force and the `main : IO ()` payload contract. The runner
@@ -217,25 +251,33 @@ need.
 ### The public surface
 
 - `WorldState` accessors (moved from `RillProgram`): `result()`,
-  `arena()`, `copy_buffer(r, dst)`, `param_index`/`set_param`/`param`/
-  `params_meta` (on the world so initial params can be set before a run and
-  read after), `inject_stdin`, `init`/`reset` (session teardown semantics).
+  `arena()`, `copy_buffer(r, dst)`, `set_param(name, value)` /
+  `param(name)` / `params_meta()` (on the world so initial params can be set
+  before a run and read after), `inject_stdin`, `init`/`reset` (session
+  teardown semantics). Addressing is **by name** — `set_param` writes
+  `world.params` (`insert` / `ParameterWrite::write_parameter`), `param` reads
+  it (`get` / `read_parameter`). `param_index` plumbing is removed.
   Whether metadata (`params_meta`) lives on the world or stays on `Ir` is a
   builder call (see below).
 - **Eval surface (compilation explicit):**
-  - `compile_eval(defs, expr, mode, sample_rate) -> Result<Ir, CompileError>` —
+  - `compile_eval(defs, expr, mode) -> Result<Ir, CompileError>` —
     builds `"{defs}\n__rill_eval = ({expr});"`, compiles through the existing
-    entry-name pipeline with the internal marker; no `main` gate.
+    entry-name pipeline with the internal marker; no `main` gate. No
+    `sample_rate` parameter — frequency, when a program reads `?sample_rate`,
+    comes from the world's `Params` at run time.
   - `test_eval(ir, &mut world) -> Result<(), CompileError>` — seats `ir` into
     `world`, runs `exec_entry`; a run `ProcessError` maps to
     `CompileError::Unsupported`. The run result and all live state are read from
     `world` afterwards.
-- **Runner surface:** `compile::<T, BUF>(src, ffi, sr) -> Result<ProgramRunner, CompileError>`
+- **Runner surface:** `compile::<T, BUF>(src, ffi) -> Result<ProgramRunner, CompileError>`
   (Complete mode default, `main : IO ()` gate on the `"main"` entry) creates a
   fresh `WorldState` from default config and seats the IR into it;
   `ProgramRunner { ir: Ir, world: WorldState }`; `run()` = `run_main_io(ir, world)`;
   console accessors (`stdout`/`stderr`) read `world.stdout`/`world.stderr`;
-  `set_stdin` delegates to `world.inject_stdin`. `RillProgram` is gone.
+  `set_stdin` delegates to `world.inject_stdin`. The caller who needs a specific
+  sample rate pre-seeds it on `world.params.sample_rate` (or supplies a
+  `WorldConfig`) before `run()` — the compiler never sees `sr`.
+  `RillProgram` is gone.
 - The `IO ()` gate: after lowering, in `compile`'s front-end, `if !ir.main_io_unit → Err`
   ("`main` must have type `IO ()`"). Pinned by the compile-gate tests.
 
@@ -268,6 +310,35 @@ need.
 - **Built-in existence is checked at seat time.** Tests that assert
   compile errors for unknown built-in names currently do so at assembly; under
   this spec the same error surfaces from `seat` (still before any effect runs).
+- **Params are addressed by name at run time.** `ValueReadParam`
+  (`interp.rs:1562`) currently reads `prog.params[idx]` — a positional index
+  into a `Vec<ParamValue>`. Under this spec the world's `Params` is the single
+  store and reads/writes go through name-keyed `get`/`insert`
+  (`Params`/`ParameterWrite`). The instruction may keep an IR-local index
+  into `Ir::params` (the `ParamDef` declaration table, which carries the name)
+  or carry the name directly — a builder decision for the plan; either way the
+  runtime store is the world's name-keyed map, so `set_param("cutoff", 0.3)`
+  between two runs is exactly what the second run reads.
+- **`smooth` computes its coefficient at run time.** The only lowering consumer
+  of the sample rate is `smooth` (`lower.rs:1944/6598`): instead of the compiler
+  baking `a = 1 − exp(−1/(τ·sr))` into the IR, the operator reads `?sample_rate`
+  at run time and computes the coefficient per run — the compiler never needs
+  `sr` again. Precedent: `lofi ?sr=44100` (`parser.rs:2395`).
+- **The world's `Params` is the same type the actor model writes through.**
+  `Params`/`ParameterWrite` (and `SetParameter` in `rill_core::queues`, which
+  rill-patchbay servos emit) already speak `ParamValue`s; a world backed by a
+  graph engine shares the same store. That is the seam rill-analyzer and
+  patchbay-facing control can later use to inspect or drive a live world.
+- **A world parameter is ecosystem-addressable by name, and the name
+  conventions on that boundary are `ParameterId`-validated.** The graph world
+  (`SetParameter.parameter: ParameterId`, `write_parameter(name, …)` names,
+  `ServoTarget.target_param: String`) validates names: ≤ 64 chars,
+  `[a-zA-Z][a-zA-Z0-9_.]*` (`rill-core/src/traits/param.rs:21`). The world's
+  `Params` itself accepts whatever the DSL produces (`?`-names are not
+  `ParameterId`-constrained today); when a world parameter routes into graph
+  construction or a `SetParameter`, the `ParameterId` rules apply at that
+  boundary — a future concern, noted so the world API does not paint itself
+  into a corner (e.g. by baking in index addressing).
 - **The `World` token stays opaque.** `IO a = { unIO: World -> Pair World a }`
   and the `WORLD_TOKEN` value are unchanged; only the *state behind* the token
   grows from streams to the whole world. The runner/`test_eval` never see the
@@ -285,6 +356,10 @@ need.
   `params_meta` lives on the world (for `params_meta()` inspection of a live
   world) or stays on `Ir` (lookup by name needs `ir.params`). Sensible default:
   expose on the world, sourced from the seat.
+- **How `ValueReadParam` names its target.** Keep the positional `idx` into
+  `Ir::params` (the name lives in `ParamDef`, so the seat binds name→value once)
+  or hoist the name into the instruction. Sensible default: keep `idx` — the
+  IR stays as-is and the world store remains name-keyed regardless.
 - **Ownership shape of the world** — plain `WorldState` field vs the current
   `Rc<RefCell<…>>` realization handle. Start from plain ownership; the plan
   should verify effect sites (`write`/`read`/`makeInputStream`/…) with
