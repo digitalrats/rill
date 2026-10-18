@@ -2102,6 +2102,139 @@ fn flat_assoc<T: Transcendental, const BUF: usize>(
     Ok((offset, fields[1]))
 }
 
+/// The run-time shape of an array's bounds — the interpreter-side mirror of the
+/// prelude `Ix` instances for the two supported index types (`Int`,
+/// `Pair Int Int`). Everything else is a clean "unsupported index type" fault
+/// (Q1): construction/update offsets are resolved HERE against the bounds
+/// shape instead of being computed in the language, so the supported surface is
+/// exactly the two prelude shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArrayShape {
+    /// One-dimensional: `bounds = Pair lo hi` over `Int` indices.
+    Dim1 { lo: i64, hi: i64 },
+    /// Row-major 2-D: `bounds = Pair (Pair lo1 lo2) (Pair hi1 hi2)`.
+    Dim2 {
+        lo1: i64,
+        lo2: i64,
+        hi1: i64,
+        hi2: i64,
+    },
+}
+
+/// Discriminate the bounds VALUE of an array (or construction bounds pair)
+/// into its shape. Each field is forced to WHNF before matching, so lazy
+/// bounds values in Complete mode read correctly. Any shape other than the two
+/// prelude index types is `Err` (a clean "unsupported index type" fault).
+fn array_shape<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    bounds: ArenaRef,
+    drops: &mut Vec<ArenaRef>,
+) -> Result<ArrayShape, &'static str> {
+    // Copy the two bound field refs out of the borrow before any `&mut world`
+    // call below.
+    let (b0, b1) = match world.arena.get(bounds) {
+        Some(Value::Record(fields)) if fields.len() == 2 => (fields[0], fields[1]),
+        _ => return Err("unsupported index type"),
+    };
+    let f0 = force(ir, world, b0, drops);
+    let f1 = force(ir, world, b1, drops);
+    // Dim1: both sides are plain `Int`s. Dim2: both sides are 2-field records
+    // of `Int`s (nested order: `lo = (lo1, lo2)`, `hi = (hi1, hi2)`).
+    match (world.arena.get(f0), world.arena.get(f1)) {
+        (Some(Value::Int(_)), Some(Value::Int(_))) => {
+            let (Some(lo), Some(hi)) = (
+                forced_i64(ir, world, f0, drops),
+                forced_i64(ir, world, f1, drops),
+            ) else {
+                return Err("unsupported index type");
+            };
+            Ok(ArrayShape::Dim1 { lo, hi })
+        }
+        (Some(Value::Record(lf)), Some(Value::Record(hf))) if lf.len() == 2 && hf.len() == 2 => {
+            // Copy the four nested field refs out of the borrow, then resolve.
+            let (lf0, lf1, hf0, hf1) = (lf[0], lf[1], hf[0], hf[1]);
+            let l1 = forced_i64(ir, world, lf0, drops);
+            let l2 = forced_i64(ir, world, lf1, drops);
+            let h1 = forced_i64(ir, world, hf0, drops);
+            let h2 = forced_i64(ir, world, hf1, drops);
+            let (Some(lo1), Some(lo2), Some(hi1), Some(hi2)) = (l1, l2, h1, h2) else {
+                return Err("unsupported index type");
+            };
+            Ok(ArrayShape::Dim2 { lo1, lo2, hi1, hi2 })
+        }
+        _ => Err("unsupported index type"),
+    }
+}
+
+impl ArrayShape {
+    /// The flat element count of the shape. The arithmetic wraps i64 exactly
+    /// like the language's unchecked `Ix` methods: an INVERTED bounds pair
+    /// yields a negative size, meaning a VALID EMPTY array (Q3); a huge
+    /// wrapping size is bounded by the arena capacity at construction.
+    fn size(&self) -> i64 {
+        match self {
+            ArrayShape::Dim1 { lo, hi } => hi.wrapping_sub(*lo).wrapping_add(1),
+            ArrayShape::Dim2 { lo1, lo2, hi1, hi2 } => hi1
+                .wrapping_sub(*lo1)
+                .wrapping_add(1)
+                .wrapping_mul(hi2.wrapping_sub(*lo2).wrapping_add(1)),
+        }
+    }
+
+    /// The flat offset of `index` under this shape, or `None` when the index is
+    /// OUT OF the bounded rectangle — checked BEFORE any arithmetic (Q3: an
+    /// out-of-rectangle cell with an accidentally in-range flat offset must
+    /// fault). Reproduces the prelude instances' `inRange`/`index` bodies
+    /// exactly.
+    ///
+    /// The index-typed `arrayUpdate`/`arrayAccum` arms (Task 3) call this for
+    /// every association; until then only the unit test below drives it.
+    #[allow(dead_code)]
+    fn offset<T: Transcendental, const BUF: usize>(
+        &self,
+        ir: &Ir,
+        world: &mut WorldState<T, BUF>,
+        index: ArenaRef,
+        drops: &mut Vec<ArenaRef>,
+    ) -> Option<i64> {
+        let i = forced_i64(ir, world, index, drops);
+        match (self, i) {
+            (ArrayShape::Dim1 { .. }, None) => None,
+            (ArrayShape::Dim1 { lo, hi }, Some(i)) => {
+                if *lo <= i && i <= *hi {
+                    Some(i.wrapping_sub(*lo))
+                } else {
+                    None
+                }
+            }
+            // A 2-D index is a `Pair i1 i2` record. Non-record / non-Int
+            // fields are simply out of the supported surface (=> `None`, so the
+            // caller reports an out-of-range / unsupported fault).
+            (ArrayShape::Dim2 { lo1, lo2, hi1, hi2 }, _) => {
+                let (x0, x1) = match world.arena.get(index) {
+                    Some(Value::Record(f)) if f.len() == 2 => (f[0], f[1]),
+                    _ => return None,
+                };
+                let i1 = forced_i64(ir, world, x0, drops);
+                let i2 = forced_i64(ir, world, x1, drops);
+                let (Some(i1), Some(i2)) = (i1, i2) else {
+                    return None;
+                };
+                if *lo1 <= i1 && i1 <= *hi1 && *lo2 <= i2 && i2 <= *hi2 {
+                    Some(
+                        i1.wrapping_sub(*lo1)
+                            .wrapping_mul(hi2.wrapping_sub(*lo2).wrapping_add(1))
+                            .wrapping_add(i2.wrapping_sub(*lo2)),
+                    )
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
 /// Whether `offset` is a valid flat index into an array of `len` elements.
 fn flat_index_in_range(offset: i64, len: usize) -> Option<usize> {
     usize::try_from(offset).ok().filter(|i| *i < len)
@@ -2811,6 +2944,81 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 _ = world.arena.copy(*e);
             }
             world.value_regs[dst] = alloc_owned(ir, world, Value::Array { bounds, elems });
+        }
+        ArraySeed => {
+            // arraySeed bounds init: build an array whose EVERY position is the
+            // given seed value. `size` claims on the same init ref are pooled
+            // (no per-position arena allocation; the array owns one ref per
+            // slot, released on drop). Inverted bounds give a VALID EMPTY
+            // array (Q3): `size <= 0` stores zero elements.
+            let Some(bounds) = world.value_regs[base + args[0]] else {
+                latch_fault(ir, world, "arraySeed: bounds operand is unbound");
+                world.value_regs[dst] = None;
+                return;
+            };
+            let shape = match array_shape(ir, world, bounds, drops) {
+                Ok(shape) => shape,
+                Err(why) => {
+                    latch_fault(ir, world, &format!("arraySeed: {why}"));
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
+            let size = shape.size();
+            let Some(init) = world.value_regs[base + args[1]] else {
+                latch_fault(ir, world, "arraySeed: seed operand is unbound");
+                world.value_regs[dst] = None;
+                return;
+            };
+            let mut elems = Vec::new();
+            if size > 0 {
+                let n = usize::try_from(size).unwrap_or(usize::MAX);
+                let mut buf = match world.arena.take_buf(n) {
+                    Ok(b) => b,
+                    Err(_) => {
+                        latch_exhaustion(ir, world, "value buffer pool");
+                        world.value_regs[dst] = None;
+                        return;
+                    }
+                };
+                let mut ok = true;
+                for _ in 0..n {
+                    match world.arena.copy(init) {
+                        Ok(r) => buf.push(r),
+                        Err(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    for r in &buf {
+                        world.arena.drop_ref(*r);
+                    }
+                    world.arena.put_buf(buf);
+                    latch_exhaustion(ir, world, "value arena capacity");
+                    world.value_regs[dst] = None;
+                    return;
+                }
+                elems = buf;
+            }
+            let Some(bounds) = copy_owned(ir, world, bounds) else {
+                for r in &elems {
+                    world.arena.drop_ref(*r);
+                }
+                world.arena.put_buf(elems);
+                world.value_regs[dst] = None;
+                return;
+            };
+            world.value_regs[dst] = alloc_owned(ir, world, Value::Array { bounds, elems });
+        }
+        ArrayFromAssocs => {
+            // Placeholder: the index-typed constructor is registered and fully
+            // replaces the prelude `array` in Task 3; until the shared lazy hole
+            // lands (Task 2) it latches a clean fault instead of producing a
+            // wrong array.
+            latch_fault(ir, world, "arrayFromAssocs: not implemented yet");
+            world.value_regs[dst] = None;
         }
         ArrayBounds => {
             // arrayBounds arr: a direct primitive read of the stored bounds
@@ -5925,6 +6133,55 @@ mod value_track_tests {
             "a fractional flat offset must not be truncated"
         );
         assert_eq!(forced_i64(&ir, &mut world, text, &mut drops), None);
+    }
+
+    #[test]
+    fn array_shape_size_and_offset_follow_the_prelude_ix_instances() {
+        // The interpreter-side shape mirror must reproduce the prelude `Ix Int`
+        // and `Ix (Pair Int Int)` bodies exactly (Sharing the shape helper).
+        let (ir, mut world) = prog_with(vec![], 0, 0, 0);
+        // Dim1 (0..=2): size 3; offset of 1 is 1; out-of-range 3 is None.
+        let dim1 = ArrayShape::Dim1 { lo: 0, hi: 2 };
+        assert_eq!(dim1.size(), 3);
+        let idx1 = world.arena.alloc(Value::Int(1)).unwrap();
+        let idx3 = world.arena.alloc(Value::Int(3)).unwrap();
+        let mut drops = Vec::new();
+        assert_eq!(dim1.offset(&ir, &mut world, idx1, &mut drops), Some(1));
+        assert_eq!(dim1.offset(&ir, &mut world, idx3, &mut drops), None);
+        // Dim2 ((0,0)..(2,1)): a 3x2 grid, size 6, row-major.
+        let dim2 = ArrayShape::Dim2 {
+            lo1: 0,
+            lo2: 0,
+            hi1: 2,
+            hi2: 1,
+        };
+        assert_eq!(dim2.size(), 6);
+        let (a, b) = (
+            world.arena.alloc(Value::Int(1)).unwrap(),
+            world.arena.alloc(Value::Int(1)).unwrap(),
+        );
+        let cell = world.arena.alloc(Value::Record(vec![a, b])).unwrap();
+        assert_eq!(
+            dim2.offset(&ir, &mut world, cell, &mut drops),
+            Some(3),
+            "row 1, column 1 of a 3x2 grid is flat offset 3"
+        );
+        // Out-of-rectangle cell whose FLAT offset lies in range: `(0, 2)` on
+        // `((0,0)..(2,1))` (the flat offset 2 is inside the 6-slot buffer, but
+        // column 2 exceeds the bounded rectangle).
+        let (c1, c2) = (
+            world.arena.alloc(Value::Int(0)).unwrap(),
+            world.arena.alloc(Value::Int(2)).unwrap(),
+        );
+        let bad = world.arena.alloc(Value::Record(vec![c1, c2])).unwrap();
+        assert_eq!(
+            dim2.offset(&ir, &mut world, bad, &mut drops),
+            None,
+            "the rectangle check fires before flat-offset arithmetic"
+        );
+        // Inverted bounds: a valid EMPTY array (size negative).
+        let empty = ArrayShape::Dim1 { lo: 4, hi: 2 };
+        assert!(empty.size() < 0);
     }
 
     #[test]

@@ -165,6 +165,48 @@ fn array_index_flat_out_of_range_is_a_clean_fault() {
 }
 
 #[test]
+fn array_seed_fills_every_position_with_the_same_value() {
+    // `arraySeed bounds init` is the M8 construction helper behind
+    // `accumArray`: every position receives the seed. Reading the flat elems
+    // back shows N copies of the seed.
+    let src = "main = arrayElems (arraySeed (Pair { first: 0, second: 2 }) 7.0);";
+    let prog = run(src);
+    assert_eq!(list_floats(&prog, &output(&prog)), vec![7.0, 7.0, 7.0]);
+}
+
+#[test]
+fn array_seed_on_a_matrix_shape_seeds_every_cell() {
+    // 2-D bounds `((0,0),(1,1))` — a 2x2 grid, row-major: four cells.
+    let src = "main = arrayElems (arraySeed (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 1 } }) 2.5);";
+    let prog = run(src);
+    assert_eq!(list_floats(&prog, &output(&prog)), vec![2.5, 2.5, 2.5, 2.5]);
+}
+
+#[test]
+fn array_seed_on_inverted_bounds_is_a_valid_empty_array() {
+    // `lo > hi` is a VALID EMPTY array (Q3): zero elements, no fault.
+    let src = "main = arrayElems (arraySeed (Pair { first: 0, second: -1 }) 1.0);";
+    let prog = run(src);
+    assert_eq!(list_floats(&prog, &output(&prog)), vec![]);
+    let src = "main = arrayBounds (arraySeed (Pair { first: 0, second: -1 }) 1.0);";
+    let prog = run(src);
+    let (lo, hi) = pair_values(&prog, &output(&prog));
+    assert_eq!(lo, Value::Int(0));
+    assert_eq!(hi, Value::Int(-1));
+}
+
+#[test]
+fn array_seed_rejects_an_unsupported_index_type() {
+    // Float bounds are not a prelude index shape: a clean fault (Q1).
+    let src = "main = arraySeed (Pair { first: 0.5, second: 2.0 }) 1.0;";
+    let msg = fault(src);
+    assert!(
+        msg.contains("arraySeed") && msg.contains("unsupported index type"),
+        "expected the unsupported index type fault, got: {msg}"
+    );
+}
+
+#[test]
 fn array_update_returns_a_new_array_and_leaves_the_original_unchanged() {
     // The updated array is observed FIRST, the original SECOND: an in-place
     // update would leak the new element into the original's read.

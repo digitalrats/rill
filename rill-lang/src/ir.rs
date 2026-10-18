@@ -157,6 +157,14 @@ pub enum ValueBuiltinOp {
     /// the `Ix` instance) latches a clean fault instead of building a
     /// mis-indexed array.
     ArrayFromListChecked,
+    /// Build an immutable array from its bounds and an index-typed
+    /// `List (Pair i e)` of associations: every unlisted position becomes one
+    /// shared lazy hole whose force latches a clean fault (Task 2 lands the
+    /// hole mechanism; the arm latches `not implemented yet` until then).
+    ArrayFromAssocs,
+    /// Build an immutable array whose every position is the given seed value:
+    /// `arraySeed bounds init`.
+    ArraySeed,
 }
 
 /// A value-track effect operation (the ST/region and IO-stream primitives).
@@ -1038,7 +1046,11 @@ mod value_builtin_tests {
             ValueBuiltinOp::ArrayAccum,
             ValueBuiltinOp::ArrayFromBuffer,
             ValueBuiltinOp::BufferFromArray,
+            ValueBuiltinOp::ListRange,
+            ValueBuiltinOp::ArrayFromListChecked,
+            ValueBuiltinOp::ArrayFromAssocs,
+            ValueBuiltinOp::ArraySeed,
         ];
-        assert_eq!(ops.len(), 30);
+        assert_eq!(ops.len(), 34);
     }
 }

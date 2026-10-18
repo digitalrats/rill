@@ -307,6 +307,19 @@ fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
     }
 }
 
+/// The `Pair i e` association-list element's SECOND type argument (the
+/// element type `e` of an index-typed `List (Pair i e)`), or the builtin `Int`
+/// when the argument is not a `Pair` (mirrors [`pair_index_ty`] but reads the
+/// value side of the pair).
+fn pair_second_ty(t: Option<&ValueTy>) -> ValueTy {
+    match t {
+        Some(ValueTy::App(name, inner)) | Some(ValueTy::Data(name, inner)) if name == "Pair" => {
+            inner.get(1).cloned().unwrap_or(ValueTy::Int)
+        }
+        _ => ValueTy::Int,
+    }
+}
+
 /// Structurally match a signature parameter type against the actual argument
 /// type, recording the signature's fresh variables (`Var(id)` from
 /// `signature_param_tys_conv`) in `out`. First binding wins; a mismatch binds
@@ -3813,6 +3826,8 @@ impl<'a> Lowerer<'a> {
             ("arrayAccum", 3) => ArrayAccum,
             ("arrayFromBuffer", 1) => ArrayFromBuffer,
             ("bufferFromArray", 1) => BufferFromArray,
+            ("arrayFromAssocs", 2) => ArrayFromAssocs,
+            ("arraySeed", 2) => ArraySeed,
             // `listRange (l, u)` — the inclusive Int range (the only
             // list-GENERATING primitive; `Ix.range` is built on it).
             ("listRange", 1) => ListRange,
@@ -3976,6 +3991,30 @@ impl<'a> Lowerer<'a> {
                     .get(1)
                     .and_then(list_type_args)
                     .and_then(|i| i.first().cloned());
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
+            // Index-typed construction ops: the bounds pair gives the index
+            // type `i`; `arrayFromAssocs` reads the element type off the
+            // association-list element's `Pair` (second half), `arraySeed` off
+            // its seed operand directly.
+            "arrayFromAssocs" => {
+                let index = pair_index_ty(args.first());
+                let elem = args
+                    .get(1)
+                    .and_then(list_type_args)
+                    .and_then(|i| i.first())
+                    .map(|first| pair_second_ty(Some(first)));
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
+            "arraySeed" => {
+                let index = pair_index_ty(args.first());
+                let elem = args.get(1).cloned();
                 Ok(ValueTy::App(
                     "Array".into(),
                     vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],

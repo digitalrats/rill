@@ -1329,6 +1329,16 @@ impl TypeEnv {
         //   arrayAccum     :: Array i e -> (e -> e -> e) -> List (Pair Int e)
         //                     -> Array i e
         //
+        //   arrayFromAssocs :: Pair i i -> List (Pair i e) -> Array i e
+        //   arraySeed       :: Pair i i -> e -> Array i e
+        //
+        // `arrayUpdate`/`arrayAccum` still take FLAT `(Int offset, value)`
+        // associations; the language-side statements (prelude `array`, `update`,
+        // `accum`, `accumArray`) compute the offsets. `arrayFromAssocs` (the
+        // index-typed constructor behind the polymorphic `array`) and
+        // `arraySeed` are registered alongside: lowering resolves them by name
+        // and the interpreter resolves the index-typed associations against the
+        // bounds shape.
         // The accumulator of `arrayAccum` is written CURRIED (`e -> e -> e`
         // right-associates to `e -> (e -> e)`), matching the language's
         // representation of a binary closure as a nest of unary lambdas.
@@ -1393,6 +1403,29 @@ impl TypeEnv {
                     ),
                     flat_assocs(),
                 ],
+                Box::new(arr_ie()),
+            )),
+        );
+        // Index-typed construction ops (the M8 shape): `arrayFromAssocs` takes
+        // an index-typed `List (Pair i e)` association list whose offsets are
+        // resolved against the construction bounds by the interpreter;
+        // `arraySeed` fills every position with one value. Both are
+        // UNCONSTRAINED like their siblings — the language defs carry the
+        // `Ix i =>` context.
+        env.builtin_sigs.insert(
+            "arrayFromAssocs".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![
+                    pair(vec![tv("i"), tv("i")]),
+                    list(pair(vec![tv("i"), tv("e")])),
+                ],
+                Box::new(arr_ie()),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arraySeed".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("i"), tv("i")]), tv("e")],
                 Box::new(arr_ie()),
             )),
         );
@@ -2244,6 +2277,88 @@ mod funcsig_tests {
         );
         let g = ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float]);
         assert_ne!(f, g);
+    }
+}
+
+#[cfg(test)]
+mod builtin_array_sig_tests {
+    use super::*;
+
+    /// Navigate a builtin sig entry `forall i e. TFunc(args, ret)` down to its
+    /// argument list, panicking on any other shape.
+    fn tfunc_args(sig: &crate::ast::TypeExpr) -> &[crate::ast::TypeExpr] {
+        match sig {
+            crate::ast::TypeExpr::TForall(_, inner) => match inner.as_ref() {
+                crate::ast::TypeExpr::TFunc(args, _) => args.as_slice(),
+                other => panic!("expected a TFunc under the forall, got {other:?}"),
+            },
+            other => panic!("expected a TForall sig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn array_construction_ops_register_index_typed_signatures() {
+        let env = TypeEnv::with_builtins();
+        for name in ["arrayFromAssocs", "arraySeed"] {
+            let sig = env
+                .builtin_sigs
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must be in the builtin sig table"));
+            let args = tfunc_args(sig);
+            assert_eq!(args.len(), 2, "{name} takes (bounds, init/assocs)");
+            // Arg 0 is the bounds pair `Pair i i`.
+            assert!(
+                matches!(&args[0], crate::ast::TypeExpr::TApp(n, inner)
+                    if n == "Pair" && inner.len() == 2),
+                "{name}: first argument must be the `Pair i i` bounds"
+            );
+        }
+        // arrayFromAssocs's second argument is the index-typed assoc list.
+        let sig = env
+            .builtin_sigs
+            .get("arrayFromAssocs")
+            .expect("arrayFromAssocs sig");
+        let args = tfunc_args(sig);
+        assert!(
+            matches!(
+                &args[1],
+                crate::ast::TypeExpr::TApp(n, inner)
+                    if n == "List" && inner.len() == 1
+                        && matches!(&inner[0], crate::ast::TypeExpr::TApp(p, el)
+                            if p == "Pair" && el.len() == 2)
+            ),
+            "arrayFromAssocs: second argument must be `List (Pair i e)`, got {:?}",
+            args[1]
+        );
+    }
+
+    #[test]
+    fn array_update_accum_signatures_stay_flat_until_the_index_typed_flip() {
+        // Task 1 only ADDS the two construction ops; the update/accum entries
+        // still take FLAT `(Int offset, value)` associations until the prelude
+        // rewrite lands (their language-side statements compute offsets).
+        let env = TypeEnv::with_builtins();
+        for name in ["arrayUpdate", "arrayAccum"] {
+            let sig = env
+                .builtin_sigs
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must be in the builtin sig table"));
+            let args = tfunc_args(sig);
+            let assoc_idx = if name == "arrayUpdate" { 1 } else { 2 };
+            assert!(
+                matches!(
+                    &args[assoc_idx],
+                    crate::ast::TypeExpr::TApp(n, inner)
+                        if n == "List" && inner.len() == 1
+                            && matches!(&inner[0], crate::ast::TypeExpr::TApp(p, el)
+                                if p == "Pair" && el.len() == 2
+                                    && matches!(&el[0], crate::ast::TypeExpr::TName(t)
+                                        if t == "Int"))
+                ),
+                "{name}: association list must still be flat `List (Pair Int e)` in Task 1, got {:?}",
+                args[assoc_idx]
+            );
+        }
     }
 }
 
