@@ -81,6 +81,21 @@ impl ValueTy {
     }
 }
 
+/// `(a -> List b) -> List a -> List b`: pick the result element type for
+/// `concat_map` from the closure's RETURN list element, falling back to the
+/// source list element when the return is not a `List`.
+pub(crate) fn concat_map_result_elem(closure_ty: &ValueTy, source_elem: ValueTy) -> ValueTy {
+    match closure_ty {
+        ValueTy::Thunk(_, rets) => match rets.first() {
+            Some(ValueTy::App(name, inner)) if name == "List" => {
+                inner.first().cloned().unwrap_or(source_elem)
+            }
+            _ => source_elem,
+        },
+        _ => source_elem,
+    }
+}
+
 /// The type of a single expression: a unary core value type.
 ///
 /// Every `infer_expr` produces one `Ty` (a single value); there is no channel

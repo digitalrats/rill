@@ -10,7 +10,7 @@ use crate::ir::{
 };
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
-use crate::types::ty::{DataInfo, TypeEnv, ValueTy};
+use crate::types::ty::{concat_map_result_elem, DataInfo, TypeEnv, ValueTy};
 
 /// Match a concrete value type against a structural pattern that may contain
 /// fresh `Var` positions (a record's freshened field type), recording each
@@ -3827,29 +3827,13 @@ impl<'a> Lowerer<'a> {
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
             "concat_map" => {
-                // `(a -> List b) -> List a -> List b`. The result element type
-                // comes from the closure's RETURN list, not from the source
-                // list: the two agree only when `b == a`. `range`'s 2-D
-                // instance body is exactly the disagreeing case
-                // (`concat_map (\ i1 -> map (\ i2 -> Pair { … }) …) (List Int)`),
-                // and reading the source element typed it `List Int`, so the
-                // constrained body failed its own signature check. Mirrors
-                // `infer_collection_call`'s `concat_map` arm, with the source
-                // element as the fallback when the return is not a `List`.
+                // See `concat_map_result_elem`: `(a -> List b) -> List a -> List b`.
                 let source_elem = match args.get(1).and_then(list_type_args) {
                     Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
                     _ => ValueTy::Float,
                 };
-                let elem = match args.first() {
-                    Some(ValueTy::Thunk(_, rets)) => match rets.first() {
-                        Some(ValueTy::App(n, inner)) if n == "List" => inner
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| source_elem.clone()),
-                        _ => source_elem,
-                    },
-                    _ => source_elem,
-                };
+                let closure_ty = args.first().unwrap_or(&ValueTy::Float);
+                let elem = concat_map_result_elem(closure_ty, source_elem);
                 Ok(ValueTy::App("List".into(), vec![elem]))
             }
             "append_list" => match args.first().and_then(list_type_args) {

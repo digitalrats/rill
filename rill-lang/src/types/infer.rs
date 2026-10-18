@@ -6,7 +6,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{ArrowTy, Block, DataInfo, Scheme, Subst, TypeEnv, TypeVarId, ValueTy};
+use super::ty::{
+    concat_map_result_elem, ArrowTy, Block, DataInfo, Scheme, Subst, TypeEnv, TypeVarId, ValueTy,
+};
 use super::unify::unify_value;
 use crate::ast::{Def, Expr, MatchArm, Pattern, Program};
 use crate::error::{CompileError, Span};
@@ -6261,19 +6263,10 @@ fn infer_collection_call(
                 let lt = arg_vty(ctx, 1)?;
                 list_elem(&lt)
             };
-            // (a -> List b) -> List a -> List b: the result element type is the
-            // closure's RETURN list element, falling back to the source element.
             let ft0 = arg_vty(ctx, 0)?;
             let ft = ctx.subst.resolve_value(&ft0);
-            let b = match &ft {
-                ValueTy::Thunk(_, rets) => match rets.first() {
-                    Some(ValueTy::App(n, inner)) if n == "List" => {
-                        inner.first().cloned().unwrap_or(elem)
-                    }
-                    _ => elem,
-                },
-                _ => elem,
-            };
+            // See `concat_map_result_elem`: `(a -> List b) -> List a -> List b`.
+            let b = concat_map_result_elem(&ft, elem);
             Ok(ValueTy::App("List".into(), vec![b]))
         }
         "append_list" => {
