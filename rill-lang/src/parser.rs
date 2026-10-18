@@ -676,6 +676,14 @@ impl<'a> Parser<'a> {
     /// Only the binary tuple is supported. The opening `LParen` must already be
     /// consumed; this eats the closing `RParen`.
     fn parse_paren_type(&mut self) -> Result<TypeExpr, CompileError> {
+        // `()` — the unit type. Haskell 2010 spells the unit type as the empty
+        // tuple; `ValueTy::Void`'s type name is already `"()"` (see
+        // `TypeEnv::vty_of_name`), which is what the builtin ST signatures use
+        // internally, so the source-level spelling maps straight onto it.
+        if self.peek().tok == Tok::RParen {
+            self.bump();
+            return Ok(TypeExpr::TName("()".into()));
+        }
         let first = self.parse_type_expr()?;
         if self.peek().tok == Tok::Comma {
             let mut items = vec![first];

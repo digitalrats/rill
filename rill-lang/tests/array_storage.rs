@@ -242,12 +242,13 @@ fn empty_array_has_the_empty_range_bounds_and_no_elements() {
     let (bounds, len) = pair_values(&prog, &output(&prog));
     let (lo, hi) = pair_values(&prog, &bounds);
     // `arrayFromList` stores the bounds value VERBATIM, so the empty range
-    // reads back exactly as written. (`-1` lowers through `neg`, and value
-    // arithmetic is Float-only, hence the Float upper bound; the interpreter's
-    // own `Int` empty range comes from `arrayFromBuffer`, which only sees a
-    // non-empty block through `run_value`.)
+    // reads back exactly as written. Both bounds stay on the `Int` track:
+    // value arithmetic preserves `Int` operands (and `neg` keeps the operand's
+    // track), so `-1` reaches the array as `Value::Int(-1)`. Before the
+    // Int-preserving arithmetic change this was a `Float`, which the
+    // interpreter accepted only through its integral-float tolerance.
     assert_eq!(lo, Value::Int(0), "the empty lower bound reads back");
-    assert_eq!(hi, Value::Float(-1.0), "the empty upper bound reads back");
+    assert_eq!(hi, Value::Int(-1), "the empty upper bound reads back");
     assert_eq!(len, Value::Int(0), "the empty array has no elements");
 
     let mut index = compile::<f32>(&format!("main = arrayIndexFlat {empty} 0;"))

@@ -1,0 +1,643 @@
+//! Data.Array language surface (Task 9): the `Ix` typeclass with its `Int` and
+//! `Pair Int Int` instances, and the constrained immutable/ST array vocabulary
+//! built on the flat storage primitives (Tasks 7-8).
+//!
+//! Every offset/range computation happens in the LANGUAGE (`Ix` instance
+//! bodies), so these tests drive the whole pipeline end to end
+//! (parse → infer → reduce → lower → interpreter) through `compile` and assert
+//! the resulting VALUES, the array shapes, and the latched fault channel.
+
+use rill_lang::arena::{ArenaRef, Value};
+use rill_lang::compile;
+use rill_lang::program::RillProgram;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Compile `src`, run one tick, and return the single value output.
+fn run(src: &str) -> Value {
+    let mut prog =
+        compile::<f32>(src).unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
+    prog.run_value()
+        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    output(&prog)
+}
+
+/// The single value output of an already-run program.
+fn output(prog: &RillProgram<f32, 256>) -> Value {
+    let outputs = prog.value_outputs();
+    assert_eq!(outputs.len(), 1, "expected exactly one value output");
+    let v = outputs[0].expect("the value output must be bound");
+    prog.arena()
+        .get(v)
+        .expect("the output ref must resolve")
+        .clone()
+}
+
+/// Compile `src` against the foreign generator registry (the buffer
+/// generators `sine`/`square` are FFI builtins), so a program may bridge
+/// buffers and arrays.
+fn buffer_program(src: &str) -> RillProgram<f32, 256> {
+    let mut ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
+    rill_lang::register::register_foreign_generators(&mut ffi);
+    rill_lang::compile_with_ffi::<f32>(src, &ffi, 44_100.0)
+        .unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"))
+}
+
+/// Compile and run `src`, returning the latched fault message.
+fn fault(src: &str) -> String {
+    let mut prog =
+        compile::<f32>(src).unwrap_or_else(|e| panic!("compile failed: {e}\nsrc:\n{src}"));
+    match prog.run_value() {
+        Ok(()) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
+        Err(e) => format!("{e}"),
+    }
+}
+
+/// The two field VALUES of a `Pair` record output, resolved through the arena.
+fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+    let fields = match v {
+        Value::Record(fields) if fields.len() == 2 => fields,
+        other => panic!("expected a Pair record, got {other:?}"),
+    };
+    (
+        prog.arena().get(fields[0]).expect("first resolves").clone(),
+        prog.arena()
+            .get(fields[1])
+            .expect("second resolves")
+            .clone(),
+    )
+}
+
+/// The Int payloads of a `List` value.
+fn list_ints(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<i64> {
+    let elems = match v {
+        Value::List { elems } => elems.clone(),
+        other => panic!("expected a List, got {other:?}"),
+    };
+    elems
+        .iter()
+        .map(|r| match prog.arena().get(*r) {
+            Some(Value::Int(i)) => *i,
+            other => panic!("expected an Int element, got {other:?}"),
+        })
+        .collect()
+}
+
+/// The Float payloads of a `List` value.
+fn list_floats(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<f64> {
+    let elems = match v {
+        Value::List { elems } => elems.clone(),
+        other => panic!("expected a List, got {other:?}"),
+    };
+    elems
+        .iter()
+        .map(|r| match prog.arena().get(*r) {
+            Some(Value::Float(f)) => *f,
+            other => panic!("expected a Float element, got {other:?}"),
+        })
+        .collect()
+}
+
+/// The stored bounds ref and flat element refs of an `Array` value.
+fn array_parts(v: &Value) -> (ArenaRef, Vec<ArenaRef>) {
+    match v {
+        Value::Array { bounds, elems } => (*bounds, elems.clone()),
+        other => panic!("expected an Array, got {other:?}"),
+    }
+}
+
+/// The flat Float elements of an `Array` value plus its bounds as Ints.
+fn array_1d(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
+    let (bounds, elems) = array_parts(v);
+    let bounds = prog.arena().get(bounds).expect("bounds resolve").clone();
+    let (lo, hi) = pair_values(prog, &bounds);
+    let (lo, hi) = match (lo, hi) {
+        (Value::Int(lo), Value::Int(hi)) => (lo, hi),
+        other => panic!("expected Int bounds, got {other:?}"),
+    };
+    let values = elems
+        .iter()
+        .map(|r| match prog.arena().get(*r) {
+            Some(Value::Float(f)) => *f,
+            other => panic!("expected a Float element, got {other:?}"),
+        })
+        .collect();
+    (values, (lo, hi))
+}
+
+/// A `Pair Int Int` bound-shape expression, PARENTHESIZED so it stays one
+/// argument in a juxtaposition application (`range (Pair { … })` — an
+/// unparenthesized record literal would split into `range Pair { … }`).
+fn bounds(lo: i64, hi: i64) -> String {
+    format!("(Pair {{ first: {lo}, second: {hi} }})")
+}
+
+// ---------------------------------------------------------------------------
+// 1. `Ix Int`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ix_int_range_is_inclusive_and_handles_negative_bounds() {
+    let src = format!("main = range {};", bounds(-3, 2));
+    let prog_val = {
+        let mut prog = compile::<f32>(&src).expect("the program must compile");
+        prog.run_value().expect("the program must run");
+        let v = output(&prog);
+        list_ints(&prog, &v)
+    };
+    assert_eq!(prog_val, vec![-3, -2, -1, 0, 1, 2]);
+}
+
+#[test]
+fn ix_int_range_is_empty_when_upper_precedes_lower() {
+    let src = format!("main = range {};", bounds(2, 1));
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert!(list_ints(&prog, &v).is_empty(), "l > u is the empty range");
+}
+
+#[test]
+fn ix_int_range_is_the_empty_list_for_the_canonical_empty_bounds() {
+    // `(0, -1)` is the conventional empty range Haskell uses for 0-element
+    // arrays; `listRange` must not emit the `0` element for it.
+    let src = format!("main = range {};", bounds(0, -1));
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert!(list_ints(&prog, &v).is_empty());
+}
+
+#[test]
+fn ix_int_index_is_the_offset_from_the_lower_bound() {
+    // `index (0,2) 1` is 1 by the METHOD, not the array accessor.
+    assert_eq!(
+        run("main = index (Pair { first: 0, second: 2 }) 1;"),
+        Value::Int(1)
+    );
+    assert_eq!(
+        run("main = index (Pair { first: 3, second: 9 }) 5;"),
+        Value::Int(2)
+    );
+    // A negative lower bound shifts the offset by the same amount.
+    assert_eq!(
+        run("main = index (Pair { first: -2, second: 3 }) 1;"),
+        Value::Int(3)
+    );
+}
+
+#[test]
+fn ix_int_in_range_includes_both_endpoints() {
+    let b = bounds(-2, 2);
+    for (i, want) in [(-2, true), (2, true), (0, true), (-3, false), (3, false)] {
+        let src = format!("main = inRange {b} {i};");
+        assert_eq!(run(&src), Value::Bool(want), "inRange {b} {i}");
+    }
+}
+
+#[test]
+fn ix_int_range_size_is_the_inclusive_span() {
+    assert_eq!(
+        run(&format!("main = rangeSize {};", bounds(0, 2))),
+        Value::Int(3)
+    );
+    assert_eq!(
+        run(&format!("main = rangeSize {};", bounds(-1, 2))),
+        Value::Int(4)
+    );
+    // Zero-length: the upper bound one below the lower yields size 0.
+    assert_eq!(
+        run(&format!("main = rangeSize {};", bounds(2, 1))),
+        Value::Int(0)
+    );
+    assert_eq!(
+        run(&format!("main = rangeSize {};", bounds(0, -1))),
+        Value::Int(0)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 2. `Ix (Pair Int Int)` — row-major
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ix_pair_index_is_row_major() {
+    let b = "(Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } })";
+    // A 2x3 grid: (i1,j1) -> i1 * 3 + j1.
+    for (i1, i2, want) in [(0, 0, 0), (0, 2, 2), (1, 0, 3), (1, 1, 4), (1, 2, 5)] {
+        let src = format!("main = index {b} (Pair {{ first: {i1}, second: {i2} }});");
+        assert_eq!(run(&src), Value::Int(want), "index ({i1},{i2})");
+    }
+    // A non-zero origin shifts the whole grid.
+    let b = "(Pair { first: Pair { first: 1, second: 2 }, second: Pair { first: 2, second: 4 } })";
+    assert_eq!(
+        run(&format!(
+            "main = index {b} (Pair {{ first: 2, second: 4 }});"
+        )),
+        Value::Int(5),
+        "(2-1)*3 + (4-2) = 5"
+    );
+}
+
+#[test]
+fn ix_pair_range_size_is_the_product_of_the_spans() {
+    assert_eq!(
+        run("main = rangeSize ((Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } }));"),
+        Value::Int(6)
+    );
+    // An empty dimension makes the whole range empty.
+    assert_eq!(
+        run("main = rangeSize ((Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: -1 } }));"),
+        Value::Int(0)
+    );
+}
+
+#[test]
+fn ix_pair_range_is_row_major_and_empty_for_an_empty_dimension() {
+    let src = "main = range ((Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 1 } }));";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    let cells: Vec<(i64, i64)> = match &v {
+        Value::List { elems } => elems
+            .iter()
+            .map(|r| {
+                let cell = prog.arena().get(*r).expect("cell resolves").clone();
+                let (a, b) = pair_values(&prog, &cell);
+                match (a, b) {
+                    (Value::Int(a), Value::Int(b)) => (a, b),
+                    other => panic!("expected an Int pair cell, got {other:?}"),
+                }
+            })
+            .collect(),
+        other => panic!("expected a List, got {other:?}"),
+    };
+    assert_eq!(cells, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
+
+    let empty = "main = range ((Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 0, second: -1 } }));";
+    let mut prog = compile::<f32>(empty).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert!(
+        list_ints(&prog, &v).is_empty(),
+        "an empty dimension yields no cells"
+    );
+}
+
+#[test]
+fn ix_pair_in_range_checks_both_dimensions() {
+    let b = "(Pair { first: Pair { first: 0, second: 1 }, second: Pair { first: 1, second: 2 } })";
+    for (i1, i2, want) in [
+        (0, 1, true),
+        (1, 2, true),
+        (0, 0, false),
+        (2, 1, false),
+        (1, 3, false),
+    ] {
+        let src = format!("main = inRange {b} (Pair {{ first: {i1}, second: {i2} }});");
+        assert_eq!(run(&src), Value::Bool(want), "inRange ({i1},{i2})");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 3. `index` double duty (D1): the method and the array accessor
+// ---------------------------------------------------------------------------
+
+#[test]
+fn index_is_the_ix_offset_and_the_array_accessor_by_argument_type() {
+    // `Pair` first argument → the `Ix` METHOD (an offset).
+    assert_eq!(
+        run("main = index (Pair { first: 0, second: 2 }) 1;"),
+        Value::Int(1)
+    );
+    // `Array` first argument → the constrained accessor (an element), whose
+    // body must reach the METHOD through `index (bounds a) i`.
+    let src = "main = index (arrayFromList (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1;";
+    assert_eq!(run(src), Value::Float(20.0));
+}
+
+#[test]
+fn bang_reaches_the_array_accessor_through_an_ix_computed_offset() {
+    // `!` desugars to `index` (Task 2). A NEGATIVE lower bound proves the whole
+    // chain stays on the Int track: the offset is `0 - (-1) = 1`, so the
+    // element is the middle one — and `arrayIndexFlat` requires a real
+    // `Value::Int` offset, so a Float offset would fault instead.
+    let src = "main = (arrayFromList (Pair { first: -1, second: 1 }) [10.0, 20.0, 30.0]) ! 0;";
+    assert_eq!(run(src), Value::Float(20.0));
+}
+
+#[test]
+fn two_dimensional_bang_indexes_row_major() {
+    let src = "main = (listArray \
+                 (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } }) \
+                 [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) ! Pair { first: 1, second: 2 };";
+    assert_eq!(run(src), Value::Float(6.0));
+}
+
+// ---------------------------------------------------------------------------
+// 4. Immutable surface
+// ---------------------------------------------------------------------------
+
+#[test]
+fn list_array_stores_bounds_and_elements() {
+    let src = format!("main = listArray {} [1.0, 2.0, 3.0];", bounds(0, 2));
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    let (values, (lo, hi)) = array_1d(&prog, &v);
+    assert_eq!((lo, hi), (0, 2), "the bounds are stored verbatim");
+    assert_eq!(values, vec![1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn list_array_rejects_a_length_that_does_not_match_range_size() {
+    for (lo, hi, n) in [(0i64, 2, 2usize), (0, 2, 4), (0, -1, 1)] {
+        let elems: Vec<String> = (0..n).map(|i| format!("{i}.0")).collect();
+        let src = format!(
+            "main = listArray {} [{}];",
+            bounds(lo, hi),
+            elems.join(", ")
+        );
+        let msg = fault(&src);
+        assert!(
+            msg.contains("listArray") && msg.contains("rangeSize"),
+            "expected the clean length-mismatch fault for bounds {lo}..={hi} with {n} elements, got: {msg}"
+        );
+    }
+}
+
+#[test]
+fn list_array_accepts_an_empty_range_with_no_elements() {
+    let src = format!("main = listArray {} [];", bounds(0, -1));
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    let (values, (lo, hi)) = array_1d(&prog, &v);
+    assert_eq!((lo, hi), (0, -1));
+    assert!(values.is_empty());
+}
+
+#[test]
+fn array_fills_unlisted_positions_with_the_zero_default() {
+    // `array` is the assoc-list constructor: unlisted positions take the
+    // documented `0.0` fill.
+    let src = format!(
+        "main = array {} [Pair {{ first: 0, second: 1.5 }}, Pair {{ first: 2, second: 3.5 }}];",
+        bounds(0, 3)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (values, (lo, hi)) = array_1d(&prog, &output(&prog));
+    assert_eq!((lo, hi), (0, 3));
+    assert_eq!(values, vec![1.5, 0.0, 3.5, 0.0]);
+}
+
+#[test]
+fn accum_array_folds_the_assocs_over_the_initial_value() {
+    let src = format!(
+        "main = accumArray (\\ a -> \\ b -> a + b) 0.0 {} \
+           [Pair {{ first: 0, second: 1.0 }}, Pair {{ first: 0, second: 2.0 }}, Pair {{ first: 2, second: 5.0 }}];",
+        bounds(0, 2)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (values, (lo, hi)) = array_1d(&prog, &output(&prog));
+    assert_eq!((lo, hi), (0, 2));
+    assert_eq!(values, vec![3.0, 0.0, 5.0], "position 0 accumulates twice");
+}
+
+#[test]
+fn bounds_and_elems_are_direct_reads_of_a_list_array() {
+    let src = format!(
+        "main = (\\ a -> Pair {{ first: bounds a, second: elems a }}) (listArray {} [7.0, 8.0]);",
+        bounds(-1, 0)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (b, es) = pair_values(&prog, &output(&prog));
+    let (lo, hi) = pair_values(&prog, &b);
+    assert_eq!(lo, Value::Int(-1));
+    assert_eq!(hi, Value::Int(0));
+    assert_eq!(list_floats(&prog, &es), vec![7.0, 8.0]);
+}
+
+#[test]
+fn indices_is_the_range_of_the_bounds() {
+    let src = format!(
+        "main = indices (listArray {} [9.0, 8.0, 7.0]);",
+        bounds(-1, 1)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert_eq!(list_ints(&prog, &v), vec![-1, 0, 1]);
+}
+
+#[test]
+fn assocs_pairs_each_index_with_its_element() {
+    let src = format!(
+        "main = assocs (listArray {} [10.0, 20.0, 30.0]);",
+        bounds(0, 2)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    let elems = match &v {
+        Value::List { elems } => elems.clone(),
+        other => panic!("expected a List, got {other:?}"),
+    };
+    let observed: Vec<(i64, f64)> = elems
+        .iter()
+        .map(|r| {
+            let pair = prog.arena().get(*r).expect("pair resolves").clone();
+            let (i, e) = pair_values(&prog, &pair);
+            match (i, e) {
+                (Value::Int(i), Value::Float(f)) => (i, f),
+                other => panic!("expected an (Int, Float) assoc, got {other:?}"),
+            }
+        })
+        .collect();
+    assert_eq!(observed, vec![(0, 10.0), (1, 20.0), (2, 30.0)]);
+}
+
+#[test]
+fn update_replaces_the_selected_positions_only() {
+    let src = format!(
+        "main = update (listArray {} [1.0, 2.0, 3.0]) \
+           [Pair {{ first: 0, second: 9.0 }}, Pair {{ first: 2, second: 7.0 }}];",
+        bounds(0, 2)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (values, (lo, hi)) = array_1d(&prog, &output(&prog));
+    assert_eq!((lo, hi), (0, 2));
+    assert_eq!(values, vec![9.0, 2.0, 7.0]);
+}
+
+#[test]
+fn accum_folds_into_an_existing_array() {
+    let src = format!(
+        "main = accum (\\ a -> \\ b -> a + b) (listArray {} [1.0, 2.0, 3.0]) \
+           [Pair {{ first: 1, second: 5.0 }}, Pair {{ first: 1, second: 6.0 }}];",
+        bounds(0, 2)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (values, _) = array_1d(&prog, &output(&prog));
+    assert_eq!(values, vec![1.0, 13.0, 3.0], "2 + 5 + 6");
+}
+
+#[test]
+fn ixmap_transposes_a_two_by_three_matrix() {
+    // Reindex a 2x3 array into a 3x2 array with the transposing index map.
+    //
+    // The swap is an anonymous lambda whose parameter is typed by the
+    // signature's FUNCTION-shaped parameter `(i -> j)`: the new bounds fix
+    // `i := Pair Int Int` before the lambda argument is typed, so `p.second`
+    // projects a record instead of the scalar default.
+    let src = "main = ixmap \
+                 (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 2, second: 1 } }) \
+                 (\\ p -> Pair { first: p.second, second: p.first }) \
+                 (listArray \
+                   (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } }) \
+                   [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    let (bounds_ref, elems) = array_parts(&v);
+    let bounds = prog
+        .arena()
+        .get(bounds_ref)
+        .expect("bounds resolve")
+        .clone();
+    let (l, u) = pair_values(&prog, &bounds);
+    let (l1, l2) = pair_values(&prog, &l);
+    let (u1, u2) = pair_values(&prog, &u);
+    assert_eq!(
+        (l1, l2, u1, u2),
+        (Value::Int(0), Value::Int(0), Value::Int(2), Value::Int(1)),
+        "the result has the new 3x2 bounds"
+    );
+    let values: Vec<f64> = elems
+        .iter()
+        .map(|r| match prog.arena().get(*r) {
+            Some(Value::Float(f)) => *f,
+            other => panic!("expected a Float element, got {other:?}"),
+        })
+        .collect();
+    // Row-major 3x2: (0,0)=m(0,0)=1, (0,1)=m(1,0)=4, (1,0)=m(0,1)=2, …
+    assert_eq!(values, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+}
+
+// ---------------------------------------------------------------------------
+// 5. ST surface
+// ---------------------------------------------------------------------------
+
+#[test]
+fn st_new_array_read_write_modify_through_ix_offsets() {
+    let src = "{-# MODE complete #-}\n\
+        main = runSTArray (\\ s -> do {\n\
+            a <- newArray (Pair { first: 0, second: 2 }) 1.0; \
+            writeArray a 1 5.0; \
+            modifyArray a 2 (\\ x -> x + 10.0); \
+            return a });";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (values, (lo, hi)) = array_1d(&prog, &output(&prog));
+    assert_eq!((lo, hi), (0, 2));
+    assert_eq!(values, vec![1.0, 5.0, 11.0]);
+}
+
+#[test]
+fn st_read_array_reaches_the_written_element() {
+    // `readArray` computes the offset from `getBounds` + `Ix.index`.
+    let src = "{-# MODE complete #-}\n\
+        main = runST (\\ s -> do {\n\
+            a <- newArray (Pair { first: -1, second: 1 }) 0.0; \
+            writeArray a 0 42.0; \
+            readArray a 0 });";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    assert_eq!(output(&prog), Value::Float(42.0));
+}
+
+#[test]
+fn st_new_list_array_seeds_every_element() {
+    let src = format!(
+        "{{-# MODE complete #-}}\nmain = runSTArray (\\ s -> newListArray {} [4.0, 5.0, 6.0]);",
+        bounds(0, 2)
+    );
+    let mut prog = compile::<f32>(&src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (values, _) = array_1d(&prog, &output(&prog));
+    assert_eq!(values, vec![4.0, 5.0, 6.0]);
+}
+
+#[test]
+fn st_new_list_array_rejects_a_length_that_does_not_match_range_size() {
+    let src = format!(
+        "{{-# MODE complete #-}}\nmain = runSTArray (\\ s -> newListArray {} [1.0, 2.0]);",
+        bounds(0, 2)
+    );
+    let msg = fault(&src);
+    assert!(
+        msg.contains("newListArray") && msg.contains("rangeSize"),
+        "expected the clean length-mismatch fault, got: {msg}"
+    );
+}
+
+#[test]
+fn frozen_array_is_immutable_after_the_region_closes() {
+    // The frozen result feeds the immutable accessor, and a second read sees
+    // the same element — the region's mutations cannot leak through.
+    let src = "{-# MODE complete #-}\n\
+        main = (\\ arr -> Pair { first: arr ! 1, second: arr ! 1 }) \
+            (runSTArray (\\ s -> do {\n\
+                a <- newListArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]; \
+                writeArray a 1 99.0; \
+                return a }));";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let (a, b) = pair_values(&prog, &output(&prog));
+    assert_eq!(a, Value::Float(99.0));
+    assert_eq!(b, Value::Float(99.0), "repeated reads are stable");
+}
+
+// ---------------------------------------------------------------------------
+// 6. Buffer bridge (Task 7 primitives, exercised through the surface)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn array_from_buffer_round_trips_through_buffer_from_array() {
+    // `sine` produces a FixedBuffer; `arrayFromBuffer` copies its samples into
+    // an `Int`-indexed array, and `bufferFromArray` copies them back. The
+    // generator is a FOREIGN builtin, so the program compiles against the
+    // generator registry (the same fixture Task 7's bridge tests use).
+    let src = "{-# MODE complete #-}\n\
+        main = (\\ arr -> Pair { first: length arr, second: bufferFromArray arr }) \
+            (arrayFromBuffer (sine 440.0 0.5 0.0));";
+    let mut prog = buffer_program(src);
+    prog.run_value().expect("the program must run");
+    let (len, _buf) = pair_values(&prog, &output(&prog));
+    assert_eq!(
+        len,
+        Value::Int(256),
+        "the block length becomes the array length"
+    );
+}
+
+#[test]
+fn array_from_buffer_values_match_the_buffer_contents() {
+    // The bridge copies real samples: index 0 of the copy equals the buffer's
+    // first sample, read through the immutable accessor.
+    let src = "{-# MODE complete #-}\n\
+        main = (\\ buf -> (arrayFromBuffer buf) ! 0) (sine 440.0 0.5 0.0);";
+    let mut prog = buffer_program(src);
+    prog.run_value().expect("the program must run");
+    match output(&prog) {
+        Value::Float(f) => assert!(f.is_finite(), "expected a real sample, got {f}"),
+        other => panic!("expected a Float element, got {other:?}"),
+    }
+}

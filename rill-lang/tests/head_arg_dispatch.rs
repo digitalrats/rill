@@ -2,10 +2,11 @@
 //! `C (Pair Int (Pair Int Int))` coexist as distinct instances and dispatch by
 //! the FULL applied type, not by the selector's head constructor.
 //!
-//! The probe class `C` is a throwaway stand-in for `Ix` (the real class lands
-//! with the array surface): its method takes a `Pair`-shaped index, so the
-//! class variable is only recoverable by unifying the method's parameter
-//! pattern (`Pair a a`) against the concrete argument type.
+//! The probe class `C` mirrors the shape of the standard prelude's `Ix` (whose
+//! `Int` and `Pair Int Int` instances now ship with the language) without
+//! colliding with it: its method takes a `Pair`-shaped index, so the class
+//! variable is only recoverable by unifying the method's parameter pattern
+//! (`Pair a a`) against the concrete argument type.
 
 use rill_lang::ast::Expr;
 use rill_lang::mode::Mode;
@@ -19,14 +20,19 @@ fn env_of(src: &str) -> TypeEnv {
     infer_program(&prog, Mode::Strict).unwrap().type_env
 }
 
-/// Compile and run `src`, returning `main`'s Float value.
+/// Compile and run `src`, returning `main`'s numeric value.
+///
+/// Value arithmetic preserves the `Int` track (an `Int` operand stays `Int`),
+/// so an instance body that adds projected integer fields yields `Int` while a
+/// float-literal body yields `Float`; both are compared as `f64`.
 fn run(src: &str) -> f64 {
     let mut prog = rill_lang::compile::<f32>(src).unwrap();
     prog.run_value().unwrap();
     let v = prog.value_outputs()[0].unwrap();
     match prog.arena().get(v) {
         Some(rill_lang::arena::Value::Float(x)) => *x,
-        other => panic!("expected Float, got {other:?}"),
+        Some(rill_lang::arena::Value::Int(i)) => *i as f64,
+        other => panic!("expected a number, got {other:?}"),
     }
 }
 

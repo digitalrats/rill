@@ -298,11 +298,95 @@ fn array_elem_ty(t: Option<&ValueTy>) -> ValueTy {
 /// every path that the interpreter builds (`arrayFromBuffer`), so typing an
 /// unresolved parameter as `Float` would drift from the runtime value.
 fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
+    // `Pair` reaches this helper in BOTH flavours: a record literal lowers to
+    // `Data("Pair", …)` while an inferred/parameter type is `App("Pair", …)`.
+    // Matching only `App` silently degraded a 2-D bound (`Pair (Pair Int Int)
+    // (Pair Int Int)`) to a flat `Int` index.
     match t {
-        Some(ValueTy::App(name, inner)) if name == "Pair" => {
+        Some(ValueTy::App(name, inner)) | Some(ValueTy::Data(name, inner)) if name == "Pair" => {
             inner.first().cloned().unwrap_or(ValueTy::Int)
         }
         _ => ValueTy::Int,
+    }
+}
+
+/// Structurally match a signature parameter type against the actual argument
+/// type, recording the signature's fresh variables (`Var(id)` from
+/// `signature_param_tys_conv`) in `out`. First binding wins; a mismatch binds
+/// nothing (lowering never fails on a type it cannot pattern-match).
+///
+/// This is the one-directional, non-failing cousin of the unifier: it exists so
+/// an inlined method body sees the concrete types its earlier arguments
+/// revealed (`bind m f`: `f`'s parameter is `m`'s payload).
+fn bind_pattern_vars(
+    pat: &ValueTy,
+    actual: &ValueTy,
+    out: &mut HashMap<crate::types::TypeVarId, ValueTy>,
+) {
+    match (pat, actual) {
+        (ValueTy::Var(v), actual) if !matches!(actual, ValueTy::Var(w) if w == v) => {
+            out.entry(*v).or_insert_with(|| actual.clone());
+        }
+        (ValueTy::Data(pn, pa), ValueTy::Data(an, aa))
+        | (ValueTy::App(pn, pa), ValueTy::App(an, aa))
+        | (ValueTy::Data(pn, pa), ValueTy::App(an, aa))
+        | (ValueTy::App(pn, pa), ValueTy::Data(an, aa))
+            if pn == an && pa.len() == aa.len() =>
+        {
+            for (p, a) in pa.iter().zip(aa.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+        }
+        (ValueTy::Thunk(pa, pr), ValueTy::Thunk(aa, ar))
+            if pa.len() == aa.len() && pr.len() == ar.len() =>
+        {
+            for (p, a) in pa.iter().zip(aa.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+            for (p, a) in pr.iter().zip(ar.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+        }
+        (ValueTy::Newtype(pn, pa), ValueTy::Newtype(an, aa))
+            if pn == an && pa.len() == aa.len() =>
+        {
+            for (p, a) in pa.iter().zip(aa.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply [`bind_pattern_vars`]' recorded bindings to a type (structural,
+/// transitive through bound variables).
+fn subst_value_vars(t: &ValueTy, vars: &HashMap<crate::types::TypeVarId, ValueTy>) -> ValueTy {
+    match t {
+        ValueTy::Var(v) => match vars.get(v) {
+            Some(bound @ ValueTy::Var(w)) if *w != *v => subst_value_vars(bound, vars),
+            Some(bound) => bound.clone(),
+            None => t.clone(),
+        },
+        ValueTy::Data(n, args) => ValueTy::Data(
+            n.clone(),
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        ValueTy::Newtype(n, args) => ValueTy::Newtype(
+            n.clone(),
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        ValueTy::App(n, args) => ValueTy::App(
+            n.clone(),
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        ValueTy::TyConApp(f, args) => {
+            ValueTy::TyConApp(*f, args.iter().map(|a| subst_value_vars(a, vars)).collect())
+        }
+        ValueTy::Thunk(args, rets) => ValueTy::Thunk(
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+            rets.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        other => other.clone(),
     }
 }
 
@@ -341,7 +425,7 @@ fn starray_handle_types(t: Option<&ValueTy>) -> (ValueTy, ValueTy) {
 /// here).
 fn starray_op_arity(op: ValueEffectOp) -> usize {
     match op {
-        ValueEffectOp::NewArrayFlat => 3,
+        ValueEffectOp::NewArrayFlat | ValueEffectOp::NewArrayFromListFlat => 3,
         ValueEffectOp::ReadArrayFlat => 2,
         ValueEffectOp::WriteArrayFlat | ValueEffectOp::ModifyArrayFlat => 3,
         _ => 1,
@@ -838,7 +922,11 @@ impl<'a> Lowerer<'a> {
             regs.push(r);
             arg_tys.push(ty);
         }
-        let (index, elem) = if matches!(op, ValueEffectOp::NewArrayFlat) {
+        let allocates = matches!(
+            op,
+            ValueEffectOp::NewArrayFlat | ValueEffectOp::NewArrayFromListFlat
+        );
+        let (index, elem) = if allocates {
             (
                 pair_index_ty(arg_tys.first()),
                 concrete_or_float(arg_tys.get(2).cloned().unwrap_or(ValueTy::Float)),
@@ -846,7 +934,7 @@ impl<'a> Lowerer<'a> {
         } else {
             starray_handle_types(arg_tys.first())
         };
-        let payload = if matches!(op, ValueEffectOp::NewArrayFlat) {
+        let payload = if allocates {
             ValueTy::Data("STArray".into(), vec![ValueTy::Void, index.clone(), elem])
         } else if matches!(op, ValueEffectOp::ReadArrayFlat) {
             elem
@@ -1651,6 +1739,7 @@ impl<'a> Lowerer<'a> {
                 // which `getBounds` a call means.
                 if let Some(op) = match name.as_str() {
                     "newArrayFlat" => Some(ValueEffectOp::NewArrayFlat),
+                    "newArrayFromListFlat" => Some(ValueEffectOp::NewArrayFromListFlat),
                     "readArrayFlat" => Some(ValueEffectOp::ReadArrayFlat),
                     "writeArrayFlat" => Some(ValueEffectOp::WriteArrayFlat),
                     "modifyArrayFlat" => Some(ValueEffectOp::ModifyArrayFlat),
@@ -2196,7 +2285,7 @@ impl<'a> Lowerer<'a> {
                 // modes: result-directed (`pure`/`return`/`mempty`), arity-0
                 // (`Monoid mappend`, `Show show`), and constructor classes
                 // (`Functor f`, by the class-var-applied argument).
-                if !self.defs.contains_key(name) {
+                if !self.method_shadowed_by_def(name, call_args) {
                     if let Some(class_name) = self.env.class_of_method(name) {
                         let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
                         let class_var = class_info.var.clone();
@@ -2313,12 +2402,27 @@ impl<'a> Lowerer<'a> {
                                     ValueTy::Var(v)
                                 },
                             );
+                            // The signature's fresh variables are solved as the
+                            // arguments arrive: `bind m f`'s second parameter is
+                            // `a -> m b`, and `a` is only known from `m`'s
+                            // payload. Without this the inlined body's lambda
+                            // parameter stayed an unresolved variable, so a
+                            // method call on it (`index b ix` where `b` is the
+                            // bounds payload) could not dispatch and fell back
+                            // to the definition.
+                            let mut arg_var_bindings: HashMap<crate::types::TypeVarId, ValueTy> =
+                                HashMap::new();
                             for (i, (p, a)) in params.iter().zip(call_args.iter()).enumerate() {
-                                let exp = arg_param_tys.get(i).cloned();
+                                let exp = arg_param_tys
+                                    .get(i)
+                                    .map(|t| subst_value_vars(t, &arg_var_bindings));
                                 let (r, t) = match exp {
                                     Some(e) => self.lower_value_expected(a, Some(&e))?,
                                     None => self.lower_value(a)?,
                                 };
+                                if let Some(pat) = arg_param_tys.get(i) {
+                                    bind_pattern_vars(pat, &t, &mut arg_var_bindings);
+                                }
                                 scope.insert(p.clone(), (r, t));
                                 ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
                             }
@@ -2608,6 +2712,19 @@ impl<'a> Lowerer<'a> {
                                 ValueTy::Var(v)
                             },
                         );
+                        // The signature's fresh variables are solved as the
+                        // arguments arrive. `bind m f`'s second parameter is
+                        // `a -> m b`, and `a` is ONLY known from `m`'s payload:
+                        // without binding it the inlined instance body's
+                        // continuation parameter stayed an unresolved variable,
+                        // so a call on it inside the callback (`index b ix`
+                        // where `b` is the bounds payload) could not dispatch by
+                        // type and fell back to the constrained definition.
+                        let mut arg_var_bindings: HashMap<crate::types::TypeVarId, ValueTy> =
+                            HashMap::new();
+                        if let Some(pat) = param_tys.get(container_idx) {
+                            bind_pattern_vars(pat, &container_vty, &mut arg_var_bindings);
+                        }
                         let mut arg_regs = Vec::with_capacity(call_args.len());
                         let mut arg_vtys = Vec::with_capacity(call_args.len());
                         for (i, a) in call_args.iter().enumerate() {
@@ -2615,8 +2732,14 @@ impl<'a> Lowerer<'a> {
                                 arg_regs.push(container_reg);
                                 arg_vtys.push(container_vty.clone());
                             } else {
-                                let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                                let exp = param_tys
+                                    .get(i)
+                                    .map(|t| subst_value_vars(t, &arg_var_bindings))
+                                    .unwrap_or(ValueTy::Float);
                                 let (r, t) = self.lower_value_expected(a, Some(&exp))?;
+                                if let Some(pat) = param_tys.get(i) {
+                                    bind_pattern_vars(pat, &t, &mut arg_var_bindings);
+                                }
                                 arg_regs.push(r);
                                 arg_vtys.push(t);
                             }
@@ -3115,12 +3238,43 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 });
-                Ok((dst, ValueTy::Float))
+                // Int-preserving value arithmetic: `+`/`-`/`*` over two `Int`
+                // operands stays on the Int track (`Value::Int` at runtime,
+                // `ValueTy::Int` statically). `/` is float division, so it
+                // always yields a `Float`; `%` is unsupported. This mirrors
+                // `infer_arith` and the interpreter's `exec_value_arith` — the
+                // three must agree, or an `Int`-typed slot would hold a
+                // `Value::Float` (which the flat array primitives reject).
+                let int_track = matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
+                    && matches!(a_ty, ValueTy::Int)
+                    && matches!(b_ty, ValueTy::Int);
+                Ok((
+                    dst,
+                    if int_track {
+                        ValueTy::Int
+                    } else {
+                        ValueTy::Float
+                    },
+                ))
             }
             Expr::Neg(inner, _span) => {
                 // Negative literal / unary minus in value position. A numeric
                 // literal folds to a negative constant; anything else lowers as
-                // `0.0 - inner`.
+                // `zero - inner`.
+                //
+                // The result keeps the OPERAND's track: an integer literal
+                // negates to a `Value::Int` (an `Expr::Int` is Int-track
+                // unconditionally, so `-3` must be too), a float literal to a
+                // `Value::Float`, and a non-literal follows its lowered type.
+                // Without this, `-1` was the one place a statically-`Int` slot
+                // held a `Value::Float` — and an `Ix` offset computed from a
+                // negative lower bound then failed the interpreter's
+                // "index is not an Int" check.
+                if let Some(v) = const_i64(inner) {
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueConstInt { dst, value: -v });
+                    return Ok((dst, ValueTy::Int));
+                }
                 match const_f64(inner) {
                     Some(v) => {
                         let dst = self.fresh_value_reg();
@@ -3128,19 +3282,34 @@ impl<'a> Lowerer<'a> {
                         Ok((dst, ValueTy::Float))
                     }
                     None => {
-                        let (ir, _) = self.lower_value(inner)?;
+                        let (ir, inner_ty) = self.lower_value(inner)?;
+                        let int_track = matches!(inner_ty, ValueTy::Int);
                         let zero = self.fresh_value_reg();
-                        self.emit_value(ValueInstr::ValueConstFloat {
-                            dst: zero,
-                            value: 0.0,
-                        });
+                        if int_track {
+                            self.emit_value(ValueInstr::ValueConstInt {
+                                dst: zero,
+                                value: 0,
+                            });
+                        } else {
+                            self.emit_value(ValueInstr::ValueConstFloat {
+                                dst: zero,
+                                value: 0.0,
+                            });
+                        }
                         let dst = self.fresh_value_reg();
                         self.emit_value(ValueInstr::ValueSub {
                             dst,
                             a: zero,
                             b: ir,
                         });
-                        Ok((dst, ValueTy::Float))
+                        Ok((
+                            dst,
+                            if int_track {
+                                ValueTy::Int
+                            } else {
+                                ValueTy::Float
+                            },
+                        ))
                     }
                 }
             }
@@ -3462,6 +3631,8 @@ impl<'a> Lowerer<'a> {
             "not",
             "and",
             "or",
+            "listRange",
+            "arrayFromListChecked",
         ]
         .iter()
         .any(|n| name == s(n));
@@ -3478,6 +3649,7 @@ impl<'a> Lowerer<'a> {
                     | "writeSTRef"
                     | "modifySTRef"
                     | "newArrayFlat"
+                    | "newArrayFromListFlat"
                     | "readArrayFlat"
                     | "writeArrayFlat"
                     | "modifyArrayFlat"
@@ -3555,6 +3727,11 @@ impl<'a> Lowerer<'a> {
             ("arrayAccum", 3) => ArrayAccum,
             ("arrayFromBuffer", 1) => ArrayFromBuffer,
             ("bufferFromArray", 1) => BufferFromArray,
+            // `listRange (l, u)` — the inclusive Int range (the only
+            // list-GENERATING primitive; `Ix.range` is built on it).
+            ("listRange", 1) => ListRange,
+            // `listArray`'s strict constructor: (bounds, rangeSize, elems).
+            ("arrayFromListChecked", 3) => ArrayFromListChecked,
             _ => return None,
         })
     }
@@ -3748,6 +3925,23 @@ impl<'a> Lowerer<'a> {
                 vec![ValueTy::Int, ValueTy::Float],
             )),
             "bufferFromArray" => Ok(ValueTy::Buffer),
+            // `listRange (l, u)`: the inclusive Int range as a flat list.
+            "listRange" => Ok(ValueTy::App("List".into(), vec![ValueTy::Int])),
+            // `arrayFromListChecked bounds rangeSize elems`: the element list is
+            // the THIRD operand (the size sits between bounds and elements), so
+            // the assembled type reads the index off the bounds and the element
+            // type off `args[2]`.
+            "arrayFromListChecked" => {
+                let index = pair_index_ty(args.first());
+                let elem = args
+                    .get(2)
+                    .and_then(list_type_args)
+                    .and_then(|i| i.first().cloned());
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
             _ => Err(CompileError::Unsupported(format!(
                 "unknown collection op {name}"
             ))),
@@ -3880,10 +4074,94 @@ impl<'a> Lowerer<'a> {
     ) -> Option<Result<(usize, ValueTy), CompileError>> {
         let env = self.env;
         let cd = env.constrained_defs.get(name)?.clone();
-        if self.value_locals.iter().any(|s| s.contains_key(name)) {
+        // A value binding named like the definition shadows it: a λ-parameter
+        // or a fragment capture (`\ listArray -> listArray 1.0`).
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
             return None;
         }
+        // A DUAL name (`index` is both the `Ix` offset method and the array
+        // accessor): when the first argument's static type selects a method
+        // instance, DECLINE the definition so the method path below handles the
+        // call. The first argument is probed in a sandbox (the instructions are
+        // discarded), and the routing predicate is the SAME one inference uses
+        // (`first_arg_solves_class_var`), so the passes cannot disagree.
+        if env.class_of_method(name).is_some() {
+            if let Some(first) = call_args.first() {
+                if let Some(ty) = self.peek_value_ty(first) {
+                    if crate::types::infer::first_arg_solves_class_var(env, name, &ty) {
+                        return None;
+                    }
+                }
+            }
+        }
         Some(self.lower_constrained_apply(name, &cd, call_args, expected, span))
+    }
+
+    /// Whether `name` is shadowed by a DEFINITION at this call site, i.e. the
+    /// call must NOT be a class-method dispatch.
+    ///
+    /// Mirrors inference's `method_shadowed_by_def`: a plain user definition
+    /// shadows a method outright; a class-CONSTRAINED definition sharing its
+    /// name with a method (`index`) routes by the FIRST argument's static type —
+    /// an argument that solves the method's class variable goes to the method,
+    /// everything else to the definition.
+    fn method_shadowed_by_def(&mut self, name: &str, args: &[Expr]) -> bool {
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
+            return true;
+        }
+        let constrained = self.env.constrained_defs.contains_key(name);
+        if !constrained && !self.defs.contains_key(name) {
+            return false;
+        }
+        if constrained && self.env.class_of_method(name).is_some() {
+            if let Some(first) = args.first() {
+                if let Some(ty) = self.peek_value_ty(first) {
+                    return !crate::types::infer::first_arg_solves_class_var(self.env, name, &ty);
+                }
+            }
+        }
+        true
+    }
+
+    /// Recover an expression's static value type by lowering it in a throwaway
+    /// block, KEEPING the current locals visible.
+    ///
+    /// [`Self::sandbox_value_ty`] empties the local scopes because it types
+    /// self-contained scrutinees; a dispatch probe asks about an argument that
+    /// usually IS a local reference (`index b i` with `b` a λ-parameter), so
+    /// clearing them would make every probe of a local fail and silently route
+    /// every dual-name call to the definition. The emitted instructions,
+    /// registers, captures, inlined-def state, pending parameter types, and
+    /// head-arg bindings are all restored.
+    fn peek_value_ty(&mut self, e: &Expr) -> Option<ValueTy> {
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
+        let saved_next = self.next_value_reg;
+        // The probe must see the CURRENT scopes: a λ-parameter lives in
+        // `value_locals`, and — inside a nested fragment — a capture lives in
+        // `fragment_captures`. Taking either map away (as `sandbox_value_ty`
+        // does for self-contained scrutinees) makes the probe of a plain
+        // local reference fail, which silently routed every dual-name call
+        // inside a λ body to the definition. Both maps are cloned and restored
+        // instead, so a capture registered during the probe is discarded.
+        let saved_captures = self.fragment_captures.clone();
+        let saved_inline = self.value_inline.clone();
+        let saved_pending = self.pending_param_tys.clone();
+        let saved_bindings = self.head_arg_bindings.clone();
+        let r = self.lower_value(e).ok();
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
+        self.next_value_reg = saved_next;
+        self.fragment_captures = saved_captures;
+        self.value_inline = saved_inline;
+        self.pending_param_tys = saved_pending;
+        self.head_arg_bindings = saved_bindings;
+        r.map(|(_, ty)| ty)
     }
 
     /// [`Self::lower_constrained_apply_site`] for a known constrained
@@ -3945,13 +4223,31 @@ impl<'a> Lowerer<'a> {
         let env = self.env;
         let (arg_tes, ret_te) = crate::types::infer::sig_func_parts(&cd.sig);
         // Pass 1: lower the arguments and solve the signature's type variables
-        // from their static types. The expectation is deliberately NOT threaded
-        // here — the parameter types it would come from are what this pass
-        // computes.
+        // from their static types.
+        //
+        // A FUNCTION-shaped parameter (`(i -> j)` in `ixmap`) is the one case
+        // where the expectation must be threaded: its argument is usually a
+        // λ-literal, and a λ parameter is only typed structurally when the
+        // expected type says what it is — otherwise `p` stayed the scalar
+        // default and `p.second` had no record to project from. The class
+        // variables of the preceding arguments are already solved here, so the
+        // expectation is concrete. Scalar/record parameters keep the
+        // expectation-free lowering (their argument's own form types them).
         let mut bindings: HashMap<String, ValueTy> = HashMap::new();
         let mut lowered: Vec<(usize, ValueTy)> = Vec::with_capacity(call_args.len());
         for (i, a) in call_args.iter().enumerate() {
-            let (r, t) = self.lower_value(a)?;
+            let expected_arg = arg_tes.get(i).and_then(|te| {
+                let mut vars: HashMap<String, ValueTy> = HashMap::new();
+                let vty =
+                    crate::types::infer::sig_ty_to_vty(env, te, &bindings, &mut vars, &mut || {
+                        self.fresh_sig_var()
+                    });
+                matches!(vty, ValueTy::Thunk(_, _)).then_some(vty)
+            });
+            let (r, t) = match &expected_arg {
+                Some(exp) => self.lower_value_expected(a, Some(exp))?,
+                None => self.lower_value(a)?,
+            };
             if let Some(pat) = arg_tes.get(i) {
                 crate::types::infer::bind_sig_type_vars(env, pat, &t, &mut bindings);
             }
@@ -4083,7 +4379,14 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
-        if !self.defs.contains_key(name) && !self.value_locals.iter().any(|s| s.contains_key(name))
+        // A value binding shadows a class method — a λ-parameter in
+        // `value_locals`, and equally a CAPTURE inside a nested fragment (a
+        // `\ arr -> …` that names its handle `arr` must not resolve to the
+        // `Arrow` class's `arr`).
+        let captured = self.fragment_captures.iter().any(|(n, _)| n == name);
+        if !self.defs.contains_key(name)
+            && !captured
+            && !self.value_locals.iter().any(|s| s.contains_key(name))
         {
             if let Some(class_name) = self.env.class_of_method(name) {
                 let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
@@ -4450,7 +4753,18 @@ impl<'a> Lowerer<'a> {
                 let param_names: HashSet<String> =
                     def_params.iter().map(|p| p.name.clone()).collect();
                 let free = self.free_vars(&body, &param_names);
-                let param_tys = vec![ValueTy::Float; def_params.len()];
+                // A signature-annotated definition carries its λ-parameter
+                // types from inference; the scalar default is only the last
+                // resort. Without this a body that projects a field of its
+                // parameter (`swap p :: Pair Int Int -> Pair Int Int = Pair {
+                // first: p.second, … }`) had no record to project from when the
+                // closure form was compiled instead of inlined.
+                let param_tys: Vec<ValueTy> = self
+                    .anchor_param_tys
+                    .get(name)
+                    .filter(|tys| tys.len() == def_params.len())
+                    .cloned()
+                    .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()]);
                 let (fragment_id, ret_ty) = self.lower_fragment(
                     &def_params,
                     &body,
@@ -4538,6 +4852,13 @@ impl<'a> Lowerer<'a> {
             || self.sum_ctor(name).is_some()
             || self.env.class_of_method(name).is_some()
             || self.env.builtin_sigs.contains_key(name)
+            // A class-constrained definition (`listArray`, `newArray`, …) is
+            // specialized per CALL SITE at lowering, exactly like an inlined
+            // top-level def: it has no standalone value, so it must never be
+            // captured as one. Without this a `do`-block continuation lambda
+            // captured `writeArray`/`modifyArray` as closures and the
+            // specialized application was then shadowed by the capture.
+            || self.env.constrained_defs.contains_key(name)
     }
 
     /// Record a name that appears in callee position of an application as a
@@ -4559,6 +4880,22 @@ impl<'a> Lowerer<'a> {
         if bound.contains(name) || !seen.insert(name.to_string()) {
             return;
         }
+        // An enclosing value binding (λ-parameter or fragment capture) is
+        // applied as a closure here, so it must be captured even when the name
+        // also denotes a class method or a definition.
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
+            out.push(name.to_string());
+            return;
+        }
+        // A class-constrained definition is specialized per CALL SITE at
+        // lowering: it has no standalone value, so it is never a capture —
+        // not even in complete mode (where ordinary defs are captured as
+        // shared self-cells for recursion).
+        if self.env.constrained_defs.contains_key(name) {
+            return;
+        }
         if self.defs.contains_key(name) {
             if self.mode == Mode::Complete {
                 out.push(name.to_string());
@@ -4577,6 +4914,23 @@ impl<'a> Lowerer<'a> {
     ) {
         match e {
             Expr::Ref(name, _) => {
+                // A name bound by an ENCLOSING value scope (a λ-parameter of the
+                // definition being compiled, or a capture of the fragment we are
+                // already inside) is a runtime value HERE, whatever it may also
+                // mean globally: a def named `arr`/`show`/`index` must still be
+                // captured. This must be checked BEFORE the
+                // `resolves_at_lowering` suppression — a parameter named `arr`
+                // would otherwise be dropped as "the `Arrow` class method" and
+                // the fragment body would resolve it as a method instead of a
+                // capture.
+                let enclosing = self.value_locals.iter().any(|s| s.contains_key(name))
+                    || self.fragment_captures.iter().any(|(n, _)| n == name);
+                if enclosing {
+                    if seen.insert(name.clone()) {
+                        out.push(name.clone());
+                    }
+                    return;
+                }
                 // Top-level value defs are inlined at each use site (see
                 // `lower_value_ref_inner`), so they are never captured. A name
                 // that resolves at lowering (a builtin, constructor, typeclass
@@ -7206,6 +7560,18 @@ fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
             default: Some(d), ..
         } => collect_def_ref_names(d, out),
         _ => {}
+    }
+}
+
+/// The INTEGER value of a constant expression, when it is an integer literal
+/// (possibly nested under unary minus). Unlike [`const_f64`] this does NOT
+/// accept float literals or arithmetic: it is used where the constant must stay
+/// on the Int track (`Expr::Neg` of an integer literal).
+fn const_i64(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int(v, _) => Some(*v),
+        Expr::Neg(inner, _) => const_i64(inner).map(|v| -v),
+        _ => None,
     }
 }
 

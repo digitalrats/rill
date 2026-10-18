@@ -398,6 +398,20 @@ typeclass Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
 typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
 
+--  Index types (`Data.Ix`): the offset/range vocabulary the array surface is
+--  written against. `range` enumerates the index set in ROW-MAJOR order (last
+--  coordinate fastest), `index` gives an element's flat offset, `inRange` tests
+--  membership and `rangeSize` counts the elements — its value is also the
+--  required element count of `listArray`. Instances are declared in the
+--  standard prelude (`STD_PRELUDE`), and every offset they compute is an `Int`,
+--  so the flat array primitives only ever see integers.
+typeclass Ix i where {
+    range: Pair i i -> List i;
+    index: Pair i i -> i -> Int;
+    inRange: Pair i i -> i -> Bool;
+    rangeSize: Pair i i -> Int;
+}
+
 data Kleisli m a b = { unKleisli: a -> m b };
 
 typeclass Arrow a where {
@@ -518,6 +532,120 @@ instance Monad IO where {
     return x = IO { unIO: \w -> Pair { first: w, second: x } };
     bind m f = IO { unIO: \w -> let io_state = m.unIO w in let io_next = f io_state.second in io_next.unIO io_state.first };
 };
+
+--  ---------------------------------------------------------------------------
+--  Data.Array — the constrained language-level array surface.
+--
+--  It is written entirely against `Ix` (declared in `CATEGORY_PRELUDE`), on top
+--  of the flat storage primitives (`arrayFromList`, `arrayIndexFlat`,
+--  `arrayUpdate`, `arrayAccum`, the `STArray` effects, and the buffer bridge).
+--  Every offset and range is computed by an INSTANCE BODY, in the language, so
+--  the primitives only ever receive plain `Int`s — that split is what keeps the
+--  storage layer type-agnostic and the index math user-extensible.
+--
+--  Two deliberate deviations from GHC are documented where they bite:
+--    * `listArray` / `newListArray` are STRICT: `length elems` must equal
+--      `rangeSize bounds`, otherwise the program faults cleanly instead of
+--      building a mis-indexed array.
+--    * `array` fills the unlisted positions with `0.0`, so it is Float-element
+--      only (`Array i Float`): the language has no `undefined`-style bottom to
+--      conjure a value of an arbitrary element type. `accumArray` takes its
+--      initial value as an argument and therefore stays generic.
+--
+--  `range` enumerates ROW-MAJOR (last coordinate fastest), which is exactly the
+--  order `Ix.index` flattens to, so `indices`/`assocs` and the element list of
+--  a 2-D `listArray` all agree.
+--  ---------------------------------------------------------------------------
+
+--  1-D indices: `rangeSize` is defined per instance (rather than as a class
+--  default over `length (range b)`) so an instance body never has to invoke a
+--  sibling method of its own class; `range` itself is the definition of the
+--  enumeration, so counting it would be circular in spirit.
+instance Ix Int where {
+    range b = listRange b;
+    index b i = i - b.first;
+    inRange b i = (b.first <= i) && (i <= b.second);
+    rangeSize b = b.second - b.first + 1;
+}
+
+--  2-D indices, row-major over `Pair Int Int`. The instance is SELF-CONTAINED on
+--  purpose: the per-coordinate arithmetic is inlined instead of dispatching the
+--  `Ix Int` sibling method, so an instance body never depends on instance
+--  resolution of its own class (the same class variable would have to be solved
+--  twice). `range` builds the grid with `concat_map`/`map` over two inclusive
+--  `listRange`s — no recursion, which strict mode bans.
+instance Ix (Pair Int Int) where {
+    range b = concat_map (\ i1 -> map (\ i2 -> Pair { first: i1, second: i2 }) (listRange (Pair { first: (b.first).second, second: (b.second).second }))) (listRange (Pair { first: (b.first).first, second: (b.second).first }));
+    index b i = (i.first - (b.first).first) * ((b.second).second - (b.first).second + 1) + (i.second - (b.first).second);
+    inRange b i = ((b.first).first <= i.first) && (i.first <= (b.second).first) && ((b.first).second <= i.second) && (i.second <= (b.second).second);
+    rangeSize b = ((b.second).first - (b.first).first + 1) * ((b.second).second - (b.first).second + 1);
+}
+
+--  --- Immutable arrays ------------------------------------------------------
+--  `bounds` and `elems` are plain definitions (not builtins): the ST read-backs
+--  `getBounds`/`getElems` are the mutable-handle counterparts and stay distinct.
+
+--  Both carry EXPLICIT signatures: without one the inferred parameter type is
+--  the numeric fallback, so `arrayBounds` inside the body saw a non-array and
+--  typed the bounds as a flat `Pair Int Int` (right by accident for 1-D, wrong
+--  for a nested index). With the signature the index type is a signature
+--  variable, which never solves an `Ix` instance — a caller that indexes with
+--  `bounds a` therefore routes to the array definition, never to a bogus
+--  `Ix Int` method.
+bounds a :: Array i e -> Pair i i = arrayBounds a;
+elems a :: Array i e -> List e = arrayElems a;
+
+--  `index` is DOUBLE DUTY: the `Ix` offset method (`Pair i i -> i -> Int`) and
+--  this array accessor (`Array i e -> i -> e`, the `!` operator). The dispatch is
+--  type-directed on the first argument — a `Pair` bounds value selects the
+--  method, an `Array` selects this definition — and the body below relies on
+--  exactly that to reach the METHOD for its offset. The offset reads the
+--  PRIMITIVE `arrayBounds`, not the `bounds` definition: a plain definition is
+--  lowered through its (polymorphic) scheme, so its index type would stay a
+--  variable and the METHOD dispatch would be lost.
+index a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (index (arrayBounds a) ix);
+
+--  The strict constructor: the element count must equal `rangeSize` of the
+--  bounds. `arrayFromListChecked` carries the pre-computed size to the
+--  interpreter, which faults on a mismatch.
+listArray b es :: Ix i => Pair i i -> List e -> Array i e = arrayFromListChecked b (rangeSize b) es;
+
+--  `array assocs`: every position starts at `0.0` and the associations are
+--  applied over it in order, so a repeated index leaves the last value.
+array b xs :: Ix i => Pair i i -> List (Pair i Float) -> Array i Float = arrayUpdate (arrayFromList b (map (\ k -> 0.0) (range b))) (map (\ p -> Pair { first: index b p.first, second: p.second }) xs);
+
+--  `accumArray f init assocs`: every position starts at `init` and the
+--  associations are folded in order (`f old new`).
+accumArray f init b xs :: Ix i => (e -> (e -> e)) -> e -> Pair i i -> List (Pair i e) -> Array i e = arrayAccum (arrayFromList b (map (\ k -> init) (range b))) f (map (\ p -> Pair { first: index b p.first, second: p.second }) xs);
+
+--  `(//)` — apply (index, value) associations, last wins, source untouched.
+update a xs :: Ix i => Array i e -> List (Pair i e) -> Array i e = arrayUpdate a (map (\ p -> Pair { first: index (arrayBounds a) p.first, second: p.second }) xs);
+
+--  `accum f` — fold associations into an existing array.
+accum f a xs :: Ix i => (e -> (e -> e)) -> Array i e -> List (Pair i e) -> Array i e = arrayAccum a f (map (\ p -> Pair { first: index (arrayBounds a) p.first, second: p.second }) xs);
+
+indices a :: Ix i => Array i e -> List i = range (arrayBounds a);
+
+assocs a :: Ix i => Array i e -> List (Pair i e) = map (\ ix -> Pair { first: ix, second: index a ix }) (indices a);
+
+--  `ixmap b f a`: reindex — the result is indexed by `Pair i i`, and position
+--  `ix` takes `a`'s element at `f ix`. TWO `Ix` instances are in play, one per
+--  index type.
+ixmap b f a :: (Ix i, Ix j) => Pair i i -> (i -> j) -> Array j e -> Array i e = arrayFromList b (map (\ ix -> index a (f ix)) (range b));
+
+--  --- Mutable arrays (ST) ---------------------------------------------------
+--  The wrappers compute the flat offset with `Ix.index` on the handle's own
+--  bounds (`getBounds`) and then call the corresponding `…Flat` effect.
+
+newArray b e :: Ix i => Pair i i -> e -> ST s (STArray s i e) = newArrayFlat b (rangeSize b) e;
+
+newListArray b es :: Ix i => Pair i i -> List e -> ST s (STArray s i e) = newArrayFromListFlat b (rangeSize b) es;
+
+readArray arr ix :: Ix i => STArray s i e -> i -> ST s e = bind (getBounds arr) (\ b -> readArrayFlat arr (index b ix));
+
+writeArray arr ix v :: Ix i => STArray s i e -> i -> e -> ST s () = bind (getBounds arr) (\ b -> writeArrayFlat arr (index b ix) v);
+
+modifyArray arr ix f :: Ix i => STArray s i e -> i -> (e -> e) -> ST s () = bind (getBounds arr) (\ b -> modifyArrayFlat arr (index b ix) f);
 
 main = ();
 "#;
@@ -978,6 +1106,19 @@ impl TypeEnv {
                 Box::new(forall_s(st(vec![tv("s"), list_of(tv("e"))]))),
             ),
         );
+        // `newArrayFromListFlat` — the strict `newListArray` allocation:
+        //
+        //   newArrayFromListFlat :: Pair i i -> Int -> List e -> ST s (STArray s i e)
+        //
+        // The `Int` is the language-computed `rangeSize`; the interpreter
+        // compares it with the list length and faults on a mismatch.
+        env.builtin_sigs.insert(
+            "newArrayFromListFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![pair_of(vec![tv("i"), tv("i")]), tv("Int"), list_of(tv("e"))],
+                Box::new(forall_s(st(vec![tv("s"), sa_ie()]))),
+            ),
+        );
         // `runSTArray` — the freeze. Its signature is the rank-N shape of
         // `runST` with the region's payload pinned to an `STArray`:
         //
@@ -1244,6 +1385,30 @@ impl TypeEnv {
                 vec![array(vec![tv("Int"), tv("Float")])],
                 Box::new(tv("Buffer")),
             ),
+        );
+        // The two primitives the language-level array surface needs but the
+        // flat storage layer cannot express:
+        //
+        //   listRange           :: Pair Int Int -> List Int
+        //   arrayFromListChecked :: Pair i i -> Int -> List e -> Array i e
+        //
+        // `listRange` is the only list-GENERATING primitive (strict mode bans
+        // recursion and there is no `enumFromTo`), so `Ix.range` builds on it.
+        // `arrayFromListChecked` is `arrayFromList` plus the strict length check
+        // behind `listArray` (and `newArrayFromListFlat` is its ST twin).
+        env.builtin_sigs.insert(
+            "listRange".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("Int"), tv("Int")])],
+                Box::new(list(tv("Int"))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "arrayFromListChecked".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("i"), tv("i")]), tv("Int"), list(tv("e"))],
+                Box::new(arr_ie()),
+            )),
         );
 
         env

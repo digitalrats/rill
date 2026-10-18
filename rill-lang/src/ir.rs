@@ -144,6 +144,18 @@ pub enum ValueBuiltinOp {
     /// Copy an immutable `Int`-indexed `Float` array into a signal buffer:
     /// `bufferFromArray arr`.
     BufferFromArray,
+    /// The inclusive `Int` range of a bounds pair: `listRange (l, u)` →
+    /// `[l, l+1, …, u]` (the empty list when `u < l`). The single
+    /// list-GENERATING primitive — the language has no recursion in strict mode
+    /// and no `enumFromTo`, so `Ix.range` needs it to build its result. It takes
+    /// a `Pair Int Int`, so it is Int-only by construction.
+    ListRange,
+    /// `arrayFromList` with the STRICT length check behind the language-level
+    /// `listArray`: `arrayFromListChecked bounds rangeSize elems`. A mismatch
+    /// between the element count and `rangeSize` (computed by the language from
+    /// the `Ix` instance) latches a clean fault instead of building a
+    /// mis-indexed array.
+    ArrayFromListChecked,
 }
 
 /// A value-track effect operation (the ST/region and IO-stream primitives).
@@ -190,6 +202,12 @@ pub enum ValueEffectOp {
     GetArrayBounds,
     /// `getElems a`: read the cell's current elements back out as a `List e`.
     GetArrayElems,
+    /// `newArrayFromListFlat bounds n xs`: allocate a mutable array cell in
+    /// the current region and seed its elements from `xs` (the strict
+    /// `newListArray` counterpart of [`Self::NewArrayFlat`]). `n` is the
+    /// language-computed `rangeSize`; a list whose length differs latches a
+    /// clean fault.
+    NewArrayFromListFlat,
     /// `runSTArray st`: like [`Self::RunST`], but FREEZE the region's
     /// `STArray` result into an immutable `Array` (a refcount transfer — no
     /// element copies).

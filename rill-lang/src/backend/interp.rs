@@ -824,6 +824,38 @@ enum ValueArith {
     Div,
 }
 
+/// A forced value-arithmetic operand, keeping the Int/Float KIND so integer
+/// arithmetic can stay on the Int track.
+///
+/// `Bottom` propagates through strict arithmetic; an unbound or non-numeric
+/// slot reads as the float `0.0` (the pre-existing "unbound reads as zero"
+/// rule).
+enum ArithmeticOperand {
+    Int(i64),
+    Float(f64),
+    Bottom,
+}
+
+/// Force a slot's value and classify it as an arithmetic operand. The operand
+/// is read exactly once (forcing may replace the slot's ref), so callers must
+/// not re-read the same register.
+fn arithmetic_operand<T: Transcendental, const BUF: usize>(
+    prog: &mut RillProgram<T, BUF>,
+    reg: usize,
+    drops: &mut Vec<ArenaRef>,
+) -> ArithmeticOperand {
+    let Some(r) = prog.value_regs.get(reg).copied().flatten() else {
+        return ArithmeticOperand::Float(0.0);
+    };
+    let head = force(prog, r, drops);
+    match prog.arena.get(head) {
+        Some(Value::Bottom) => ArithmeticOperand::Bottom,
+        Some(Value::Int(i)) => ArithmeticOperand::Int(*i),
+        Some(Value::Float(f)) => ArithmeticOperand::Float(*f),
+        _ => ArithmeticOperand::Float(0.0),
+    }
+}
+
 /// Read a scalar value as `f64`: a Float reads directly, an Int widens.
 /// Non-numeric values (records, sums, closures, `Void`) read as `None`.
 fn value_to_f64(v: &Value) -> Option<f64> {
@@ -834,9 +866,18 @@ fn value_to_f64(v: &Value) -> Option<f64> {
     }
 }
 
-/// Execute one value-track arithmetic instruction: read the two operand values
-/// as scalars (an unbound or non-numeric operand reads as `0.0`), compute the
-/// Float result, and store it as a freshly allocated slot in `dst`.
+/// Execute one value-track arithmetic instruction and store the result in
+/// `dst`.
+///
+/// The result keeps the Int track: when BOTH operands are `Value::Int` and the
+/// operation is `+`, `-`, or `*`, the result is a `Value::Int` (wrapping, so a
+/// pathological overflow cannot panic a debug build). `/` always yields a
+/// `Float` — it is float division in this language, and truncating it would
+/// silently change `3 / 2`. Everything else (a `Float` operand, an unbound or
+/// non-numeric slot) computes in `f64` and yields a `Float`, exactly as before.
+/// The static type tracks this rule in `infer_arith` / `lower`'s `Expr::Arith`
+/// arm — a typed `Int` slot therefore holds a real `Value::Int`, which the flat
+/// array primitives require of an offset.
 ///
 /// The operands are read BEFORE any `dst` occupant is released, so `dst` may
 /// alias an operand (`dst == a` or `dst == b`) without losing its value.
@@ -852,20 +893,41 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     b: usize,
     drops: &mut Vec<ArenaRef>,
 ) {
-    let av = numeric_operand(prog, a, drops);
-    let bv = numeric_operand(prog, b, drops);
+    let av = arithmetic_operand(prog, a, drops);
+    let bv = arithmetic_operand(prog, b, drops);
     // Release the previous `dst` occupant AFTER the operands are read/forced,
     // so `dst` may alias an operand without losing its value.
     if let Some(r) = prog.value_regs.get_mut(dst).and_then(|r| r.take()) {
         drops.push(r);
     }
     // Bottom propagates through strict arithmetic.
-    if matches!(&av, Some(Err(()))) || matches!(&bv, Some(Err(()))) {
+    if matches!(av, ArithmeticOperand::Bottom) || matches!(bv, ArithmeticOperand::Bottom) {
         prog.value_regs[dst] = alloc_owned(prog, Value::Bottom);
         return;
     }
-    let av = av.map(|v| v.unwrap_or(0.0)).unwrap_or(0.0);
-    let bv = bv.map(|v| v.unwrap_or(0.0)).unwrap_or(0.0);
+    // Int-preserving `+`/`-`/`*` (see the doc comment above).
+    if let (ArithmeticOperand::Int(x), ArithmeticOperand::Int(y)) = (&av, &bv) {
+        let int_result = match op {
+            ValueArith::Add => Some(x.wrapping_add(*y)),
+            ValueArith::Sub => Some(x.wrapping_sub(*y)),
+            ValueArith::Mul => Some(x.wrapping_mul(*y)),
+            ValueArith::Div => None,
+        };
+        if let Some(v) = int_result {
+            prog.value_regs[dst] = alloc_owned(prog, Value::Int(v));
+            return;
+        }
+    }
+    let av = match av {
+        ArithmeticOperand::Int(i) => i as f64,
+        ArithmeticOperand::Float(f) => f,
+        ArithmeticOperand::Bottom => unreachable!("bottom handled above"),
+    };
+    let bv = match bv {
+        ArithmeticOperand::Int(i) => i as f64,
+        ArithmeticOperand::Float(f) => f,
+        ArithmeticOperand::Bottom => unreachable!("bottom handled above"),
+    };
     let result = match op {
         ValueArith::Add => av + bv,
         ValueArith::Sub => av - bv,
@@ -915,26 +977,6 @@ fn forced_operand<T: Transcendental, const BUF: usize>(
 ) -> Option<ArenaRef> {
     let r = prog.value_regs.get(reg).copied().flatten()?;
     Some(force(prog, r, drops))
-}
-
-/// Force a register's operand and read it as a scalar for strict arithmetic.
-///
-/// `Some(Ok(f))` when the forced operand is numeric (Int widens to `f64`);
-/// `Some(Err(()))` when it forced to bottom (propagate); `None` when the
-/// register is unbound. An unbound or non-numeric operand reads as `0.0`,
-/// matching the pre-lazy eager behavior.
-fn numeric_operand<T: Transcendental, const BUF: usize>(
-    prog: &mut RillProgram<T, BUF>,
-    reg: usize,
-    drops: &mut Vec<ArenaRef>,
-) -> Option<Result<f64, ()>> {
-    let r = prog.value_regs.get(reg).copied().flatten()?;
-    let head = force(prog, r, drops);
-    match prog.arena.get(head) {
-        Some(Value::Bottom) => Some(Err(())),
-        Some(v) => Some(Ok(value_to_f64(v).unwrap_or(0.0))),
-        None => Some(Ok(0.0)),
-    }
 }
 
 fn exec_value_instr<T: Transcendental, const BUF: usize>(
@@ -2699,6 +2741,137 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             };
             prog.value_regs[dst] = alloc_owned(prog, Value::List { elems });
         }
+        ArrayFromListChecked => {
+            // arrayFromListChecked bounds rangeSize xs: the strict constructor
+            // behind the language-level `listArray`. It behaves exactly like
+            // `arrayFromList` once the element count matches the language-
+            // computed `rangeSize`; a mismatch latches a clean fault (the
+            // design's strict-construction policy, a deliberate deviation from
+            // GHC's lazy tolerance). The primitive exists only for `listArray`,
+            // so its fault names that function.
+            let Some(elems) = pooled_elems_of(prog, base + args[2]) else {
+                latch_fault(prog, "listArray: expected a list of elements");
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let size_reg = match prog.value_regs[base + args[1]] {
+                Some(r) => r,
+                None => {
+                    prog.arena.put_buf(elems);
+                    latch_fault(prog, "listArray: the rangeSize operand is unbound");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            let expected = match forced_i64(prog, size_reg, drops) {
+                Some(n) => n,
+                None => {
+                    prog.arena.put_buf(elems);
+                    latch_fault(prog, "listArray: rangeSize is not an integral number");
+                    prog.value_regs[dst] = None;
+                    return;
+                }
+            };
+            if elems.len() as i64 != expected {
+                let got = elems.len();
+                prog.arena.put_buf(elems);
+                latch_fault(
+                    prog,
+                    &format!(
+                        "listArray: {got} element(s) but rangeSize is {expected} \
+                         (the length must equal rangeSize of the bounds)"
+                    ),
+                );
+                prog.value_regs[dst] = None;
+                return;
+            }
+            let Some(bounds) = prog.value_regs[base + args[0]] else {
+                prog.arena.put_buf(elems);
+                latch_fault(prog, "listArray: bounds operand is unbound");
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let Some(bounds) = copy_owned(prog, bounds) else {
+                prog.arena.put_buf(elems);
+                prog.value_regs[dst] = None;
+                return;
+            };
+            for e in &elems {
+                _ = prog.arena.copy(*e);
+            }
+            prog.value_regs[dst] = alloc_owned(prog, Value::Array { bounds, elems });
+        }
+        ListRange => {
+            // listRange (l, u): the inclusive `[l..=u]` as a flat Int list —
+            // the single list-GENERATING primitive, and what `Ix.range` is
+            // built on. `l > u` is the empty list (the canonical empty range is
+            // `(0, -1)`, which therefore yields no elements). The size is
+            // bounded by the arena's free slots up front, so an absurd computed
+            // range is a clean fault rather than a long futile allocation.
+            let Some(Value::Record(fields)) = prog.value_regs[base + args[0]]
+                .and_then(|r| prog.arena.get(r))
+                .cloned()
+            else {
+                latch_fault(prog, "listRange: bounds operand is not a Pair");
+                prog.value_regs[dst] = None;
+                return;
+            };
+            if fields.len() != 2 {
+                latch_fault(prog, "listRange: bounds operand is not a Pair");
+                prog.value_regs[dst] = None;
+                return;
+            }
+            let lo = forced_i64(prog, fields[0], drops);
+            let hi = forced_i64(prog, fields[1], drops);
+            let (Some(lo), Some(hi)) = (lo, hi) else {
+                latch_fault(prog, "listRange: bounds are not integral numbers");
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let n = if hi < lo {
+                0usize
+            } else {
+                // `hi - lo + 1` cannot overflow for a sane bounds pair; a
+                // pathological one saturates and is then rejected by the
+                // free-slot bound below.
+                usize::try_from((hi as i128) - (lo as i128) + 1).unwrap_or(usize::MAX)
+            };
+            let free_slots = prog.arena.capacity().saturating_sub(prog.arena.live());
+            if n > free_slots {
+                latch_fault(prog, "listRange: range exceeds the value arena capacity");
+                prog.value_regs[dst] = None;
+                return;
+            }
+            let Some(mut elems) = (match prog.arena.take_buf(n) {
+                Ok(b) => Some(b),
+                Err(_) => {
+                    latch_exhaustion(prog, "value buffer pool");
+                    None
+                }
+            }) else {
+                prog.value_regs[dst] = None;
+                return;
+            };
+            let mut ok = true;
+            for k in 0..n {
+                match alloc_owned(prog, Value::Int(lo + k as i64)) {
+                    Some(r) => elems.push(r),
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if !ok {
+                for e in &elems {
+                    prog.arena.drop_ref(*e);
+                }
+                prog.arena.put_buf(elems);
+                prog.value_regs[dst] = None;
+                return;
+            }
+            prog.value_regs[dst] = alloc_owned(prog, Value::List { elems });
+        }
         ArrayIndexFlat => {
             // arrayIndexFlat arr i: read a FLAT offset (the language computed
             // it via `Ix`). The three failure causes stay distinct — a
@@ -3524,6 +3697,52 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
                         return None;
                     }
                 }
+            }
+            let id = prog.st_cells.len() as u32;
+            prog.st_cells.push(Some(StCell::Array { bounds, elems }));
+            let region = prog.regions.get_mut(region_id)?;
+            region.cells.push(id);
+            alloc_owned(prog, Value::Opaque(id))
+        }
+        crate::ir::ValueEffectOp::NewArrayFromListFlat => {
+            // newArrayFromListFlat bounds rangeSize xs: allocate a cell seeded
+            // from a list — the strict `newListArray` counterpart of
+            // `newArrayFlat`. The language computes `rangeSize` from the `Ix`
+            // instance; a list whose length differs is the clean length fault
+            // (never a silently short or over-long cell). The primitive exists
+            // only for `newListArray`, so its fault names that function.
+            // The operands arrive as ARENA refs (this is an effect, not a
+            // register-indexed value builtin), so the element list is read
+            // through its ref — the same convention as `ReadArrayFlat`.
+            let bounds_src = *args.first()?;
+            let Some(elems) = pooled_elems_of_ref(prog, *args.get(2)?) else {
+                latch_fault(prog, "newListArray: expected a list of elements");
+                return None;
+            };
+            let expected = match forced_i64(prog, *args.get(1)?, drops) {
+                Some(n) => n,
+                None => {
+                    prog.arena.put_buf(elems);
+                    latch_fault(prog, "newListArray: rangeSize is not an integral number");
+                    return None;
+                }
+            };
+            if elems.len() as i64 != expected {
+                let got = elems.len();
+                prog.arena.put_buf(elems);
+                latch_fault(
+                    prog,
+                    &format!(
+                        "newListArray: {got} element(s) but rangeSize is {expected} \
+                         (the length must equal rangeSize of the bounds)"
+                    ),
+                );
+                return None;
+            }
+            let bounds = copy_owned(prog, bounds_src)?;
+            // The cell owns its elements independently of the source list.
+            for e in &elems {
+                _ = prog.arena.copy(*e);
             }
             let id = prog.st_cells.len() as u32;
             prog.st_cells.push(Some(StCell::Array { bounds, elems }));
