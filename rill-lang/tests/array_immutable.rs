@@ -690,3 +690,52 @@ fn the_accessor_feeds_a_condition() {
 // is a parse error, `if y < (x) then` is not) — a pre-existing general grammar
 // limitation of `if`, unrelated to arrays. The conditions above are therefore
 // written comparison-first.
+
+// ---------------------------------------------------------------------------
+// 6. Q1: custom index types — reads keep using the language `Ix` instance
+// ---------------------------------------------------------------------------
+
+// The documented Q1 split: READS (`listArray` + `!`) call the `Ix` instance
+// methods in the language, so a USER instance with trivial bodies runs and
+// computes the offsets; CONSTRUCTION (`array` = `arrayFromAssocs`) resolves the
+// bounds shape in the INTERPRETER, which only knows the two prelude index
+// shapes (`Int`, `Pair Int Int`) — so a custom index type faults cleanly
+// ("unsupported index type") instead of being flattened.
+#[test]
+fn q1_user_ix_instances_keep_reads_working_but_array_construction_faults() {
+    // A user `Ix (Pair Int (Pair Int Int))` with deliberately trivial bodies.
+    // The read is driven entirely by these bodies: `listArray` takes its size
+    // from `rangeSize` (1) and `!` takes its offset from `index` (0) through
+    // `checkedOffset` — never from the interpreter's shape table.
+    let ix = r#"
+        instance Ix (Pair Int (Pair Int Int)) where {
+            range b = [b.first];
+            index b i = 0;
+            inRange b i = true;
+            rangeSize b = 1;
+        }
+    "#;
+    let bounds = "Pair { first: Pair { first: 0, second: Pair { first: 0, second: 0 } }, second: Pair { first: 0, second: Pair { first: 0, second: 0 } } }";
+    let index = "Pair { first: 0, second: Pair { first: 0, second: 0 } }";
+
+    // Read: `listArray bounds [7.5]` demands `rangeSize bounds` == 1 element,
+    // then `! index` reads flat offset `index bounds index` == 0 -> 7.5.
+    let (_prog, v) = run(&format!(
+        "{ix}\nbounds_ref = {bounds};\nix_ref = {index};\nmain = (listArray bounds_ref [7.5]) ! ix_ref;"
+    ));
+    assert_eq!(
+        v,
+        Value::Float(7.5),
+        "the user Ix instance must drive the language-side read"
+    );
+
+    // Construction: the very same index type is out of the interpreter's shape
+    // table, so `array` faults cleanly instead of flattening the custom index.
+    let msg = fault(&format!(
+        "{ix}\nbounds_ref = {bounds};\nmain = array bounds_ref [Pair {{ first: {index}, second: 9.0 }}];"
+    ));
+    assert!(
+        msg.contains("arrayFromAssocs") && msg.contains("unsupported index type"),
+        "expected the unsupported index type fault for a custom-index array, got: {msg}"
+    );
+}
