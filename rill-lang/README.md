@@ -190,7 +190,7 @@ no parentheses:
 
 ```faust
 f g x = g (g x);             // juxtaposed
-main = f (fn x -> x * 2.0) 3.0;
+main = f (\x -> x * 2.0) 3.0;
 ```
 
 Parenthesized form `name(arg, ...)` is also supported (for compatibility),
@@ -512,9 +512,9 @@ xs  = [1.0, 2.0, 3.0];            // List Float
 ys  = cons 10.0 (list);           // prepend; the list grows
 h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
 n   = length xs;                  // Int
-z   = map (fn x -> x * 2.0) xs;   // function first
-s   = fold (fn a b -> a + b) 0.0 xs;   // Float
-f   = filter (fn x -> x > 1.0) xs;     // List Float
+z   = map (\x -> x * 2.0) xs;   // function first
+s   = fold (\a b -> a + b) 0.0 xs;   // Float
+f   = filter (\x -> x > 1.0) xs;     // List Float
 
 m  = { "a": 1.0, "b": 2.0 };      // Map String Float
 m1 = insert "a" 9.0 m;            // replace-on-duplicate
@@ -528,6 +528,35 @@ derives `Eq`/`Ord` instances for every data type (except `Func`) — a structura
 total order, used to keep entries sorted for O(log n) `lookup`/`member`. A
 function-typed key is a compile error.
 
+### Arrays and `STArray` (Data.Array surface)
+
+Immutable arrays are first-class values: `Array i e` indexed by `Int` or
+`Pair Int Int` (a matrix is `Array (Pair Int Int) Float`). Use `listArray` for
+sequential construction, or `array` with explicit associations. Index with the
+infix `!`; note that `!` is also the bang marker in patterns — `f !x` forces
+`x` to WHNF, while `a ! i` indexes an array.
+
+The core vocabulary includes `bounds`, `elems`, `indices`, `assocs`, `update`,
+`accum`, and `ixmap` for reindexing:
+
+```faust
+b = Pair { first: 0, second: 2 };
+a = listArray b [10.0, 20.0, 30.0];
+main = a ! 1;                         // Float(20.0)
+```
+
+Mutable arrays live in `ST`: `STArray s i e` can be built and mutated inside a
+region, then frozen to `Array i e` with `runSTArray`. The region phantom `s`
+cannot escape — a use-after-free is a compile-time error.
+
+```faust
+main = let a = runSTArray (\s -> do {
+    arr <- newArray (Pair { first: 0, second: 1 }) 0.0;
+    writeArray arr 1 3.0;
+    return arr;
+}) in a ! 1;
+```
+
 ### Higher-kinded types (HKT)
 
 `data` can take type parameters and `typeclass` can range over a type
@@ -540,9 +569,9 @@ data Box a = { value: a };
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
-    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+    fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); };
 }
-main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
+main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
 ```
 
 Kind arity is inferred from method signatures and checked — `instance Functor
@@ -597,8 +626,8 @@ Using `mempty` where its result type is unknown is a compile error.
 ```faust
 mx = Just 1.0;
 my = Just 2.0;
-main = match (do { x <- mx; y <- my; pure (x + y); }) of { Nothing => 0.0; Just z => z; };
-// == bind mx (fn x -> bind my (fn y -> pure (x + y))) -> Just 3.0
+main = case (do { x <- mx; y <- my; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
+// == bind mx (\x -> bind my (\y -> pure (x + y))) -> Just 3.0
 ```
 
 `do { x <- mx; let y = e; stmt; expr; }` supports `<-` binds, `let` bindings,
@@ -622,17 +651,17 @@ typeclass Arrow a where {
     first:   a b c -> a (Pair b d) (Pair c d);
     compose: a b c -> a c d -> a b d;
     second:  a b c -> a (Pair d b) (Pair d c) =
-        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+        k (compose (compose (arr (\p -> Pair { first: p.second, second: p.first })) (first k)) (arr (\p -> Pair { first: p.second, second: p.first })));
     both:    a b c -> a d e -> a (Pair b d) (Pair c e) =
         f g (compose (first f) (second g));
     fan:     a b c -> a b d -> a b (Pair c d) =
-        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+        f g (compose (arr (\x -> Pair { first: x, second: x })) (both f g));
 }
 
 instance (Monad m) => Arrow (Kleisli m) where {
-    arr f        = Kleisli (fn x -> return (f x));
-    first k      = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
-    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+    arr f        = Kleisli (\x -> return (f x));
+    first k      = Kleisli (\p -> bind (k.unKleisli p.first) (\z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (\x -> bind (k1.unKleisli x) (\y -> k2.unKleisli y));
 }
 ```
 
@@ -653,8 +682,8 @@ and the body is parenthesized.
 
 ```faust
 apply k x = let u = k.unKleisli in u x;
-main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
-    Just v => v; Nothing => 0.0;
+main = case (apply (compose (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
+    Just v -> v; Nothing -> 0.0;
 };
 // -> Just 8.0, i.e. (3 + 1) * 2
 ```
@@ -688,7 +717,7 @@ can be applied directly, parenthesized or bare:
 
 ```faust
 data Box = { f: Float -> Float };
-b = Box { f: fn x -> x * 2.0 };
+b = Box { f: \x -> x * 2.0 };
 main = (b.f) 3.0;         // parenthesized projection applied: Float(6.0)
 main = b.f 3.0;           // bare projection applied too
 ```
@@ -700,18 +729,18 @@ Reserved method/builtin names from the prelude: `fmap`, `pure`, `ap`,
 
 ## First-class functions and closures
 
-Functions are first-class values: a **lambda literal** `fn p -> body` compiles
+Functions are first-class values: a **lambda literal** `\p -> body` compiles
 to a `Value::Callable` (a by-value environment snapshot plus a compiled body
 fragment; eager, with no memo cell), and `ValueCallFunc` performs real runtime
 dispatch:
 
 ```faust
-adder = fn n -> fn x -> x + n;   // a function returning a closure
+adder = \n -> \x -> x + n;   // a function returning a closure
 add2  = adder 2.0;               // partial application (currying)
 main  = add2 3.0;                // -> Float(5.0)
 
-twice  = fn f x -> f (f x);      // a higher-order combinator
-double = fn x -> x * 2.0;
+twice  = \f x -> f (f x);      // a higher-order combinator
+double = \x -> x * 2.0;
 main   = twice double 3.0;       // -> Float(12.0)
 ```
 
@@ -726,7 +755,7 @@ main   = twice double 3.0;       // -> Float(12.0)
 
 ## Branching and pattern matching
 
-`if cond then a else b` and `match` are expressions on the value track. In an
+`if cond then a else b` and `case` are expressions on the value track. In an
 `IO` program they may choose between effects as well as values:
 
 ```faust
@@ -737,7 +766,7 @@ main = do {
 };
 ```
 
-`match` supports constructor, literal (`0`, `1.5`, `true`, `"s"`), wildcard
+`case` supports constructor, literal (`0`, `1.5`, `true`, `"s"`), wildcard
 `_`, variable, and nested patterns plus Haskell-style guards. An uppercase
 initial is a constructor, a lowercase initial is a binding. Matches must be
 exhaustive (every constructor covered, or a `_`/variable arm); a guarded arm
@@ -750,7 +779,7 @@ The IO/streams core is in place: `main : (String…) -> IO ()` executed by
 `ProgramRunner`, a Haskell-faithful `ST` with isolated state, io-streams-style
 memory/stdio streams, and the retained pure-value tick. The value track ships
 first-class collections (`List`/`Map`/`Set`, `Maybe`/`Pair`/`Either`,
-`Bool`/`String`), higher-kinded types, and `if`/`match`.
+`Bool`/`String`), higher-kinded types, and `if`/`case`.
 
 Deferred to follow-on work: the Cranelift `jit` feature, trampolining the `bind`
 chain (removing the stack-depth limit), signal-transform execution over streams
