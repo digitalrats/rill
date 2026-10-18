@@ -462,6 +462,122 @@ fn assocs_pairs_each_index_with_its_element() {
     assert_eq!(observed, vec![(0, 10.0), (1, 20.0), (2, 30.0)]);
 }
 
+/// The cell indices of a `List (Pair Int Int)` value.
+fn list_cells(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<(i64, i64)> {
+    let elems = match v {
+        Value::List { elems } => elems.clone(),
+        other => panic!("expected a List, got {other:?}"),
+    };
+    elems
+        .iter()
+        .map(|r| {
+            let cell = prog.arena().get(*r).expect("cell resolves").clone();
+            let (i, j) = pair_values(prog, &cell);
+            match (i, j) {
+                (Value::Int(i), Value::Int(j)) => (i, j),
+                other => panic!("expected an (Int, Int) cell, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+/// The cell indices of a `List (Pair (Pair Int Int) e)` value, with their `e`
+/// payloads resolved through the arena.
+fn list_cell_assocs(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<((i64, i64), f64)> {
+    let elems = match v {
+        Value::List { elems } => elems.clone(),
+        other => panic!("expected a List, got {other:?}"),
+    };
+    elems
+        .iter()
+        .map(|r| {
+            let pair = prog.arena().get(*r).expect("pair resolves").clone();
+            let (ix, e) = pair_values(prog, &pair);
+            let (i, j) = pair_values(prog, &ix);
+            match (i, j, e) {
+                (Value::Int(i), Value::Int(j), Value::Float(e)) => ((i, j), e),
+                other => panic!("expected a ((Int, Int), Float) assoc, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn two_dimensional_indices_are_the_row_major_grid() {
+    // `indices` = `range (arrayBounds a)` read off the STORED bounds: for a 2x3
+    // array the whole grid, last coordinate fastest (the same order `Ix.index`
+    // flattens to and `listArray` stores in).
+    let src = "main = indices (listArray \
+                 (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } }) \
+                 [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert_eq!(
+        list_cells(&prog, &v),
+        vec![(0, 0), (0, 1), (0, 2), (1, 0), (1, 1), (1, 2)],
+        "the 2-D indices are the row-major grid of the stored bounds"
+    );
+
+    // A non-zero origin shifts every cell: (1,2)..(2,4) is still 2x3.
+    let shifted = "main = indices (listArray \
+                     (Pair { first: Pair { first: 1, second: 2 }, second: Pair { first: 2, second: 4 } }) \
+                     [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);";
+    let mut prog = compile::<f32>(shifted).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert_eq!(
+        list_cells(&prog, &v),
+        vec![(1, 2), (1, 3), (1, 4), (2, 2), (2, 3), (2, 4)],
+        "the stored origin is the first cell"
+    );
+}
+
+#[test]
+fn two_dimensional_assocs_pairs_each_cell_with_its_row_major_element() {
+    // `assocs a` zips `indices a` with `index a cell`: the element at (i, j) is
+    // the (i * cols + j)-th stored element, so the pairing is exactly the
+    // order `listArray` took the elements in.
+    let src = "main = assocs (listArray \
+                 (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } }) \
+                 [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);";
+    let mut prog = compile::<f32>(src).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert_eq!(
+        list_cell_assocs(&prog, &v),
+        vec![
+            ((0, 0), 10.0),
+            ((0, 1), 20.0),
+            ((0, 2), 30.0),
+            ((1, 0), 40.0),
+            ((1, 1), 50.0),
+            ((1, 2), 60.0),
+        ],
+        "each cell pairs with its row-major element"
+    );
+
+    // Non-zero origin: the cells carry the declared origin, the values stay in
+    // storage order.
+    let shifted = "main = assocs (listArray \
+                     (Pair { first: Pair { first: 1, second: 2 }, second: Pair { first: 2, second: 4 } }) \
+                     [10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);";
+    let mut prog = compile::<f32>(shifted).expect("the program must compile");
+    prog.run_value().expect("the program must run");
+    let v = output(&prog);
+    assert_eq!(
+        list_cell_assocs(&prog, &v),
+        vec![
+            ((1, 2), 10.0),
+            ((1, 3), 20.0),
+            ((1, 4), 30.0),
+            ((2, 2), 40.0),
+            ((2, 3), 50.0),
+            ((2, 4), 60.0),
+        ]
+    );
+}
+
 #[test]
 fn update_replaces_the_selected_positions_only() {
     let src = format!(

@@ -2081,11 +2081,17 @@ impl<'a> Lowerer<'a> {
                 if let Some(op) = self.value_builtin(name, call_args.len()) {
                     let mut arg_regs = Vec::with_capacity(call_args.len());
                     let mut arg_tys = Vec::with_capacity(call_args.len());
-                    // `map f xs`: lower the source list FIRST so its element
-                    // type can type the closure's parameter — `map (fn x -> x *
-                    // 0.5) (sine 440.0 0.5 0.0)` over a `List Buffer` keeps `x` a Buffer
-                    // value and `x * 0.5` lowers to a Buffer op, not scalar.
-                    if name == "map" && call_args.len() == 2 {
+                    // `map f xs` / `concat_map f xs`: lower the source list
+                    // FIRST so its element type can type the closure's
+                    // parameter — `map (fn x -> x * 0.5) (sine 440.0 0.5 0.0)`
+                    // over a `List Buffer` keeps `x` a Buffer value and
+                    // `x * 0.5` lowers to a Buffer op, not scalar.
+                    // `concat_map` needs the same threading: its closure
+                    // returns a LIST, and an untyped parameter would make the
+                    // elements of that inner list default to `Float` (the 2-D
+                    // `Ix` instance builds `Pair Int Int` cells through a
+                    // lambda-in-lambda).
+                    if (name == "map" || name == "concat_map") && call_args.len() == 2 {
                         let (lr, lt) = self.lower_value(&call_args[1])?;
                         let elem = list_type_args(&lt)
                             .and_then(|inner| inner.first().cloned())
@@ -3821,9 +3827,28 @@ impl<'a> Lowerer<'a> {
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
             "concat_map" => {
-                let elem = match args.get(1).and_then(list_type_args) {
+                // `(a -> List b) -> List a -> List b`. The result element type
+                // comes from the closure's RETURN list, not from the source
+                // list: the two agree only when `b == a`. `range`'s 2-D
+                // instance body is exactly the disagreeing case
+                // (`concat_map (\ i1 -> map (\ i2 -> Pair { … }) …) (List Int)`),
+                // and reading the source element typed it `List Int`, so the
+                // constrained body failed its own signature check. Mirrors
+                // `infer_collection_call`'s `concat_map` arm, with the source
+                // element as the fallback when the return is not a `List`.
+                let source_elem = match args.get(1).and_then(list_type_args) {
                     Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
                     _ => ValueTy::Float,
+                };
+                let elem = match args.first() {
+                    Some(ValueTy::Thunk(_, rets)) => match rets.first() {
+                        Some(ValueTy::App(n, inner)) if n == "List" => inner
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| source_elem.clone()),
+                        _ => source_elem,
+                    },
+                    _ => source_elem,
                 };
                 Ok(ValueTy::App("List".into(), vec![elem]))
             }
