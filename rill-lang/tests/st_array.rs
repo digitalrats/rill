@@ -7,12 +7,14 @@
 //! `Ix` class lands in a later task — so the primitives stay type-agnostic and
 //! the tests pass literal flat sizes. The whole pipeline (infer → reduce →
 //! lower → interpreter) is driven through `compile`/`test_eval`.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::{ArenaRef, Value};
-use rill_lang::compile;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::program::RillProgram;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
+use rill_lang::program::WorldState;
 
 /// Split `src` at the `main = ` binding into `(defs, expr)` for the eval
 /// surface: `main` is not special inside `test_eval`'s defs, so the entry
@@ -25,17 +27,16 @@ fn split_main(src: &str) -> (&str, &str) {
 }
 
 /// Compile `src`, run it once, and return the program and its single result.
-fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
+fn run(src: &str) -> (WorldState<f32, 256>, Value) {
     let (defs, expr) = split_main(src);
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let v = output(&prog);
     (prog, v)
 }
 
 /// The single run result of an already-run program.
-fn output(prog: &RillProgram<f32, 256>) -> Value {
+fn output(prog: &WorldState<f32, 256>) -> Value {
     let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
@@ -52,7 +53,7 @@ fn output(prog: &RillProgram<f32, 256>) -> Value {
 fn fault(src: &str) -> String {
     let (defs, expr) = split_main(src);
     let ffi = ForeignRegistry::<f32>::new();
-    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+    match eval_ffi(defs, expr, ffi) {
         Ok(_) => panic!("expected a runtime fault, but the program ran\nsrc:\n{src}"),
         Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
@@ -60,7 +61,7 @@ fn fault(src: &str) -> String {
 }
 
 /// The two field VALUES of a `Pair` record output, resolved through the arena.
-fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     let fields = match v {
         Value::Record(fields) if fields.len() == 2 => fields,
         other => panic!("expected a Pair record, got {other:?}"),
@@ -255,10 +256,14 @@ fn escaping_starray_is_a_compile_error() {
     // Returning the handle out of `runST` leaves an `STArray s i e` in the
     // region result — it mentions the phantom `s` and must be rejected, exactly
     // like an escaping `STRef`.
-    let err = match compile::<f32>(&format!(
-        "{{-# MODE complete #-}}\nmain = runST (\\s -> do {{ a <- {}; return a }});",
-        new_array_0_to_2("1.0")
-    )) {
+    let err = match compile_eval::<f32, 256>(
+        &format!(
+            "{{-# MODE complete #-}}\nmain = runST (\\s -> do {{ a <- {}; return a }});",
+            new_array_0_to_2("1.0")
+        ),
+        "main",
+        Mode::Strict,
+    ) {
         Ok(_) => panic!("an escaping STArray must be a compile error"),
         Err(err) => err,
     };
@@ -273,10 +278,14 @@ fn escaping_starray_is_a_compile_error() {
 fn runst_array_rejects_a_non_starray_result() {
     // `runSTArray` freezes an `STArray`; a region that computes anything else
     // has no array to freeze and is a compile-time error.
-    let err = match compile::<f32>(&format!(
-        "{{-# MODE complete #-}}\nmain = runSTArray (\\s -> do {{ a <- {}; return 1.0 }});",
-        new_array_0_to_2("1.0")
-    )) {
+    let err = match compile_eval::<f32, 256>(
+        &format!(
+            "{{-# MODE complete #-}}\nmain = runSTArray (\\s -> do {{ a <- {}; return 1.0 }});",
+            new_array_0_to_2("1.0")
+        ),
+        "main",
+        Mode::Strict,
+    ) {
         Ok(_) => panic!("a non-STArray runSTArray body must be a compile error"),
         Err(err) => err,
     };
@@ -346,7 +355,7 @@ fn wrong_kind_handles_are_rejected_at_compile_time() {
         // `readSTRef` on an `STArray`.
         "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 0.0; x <- readSTRef a; x });",
     ] {
-        let err = match compile::<f32>(src) {
+        let err = match compile_eval::<f32, 256>(src, "main", Mode::Strict) {
             Ok(_) => panic!("a mis-kinded handle must be a compile error: {src}"),
             Err(err) => err,
         };
@@ -369,7 +378,7 @@ fn a_fractional_flat_offset_is_rejected_at_compile_time() {
         "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 0.0; readArrayFlat a 1.5 });",
         "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3.0 0.0; readArrayFlat a 0 });",
     ] {
-        let err = match compile::<f32>(src) {
+        let err = match compile_eval::<f32, 256>(src, "main", Mode::Strict) {
             Ok(_) => panic!("a Float flat size/offset must be a compile error: {src}"),
             Err(err) => err,
         };

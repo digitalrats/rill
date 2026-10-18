@@ -855,7 +855,8 @@ pub struct StateLayout {
 }
 
 /// A resolved built-in call site: its name, folded constant params, and kind.
-/// Runtime instances are built from these by `RillProgram::new_with`.
+/// Runtime instances are built from these by
+/// [`WorldState::seat`](crate::program::WorldState::seat).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuiltinInstance {
     /// Registered built-in name.
@@ -922,9 +923,10 @@ pub struct Ir {
     /// Named parameter definitions, indexed by [`Instr::ReadParam::idx`].
     pub params: Vec<ParamDef>,
     /// Top-level value-track blocks: the program's single execution surface,
-    /// executed once per run by [`run_entry`](crate::backend::interp::run_entry)
-    /// directly (an ordinary top-level binding run at base 0 — no fragment
-    /// wrapper, no `run_call` frame). Kept here for `max_drops`/`max_frag_cells`
+    /// executed once per run by
+    /// [`exec_entry`](crate::backend::interp::exec_entry) directly (an ordinary
+    /// top-level binding run at base 0 — no fragment wrapper, no `run_call`
+    /// frame). Kept here for `max_drops`/`max_frag_cells`
     /// accounting, inspection, and the run itself.
     pub value_blocks: Vec<ValueBlock>,
     /// Entry block of the top-level value track.
@@ -933,8 +935,8 @@ pub struct Ir {
     pub num_value_regs: usize,
     /// The register where the entry body's value landed: the program's single
     /// result. Set at lower time (`lw.value_regs_out[0]`) and captured by
-    /// [`run_entry`](crate::backend::interp::run_entry) — which forces it to
-    /// WHNF and copies it into [`RillProgram::main`](crate::program::RillProgram).
+    /// [`exec_entry`](crate::backend::interp::exec_entry) — which forces it to
+    /// WHNF and copies it into [`WorldState::result`](crate::program::WorldState::result).
     /// Architecturally there are no signal programs (no output channels): every
     /// program is a value program whose result is one register — buffer results
     /// are `Value::Buffer(idx)` arena values, not channels.
@@ -952,15 +954,16 @@ pub struct Ir {
     /// `max_call_depth` is the total fragment count (a strict upper bound on
     /// the number of concurrently-active fragment frames — the acyclic
     /// contract forbids any fragment from recursing) and `max_fragment_regs`
-    /// is the largest `FragmentIr::num_value_regs`. [`RillProgram`](crate::program::RillProgram)
-    /// sizes its per-tick value-register store to `num_value_regs + max_call_regs`
+    /// is the largest `FragmentIr::num_value_regs`.
+    /// [`WorldState`](crate::program::WorldState) sizes its value-register
+    /// store to `num_value_regs + max_call_regs`
     /// so [`run_call`](crate::backend::interp::run_call) never grows it
     /// on the RT path.
     pub max_call_regs: usize,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
     /// Number of program-level signal buffers (see
-    /// [`RillProgram::buffers`](crate::program::RillProgram)). Each
+    /// [`WorldState::buffers_len`](crate::program::WorldState::buffers_len)). Each
     /// `Value::Buffer` index points into this table; the memory is carved from
     /// a [`BufferAllocator`](rill_core::memory::BufferAllocator) at build.
     pub num_buffers: usize,

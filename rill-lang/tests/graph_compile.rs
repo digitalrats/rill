@@ -1,7 +1,8 @@
 //! Whole-buffer program compile/run smoke tests through the retained
 //! value path: a 0-input generator program.
+pub mod common;
 
-use rill_lang::compile_with_ffi;
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
 
@@ -13,14 +14,14 @@ fn ffi() -> ForeignRegistry<f32> {
 
 #[test]
 fn compiles_simple_graph() {
-    let result = compile_with_ffi::<f32>("main = sine 440.0 0.5 0.0", &ffi(), 44100.0);
-    assert!(result.is_ok(), "should compile simple graph");
+    let result = eval_ffi("", "sine 440.0 0.5 0.0", ffi());
+    assert!(result.is_ok(), "should compile and run the simple graph");
 }
 
 #[test]
 fn single_algorithm_works() {
-    let result = compile_with_ffi::<f32>("main = sine 440.0 0.5 0.0", &ffi(), 44100.0);
-    assert!(result.is_ok(), "single algorithm should compile");
+    let result = eval_ffi("", "sine 440.0 0.5 0.0", ffi());
+    assert!(result.is_ok(), "single algorithm should compile and run");
 }
 
 #[test]
@@ -31,7 +32,7 @@ fn engine_executes_and_produces_output() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ffi();
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
 
     let r = prog.result().expect("whole-buffer result expected");
     let mut output = [0.0f32; 8];
@@ -58,7 +59,7 @@ fn engine_with_param_compiles_and_processes() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ffi();
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
 
     let r = prog.result().expect("whole-buffer result expected");
     let mut output = [0.0f32; 8];

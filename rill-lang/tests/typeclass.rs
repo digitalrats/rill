@@ -3,20 +3,22 @@
 //! argument's static type selects the instance; the body is β-substituted at
 //! compile time (zero runtime dispatch — typeclasses and instances produce no
 //! arena values).
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src` (which must bind `main` to the evaluated expression) and RUN
 /// it once on the single-run value surface, returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
 #[test]
@@ -62,9 +64,9 @@ fn recursive_typeclass_method_is_compile_error() {
         instance Show Float where { show f = show f; }
         main = show 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),
@@ -84,9 +86,9 @@ fn transitive_recursive_typeclass_methods_are_compile_error() {
         instance C Float where { a f = b f; b f = a f; }
         main = a 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),
@@ -111,9 +113,9 @@ fn recursive_constructor_class_method_is_compile_error() {
         apply k x = let u = k.unK in u x;
         main = case (apply (f (K { unK: \x -> Just x })) 3.0) of { Just v -> v; Nothing -> 0.0; };
     ";
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),
@@ -134,9 +136,9 @@ fn buffer_value_does_not_select_scalar_instance() {
         instance Show Float where { show f = f; }
         main = show (sin 1.0);
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("cannot resolve method `show`"),
@@ -158,7 +160,7 @@ fn instance_body_accepts_value_expression() {
         instance Show Float where { show f = sin 1.0; }
         main = 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_ok(), "expected success");
 }
 
@@ -175,12 +177,12 @@ fn user_instance_redefining_a_prelude_class_is_validated() {
         instance Monad IO where { return x = return x; bind m f = bind m f; }
         main = 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(
         res.is_err(),
         "a user instance overwriting the prelude's must be validated, got success"
     );
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),

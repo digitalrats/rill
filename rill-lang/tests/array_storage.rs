@@ -6,23 +6,23 @@
 //! These tests drive the whole pipeline (infer → reduce → lower → interpreter)
 //! through `test_eval`, asserting the resulting run result and the latched
 //! fault channel for out-of-range flat indices.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::{ArenaRef, Value};
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::program::RillProgram;
+use rill_lang::program::WorldState;
 use rill_lang::register;
-use rill_lang::test_eval;
 
 /// Compile `src`, run it once via [`test_eval`] against an empty foreign
 /// registry, and return the already-run program.
-fn run(src: &str) -> RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"))
+    eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"))
 }
 
 /// Compile `src`, run it once, and return the single run result's arena value
@@ -32,7 +32,7 @@ fn run_value_output(src: &str) -> Value {
 }
 
 /// The single run result of an already-run program.
-fn output(prog: &RillProgram<f32, 256>) -> Value {
+fn output(prog: &WorldState<f32, 256>) -> Value {
     let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
@@ -47,7 +47,7 @@ fn fault(src: &str) -> String {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+    match eval_ffi(defs, expr, ffi) {
         Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
         Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
@@ -63,7 +63,7 @@ fn pair_refs(v: &Value) -> (ArenaRef, ArenaRef) {
 }
 
 /// The two field VALUES of a `Pair` record output, resolved through the arena.
-fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     let (a, b) = pair_refs(v);
     (
         prog.arena().get(a).expect("first resolves").clone(),
@@ -72,7 +72,7 @@ fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
 }
 
 /// The `Float` payloads of a `List` value, read through the arena.
-fn list_floats(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<f64> {
+fn list_floats(prog: &WorldState<f32, 256>, v: &Value) -> Vec<f64> {
     let elems = match v {
         Value::List { elems } => elems,
         other => panic!("expected a List, got {other:?}"),
@@ -99,8 +99,7 @@ fn run_buffer(src: &str) -> Vec<f32> {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let r = prog.result().expect("whole-buffer result expected");
     let mut got = [0.0f32; 256];
     assert!(prog.copy_buffer(r, &mut got), "the output must be a buffer");
@@ -115,7 +114,7 @@ fn buffer_fault(src: &str) -> String {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+    match eval_ffi(defs, expr, ffi) {
         Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
         Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),

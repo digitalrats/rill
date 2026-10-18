@@ -5,6 +5,9 @@
 //!
 //! Thunks are a `Complete`-mode concern, so every source carries the
 //! `{-# MODE complete #-}` pragma and runs through the eval surface.
+pub mod common;
+
+use common::*;
 
 /// Compile `src` in `Complete` mode, run it once, and return the single result.
 fn run_complete(src: &str) -> rill_lang::arena::Value {
@@ -13,14 +16,7 @@ fn run_complete(src: &str) -> rill_lang::arena::Value {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
-    let prog = rill_lang::test_eval_with_mode::<f32, 256>(
-        defs,
-        expr,
-        &ffi,
-        44_100.0,
-        rill_lang::mode::Mode::Complete,
-    )
-    .unwrap();
+    let prog = eval_mode::<256>(defs, expr, ffi, rill_lang::mode::Mode::Complete).unwrap();
     let v = prog.result().unwrap();
     prog.arena().get(v).unwrap().clone()
 }

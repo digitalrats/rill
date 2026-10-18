@@ -6,14 +6,17 @@
 //! shared instance, and its observable state is shared across every reference.
 //! On the single-run surface the discriminator is a harness-owned call counter:
 //! exactly one instance must run per evaluation of the program.
+pub mod common;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use common::*;
 use rill_core::traits::{Algorithm, ProcessResult};
 use rill_lang::builtin::BlockBuiltin;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::{compile, test_eval};
+use rill_lang::mode::Mode;
 
 /// A real block oscillator (0 signal in, 1 out; params freq/amp/phase) whose
 /// phase accumulates per sample.
@@ -91,7 +94,7 @@ fn sine_registry() -> (ForeignRegistry<f32>, Arc<AtomicUsize>) {
 #[test]
 fn shared_oscillator_runs_one_instance_per_tick() {
     let (ffi, calls) = sine_registry();
-    let prog = test_eval::<f32, 256>("osc = sine 440.0 0.5 0.0;", "osc", &ffi, 44100.0)
+    let prog = eval_ffi("osc = sine 440.0 0.5 0.0;", "osc", ffi)
         .expect("program with a shared CAF compiles");
 
     // Value model: a program has ONE value output — the single generator.
@@ -123,11 +126,10 @@ fn shared_oscillator_runs_one_instance_per_tick() {
 #[test]
 fn user_function_captures_shared_free_variable() {
     let (ffi, calls) = sine_registry();
-    let prog = test_eval::<f32, 256>(
+    let prog = eval_ffi(
         "osc = sine 440.0 0.5 0.0; voice gain = osc * gain;",
         "voice 0.5",
-        &ffi,
-        44100.0,
+        ffi,
     )
     .expect("user function capturing a CAF compiles");
 
@@ -165,7 +167,7 @@ fn user_function_captures_shared_free_variable() {
 /// A self-referential CAF is a compile error, not a crash.
 #[test]
 fn recursive_caf_is_a_compile_error() {
-    let res = compile::<f32>("a = a; main = a");
+    let res = compile_eval::<f32, 256>("a = a; main = a", "main", Mode::Strict);
     assert!(
         res.is_err(),
         "self-recursive CAF must be rejected, not crash"

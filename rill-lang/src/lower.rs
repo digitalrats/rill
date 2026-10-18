@@ -615,7 +615,7 @@ struct Lowerer<'a> {
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
     /// Value-track blocks, executed once per run by
-    /// [`run_entry`](crate::backend::interp::run_entry) (see
+    /// [`exec_entry`](crate::backend::interp::exec_entry) (see
     /// [`Ir::value_blocks`](crate::ir::Ir)).
     value_blocks: Vec<ValueBlock>,
     /// The block currently being appended to.
@@ -6543,14 +6543,13 @@ impl<'a> Lowerer<'a> {
                     // its own arena slot).
                     //
                     // The bound below is the block size the DEFAULT entry
-                    // points use (`compile`, `compile_with_ffi` and friends fix
-                    // `BUF` at 256). It is not a hard invariant: `compile_runner`,
-                    // `graph::compile` and `compile_spec` are const-generic over
-                    // `BUF`, and `compile_to_ir` is block-size agnostic, so the
-                    // same IR run as `RillProgram<T, 1024>` would under-budget
-                    // the array 4x and `arrayFromBuffer` would latch a clean
-                    // exhaustion. Nothing breaks in-tree today (every caller
-                    // uses 256).
+                    // points use (the `compile`/`compile_eval` family fixes
+                    // `BUF` at 256). It is not a hard invariant: every entry is
+                    // const-generic over `BUF` and `compile_to_ir` is
+                    // block-size agnostic, so the same IR run with `BUF = 1024`
+                    // would under-budget the array 4x and `arrayFromBuffer`
+                    // would latch a clean exhaustion. Nothing breaks in-tree
+                    // today (every caller uses 256).
                     // TODO: parameterise this estimate over `BUF` once lowering
                     // is told the block size.
                     let elem = args.last().unwrap_or(&ValueTy::Float);

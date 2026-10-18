@@ -7,8 +7,8 @@
 //! end-to-end, and `write_nothing_does_not_close_the_console` pins the console
 //! close semantics the rest of this file relies on.
 
-use rill_lang::builtin::Registry;
-use rill_lang::compile_runner;
+use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::run_on_stack;
 
 /// Compile and run a program, returning its captured `(stdout, stderr)`.
@@ -22,7 +22,7 @@ fn run(src: &str, stdin_lines: &[String]) -> (Vec<String>, Vec<String>) {
     let src = src.to_string();
     let stdin_lines = stdin_lines.to_vec();
     run_on_stack(16 << 20, move || {
-        let mut r = compile_runner::<f32, 256>(&src, &Registry::new(), 44_100.0)
+        let mut r = compile::<f32, 256>(&src, ForeignRegistry::new())
             .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
         r.set_stdin(&stdin_lines);
         r.run()

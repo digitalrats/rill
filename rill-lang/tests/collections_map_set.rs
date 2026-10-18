@@ -1,18 +1,20 @@
 //! End-to-end Map/Set tests: insert/lookup/member with structural ordering.
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src` against an empty foreign registry and RUN it once (the
 /// single-run value surface), returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
 #[test]
@@ -103,7 +105,7 @@ fn map_literal_entries_are_sorted_regardless_of_write_order() {
 fn func_key_is_compile_error() {
     // `Func` has no derived Ord instance — a Map with a function key must not compile.
     let src = r#"f = \x -> x; main = lookup f { "a": 1.0 };"#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "function-typed map key must be rejected");
     if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
         assert!(
@@ -188,7 +190,8 @@ fn map_literal_value_type_is_actual_entry_type() {
 fn map_literal_mixed_value_types_are_compile_error() {
     // A map literal's entries must share one value type: `{ "a": 1.0, "b": [1.0] }`
     // mixes Float and List and must not compile.
-    let res = compile::<f32>("main = { \"a\": 1.0, \"b\": [1.0] };");
+    let res =
+        compile_eval::<f32, 256>("main = { \"a\": 1.0, \"b\": [1.0] };", "main", Mode::Strict);
     assert!(
         res.is_err(),
         "a map literal with mixed value types must be a compile error"

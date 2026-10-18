@@ -15,8 +15,8 @@ use rill_core::traits::{Algorithm, ProcessResult};
 /// Register the rill-digital-effects builtins (delay/distortion/limiter) as FFI
 /// factories. The algorithms live in `rill-digital-effects` (a pure library,
 /// no rill-lang dependency); rill-lang supplies the wrapper structs
-/// implementing `BlockBuiltin`. Call this on the `ForeignRegistry` you pass to
-/// `compile_with_ffi` (or any other FFI assembly point).
+/// implementing `BlockBuiltin`. Call this on the `ForeignRegistry` you hand to the
+/// world (`WorldConfig::ffi`) before seating (or at any other FFI assembly point).
 #[cfg(feature = "dsp")]
 pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
     ffi: &mut crate::ffi::ForeignRegistry<T>,
@@ -135,8 +135,9 @@ pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
 /// integrators (integrator/leaky_integrator) as FFI factories. The algorithms
 /// live in `rill-core-dsp` (a pure library, no rill-lang dependency); the
 /// wrapper structs implementing `BlockBuiltin` live in
-/// [`crate::builtins::generators`]. Call this on the `ForeignRegistry` you pass
-/// to `compile_with_ffi` (or any other FFI assembly point).
+/// [`crate::builtins::generators`]. Call this on the `ForeignRegistry` you hand to
+/// the world (`WorldConfig::ffi`) before seating (or at any other FFI assembly
+/// point).
 #[cfg(feature = "dsp")]
 pub fn register_foreign_generators<T: Transcendental + 'static>(
     ffi: &mut crate::ffi::ForeignRegistry<T>,
@@ -273,8 +274,8 @@ pub fn register_foreign_filters<T: Transcendental + 'static>(
 /// Register the rill-core-dsp generators/integrators/filters into the legacy
 /// [`Registry`]. Factory-only bridge: downstream crates (rill-adrift) consume
 /// the legacy `Registry<T>` (signatures come from the catalog); the equivalent
-/// `register_foreign_*` functions above target `ForeignRegistry` for
-/// `compile_with_ffi`. Mirrors the deleted
+/// `register_foreign_*` functions above target `ForeignRegistry`, which a
+/// `WorldState` owns. Mirrors the deleted
 /// `rill-core-dsp::lang::register::register_lang_builtins` factories exactly.
 #[cfg(feature = "dsp")]
 pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
@@ -405,8 +406,9 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
 /// Register the rill-core-model analog filter builtin (`analog_moog`) as an
 /// FFI factory. The algorithm lives in `rill-core-model` (a pure library, no
 /// rill-lang dependency); the wrapper struct implementing `BlockBuiltin` lives
-/// in [`crate::builtins::model`]. Call this on the `ForeignRegistry` you pass
-/// to `compile_with_ffi` (or any other FFI assembly point). Mirrors the deleted
+/// in [`crate::builtins::model`]. Call this on the `ForeignRegistry` you hand to
+/// the world (`WorldConfig::ffi`) before seating (or at any other FFI assembly
+/// point). Mirrors the deleted
 /// `rill-core-model::register::register_lang_builtins` factory exactly.
 #[cfg(feature = "model")]
 pub fn register_foreign_model<T: Transcendental + 'static>(
@@ -509,7 +511,7 @@ impl<T: Transcendental> BlockBuiltin<T> for GraphicEqBuiltin<T> {
 /// Register the EQ FFI factories (`graphic_eq` / `eq_parametric`). The
 /// algorithms live in `rill-core-dsp` (moved from the deleted `rill-router`);
 /// the wrappers implementing `BlockBuiltin` live in [`crate::builtins::eq`].
-/// Call this on the `ForeignRegistry` you pass to `compile_with_ffi`.
+/// Call this on the `ForeignRegistry` you hand to the world (`WorldConfig::ffi`).
 #[cfg(feature = "dsp")]
 pub fn register_foreign_eq<T: Transcendental + 'static>(ffi: &mut crate::ffi::ForeignRegistry<T>) {
     use crate::builtins::eq::{BandType, EqBandConfig, EqBuiltin, EqConfig, EqState};

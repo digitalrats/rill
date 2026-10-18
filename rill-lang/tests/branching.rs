@@ -6,9 +6,10 @@
 //! the single-run value model cannot inject a named parameter (`?g`) into its
 //! one run, so the cross-tick branch switching they asserted is no longer
 //! testable.
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
 
 fn float_output(src: &str) -> f64 {
     let (defs, expr) = src
@@ -16,7 +17,7 @@ fn float_output(src: &str) -> f64 {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(f) => *f,

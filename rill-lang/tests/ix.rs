@@ -7,11 +7,12 @@
 //! (parse → infer → reduce → lower → interpreter) through `test_eval` and
 //! assert the resulting VALUES, the array shapes, and the latched fault
 //! channel.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::{ArenaRef, Value};
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::program::RillProgram;
-use rill_lang::test_eval;
+use rill_lang::program::WorldState;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -28,17 +29,16 @@ fn split_main(src: &str) -> (&str, &str) {
 }
 
 /// Compile `src`, run it once, and return the program and its single result.
-fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
+fn run(src: &str) -> (WorldState<f32, 256>, Value) {
     let (defs, expr) = split_main(src);
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let v = output(&prog);
     (prog, v)
 }
 
 /// The single run result of an already-run program.
-fn output(prog: &RillProgram<f32, 256>) -> Value {
+fn output(prog: &WorldState<f32, 256>) -> Value {
     let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
@@ -49,12 +49,11 @@ fn output(prog: &RillProgram<f32, 256>) -> Value {
 /// Compile `src` and run it once against the foreign generator registry (the
 /// buffer generators `sine`/`square` are FFI builtins), so a program may
 /// bridge buffers and arrays.
-fn buffer_program(src: &str) -> (RillProgram<f32, 256>, Value) {
+fn buffer_program(src: &str) -> (WorldState<f32, 256>, Value) {
     let (defs, expr) = split_main(src);
     let mut ffi = ForeignRegistry::<f32>::new();
     rill_lang::register::register_foreign_generators(&mut ffi);
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let v = output(&prog);
     (prog, v)
 }
@@ -68,7 +67,7 @@ fn buffer_program(src: &str) -> (RillProgram<f32, 256>, Value) {
 fn fault(src: &str) -> String {
     let (defs, expr) = split_main(src);
     let ffi = ForeignRegistry::<f32>::new();
-    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+    match eval_ffi(defs, expr, ffi) {
         Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
         Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
@@ -76,7 +75,7 @@ fn fault(src: &str) -> String {
 }
 
 /// The two field VALUES of a `Pair` record output, resolved through the arena.
-fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     let fields = match v {
         Value::Record(fields) if fields.len() == 2 => fields,
         other => panic!("expected a Pair record, got {other:?}"),
@@ -91,7 +90,7 @@ fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
 }
 
 /// The Int payloads of a `List` value.
-fn list_ints(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<i64> {
+fn list_ints(prog: &WorldState<f32, 256>, v: &Value) -> Vec<i64> {
     let elems = match v {
         Value::List { elems } => elems.clone(),
         other => panic!("expected a List, got {other:?}"),
@@ -106,7 +105,7 @@ fn list_ints(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<i64> {
 }
 
 /// The Float payloads of a `List` value.
-fn list_floats(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<f64> {
+fn list_floats(prog: &WorldState<f32, 256>, v: &Value) -> Vec<f64> {
     let elems = match v {
         Value::List { elems } => elems.clone(),
         other => panic!("expected a List, got {other:?}"),
@@ -129,7 +128,7 @@ fn array_parts(v: &Value) -> (ArenaRef, Vec<ArenaRef>) {
 }
 
 /// The flat Float elements of an `Array` value plus its bounds as Ints.
-fn array_1d(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
+fn array_1d(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
     let (bounds, elems) = array_parts(v);
     let bounds = prog.arena().get(bounds).expect("bounds resolve").clone();
     let (lo, hi) = pair_values(prog, &bounds);
@@ -460,7 +459,7 @@ fn assocs_pairs_each_index_with_its_element() {
 }
 
 /// The cell indices of a `List (Pair Int Int)` value.
-fn list_cells(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<(i64, i64)> {
+fn list_cells(prog: &WorldState<f32, 256>, v: &Value) -> Vec<(i64, i64)> {
     let elems = match v {
         Value::List { elems } => elems.clone(),
         other => panic!("expected a List, got {other:?}"),
@@ -480,7 +479,7 @@ fn list_cells(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<(i64, i64)> {
 
 /// The cell indices of a `List (Pair (Pair Int Int) e)` value, with their `e`
 /// payloads resolved through the arena.
-fn list_cell_assocs(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<((i64, i64), f64)> {
+fn list_cell_assocs(prog: &WorldState<f32, 256>, v: &Value) -> Vec<((i64, i64), f64)> {
     let elems = match v {
         Value::List { elems } => elems.clone(),
         other => panic!("expected a List, got {other:?}"),

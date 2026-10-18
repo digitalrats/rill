@@ -1,9 +1,10 @@
-//! `RillProgram<T, BUF>` — a compiled rill-lang program.
+//! `WorldState<T, BUF>` — the runtime realization of a compiled rill-lang
+//! program's world.
 //!
-//! It owns its IR and a [`WorldState`] holding the pre-allocated runtime state.
-//! A program is executed once to completion: its entry fragment runs and the
-//! terminal register is captured into the world's `main` (inspected with
-//! [`result`](RillProgram::result)). The
+//! The compiled [`Ir`] is pure code; the world holds every piece of mutable
+//! runtime state. A program is executed once to completion: its entry fragment
+//! runs and the terminal register is captured into the world's `main`
+//! (inspected with [`result`](WorldState::result)). The
 //! [`ProgramRunner`](crate::program_runner::ProgramRunner) runs `main : IO ()`
 //! through this same path. Nothing allocates after warm-up.
 
@@ -99,7 +100,7 @@ pub(crate) enum StreamHandle {
     /// is `String` and each line is one element.
     Stdin {
         /// The injected console lines, in order (reset by
-        /// [`RillProgram::inject_stdin`](crate::program::RillProgram)).
+        /// [`WorldState::inject_stdin`]).
         lines: Vec<String>,
         /// Number of lines already consumed.
         pos: usize,
@@ -165,10 +166,11 @@ pub struct WorldConfig<T: Transcendental> {
     pub growable: bool,
     /// The built-in factory registry as a world-owned value.
     ///
-    /// Built-in resolution moves onto this field when the world takes
-    /// ownership of the registry; until then [`WorldState::seat`] still
-    /// receives the registry as an argument, and this field only records the
-    /// caller's configuration.
+    /// [`WorldState::seat`] resolves every `foreign`-declared built-in against
+    /// this registry (an unresolvable name is a [`CompileError`] at seat). The
+    /// world owns the registry, so a caller hands it over here rather than
+    /// passing it to the executor on every run. `None` means "no foreign
+    /// builtins": a program that declares one fails at seat.
     pub ffi: Option<crate::ffi::ForeignRegistry<T>>,
     /// The world's parameter bag (`sample_rate` + named parameters).
     ///
@@ -176,7 +178,8 @@ pub struct WorldConfig<T: Transcendental> {
     /// the program's declared parameter defaults only where the bag carries no
     /// value yet, so a caller-supplied entry survives seating. The sample rate
     /// is pre-seeded on [`Params::sample_rate`](rill_core::Params::sample_rate)
-    /// (default `0.0` = "not a signal program").
+    /// (default `0.0` = "not a signal program"); the seat reads the rate from
+    /// this field (there is no `sample_rate` argument).
     pub params: rill_core::Params,
 }
 
@@ -195,10 +198,11 @@ impl<T: Transcendental> Default for WorldConfig<T> {
 /// `main : IO ()` threads the opaque `World` token for ordering only; the state
 /// the effects actually mutate lives here. The world owns the memory-stream
 /// table and the captured stdio console, the signal runtime (block feedback,
-/// delay lines, the buffer table, built-in instances), the parameter store and
-/// its metadata, and the whole value track (arena, registers, capture cells,
-/// deferred drops, ST regions). [`RillProgram`] owns only the `Ir` and
-/// delegates every operation here. The runner captures the console
+/// delay lines, the buffer table, built-in instances), the foreign factory
+/// registry, the parameter store and its metadata, and the whole value track
+/// (arena, registers, capture cells, deferred drops, ST regions). The compiled
+/// [`Ir`] is pure code and lives outside the world; every executor function
+/// takes `(&Ir, &mut WorldState)`. The runner captures the console
 /// (`stdout`/`stderr`) so tests and drivers can assert on it, and injects the
 /// console input (`stdin`).
 pub struct WorldState<T: Transcendental, const BUF: usize> {
@@ -281,7 +285,7 @@ pub struct WorldState<T: Transcendental, const BUF: usize> {
     pub(crate) drops_scratch: Vec<crate::arena::ArenaRef>,
     /// The run's terminal register: the result of executing the program's
     /// entry fragment once. Set at run end by
-    /// [`run_entry`](crate::backend::interp::run_entry) (see
+    /// [`exec_entry`](crate::backend::interp::exec_entry) (see
     /// [`result`](Self::result)); released at the start of the next run and by
     /// [`reset`](Self::reset).
     pub(crate) main: Option<crate::arena::ArenaRef>,
@@ -374,7 +378,8 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     }
 
     /// Seat this world for `ir`: assemble every structural table the program
-    /// needs, resolving built-ins against `foreign`.
+    /// needs, resolving built-ins against the world's own
+    /// [`ffi`](WorldConfig::ffi) registry.
     ///
     /// The seat is the code-meets-memory boundary. It reads **only** the IR's
     /// layout (register store, block state, buffer table, tapes, delay sites,
@@ -383,9 +388,11 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// from configuration. An unresolvable built-in name is a [`CompileError`]
     /// here — before any run can reach an effect.
     ///
-    /// An empty legacy [`Registry`](crate::builtin::Registry) is used: the
-    /// public seat resolves built-ins from `foreign` only (the legacy registry
-    /// survives on [`RillProgram::new_with`] until it is deleted).
+    /// The foreign factory registry comes from [`WorldConfig::ffi`] (the world
+    /// owns it); a world without one resolves no foreign built-in, so a program
+    /// that declares one fails here. The sample rate comes from
+    /// [`params.sample_rate`](rill_core::Params::sample_rate), which a caller
+    /// pre-seeds; a non-signal world keeps the `0.0` default.
     ///
     /// Re-seating is supported: the structural tables (and the arena) are
     /// re-sized to the new IR, the value-track bookkeeping is cleared, and the
@@ -394,37 +401,11 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// earlier run (`result()` returns `None` afterwards). Declared parameter
     /// **defaults** are seeded only where the world's bag has no value yet, so
     /// a pre-seeded parameter survives; `sample_rate` is never seeded from a
-    /// declaration (the field owns it) — the `sample_rate` argument seeds the
-    /// field.
-    pub fn seat(
-        &mut self,
-        ir: &Ir,
-        foreign: &crate::ffi::ForeignRegistry<T>,
-        sample_rate: f32,
-    ) -> Result<(), CompileError> {
-        self.seat_with(
-            ir,
-            &crate::builtin::Registry::<T>::new(),
-            Some(foreign),
-            None,
-            sample_rate,
-        )
-    }
-
-    /// The seat implementation shared with the legacy [`RillProgram`]
-    /// constructors, which still resolve built-ins against a caller-supplied
-    /// [`Registry`](crate::builtin::Registry) and may pass a resource registry.
-    ///
-    /// `foreign` stays `Option` so `new_with(…, None)` keeps reporting an
-    /// unresolved name as "unknown built-in" exactly as before.
-    pub(crate) fn seat_with(
-        &mut self,
-        ir: &Ir,
-        registry: &crate::builtin::Registry<T>,
-        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-        mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
-        sample_rate: f32,
-    ) -> Result<(), CompileError> {
+    /// declaration (the field owns it).
+    pub fn seat(&mut self, ir: &Ir) -> Result<(), CompileError> {
+        // The world's parameter store owns the rate: a caller pre-seeds
+        // `params.sample_rate` before seating (there is no rate argument).
+        let sample_rate = self.params.sample_rate;
         // One shared cell per `tape_loop <capacity>` call (indexed by
         // `BuiltinInstance::tape_index`). Tape heads referencing the same index
         // get writer/reader handles over the same cell. The cells are local to
@@ -443,14 +424,21 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         // Carve the delay sites first so the allocator is available to
         // built-in factories below.
         let (delays, mut allocator) = Self::alloc_delays(ir);
+        // The world owns exactly one factory registry (its `ffi`), so the
+        // legacy rill-core `Registry` is empty and an external resource
+        // registry (`resources`) is never supplied: a name-based resource
+        // binding is rejected on the source path (`compile`), and the tape path
+        // resolves by index.
+        let legacy = crate::builtin::Registry::<T>::new();
+        let mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>> = None;
         // Build every built-in before committing anything, so a failed seat
         // leaves the previous seat's state intact.
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
             builtins.push(build_builtin(
                 bi,
-                registry,
-                foreign,
+                &legacy,
+                self.config.ffi.as_ref(),
                 &mut resources,
                 &tapes,
                 sample_rate,
@@ -460,11 +448,6 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         self.delays = delays;
         self.builtins = builtins;
         self.fill_layout(ir);
-        // Transitional: the seat's `sample_rate` argument is the world's rate
-        // seed (the public compile/eval entries still take one). Once the
-        // caller owns the world outright it pre-seeds
-        // `world.params.sample_rate` and the seat takes only `&Ir`.
-        self.params.sample_rate = sample_rate;
         Ok(())
     }
 
@@ -648,18 +631,6 @@ pub(crate) enum BuiltinInst<T: Transcendental> {
     Block(Box<dyn BlockBuiltin<T>>),
     /// A whole-buffer multi-channel built-in.
     MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
-}
-
-/// A compiled program ready to run.
-///
-/// The program owns its `Ir` and the [`WorldState`] holding every piece of
-/// mutable runtime state; every operation delegates to the world.
-pub struct RillProgram<T: Transcendental, const BUF: usize> {
-    pub(crate) ir: Ir,
-    /// The realized `realWorld`: streams, captured console, signal runtime,
-    /// parameters, and the value track. `IO` actions reach it through this
-    /// world; the `World` token only orders them.
-    pub(crate) world: WorldState<T, BUF>,
 }
 
 /// One running `runST` region: the STRef/STArray cells it allocated.
@@ -934,156 +905,6 @@ fn build_builtin<T: Transcendental>(
     }
 }
 
-impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
-    /// Create a program from a compiled IR. Allocates state, delays, registers,
-    /// and builds the execution schedule. Built-ins are NOT instantiated — use
-    /// [`new_with`](Self::new_with) if the IR references built-in functions.
-    pub fn new(ir: Ir) -> Self {
-        let mut world = WorldState::<T, BUF>::new(WorldConfig::default());
-        // Built-ins are not instantiated here, so the delay sites need no
-        // allocator hand-off to the factories below (`seat` does that).
-        let (delays, _allocator) = WorldState::<T, BUF>::alloc_delays(&ir);
-        world.delays = delays;
-        world.fill_layout(&ir);
-        Self { ir, world }
-    }
-
-    /// Create a program from a compiled [`Ir`], instantiating all built-ins
-    /// via the provided `Registry`. Also sets the initial `sample_rate`.
-    ///
-    /// Parses `builtins` from the IR, allocates registers, state, and delays,
-    /// and builds the execution schedule. The resulting program implements
-    /// [`Algorithm<T>`](rill_core::traits::Algorithm).
-    ///
-    /// When `foreign` is provided, built-in names not in `registry` resolve
-    /// against the foreign registry (foreign-declared builtins).
-    pub fn new_with(
-        ir: Ir,
-        registry: &crate::builtin::Registry<T>,
-        sample_rate: f32,
-        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, None, foreign)
-    }
-
-    /// Create a program with a resource registry, resolving resource-backed
-    /// built-ins (e.g. tape heads) from the named resources. When `foreign`
-    /// is provided, non-resource built-in names not in `registry` resolve
-    /// against the foreign registry.
-    pub fn new_with_resources(
-        ir: Ir,
-        registry: &crate::builtin::Registry<T>,
-        sample_rate: f32,
-        resources: &mut rill_core::buffer::ResourceRegistry<T>,
-        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, Some(resources), foreign)
-    }
-
-    fn build(
-        ir: Ir,
-        registry: &crate::builtin::Registry<T>,
-        sample_rate: f32,
-        resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
-        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    ) -> Result<Self, CompileError> {
-        let mut world = WorldState::<T, BUF>::new(WorldConfig::default());
-        world.seat_with(&ir, registry, foreign, resources, sample_rate)?;
-        Ok(Self { ir, world })
-    }
-
-    /// Swap the double-buffered block feedback state at the end of a tick.
-    pub(crate) fn swap_block_state(&mut self) {
-        self.world.swap_block_state();
-    }
-
-    /// Release this run's per-run value registers.
-    ///
-    /// Value registers are per-run scratch: every occupied register holds a
-    /// counted arena ref that must be released before the next run (otherwise
-    /// a repeated-run value program leaks one slot per register per run and
-    /// exhausts the fixed arena). Called at the very end of a run, after the
-    /// result has been captured into the world's `main`. Only the program's
-    /// own registers (`0..ir.num_value_regs`) are cleared — the pre-allocated
-    /// call scratch is drained by `run_call` on every dispatch return, so its
-    /// slots are already `None`.
-    pub(crate) fn clear_value_regs(&mut self) {
-        self.world.clear_value_regs(self.ir.num_value_regs);
-    }
-
-    /// Set a parameter by name. RT-safe (map store + flag).
-    ///
-    /// The world's bag is kept in sync for readback (`param`) and is what the
-    /// value track and bound built-ins read at run time.
-    pub fn set_param(&mut self, name: &str, value: ParamValue) {
-        self.world.set_param(name, value);
-    }
-
-    /// Replace the console input (`stdin`) lines and rewind the stream cursor.
-    ///
-    /// The runner's captured console realizes the program's stdio, so the
-    /// caller supplies the finite, line-oriented input that `read stdin`
-    /// yields; after the lines are drained the stream reports EOF. Pushback
-    /// entries left over from an earlier run are released (the stream keeps its
-    /// `unread` stack across runs otherwise).
-    pub(crate) fn inject_stdin(&mut self, lines: &[String]) {
-        self.world.inject_stdin(lines);
-    }
-
-    /// Current value of a parameter by name.
-    pub fn param(&self, name: &str) -> Option<ParamValue> {
-        self.world.param(name)
-    }
-
-    /// Metadata for all parameters (name, default, range).
-    pub fn params_meta(&self) -> &[ParamDef] {
-        self.world.params_meta()
-    }
-
-    /// The result of the program's single run: the terminal arena ref captured
-    /// by [`run_entry`](crate::backend::interp::run_entry) into the world's
-    /// `main`.
-    ///
-    /// A rill-lang program executes its entry fragment exactly ONCE, so this is
-    /// the program's one value-level result — the whole-buffer
-    /// (`Value::Buffer`) forms are inspected with
-    /// [`copy_buffer`](Self::copy_buffer). Returns `None` before the first run
-    /// or when the run produced no output register.
-    pub fn result(&self) -> Option<crate::arena::ArenaRef> {
-        self.world.result()
-    }
-
-    /// Access to the value arena, for inspecting output values (tests, tooling).
-    pub fn arena(&self) -> &Arena<Value> {
-        self.world.arena()
-    }
-
-    /// Forward initialisation to all built-in instances.
-    pub fn init(&mut self, sample_rate: f32) {
-        self.world.init(sample_rate);
-    }
-
-    /// Copy the samples of a whole-buffer run result into `dst`.
-    ///
-    /// Returns `true` when `dst` was filled (up to `dst.len()` or the run
-    /// length, whichever is smaller); `false` when `r` is not a buffer value
-    /// (a scalar/list/record value) or its buffer is gone. Intended for tests
-    /// and tooling that inspect the retained buffer path.
-    pub fn copy_buffer(&self, r: crate::arena::ArenaRef, dst: &mut [T]) -> bool {
-        self.world.copy_buffer(r, dst)
-    }
-
-    /// Reset the program to its initial state.
-    ///
-    /// Clears the signal state (feedback slots, delay lines), re-initialises
-    /// every built-in instance, and releases the value-track state (value
-    /// state slots, per-tick registers, outputs, capture cells, deferred
-    /// drops) so a mid-lifetime reset cannot exhaust the fixed arena.
-    pub fn reset(&mut self) {
-        self.world.reset(self.ir.num_value_regs);
-    }
-}
-
 impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// Swap the double-buffered block feedback state at the end of a tick.
     pub(crate) fn swap_block_state(&mut self) {
@@ -1225,7 +1046,7 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     }
 
     /// The result of the program's single run: the terminal arena ref captured
-    /// by `run_entry` into `main`.
+    /// by [`exec_entry`](crate::backend::interp::exec_entry) into `main`.
     ///
     /// A rill-lang program executes its entry fragment exactly ONCE, so this is
     /// the program's one value-level result — the whole-buffer
@@ -1279,7 +1100,7 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// `num_value_regs` is the IR's register count: it is the watermark the
     /// per-tick register store returns to after the value-track state is
     /// released.
-    pub(crate) fn reset(&mut self, num_value_regs: usize) {
+    pub fn reset(&mut self, num_value_regs: usize) {
         for b in &mut self.block_state {
             b.fill(T::ZERO);
         }
@@ -1366,9 +1187,10 @@ mod program_value_tests {
             input_buffers: Vec::new(),
             tapes: Vec::new(),
         };
-        let prog = RillProgram::<f32, 256>::new(ir);
-        assert_eq!(prog.world.arena.capacity(), 4);
-        assert_eq!(prog.world.value_state.len(), 2);
+        let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+        world.seat(&ir).expect("seat");
+        assert_eq!(world.arena.capacity(), 4);
+        assert_eq!(world.value_state.len(), 2);
     }
 
     #[test]
@@ -1407,19 +1229,23 @@ mod program_value_tests {
             input_buffers: Vec::new(),
             tapes: Vec::new(),
         };
-        let ffi = crate::ffi::ForeignRegistry::<f32>::new();
-
-        let mut preseeded = WorldState::<f32, 256>::new(WorldConfig::default());
+        let mut preseeded = WorldState::<f32, 256>::new(WorldConfig {
+            params: rill_core::Params::new(44_100.0),
+            ..WorldConfig::default()
+        });
         preseeded.set_param("level", ParamValue::Float(0.5));
-        preseeded.seat(&ir, &ffi, 44_100.0).expect("seat");
+        preseeded.seat(&ir).expect("seat");
         assert_eq!(preseeded.param("level"), Some(ParamValue::Float(0.5)));
         assert!(
             preseeded.params_dirty[0],
             "a pre-supplied value is an initial state and must be pushed"
         );
 
-        let mut defaulted = WorldState::<f32, 256>::new(WorldConfig::default());
-        defaulted.seat(&ir, &ffi, 44_100.0).expect("seat");
+        let mut defaulted = WorldState::<f32, 256>::new(WorldConfig {
+            params: rill_core::Params::new(44_100.0),
+            ..WorldConfig::default()
+        });
+        defaulted.seat(&ir).expect("seat");
         assert_eq!(defaulted.param("level"), Some(ParamValue::Float(0.0)));
         assert!(
             !defaulted.params_dirty[0],
@@ -1427,7 +1253,7 @@ mod program_value_tests {
         );
         assert_eq!(
             defaulted.params.sample_rate, 44_100.0,
-            "the seat argument seeds the rate field"
+            "the world's pre-seeded rate survives the seat"
         );
     }
 
@@ -1462,9 +1288,7 @@ mod program_value_tests {
             tapes: Vec::new(),
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
-        world
-            .seat(&ir, &crate::ffi::ForeignRegistry::<f32>::new(), 44_100.0)
-            .expect("seat");
+        world.seat(&ir).expect("seat");
 
         world.set_param("cutoff", ParamValue::Float(9.0));
         assert_eq!(world.param("cutoff"), Some(ParamValue::Float(2.0)));
@@ -1517,11 +1341,9 @@ mod program_value_tests {
             input_buffers: Vec::new(),
             tapes: Vec::new(),
         };
-        let ffi = crate::ffi::ForeignRegistry::<f32>::new();
-
         let mut out_of_range = WorldState::<f32, 256>::new(WorldConfig::default());
         out_of_range.set_param("level", ParamValue::Float(9.0));
-        out_of_range.seat(&ir, &ffi, 44_100.0).expect("seat");
+        out_of_range.seat(&ir).expect("seat");
         assert_eq!(
             out_of_range.param("level"),
             Some(ParamValue::Float(2.0)),
@@ -1534,7 +1356,7 @@ mod program_value_tests {
 
         let mut in_range = WorldState::<f32, 256>::new(WorldConfig::default());
         in_range.set_param("level", ParamValue::Float(0.25));
-        in_range.seat(&ir, &ffi, 44_100.0).expect("seat");
+        in_range.seat(&ir).expect("seat");
         assert_eq!(
             in_range.param("level"),
             Some(ParamValue::Float(0.25)),
@@ -1567,19 +1389,20 @@ mod program_value_tests {
             input_buffers: Vec::new(),
             tapes: Vec::new(),
         };
-        let mut prog = RillProgram::<f32, 256>::new(ir);
+        let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+        world.seat(&ir).expect("seat");
         // Three counted refs to the same value: one per value-state slot,
         // value register, and cell-stack frame.
-        let r = prog.world.arena.alloc(crate::arena::Value::Int(1)).unwrap();
-        prog.world.value_state[0] = Some(r);
-        let r2 = prog.world.arena.copy(r).unwrap();
-        prog.world.value_regs.push(Some(r2));
-        let r3 = prog.world.arena.copy(r).unwrap();
-        prog.world.cell_stack.push(vec![(0, r3)]);
-        prog.reset();
-        assert_eq!(prog.world.value_state[0], None);
-        assert_eq!(prog.world.value_regs[0], None);
-        assert_eq!(prog.world.cell_stack.len(), 0);
-        assert_eq!(prog.world.arena.rc(r), 0, "all refs dropped, slot freed");
+        let r = world.arena.alloc(crate::arena::Value::Int(1)).unwrap();
+        world.value_state[0] = Some(r);
+        let r2 = world.arena.copy(r).unwrap();
+        world.value_regs.push(Some(r2));
+        let r3 = world.arena.copy(r).unwrap();
+        world.cell_stack.push(vec![(0, r3)]);
+        world.reset(ir.num_value_regs);
+        assert_eq!(world.value_state[0], None);
+        assert_eq!(world.value_regs[0], None);
+        assert_eq!(world.cell_stack.len(), 0);
+        assert_eq!(world.arena.rc(r), 0, "all refs dropped, slot freed");
     }
 }

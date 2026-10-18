@@ -1,18 +1,20 @@
 //! End-to-end list-collection tests: literals, cons/head/tail/length/map/fold/filter.
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src` against an empty foreign registry and RUN it once (the
 /// single-run value surface), returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
 #[test]
@@ -133,7 +135,7 @@ fn colon_seq_still_composes_buffers() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let mut out = [0.0f32; 64];
     let r = prog.result().unwrap();
     assert!(prog.copy_buffer(r, &mut out));
@@ -153,7 +155,11 @@ fn fold_rejects_wrong_arity_closure_at_compile_time() {
     // `fold` calls its closure with (acc, elem), so a unary closure is a type
     // error. It used to compile and then panic the runtime path with an
     // index-out-of-bounds in `call_closure_args`.
-    let err = match compile::<f32>(r"main = fold (\a -> a) 0.0 [1.0, 2.0, 3.0];") {
+    let err = match compile_eval::<f32, 256>(
+        r"main = fold (\a -> a) 0.0 [1.0, 2.0, 3.0];",
+        "main",
+        Mode::Strict,
+    ) {
         Ok(_) => panic!("wrong-arity fold closure must not compile"),
         Err(e) => e,
     };
@@ -167,7 +173,11 @@ fn fold_rejects_wrong_arity_closure_at_compile_time() {
 fn map_rejects_wrong_arity_closure_at_compile_time() {
     // `map` calls its closure with one element, so a binary closure is a type
     // error. It used to compile and silently produce an empty list.
-    let err = match compile::<f32>(r"main = map (\a -> \b -> b) [1.0, 2.0];") {
+    let err = match compile_eval::<f32, 256>(
+        r"main = map (\a -> \b -> b) [1.0, 2.0];",
+        "main",
+        Mode::Strict,
+    ) {
         Ok(_) => panic!("wrong-arity map closure must not compile"),
         Err(e) => e,
     };
@@ -195,7 +205,12 @@ fn map_result_element_type_comes_from_closure_return() {
     // element type): a later `cons 4.0` must typecheck — it used to fail with a
     // spurious "cannot unify Int with Float".
     assert!(
-        compile::<f32>(r"main = cons 4.0 (map (\x -> x + 0.5) [1, 2, 3]);").is_ok(),
+        compile_eval::<f32, 256>(
+            r"main = cons 4.0 (map (\x -> x + 0.5) [1, 2, 3]);",
+            "main",
+            Mode::Strict,
+        )
+        .is_ok(),
         "a type-changing map followed by a Float cons must compile"
     );
     // End-to-end length 4: the source needs spare capacity for the cons (map

@@ -2,8 +2,8 @@
 // `run_blocks` extraction (Task 1). This asserts the SAME result after the
 // unified block-walker refactor — it is a parity check, not a stack-safety
 // test (the trampoline is a deferred, separate step).
-use rill_lang::builtin::Registry;
-use rill_lang::compile_runner;
+use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 
 #[test]
 fn deep_non_tail_recursion_same_result() {
@@ -15,7 +15,7 @@ main = do { xs <- fromList (take 3.0 (from 10.0));
     write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
     return () };
 "#;
-    let mut r = compile_runner::<f32, 256>(src, &Registry::new(), 44100.0).unwrap();
+    let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).unwrap();
     r.run().unwrap();
     assert_eq!(r.stdout(), ["10.011.012.0"]);
 }

@@ -7,12 +7,17 @@ one of two paths:
 
 | Path | Entry point | What runs |
 |---|---|---|
-| **Program executor** | `compile_runner` → `ProgramRunner` | `main : (String…) -> IO ()`, run to completion against a realized `World` (memory streams + stdio) |
-| **Single-run value eval** | `test_eval` / `test_eval_with_mode` | Evaluate one expression to WHNF against a `defs` context; the result is read from `RillProgram::result()` (`copy_buffer(r, dst)` for whole-buffer results) |
+| **Program executor** | `compile` → `ProgramRunner` | `main : IO ()`, run to completion against a realized `WorldState` (memory streams + stdio) |
+| **Single-run value eval** | `compile_eval` + `test_eval` | Evaluate one expression to WHNF against a `defs` context, in a caller-owned `WorldState`; the result is read from `WorldState::result()` (`copy_buffer(r, dst)` for whole-buffer results) |
+
+Compilation is **explicit**: source lowers to a pure-code `Ir`, and every piece
+of runtime state lives in a `WorldState`. A world is **seated** for an IR
+(`world.seat(&ir)`) before anything runs, and the executor takes the pair —
+`(ir, &mut world)` — never a program object.
 
 A program executes its value entry exactly ONCE — there is no public re-run
-surface. The `RillProgram` returned by `test_eval` carries the run's single
-result in `main`/`result()`.
+surface. The `Ir` compiled by `compile_eval` is run once by `test_eval`, which
+leaves the run's single result in `world.result()`.
 
 The interpreter is safe and allocation-free after warm-up: values live in a
 fixed, page-based arena, and a program that exceeds the budget reports a clean
@@ -21,10 +26,10 @@ future `jit` feature; both share the same linear IR, so the front-end is
 unaffected when the JIT lands.
 
 > **Removed in the IO/streams core change (this branch).** `rill-lang` no longer
-> implements `Algorithm<T>`/`MultichannelAlgorithm<T>` for `RillProgram`; there
-> is no `process()`, no `ProgramEngine`, no `readInput`/`writeOutput`, and no
-> buffer-λ `main`. The old `compile_graph()` graph-execution entry point is gone
-> as well: what remains of graph compilation sits behind the off-by-default
+> implements `Algorithm<T>`/`MultichannelAlgorithm<T>` for a compiled program;
+> there is no `process()`, no `ProgramEngine`, no `readInput`/`writeOutput`, and
+> no buffer-λ `main`. The old `compile_graph()` graph-execution entry point is
+> gone as well: what remains of graph compilation sits behind the off-by-default
 > `graph` feature (`rill_lang::graph`), does not build at this revision (its
 > `reconstruct.rs` still targets the removed `Par`/`Split`/`Cut` AST), and is not
 > built by the workspace gates. Programs express their I/O as streams inside the
@@ -33,12 +38,11 @@ unaffected when the JIT lands.
 ## Quick start: an IO program
 
 ```rust
-use rill_lang::{compile_runner, Registry};
+use rill_lang::{compile, ffi::ForeignRegistry};
 
-let mut runner = compile_runner::<f32, 256>(
+let mut runner = compile::<f32, 256>(
     r#"main = do { write (Just "hi") stdout; return () };"#,
-    &Registry::new(),
-    44_100.0,
+    ForeignRegistry::new(),
 )
 .unwrap();
 
@@ -47,48 +51,56 @@ assert_eq!(runner.stdout(), ["hi"]);
 ```
 
 `main` is a pure `IO ()` action — it takes no String launch arguments. The
-runner owns the program's `World`: `stdout`/`stderr` are
+runner owns the program's `WorldState`: `stdout`/`stderr` are
 captured into the runner (not echoed to the process console) and read back with
 `stdout()` / `stderr()`, which report the console built up by **all runs since
 construction**. `set_stdin(&[String])` injects the line-oriented input that
 `read stdin` yields, rewinding the stream for the next run.
 
 A program whose `main` reaches `return ()` runs to completion cleanly, even when
-it performs no I/O; a `main` whose final action's result is not `()` is a clean
-`ProcessError` (`` `main` must have type `IO ()` ``) rather than a silently
-discarded value — `return 0.0` in a `do` block is rejected as well. Because the
-`Monad` method is resolved from the expected type, a bare `main = return ()`
-does not type-check: fix the monad with a preceding effect (as above) or with a
-`bind` whose result type is known.
+it performs no I/O; a `main` that does not type as `IO ()` is rejected by
+`compile` with a `CompileError` (`` `main` must have type `IO ()` ``) rather
+than a silently discarded value — `return 0.0` in a `do` block is rejected as
+well. Because the `Monad` method is resolved from the expected type, a bare
+`main = return ()` does not type-check: fix the monad with a preceding effect
+(as above) or with a `bind` whose result type is known.
 
 ### Entry points
 
 | Function | Produces | Use |
 |---|---|---|
-| `compile_runner(src, &registry, sample_rate)` | `ProgramRunner<T, BUF>` | The executor for `main : IO ()` programs; compiles in `Complete` (lazy) mode unless the source has a mode pragma |
-| `compile(src)` | `RillProgram<T, 256>` | Compiles a value-`main` program without running it (still accepts value-`main` until the `IO ()` gate; do not run) |
-| `compile_with_ffi(src, &ffi, sample_rate)` | `RillProgram<T, 256>` | Compiles against a foreign-function registry without running |
-| `test_eval(defs, expr, &ffi, sample_rate)` | `RillProgram<T, 256>` | Evaluate `expr` (strict mode) against the `defs` context and RUN it once; read the result with `result()` / `copy_buffer(r, dst)` |
-| `test_eval_with_mode(defs, expr, &ffi, sample_rate, mode)` | `RillProgram<T, 256>` | Same, under an explicit evaluation mode |
-| `RillProgram::result()` | `Option<ArenaRef>` | The single run's result ref |
-| `RillProgram::copy_buffer(r, dst)` | `bool` | Copy a whole-buffer result (`Value::Buffer`) into `dst`; `false` on non-buffer refs |
+| `compile(src, ffi)` | `ProgramRunner<T, 256>` | The executor for `main : IO ()` programs; owns the `Ir` and the `WorldState` (including the `ForeignRegistry`); compiles in `Complete` (lazy) mode unless the source has a mode pragma |
+| `compile_eval::<T, BUF>(defs, expr, mode)` | `Ir` | Compiles `expr` as a fresh entry in the context of `defs`; no sample rate, no run |
+| `test_eval(&ir, &mut world)` | `Result<(), CompileError>` | Seats the world for `ir` and runs the entry once; read the result with `world.result()` / `world.copy_buffer(r, dst)` |
+| `WorldState::seat(&ir)` | `Result<(), CompileError>` | Assembles the world's tables for an IR, resolving built-ins against `world.ffi` (idempotent for params) |
+| `WorldState::result()` | `Option<ArenaRef>` | The single run's result ref |
+| `WorldState::copy_buffer(r, dst)` | `bool` | Copy a whole-buffer result (`Value::Buffer`) into `dst`; `false` on non-buffer refs |
 
 ### The pure-value path
 
-`test_eval` builds `"{defs}\n__rill_eval = ({expr});"` and compiles it through
-the same pipeline as any program — `defs` carries the program's top-level
-bindings, `expr` the expression to evaluate. The entry marker is internal
-(never `main`), so `main` in `defs` is an ordinary binding. This is the path for
-pure computation — collections, records, closures, typeclass methods — without
-I/O:
+`compile_eval` builds `"{defs}\n__rill_eval = ({expr});"` and compiles it
+through the same pipeline as any program — `defs` carries the program's
+top-level bindings, `expr` the expression to evaluate. The entry marker is
+internal (never `main`), so `main` in `defs` is an ordinary binding. `test_eval`
+then seats a caller-owned world for that `Ir` and runs the entry once. This is
+the path for pure computation — collections, records, closures, typeclass
+methods — without I/O:
 
 ```rust
-use rill_lang::{arena::Value, ffi::ForeignRegistry, test_eval};
+use rill_lang::arena::Value;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
+use rill_lang::program::{WorldConfig, WorldState};
+use rill_lang::{compile_eval, test_eval};
 
-let ffi = ForeignRegistry::<f32>::new();
-let prog = test_eval::<f32, 256>("", "1.0 + 2.0", &ffi, 44_100.0).unwrap();
+let ir = compile_eval::<f32, 256>("", "1.0 + 2.0", Mode::Strict).unwrap();
+let mut world = WorldState::<f32, 256>::new(WorldConfig {
+    ffi: Some(ForeignRegistry::<f32>::new()),
+    ..Default::default()
+});
+test_eval(&ir, &mut world).unwrap();
 assert_eq!(
-    prog.arena().get(prog.result().unwrap()).unwrap(),
+    world.arena().get(world.result().unwrap()).unwrap(),
     &Value::Float(3.0),
 );
 ```
@@ -152,13 +164,13 @@ stream program therefore overflows a default 2 MiB thread stack (an abort, not a
 clean error). Run such programs on a grown-stack thread:
 
 ```rust
-use rill_lang::{compile_runner, run_on_stack, Registry};
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::{compile, run_on_stack};
 
 let stdout = run_on_stack(16 << 20, || {
-    let mut runner = compile_runner::<f32, 256>(
+    let mut runner = compile::<f32, 256>(
         r#"main = do { write (Just "hi") stdout; return () };"#,
-        &Registry::new(),
-        44_100.0,
+        ForeignRegistry::new(),
     )
     .unwrap();
     runner.run().unwrap();
@@ -167,7 +179,8 @@ let stdout = run_on_stack(16 << 20, || {
 assert_eq!(stdout, ["hi"]);
 ```
 
-`ProgramRunner` is **not `Send`** (it owns `Rc<RefCell<…>>` state), so compile
+`ProgramRunner` is **not `Send`** (its `WorldState` owns `Rc<RefCell<…>>`
+state), so compile
 *inside* the closure, not before it. `run_on_stack` resumes a panic on the
 calling thread, and a failed spawn panics (a host-resource failure, not a program
 error). Trampolining the `bind` chain to remove the limit is a planned follow-up.
@@ -176,10 +189,11 @@ error). Trampolining the `bind` chain to remove the limit is a planned follow-up
 
 | Removed | Replacement |
 |---|---|
-| `compile(...)` then `prog.process(inputs, outputs)` | `compile_runner(...)` then `runner.run()`; describe the work as stream reads/writes inside `main` |
-| `impl Algorithm<T> for RillProgram`, `BlockBuiltin` driving `RillProgram` | Built-ins remain callable *inside* a program; there is no transform wrapper around a whole program |
+| `compile(...)` then `prog.process(inputs, outputs)` | `compile(src, ffi)` then `runner.run()`; describe the work as stream reads/writes inside `main` |
+| `impl Algorithm<T>` for a compiled program, `BlockBuiltin` driving it | Built-ins remain callable *inside* a program; there is no transform wrapper around a whole program |
 | `readInput` / `writeOutput` and indexed variants | `fromList` / `toList`, `read` / `write`, `connect`, `makeInputStream` / `makeOutputStream` |
-| Buffer-λ `main` (`main = _ * 0.5`) | `main : (String…) -> IO ()`; a value `main` remains valid for the pure-value tick |
+| Buffer-λ `main` (`main = _ * 0.5`) | `main : IO ()`; a value `main` remains valid for the pure-value tick |
+| `RillProgram`, `compile_with_ffi`, `compile_with_mode`, `compile_runner`, `compile_source_to_program` | `Ir` + `WorldState`: `compile_eval(defs, expr, mode)` → `test_eval(&ir, &mut world)`; `compile(src, ffi)` → `ProgramRunner` |
 | `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Not available here: the `graph` feature is off by default, the transform executor is gone, and the module does not build at this revision. Graph compilation is **deferred** with the graph follow-on |
 | Actor `?name=default` slots wired to a graph's `SetParameter` mailbox | `?name` slots still type-check and lower as dynamic built-in parameters; the graph-side mailbox wiring is not part of this branch |
 
@@ -264,8 +278,8 @@ which this branch does not provide.
 ## Built-in functions
 
 rill-lang supports calling stateful DSP/model built-ins from
-`rill-core-dsp`/`rill-core-model`/`rill-fft` via a `ForeignRegistry` handed to
-`test_eval` (or to the compile-only `compile_with_ffi`).
+`rill-core-dsp`/`rill-core-model`/`rill-fft` via a `ForeignRegistry` the world
+owns (`WorldConfig::ffi`); seating resolves every declared built-in against it.
 
 | Category | Builtins | Feature |
 |---|---|---|
@@ -309,9 +323,9 @@ main = lowpass _ ?cutoff=1000.0 0.7;
 Names are stable and may be namespaced by a `where` block with dot notation
 (`?osc.freq=440.0` → `"osc.freq"`). `param("name", default)` is the older inline
 form for the same idea; both coexist. Parameter slots are addressable
-programmatically through `RillProgram::params_meta()` / `set_param()`; the
-graph-side `SetParameter` mailbox that consumed these names is not part of this
-branch.
+programmatically by NAME through `WorldState::params_meta()` / `set_param()`; a
+`set_param` between two runs is what the second run observes. The graph-side
+`SetParameter` mailbox that consumed these names is not part of this branch.
 
 ## FFI (foreign functions)
 
@@ -377,15 +391,20 @@ ffi.register_block("gain", |params: &[f64], sample_rate: f32| {
 ffi.register_multichannel_block("add", |ins: usize, params: &[f64], sample_rate: f32| {
     // -> Box<dyn MultichannelBlockBuiltin<f32>>  (an N→M block builtin)
 });
-let prog = rill_lang::test_eval::<f32, 256>("", "gain _ 0.5", &ffi, 44100.0).unwrap();
+// `ffi` is handed to the world, which resolves `gain` at seat time.
+let mut world = rill_lang::program::WorldState::<f32, 256>::new(
+    rill_lang::program::WorldConfig { ffi: Some(ffi), ..Default::default() },
+);
+let ir = rill_lang::compile_eval::<f32, 256>("", "gain _ 0.5", rill_lang::mode::Mode::Strict)
+    .unwrap();
+rill_lang::test_eval(&ir, &mut world).unwrap();
 ```
 
 `register_block` registers a single-channel (1→1) built-in;
 `register_multichannel_block` an N→M one — the runtime dispatches by the
-`BuiltinInst` variant. `test_eval` compiles against the registry and runs the
-expression once, returning `RillProgram<T, BUF>`. A foreign call whose name is
-not registered fails at `RillProgram::build` with `foreign built-in '...' is
-not registered`.
+`BuiltinInst` variant. `test_eval` seats the world for the compiled `Ir` and
+runs the expression once. A foreign call whose name is not registered fails at
+seat (`WorldState::seat`) with `foreign built-in '...' is not registered`.
 
 ### The builtin catalog
 
@@ -432,13 +451,14 @@ generation is blocked — so an ill-formed program never reaches the runtime.
 
 With the `serialization` feature, [`RillLangDef`] carries a program as its
 **source string** (the canonical, human-editable form) and [`compile_def`] turns
-it back into a runnable program:
+it back into a `ProgramRunner`:
 
 ```rust,no_run
 use rill_lang::{RillLangDef, compile_def};
 
 let def = RillLangDef::new("gain", "main = return ();");
-let prog = compile_def::<f32>(&def).unwrap();
+let mut runner = compile_def::<f32>(&def).unwrap();
+runner.run().unwrap();
 ```
 
 The `serialization` feature no longer implies `graph`: `RillLangDef` and
@@ -785,11 +805,16 @@ runtime `ProcessError::Processing`.
 
 ## Status
 
-The IO/streams core is in place: `main : (String…) -> IO ()` executed by
+The IO/streams core is in place: `main : IO ()` executed by
 `ProgramRunner`, a Haskell-faithful `ST` with isolated state, io-streams-style
 memory/stdio streams, and the retained pure-value tick. The value track ships
 first-class collections (`List`/`Map`/`Set`, `Maybe`/`Pair`/`Either`,
 `Bool`/`String`), higher-kinded types, and `if`/`case`.
+
+Compilation is explicit and the runtime state is world-owned: `compile` and
+`compile_eval` produce pure-code `Ir`, `WorldState` owns every piece of mutable
+state (arenas, buffers, streams, console, parameters, and the foreign factory
+registry), and the executor runs the pair `(ir, &mut world)`.
 
 Deferred to follow-on work: the Cranelift `jit` feature, trampolining the `bind`
 chain (removing the stack-depth limit), signal-transform execution over streams

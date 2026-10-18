@@ -12,8 +12,11 @@
 //! `Pair`-shaped index, so the class variable is only recoverable by unifying
 //! the method's parameter pattern (`Pair i i`) against the concrete index
 //! type.
+pub mod common;
 
+use common::*;
 use rill_lang::ast::TypeExpr;
+use rill_lang::compile_eval;
 use rill_lang::mode::Mode;
 use rill_lang::types::infer::infer_program;
 use rill_lang::types::ty::TypeEnv;
@@ -46,7 +49,7 @@ fn run(src: &str) -> f64 {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v) {
         Some(rill_lang::arena::Value::Float(x)) => *x,
@@ -124,7 +127,7 @@ fn non_instanced_index_type_is_a_compile_error() {
     // the constraint cannot be discharged and must fail at COMPILE time
     // (never fall back to a runtime dictionary).
     let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (true,false) 0.0;");
-    let err = match rill_lang::compile::<f32>(&src) {
+    let err = match compile_eval::<f32, 256>(&src, "main", Mode::Strict) {
         Ok(_) => panic!("`ProbeIx Bool` has no instance, so the program must not compile"),
         Err(e) => e,
     };
@@ -139,7 +142,8 @@ fn non_instanced_index_type_is_a_compile_error() {
 fn unconstrained_defs_are_still_inferred_eagerly() {
     // Deferral is only for constrained signatures: an ordinary def with a
     // garbage body must still fail at load, not silently compile.
-    let err = match rill_lang::compile::<f32>("g x = missing x;\nmain = 1.0;") {
+    let err = match compile_eval::<f32, 256>("g x = missing x;\nmain = 1.0;", "main", Mode::Strict)
+    {
         Ok(_) => panic!("an unconstrained body is still type-checked eagerly"),
         Err(e) => e,
     };
@@ -178,7 +182,7 @@ fn where_block_of_a_constrained_def_is_in_scope() {
 
 /// Compile `src`, expecting an error; return its rendered message.
 fn compile_err(src: &str) -> String {
-    match rill_lang::compile::<f32>(src) {
+    match compile_eval::<f32, 256>(src, "main", Mode::Strict) {
         Ok(_) => panic!("expected a compile error, but the program compiled"),
         Err(e) => format!("{e}"),
     }

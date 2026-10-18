@@ -1,18 +1,20 @@
 //! Kind polymorphism: typeclasses over type constructors (Functor/Foldable).
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src` (which must bind `main` to the evaluated expression) and RUN
 /// it once on the single-run value surface, returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
 #[test]
@@ -57,7 +59,7 @@ fn kind_mismatch_is_compile_error() {
         instance Functor Pair where { fmap g p = p; }
         main = 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "Pair has arity 2; Functor needs arity 1");
     if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
         assert!(
@@ -82,7 +84,7 @@ fn parameterized_user_sum_instance_is_kind_error() {
         instance Functor Opt where { fmap g o = o; }
         main = 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(
         res.is_err(),
         "parameterized user sum Opt must be rejected as an instance"

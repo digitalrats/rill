@@ -7,20 +7,22 @@
 //! (see `reduce.rs`), so `ValueCallFunc` runtime dispatch is exercised by
 //! closure-valued calls (lambdas, partial application, HOFs — see
 //! `tests/closures.rs`, `tests/currying_wires.rs`, `tests/hof.rs`).
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src` (which must bind `main` to the evaluated expression) and RUN
 /// it once on the single-run value surface, returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
 #[test]
@@ -31,7 +33,12 @@ fn function_reference_calls_signal_definition() {
     // program's BLOCK output is 42.0. A func value over a signal function
     // collapses to the block track — only the value-track form (below) yields
     // a `Value::Callable`/value-channel output.
-    compile::<f32>("double x = x * 2.0; f = double; main = f 21.0").unwrap();
+    compile_eval::<f32, 256>(
+        "double x = x * 2.0; f = double; main = f 21.0",
+        "main",
+        Mode::Strict,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -68,14 +75,23 @@ fn func_value_can_be_chained() {
     // `g = f` where `f = double` resolves through the reference chain: calling
     // `g` still dispatches to `double` (the scheme collapses the func-value
     // chain to the referenced definition at inference time).
-    compile::<f32>("double x = x * 2.0; f = double; g = f; main = g 21.0").unwrap();
+    compile_eval::<f32, 256>(
+        "double x = x * 2.0; f = double; g = f; main = g 21.0",
+        "main",
+        Mode::Strict,
+    )
+    .unwrap();
 }
 
 #[test]
 fn func_value_call_arity_mismatch_is_error() {
     // `double` takes one argument: calling its func value with the wrong arity
     // must be a compile error, not a runtime surprise.
-    let r = compile::<f32>("double x = x * 2.0; f = double; main = f 21.0 22.0");
+    let r = compile_eval::<f32, 256>(
+        "double x = x * 2.0; f = double; main = f 21.0 22.0",
+        "main",
+        Mode::Strict,
+    );
     assert!(r.is_err());
 }
 
@@ -136,6 +152,16 @@ fn value_function_with_match_body_calls_correct_arm() {
 fn func_value_in_signal_combinator_is_error() {
     // A bare func value has no block representation: composing it through a
     // signal combinator must be a clean compile error, not a lowering panic.
-    assert!(compile::<f32>("double x = x * 2.0; main = double : _").is_err());
-    assert!(compile::<f32>("double x = x * 2.0; main = double + 1.0").is_err());
+    assert!(compile_eval::<f32, 256>(
+        "double x = x * 2.0; main = double : _",
+        "main",
+        Mode::Strict
+    )
+    .is_err());
+    assert!(compile_eval::<f32, 256>(
+        "double x = x * 2.0; main = double + 1.0",
+        "main",
+        Mode::Strict
+    )
+    .is_err());
 }

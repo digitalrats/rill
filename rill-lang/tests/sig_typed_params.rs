@@ -8,7 +8,9 @@
 //! its formal parameters from the signature's arity. Without that recovery the
 //! parameters fell back to the scalar `Float` default: the `Int` call site
 //! could not type-check, and a `Float` scheme contradicted an `Int`-typed body.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::Value;
 
 /// Compile and evaluate the `main` expression of `src` in a single run,
@@ -19,7 +21,7 @@ fn run_value(src: &str) -> Value {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     prog.arena().get(v).unwrap().clone()
 }

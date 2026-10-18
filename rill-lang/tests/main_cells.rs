@@ -3,11 +3,12 @@
 //! default (`0.0`) when unset. Under the single-run value surface there is no
 //! way to inject a `SetParameter` into the run, so the cell-persistence tests
 //! were removed (see notes below).
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
 
-fn value_output(prog: &rill_lang::program::RillProgram<f32, 256>) -> rill_lang::arena::Value {
+fn value_output(prog: &WorldState<f32, 256>) -> rill_lang::arena::Value {
     prog.arena()
         .get(prog.result().expect("the single run must produce a value"))
         .unwrap()
@@ -22,7 +23,7 @@ fn actor_param_defaults_to_zero() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     assert_eq!(value_output(&prog), rill_lang::arena::Value::Float(0.0));
 }
 

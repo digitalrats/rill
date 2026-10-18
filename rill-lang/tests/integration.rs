@@ -1,5 +1,8 @@
-use rill_lang::compile;
+pub mod common;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
 use rill_lang::register;
 
 /// Run a pure value program over literal data and read back its single output
@@ -16,8 +19,7 @@ fn run_values(src: &str) -> Vec<f64> {
         _ => (src.trim().trim_end_matches(';'), "main"),
     };
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::List { elems } => elems
@@ -50,8 +52,7 @@ fn math_builtin_abs() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -73,15 +74,15 @@ fn application_in_fanout_lowers_correctly() {
 
 #[test]
 fn type_error_is_reported() {
-    assert!(compile::<f32>("main = !").is_err());
+    assert!(compile_eval::<f32, 256>("main = !", "main", Mode::Strict).is_err());
 }
 
 #[test]
 fn parse_error_is_reported() {
-    assert!(compile::<f32>("_").is_err());
+    assert!(compile_eval::<f32, 256>("_", "main", Mode::Strict).is_err());
 }
 
 #[test]
 fn plain_expression_rejected() {
-    assert!(compile::<f32>("_ * 0.5").is_err());
+    assert!(compile_eval::<f32, 256>("_ * 0.5", "main", Mode::Strict).is_err());
 }

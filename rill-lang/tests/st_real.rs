@@ -3,11 +3,13 @@
 //!
 //! These tests exercise the whole pipeline (infer → reduce → lower → executor)
 //! through `compile`, asserting the resulting run values.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::Value;
-use rill_lang::compile;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src`, run it once, and return the single run result's arena value
 /// (cloned out of the program's arena).
@@ -17,7 +19,7 @@ fn run_value_output(src: &str) -> Value {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().unwrap();
     prog.arena().get(v).unwrap().clone()
 }
@@ -42,7 +44,7 @@ fn two_runst_regions_are_isolated() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().unwrap();
     let fields = match prog.arena().get(v).unwrap() {
         Value::Record(fields) => fields.clone(),
@@ -59,8 +61,10 @@ fn two_runst_regions_are_isolated() {
 fn stref_escaping_region_is_compile_error() {
     // `return r` makes the region result an `STRef s a`, which mentions the
     // phantom `s`: it must not escape the region.
-    let err = match compile::<f32>(
+    let err = match compile_eval::<f32, 256>(
         "{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 0.0; return r });",
+        "main",
+        Mode::Strict,
     ) {
         Ok(_) => panic!("an escaping STRef must be a compile error"),
         Err(err) => err,
@@ -81,9 +85,7 @@ fn nested_region_cannot_use_an_outer_region_cell() {
     // instantiated independently for the parameter and the result, the inner
     // `writeSTRef r 99.0` would type-check against region B while mutating
     // region A's cell (the cell table is global).
-    let err = match compile::<f32>(
-        "{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 1.0; c <- newSTRef (runST (\\s2 -> writeSTRef r 99.0)); v <- readSTRef r; return v });",
-    ) {
+    let err = match compile_eval::<f32, 256>("{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 1.0; c <- newSTRef (runST (\\s2 -> writeSTRef r 99.0)); v <- readSTRef r; return v });", "main", Mode::Strict) {
         Ok(_) => panic!("a nested region must not be able to use an outer region's cell"),
         Err(err) => err,
     };

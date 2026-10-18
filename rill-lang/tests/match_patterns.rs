@@ -1,9 +1,11 @@
 //! Runtime `match`: dispatch on non-static scrutinees, literal/wildcard/var
 //! patterns, nested patterns, and guards.
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 fn run_float(src: &str) -> f64 {
     let (defs, expr) = src
@@ -11,7 +13,7 @@ fn run_float(src: &str) -> f64 {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(f) => *f,
@@ -92,8 +94,10 @@ fn guarded_arm_without_unguarded_fallback_is_compile_error() {
     // A guarded arm does not satisfy compile-time totality (spec §4.3): the
     // `Just` arm is guarded, `Nothing` is unguarded, and there is no wildcard
     // — the match is non-exhaustive and must NOT compile.
-    assert!(compile::<f32>(
+    assert!(compile_eval::<f32, 256>(
         r"main = case Just 5.0 of { Just x | x > 10.0 -> 1.0; Nothing -> 2.0; };",
+        "main",
+        Mode::Strict
     )
     .is_err());
 }

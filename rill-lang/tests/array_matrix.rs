@@ -19,11 +19,12 @@
 //! arithmetic and 1-D storage (`tests/ix.rs`, `tests/array_storage.rs`), the
 //! fault policy and the per-function surface (`tests/array_immutable.rs`), and
 //! the ST/buffer bridge (`tests/st_array.rs`, `tests/array_buffer.rs`).
+pub mod common;
 
+use common::*;
 use rill_lang::arena::{ArenaRef, Value};
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::program::RillProgram;
-use rill_lang::test_eval;
+use rill_lang::program::WorldState;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,13 +44,10 @@ use rill_lang::test_eval;
 /// the Arrow defaults and uses the same mitigation. The subject here is the
 /// array surface, not stack arithmetic, so give the recursion room.
 ///
-/// `RillProgram` owns an `Rc<RefCell<WorldState>>` and is therefore not
-/// `Send`: the program cannot outlive the thread, so `f` extracts plain data
-/// (numbers, bools, vectors) instead.
-fn with_output<R: Send>(
-    src: &str,
-    f: impl FnOnce(&RillProgram<f32, 256>, &Value) -> R + Send,
-) -> R {
+/// A [`WorldState`] owns `Rc`-backed arenas and is therefore not `Send`: the
+/// world cannot outlive the thread, so `f` extracts plain data (numbers,
+/// bools, vectors) instead.
+fn with_output<R: Send>(src: &str, f: impl FnOnce(&WorldState<f32, 256>, &Value) -> R + Send) -> R {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(16 << 20)
@@ -59,7 +57,7 @@ fn with_output<R: Send>(
                     .expect("the source must bind `main` to the evaluated expression");
                 let expr = expr.trim().trim_end_matches(';');
                 let ffi = ForeignRegistry::<f32>::new();
-                let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
+                let prog = eval_ffi(defs, expr, ffi)
                     .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
                 let v = output(&prog);
                 f(&prog, &v)
@@ -98,7 +96,7 @@ fn assocs_of(src: &str) -> Vec<((i64, i64), f64)> {
 }
 
 /// The single run result of an already-run program.
-fn output(prog: &RillProgram<f32, 256>) -> Value {
+fn output(prog: &WorldState<f32, 256>) -> Value {
     let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
@@ -106,7 +104,7 @@ fn output(prog: &RillProgram<f32, 256>) -> Value {
         .clone()
 }
 
-fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     let fields = match v {
         Value::Record(fields) if fields.len() == 2 => fields,
         other => panic!("expected a Pair record, got {other:?}"),
@@ -120,7 +118,7 @@ fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
     )
 }
 
-fn int_pair(prog: &RillProgram<f32, 256>, v: &Value) -> (i64, i64) {
+fn int_pair(prog: &WorldState<f32, 256>, v: &Value) -> (i64, i64) {
     match pair_values(prog, v) {
         (Value::Int(lo), Value::Int(hi)) => (lo, hi),
         other => panic!("expected an Int pair, got {other:?}"),
@@ -129,7 +127,7 @@ fn int_pair(prog: &RillProgram<f32, 256>, v: &Value) -> (i64, i64) {
 
 /// `(flat elements, ((lo1, hi1), (lo2, hi2)))` of a matrix value.
 #[allow(clippy::type_complexity)]
-fn matrix(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i64, i64))) {
+fn matrix(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i64, i64))) {
     let (bounds, elems) = match v {
         Value::Array { bounds, elems } => (*bounds, elems.clone()),
         other => panic!("expected an Array, got {other:?}"),
@@ -147,7 +145,7 @@ fn matrix(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i
 }
 
 /// The `((row, col), value)` pairs of an `assocs` list.
-fn assoc_pairs(prog: &RillProgram<f32, 256>, v: &Value) -> Vec<((i64, i64), f64)> {
+fn assoc_pairs(prog: &WorldState<f32, 256>, v: &Value) -> Vec<((i64, i64), f64)> {
     let elems: Vec<ArenaRef> = match v {
         Value::List { elems } => elems.clone(),
         other => panic!("expected a List, got {other:?}"),

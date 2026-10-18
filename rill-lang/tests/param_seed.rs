@@ -17,15 +17,17 @@
 //! `compile_to_ir_entry` helper is not reachable from an integration test; this
 //! is the same sequence used by `tests/world_seat.rs`.
 
+pub mod common;
+
+use common::*;
 use rill_core::traits::ParamValue;
 use rill_lang::arena::Value;
-use rill_lang::builtin::Registry;
-use rill_lang::compile_runner;
+use rill_lang::compile;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::mode::Mode;
-use rill_lang::program::{RillProgram, WorldConfig, WorldState};
+use rill_lang::program::WorldConfig;
 use rill_lang::register;
-use rill_lang::{test_eval, Ir};
+use rill_lang::Ir;
 
 /// Block size used by every test (matches the crate default).
 const BUF: usize = 256;
@@ -45,22 +47,25 @@ fn compile_ir(src: &str) -> Ir {
 /// A world seated for `src` at `sample_rate`, with no built-ins registered.
 fn seated_world(src: &str, sample_rate: f32) -> WorldState<f32, BUF> {
     let ir = compile_ir(src);
-    let ffi = ForeignRegistry::<f32>::new();
-    let mut world = WorldState::<f32, BUF>::new(WorldConfig::default());
-    world.seat(&ir, &ffi, sample_rate).expect("seat");
+    let mut world = WorldState::<f32, BUF>::new(WorldConfig {
+        ffi: Some(ForeignRegistry::<f32>::new()),
+        params: rill_core::Params::new(sample_rate),
+        ..Default::default()
+    });
+    world.seat(&ir).expect("seat");
     world
 }
 
 /// Evaluate `expr` once at `sample_rate` with the DSP generators registered.
-fn eval_block(expr: &str, sample_rate: f32) -> RillProgram<f32, BUF> {
+fn eval_block(expr: &str, sample_rate: f32) -> WorldState<f32, BUF> {
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_generators(&mut ffi);
-    test_eval::<f32, BUF>("", expr, &ffi, sample_rate)
+    eval_at("", expr, ffi, sample_rate)
         .unwrap_or_else(|e| panic!("`{expr}` must compile and run: {e}"))
 }
 
 /// Copy the run's whole-buffer result (a `Value::Buffer`) out of the world.
-fn block_of(prog: &RillProgram<f32, BUF>) -> Vec<f32> {
+fn block_of(prog: &WorldState<f32, BUF>) -> Vec<f32> {
     let r = prog.result().expect("the run must produce a result");
     let mut out = vec![0.0f32; BUF];
     assert!(
@@ -86,11 +91,10 @@ fn runtime_coefficient(ms: f32, sample_rate: f32) -> f32 {
 #[test]
 fn a_param_preseeded_before_seat_survives_the_seat() {
     let ir = compile_ir("main = ?level * 1.0");
-    let ffi = ForeignRegistry::<f32>::new();
     let mut world = WorldState::<f32, BUF>::new(WorldConfig::default());
 
     world.set_param("level", ParamValue::Float(0.5));
-    world.seat(&ir, &ffi, 44_100.0).expect("seat");
+    world.seat(&ir).expect("seat");
 
     assert_eq!(
         world.param("level"),
@@ -114,9 +118,7 @@ fn world_config_params_survive_the_seat() {
     };
     let mut world = WorldState::<f32, BUF>::new(config);
 
-    world
-        .seat(&ir, &ForeignRegistry::<f32>::new(), 44_100.0)
-        .expect("seat");
+    world.seat(&ir).expect("seat");
 
     assert_eq!(
         world.param("level"),
@@ -124,8 +126,8 @@ fn world_config_params_survive_the_seat() {
         "WorldConfig::params is an initial-state seed and must survive seating"
     );
     assert_eq!(
-        world.params.sample_rate, 44_100.0,
-        "the seat argument is the transition's sample-rate seed"
+        world.params.sample_rate, 48_000.0,
+        "the sample rate is part of the world's initial state, supplied by config"
     );
 }
 
@@ -169,8 +171,7 @@ fn sample_rate_is_the_world_field_and_never_a_map_entry() {
 
 #[test]
 fn a_run_reads_sample_rate_from_the_world_field() {
-    let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, BUF>("", "?sample_rate", &ffi, 48_000.0).expect("eval");
+    let prog = eval_at("", "?sample_rate", ForeignRegistry::new(), 48_000.0).expect("eval");
 
     let r = prog.result().expect("the run must produce a result");
     assert_eq!(
@@ -275,16 +276,15 @@ fn smooth_with_a_negative_sample_rate_is_identity() {
 
 #[test]
 fn a_seated_world_observes_param_changes_between_runs() {
-    let mut runner = compile_runner::<f32, BUF>(
+    let mut runner = compile::<f32, BUF>(
         r#"main = do { write (Just (show_float ?level)) stdout; return () };"#,
-        &Registry::new(),
-        44_100.0,
+        ForeignRegistry::new(),
     )
     .expect("compile");
 
     runner.run().expect("first run");
     runner
-        .program_mut()
+        .world_mut()
         .set_param("level", ParamValue::Float(0.5));
     runner.run().expect("second run");
 

@@ -5,7 +5,9 @@
 //! actually forced: `countdown 2000.0` exhausts the pre-allocated call scratch
 //! (a latched `ProcessError`, see `tests/lazy_mode.rs`), so a run that forces
 //! it fails and a run that leaves it thunked succeeds.
+pub mod common;
 
+use common::*;
 use rill_lang::mode::Mode;
 
 /// A `countdown` definition that diverges by exhausting the call budget, plus
@@ -32,8 +34,7 @@ fn run_with(src: &str, mode: Mode) -> Result<f64, String> {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
-    let prog = rill_lang::test_eval_with_mode::<f32, 256>(defs, expr, &ffi, 44_100.0, mode)
-        .map_err(|e| e.to_string())?;
+    let prog = eval_mode::<256>(defs, expr, ffi, mode).map_err(|e| e.to_string())?;
     let v = prog.result().ok_or("no value output")?;
     match prog.arena().get(v) {
         Some(rill_lang::arena::Value::Float(x)) => Ok(*x),

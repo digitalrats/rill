@@ -7,7 +7,9 @@
 //! colliding with it: its method takes a `Pair`-shaped index, so the class
 //! variable is only recoverable by unifying the method's parameter pattern
 //! (`Pair a a`) against the concrete argument type.
+pub mod common;
 
+use common::*;
 use rill_lang::ast::Expr;
 use rill_lang::mode::Mode;
 use rill_lang::types::infer::infer_program;
@@ -32,7 +34,7 @@ fn run(src: &str) -> f64 {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v) {
         Some(rill_lang::arena::Value::Float(x)) => *x,

@@ -1,15 +1,15 @@
 //! End-to-end data-program tests: `data` declarations flow through the whole
 //! pipeline (infer → reduce → lower → executor) and the program's single run
-//! result is exposed via `RillProgram::result`.
+//! result is exposed via `WorldState::result`.
 //!
 //! The multi-tick persistence tests moved off this file when the value surface
-//! became single-run: `RillProgram` executes its entry fragment exactly once
-//! (`test_eval`), so the cross-tick arena-accounting observables ("the value
+//! became single-run: `test_eval` executes the entry fragment exactly once, so the cross-tick arena-accounting observables ("the value
 //! output keeps one slot alive across ticks", "tick 2 must not exhaust the
 //! fixed arena") no longer exist.
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
 
 #[test]
 fn record_flow_through_process() {
@@ -22,7 +22,7 @@ fn record_flow_through_process() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     assert_eq!(
         prog.arena().get(v).unwrap(),

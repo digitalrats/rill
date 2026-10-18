@@ -1,15 +1,25 @@
-//! `ProgramRunner` — the executor of a compiled program.
+//! `ProgramRunner` — the executor of a compiled `main : IO ()` program.
 //!
-//! Where the old runner was a pure signal transform (`&[&[f32]]` →
-//! `&mut [&mut [f32]]`), this one **executes the program**: it runs
-//! `main : (String…) -> IO ()` to completion against the realized `World`,
-//! performing whatever memory-stream and stdio effects the program requests.
-//! The runner takes no input/output buffers or backend handles from outside —
-//! streams are created inside the program.
+//! The runner owns the pair the world-state split separates: the compiled
+//! [`Ir`] (pure code) and the [`WorldState`] (all runtime state, including the
+//! foreign factory registry the world owns by value). It runs `main : IO ()` to
+//! completion against that world, performing whatever memory-stream and stdio
+//! effects the program requests. It takes no input/output buffers or backend
+//! handles from outside — streams are created inside the program.
 //!
-//! The executable is built with [`compile_runner`](crate::compile_runner), which
-//! compiles in `Complete` (lazy) mode unless the source carries its own
-//! `{-# MODE … #-}` pragma.
+//! The executable is built with [`compile`](crate::compile), which compiles in
+//! `Complete` (lazy) mode unless the source carries its own
+//! `{-# MODE … #-}` pragma and rejects a `main` that does not type as `IO ()`.
+//!
+//! # Seating and repeated runs
+//!
+//! [`run`](ProgramRunner::run) seats the world for the IR before executing, so
+//! the runner needs no eager assembly: a caller may pre-seed the world
+//! (`world_mut().params.sample_rate = 48_000.0`, `set_param(…)`) and the seat
+//! keeps every supplied value (declared parameter defaults are seeded only
+//! where the bag has no value). Re-seating re-instantiates the built-in
+//! instances and re-reads the parameter store, so a `set_param` between two runs
+//! is what the second run observes.
 //!
 //! # Console
 //!
@@ -33,64 +43,66 @@
 //! chain to remove the limit is a planned follow-up.
 
 use rill_core::math::Transcendental;
-use rill_core::traits::ProcessError;
 
-use crate::program::RillProgram;
+use crate::error::CompileError;
+use crate::ir::Ir;
+use crate::program::WorldState;
 
 /// The executor of a compiled rill-lang program.
 ///
-/// [`run`](Self::run) runs the program's `main : IO ()` to completion. The
-/// captured console is available through [`stdout`](Self::stdout) and
-/// [`stderr`](Self::stderr); it is captured (not echoed) and cumulative across
-/// runs. Multi-statement programs need a grown stack — see [`run_on_stack`].
+/// [`run`](Self::run) seats the world for the runner's IR and runs the
+/// program's `main : IO ()` to completion. The captured console is available
+/// through [`stdout`](Self::stdout) and [`stderr`](Self::stderr); it is captured
+/// (not echoed) and cumulative across runs. Multi-statement programs need a
+/// grown stack — see [`run_on_stack`].
 pub struct ProgramRunner<T: Transcendental, const BUF: usize> {
-    program: RillProgram<T, BUF>,
-    stdout: Vec<String>,
-    stderr: Vec<String>,
+    /// The compiled program: pure code, no runtime state.
+    pub(crate) ir: Ir,
+    /// The realized `realWorld`: streams, captured console, signal runtime,
+    /// parameters, the foreign factory registry, and the value track.
+    pub(crate) world: WorldState<T, BUF>,
 }
 
 impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
-    /// Wrap an already-compiled program in a runner.
-    pub fn new(program: RillProgram<T, BUF>) -> Self {
-        Self {
-            program,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        }
+    /// Wrap a compiled IR and its world in a runner.
+    pub fn new(ir: Ir, world: WorldState<T, BUF>) -> Self {
+        Self { ir, world }
     }
 
     /// Inject the console input lines that `read stdin` yields.
     ///
     /// The runner owns the program's realized stdio: `stdout`/`stderr` are
-    /// captured into the runner's console (not echoed to the process console),
+    /// captured into the world's console (not echoed to the process console),
     /// and `stdin` is a finite, line-oriented input the caller supplies (rill
     /// has no `ByteString`, so each line is one `String` element). Injecting
     /// rewinds the stream, so the next [`run`](Self::run) reads the lines from
     /// the start and reports EOF after them.
     pub fn set_stdin(&mut self, lines: &[String]) {
-        self.program.inject_stdin(lines);
+        self.world.inject_stdin(lines);
     }
 
-    /// Run `main : IO ()` to completion against the realized `World`.
+    /// Seat the world for the runner's IR and run `main : IO ()` to
+    /// completion.
     ///
-    /// The captured console is refreshed even when the run fails, so a caller
-    /// can inspect what the program wrote before the error. The refresh is a
-    /// snapshot of the console built up by **all runs since construction** (the
-    /// world console is cumulative, not per-run). A program whose `main` is not
-    /// an executable `IO ()` action (including an action whose final result is
-    /// not `()`), or whose evaluation exhausts the fixed arena, yields a
-    /// [`ProcessError`] rather than panicking.
+    /// The seat is idempotent for the parameter store (declared defaults are
+    /// seeded only where the world's bag has no value, so a caller's pre-seed
+    /// and any `set_param` between runs survive) and re-instantiates the
+    /// built-in instances from the world's registry, so a parameter written
+    /// between two runs reaches the built-ins bound to it.
+    ///
+    /// A program whose `main` is not an executable `IO ()` action (including an
+    /// action whose final result is not `()`), or whose evaluation exhausts the
+    /// fixed arena, yields a [`CompileError`] rather than panicking; an
+    /// unresolvable built-in yields a [`CompileError`] at seat time.
     ///
     /// This method runs on the calling thread's stack. The lazy `IO`
     /// interpreter costs roughly 300 KiB of stack per `do` statement in a debug
     /// build, so run multi-statement programs via [`run_on_stack`] (or a
     /// `std::thread::Builder::stack_size` thread of your own).
-    pub fn run(&mut self) -> Result<(), ProcessError> {
-        let result = crate::backend::interp::run_main_io(&mut self.program);
-        let world = &self.program.world;
-        self.stdout.clone_from(&world.stdout);
-        self.stderr.clone_from(&world.stderr);
-        result
+    pub fn run(&mut self) -> Result<(), CompileError> {
+        self.world.seat(&self.ir)?;
+        crate::backend::interp::run_main_io(&self.ir, &mut self.world)
+            .map_err(|e| CompileError::Unsupported(format!("run failed: {e}")))
     }
 
     /// Lines written to `stdout` by **all runs since construction**, in order.
@@ -98,7 +110,7 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
     /// The console is cumulative: it is not cleared between runs, and it is
     /// captured rather than echoed to the process console.
     pub fn stdout(&self) -> &[String] {
-        &self.stdout
+        &self.world.stdout
     }
 
     /// Lines written to `stderr` by **all runs since construction**, in order.
@@ -106,17 +118,24 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
     /// The console is cumulative: it is not cleared between runs, and it is
     /// captured rather than echoed to the process console.
     pub fn stderr(&self) -> &[String] {
-        &self.stderr
+        &self.world.stderr
     }
 
-    /// The underlying compiled program, for inspection (parameters, IR).
-    pub fn program(&self) -> &RillProgram<T, BUF> {
-        &self.program
+    /// The compiled program's IR (pure code), for inspection.
+    pub fn ir(&self) -> &Ir {
+        &self.ir
     }
 
-    /// Mutable access to the underlying compiled program (parameter control).
-    pub fn program_mut(&mut self) -> &mut RillProgram<T, BUF> {
-        &mut self.program
+    /// The world the runner executes against, for inspection (parameters, the
+    /// value arena, the captured console).
+    pub fn world(&self) -> &WorldState<T, BUF> {
+        &self.world
+    }
+
+    /// Mutable access to the world (parameter control, pre-seeding the sample
+    /// rate, injecting console input).
+    pub fn world_mut(&mut self) -> &mut WorldState<T, BUF> {
+        &mut self.world
     }
 }
 
@@ -134,13 +153,12 @@ impl<T: Transcendental, const BUF: usize> ProgramRunner<T, BUF> {
 /// the thread; the whole compile-then-run sequence must happen **inside** `f`:
 ///
 /// ```
-/// use rill_lang::{compile_runner, run_on_stack, Registry};
+/// use rill_lang::{compile, ffi::ForeignRegistry, run_on_stack};
 ///
 /// let (stdout, ()) = run_on_stack(16 << 20, || {
-///     let mut r = compile_runner::<f32, 256>(
+///     let mut r = compile::<f32, 256>(
 ///         r#"main = do { write (Just "hi") stdout; return () };"#,
-///         &Registry::new(),
-///         44_100.0,
+///         ForeignRegistry::new(),
 ///     )
 ///     .unwrap();
 ///     r.run().unwrap();

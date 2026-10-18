@@ -2,13 +2,13 @@
 //! `atEnd`, `unread`, `connect`, and the `makeInputStream`/`makeOutputStream`
 //! wrappers — faithful to Haskell io-streams (`Nothing` = EOF / close).
 
-use rill_lang::builtin::Registry;
-use rill_lang::compile_runner;
+use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::program_runner::ProgramRunner;
 use rill_lang::run_on_stack;
 
 fn runner(src: &str) -> ProgramRunner<f32, 256> {
-    compile_runner::<f32, 256>(src, &Registry::new(), 44_100.0)
+    compile::<f32, 256>(src, ForeignRegistry::new())
         .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"))
 }
 
@@ -46,7 +46,7 @@ fn run_many(src: &str, runs: usize) -> (Vec<String>, usize, usize) {
             r.run()
                 .unwrap_or_else(|e| panic!("run {i} must succeed: {e}\nsource:\n{src}"));
         }
-        let arena = r.program().arena();
+        let arena = r.world().arena();
         (r.stdout().to_vec(), arena.live(), arena.capacity())
     })
 }

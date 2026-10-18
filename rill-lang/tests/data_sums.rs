@@ -1,10 +1,11 @@
 //! End-to-end sum-value tests: `data ... = Ctor ... | ...` declarations flow
 //! through the whole pipeline (infer → reduce → lower → executor) and a
 //! `match` on a sum value selects its arm statically, exposing the arm's
-//! payload through the single run result (`RillProgram::result`).
+//! payload through the single run result (`WorldState::result`).
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
 
 #[test]
 fn sum_match_runs() {
@@ -17,7 +18,7 @@ fn sum_match_runs() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(1.5));
@@ -34,7 +35,7 @@ fn sum_match_selects_second_arm() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(2.0));
@@ -52,7 +53,7 @@ fn parameterized_user_sum_still_constructs_and_matches() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(1.5));

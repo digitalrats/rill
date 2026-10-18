@@ -27,11 +27,13 @@ fn compile_ir(src: &str, mode: Mode) -> Ir {
 #[test]
 fn seat_sizes_structural_tables_from_the_ir() {
     let ir = compile_ir("main = 1.0", Mode::Complete);
-    let ffi = ForeignRegistry::<f32>::new();
-    let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+    let mut world = WorldState::<f32, 256>::new(WorldConfig {
+        ffi: Some(ForeignRegistry::<f32>::new()),
+        ..Default::default()
+    });
 
     world
-        .seat(&ir, &ffi, 44_100.0)
+        .seat(&ir)
         .expect("seat of a builtin-free program needs no registrations");
 
     assert_eq!(
@@ -54,10 +56,9 @@ fn seat_sizes_structural_tables_from_the_ir() {
 #[test]
 fn seat_sizes_the_arena_from_the_ir() {
     let ir = compile_ir("main = 1.0", Mode::Complete);
-    let ffi = ForeignRegistry::<f32>::new();
     let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
 
-    world.seat(&ir, &ffi, 44_100.0).expect("seat");
+    world.seat(&ir).expect("seat");
 
     // The arena is sized EXACTLY from the IR's build-time capacity bound — no
     // config page size, no constant. (`ChunkedVec`'s internal page is
@@ -91,10 +92,12 @@ fn unregistered_foreign_builtin_fails_at_seat() {
         "the declaration must lower to a builtin instance"
     );
 
-    let empty = ForeignRegistry::<f32>::new();
-    let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+    let mut world = WorldState::<f32, 256>::new(WorldConfig {
+        ffi: Some(ForeignRegistry::<f32>::new()),
+        ..Default::default()
+    });
     let err = world
-        .seat(&ir, &empty, 44_100.0)
+        .seat(&ir)
         .expect_err("an unregistered foreign built-in must fail at seat");
 
     assert!(

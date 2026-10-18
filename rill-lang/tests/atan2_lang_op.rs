@@ -1,5 +1,7 @@
 //! `atan2` as a language operation (mono buffer algebra), not an FFI builtin.
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
 
@@ -24,7 +26,7 @@ fn atan2_over_buffers_is_elementwise() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ffi();
-    let prog = rill_lang::test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
     assert!(prog.copy_buffer(r, &mut out));

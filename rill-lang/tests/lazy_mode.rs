@@ -1,39 +1,36 @@
+pub mod common;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::mode::Mode;
-use rill_lang::{compile, compile_with_mode};
 
 /// Compile and run `src` in complete (lazy) mode through the single-run value
 /// surface, returning the program plus its result ref.
 ///
 /// `src` must bind `main = <expr>` (the last `main = ` wins); the body is
-/// evaluated by [`test_eval_with_mode`] and read with [`RillProgram::result`].
-fn eval_complete(
-    src: &str,
-) -> (
-    rill_lang::program::RillProgram<f32, 256>,
-    rill_lang::arena::ArenaRef,
-) {
+/// evaluated by [`compile_eval`] + [`rill_lang::test_eval`] and read with
+/// [`WorldState::result`].
+fn eval_complete(src: &str) -> (WorldState<f32, 256>, rill_lang::arena::ArenaRef) {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim_end_matches(';').trim();
     let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
-    let prog =
-        rill_lang::test_eval_with_mode::<f32, 256>(defs, expr, &ffi, 44_100.0, Mode::Complete)
-            .expect("the program must compile and run");
+    let prog = eval_mode::<256>(defs, expr, ffi, Mode::Complete)
+        .expect("the program must compile and run");
     let v = prog.result().expect("the run must produce a result");
     (prog, v)
 }
 
 #[test]
 fn recursion_rejected_in_strict() {
-    assert!(compile::<f32>("a = a; main = a").is_err());
+    assert!(compile_eval::<f32, 256>("a = a; main = a", "main", Mode::Strict).is_err());
 }
 
 #[test]
 fn recursion_accepted_in_complete() {
     // Compiles; running `main = a` where `a = a` yields bottom at runtime
     // (tested in Task A6) — here we only require it to COMPILE.
-    let r = compile_with_mode::<f32>("a = a; main = a", Mode::Complete);
+    let r = compile_eval::<f32, 256>("a = a; main = a", "main", Mode::Complete);
     assert!(r.is_ok(), "complete mode must accept recursion");
 }
 
@@ -43,7 +40,7 @@ fn nonrecursive_value_func_types_as_value() {
     // function; if this fails, `from`-style recursion fails for the same
     // rate-resolution reason even before the recursion matters.
     let src = "{-# MODE complete #-}\nwrap n = cons n (list)\nmain = wrap 0.0";
-    match rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete) {
+    match compile_eval::<f32, 256>(src, "main", rill_lang::mode::Mode::Complete) {
         Ok(_) => {}
         Err(e) => panic!("non-recursive value func must compile in complete, got: {e}"),
     }
@@ -55,7 +52,7 @@ fn recursive_float_value_func() {
     // (`+` is used because value-track infix `-` is a pre-existing parser
     // quirk — `+` in a lambda works, `-` does not.)
     let src = "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0)\nmain = countup 0.0";
-    match rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete) {
+    match compile_eval::<f32, 256>(src, "main", rill_lang::mode::Mode::Complete) {
         Ok(_) => {}
         Err(e) => panic!("recursive float func must compile in complete, got: {e}"),
     }
@@ -64,14 +61,14 @@ fn recursive_float_value_func() {
 #[test]
 fn countdown_compile_only() {
     let src = "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0)\nmain = countup 0.0";
-    let _ = rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
+    let _ = compile_eval::<f32, 256>(src, "main", rill_lang::mode::Mode::Complete).unwrap();
 }
 
 #[test]
 fn lambda_arith_plus_works() {
     let src = r"{-# MODE complete #-}
 main = (\a -> \b -> a + b) 5.0 2.0";
-    match rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete) {
+    match compile_eval::<f32, 256>(src, "main", rill_lang::mode::Mode::Complete) {
         Ok(_) => {}
         Err(e) => panic!("lambda plus must compile, got: {e}"),
     }
@@ -109,7 +106,7 @@ main = headv (tail (tail (tail (from 10.0))));";
 fn match_maybe_syntax_works() {
     let src = r"{-# MODE complete #-}
 main = case head (cons 1.0 (list)) of { Nothing -> 0.0; Just x -> x }";
-    match rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete) {
+    match compile_eval::<f32, 256>(src, "main", rill_lang::mode::Mode::Complete) {
         Ok(_) => {}
         Err(e) => panic!(r"case syntax must compile, got: {e}"),
     }
@@ -118,7 +115,7 @@ main = case head (cons 1.0 (list)) of { Nothing -> 0.0; Just x -> x }";
 #[test]
 fn simple_headv_def_parses() {
     let src = "headv xs = head xs\nmain = headv (cons 1.0 (list))";
-    match rill_lang::compile::<f32>(src) {
+    match compile_eval::<f32, 256>(src, "main", Mode::Strict) {
         Ok(_) => {}
         Err(e) => panic!("simple headv def must parse, got: {e}"),
     }
@@ -128,7 +125,7 @@ fn simple_headv_def_parses() {
 fn headv_match_def_parses() {
     let src = r"headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x }
 main = headv (cons 1.0 (list))";
-    match rill_lang::compile::<f32>(src) {
+    match compile_eval::<f32, 256>(src, "main", Mode::Strict) {
         Ok(_) => {}
         Err(e) => panic!(r"headv case def must parse, got: {e}"),
     }
@@ -453,10 +450,9 @@ fn deep_recursion_is_latched_error_not_panic() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
-    let err =
-        rill_lang::test_eval_with_mode::<f32, 256>(defs, expr, &ffi, 44_100.0, Mode::Complete)
-            .err()
-            .expect("deep recursion must exhaust the pre-allocated budget and latch an error");
+    let err = eval_mode::<256>(defs, expr, ffi, Mode::Complete)
+        .err()
+        .expect("deep recursion must exhaust the pre-allocated budget and latch an error");
     let msg = err.to_string();
     assert!(
         msg.contains("exhausted"),

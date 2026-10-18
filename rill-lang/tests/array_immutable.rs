@@ -15,25 +15,25 @@
 //!
 //! This target asserts the SHAPES (`2-D` bounds/elements through the surface)
 //! and the fault surface those targets do not cover.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::{ArenaRef, Value};
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::program::RillProgram;
-use rill_lang::test_eval;
+use rill_lang::program::WorldState;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /// Compile `src`, run it once, and return the program (and its single result).
-fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
+fn run(src: &str) -> (WorldState<f32, 256>, Value) {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
     let v = output(&prog);
     (prog, v)
 }
@@ -43,10 +43,7 @@ fn run(src: &str) -> (RillProgram<f32, 256>, Value) {
 /// Nested `ixmap` calls build deep lowering chains in debug builds, so the
 /// default libtest stack can overflow. Keep the program inside the thread (it
 /// is not `Send`) and extract plain data instead.
-fn with_output<R: Send>(
-    src: &str,
-    f: impl FnOnce(&RillProgram<f32, 256>, &Value) -> R + Send,
-) -> R {
+fn with_output<R: Send>(src: &str, f: impl FnOnce(&WorldState<f32, 256>, &Value) -> R + Send) -> R {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(16 << 20)
@@ -56,7 +53,7 @@ fn with_output<R: Send>(
                     .expect("the source must bind `main` to the evaluated expression");
                 let expr = expr.trim().trim_end_matches(';');
                 let ffi = ForeignRegistry::<f32>::new();
-                let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
+                let prog = eval_ffi(defs, expr, ffi)
                     .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
                 let v = output(&prog);
                 f(&prog, &v)
@@ -68,7 +65,7 @@ fn with_output<R: Send>(
 }
 
 /// The single run result of an already-run program.
-fn output(prog: &RillProgram<f32, 256>) -> Value {
+fn output(prog: &WorldState<f32, 256>) -> Value {
     let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
@@ -89,7 +86,7 @@ fn fault(src: &str) -> String {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+    match eval_ffi(defs, expr, ffi) {
         Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
         Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
@@ -97,7 +94,7 @@ fn fault(src: &str) -> String {
 }
 
 /// The two field VALUES of a `Pair` record, resolved through the arena.
-fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     let fields = match v {
         Value::Record(fields) if fields.len() == 2 => fields,
         other => panic!("expected a Pair record, got {other:?}"),
@@ -111,7 +108,7 @@ fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
     )
 }
 
-fn int_pair(prog: &RillProgram<f32, 256>, v: &Value) -> (i64, i64) {
+fn int_pair(prog: &WorldState<f32, 256>, v: &Value) -> (i64, i64) {
     match pair_values(prog, v) {
         (Value::Int(lo), Value::Int(hi)) => (lo, hi),
         other => panic!("expected an Int pair, got {other:?}"),
@@ -128,7 +125,7 @@ fn array_elems(v: &Value) -> Vec<ArenaRef> {
 
 /// `(flat elements, ((lo1, hi1), (lo2, hi2)))` of a matrix-shaped `Array`.
 #[allow(clippy::type_complexity)]
-fn matrix(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i64, i64))) {
+fn matrix(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i64, i64))) {
     let elems = array_elems(v);
     let values = elems
         .iter()
@@ -146,7 +143,7 @@ fn matrix(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i
 }
 
 /// `(flat elements, (lo, hi))` of a 1-D `Array`.
-fn vector(prog: &RillProgram<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
+fn vector(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
     let elems = array_elems(v);
     let values = elems
         .iter()

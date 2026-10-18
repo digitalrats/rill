@@ -4,12 +4,13 @@
 //! The context is carried on the signature; it is not yet enforced by the
 //! typechecker (constrained-def dispatch is a later task), so an unconstrained
 //! body must keep compiling.
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::lexer::tokenize;
 use rill_lang::parser::parse;
 use rill_lang::render::render;
-use rill_lang::test_eval;
 
 fn program(src: &str) -> rill_lang::ast::Program {
     let toks = tokenize(src).unwrap();
@@ -52,8 +53,8 @@ fn constrained_signature_does_not_break_typechecking() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .expect("a constrained signature must not break compilation");
+    let prog =
+        eval_ffi(defs, expr, ffi).expect("a constrained signature must not break compilation");
     let v = prog.result().expect("the run must produce a single result");
     assert_eq!(
         prog.arena().get(v).unwrap(),

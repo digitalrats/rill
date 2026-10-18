@@ -1,28 +1,29 @@
 //! Built-in category typeclasses: `Functor`, `Applicative`, `Monad`, `Monoid`
 //! registered via the language prelude, with compile-time inline resolution.
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
 
 /// Compile `src` against an empty foreign registry and RUN it once (the
 /// single-run value surface), returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
-fn out_int(prog: &rill_lang::program::RillProgram<f32, 256>) -> i64 {
+fn out_int(prog: &WorldState<f32, 256>) -> i64 {
     match prog.arena().get(prog.result().unwrap()).unwrap() {
         rill_lang::arena::Value::Int(n) => *n,
         other => panic!("expected Int, got {other:?}"),
     }
 }
 
-fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>) -> f64 {
+fn out_float(prog: &WorldState<f32, 256>) -> f64 {
     match prog.arena().get(prog.result().unwrap()).unwrap() {
         rill_lang::arena::Value::Float(n) => *n,
         other => panic!("expected Float, got {other:?}"),

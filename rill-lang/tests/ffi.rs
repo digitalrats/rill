@@ -1,7 +1,8 @@
 //! SP-3a: FFI layer — foreign fn declarations + FixedBuffer/Buffer types.
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
 use rill_lang::types::ty::TypeEnv;
 
 #[test]
@@ -37,7 +38,7 @@ fn buffer_typeclass_registers_from_signal_prelude() {
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     assert_eq!(
         prog.arena().get(prog.result().unwrap()).unwrap(),
         &rill_lang::arena::Value::Float(1.0)
@@ -384,7 +385,7 @@ fn foreign_fn_runs_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -400,9 +401,9 @@ fn foreign_fn_not_registered_is_compile_error() {
         foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
-    let err = match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+    let err = match eval_at(src, "main", ffi, 44_100.0) {
         Err(e) => e,
-        Ok(_) => panic!("expected a compile error for an unregistered foreign builtin"),
+        Ok(_) => panic!("expected an error for an unregistered foreign builtin"),
     };
     assert!(
         err.to_string().contains("not registered"),
@@ -859,7 +860,7 @@ fn analog_moog_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -892,7 +893,7 @@ fn eq_parametric_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -966,7 +967,7 @@ fn digital_effects_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -995,7 +996,7 @@ fn digital_effects_distortion_runs() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1032,7 +1033,7 @@ fn digital_effects_limiter_runs() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1059,7 +1060,7 @@ fn generators_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1092,7 +1093,7 @@ fn saw_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1120,7 +1121,7 @@ fn square_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1147,7 +1148,7 @@ fn triangle_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1176,7 +1177,7 @@ fn noise_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1203,7 +1204,7 @@ fn leaky_integrator_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1237,7 +1238,7 @@ fn lowpass_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1269,7 +1270,7 @@ fn biquad_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1300,7 +1301,7 @@ fn integrator_ffi_end_to_end() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1326,7 +1327,7 @@ fn tape_loop_read_head_compiles_and_runs() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 64];
     assert!(prog.copy_buffer(r, &mut out));
@@ -1355,7 +1356,7 @@ fn tape_loop_float_capacity_is_rejected() {
     register_tape_ffi(&mut ffi);
 
     let src = r#"main = read_head (tape_loop 1024.5) 0.1;"#;
-    match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+    match rill_lang::compile::<f32, 256>(src, ffi) {
         Err(e) => assert!(
             e.to_string().contains("capacity"),
             "expected a capacity error, got: {e}"
@@ -1375,7 +1376,7 @@ fn tape_loop_zero_capacity_is_rejected() {
 
     let src = r#"main = read_head (tape_loop 0) 0.1;"#;
     assert!(
-        rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).is_err(),
+        rill_lang::compile::<f32, 256>(src, ffi).is_err(),
         "zero-capacity tape_loop must be rejected"
     );
 }
@@ -1394,7 +1395,7 @@ fn undeclared_resource_ref_is_reported_on_source_path() {
     register_tape_ffi(&mut ffi);
 
     let src = r#"main = read_head missing 0.1;"#;
-    match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+    match rill_lang::compile::<f32, 256>(src, ffi) {
         Err(e) => assert!(
             e.to_string().contains("undeclared resource 'missing'"),
             "expected the undeclared-resource diagnostic, got: {e}"
@@ -1415,7 +1416,7 @@ fn main_is_not_extracted_as_tape_declaration() {
     register_tape_ffi(&mut ffi);
 
     let src = r#"main = tape_loop 1024;"#;
-    match rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0) {
+    match rill_lang::compile::<f32, 256>(src, ffi) {
         Err(e) => assert!(
             !e.to_string().contains("must contain a `main`"),
             "the typo must not be reported as a missing main, got: {e}"
@@ -1448,7 +1449,7 @@ fn eq_parametric_ffi_two_bands() {
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    let prog = test_eval::<f32, 256>(defs, expr, &ffi, 44100.0).unwrap();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
     assert!(prog.copy_buffer(r, &mut out));

@@ -1,19 +1,21 @@
 //! Higher-order function combinators: functions applied to functions,
 //! static call-depth rejection of recursion, and fixed-shape container mapping.
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src` (which must bind `main` to the evaluated expression) and RUN
 /// it once on the single-run value surface, returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
 #[test]
@@ -30,14 +32,18 @@ fn twice_applies_twice() {
 #[test]
 fn recursion_is_rejected() {
     // f = fn x -> f x  -> compile error (acyclic contract)
-    let res = compile::<f32>(r"f = \x -> f x; main = f 1.0");
+    let res = compile_eval::<f32, 256>(r"f = \x -> f x; main = f 1.0", "main", Mode::Strict);
     assert!(res.is_err());
 }
 
 #[test]
 fn mutual_recursion_is_rejected() {
     // g calls h and h calls g: a static cycle in the fragment call graph.
-    let res = compile::<f32>(r"g = \n -> h n; h = \m -> g m; main = g 1.0");
+    let res = compile_eval::<f32, 256>(
+        r"g = \n -> h n; h = \m -> g m; main = g 1.0",
+        "main",
+        Mode::Strict,
+    );
     assert!(res.is_err());
 }
 
@@ -48,7 +54,7 @@ fn omega_combinator_is_compile_error() {
     // contract must reject it with a clean compile error, never a compiler
     // crash (regression: self-application cycled the value unification and
     // overflowed the stack).
-    let res = compile::<f32>(r"make = \f -> f f; main = 1.0");
+    let res = compile_eval::<f32, 256>(r"make = \f -> f f; main = 1.0", "main", Mode::Strict);
     assert!(res.is_err());
 }
 

@@ -9,12 +9,13 @@
 //! verifies the same contract END TO END — the samples are compared against a
 //! directly-generated buffer, not just against each other, so a bridge that
 //! mangles both directions symmetrically cannot pass.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::Value;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::program::RillProgram;
+use rill_lang::program::WorldState;
 use rill_lang::register;
-use rill_lang::test_eval;
 
 /// The block length the bridge operates on (the program's `BUF_SIZE`).
 const BLOCK: usize = 256;
@@ -22,15 +23,14 @@ const BLOCK: usize = 256;
 /// Compile `src` against the foreign generator registry (the buffer generators
 /// `sine`/`square` are FFI builtins), run it once, and return the already-run
 /// program.
-fn run(src: &str) -> RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_generators(&mut ffi);
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0)
-        .unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"))
+    eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"))
 }
 
 /// Run `src` and return the live block of its single BUFFER output.
@@ -53,7 +53,7 @@ fn fault(src: &str) -> String {
     let expr = expr.trim().trim_end_matches(';');
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_generators(&mut ffi);
-    match test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0) {
+    match eval_ffi(defs, expr, ffi) {
         Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
         Err(rill_lang::CompileError::Unsupported(msg)) => msg,
         Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
@@ -61,7 +61,7 @@ fn fault(src: &str) -> String {
 }
 
 /// The single run result of an already-run program.
-fn output(prog: &RillProgram<f32, 256>) -> Value {
+fn output(prog: &WorldState<f32, 256>) -> Value {
     let v = prog.result().expect("the run must produce a single result");
     prog.arena()
         .get(v)
@@ -69,7 +69,7 @@ fn output(prog: &RillProgram<f32, 256>) -> Value {
         .clone()
 }
 
-fn pair_values(prog: &RillProgram<f32, 256>, v: &Value) -> (Value, Value) {
+fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     let fields = match v {
         Value::Record(fields) if fields.len() == 2 => fields,
         other => panic!("expected a Pair record, got {other:?}"),

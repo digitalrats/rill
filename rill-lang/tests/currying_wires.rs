@@ -5,19 +5,20 @@
 //! removed (see notes below): `signal_wire_argument_scales_block`,
 //! `chained_currying_dispatches_without_leak`,
 //! `caf_applied_at_two_sites_with_different_wires`.
+pub mod common;
 
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
 
 /// Compile `src` against an empty foreign registry and RUN it once (the
 /// single-run value surface), returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
 #[test]

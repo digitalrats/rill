@@ -3,7 +3,8 @@
 use rill_core::math::Transcendental;
 
 use crate::error::CompileError;
-use crate::program::RillProgram;
+use crate::ffi::ForeignRegistry;
+use crate::program_runner::ProgramRunner;
 
 /// A serializable rill-lang program definition.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,12 +29,12 @@ impl RillLangDef {
     }
 }
 
-/// Compile a [`RillLangDef`] into a runnable program for scalar type `T`.
-/// Uses the default block size (`BUF = 256`).
+/// Compile a [`RillLangDef`] into a runnable [`ProgramRunner`] for scalar type
+/// `T`. Uses the default block size (`BUF = 256`) and an empty foreign registry.
 pub fn compile_def<T: Transcendental>(
     def: &RillLangDef,
-) -> Result<RillProgram<T, 256>, CompileError> {
-    crate::compile::<T>(&def.source)
+) -> Result<ProgramRunner<T, 256>, CompileError> {
+    crate::compile::<T, 256>(&def.source, ForeignRegistry::new())
 }
 
 #[cfg(test)]
@@ -42,15 +43,13 @@ mod tests {
 
     #[test]
     fn compile_def_runs() {
-        use crate::arena::Value;
-
-        let def = RillLangDef::new("sum", "main = 1.0 + 2.0");
-        let mut prog = compile_def::<f32>(&def).unwrap();
-        crate::backend::interp::run_entry(&mut prog).unwrap();
-        assert_eq!(
-            prog.arena().get(prog.result().unwrap()).unwrap(),
-            &Value::Float(3.0)
+        let def = RillLangDef::new(
+            "hello",
+            r#"main = do { write (Just "hi") stdout; return () };"#,
         );
+        let mut runner = compile_def::<f32>(&def).unwrap();
+        runner.run().unwrap();
+        assert_eq!(runner.stdout(), ["hi"]);
     }
 
     #[cfg(feature = "serde")]

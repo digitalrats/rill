@@ -1,21 +1,23 @@
 //! SP-2: Kleisli + value-track Arrow. HKT data fields, channel tuples, arrow.
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
-use rill_lang::test_eval;
+use rill_lang::mode::Mode;
 
 /// Compile `src` against an empty foreign registry and RUN it once (the
 /// single-run value surface), returning the already-run program.
-fn run(src: &str) -> rill_lang::program::RillProgram<f32, 256> {
+fn run(src: &str) -> WorldState<f32, 256> {
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
-    test_eval::<f32, 256>(defs, expr, &ffi, 44_100.0).unwrap()
+    eval_ffi(defs, expr, ffi).unwrap()
 }
 
-fn out_float(prog: &rill_lang::program::RillProgram<f32, 256>) -> f64 {
+fn out_float(prog: &WorldState<f32, 256>) -> f64 {
     match prog.arena().get(prog.result().unwrap()).unwrap() {
         rill_lang::arena::Value::Float(n) => *n,
         other => panic!("expected Float, got {other:?}"),
@@ -40,7 +42,9 @@ fn compiles_with_deep_stack(src: &str) -> bool {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(16 << 20)
-            .spawn_scoped(scope, || compile::<f32>(src).is_ok())
+            .spawn_scoped(scope, || {
+                compile_eval::<f32, 256>(src, "main", Mode::Strict).is_ok()
+            })
             .expect("the compile thread must spawn")
             .join()
             .expect("the compile thread must not panic")
@@ -79,7 +83,7 @@ fn value_tuple_field_projection_is_first() {
 fn mixed_value_signal_tuple_is_error() {
     // `value , signal` in a tuple cannot share one track — the mixed case is a
     // compile error, not a silent fallback to the signal parallel composition.
-    assert!(compile::<f32>("main = 1.0 , _;").is_err());
+    assert!(compile_eval::<f32, 256>("main = 1.0 , _;", "main", Mode::Strict).is_err());
 }
 
 #[test]
@@ -187,14 +191,14 @@ fn parses_constraint_instance_head() {
         instance (Monad m) => Arrow (Kleisli m) where { arr f = f; }
         main = 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_ok() || matches!(res.err(), Some(rill_lang::CompileError::Type { .. })));
 }
 
 #[test]
 fn apply_expr_non_function_callee_is_error() {
     // `(5.0) 3.0` — a non-function callee must be a compile error.
-    let res = compile::<f32>("main = (5.0) 3.0;");
+    let res = compile_eval::<f32, 256>("main = (5.0) 3.0;", "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
 }
 

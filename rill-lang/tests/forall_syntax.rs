@@ -1,4 +1,6 @@
+use rill_lang::compile_eval;
 use rill_lang::lexer::tokenize;
+use rill_lang::mode::Mode;
 use rill_lang::parser::parse;
 use rill_lang::render::render;
 use rill_lang::CompileError;
@@ -91,7 +93,7 @@ fn forall_two_arg_method_compiles() {
         instance C Int where { f x y = x; }
         main = f 1 2;
     "#;
-    let res = rill_lang::compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(
         res.is_ok(),
         "2-arg forall method must compile (arity mis-report regression): {:?}",
