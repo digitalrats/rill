@@ -4232,7 +4232,29 @@ impl<'a> Lowerer<'a> {
         }
         // A constrained body cannot specialize itself eagerly: the recursive
         // call's class variable is only solved by the enclosing call site,
-        // which is exactly the expansion in flight.
+        // which is exactly the expansion in flight. The guard is applied when
+        // the BODY is lowered (see [`Self::lower_constrained_body`]), not here:
+        // the call's arguments are ordinary expressions and may legitimately
+        // contain another use of the same definition.
+        self.lower_constrained_apply_inner(name, cd, call_args, expected, span)
+    }
+
+    /// Lower a constrained definition's body under the recursion guard.
+    ///
+    /// The guard spans the BODY only. A nested use of the same definition is
+    /// not recursion: `ixmap b f (ixmap b f a)` lowers the inner call as the
+    /// outer call's ARGUMENT, before the outer body exists, and the accessor
+    /// `index` over an `ixmap` reaches `ixmap`'s body (which calls `index` for
+    /// its source read) before the outer accessor's body. Guarding the
+    /// argument pass rejected both compositions as "recursive".
+    fn lower_constrained_body(
+        &mut self,
+        name: &str,
+        where_defs: &[Def],
+        body: &Expr,
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
         if self.constrained_lifting.contains(name) {
             return Err(CompileError::Type {
                 msg: format!("recursive class-constrained definition `{name}`"),
@@ -4240,7 +4262,7 @@ impl<'a> Lowerer<'a> {
             });
         }
         self.constrained_lifting.insert(name.to_string());
-        let result = self.lower_constrained_apply_inner(name, cd, call_args, expected, span);
+        let result = self.lower_with_where_defs(where_defs, body, expected);
         self.constrained_lifting.remove(name);
         result
     }
@@ -4329,7 +4351,7 @@ impl<'a> Lowerer<'a> {
             };
             let saved_pending = self.pending_param_tys.take();
             self.pending_param_tys = Some(remaining_tys);
-            let res = self.lower_with_where_defs(&cd.where_defs, &remaining, expected);
+            let res = self.lower_constrained_body(name, &cd.where_defs, &remaining, expected, span);
             self.pending_param_tys = saved_pending;
             self.value_locals.pop();
             self.value_local_ctors.pop();
@@ -4342,7 +4364,8 @@ impl<'a> Lowerer<'a> {
         let body_expected = expected.cloned().unwrap_or_else(|| sig_ret.clone());
         self.value_locals.push(scope);
         self.value_local_ctors.push(ctor_scope);
-        let res = self.lower_with_where_defs(&cd.where_defs, &cd.body, Some(&body_expected));
+        let res =
+            self.lower_constrained_body(name, &cd.where_defs, &cd.body, Some(&body_expected), span);
         self.value_locals.pop();
         self.value_local_ctors.pop();
         let (r, t) = res?;

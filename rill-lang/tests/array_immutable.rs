@@ -478,6 +478,40 @@ fn ixmap_with_shifted_bounds_reaches_the_source_cells_through_both_origins() {
     assert_eq!(values, vec![10.0, 40.0, 20.0, 50.0, 30.0, 60.0]);
 }
 
+#[test]
+fn a_reindexed_matrix_is_indexable_and_remappable_without_a_binding() {
+    // Composing the surface with itself at one call site: the accessor over an
+    // `ixmap` result, and an `ixmap` over an `ixmap` result. Both are ordinary
+    // nests — the inner call is the outer call's ARGUMENT, not a recursive
+    // reference to the definition being expanded — so neither may be rejected
+    // as a "recursive class-constrained definition".
+    let transposed = format!(
+        "(ixmap {} (\\ p -> Pair {{ first: p.second, second: p.first }}) {})",
+        m3_bounds(),
+        m3()
+    );
+    // Transposed (1,0) is the source's (0,1) = 2.0.
+    let (prog, v) = run(&format!("main = index {transposed} {};", cell(1, 0)));
+    match v {
+        Value::Float(f) => assert_eq!(f, 2.0),
+        other => panic!("expected a Float, got {other:?}"),
+    }
+    let _ = prog;
+
+    // `transpose . transpose` is the identity, read without ever binding the
+    // intermediate array to a name.
+    let twice = format!(
+        "(ixmap {b} (\\ p -> Pair {{ first: p.second, second: p.first }}) \
+         (ixmap {b} (\\ p -> Pair {{ first: p.second, second: p.first }}) {m}))",
+        b = m3_bounds(),
+        m = m3()
+    );
+    let (prog, v) = run(&format!("main = {twice};"));
+    let (values, (low, high)) = matrix(&prog, &v);
+    assert_eq!((low, high), ((0, 0), (2, 2)));
+    assert_eq!(values, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+}
+
 // ---------------------------------------------------------------------------
 // 4. The 1-D surface's fault path in vector form (the shape `ix.rs` leaves out)
 // ---------------------------------------------------------------------------
