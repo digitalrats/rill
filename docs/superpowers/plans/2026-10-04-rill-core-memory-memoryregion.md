@@ -6,10 +6,12 @@
 > artifacts are in the code: `rill_core::memory` (`Arena<V>`, `ChunkedVec`,
 > `BufferPool`, `MemoryRegion`/`RegionHandle`/`BufferAllocator`), `TapeRing`/
 > `RingStorage`, region-backed `@` delays (`RegionDelay`), the `Value::Buffer`
-> buffer table, and the `Send`/`Sync` supertrait removal. **Phase 3 not done**:
-> no `RegionHandle` usage in `rill-fft` / `rill-core-dsp` / `rill-core-model` /
-> `rill-router`. Phase 0–2 checkboxes below are marked complete; Phase 3 stays
-> open.
+> buffer table, and the `Send`/`Sync` supertrait removal. **Phase 3 partial**:
+> Task 3.1 (factory contract with `Option<&mut BufferAllocator<T>>`) is
+> **implemented** (`builtin.rs`/`ffi.rs`/`program.rs`); the migrations
+> (Tasks 3.2–3.5) are **not done** — no `RegionHandle` usage in `rill-fft` /
+> `rill-core-dsp` / `rill-core-model` / `rill-router`. Phase 0–2 checkboxes below
+> are marked complete; P3 Tasks 3.2–3.6 stay open.
 
 **Goal:** Move the value-arena memory manager from `rill-lang` into `rill-core` (genericized as `Arena<V>` over an `ArenaValue` payload trait) and introduce a chunked, reference-counted region allocator (`MemoryRegion`/`RegionHandle`) plus a unified ring (`TapeRing`) that back tape loops, delay lines, FFT scratch, and algorithm internal buffers — one centralized, RT-safe memory subsystem.
 
@@ -1760,6 +1762,17 @@ git commit -m 'feat(rill-lang): region-backed @ delay sites via TapeRing/RegionH
 
 ## Phase 3 — Algorithm internal buffers (factory contract + migrations)
 
+> **Status (audited 2026-10-19):** Task 3.1 (factory contract) is **already
+> implemented** — it landed with the value-track unification (B3): the factory
+> type aliases in `builtin.rs`/`ffi.rs` carry `Option<&mut BufferAllocator<T>>`,
+> `program.rs::build_builtin` threads the allocator (delay sites are carved
+> first so the allocator is available to builtin construction), and DSP-crate
+> registrations ignore it. Only the migrations (Tasks 3.2–3.5) and verification
+> (Task 3.6) remain. The memory API the migrations target is current (verified
+> 2026-10-19): `BufferAllocator::new(initial, chunk_cap, fill)`,
+> `allocate(len) -> Option<RegionHandle<T>>`, `RegionHandle::with_data(_mut)`,
+> `ChunkedVec::slab_slice(_mut)`.
+
 ### Task 3.1: Factory contract gains an optional allocator
 
 **Files:**
@@ -1768,7 +1781,7 @@ git commit -m 'feat(rill-lang): region-backed @ delay sites via TapeRing/RegionH
 - Modify: `rill-lang/src/program.rs` (`build_builtin` passes the allocator)
 - Modify: DSP crates' registration (`rill-core-dsp`, `rill-digital-effects`, `rill-router`, `rill-fft`, `rill-sampler`, `rill-lofi` `lang.rs`/`register.rs`) — mechanical `+ _: Option<&mut BufferAllocator<T>>` param
 
-- [ ] **Step 3.1.1: Update the factory type aliases**
+- [x] **Step 3.1.1: Update the factory type aliases**
 
 `builtin.rs:37-47` and `ffi.rs:22-31` — add `Option<&mut BufferAllocator<T>>` as the third parameter of `BlockFactory`/`MultichannelBlockFactory` (and the resource variants):
 
@@ -1780,15 +1793,15 @@ type BlockFactory<T> = Box<
 >;
 ```
 
-- [ ] **Step 3.1.2: Update register + build methods**
+- [x] **Step 3.1.2: Update register + build methods**
 
 `register_block`, `register_multichannel_block`, the resource variants, and `build_block`/`build_multichannel_block` (and FFI equivalents) thread the new parameter. Non-migrated factories ignore it. This is a mechanical ripple across ~10 crates; compile-driven: `cargo check --workspace` lists every closure to update. Update each with the extra `|params, sr, _alloc|` (or `..`-style) parameter.
 
-- [ ] **Step 3.1.3: `program.rs::build_builtin` passes the allocator**
+- [x] **Step 3.1.3: `program.rs::build_builtin` passes the allocator**
 
 `RillProgram::build` owns `BufferAllocator<T>`; pass `Some(&mut allocator)` to factory builds.
 
-- [ ] **Step 3.1.4: Verify + commit**
+- [x] **Step 3.1.4: Verify + commit**
 
 `cargo test --workspace`, `cargo clippy --all-features --workspace`. Commit `feat(rill-lang): factory contract carries optional BufferAllocator`.
 
