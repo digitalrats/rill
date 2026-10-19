@@ -1,14 +1,11 @@
-//! Arrow type model: a program is a block transform.
+//! Arrow type model: a program is a transform over value types (linear lambda
+//! model — all data is equal; there is no signal/value split).
 //!
-//! Signal types are structured in three levels: the per-sample scalar type
-//! (`Scalar`), one channel (`Channel`), and a block transform (`ArrowTy`,
-//! n input channels → m output channels). Arities (channel counts) are
-//! synthesized separately (see `infer.rs`) because `<:`/`:>` divisibility is
-//! not expressible by unification.
-//!
-//! Channels carry a **rate**: [`Rate::Signal`] (a block of samples per tick,
-//! the existing SIMD path) or [`Rate::Value`] (one arena value per tick).
-//! [`Block`] is a back-compat alias for a signal-rate `Channel`.
+//! An expression's type is a single [`ValueTy`] wrapped in [`Ty`]; channel
+//! arity is gone (`ins`/`outs` vectors were removed with the block track). A
+//! signal is an ordinary value type ([`ValueTy::Buffer`]), executed as
+//! `Value::Buffer` on the value track. [`ArrowTy`] is a back-compat alias for
+//! [`Ty`]; [`Block`] a back-compat alias for [`ValueTy`].
 
 use std::collections::{HashMap, HashSet};
 
