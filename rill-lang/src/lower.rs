@@ -1731,7 +1731,7 @@ impl<'a> Lowerer<'a> {
                                 _ => None,
                             };
                             let mut field_regs = Vec::with_capacity(fields.len());
-                            for (fname, _, _) in &fields {
+                            for (fname, _, strict) in &fields {
                                 let fexpr = fields_expr
                                     .iter()
                                     .find(|(n, _)| n == fname)
@@ -1756,6 +1756,18 @@ impl<'a> Lowerer<'a> {
                                 let (fr, _) = match field_expected {
                                     Some(fe) => self.lower_value_expected(fexpr, Some(&fe))?,
                                     None => self.lower_value(fexpr)?,
+                                };
+                                // A strict field (`{ x: !Float }`, Haskell 2010)
+                                // forces its argument to WHNF at construction.
+                                let fr = if *strict {
+                                    let forced = self.fresh_value_reg();
+                                    self.emit_value(ValueInstr::ValueForce {
+                                        dst: forced,
+                                        src: fr,
+                                    });
+                                    forced
+                                } else {
+                                    fr
                                 };
                                 field_regs.push(fr);
                             }
@@ -1801,9 +1813,22 @@ impl<'a> Lowerer<'a> {
                             span: *span,
                         });
                     }
+                    let bangs = self.ctor_payload_bangs(&sum_name, ctor_idx);
                     let mut payload_regs = Vec::with_capacity(call_args.len());
-                    for a in call_args {
+                    for (i, a) in call_args.iter().enumerate() {
                         let (pr, _) = self.lower_value(a)?;
+                        // A strict payload (`C !Int`, Haskell 2010) forces its
+                        // argument to WHNF at construction.
+                        let pr = if bangs.get(i).copied().unwrap_or(false) {
+                            let forced = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueForce {
+                                dst: forced,
+                                src: pr,
+                            });
+                            forced
+                        } else {
+                            pr
+                        };
                         payload_regs.push(pr);
                     }
                     let dst = self.fresh_value_reg();
@@ -5172,6 +5197,20 @@ impl<'a> Lowerer<'a> {
             }
         }
         found
+    }
+
+    /// Strictness flags per payload position of a sum constructor: `true`
+    /// where the payload type carried a Haskell 2010 strictness flag
+    /// (`data T = C !Int`), so lowering forces that argument to WHNF at
+    /// construction. Empty for non-sum or out-of-range lookups.
+    fn ctor_payload_bangs(&self, sum_name: &str, ctor_idx: usize) -> Vec<bool> {
+        match self.env.data_types.get(sum_name) {
+            Some(DataInfo::Sum(ctors)) => ctors
+                .get(ctor_idx)
+                .map(|(_, payload)| payload.iter().map(|(_, b)| *b).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     /// Number of arena slots a value of the given static type occupies when
