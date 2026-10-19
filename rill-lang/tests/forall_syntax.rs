@@ -1,9 +1,34 @@
+pub mod common;
+
+use common::*;
 use rill_lang::compile_eval;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::lexer::tokenize;
 use rill_lang::mode::Mode;
 use rill_lang::parser::parse;
 use rill_lang::render::render;
 use rill_lang::CompileError;
+
+/// Compile and evaluate the `main` expression of `src` in a single run,
+/// returning its numeric value.
+///
+/// Value arithmetic preserves the `Int` track (an `Int` operand stays `Int`),
+/// so an instance body that adds projected integer fields yields `Int` while a
+/// float-literal body yields `Float`; both are compared as `f64`.
+fn run(src: &str) -> f64 {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = eval_ffi(defs, expr, ffi).expect("the program must compile and run");
+    let v = prog.result().expect("the run must produce a single result");
+    match prog.arena().get(v) {
+        Some(rill_lang::arena::Value::Float(x)) => *x,
+        Some(rill_lang::arena::Value::Int(i)) => *i as f64,
+        other => panic!("expected a number, got {other:?}"),
+    }
+}
 
 #[test]
 fn forall_parses_and_roundtrips() {
@@ -99,4 +124,22 @@ fn forall_two_arg_method_compiles() {
         "2-arg forall method must compile (arity mis-report regression): {:?}",
         res.err(),
     );
+}
+
+#[test]
+fn forall_with_class_context_parses_and_discharges() {
+    // `forall i. Ix i => Pair i i -> i -> Int` — the quantified spelling of a
+    // class context (Haskell 2010), the same shape the unquantified
+    // `constrained_signatures.rs` suites exercise. `Ix` and its `Int`/`Pair
+    // Int Int` instances ship in the prelude. A class context after the
+    // binder was previously a parse error: `parse_forall_type` parsed only a
+    // bare type expression after the `.`, so the `Ix i =>` context made the
+    // parser fail on the `=>`.
+    let src = r#"
+        off b ix :: forall i. Ix i => Pair i i -> i -> Int = index b ix;
+        main = off (0, 9) 9;
+    "#;
+    // The call discharges the prelude `Ix Int` instance: `index b i = i -
+    // b.first` with `b = (0,9)` gives `9 - 0 = 9`.
+    assert_eq!(run(src), 9.0);
 }

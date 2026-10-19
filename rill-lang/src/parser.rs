@@ -739,7 +739,9 @@ impl<'a> Parser<'a> {
     }
 
     /// `forall a b. T` — explicit universal quantification. Reads one or more
-    /// type-variable names, then a `.`, then the inner type expression.
+    /// type-variable names, then a `.`, then the inner type expression, which
+    /// may carry a Haskell 2010 class context (`Ix i => T`) exactly like a `::`
+    /// signature body.
     fn parse_forall_type(&mut self) -> Result<TypeExpr, CompileError> {
         self.bump(); // consume `forall`
         let mut names = Vec::new();
@@ -751,7 +753,7 @@ impl<'a> Parser<'a> {
             return Err(self.error("expected at least one type variable after `forall`"));
         }
         self.eat(&Tok::Dot)?;
-        let inner = self.parse_type_expr()?;
+        let inner = self.parse_sig_type()?;
         Ok(TypeExpr::TForall(names, Box::new(inner)))
     }
 
