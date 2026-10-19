@@ -5577,6 +5577,37 @@ mod tests {
     }
 
     #[test]
+    fn data_strictness_flows_into_data_info() {
+        // The Haskell 2010 strictness flag parsed by the data declaration must
+        // reach the type environment, because ctor lowering reads `DataInfo`
+        // (never the AST) when deciding where to force.
+        let t = ty_of(
+            "data T = C !Float; data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }",
+        )
+        .unwrap();
+        match t.type_env.data_types.get("T") {
+            Some(DataInfo::Sum(ctors)) => {
+                assert_eq!(ctors.len(), 1);
+                assert_eq!(ctors[0].0, "C");
+                assert_eq!(ctors[0].1, vec![(ValueTy::Float, true)]);
+            }
+            other => panic!("expected Sum for T, got {other:?}"),
+        }
+        match t.type_env.data_types.get("P") {
+            Some(DataInfo::Record(fields)) => {
+                assert_eq!(
+                    fields,
+                    &vec![
+                        ("x".to_string(), ValueTy::Float, true),
+                        ("y".to_string(), ValueTy::Float, false),
+                    ]
+                );
+            }
+            other => panic!("expected Record for P, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn gain_is_1_to_1() {
         // A buffer-valued signal expression over a literal generator.
         let t = ty_of(r"main = sine 440.0 0.5 0.0 * 0.5;").unwrap();
