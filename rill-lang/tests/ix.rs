@@ -357,29 +357,52 @@ fn list_array_stores_bounds_and_elements() {
 }
 
 #[test]
-fn list_array_rejects_a_length_that_does_not_match_range_size() {
-    for (lo, hi, n) in [(0i64, 2, 2usize), (0, 2, 4), (0, -1, 1)] {
-        let elems: Vec<String> = (0..n).map(|i| format!("{i}.0")).collect();
-        let src = format!(
-            "main = listArray {} [{}];",
-            bounds(lo, hi),
-            elems.join(", ")
-        );
-        let msg = fault(&src);
-        assert!(
-            msg.contains("listArray") && msg.contains("rangeSize"),
-            "expected the clean length-mismatch fault for bounds {lo}..={hi} with {n} elements, got: {msg}"
-        );
-    }
+fn list_array_truncates_extras_past_an_empty_range() {
+    // `(0,-1)` is the canonical empty range (rangeSize 0): a single element is
+    // an extra and is silently dropped, yielding an empty array (GHC-faithful
+    // — GHC's `newArray# 0# arrEleBottom` writes nothing).
+    let src = "main = listArray (Pair { first: 0, second: -1 }) [0.0];";
+    let (prog, v) = run(src);
+    let (values, (lo, hi)) = array_1d(&prog, &v);
+    assert_eq!((lo, hi), (0, -1));
+    assert!(values.is_empty(), "the single element is dropped");
 }
 
 #[test]
-fn list_array_accepts_an_empty_range_with_no_elements() {
-    let src = format!("main = listArray {} [];", bounds(0, -1));
+fn list_array_pads_a_short_list_with_faulting_holes() {
+    // GHC-faithful lenient construction: `listArray (0,2) [1.0, 2.0]` has
+    // rangeSize 3 — the missing position is one shared lazy hole (the same
+    // fault-on-force object as `array`'s unlisted positions), NOT a length
+    // fault. Listed positions read through `index`; only forcing the hole
+    // faults.
+    let arr = format!("listArray {} [1.0, 2.0]", bounds(0, 2));
+    let src = format!("main = (\\a -> Pair {{ first: index a 0, second: index a 1 }}) ({arr});");
+    let (prog, v) = run(&src);
+    let (c0, c1) = pair_values(&prog, &v);
+    assert_eq!(c0, Value::Float(1.0));
+    assert_eq!(c1, Value::Float(2.0));
+
+    // Forcing the padded tail faults cleanly (a fold over `arrayElems` forces
+    // every element; position 2 is the hole).
+    let msg = fault(&format!(
+        "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems ({arr}));"
+    ));
+    assert!(
+        msg.contains("array: undefined array element"),
+        "expected the hole fault for the padded tail, got: {msg}"
+    );
+}
+
+#[test]
+fn list_array_truncates_a_long_list() {
+    // GHC-faithful lenient construction: `listArray (0,2) [0.0,1.0,2.0,9.0]`
+    // has rangeSize 3 — the extra element is silently dropped, never a length
+    // fault and never a mis-indexed array.
+    let src = format!("main = listArray {} [0.0, 1.0, 2.0, 9.0];", bounds(0, 2));
     let (prog, v) = run(&src);
     let (values, (lo, hi)) = array_1d(&prog, &v);
-    assert_eq!((lo, hi), (0, -1));
-    assert!(values.is_empty());
+    assert_eq!((lo, hi), (0, 2));
+    assert_eq!(values, vec![0.0, 1.0, 2.0], "the extra element is dropped");
 }
 
 #[test]

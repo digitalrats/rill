@@ -3847,8 +3847,13 @@ impl<'a> Lowerer<'a> {
             // `listRange (l, u)` — the inclusive Int range (the only
             // list-GENERATING primitive; `Ix.range` is built on it).
             ("listRange", 1) => ListRange,
-            // `listArray`'s strict constructor: (bounds, rangeSize, elems).
-            ("arrayFromListChecked", 3) => ArrayFromListChecked,
+            // `listArray`'s lenient constructor: (bounds, rangeSize, elems) —
+            // the interpreter pads a short list with the shared hole fragment,
+            // so lowering must emit it (the same flag as `arrayFromAssocs`).
+            ("arrayFromListChecked", 3) => {
+                self.uses_array_hole = true;
+                ArrayFromListChecked
+            }
             _ => return None,
         })
     }

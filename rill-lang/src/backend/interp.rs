@@ -3239,14 +3239,17 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             world.value_regs[dst] = alloc_owned(ir, world, Value::List { elems });
         }
         ArrayFromListChecked => {
-            // arrayFromListChecked bounds rangeSize xs: the strict constructor
-            // behind the language-level `listArray`. It behaves exactly like
-            // `arrayFromList` once the element count matches the language-
-            // computed `rangeSize`; a mismatch latches a clean fault (the
-            // design's strict-construction policy, a deliberate deviation from
-            // GHC's lazy tolerance). The primitive exists only for `listArray`,
-            // so its fault names that function.
-            let Some(elems) = pooled_elems_of(ir, world, base + args[2]) else {
+            // arrayFromListChecked bounds rangeSize xs: the lenient constructor
+            // behind the language-level `listArray`, GHC-faithful. A list
+            // SHORTER than `rangeSize` pads the tail with the ONE shared lazy
+            // hole (the same fault-on-force object as `array`'s unlisted
+            // positions); a LONGER list is silently truncated. The element
+            // buffer holds BORROWED refs (no RC change) and the claim loop
+            // below claims every slot exactly once, so padding pushes the RAW
+            // hole ref and the builder's own claim (`rc 1` from `alloc_owned`)
+            // is released only AFTER that loop — never before, when a freed
+            // hole slot would make the loop's `copy` a dangling ref.
+            let Some(mut elems) = pooled_elems_of(ir, world, base + args[2]) else {
                 latch_fault(ir, world, "listArray: expected a list of elements");
                 world.value_regs[dst] = None;
                 return;
@@ -3261,7 +3264,11 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 }
             };
             let expected = match forced_i64(ir, world, size_reg, drops) {
-                Some(n) => n,
+                // A negative computed rangeSize means an empty domain (prelude
+                // `Ix` returns 0 for inverted bounds; user instances could
+                // return less — clamp defensively, mirroring GHC's
+                // `safeRangeSize`).
+                Some(n) => n.max(0),
                 None => {
                     world.arena.put_buf(elems);
                     latch_fault(ir, world, "listArray: rangeSize is not an integral number");
@@ -3269,19 +3276,75 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     return;
                 }
             };
-            if elems.len() as i64 != expected {
-                let got = elems.len();
-                world.arena.put_buf(elems);
-                latch_fault(
+            let mut pad_hole: Option<ArenaRef> = None;
+            if elems.len() as i64 > expected {
+                // Extras are silently dropped. They were BORROWED refs (owned by
+                // the source list), so a plain truncate suffices — no per-ref
+                // drop, no RC bookkeeping.
+                elems.truncate(expected as usize);
+            } else if (elems.len() as i64) < expected {
+                // Ensure the buffer can hold the padded length WITHOUT
+                // reallocating on the eval path: re-take a pooled buffer sized
+                // for `expected`, copy the borrowed refs across (no RC), return
+                // the old buffer.
+                if elems.capacity() < expected as usize {
+                    match world.arena.take_buf(expected as usize) {
+                        Ok(mut bigger) => {
+                            bigger.extend_from_slice(&elems);
+                            world.arena.put_buf(elems);
+                            elems = bigger;
+                        }
+                        Err(_) => {
+                            world.arena.put_buf(elems);
+                            latch_exhaustion(ir, world, "value buffer pool");
+                            world.value_regs[dst] = None;
+                            return;
+                        }
+                    }
+                }
+                // Build the ONE shared hole exactly like `ArrayFromAssocs`: a
+                // callable over the synthetic hole fragment with an empty env
+                // and a memo cell (see that arm for the construction shape).
+                let Some(frag) = ir.array_hole_frag else {
+                    world.arena.put_buf(elems);
+                    latch_fault(ir, world, "listArray: no hole fragment");
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                let Some(cell) = alloc_owned(ir, world, Value::ThunkCell(ThunkState::Unforced))
+                else {
+                    world.arena.put_buf(elems);
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                let Some(env) = alloc_owned(ir, world, Value::Record(vec![])) else {
+                    world.arena.drop_ref(cell);
+                    world.arena.put_buf(elems);
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                let Some(hole) = alloc_owned(
                     ir,
                     world,
-                    &format!(
-                        "listArray: {got} element(s) but rangeSize is {expected} \
-                         (the length must equal rangeSize of the bounds)"
-                    ),
-                );
-                world.value_regs[dst] = None;
-                return;
+                    Value::Callable {
+                        fragment: frag,
+                        env,
+                        cell: Some(cell),
+                    },
+                ) else {
+                    world.arena.drop_ref(env);
+                    world.arena.drop_ref(cell);
+                    world.arena.put_buf(elems);
+                    world.value_regs[dst] = None;
+                    return;
+                };
+                // Push the RAW hole ref (NO `copy`): the claim loop below gives
+                // each padded slot exactly one claim; the builder's own claim
+                // keeps the target alive until the loop has run.
+                while elems.len() < expected as usize {
+                    elems.push(hole);
+                }
+                pad_hole = Some(hole);
             }
             let Some(bounds) = world.value_regs[base + args[0]] else {
                 world.arena.put_buf(elems);
@@ -3296,6 +3359,12 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             };
             for e in &elems {
                 _ = world.arena.copy(*e);
+            }
+            if let Some(hole) = pad_hole {
+                // Release the builder's claim AFTER the claim loop: the slot now
+                // has one claim per padded copy, which the array's drop
+                // balances.
+                world.arena.drop_ref(hole);
             }
             world.value_regs[dst] = alloc_owned(ir, world, Value::Array { bounds, elems });
         }

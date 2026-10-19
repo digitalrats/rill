@@ -296,30 +296,62 @@ fn an_empty_matrix_dimension_reads_as_empty_and_access_faults() {
 }
 
 #[test]
-fn two_dimensional_list_array_rejects_a_length_that_does_not_match_range_size() {
-    // 2x2 = 4 cells; 3 and 5 elements are both wrong. The message names the
-    // language-level constructor and the contract it broke.
-    for n in [3usize, 5] {
-        let elems: Vec<String> = (0..n).map(|i| format!("{i}.0")).collect();
-        let msg = fault(&format!(
-            "main = listArray {} [{}];",
-            b2(0, 0, 1, 1),
-            elems.join(", ")
-        ));
-        assert!(
-            msg.contains("listArray") && msg.contains("rangeSize") && msg.contains(&n.to_string()),
-            "expected the clean length-mismatch fault for {n} elements, got: {msg}"
-        );
-    }
-    // 3x2 = 6 cells: a 5-element list is rejected, a 6-element one accepted.
+fn two_dimensional_list_array_pads_or_truncates_to_the_range_size() {
+    // 2x2 = 4 cells (b2(0,0,1,1)): a 3-element list is SHORT — the missing
+    // cell is one shared lazy hole (fault-on-force, GHC-faithful); a 5-element
+    // list is LONG — the extra is silently dropped, yielding 4 elements.
+    let with_3 = format!("main = listArray {} [0.0, 1.0, 2.0];", b2(0, 0, 1, 1));
+    let (prog, v) = run(&with_3);
+    // The padded tail is a hole (a `Callable`), not a Float — assert the flat
+    // element count without forcing it.
+    assert_eq!(array_elems(&v).len(), 4, "padded to the 4-cell size");
+    let bounds = match &v {
+        Value::Array { bounds, .. } => prog.arena().get(*bounds).expect("bounds resolve").clone(),
+        _ => unreachable!(),
+    };
+    let (low, high) = pair_values(&prog, &bounds);
+    assert_eq!(
+        (int_pair(&prog, &low), int_pair(&prog, &high)),
+        ((0, 0), (1, 1))
+    );
+    // The padded tail is a hole: a fold over `arrayElems` forces every element.
     let msg = fault(&format!(
-        "main = listArray {} [1.0, 2.0, 3.0, 4.0, 5.0];",
-        b2(0, 0, 2, 1)
+        "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems (listArray {} [0.0, 1.0, 2.0]));",
+        b2(0, 0, 1, 1)
     ));
     assert!(
-        msg.contains("listArray") && msg.contains("rangeSize"),
-        "expected the clean length-mismatch fault for a 3x2 with 5 elements, got: {msg}"
+        msg.contains("array: undefined array element"),
+        "expected the hole fault at the padded cell, got: {msg}"
     );
+
+    let with_5 = format!(
+        "main = listArray {} [0.0, 1.0, 2.0, 3.0, 4.0];",
+        b2(0, 0, 1, 1)
+    );
+    let (prog, v) = run(&with_5);
+    let (values, _) = matrix(&prog, &v);
+    assert_eq!(
+        values,
+        vec![0.0, 1.0, 2.0, 3.0],
+        "the 5th element is dropped"
+    );
+
+    // 3x2 = 6 cells (b2(0,0,2,1)): a 5-element list is SHORT (tail hole, not a
+    // Float); a 6-element list is exact.
+    let with_5_3x2 = format!(
+        "main = listArray {} [0.0, 1.0, 2.0, 3.0, 4.0];",
+        b2(0, 0, 2, 1)
+    );
+    let (_, v) = run(&with_5_3x2);
+    assert_eq!(array_elems(&v).len(), 6, "padded to the 6-cell size");
+
+    let with_6 = format!(
+        "main = listArray {} [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];",
+        b2(0, 0, 2, 1)
+    );
+    let (prog, v) = run(&with_6);
+    let (values, _) = matrix(&prog, &v);
+    assert_eq!(values, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
 }
 
 #[test]
