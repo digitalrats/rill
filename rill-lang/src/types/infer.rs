@@ -210,7 +210,10 @@ fn flatten_thunk(vty: &ValueTy) -> (Vec<ValueTy>, Vec<ValueTy>) {
 /// list and wraps the body in nested lambdas (`take n xs = …` becomes
 /// `take = \n -> \xs -> …`), so a definition's true λ-arity is its remaining
 /// `params().len()` plus the body's leading λs.
-fn leading_lambda_count(body: &Expr) -> usize {
+///
+/// Also consulted by lowering to align a recovered λ-parameter list with a
+/// definition's λ-nest depth before specializing it per call site.
+pub(crate) fn leading_lambda_count(body: &Expr) -> usize {
     match body {
         Expr::Lambda { body, .. } => 1 + leading_lambda_count(body),
         _ => 0,

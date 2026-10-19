@@ -4544,11 +4544,13 @@ impl<'a> Lowerer<'a> {
     ///   annotation;
     /// - an empty-parameter λ-nest whose recovered λ-parameter list holds at
     ///   least one non-`Float` type (a fully-`Float` def like `add a b = a + b`
-    ///   keeps the ordinary eager path — nothing needs a concrete type);
+    ///   keeps the ordinary eager path — nothing needs a concrete type) and
+    ///   lines up with the λ-nest's depth;
     /// - and not a recursive definition: `take n xs = …`/`zipWith` must keep
     ///   their eager shared-cell path, because specializing a recursive body
-    ///   would expand forever at compile time (the hard
-    ///   `SignatureLessLifting` guard/error is a later task).
+    ///   would expand forever at compile time. A recursing DEFERRED def
+    ///   (whose body also dispatches on a class method) is reported as a
+    ///   compile error instead; the non-class recursion keeps its eager path.
     ///
     /// A value local or fragment capture shadowing the name, and a DUAL name
     /// whose first argument's static type selects a method instance, also
@@ -4586,6 +4588,13 @@ impl<'a> Lowerer<'a> {
             return None;
         }
         let param_tys = self.fn_param_tys.get(name).cloned()?;
+        // The recovered λ-parameter list must line up with the def's λ-nest
+        // depth; a shape the currying pass did not normalize falls through to
+        // the ordinary application paths instead of mis-aligning parameters
+        // against the wrong body lambdas.
+        if param_tys.len() != crate::types::infer::leading_lambda_count(body) {
+            return None;
+        }
         // At least one non-`Float` recovered λ-parameter: a type the eager
         // path cannot dispatch on with lowering's missing substitution. A
         // fully-`Float` def (`add a b = a + b`) has nothing to substitute and
@@ -4598,6 +4607,16 @@ impl<'a> Lowerer<'a> {
         // at runtime through the shared-cell closure path). Keep those on the
         // eager anchor path.
         if self.recursive_locals.contains(name) {
+            // A recursing DEFERRED def would re-specialize itself at every
+            // application, expanding forever (there is no shared cell to anchor
+            // on, and its class demand needs concrete argument types at each
+            // step). Report it rather than loop.
+            if self.is_deferred_sigless_def(name) {
+                return Some(Err(CompileError::Type {
+                    msg: format!("recursive signature-less curried definition `{name}`"),
+                    span,
+                }));
+            }
             return None;
         }
         // A value binding or fragment capture named like the definition shadows
@@ -4714,6 +4733,40 @@ impl<'a> Lowerer<'a> {
         res
     }
 
+    /// Whether `name` is a DEFERRED signature-less curried definition — one
+    /// whose per-call-site specialization
+    /// ([`Self::lower_signature_less_apply`]) is the only way to compile it,
+    /// so a bare reference or a recursive application carries no legal
+    /// standalone value.
+    ///
+    /// The criterion is deliberately NARROWER than the specialization-site
+    /// trigger: besides not being class-constrained, an empty-parameter λ-nest
+    /// with no `::` annotation, and at least one recovered non-`Float`
+    /// λ-parameter, the body must reference a CLASS-METHOD name (`a ! i` lowers
+    /// to the dual-named `index`, an `Ix` method). `nth xs k = head (tail xs)`
+    /// references no class method and stays a well-formed first-class value.
+    fn is_deferred_sigless_def(&self, name: &str) -> bool {
+        if self.env.constrained_defs.contains_key(name) {
+            return false;
+        }
+        let Some(Def::Eval {
+            params, body, sig, ..
+        }) = self.defs.get(name)
+        else {
+            return false;
+        };
+        if !params.is_empty() || sig.is_some() || !matches!(body, Expr::Lambda { .. }) {
+            return false;
+        }
+        let Some(param_tys) = self.fn_param_tys.get(name) else {
+            return false;
+        };
+        if param_tys.is_empty() || param_tys.iter().all(|t| matches!(t, ValueTy::Float)) {
+            return false;
+        }
+        body_carries_class_demand(self.env, body)
+    }
+
     /// A fresh unification variable for signature-type conversion at a
     /// constrained definition's call site.
     fn fresh_sig_var(&mut self) -> ValueTy {
@@ -4769,6 +4822,25 @@ impl<'a> Lowerer<'a> {
         // Float`. A `where`-local of the same name shadows the definition.
         if self.env.constrained_defs.contains_key(name)
             && !self.value_locals.iter().any(|s| s.contains_key(name))
+        {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "cannot use class-constrained definition `{name}` without applying it: \
+                     its class variable is solved per call site"
+                ),
+                span,
+            });
+        }
+        // A DEFERRED signature-less curried def has no standalone value either:
+        // its body dispatches on a parameter's shape at a call site (`a ! i`
+        // lowers to the dual-named `index`, an `Ix` method), so a bare
+        // reference (`f = at`) would lower the absent body against an unsolved
+        // class variable — the same misleading `no instance of … for Float`
+        // the constrained guard reports instead. A value local or fragment
+        // capture of the same name shadows the definition.
+        if self.is_deferred_sigless_def(name)
+            && !self.value_locals.iter().any(|s| s.contains_key(name))
+            && !self.fragment_captures.iter().any(|(n, _)| n == name)
         {
             return Err(CompileError::Type {
                 msg: format!(
@@ -7909,6 +7981,17 @@ fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
         } => collect_def_ref_names(d, out),
         _ => {}
     }
+}
+
+/// Whether `e` references a CLASS-METHOD name — `a ! i` lowers to the
+/// dual-named `index`, an `Ix` method — anywhere in its tree. Only a body
+/// carrying such a demand needs the per-call-site specialization; a def like
+/// `nth` (which calls only plain functions) keeps its ordinary first-class
+/// value, bare reference included.
+fn body_carries_class_demand(env: &TypeEnv, e: &Expr) -> bool {
+    let mut refs = HashSet::new();
+    collect_def_ref_names(e, &mut refs);
+    refs.iter().any(|n| env.class_of_method(n).is_some())
 }
 
 /// The INTEGER value of a constant expression, when it is an integer literal

@@ -146,3 +146,55 @@ fn signature_less_single_param_scheme_carries_recovered_type() {
                 main = first (Point { x: 5.0, y: 1.0 });";
     assert_eq!(run_num(src), 5.0);
 }
+
+#[test]
+fn bare_ref_to_a_signature_less_accessor_is_a_compile_error() {
+    // `g = at` is a bare VALUE reference to the deferred accessor: it has no
+    // call site at which the body's index class variable could be solved.
+    // Report it like a class-constrained def (`cannot use … without applying
+    // it`) instead of lowering the absent body against an unsolved variable
+    // and surfacing a misleading `no instance of `Ix` for type `Pair``.
+    let (defs, expr) = ("at a i = a ! i;\ng = at;", "g");
+    let ffi = ForeignRegistry::<f32>::new();
+    let msg = match eval_ffi(defs, expr, ffi) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a bare reference to the accessor must fail to compile"),
+    };
+    assert!(
+        msg.contains("`at`"),
+        "the diagnostic must name the definition: {msg}"
+    );
+    assert!(
+        msg.contains("without applying it"),
+        "the diagnostic must say the definition must be applied: {msg}"
+    );
+}
+
+#[test]
+fn recursive_signature_less_accessor_is_a_compile_error() {
+    // A recursive accessor would re-specialize itself at every application,
+    // expanding forever: its cycle has no shared cell to anchor on (only the
+    // eager path makes one), and its index class demand needs concrete
+    // argument types at each step. Report the definition instead of looping.
+    // NOTE: the natural `at a i = … else at a (i - 1)` shape never reaches
+    // lowering — Float-only arithmetic pins `i : Float`, so the `Int` index
+    // demand dies in inference (`cannot unify Int with Float`). This reachable
+    // shape keeps `i` on the class-variable track and lands in lowering.
+    let (defs, expr) = (
+        "at a i = if 0.0 == (a ! i) then a ! i else at a i;",
+        "at (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1",
+    );
+    let ffi = ForeignRegistry::<f32>::new();
+    let msg = match eval_ffi(defs, expr, ffi) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("a recursive accessor must fail to compile"),
+    };
+    assert!(
+        msg.contains("`at`"),
+        "the diagnostic must name the definition: {msg}"
+    );
+    assert!(
+        msg.contains("recursive"),
+        "the diagnostic must say the definition is recursive: {msg}"
+    );
+}
