@@ -3348,12 +3348,18 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             }
             let Some(bounds) = world.value_regs[base + args[0]] else {
                 world.arena.put_buf(elems);
+                if let Some(hole) = pad_hole {
+                    world.arena.drop_ref(hole);
+                }
                 latch_fault(ir, world, "listArray: bounds operand is unbound");
                 world.value_regs[dst] = None;
                 return;
             };
             let Some(bounds) = copy_owned(ir, world, bounds) else {
                 world.arena.put_buf(elems);
+                if let Some(hole) = pad_hole {
+                    world.arena.drop_ref(hole);
+                }
                 world.value_regs[dst] = None;
                 return;
             };
@@ -4459,7 +4465,16 @@ fn exec_effect<T: Transcendental, const BUF: usize>(
                 }
                 pad_hole = Some(hole);
             }
-            let bounds = copy_owned(ir, world, bounds_src)?;
+            let bounds = match copy_owned(ir, world, bounds_src) {
+                Some(b) => b,
+                None => {
+                    world.arena.put_buf(elems);
+                    if let Some(hole) = pad_hole {
+                        world.arena.drop_ref(hole);
+                    }
+                    return None;
+                }
+            };
             // The cell owns its elements independently of the source list.
             for e in &elems {
                 _ = world.arena.copy(*e);
