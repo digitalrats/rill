@@ -52,6 +52,19 @@ fn signature_less_array_accessor_reads_a_cell_in_strict() {
 }
 
 #[test]
+fn signature_less_st_accessor_reads_a_cell_in_strict() {
+    // `readAt st i = readArray st i` over ST — see st_array.rs for the ST
+    // surface. R4-deferred: at Task 1-2 time this curried signature-less ST
+    // form crashed lowering with infinite recursion/SIGSEGV. The branch's
+    // scheme-carried λ-param types + per-call-site specialization now let the
+    // strict shape compile and read the cell. (The complete-mode variant still
+    // stack-overflows in lowering — a separately-tracked latent bug.)
+    let src = "readAt st i = readArray st i;\n\
+               main = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 1.0; readAt a 1 });";
+    assert_eq!(run_num(src), 1.0);
+}
+
+#[test]
 fn signature_less_array_accessor_reads_a_cell_in_complete() {
     // Same accessor under `Mode::Complete` (the mode region/ST programs use).
     let (defs, expr) = (
