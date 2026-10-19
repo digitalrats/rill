@@ -103,3 +103,43 @@ fn constrained_signature_survives_typing() {
         other => panic!("the typed program lost the constrained signature: {other:?}"),
     }
 }
+
+#[test]
+fn bare_named_fn_into_function_shaped_param_names_the_annotation() {
+    // PARK M9: a bare named function reference (`f`) passed to `ixmap`'s
+    // function-shaped parameter (`i -> j`) types as the empty `Thunk([], [])` —
+    // a bare ref's arity resolves only when it is applied — and the
+    // constrained-apply argument unify reports an opaque `Thunk … with Thunk …`
+    // mismatch. The diagnostic must name the callee and point at annotating
+    // the parameter's type (or wrapping the ref in a lambda).
+    let src = r#"f p = p;
+main = ixmap (Pair { first: 0, second: 2 }) f (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]);"#;
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let msg = match eval_ffi(defs, expr, ffi) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("the bare named-function argument must fail to compile"),
+    };
+    assert!(
+        msg.contains("annotate the parameter's type"),
+        "the diagnostic must suggest the missing annotation: {msg}"
+    );
+    assert!(
+        msg.contains("ixmap"),
+        "the diagnostic must name the callee: {msg}"
+    );
+
+    // The lambda-literal workaround the message recommends still compiles and
+    // runs: the diagnostic must not fire on a real function value.
+    let ok = r#"f p = p;
+main = ixmap (Pair { first: 0, second: 2 }) (\x -> x) (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]);"#;
+    let (ok_defs, ok_expr) = ok
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let ok_expr = ok_expr.trim().trim_end_matches(';');
+    eval_ffi(ok_defs, ok_expr, ForeignRegistry::<f32>::new())
+        .expect("a lambda literal must keep the constrained call typechecking");
+}

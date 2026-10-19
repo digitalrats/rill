@@ -101,6 +101,14 @@ struct Ctx {
     /// types fragment-local parameter registers with these so a List param
     /// (`nth xs k`) can feed `head`/`tail` without a type error.
     anchor_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Names of SIGNATURE-LESS CURRIED definitions (`at a i = a ! i`, whose
+    /// body is a λ-nest) whose scheme carries only a bare `Thunk([],[])`: the
+    /// structured parameter types (`Array i e`) recovered from the constrained
+    /// `index` inside the λ-body surface only at the call site, so a mismatch
+    /// reports the recovered shapes as if they were the user's own source.
+    /// The M10 diagnostic consults this set to point at the missing
+    /// annotation instead of dumping those shapes.
+    retry_inferred_defs: HashSet<String>,
     /// The evaluation mode (strict/complete). Complete mode's value-track
     /// retry re-registers a recursive def's scheme with value-rate channels
     /// (§: recursion is the lazy value track).
@@ -1796,6 +1804,7 @@ pub fn infer_program_with_entry(
             method_lifting: HashSet::new(),
             type_var_bindings: HashMap::new(),
             anchor_param_tys: HashMap::new(),
+            retry_inferred_defs: HashSet::new(),
             mode,
             runst_payload_tys: HashMap::new(),
         };
@@ -1910,6 +1919,7 @@ pub fn infer_program_with_entry(
         method_lifting: HashSet::new(),
         type_var_bindings: HashMap::new(),
         anchor_param_tys: HashMap::new(),
+        retry_inferred_defs: HashSet::new(),
         mode,
         runst_payload_tys: HashMap::new(),
     };
@@ -2402,6 +2412,15 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
             infer_def_group(ctx, def.where_defs())?;
         }
         let body_ty = infer_def_body(ctx, def)?;
+        // M10 marker: a signature-less CURRIED definition (`at a i = a ! i`,
+        // whose body is a λ-nest) recovers structured parameter types
+        // (`Array i e`) from the constrained `index` inside the λ-body, but the
+        // recovered shapes surface only at the call site. Remember the name so
+        // a call-site mismatch can point at the missing annotation instead of
+        // dumping the recovered shapes.
+        if def.sig().is_none() && leading_lambda_count(def.body()) > 0 {
+            ctx.retry_inferred_defs.insert(def.name().to_string());
+        }
         let lam_count = effective_def_params(def).0.len();
         let vty = def_scheme_vty(ctx, def, &body_ty, lam_count);
         let resolved = ctx.subst.apply(&ArrowTy { vty });
@@ -4286,8 +4305,33 @@ fn infer_constrained_apply(
     // so a result-directed method inside an argument resolves by the container
     // this call must produce (mirrors the plain function path).
     pin_result_to_expected(ctx, &ret_ty, expected.as_ref(), span)?;
-    for (a, pt) in args.iter().zip(param_tys.iter()) {
+    for (i, (a, pt)) in args.iter().zip(param_tys.iter()).enumerate() {
         let vt = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
+        // PARK M9: a bare named function reference (`f` in `ixmap b f a`) infers
+        // as the EMPTY `Thunk([], [])` — a bare ref's arity resolves only when it
+        // is applied — so a function-shaped constrained parameter (`i -> j`)
+        // reports an opaque `Thunk … with Thunk …` mismatch. Name the parameter
+        // and point at the missing annotation (or a lambda literal) instead of
+        // dumping thunk shapes.
+        let resolved_vt = ctx.subst.resolve_value(&vt);
+        if matches!(&resolved_vt, ValueTy::Thunk(c, r) if c.is_empty() && r.is_empty())
+            && matches!(pt, ValueTy::Thunk(..))
+        {
+            let pname = cd
+                .params
+                .get(i)
+                .map(|p| p.name.as_str())
+                .unwrap_or("<unnamed>");
+            return Err(CompileError::Type {
+                msg: format!(
+                    "`{name}` expects a function value for parameter `{pname}`; a bare \
+                     named function reference types as an unresolved thunk here — \
+                     annotate the parameter's type (or wrap the function in a lambda \
+                     literal)"
+                ),
+                span: a.span(),
+            });
+        }
         unify_value(&vt, pt, &mut ctx.subst, a.span())?;
     }
     // The class variables as the call site solved them.
@@ -5895,7 +5939,31 @@ fn infer_apply_impl(
                 for (a, pty) in args.iter().zip(arg_tys.iter()) {
                     let vt =
                         infer_method_value_vty_expected(ctx, a, "argument", Some(pty.clone()))?;
-                    unify_value(&vt, pty, &mut ctx.subst, a.span())?;
+                    // PARK M10: a signature-less CURRIED definition
+                    // (`at a i = a ! i`) types as a bare `Thunk([],[])` — its
+                    // structured parameter types (`Array i e`), recovered from
+                    // the constrained `index` inside the λ-body, live only in
+                    // the `anchor_param_tys` side-channel and are dropped from
+                    // the scheme — so a call-site mismatch reports the
+                    // recovered `App` shapes as if they were the user's own
+                    // source. Point at the missing signature instead of
+                    // dumping those shapes.
+                    if let Err(e) = unify_value(&vt, pty, &mut ctx.subst, a.span()) {
+                        if ctx.retry_inferred_defs.contains(name) {
+                            return Err(CompileError::Type {
+                                msg: format!(
+                                    "argument mismatch in a call to `{name}`: {e}. \
+                                     `{name}` has no signature, so its parameter types \
+                                     were inferred from its body by an internal retry, \
+                                     and the call is checked against those recovered \
+                                     types — annotate the parameter's type to check the \
+                                     call against an explicit signature"
+                                ),
+                                span: a.span(),
+                            });
+                        }
+                        return Err(e);
+                    }
                 }
                 let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
                 return Ok(ArrowTy::value_channel(ret_ty));
@@ -6635,6 +6703,7 @@ mod tests {
                 method_lifting: HashSet::new(),
                 type_var_bindings: HashMap::new(),
                 anchor_param_tys: HashMap::new(),
+                retry_inferred_defs: HashSet::new(),
                 mode: Mode::Strict,
                 runst_payload_tys: HashMap::new(),
             };

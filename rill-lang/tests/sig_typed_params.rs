@@ -75,3 +75,34 @@ fn shared_type_variable_keeps_its_identity_across_the_scheme() {
     let src = "pick x :: a -> a = x;\nmain = pick 1 + pick 2;";
     assert_eq!(run_num(src), 3.0);
 }
+
+#[test]
+fn signature_less_accessor_call_names_the_missing_annotation() {
+    // PARK M10: `at a i = a ! i` is a signature-less CURRIED accessor (its body
+    // is a λ-nest), so it types as a bare `Thunk([],[])`: the structured
+    // parameter type `a : Array i e` is recovered from the constrained `index`
+    // inside the λ-body but never reaches the scheme. A call with a bound
+    // pair — `at (0, 9) 9` — reports an opaque `cannot unify Pair … with Array`
+    // instead of pointing at the cause. The diagnostic must name `at` and
+    // suggest annotating the parameter's type.
+    let (defs, expr) = ("at a i = a ! i;", "at (0, 9) 9");
+    let ffi = rill_lang::ffi::ForeignRegistry::<f32>::new();
+    let msg = match eval_ffi(defs, expr, ffi) {
+        Err(e) => e.to_string(),
+        Ok(_) => panic!("the signature-less accessor call must fail to compile"),
+    };
+    assert!(
+        msg.contains("annotate the parameter's type"),
+        "the diagnostic must suggest the missing annotation: {msg}"
+    );
+    assert!(
+        msg.contains("`at`"),
+        "the diagnostic must name the definition: {msg}"
+    );
+
+    // The advice is actionable: the same accessor with a signature compiles
+    // and reads the array element.
+    let src = "at a i :: Array Int Float -> Int -> Float = a ! i;\n\
+               main = at (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1;";
+    assert_eq!(run_value(src), Value::Float(2.0));
+}
