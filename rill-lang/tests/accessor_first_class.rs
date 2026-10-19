@@ -171,6 +171,74 @@ fn bare_ref_to_a_signature_less_accessor_is_a_compile_error() {
 }
 
 #[test]
+fn render_accessor_def_is_idempotent() {
+    // The plan never writes a synthesized signature into the AST: typing the
+    // signature-less accessor (`at a i = a ! i`) must leave its `sig` at
+    // `None`, so the typed-program render emits no `::` on the def and the
+    // accessor def alone is a fixed point across render → parse → render.
+    let src = "at a i = a ! i;\n\
+               main = at (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1;";
+    let toks = rill_lang::lexer::tokenize(src).unwrap();
+    let program = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
+    let typed = rill_lang::types::infer::infer_program(&program, program.mode).unwrap();
+    // The structural pin: after inference the accessor def still carries no
+    // `sig` — the per-call-site specialization must not fall back to writing
+    // an annotation into the AST.
+    let at_def = typed
+        .program
+        .defs
+        .iter()
+        .find(|d| d.name() == "at")
+        .expect("the typed program keeps the accessor def");
+    match at_def {
+        rill_lang::ast::Def::Eval { sig, .. } => assert!(
+            sig.is_none(),
+            "typing must not synthesize a signature for `at`"
+        ),
+        other => panic!("expected an Eval def, got {other:?}"),
+    }
+    // Render the accessor and its call site exactly as the typed program
+    // carries them (the `main` body's record-arg application hits a pre-existing
+    // ApplyExpr re-parse gap in the renderer, so the fixed-point assertion
+    // below is scoped to the accessor def the plan touches).
+    let render_prog = rill_lang::ast::Program {
+        mode: program.mode,
+        mode_explicit: program.mode_explicit,
+        defs: typed
+            .program
+            .defs
+            .iter()
+            .filter(|d| matches!(d.name(), "at" | "main"))
+            .cloned()
+            .collect(),
+    };
+    let first = rill_lang::render::render(&render_prog).unwrap();
+    assert!(
+        !first.contains("::"),
+        "no synthesized `::` may appear on the signature-less accessor render: {first}"
+    );
+    assert!(
+        first.contains("at = "),
+        "the accessor def must render signature-less: {first}"
+    );
+    // The accessor def alone is a fixed point: render → parse → render is
+    // byte-identical.
+    let at_prog = rill_lang::ast::Program {
+        mode: typed.mode,
+        mode_explicit: false,
+        defs: vec![at_def.clone()],
+    };
+    let at_first = rill_lang::render::render(&at_prog).unwrap();
+    let toks2 = rill_lang::lexer::tokenize(&at_first).unwrap();
+    let reparsed = rill_lang::parser::parse(&toks2, at_first.as_bytes()).unwrap();
+    let at_second = rill_lang::render::render(&reparsed).unwrap();
+    assert_eq!(
+        at_first, at_second,
+        "render → parse → render is not idempotent for the typed accessor def\nfirst: {at_first}\nsecond: {at_second}"
+    );
+}
+
+#[test]
 fn recursive_signature_less_accessor_is_a_compile_error() {
     // A recursive accessor would re-specialize itself at every application,
     // expanding forever: its cycle has no shared cell to anchor on (only the
