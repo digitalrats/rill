@@ -708,6 +708,15 @@ struct Lowerer<'a> {
     /// callee dispatches), a record parameter its `Data` type (so field
     /// projection resolves indices).
     fn_param_tys: HashMap<String, Vec<ValueTy>>,
+    /// Flat RESULT value types of every def's inferred scheme (from inference),
+    /// parallel in spirit to [`Self::fn_param_tys`]. The signature-less
+    /// call-site specialization needs them to mirror the ordinary application
+    /// path's `pin_ret_head_types`: a polymorphic result (`apply k x =
+    /// k.unKleisli x` → `m b`) carries a type-constructor variable that the
+    /// caller's expected type pins so a result-directed/constructor-class
+    /// method inside an argument (`arr f`) threads the concrete monad into its
+    /// instance body.
+    def_result_tys: HashMap<String, Vec<ValueTy>>,
     /// Resolved λ-parameter value types of every top-level Anchor def (a named
     /// value function with λ-parameters), from inference. Lowering types the
     /// def's fragment-local parameter registers with these so a `List` param
@@ -1735,6 +1744,21 @@ impl<'a> Lowerer<'a> {
                 // below is deep enough to be stack-sensitive.
                 if let Some(out) =
                     self.lower_constrained_apply_site(name, call_args, expected, *span)
+                {
+                    return out;
+                }
+                // A signature-less curried def (`at a i = a ! i` — the parser
+                // drains its parameter list into a λ-nest) is specialized HERE
+                // just like a class-constrained def. Its recovered λ-parameter
+                // types (`fn_param_tys`) carry type variables lowering cannot
+                // substitute, so a body that dispatches on a parameter's shape
+                // (`a ! i` → the dual-named `index`) died in the typeclass
+                // dispatch with an unsolved class variable. Binding the
+                // parameters to the argument registers' CONCRETE static types
+                // lets those method calls select their instances. See
+                // [`Self::lower_signature_less_apply_site`].
+                if let Some(out) =
+                    self.lower_signature_less_apply_site(name, call_args, expected, *span)
                 {
                     return out;
                 }
@@ -4501,6 +4525,200 @@ impl<'a> Lowerer<'a> {
         let (r, t) = res?;
         check_specialized_result(name, &t, &sig_ret, span)?;
         Ok((r, t))
+    }
+
+    /// Specialize a SIGNATURE-LESS curried definition — `at a i = a ! i`, which
+    /// the parser drains into a bare `at = \a -> \i -> …` λ-nest — at its call
+    /// site.
+    ///
+    /// Inference recovers the λ-parameter types of such a definition into
+    /// [`Self::fn_param_tys`] (`Array i e`, `i`), but lowering has no
+    /// substitution: a body that dispatches on a parameter's shape (`a ! i` →
+    /// the dual-named `index`, whose `Ix` class variable is the array's INDEX
+    /// type) reaches the typeclass dispatch with an unsolved variable and dies
+    /// (`no instance of `Ix` for type `Pair``). Just as
+    /// [`Self::lower_constrained_apply_site`] solves a class-constrained
+    /// definition's variables from its arguments' static types, this site binds
+    /// the λ-parameters to the argument registers' CONCRETE static types and
+    /// lowers the uncurried body, so the body's method calls dispatch by the
+    /// concrete types.
+    ///
+    /// Returns `None` (falling through to the ordinary application paths)
+    /// unless the callee is exactly such a definition:
+    ///
+    /// - a value def in [`Self::defs`] that is NOT class-constrained (those
+    ///   belong to [`Self::lower_constrained_apply_site`]) and carries no `::`
+    ///   annotation;
+    /// - an empty-parameter λ-nest whose recovered λ-parameter list holds at
+    ///   least one non-`Float` type (a fully-`Float` def like `add a b = a + b`
+    ///   keeps the ordinary eager path — nothing needs a concrete type);
+    /// - and not a recursive definition: `take n xs = …`/`zipWith` must keep
+    ///   their eager shared-cell path, because specializing a recursive body
+    ///   would expand forever at compile time (the hard
+    ///   `SignatureLessLifting` guard/error is a later task).
+    ///
+    /// A value local or fragment capture shadowing the name, and a DUAL name
+    /// whose first argument's static type selects a method instance, also
+    /// return `None` (mirroring [`Self::lower_constrained_apply_site`]).
+    #[inline(never)]
+    fn lower_signature_less_apply_site(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Option<Result<(usize, ValueTy), CompileError>> {
+        let env = self.env;
+        // Class-constrained defs are specialized by the constrained site (which
+        // runs first in the `Apply` arm); a def sharing a name with a method or
+        // runtime primitive there must never reach this site twice.
+        if env.constrained_defs.contains_key(name) {
+            return None;
+        }
+        let def = self.defs.get(name)?.clone();
+        let Def::Eval {
+            params,
+            body,
+            where_defs: _,
+            sig,
+            ..
+        } = &def
+        else {
+            return None;
+        };
+        // "Signature-less curried def": the parser drained `at a i = …` into a
+        // bare binding whose body is a λ-nest, leaving `params` empty and no
+        // `::` annotation.
+        if !params.is_empty() || sig.is_some() || !matches!(body, Expr::Lambda { .. }) {
+            return None;
+        }
+        let param_tys = self.fn_param_tys.get(name).cloned()?;
+        // At least one non-`Float` recovered λ-parameter: a type the eager
+        // path cannot dispatch on with lowering's missing substitution. A
+        // fully-`Float` def (`add a b = a + b`) has nothing to substitute and
+        // stays on the eager path.
+        if param_tys.is_empty() || param_tys.iter().all(|t| matches!(t, ValueTy::Float)) {
+            return None;
+        }
+        // Recursion safety: a recursive signature-less curried def's body calls
+        // the same def, which would specialize forever (its cycle only resolves
+        // at runtime through the shared-cell closure path). Keep those on the
+        // eager anchor path.
+        if self.recursive_locals.contains(name) {
+            return None;
+        }
+        // A value binding or fragment capture named like the definition shadows
+        // it: a λ-parameter or a capture (`\ listArray -> listArray 1.0`).
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
+            return None;
+        }
+        // A DUAL name (`index` is both the `Ix` offset method and the array
+        // accessor): when the first argument's static type selects a method
+        // instance, DECLINE the definition so the method path handles the call.
+        if env.class_of_method(name).is_some() {
+            if let Some(first) = call_args.first() {
+                if let Some(ty) = self.peek_value_ty(first) {
+                    if crate::types::infer::first_arg_solves_class_var(env, name, &ty) {
+                        return None;
+                    }
+                }
+            }
+        }
+        // `param_tys` and `def` are owned clones, so the `&mut self` call below
+        // is unencumbered by the guard's borrows.
+        Some(self.lower_signature_less_apply(name, &def, call_args, &param_tys, expected, span))
+    }
+
+    /// The body of [`Self::lower_signature_less_apply_site`]: bind the applied
+    /// arguments to the definition's λ-parameters and lower its uncurried body.
+    fn lower_signature_less_apply(
+        &mut self,
+        name: &str,
+        def: &Def,
+        call_args: &[Expr],
+        param_tys: &[ValueTy],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let Def::Eval {
+            body: def_body,
+            where_defs,
+            ..
+        } = def
+        else {
+            unreachable!("the site only fires for `Def::Eval`");
+        };
+        // Recover the formal parameters from the λ-nest
+        // (`\a -> \i -> a ! i` → params `[a, i]`, body `a ! i`): `arity` is the
+        // number of recovered λ-parameter types, so exactly the def's head
+        // lambdas are peeled off.
+        let (params, uncurried_body) =
+            crate::types::ty::split_curried_params(param_tys.len(), &[], def_body);
+        if call_args.len() > params.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "`{name}` expects {} argument(s), got {}",
+                    params.len(),
+                    call_args.len()
+                ),
+                span,
+            });
+        }
+        // Mirror the ordinary application path before the arguments lower: a
+        // result type holding a type-constructor variable (`apply k x =
+        // k.unKleisli x` → `m b`) is pinned from the caller's expected type, so
+        // a result-directed/constructor-class method inside an argument (`arr
+        // f`) threads the concrete monad into its instance body.
+        let result_tys = self.def_result_tys.get(name).cloned().unwrap_or_default();
+        let (arg_tys, _) = pin_ret_head_types(param_tys, &result_tys, expected);
+        // Lower the applied arguments (each against its recovered parameter type
+        // as the expectation) and bind each λ-parameter to its argument register
+        // and CONCRETE static type, so the body's own method calls dispatch by
+        // those types.
+        let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+        let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+        let mut lowered: Vec<(usize, ValueTy)> = Vec::with_capacity(call_args.len());
+        for (i, a) in call_args.iter().enumerate() {
+            let (r, t) = match arg_tys.get(i).cloned() {
+                Some(pt) => self.lower_value_expected(a, Some(&pt))?,
+                None => self.lower_value(a)?,
+            };
+            lowered.push((r, t));
+        }
+        for (i, (p, (r, t))) in params.iter().zip(&lowered).enumerate() {
+            scope.insert(p.name.clone(), (*r, t.clone()));
+            ctor_scope.insert(p.name.clone(), self.static_scrutinee_ctor(&call_args[i]));
+        }
+        self.value_locals.push(scope);
+        self.value_local_ctors.push(ctor_scope);
+        let res = if call_args.len() < params.len() {
+            // Partial application: the remaining λ-parameters stay a function
+            // value, typed by the recovered parameter list (the same types the
+            // ordinary path would use — the applied arguments are captured in
+            // scope as locals).
+            let remaining_tys: Vec<ValueTy> = param_tys[call_args.len()..].to_vec();
+            let remaining = Expr::Lambda {
+                params: params[call_args.len()..].to_vec(),
+                body: Box::new(uncurried_body.clone()),
+                span,
+            };
+            let saved_pending = self.pending_param_tys.take();
+            self.pending_param_tys = Some(remaining_tys);
+            let res = self.lower_value_expected(&remaining, expected);
+            self.pending_param_tys = saved_pending;
+            res
+        } else {
+            // Full application: the definition's uncurried body becomes the
+            // call's value, compiled here with the parameters bound to the
+            // argument registers — compile-time β-substitution, one
+            // specialization per call site.
+            self.lower_with_where_defs(where_defs, &uncurried_body, expected)
+        };
+        self.value_locals.pop();
+        self.value_local_ctors.pop();
+        res
     }
 
     /// A fresh unification variable for signature-type conversion at a
@@ -7846,6 +8064,11 @@ pub fn lower_program_with_channels(
         fragments: Vec::new(),
         fragment_captures: Vec::new(),
         fn_param_tys: tp.fn_param_tys.clone(),
+        def_result_tys: tp
+            .def_schemes
+            .iter()
+            .map(|(n, s)| (n.clone(), flatten_value_thunk(&s.ty.vty).1))
+            .collect(),
         anchor_param_tys: tp.anchor_param_tys.clone(),
         shared_cell_result_tys: tp.shared_cell_result_tys.clone(),
         pending_param_tys: None,
@@ -8159,6 +8382,7 @@ mod tests {
             fragments: Vec::new(),
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),
+            def_result_tys: HashMap::new(),
             anchor_param_tys: HashMap::new(),
             shared_cell_result_tys: HashMap::new(),
             pending_param_tys: None,
