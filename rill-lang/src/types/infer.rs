@@ -102,12 +102,12 @@ struct Ctx {
     /// (`nth xs k`) can feed `head`/`tail` without a type error.
     anchor_param_tys: HashMap<String, Vec<ValueTy>>,
     /// Names of SIGNATURE-LESS CURRIED definitions (`at a i = a ! i`, whose
-    /// body is a λ-nest) whose scheme carries only a bare `Thunk([],[])`: the
-    /// structured parameter types (`Array i e`) recovered from the constrained
-    /// `index` inside the λ-body surface only at the call site, so a mismatch
-    /// reports the recovered shapes as if they were the user's own source.
-    /// The M10 diagnostic consults this set to point at the missing
-    /// annotation instead of dumping those shapes.
+    /// body is a λ-nest). Such a def is typed as a VALUE (its λ-chain), so its
+    /// scheme carries the structured parameter shapes the body recovered
+    /// (`Array i e` from the constrained `index`) — shapes the user never
+    /// wrote. A call-site mismatch then dumps those recovered shapes as if
+    /// they were the user's own source. The M10 diagnostic consults this set
+    /// to point at the missing annotation instead.
     retry_inferred_defs: HashSet<String>,
     /// The evaluation mode (strict/complete). Complete mode's value-track
     /// retry re-registers a recursive def's scheme with value-rate channels
@@ -5940,24 +5940,22 @@ fn infer_apply_impl(
                     let vt =
                         infer_method_value_vty_expected(ctx, a, "argument", Some(pty.clone()))?;
                     // PARK M10: a signature-less CURRIED definition
-                    // (`at a i = a ! i`) types as a bare `Thunk([],[])` — its
-                    // structured parameter types (`Array i e`), recovered from
-                    // the constrained `index` inside the λ-body, live only in
-                    // the `anchor_param_tys` side-channel and are dropped from
-                    // the scheme — so a call-site mismatch reports the
-                    // recovered `App` shapes as if they were the user's own
-                    // source. Point at the missing signature instead of
-                    // dumping those shapes.
+                    // (`at a i = a ! i`) is typed as a VALUE (its λ-chain), so
+                    // the structured parameter shapes its body recovered
+                    // (`Array i e` from the constrained `index`) land straight
+                    // in the scheme — shapes the user never wrote. A call-site
+                    // mismatch thus dumps the recovered `App` shapes as if
+                    // they were the user's own source. Point at the missing
+                    // signature instead of dumping those shapes.
                     if let Err(e) = unify_value(&vt, pty, &mut ctx.subst, a.span()) {
                         if ctx.retry_inferred_defs.contains(name) {
                             return Err(CompileError::Type {
                                 msg: format!(
                                     "argument mismatch in a call to `{name}`: {e}. \
-                                     `{name}` has no signature, so its parameter types \
-                                     were inferred from its body by an internal retry, \
-                                     and the call is checked against those recovered \
-                                     types — annotate the parameter's type to check the \
-                                     call against an explicit signature"
+                                     `{name}` has no signature, so its parameter \
+                                     types are inferred from its body and are \
+                                     invisible here — annotate the parameter's type \
+                                     to check the call against an explicit signature"
                                 ),
                                 span: a.span(),
                             });
