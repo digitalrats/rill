@@ -589,6 +589,11 @@ sequential construction, or `array` with explicit associations. Index with the
 infix `!`; note that `!` is also the bang marker in patterns — `f !x` forces
 `x` to WHNF, while `a ! i` indexes an array.
 
+Both `listArray` and the ST `newListArray` follow GHC's lenient construction: a
+list shorter than the bounds' `rangeSize` pads the tail with undefined elements
+(forcing one of them faults with "array: undefined array element"), and a list
+longer than the range is silently truncated to it.
+
 The core vocabulary includes `bounds`, `elems`, `indices`, `assocs`, `update`,
 `accum`, and `ixmap` for reindexing:
 

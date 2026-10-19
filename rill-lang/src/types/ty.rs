@@ -565,16 +565,20 @@ instance Monad IO where {
 --  and the ST wrappers; only `array`-construction over a non-prelude index
 --  shape is out of reach.
 --
---  Two deliberate deviations from GHC are documented where they bite:
---    * `listArray` / `newListArray` are STRICT: `length elems` must equal
---      `rangeSize bounds`, otherwise the program faults cleanly instead of
---      building a mis-indexed array.
+--  Construction details worth spelling out:
 --    * `array`'s unlisted positions are UNDEFINED elements — one shared lazy
 --      callable that latches the clean fault "array: undefined array element"
 --      when forced (GHC's `undefined`), which makes `array` generic in the
 --      element type. Associations are applied in order; a repeated index
 --      leaves the last value. `accumArray` seeds every position with its
 --      initial value and therefore has no holes.
+--
+--  `listArray` / `newListArray` follow GHC's lenient construction (no length
+--  check): a list SHORTER than `rangeSize` pads the tail with the same shared
+--  lazy hole as `array`'s unlisted positions (forcing it faults "array:
+--  undefined array element"); a list LONGER than `rangeSize` is silently
+--  truncated to the array's size. This is exactly GHC's `arrEleBottom` model
+--  shared by `array`, `listArray`, and `newListArray`.
 --
 --  Fault policy: every CELL reference is bounds-checked, not just the flat
 --  offset. `checkedOffset` turns an out-of-range cell into `-1`, which the flat
@@ -644,9 +648,11 @@ index a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (checkedOffset (arr
 --  offset carries no information about the cell it came from.
 checkedOffset b ix :: Ix i => Pair i i -> i -> Int = if inRange b ix then index b ix else -1;
 
---  The strict constructor: the element count must equal `rangeSize` of the
---  bounds. `arrayFromListChecked` carries the pre-computed size to the
---  interpreter, which faults on a mismatch.
+--  Lenient constructor (GHC-faithful): a list SHORTER than `rangeSize` pads
+--  the tail with the shared lazy hole (forcing it faults "array: undefined
+--  array element"); a list LONGER than `rangeSize` is silently truncated.
+--  `arrayFromListChecked` carries the pre-computed size to the interpreter,
+--  which pads or truncates.
 listArray b es :: Ix i => Pair i i -> List e -> Array i e = arrayFromListChecked b (rangeSize b) es;
 
 --  `array assocs`: every unlisted position is ONE SHARED lazy hole whose
@@ -684,6 +690,8 @@ ixmap b f a :: (Ix i, Ix j) => Pair i i -> (i -> j) -> Array j e -> Array i e = 
 
 newArray b e :: Ix i => Pair i i -> e -> ST s (STArray s i e) = newArrayFlat b (rangeSize b) e;
 
+--  Lenient, like `listArray`: a short list pads the tail with the shared lazy
+--  hole; a long list is silently truncated to `rangeSize`.
 newListArray b es :: Ix i => Pair i i -> List e -> ST s (STArray s i e) = newArrayFromListFlat b (rangeSize b) es;
 
 readArray arr ix :: Ix i => STArray s i e -> i -> ST s e = bind (getBounds arr) (\ b -> readArrayFlat arr (index b ix));
