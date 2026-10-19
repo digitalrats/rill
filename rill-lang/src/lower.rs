@@ -717,13 +717,6 @@ struct Lowerer<'a> {
     /// method inside an argument (`arr f`) threads the concrete monad into its
     /// instance body.
     def_result_tys: HashMap<String, Vec<ValueTy>>,
-    /// Resolved λ-parameter value types of every top-level Anchor def (a named
-    /// value function with λ-parameters), from inference. Lowering types the
-    /// def's fragment-local parameter registers with these so a `List` param
-    /// (`nth xs k`) feeds `head`/`tail` without a type error, a record param
-    /// keeps its `Data` type (field projection resolves), and a higher-order
-    /// param is a `Func`.
-    anchor_param_tys: HashMap<String, Vec<ValueTy>>,
     /// Static RESULT value type of every shared-cell def (named λ-parameter
     /// function or self-recursive local), from inference. Types the def's
     /// shared cell so a recursive reference inside the body (`tail fibs`)
@@ -5157,14 +5150,14 @@ impl<'a> Lowerer<'a> {
                 let param_names: HashSet<String> =
                     def_params.iter().map(|p| p.name.clone()).collect();
                 let free = self.free_vars(&body, &param_names);
-                // A signature-annotated definition carries its λ-parameter
-                // types from inference; the scalar default is only the last
-                // resort. Without this a body that projects a field of its
-                // parameter (`swap p :: Pair Int Int -> Pair Int Int = Pair {
-                // first: p.second, … }`) had no record to project from when the
-                // closure form was compiled instead of inlined.
+                // A definition carries its λ-parameter types in its scheme
+                // (rebuilt into `fn_param_tys`); the scalar default is only
+                // the last resort. Without this a body that projects a field
+                // of its parameter (`swap p :: Pair Int Int -> Pair Int Int =
+                // Pair { first: p.second, … }`) had no record to project from
+                // when the closure form was compiled instead of inlined.
                 let param_tys: Vec<ValueTy> = self
-                    .anchor_param_tys
+                    .fn_param_tys
                     .get(name)
                     .filter(|tys| tys.len() == def_params.len())
                     .cloned()
@@ -5778,12 +5771,12 @@ impl<'a> Lowerer<'a> {
         };
         let param_names: HashSet<String> = def_params.iter().map(|p| p.name.clone()).collect();
         let free = self.free_vars(&body, &param_names);
-        // The def's λ-parameter value types come from inference (the
-        // value-channel retry of `infer_def_body`, where the body's demands
-        // resolved them: `tail xs` → xs : List). Falling back to Float keeps
-        // unconstrained scalar params working.
+        // The def's λ-parameter value types come from its scheme, rebuilt into
+        // `fn_param_tys` by inference (`tail xs` → xs : List; a signature
+        // `:: Pair … -> …` types `p` as the record). Falling back to Float
+        // keeps unconstrained scalar params working.
         let param_tys: Vec<ValueTy> = if is_anchor {
-            self.anchor_param_tys
+            self.fn_param_tys
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()])
@@ -8069,7 +8062,6 @@ pub fn lower_program_with_channels(
             .iter()
             .map(|(n, s)| (n.clone(), flatten_value_thunk(&s.ty.vty).1))
             .collect(),
-        anchor_param_tys: tp.anchor_param_tys.clone(),
         shared_cell_result_tys: tp.shared_cell_result_tys.clone(),
         pending_param_tys: None,
         anchor_cells: HashMap::new(),
@@ -8312,7 +8304,6 @@ mod tests {
             cafs,
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
-            anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
@@ -8383,7 +8374,6 @@ mod tests {
             fragment_captures: Vec::new(),
             fn_param_tys: HashMap::new(),
             def_result_tys: HashMap::new(),
-            anchor_param_tys: HashMap::new(),
             shared_cell_result_tys: HashMap::new(),
             pending_param_tys: None,
             anchor_cells: HashMap::new(),
@@ -8557,7 +8547,6 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
-            anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
@@ -8585,7 +8574,6 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
-            anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
@@ -8614,7 +8602,6 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
-            anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
@@ -8648,7 +8635,6 @@ mod tests {
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
-            anchor_param_tys: typed.anchor_param_tys.clone(),
             shared_cell_result_tys: typed.shared_cell_result_tys.clone(),
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),

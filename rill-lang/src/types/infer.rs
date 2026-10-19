@@ -32,19 +32,14 @@ pub struct TypedProgram {
     /// The compile-time type environment (aliases, newtypes, data types),
     /// built once here and shared with lowering.
     pub type_env: TypeEnv,
-    /// Resolved λ-parameter value types of every named lambda-literal definition,
-    /// keyed by definition name. Lowering types fragment-local parameter
-    /// registers with these so a higher-order parameter is a `Func`, a record
-    /// parameter is its `Data` type, and field projection / function dispatch
-    /// resolve at compile time.
+    /// Resolved λ-parameter value types of every def whose parameters live in
+    /// its scheme, keyed by definition name: named lambda-literal definitions
+    /// (`take = \n -> \xs -> …`, a curried λ-nest) and signature-less
+    /// single-parameter defs (`first p = p.x`, a flat `Thunk([Point],[Float])`).
+    /// Lowering types fragment-local parameter registers with these so a
+    /// higher-order parameter is a `Func`, a record parameter its `Data` type,
+    /// and field projection / function dispatch resolve at compile time.
     pub fn_param_tys: HashMap<String, Vec<ValueTy>>,
-    /// Resolved λ-parameter value types of every top-level Anchor def (a named
-    /// value function with λ-parameters, `nth xs k = ...`), keyed by definition
-    /// name. Collected from the value-channel retry in `infer_def_body`, where
-    /// the body's value demands actually resolve the parameter types (`xs :
-    /// List`), because the final scheme stores λ-params as signal scalars.
-    /// Lowering types the def's fragment-local parameter registers with these.
-    pub anchor_param_tys: HashMap<String, Vec<ValueTy>>,
     /// Static RESULT value type of every shared-cell def (a named λ-parameter
     /// function or a self-recursive local), from the final substitution.
     /// Lowering types the def's shared cell with this so a recursive reference
@@ -92,15 +87,6 @@ struct Ctx {
     /// instance body's own record construction unifies against the same
     /// concrete type via the expected-type threading.
     type_var_bindings: HashMap<String, ValueTy>,
-    /// Resolved λ-parameter VALUE types of every Anchor def (a named value
-    /// function with λ-parameters, `nth xs k = ...`), collected from the
-    /// value-channel retry of [`infer_def_body`]. The final scheme stores the
-    /// λ-params as signal scalars (the v1 λ-parameter default), so the retry's
-    /// resolution — where the body actually constrained the params (`xs :
-    /// List`, `k : Float`) — is the only record of their true types. Lowering
-    /// types fragment-local parameter registers with these so a List param
-    /// (`nth xs k`) can feed `head`/`tail` without a type error.
-    anchor_param_tys: HashMap<String, Vec<ValueTy>>,
     /// Names of SIGNATURE-LESS CURRIED definitions (`at a i = a ! i`, whose
     /// body is a λ-nest). Such a def is typed as a VALUE (its λ-chain), so its
     /// scheme carries the structured parameter shapes the body recovered
@@ -1803,7 +1789,6 @@ pub fn infer_program_with_entry(
             env: env.clone(),
             method_lifting: HashSet::new(),
             type_var_bindings: HashMap::new(),
-            anchor_param_tys: HashMap::new(),
             retry_inferred_defs: HashSet::new(),
             mode,
             runst_payload_tys: HashMap::new(),
@@ -1918,7 +1903,6 @@ pub fn infer_program_with_entry(
         env,
         method_lifting: HashSet::new(),
         type_var_bindings: HashMap::new(),
-        anchor_param_tys: HashMap::new(),
         retry_inferred_defs: HashSet::new(),
         mode,
         runst_payload_tys: HashMap::new(),
@@ -1993,6 +1977,29 @@ pub fn infer_program_with_entry(
                         fn_param_tys.insert(name.to_string(), resolved);
                     }
                 }
+            } else if def.params().len() == 1 {
+                // A single-parameter def (`first p = p.x`, `swap p :: Pair …
+                // = …`) keeps its parser parameter: the parser only curries
+                // MULTI-parameter definitions into λ-nests. Its scheme is a
+                // flat `Thunk([p],[r])` carrying the recovered/signature
+                // parameter type for lowering's fragment-local parameter
+                // registers.
+                let scheme = ctx.defs.get(name).cloned();
+                if let Some(s) = scheme {
+                    if let ValueTy::Thunk(..) = &s.ty.vty {
+                        let (arg_tys, _) = flatten_thunk(&s.ty.vty);
+                        let mut resolved: Vec<ValueTy> =
+                            arg_tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
+                        // A body that itself returns a function (`f x = \y ->
+                        // …`) flattens PAST the def's own parameter into the
+                        // inner λ's; truncate to the def's formal parameter
+                        // count so lowering sees one type per parameter (the
+                        // signature's arity when it exceeds the written ones).
+                        let arity = effective_def_params(def).0.len();
+                        resolved.truncate(arity);
+                        fn_param_tys.insert(name.to_string(), resolved);
+                    }
+                }
             }
         }
     }
@@ -2042,7 +2049,6 @@ pub fn infer_program_with_entry(
         cafs,
         type_env: ctx.env.clone(),
         fn_param_tys,
-        anchor_param_tys: ctx.anchor_param_tys.clone(),
         shared_cell_result_tys,
         tape_decls: Vec::new(),
         runst_payload_tys: ctx.runst_payload_tys.clone(),
@@ -2192,24 +2198,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
     }
     let (result, lambda_param_tys) = match infer_expr(ctx, &body) {
-        Ok(t) => {
-            // An annotated definition whose body is NOT a λ-literal
-            // (`swap p :: Pair Int Int -> Pair Int Int = Pair { first: p.second, … }`)
-            // is compiled by lowering as an anchor closure, whose λ-parameter
-            // registers take their types from `anchor_param_tys`. Only the
-            // failed-first-attempt retry below used to record them, so a body
-            // that typed on the first attempt left its parameters on the
-            // scalar default — and a field projection on `p` then had no
-            // record to project from. The signature already names the types;
-            // resolve the variables the body constrained and record those.
-            if let Some(tys) = &sig_param_tys {
-                let resolved: Vec<ValueTy> =
-                    tys.iter().map(|t| ctx.subst.resolve_value(t)).collect();
-                ctx.anchor_param_tys
-                    .insert(def.name().to_string(), resolved);
-            }
-            (Ok(t), Vec::new())
-        }
+        Ok(t) => (Ok(t), Vec::new()),
         Err(_) => {
             ctx.subst = saved_subst.clone();
             ctx.next = saved_next;
@@ -2254,10 +2243,9 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             // returned body type: the body's value demands (`tail xs` → xs :
             // List, `k - 1.0` → k : Float) resolve the fresh param vars here,
             // and the final scheme would otherwise discard them (λ-params are
-            // stored as signal scalars). Lowering types the def's
-            // fragment-local parameter registers with these — the side-channel
-            // below is recorded for the same reason and deleted by a later
-            // task.
+            // stored as signal scalars). `def_scheme_vty` lifts them into the
+            // scheme, and lowering's `fn_param_tys` rebuild reads them from
+            // there — no separate side-channel is needed.
             let lambda_param_tys = if retry.is_ok() {
                 let mut param_tys = Vec::with_capacity(params.len());
                 for p in &params {
@@ -2275,8 +2263,6 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                         other => other,
                     });
                 }
-                ctx.anchor_param_tys
-                    .insert(def.name().to_string(), param_tys.clone());
                 param_tys
             } else {
                 Vec::new()
@@ -6732,7 +6718,6 @@ mod tests {
                 env: TypeEnv::with_builtins(),
                 method_lifting: HashSet::new(),
                 type_var_bindings: HashMap::new(),
-                anchor_param_tys: HashMap::new(),
                 retry_inferred_defs: HashSet::new(),
                 mode: Mode::Strict,
                 runst_payload_tys: HashMap::new(),
