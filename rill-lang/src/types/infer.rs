@@ -2083,6 +2083,12 @@ struct DefBodyTy {
     ty: ArrowTy,
     /// Signature argument types used for the λ-parameters, if any.
     sig_params: Vec<ValueTy>,
+    /// Recovered λ-parameter types from the value-track retry, if any: empty
+    /// when the first attempt typed the body (with signature types or the
+    /// scalar default). [`def_scheme_vty`] prefers these over the `Float`
+    /// fallback so a signature-less def's scheme carries its structured
+    /// parameters (`first p = p.x` → `p : Point`) instead of flattening them.
+    lambda_param_tys: Vec<ValueTy>,
 }
 
 /// λ-parameters are bound as signal channels first. When that fails and the
@@ -2104,6 +2110,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         return Ok(DefBodyTy {
             ty: ArrowTy::value_channel(ret),
             sig_params: Vec::new(),
+            lambda_param_tys: Vec::new(),
         });
     }
     // Effective parameters: the parser curries every multi-parameter definition
@@ -2145,12 +2152,14 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             return retry.map(|ty| DefBodyTy {
                 ty,
                 sig_params: Vec::new(),
+                lambda_param_tys: Vec::new(),
             });
         }
         ctx.locals = saved_locals;
         return r.map(|ty| DefBodyTy {
             ty,
             sig_params: Vec::new(),
+            lambda_param_tys: Vec::new(),
         });
     }
     let saved_subst = ctx.subst.clone();
@@ -2182,7 +2191,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         ctx.locals
             .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
     }
-    let result = match infer_expr(ctx, &body) {
+    let (result, lambda_param_tys) = match infer_expr(ctx, &body) {
         Ok(t) => {
             // An annotated definition whose body is NOT a λ-literal
             // (`swap p :: Pair Int Int -> Pair Int Int = Pair { first: p.second, … }`)
@@ -2199,7 +2208,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                 ctx.anchor_param_tys
                     .insert(def.name().to_string(), resolved);
             }
-            Ok(t)
+            (Ok(t), Vec::new())
         }
         Err(_) => {
             ctx.subst = saved_subst.clone();
@@ -2241,12 +2250,15 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                 }
             }
             let retry = infer_expr(ctx, &body);
-            // Record the VALUE-track retry's resolved λ-parameter types: the
-            // body's value demands (`tail xs` → xs : List, `k - 1.0` → k :
-            // Float) resolve the fresh param vars here, and the final scheme
-            // discards them (λ-params are stored as signal scalars). Lowering
-            // types the def's fragment-local parameter registers with these.
-            if retry.is_ok() {
+            // Carry the VALUE-track retry's resolved λ-parameter types in the
+            // returned body type: the body's value demands (`tail xs` → xs :
+            // List, `k - 1.0` → k : Float) resolve the fresh param vars here,
+            // and the final scheme would otherwise discard them (λ-params are
+            // stored as signal scalars). Lowering types the def's
+            // fragment-local parameter registers with these — the side-channel
+            // below is recorded for the same reason and deleted by a later
+            // task.
+            let lambda_param_tys = if retry.is_ok() {
                 let mut param_tys = Vec::with_capacity(params.len());
                 for p in &params {
                     let lt = ctx.locals.get(p.name.as_str()).cloned();
@@ -2264,15 +2276,19 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                     });
                 }
                 ctx.anchor_param_tys
-                    .insert(def.name().to_string(), param_tys);
-            }
-            retry
+                    .insert(def.name().to_string(), param_tys.clone());
+                param_tys
+            } else {
+                Vec::new()
+            };
+            (retry, lambda_param_tys)
         }
     };
     ctx.locals = saved_locals;
     result.map(|ty| DefBodyTy {
         ty,
         sig_params: sig_param_tys.unwrap_or_default(),
+        lambda_param_tys,
     })
 }
 
@@ -2470,8 +2486,12 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
 /// An annotated definition reuses the argument types its body was checked
 /// against (`body_ty.sig_params`), so the scheme and the lowered parameter
 /// registers agree — a `Float` scheme for an `Int`-typed parameter is exactly
-/// the divergence this avoids. Every other definition keeps the v1 shape — the
-/// inferred body type with the scalar λ-parameter default.
+/// the divergence this avoids. A signature-less def whose value-track retry
+/// recovered structured parameter types carries those (`body_ty.lambda_param_tys`)
+/// instead of the scalar default, so `first p = p.x` schemes as
+/// `Thunk([Point], [Float])` rather than `Thunk([Float], [Float])`. Every
+/// other definition keeps the v1 shape — the inferred body type with the
+/// scalar λ-parameter default.
 fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usize) -> ValueTy {
     if let Some(sig) = constrained_def_sig(def) {
         let (sig_params, sig_ret, _) = def_sig_tys(ctx, sig);
@@ -2488,6 +2508,18 @@ fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usiz
     // types, so call sites and lowering agree.
     if body_ty.sig_params.len() == lam_count {
         return ValueTy::Thunk(body_ty.sig_params.clone(), vec![body_ty.ty.vty.clone()]);
+    }
+    // Retry-recovered scheme: a signature-less def whose value-track retry
+    // recovered structured λ-parameter types (`first p = p.x` → `p : Point`)
+    // carries them here instead of the scalar `Float` fallback, so the scheme
+    // — and `fn_param_tys`, rebuilt from it — treats the parameter as
+    // first-class. Genuinely-unbound parameters were already mapped to `Float`
+    // during recovery (a `Var` that never unifies).
+    if body_ty.lambda_param_tys.len() == lam_count {
+        return ValueTy::Thunk(
+            body_ty.lambda_param_tys.clone(),
+            vec![body_ty.ty.vty.clone()],
+        );
     }
     let param_tys: Vec<ValueTy> = (0..lam_count).map(|_| ValueTy::Float).collect();
     ValueTy::Thunk(param_tys, vec![body_ty.ty.vty.clone()])

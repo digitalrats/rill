@@ -5,8 +5,12 @@
 //! Today the specialized lowering does not exist: the accessor body reaches
 //! the `Ix` typeclass dispatch with an unsolved index var and dies in lowering
 //! with `no instance of `Ix` for type `Pair` and no default for `inRange``.
-//! The first three tests pin the target behavior and are RED; the remaining
-//! three pin behavior that already holds.
+//! The first six tests pin the target behavior (Task 2's per-call-site
+//! specialization made them pass); the last two pin Task 3: the definition's
+//! SCHEME must carry the retry-recovered λ-parameter types (so a
+//! genuinely-unbound scalar stays `Float` while a structured parameter becomes
+//! first-class), which is what lets a later task delete the `anchor_param_tys`
+//! side-channel.
 pub mod common;
 
 use common::*;
@@ -114,4 +118,31 @@ fn mismatching_call_still_names_the_annotation() {
         msg.contains("`at`"),
         "the diagnostic must name the definition: {msg}"
     );
+}
+
+#[test]
+fn mixed_structured_and_unbound_params_recover_independently() {
+    // `atk a k = a ! k`: the recovered body resolves `a : Array i e` from the
+    // index demand while `k` — the index parameter, present but never bound to
+    // a structured type — stays a plain scalar in the scheme. Task 3 pins that
+    // the recovered `Array` param is FIRST-CLASS in the scheme while the index
+    // keeps its scalar treatment (the `add` pin above pins the same for two
+    // fully-unbound params). Task 2's specialization already covers this
+    // mixed-arity call site.
+    let src = "atk a k = a ! k;\n\
+                main = atk (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1;";
+    assert_eq!(run_num(src), 2.0);
+}
+
+#[test]
+fn signature_less_single_param_scheme_carries_recovered_type() {
+    // `first p = p.x`: a NON-curried signature-less def whose λ-parameter type
+    // is recovered by the value-track retry (`p : Point` from the field
+    // projection). The scheme must carry the recovered type (`Thunk([Point],
+    // [Float])`), not the `Float` fallback — that is the load-bearing
+    // deliverable that lets a later task delete `anchor_param_tys`.
+    let src = "data Point = { x: Float, y: Float };\n\
+                first p = p.x;\n\
+                main = first (Point { x: 5.0, y: 1.0 });";
+    assert_eq!(run_num(src), 5.0);
 }
