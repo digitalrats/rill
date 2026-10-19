@@ -1044,6 +1044,12 @@ impl<'a> Lowerer<'a> {
         call_args: &[Expr],
         span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
+        // `newListArray` pads a short list with the shared hole fragment, so
+        // lowering must emit it (the same flag as `arrayFromAssocs` and
+        // `arrayFromListChecked`).
+        if op == ValueEffectOp::NewArrayFromListFlat {
+            self.uses_array_hole = true;
+        }
         let arity = starray_op_arity(op);
         if call_args.len() != arity {
             return Err(CompileError::Type {

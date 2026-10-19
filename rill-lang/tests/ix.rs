@@ -715,16 +715,58 @@ fn st_new_list_array_seeds_every_element() {
 }
 
 #[test]
-fn st_new_list_array_rejects_a_length_that_does_not_match_range_size() {
-    let src = format!(
-        "{{-# MODE complete #-}}\nmain = runSTArray (\\ s -> newListArray {} [1.0, 2.0]);",
+fn st_new_list_array_pads_a_short_list_with_faulting_holes() {
+    // GHC-faithful lenient construction: `newListArray (0,2) [1.0, 2.0]` has
+    // rangeSize 3 — the missing position is one shared lazy hole, NOT a length
+    // fault. Reads through `!` surface the padded slot unforced; only forcing
+    // it faults (a fold over `arrayElems` forces every element).
+    let arr = format!(
+        "runSTArray (\\ s -> newListArray {} [1.0, 2.0])",
         bounds(0, 2)
     );
-    let msg = fault(&src);
-    assert!(
-        msg.contains("newListArray") && msg.contains("rangeSize"),
-        "expected the clean length-mismatch fault, got: {msg}"
+    let src = format!(
+        "{{-# MODE complete #-}}\nmain = (\\a -> Pair {{ first: a ! 0, second: a ! 1 }}) ({arr});"
     );
+    let (prog, v) = run(&src);
+    let (c0, c1) = pair_values(&prog, &v);
+    assert_eq!(c0, Value::Float(1.0));
+    assert_eq!(c1, Value::Float(2.0));
+
+    let msg = fault(&format!(
+        "{{-# MODE complete #-}}\nmain = fold (\\a -> \\b -> a + b) 0.0 (arrayElems ({arr}));"
+    ));
+    assert!(
+        msg.contains("array: undefined array element"),
+        "expected the hole fault for the padded tail, got: {msg}"
+    );
+}
+
+#[test]
+fn st_new_list_array_truncates_a_long_list() {
+    // GHC-faithful lenient construction: `newListArray (0,2)` with 4 elements
+    // silently keeps the first `rangeSize` and drops the extra — never a length
+    // fault, never a mis-indexed cell.
+    let src = format!(
+        "{{-# MODE complete #-}}\nmain = runSTArray (\\ s -> newListArray {} [1.0, 2.0, 3.0, 4.0]);",
+        bounds(0, 2)
+    );
+    let (prog, v) = run(&src);
+    let (values, (lo, hi)) = array_1d(&prog, &v);
+    assert_eq!((lo, hi), (0, 2));
+    assert_eq!(values, vec![1.0, 2.0, 3.0], "the extra element is dropped");
+}
+
+#[test]
+fn st_new_list_array_truncates_extras_past_an_empty_range() {
+    // `(0,-1)` is the canonical empty range (rangeSize 0): a single element is
+    // an extra and is silently dropped, yielding an empty frozen array
+    // (GHC-faithful — GHC's `newArray# 0# arrEleBottom` writes nothing).
+    let src = "{-# MODE complete #-}\n\
+        main = runSTArray (\\ s -> newListArray (Pair { first: 0, second: -1 }) [0.0]);";
+    let (prog, v) = run(src);
+    let (values, (lo, hi)) = array_1d(&prog, &v);
+    assert_eq!((lo, hi), (0, -1));
+    assert!(values.is_empty(), "the single element is dropped");
 }
 
 #[test]
