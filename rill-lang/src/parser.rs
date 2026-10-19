@@ -526,7 +526,7 @@ impl<'a> Parser<'a> {
         } else {
             // sum: C1 T1 | C2 T2 T3
             let mut ctors = Vec::new();
-            while self.peek().tok != Tok::Semi && self.peek().tok != Tok::Eof {
+            loop {
                 let (cname, _) = self.expect_ident()?;
                 let mut payload = Vec::new();
                 while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::Cut) {
@@ -540,8 +540,13 @@ impl<'a> Parser<'a> {
                     payload.push((t, strict));
                 }
                 ctors.push((cname, payload));
+                // A sum declaration ends when no further constructor follows
+                // (`|`): a bare newline (the renderer's def separator) or `;`
+                // terminates it exactly like a definition boundary would.
                 if self.peek().tok == Tok::Pipe {
                     self.bump();
+                } else {
+                    break;
                 }
             }
             Ok(Def::Sum {

@@ -69,11 +69,14 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
                 write!(buf, " {tv}").ok();
             }
             write!(buf, " = {{ ").ok();
-            for (i, (fname, tname, _)) in fields.iter().enumerate() {
+            for (i, (fname, tname, strict)) in fields.iter().enumerate() {
                 if i > 0 {
                     write!(buf, ", ").ok();
                 }
                 write!(buf, "{fname}: ").ok();
+                if *strict {
+                    write!(buf, "!").ok();
+                }
                 render_type_expr(tname, buf);
             }
             write!(buf, " }}").ok();
@@ -95,8 +98,11 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
                     write!(buf, " | ").ok();
                 }
                 write!(buf, "{cname}").ok();
-                for (t, _) in payload {
+                for (t, strict) in payload {
                     write!(buf, " ").ok();
+                    if *strict {
+                        write!(buf, "!").ok();
+                    }
                     render_type_expr(t, buf);
                 }
             }
@@ -647,6 +653,43 @@ mod tests {
     fn render_roundtrip_if() {
         let dsl = roundtrip_main("main = if true then 1.0 else 2.0;");
         assert_eq!(dsl, "main = if true then 1.0 else 2.0");
+    }
+
+    /// Render the WHOLE program (data/type declarations included), re-parse the
+    /// rendered text, render again, and assert idempotence plus that the strict
+    /// flag survives.
+    fn render_roundtrip_program(src: &str) -> String {
+        let tokens = crate::lexer::tokenize(src).unwrap();
+        let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
+        let first = render(&program).unwrap();
+        let tokens2 = crate::lexer::tokenize(&first).unwrap();
+        let reparsed = crate::parser::parse(&tokens2, first.as_bytes()).unwrap();
+        let second = render(&reparsed).unwrap();
+        assert_eq!(
+            first, second,
+            "render → parse → render is not idempotent for: {src}\nfirst: {first}\nsecond: {second}"
+        );
+        first
+    }
+
+    #[test]
+    fn render_roundtrip_strict_product_data() {
+        let dsl = render_roundtrip_program(
+            "data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }",
+        );
+        assert!(
+            dsl.contains("!Float"),
+            "strict field flag was lost in render: {dsl}"
+        );
+    }
+
+    #[test]
+    fn render_roundtrip_strict_sum_data() {
+        let dsl = render_roundtrip_program("data T = C !Int | D Float; main = C 1");
+        assert!(
+            dsl.contains("!Int"),
+            "strict payload flag was lost in render: {dsl}"
+        );
     }
 
     #[test]
