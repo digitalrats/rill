@@ -1,7 +1,13 @@
 # rill-core Memory Subsystem: Generic Arena + MemoryRegion (SP-4)
 
-> **Status:** Design (not yet implemented)
-> **Date:** 2026-10-04
+> **Status:** Implemented (P1+P2) — P3 (algorithm internal buffer migrations)
+> pending. Audited 2026-10-19: `rill_core::memory` (`Arena<V>`, `ChunkedVec`,
+> `BufferPool`, `MemoryRegion`/`RegionHandle`/`BufferAllocator`), `TapeRing`/
+> `RingStorage`, region-backed `@` delays, and the `Value::Buffer` buffer table
+> are in the code; `Algorithm`/`MultichannelAlgorithm` dropped their `Send`/
+> `Sync` supertraits. No `RegionHandle` usage yet in `rill-fft`/`rill-core-dsp`/
+> `rill-core-model`/`rill-router` (P3 open).
+> **Date:** 2026-10-04 (audited 2026-10-19)
 > **Branch:** `feature/rill-lang-arrays`
 > **Scope:** SP-4 of the rill-lang / rill-core work. Move the value-arena memory
 > manager from `rill-lang` into `rill-core` (genericized over the payload type),

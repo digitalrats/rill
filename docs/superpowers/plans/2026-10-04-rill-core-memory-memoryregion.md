@@ -2,6 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status (audited 2026-10-19):** P1 + P2 **implemented and merged** — the
+> artifacts are in the code: `rill_core::memory` (`Arena<V>`, `ChunkedVec`,
+> `BufferPool`, `MemoryRegion`/`RegionHandle`/`BufferAllocator`), `TapeRing`/
+> `RingStorage`, region-backed `@` delays (`RegionDelay`), the `Value::Buffer`
+> buffer table, and the `Send`/`Sync` supertrait removal. **Phase 3 not done**:
+> no `RegionHandle` usage in `rill-fft` / `rill-core-dsp` / `rill-core-model` /
+> `rill-router`. Phase 0–2 checkboxes below are marked complete; Phase 3 stays
+> open.
+
 **Goal:** Move the value-arena memory manager from `rill-lang` into `rill-core` (genericized as `Arena<V>` over an `ArenaValue` payload trait) and introduce a chunked, reference-counted region allocator (`MemoryRegion`/`RegionHandle`) plus a unified ring (`TapeRing`) that back tape loops, delay lines, FFT scratch, and algorithm internal buffers — one centralized, RT-safe memory subsystem.
 
 **Architecture:** `rill_core::memory` = `ChunkedVec<T>` (grow-safe chunked storage, the shared primitive) + `Arena<V>` (paged slot store, RC, COW, `BufferPool`) + `MemoryRegion<T>`/`RegionHandle<T>`/`BufferAllocator<T>` (tier-1 slabs). `rill_core::buffer::TapeRing<T, S: RingStorage<T>>` unifies `TapeLoop`/`DelayLine`/`@` delay rings over any storage. `Algorithm<T>`/`MultichannelAlgorithm<T>` drop their `Send`/`Sync` supertraits (verified redundant — the graph never crosses a thread boundary). See `docs/superpowers/specs/2026-10-04-rill-core-memory-memoryregion-design.md` (§2.1 unsafe policy, §2.2 Send/Sync, §3.1–3.6, §9 phasing).
@@ -21,12 +30,12 @@
 
 ## Phase 0 — Baseline
 
-- [ ] **Step 0.1: Confirm clean baseline**
+- [x] **Step 0.1: Confirm clean baseline**
 
 Run: `git -C /home/mikek/Projects/digitalrats/rill status --short` and `git -C /home/mikek/Projects/digitalrats/rill branch --show-current`
 Expected: clean tree, branch `feature/rill-lang-arrays`.
 
-- [ ] **Step 0.2: Snapshot the moving file**
+- [x] **Step 0.2: Snapshot the moving file**
 
 `rill-lang/src/arena.rs` (726 lines) is the source to move. `Cargo.lock`/`target/` untouched. Record pre-P1 `lang_bench` numbers:
 
@@ -44,7 +53,7 @@ Run: `cargo bench -p rill-lang --bench lang_bench` (from `rill/`), save the outp
 - Modify: `rill-core/src/lib.rs`
 - Modify: `rill-core/src/prelude.rs`
 
-- [ ] **Step 1.1.1: Write the failing tests for `ChunkedVec`**
+- [x] **Step 1.1.1: Write the failing tests for `ChunkedVec`**
 
 Create `rill-core/src/memory/chunked.rs` with a test module:
 
@@ -89,12 +98,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 1.1.2: Run to verify they fail**
+- [x] **Step 1.1.2: Run to verify they fail**
 
 Run: `cargo test -p rill-core memory::chunked`
 Expected: FAIL — `ChunkedVec` not defined (or module not found).
 
-- [ ] **Step 1.1.3: Implement `ChunkedVec<T>`**
+- [x] **Step 1.1.3: Implement `ChunkedVec<T>`**
 
 `rill-core/src/memory/chunked.rs`:
 
@@ -237,7 +246,7 @@ impl<T: fmt::Debug> fmt::Debug for ChunkedVec<T> {
 
 Note: `capacity.div_ceil` requires Rust ≥ 1.73 (workspace edition 2021; check `rust-version` — if older, use `(capacity + chunk_cap - 1) / chunk_cap`).
 
-- [ ] **Step 1.1.4: Wire the module**
+- [x] **Step 1.1.4: Wire the module**
 
 `rill-core/src/memory/mod.rs`:
 
@@ -286,12 +295,12 @@ pub mod memory;
 pub use crate::memory::{Arena, ArenaError, ArenaRef, ArenaValue, BufferPool, ChunkedVec, MemoryRegion, RegionHandle};
 ```
 
-- [ ] **Step 1.1.5: Run the tests**
+- [x] **Step 1.1.5: Run the tests**
 
 Run: `cargo test -p rill-core memory::chunked`
 Expected: PASS (3 tests).
 
-- [ ] **Step 1.1.6: Commit**
+- [x] **Step 1.1.6: Commit**
 
 ```bash
 git add rill-core/src/memory/mod.rs rill-core/src/memory/chunked.rs rill-core/src/lib.rs rill-core/src/prelude.rs
@@ -304,7 +313,7 @@ git commit -m 'feat(rill-core): memory module skeleton with ChunkedVec grow-safe
 - Create: `rill-core/src/memory/pool.rs`
 - Delete (later, in 1.4): the pool portion of `rill-lang/src/arena.rs`
 
-- [ ] **Step 1.2.1: Write the moved tests first**
+- [x] **Step 1.2.1: Write the moved tests first**
 
 Copy the `BufferPool` tests from `rill-lang/src/arena.rs:563-580` (`buffer_pool_exhaustion_and_recycle`, `growable_pool_allocates_on_exhaustion`) into `pool.rs`'s test module, adapted to the new path:
 
@@ -333,16 +342,16 @@ mod tests {
 }
 ```
 
-- [ ] **Step 1.2.2: Implement `pool.rs`**
+- [x] **Step 1.2.2: Implement `pool.rs`**
 
 Copy the `BufferPool` struct verbatim from `rill-lang/src/arena.rs:119-207` (size classes, `class_of`, `class_cap`, `new`, `take`, `put`), replacing nothing except the module doc header. `ArenaRef` is now `crate::memory::ArenaRef` (defined in Task 1.3 — for now reference it via `super::arena::ArenaRef`; it will exist after Task 1.3 lands). The buffer element type stays `u32` (a ref) — no generics needed.
 
-- [ ] **Step 1.2.3: Run the tests**
+- [x] **Step 1.2.3: Run the tests**
 
 Run: `cargo test -p rill-core memory::pool`
 Expected: PASS.
 
-- [ ] **Step 1.2.4: Commit**
+- [x] **Step 1.2.4: Commit**
 
 ```bash
 git add rill-core/src/memory/pool.rs
@@ -354,7 +363,7 @@ git commit -m 'feat(rill-core): move size-classed BufferPool into memory module'
 **Files:**
 - Create: `rill-core/src/memory/arena.rs`
 
-- [ ] **Step 1.3.1: Write the failing tests (moved + genericized)**
+- [x] **Step 1.3.1: Write the failing tests (moved + genericized)**
 
 Port every `arena.rs` unit test from `rill-lang/src/arena.rs:534-725` using a test payload that models a record of child refs:
 
@@ -486,12 +495,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 1.3.2: Run to verify they fail**
+- [x] **Step 1.3.2: Run to verify they fail**
 
 Run: `cargo test -p rill-core memory::arena`
 Expected: FAIL — `Arena`/`ArenaValue` not defined.
 
-- [ ] **Step 1.3.3: Implement `Arena<V>`**
+- [x] **Step 1.3.3: Implement `Arena<V>`**
 
 Create `rill-core/src/memory/arena.rs`:
 
@@ -803,12 +812,12 @@ enum Slot<V> {
 
 Then `drop_ref` does `std::mem::take(&mut slot.val).unwrap()` and `get` returns `val.as_ref()`. Adjust all accessors (`get`, `get_mut`, `rc`, `alloc`). **Adopt this `Option<V>` variant in the implementation** and drop the `default_value` helper entirely. (The plan's test payloads are unaffected.)
 
-- [ ] **Step 1.3.4: Run the tests**
+- [x] **Step 1.3.4: Run the tests**
 
 Run: `cargo test -p rill-core memory::arena`
 Expected: PASS (all ported tests).
 
-- [ ] **Step 1.3.5: Commit**
+- [x] **Step 1.3.5: Commit**
 
 ```bash
 git add rill-core/src/memory/arena.rs
@@ -823,7 +832,7 @@ git commit -m 'feat(rill-core): generic Arena<V> + ArenaValue with paged slot st
 - Modify: `rill-lang/src/program.rs`
 - Modify: `rill-lang/src/backend/interp.rs`
 
-- [ ] **Step 1.4.1: Rewrite `rill-lang/src/arena.rs` as a shim**
+- [x] **Step 1.4.1: Rewrite `rill-lang/src/arena.rs` as a shim**
 
 Keep `Value`, `ValueKind`, and add the `ArenaValue` impl. The `Arena`/`ArenaRef`/`ArenaError`/`BufferPool` definitions move out; re-export them from rill-core:
 
@@ -965,30 +974,30 @@ fn detach_payload(&mut self) -> Option<Vec<ArenaRef>> {
 
 (`Sum` payloads are also pooled today — include `Value::Sum(_, fields)` in the match.)
 
-- [ ] **Step 1.4.2: `lib.rs` — keep the public re-exports**
+- [x] **Step 1.4.2: `lib.rs` — keep the public re-exports**
 
 `rill-lang/src/lib.rs:44` keeps `pub use arena::{Arena, ArenaError, ArenaRef, Value, ValueKind};` — these now resolve through the shim to `rill_core::memory` types. No change needed beyond the shim.
 
-- [ ] **Step 1.4.3: `program.rs` — `Arena<Value>`**
+- [x] **Step 1.4.3: `program.rs` — `Arena<Value>`**
 
 In `rill-lang/src/program.rs`:
 - `use crate::arena::{Arena, BufferPool};` → add `Value`: `use crate::arena::{Arena, ArenaValue, BufferPool, Value};`
 - `arena: Arena` → `arena: Arena<Value>` (field, and both construction sites in `new`/`build`: `Arena::with_capacity(...)`).
 - `alloc_main_cells(arena: &mut Arena, ...)` → `&mut Arena<Value>`; `arena.alloc(crate::arena::Value::Void)` unchanged.
 
-- [ ] **Step 1.4.4: `backend/interp.rs` — compile check**
+- [x] **Step 1.4.4: `backend/interp.rs` — compile check**
 
 All `prog.arena.*` calls keep their names (`alloc`, `copy`, `drop_ref`, `mutate`, `clone_pooled`, `get`, `get_mut`, `rc`, `take_buf`, `put_buf`, `live`). Run the crate check to surface any remaining `Arena` type mentions that need `<Value>`:
 
 Run: `cargo check -p rill-lang`
 Fix any `Arena`-without-parameter mentions until clean.
 
-- [ ] **Step 1.4.5: Run the rill-lang tests**
+- [x] **Step 1.4.5: Run the rill-lang tests**
 
 Run: `cargo test -p rill-lang`
 Expected: all pass (the arena behavior is identical; the ~100 test call sites use the public API).
 
-- [ ] **Step 1.4.6: Commit**
+- [x] **Step 1.4.6: Commit**
 
 ```bash
 git add rill-lang/src/arena.rs rill-lang/src/lib.rs rill-lang/src/program.rs rill-lang/src/backend/interp.rs
@@ -1003,7 +1012,7 @@ git commit -m 'refactor(rill-lang): use generic Arena<Value> from rill_core::mem
 - Modify: `rill-sampler/src/tape/write_head.rs:14,16`
 - Modify: `rill-sampler/src/tape/read_head.rs:32,34`
 
-- [ ] **Step 1.5.1: Remove the supertraits**
+- [x] **Step 1.5.1: Remove the supertraits**
 
 `algorithm.rs`:
 ```rust
@@ -1014,21 +1023,21 @@ pub trait Algorithm<T: Transcendental> {
 pub trait MultichannelAlgorithm<T: Transcendental> {
 ```
 
-- [ ] **Step 1.5.2: Drop the now-unnecessary unsafe impls**
+- [x] **Step 1.5.2: Drop the now-unnecessary unsafe impls**
 
 `write_head.rs` — remove lines 14 and 16 (`unsafe impl<T: Transcendental, const B: usize> Send for WriteHead<T, B> {}` and the `Sync` one), and delete their preceding doc note about "builtin registry's static bounds". Same for `read_head.rs` lines 32/34.
 
-- [ ] **Step 1.5.3: Verify workspace compiles**
+- [x] **Step 1.5.3: Verify workspace compiles**
 
 Run: `cargo check --workspace`
 Expected: clean (0 errors, 0 warnings) — this was already verified empirically before the plan was written.
 
-- [ ] **Step 1.5.4: Run tests**
+- [x] **Step 1.5.4: Run tests**
 
 Run: `cargo test --workspace`
 Expected: pass.
 
-- [ ] **Step 1.5.5: Commit**
+- [x] **Step 1.5.5: Commit**
 
 ```bash
 git add rill-core/src/traits/algorithm.rs rill-core/src/traits/multichannel_algorithm.rs rill-sampler/src/tape/write_head.rs rill-sampler/src/tape/read_head.rs
@@ -1040,20 +1049,20 @@ git commit -m 'refactor(rill-core): drop Send+Sync supertraits from Algorithm/Mu
 **Files:**
 - Modify: `rill-lang/benches/lang_bench.rs` (no change expected; run only)
 
-- [ ] **Step 1.6.1: Full phase checks**
+- [x] **Step 1.6.1: Full phase checks**
 
 Run: `cargo clippy --all-features --workspace` and `cargo fmt`; fix anything the memory module or the shim introduces. Re-run `cargo test --workspace`.
 
-- [ ] **Step 1.6.2: Benchmark before/after**
+- [x] **Step 1.6.2: Benchmark before/after**
 
 Run: `cargo bench -p rill-lang --bench lang_bench`
 Compare against the Phase 0 numbers. The paged fast path (`num_chunks()==1`) must show **no regression**; note any delta in the commit or a `CHANGELOG.md` entry.
 
-- [ ] **Step 1.6.3: Miri on the new module**
+- [x] **Step 1.6.3: Miri on the new module**
 
 Run: `cargo +nightly miri test -p rill-core memory::` (if nightly + Miri available). Expected: no UB. If nightly is unavailable, note it and rely on the unit tests + SAFETY comments.
 
-- [ ] **Step 1.6.4: Update `docs/CHANGELOG.md`** with a P1 entry (arena moved to rill-core, genericized; `Algorithm`/`MultichannelAlgorithm` supertraits relaxed).
+- [x] **Step 1.6.4: Update `docs/CHANGELOG.md`** with a P1 entry (arena moved to rill-core, genericized; `Algorithm`/`MultichannelAlgorithm` supertraits relaxed).
 
 ---
 
@@ -1064,7 +1073,7 @@ Run: `cargo +nightly miri test -p rill-core memory::` (if nightly + Miri availab
 **Files:**
 - Create: `rill-core/src/memory/region.rs`
 
-- [ ] **Step 2.1.1: Write the failing tests**
+- [x] **Step 2.1.1: Write the failing tests**
 
 ```rust
 #[cfg(test)]
@@ -1116,12 +1125,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2.1.2: Run to verify they fail**
+- [x] **Step 2.1.2: Run to verify they fail**
 
 Run: `cargo test -p rill-core memory::region`
 Expected: FAIL — types not defined.
 
-- [ ] **Step 2.1.3: Implement `region.rs`**
+- [x] **Step 2.1.3: Implement `region.rs`**
 
 ```rust
 //! # Region slabs — large static buffer memory
@@ -1315,12 +1324,12 @@ impl<T: Clone> BufferAllocator<T> {
 }
 ```
 
-- [ ] **Step 2.1.4: Run the tests + Miri**
+- [x] **Step 2.1.4: Run the tests + Miri**
 
 Run: `cargo test -p rill-core memory::region` then `cargo +nightly miri test -p rill-core memory::region`
 Expected: PASS; Miri clean.
 
-- [ ] **Step 2.1.5: Commit**
+- [x] **Step 2.1.5: Commit**
 
 ```bash
 git add rill-core/src/memory/region.rs rill-core/src/memory/chunked.rs
@@ -1333,7 +1342,7 @@ git commit -m 'feat(rill-core): MemoryRegion/RegionHandle/BufferAllocator region
 - Create: `rill-core/src/buffer/tape_ring.rs`
 - Modify: `rill-core/src/buffer/mod.rs` (declare + re-export)
 
-- [ ] **Step 2.2.1: Write the failing tests**
+- [x] **Step 2.2.1: Write the failing tests**
 
 Port `tape.rs` and `delay.rs` tests as `TapeRing` tests over `Vec<T>` storage (a `RingStorage` impl that owns a `Vec<T>`):
 
@@ -1392,12 +1401,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2.2.2: Run to verify they fail**
+- [x] **Step 2.2.2: Run to verify they fail**
 
 Run: `cargo test -p rill-core buffer::tape_ring`
 Expected: FAIL — not defined.
 
-- [ ] **Step 2.2.3: Implement `TapeRing`**
+- [x] **Step 2.2.3: Implement `TapeRing`**
 
 `rill-core/src/buffer/tape_ring.rs`:
 
@@ -1499,16 +1508,16 @@ impl<T: Transcendental, S: RingStorage<T>> TapeRing<T, S> {
 
 Note: `TapeRing::read_block` above matches **TapeLoop** semantics (`TapeLoop::read_block(d, out)` reads samples at delays `d+len-1 .. d`, oldest first). The rill-lang `DelayRing::read_block` (read at delay 0) is exactly `TapeRing::read_block(0, out)` — see Task 2.4.
 
-- [ ] **Step 2.2.4: Wire into `buffer/mod.rs`**
+- [x] **Step 2.2.4: Wire into `buffer/mod.rs`**
 
 Add `mod tape_ring;` to the submodule list and `pub use tape_ring::{RingStorage, TapeRing};` to the re-exports.
 
-- [ ] **Step 2.2.5: Run the tests**
+- [x] **Step 2.2.5: Run the tests**
 
 Run: `cargo test -p rill-core buffer::tape_ring`
 Expected: PASS.
 
-- [ ] **Step 2.2.6: Commit**
+- [x] **Step 2.2.6: Commit**
 
 ```bash
 git add rill-core/src/buffer/tape_ring.rs rill-core/src/buffer/mod.rs
@@ -1521,7 +1530,7 @@ git commit -m 'feat(rill-core): TapeRing unified ring over RingStorage'
 - Modify: `rill-core/src/buffer/tape.rs`
 - Modify: `rill-core/src/buffer/mod.rs` (re-export `RingStorage for RegionHandle`)
 
-- [ ] **Step 2.3.1: Add `RingStorage for RegionHandle<T>`**
+- [x] **Step 2.3.1: Add `RingStorage for RegionHandle<T>`**
 
 In `rill-core/src/memory/region.rs` add (import `crate::buffer::tape_ring::RingStorage`):
 
@@ -1540,7 +1549,7 @@ impl<T: Clone> RingStorage<T> for RegionHandle<T> {
 }
 ```
 
-- [ ] **Step 2.3.2: Rewrite `TapeLoop` as a `TapeRing` wrapper**
+- [x] **Step 2.3.2: Rewrite `TapeLoop` as a `TapeRing` wrapper**
 
 `rill-core/src/buffer/tape.rs` becomes:
 
@@ -1633,11 +1642,11 @@ impl<T: Transcendental> TapeLoop<T> {
 
 Note: keep `write_pos()` and the `Buffer<T>`/`DelayBuffer<T>` impls delegating to the same methods. **This task keeps `TapeLoop` on a `Vec`** (zero behavior change) so the region-backed switch can land in Task 2.4 alongside `RillProgram`'s allocator; a follow-up (Phase 3) migrates `TapeLoop` to `RegionHandle` storage via the factory allocator.
 
-- [ ] **Step 2.3.3: Run the tape tests**
+- [x] **Step 2.3.3: Run the tape tests**
 
 Run: `cargo test -p rill-core buffer::tape` (existing tests must stay green).
 
-- [ ] **Step 2.3.4: Commit**
+- [x] **Step 2.3.4: Commit**
 
 ```bash
 git add rill-core/src/buffer/tape.rs rill-core/src/memory/region.rs rill-core/src/buffer/mod.rs
@@ -1650,7 +1659,7 @@ git commit -m 'refactor(rill-core): TapeLoop over TapeRing; RingStorage for Regi
 - Modify: `rill-lang/src/program.rs`
 - Modify: `rill-lang/src/backend/interp.rs` (delay read/write sites, `program.rs:108` `DelayRing`)
 
-- [ ] **Step 2.4.1: Write the failing test (region delays compile + run)**
+- [x] **Step 2.4.1: Write the failing test (region delays compile + run)**
 
 In `rill-lang/tests/` add a test that uses `@` delays and a tape, e.g. extend `tests/delays.rs` (or create `tests/region_delays.rs`):
 
@@ -1669,12 +1678,12 @@ fn delay_sites_are_region_backed_and_correct() {
 }
 ```
 
-- [ ] **Step 2.4.2: Run to verify it fails**
+- [x] **Step 2.4.2: Run to verify it fails**
 
 Run: `cargo test -p rill-lang region_delays`
 Expected: FAIL — no test yet (create file) then PASS after wiring (see below).
 
-- [ ] **Step 2.4.3: Add `RegionDelay` and the allocator to `RillProgram`**
+- [x] **Step 2.4.3: Add `RegionDelay` and the allocator to `RillProgram`**
 
 In `rill-lang/src/program.rs`:
 
@@ -1722,18 +1731,18 @@ let delays = ir
 
 Delete `DelayRing` and `MAX_DELAY_LEN` (no longer used).
 
-- [ ] **Step 2.4.4: `interp.rs` delay call sites unchanged**
+- [x] **Step 2.4.4: `interp.rs` delay call sites unchanged**
 
 `prog.delays[*line].read_block(...)` / `write_block(...)` keep working — same method names on `RegionDelay`. Verify the crate compiles.
 
 Run: `cargo check -p rill-lang`
 
-- [ ] **Step 2.4.5: Run rill-lang tests**
+- [x] **Step 2.4.5: Run rill-lang tests**
 
 Run: `cargo test -p rill-lang`
 Expected: pass.
 
-- [ ] **Step 2.4.6: Commit**
+- [x] **Step 2.4.6: Commit**
 
 ```bash
 git add rill-lang/src/program.rs rill-lang/src/backend/interp.rs rill-lang/tests/region_delays.rs
@@ -1742,10 +1751,10 @@ git commit -m 'feat(rill-lang): region-backed @ delay sites via TapeRing/RegionH
 
 ### Task 2.5: Phase 2 verification
 
-- [ ] **Step 2.5.1:** `cargo test --workspace`, `cargo clippy --all-features --workspace`, `cargo fmt`.
-- [ ] **Step 2.5.2:** `cargo bench -p rill-lang --bench lang_bench` — no regression vs Phase 0.
-- [ ] **Step 2.5.3:** Miri over `memory::region` + `buffer::tape_ring`.
-- [ ] **Step 2.5.4:** Update `docs/CHANGELOG.md` (P2 entry).
+- [x] **Step 2.5.1:** `cargo test --workspace`, `cargo clippy --all-features --workspace`, `cargo fmt`.
+- [x] **Step 2.5.2:** `cargo bench -p rill-lang --bench lang_bench` — no regression vs Phase 0.
+- [x] **Step 2.5.3:** Miri over `memory::region` + `buffer::tape_ring`.
+- [x] **Step 2.5.4:** Update `docs/CHANGELOG.md` (P2 entry).
 
 ---
 

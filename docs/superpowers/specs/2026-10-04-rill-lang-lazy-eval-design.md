@@ -1,7 +1,10 @@
 # rill-lang: Lazy Evaluation Core (STG-style) — Design (Stage A)
 
-> **Status:** Design (not yet implemented)
-> **Date:** 2026-10-04
+> **Status:** Implemented (Stage A). Audited 2026-10-19: `strict`/`complete`
+> modes (`mode.rs`), the unified `Value::Callable` closure/thunk with
+> `Value::ThunkCell(ThunkState)` black-hole, `Value::Bottom`, and `force` in the
+> interpreter are all in the code.
+> **Date:** 2026-10-04 (audited 2026-10-19)
 > **Branch:** `feature/rill-lang-arrays`
 > **Scope:** Stage A of the rill-lang evaluation-model rework: a **fully lazy
 > call-by-need** value track (STG-style thunks in the arena) behind a

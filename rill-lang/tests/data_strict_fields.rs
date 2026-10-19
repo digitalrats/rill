@@ -144,3 +144,48 @@ fn strict_sum_payload_emits_value_force() {
         0
     );
 }
+
+#[test]
+fn strict_fields_are_behavioral_noop_in_strict_mode() {
+    // `MODE strict` with strict data fields is behaviorally identical to no
+    // `!`: the emitted force is a VM no-op (registers already hold WHNF).
+    let (prog, v) = eval_main(
+        "data P = { x: !Float, y: Float }; p = P { x: 1.0, y: 2.0 }; main = p.y",
+        Mode::Strict,
+    );
+    match prog.arena().get(v).unwrap() {
+        Value::Float(y) => assert_eq!(*y, 2.0),
+        other => panic!("expected Float(2.0) in strict mode, got {other:?}"),
+    }
+    let (prog, v) = eval_main(
+        "data T = C !Float; main = case C 2.0 of { C x -> x }",
+        Mode::Strict,
+    );
+    match prog.arena().get(v).unwrap() {
+        Value::Float(x) => assert_eq!(*x, 2.0),
+        other => {
+            panic!("expected Float(2.0) from a strict ctor case in strict mode, got {other:?}")
+        }
+    }
+}
+
+#[test]
+fn strict_and_lazy_fields_agree_when_value_terminates() {
+    // Strictness changes WHEN evaluation happens, never the result.
+    let (prog, v) = eval_main(
+        "data P = { x: Float, y: Float }; p = P { x: 2.0, y: 3.0 }; main = p.y",
+        Mode::Complete,
+    );
+    match prog.arena().get(v).unwrap() {
+        Value::Float(y) => assert_eq!(*y, 3.0),
+        other => panic!("expected Float(3.0) with lazy x, got {other:?}"),
+    }
+    let (prog, v) = eval_main(
+        "data P = { x: !Float, y: Float }; p = P { x: 2.0, y: 3.0 }; main = p.y",
+        Mode::Complete,
+    );
+    match prog.arena().get(v).unwrap() {
+        Value::Float(y) => assert_eq!(*y, 3.0),
+        other => panic!("expected Float(3.0) with strict x, got {other:?}"),
+    }
+}
