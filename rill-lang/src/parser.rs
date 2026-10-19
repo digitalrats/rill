@@ -505,7 +505,7 @@ impl<'a> Parser<'a> {
                 let (fname, _) = self.expect_ident()?;
                 self.eat(&Tok::Colon)?;
                 let t = self.parse_type_expr()?;
-                fields.push((fname, t));
+                fields.push((fname, t, false));
                 if self.peek().tok == Tok::Comma {
                     self.bump();
                 }
@@ -524,7 +524,8 @@ impl<'a> Parser<'a> {
                 let (cname, _) = self.expect_ident()?;
                 let mut payload = Vec::new();
                 while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_)) {
-                    payload.push(self.parse_type_single()?);
+                    let t = self.parse_type_single()?;
+                    payload.push((t, false));
                 }
                 ctors.push((cname, payload));
                 if self.peek().tok == Tok::Pipe {
@@ -2175,7 +2176,7 @@ mod tests {
                 assert_eq!(tyvars, &vec!["a".to_string()]);
                 assert_eq!(
                     fields[0],
-                    ("value".to_string(), TypeExpr::TName("a".into()))
+                    ("value".to_string(), TypeExpr::TName("a".into()), false)
                 );
             }
             other => panic!("expected Data, got {other:?}"),

@@ -740,7 +740,7 @@ impl<'a> Lowerer<'a> {
                     .data_types
                     .iter()
                     .filter_map(|(n, info)| match info {
-                        DataInfo::Record(fields) if fields.iter().any(|(f, _)| f == field) => {
+                        DataInfo::Record(fields) if fields.iter().any(|(f, _, _)| f == field) => {
                             Some(n.clone())
                         }
                         _ => None,
@@ -778,8 +778,8 @@ impl<'a> Lowerer<'a> {
                         let fty = match self.env.data_types.get(rname) {
                             Some(DataInfo::Record(fields)) => fields
                                 .iter()
-                                .find(|(f, _)| f == field)
-                                .map(|(_, t)| t.clone()),
+                                .find(|(f, _, _)| f == field)
+                                .map(|(_, t, _)| t.clone()),
                             _ => None,
                         };
                         let bound = fty.and_then(|ft| {
@@ -848,12 +848,14 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let field_index = fields.iter().position(|(f, _)| f == field).ok_or_else(|| {
-                    CompileError::Type {
-                        msg: format!("no field `{field}` in `{rec_name}`"),
-                        span: *span,
-                    }
-                })?;
+                let field_index =
+                    fields
+                        .iter()
+                        .position(|(f, _, _)| f == field)
+                        .ok_or_else(|| CompileError::Type {
+                            msg: format!("no field `{field}` in `{rec_name}`"),
+                            span: *span,
+                        })?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueProject {
                     dst,
@@ -910,12 +912,14 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let field_index = fields.iter().position(|(f, _)| f == field).ok_or_else(|| {
-                    CompileError::Type {
-                        msg: format!("no field `{field}` in `{rec_name}`"),
-                        span: *span,
-                    }
-                })?;
+                let field_index =
+                    fields
+                        .iter()
+                        .position(|(f, _, _)| f == field)
+                        .ok_or_else(|| CompileError::Type {
+                            msg: format!("no field `{field}` in `{rec_name}`"),
+                            span: *span,
+                        })?;
                 let (src, _) = self.lower_value(value)?;
                 self.emit_value(ValueInstr::ValueUpdateField {
                     slot: rec_reg,
@@ -973,7 +977,10 @@ impl<'a> Lowerer<'a> {
                 };
                 let ctors: Vec<(String, Vec<ValueTy>)> = match &sum_name {
                     Some(n) => match self.env.data_types.get(n) {
-                        Some(DataInfo::Sum(ctors)) => ctors.clone(),
+                        Some(DataInfo::Sum(ctors)) => ctors
+                            .iter()
+                            .map(|(c, p)| (c.clone(), p.iter().map(|(t, _)| t.clone()).collect()))
+                            .collect(),
                         _ => {
                             return Err(CompileError::Type {
                                 msg: format!("`{n}` is not a sum type"),
@@ -1724,7 +1731,7 @@ impl<'a> Lowerer<'a> {
                                 _ => None,
                             };
                             let mut field_regs = Vec::with_capacity(fields.len());
-                            for (fname, _) in &fields {
+                            for (fname, _, _) in &fields {
                                 let fexpr = fields_expr
                                     .iter()
                                     .find(|(n, _)| n == fname)
@@ -1737,8 +1744,8 @@ impl<'a> Lowerer<'a> {
                                     })?;
                                 let fty = fields
                                     .iter()
-                                    .find(|(f, _)| f == fname)
-                                    .map(|(_, t)| t.clone());
+                                    .find(|(f, _, _)| f == fname)
+                                    .map(|(_, t, _)| t.clone());
                                 let field_expected = match (&rec_args, fty) {
                                     (Some(a), Some(ft)) if !a.is_empty() => {
                                         Some(crate::types::infer::substitute_field_params(&ft, a))
@@ -5155,7 +5162,11 @@ impl<'a> Lowerer<'a> {
                         if found.is_some() {
                             return None;
                         }
-                        found = Some((tname.clone(), idx, payload.clone()));
+                        found = Some((
+                            tname.clone(),
+                            idx,
+                            payload.iter().map(|(t, _)| t.clone()).collect(),
+                        ));
                     }
                 }
             }
@@ -5262,7 +5273,7 @@ impl<'a> Lowerer<'a> {
                     Some(DataInfo::Record(fields)) => {
                         1 + fields
                             .iter()
-                            .map(|(_, t)| self.subtree_size_impl(t, visiting))
+                            .map(|(_, t, _)| self.subtree_size_impl(t, visiting))
                             .sum::<usize>()
                     }
                     Some(DataInfo::Sum(ctors)) => {
@@ -5273,7 +5284,7 @@ impl<'a> Lowerer<'a> {
                             .map(|(_, payload)| {
                                 payload
                                     .iter()
-                                    .map(|t| self.subtree_size_impl(t, visiting))
+                                    .map(|(t, _)| self.subtree_size_impl(t, visiting))
                                     .sum::<usize>()
                             })
                             .max()

@@ -353,8 +353,10 @@ pub enum Def {
         name: String,
         /// Type parameters (e.g. `a` in `data Box a`).
         tyvars: Vec<String>,
-        /// Fields: (field name, type expression).
-        fields: Vec<(String, TypeExpr)>,
+        /// Fields: (field name, type expression, strictness flag). A strict
+        /// field (`{ x: !Float }`) forces its argument to WHNF at construction
+        /// (Haskell 2010 strictness flag).
+        fields: Vec<(String, TypeExpr, bool)>,
         /// Span.
         span: Span,
     },
@@ -364,8 +366,10 @@ pub enum Def {
         name: String,
         /// Type parameters (e.g. `a` in `data Box a`).
         tyvars: Vec<String>,
-        /// Constructors: (ctor name, payload type expressions).
-        ctors: Vec<(String, Vec<TypeExpr>)>,
+        /// Constructors: (ctor name, payload (type expression, strictness
+        /// flag)). A strict payload type (`C !Int`) forces its argument to
+        /// WHNF at construction (Haskell 2010 strictness flag).
+        ctors: Vec<(String, Vec<(TypeExpr, bool)>)>,
         /// Span.
         span: Span,
     },
@@ -546,5 +550,29 @@ mod type_expr_tests {
             )),
         );
         assert!(matches!(t, TypeExpr::TFunc(..)));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn data_strictness_ast_serde_roundtrips() {
+        let d = Def::Data {
+            name: "P".into(),
+            tyvars: vec![],
+            fields: vec![
+                ("x".to_string(), TypeExpr::TName("Float".into()), true),
+                ("y".to_string(), TypeExpr::TName("Float".into()), false),
+            ],
+            span: Span::new(0, 10),
+        };
+        let s = Def::Sum {
+            name: "T".into(),
+            tyvars: vec![],
+            ctors: vec![("C".to_string(), vec![(TypeExpr::TName("Int".into()), true)])],
+            span: Span::new(0, 10),
+        };
+        for def in [d, s] {
+            let json = serde_json::to_string(&def).unwrap();
+            assert_eq!(serde_json::from_str::<Def>(&json).unwrap(), def);
+        }
     }
 }

@@ -69,7 +69,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
                 write!(buf, " {tv}").ok();
             }
             write!(buf, " = {{ ").ok();
-            for (i, (fname, tname)) in fields.iter().enumerate() {
+            for (i, (fname, tname, _)) in fields.iter().enumerate() {
                 if i > 0 {
                     write!(buf, ", ").ok();
                 }
@@ -95,7 +95,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
                     write!(buf, " | ").ok();
                 }
                 write!(buf, "{cname}").ok();
-                for t in payload {
+                for (t, _) in payload {
                     write!(buf, " ").ok();
                     render_type_expr(t, buf);
                 }

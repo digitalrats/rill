@@ -155,7 +155,7 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
         DataInfo::Sum(_) | DataInfo::Opaque => return None,
     };
     let mut out = Vec::new();
-    for (name, vty) in fields {
+    for (name, vty, _) in fields {
         let default = foreign_record_defaults(type_name, name.as_str());
         match vty {
             ValueTy::Float => out.push((name.clone(), FfiScalar::Float, default)),
