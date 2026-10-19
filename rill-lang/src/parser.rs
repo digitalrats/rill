@@ -504,8 +504,14 @@ impl<'a> Parser<'a> {
             while self.peek().tok != Tok::RBrace {
                 let (fname, _) = self.expect_ident()?;
                 self.eat(&Tok::Colon)?;
+                let strict = if self.peek().tok == Tok::Cut {
+                    self.bump();
+                    true
+                } else {
+                    false
+                };
                 let t = self.parse_type_expr()?;
-                fields.push((fname, t, false));
+                fields.push((fname, t, strict));
                 if self.peek().tok == Tok::Comma {
                     self.bump();
                 }
@@ -523,9 +529,15 @@ impl<'a> Parser<'a> {
             while self.peek().tok != Tok::Semi && self.peek().tok != Tok::Eof {
                 let (cname, _) = self.expect_ident()?;
                 let mut payload = Vec::new();
-                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_)) {
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::Cut) {
+                    let strict = if self.peek().tok == Tok::Cut {
+                        self.bump();
+                        true
+                    } else {
+                        false
+                    };
                     let t = self.parse_type_single()?;
-                    payload.push((t, false));
+                    payload.push((t, strict));
                 }
                 ctors.push((cname, payload));
                 if self.peek().tok == Tok::Pipe {
@@ -2147,6 +2159,50 @@ mod tests {
     fn parses_data_sum_declaration() {
         let p = prog("data Shape = Circle Float | Rect Float Float; main = Circle 1.0");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Sum { .. })));
+    }
+
+    #[test]
+    fn parse_strict_product_field() {
+        let p = prog("data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }");
+        match &p.defs[0] {
+            Def::Data { fields, .. } => {
+                assert_eq!(
+                    fields,
+                    &vec![
+                        ("x".to_string(), TypeExpr::TName("Float".into()), true),
+                        ("y".to_string(), TypeExpr::TName("Float".into()), false),
+                    ]
+                );
+            }
+            other => panic!("expected Data, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_strict_sum_payload() {
+        let p = prog("data T = C !Int | D Float; main = C 1");
+        match &p.defs[0] {
+            Def::Sum { ctors, .. } => {
+                assert_eq!(
+                    ctors,
+                    &vec![
+                        ("C".to_string(), vec![(TypeExpr::TName("Int".into()), true)]),
+                        (
+                            "D".to_string(),
+                            vec![(TypeExpr::TName("Float".into()), false)]
+                        ),
+                    ]
+                );
+            }
+            other => panic!("expected Sum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newtype_strict_field_is_parse_error() {
+        // Haskell 2010: newtypes cannot declare strict fields.
+        let src = "newtype Hz = Hz !Float; main = Hz 1.0";
+        assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
     }
 
     #[test]
