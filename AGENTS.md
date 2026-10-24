@@ -193,6 +193,32 @@ mdbook serve docs/                # dev server at localhost:3000
     - Follow `max_width=100`, `tab_spaces=4`. 
     - Always run `cargo clippy --workspace` and fix all warnings before proposing a solution.
 
+## rill-lang conformance: Haskell 2010 is the standard
+
+`rill-lang` targets **Haskell 2010 + GHC Prelude** semantics. This is a
+correctness requirement, not an aspiration.
+
+- **A divergence is a defect, not a design choice.** If a construct or a
+  Prelude function exists in Haskell 2010 / the GHC Prelude and rill behaves
+  differently, fix rill. Do not document the divergence as acceptable, and do
+  not route around it in library or benchmark code.
+- **Fixities are part of the standard.** Haskell 2010 §4.4.2 pins operator
+  precedence and associativity (`infixr 2 ||`, `infixr 3 &&`, `infix 4`
+  comparisons and non-associativity, `infixr 5 :` and `++`, `infixl 6 + -`,
+  `infixl 7 * /`, `infixl 9` backtick operators and `!!`). Any table that
+  disagrees with §4.4.2 is a bug — including associativity, not just precedence.
+- **Placeholder comments do not satisfy conformance.** A code comment that
+  admits a known-wrong grouping, or a test that happens to pass under both the
+  correct and the incorrect reading, is not evidence. Every conformance test
+  must assert a value that changes when the behaviour is wrong.
+- **When a construct is genuinely not implementable yet,** record it in a
+  tracked gap list with the exact reproduction, and treat the gap as open work —
+  never as settled behaviour.
+- **North-star sources:** Haskell 2010 Report (syntax §3, fixities §4.4.2,
+  derived instances §11), and the GHC Prelude as the reference for library
+  functions. When the two disagree, follow the Report for syntax/semantics and
+  the Prelude for library surface.
+
 ## Terminology: «audio» vs «signal» vs «I/O»
 
 Rill is a **universal signal processing platform**, not exclusively audio. The term «audio» must only appear where hardware emitting or consuming sound is genuinely involved.
