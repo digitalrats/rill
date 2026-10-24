@@ -32,6 +32,8 @@ pub enum Tok {
     Comma,
     /// `+`
     Plus,
+    /// `++` — list append (Prelude, `infixr 5`).
+    PlusPlus,
     /// `-`
     Minus,
     /// `*`
@@ -122,6 +124,8 @@ pub enum Tok {
     LArrow,
     /// `\` — lambda literal `\x -> body`.
     Backslash,
+    /// `` ` `` — backtick infix application (`` a `f` b `` ≡ `f a b`).
+    Backtick,
     /// `case` keyword — pattern matching (`case e of { .. }`).
     KwCase,
     /// `::` — type signature annotation (`name :: TypeExpr`).
@@ -185,6 +189,8 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             continue;
         }
         let start = i;
+        // `{-# … #-}` pragma. Matched BEFORE the block-comment path so
+        // `{-# MODE complete #-}` is never swallowed as a `{- … -}` comment.
         if c == b'{' && i + 2 < bytes.len() && bytes[i + 1] == b'-' && bytes[i + 2] == b'#' {
             // `{-# name value #-}` — scan to the closing `#-}`.
             let mut j = i + 3;
@@ -231,6 +237,58 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 span: Span::new(start, end),
             });
             i = end;
+            continue;
+        }
+        // `{- … -}` block comment (Haskell 2010 §2.2), nesting-aware. Only
+        // reached for non-pragma `{-`, because the pragma branch above runs
+        // first and consumes `{-#`. An unterminated comment is a lex error
+        // rather than silently swallowing the rest of the file.
+        if c == b'{' && bytes.get(i + 1) == Some(&b'-') {
+            let start = i;
+            let mut depth = 0usize;
+            // A comment that spans a line break still separates the lines it
+            // swallowed: without this the definition before the comment and the
+            // one after it look like a single layout item.
+            let mut line_break: Option<usize> = None;
+            while i < bytes.len() {
+                if bytes[i] == b'{' && bytes.get(i + 1) == Some(&b'-') {
+                    depth += 1;
+                    i += 2;
+                } else if bytes[i] == b'-' && bytes.get(i + 1) == Some(&b'}') {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if bytes[i] == b'\n' && line_break.is_none() {
+                        line_break = Some(i);
+                    }
+                    i += 1;
+                }
+            }
+            if depth != 0 {
+                return Err(CompileError::Lex {
+                    msg: "unterminated block comment (expected `-}`)".into(),
+                    span: Span::new(start, bytes.len()),
+                });
+            }
+            if let Some(nl) = line_break {
+                out.push(Token {
+                    tok: Tok::Newline,
+                    span: Span::new(nl, nl + 1),
+                });
+            }
+            continue;
+        }
+        if c == b'+' && i + 1 < bytes.len() && bytes[i + 1] == b'+' {
+            // `++` — list append. Must precede the single-character `+` so the
+            // operator is one token, not two.
+            i += 2;
+            out.push(Token {
+                tok: Tok::PlusPlus,
+                span: Span::new(start, i),
+            });
             continue;
         }
         if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b':' {
@@ -452,6 +510,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
         }
         let single = match c {
             b'\\' => Tok::Backslash,
+            b'`' => Tok::Backtick,
             b':' => Tok::Colon,
             b'~' => Tok::Tilde,
             b'@' => Tok::At,
@@ -903,6 +962,101 @@ mod tests {
                 Tok::Ident("x".into()),
                 Tok::DoubleColon,
                 Tok::Ident("Float".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_backtick() {
+        assert_eq!(
+            kinds("1.0 `add` 2.0"),
+            vec![
+                Tok::Float(1.0),
+                Tok::Backtick,
+                Tok::Ident("add".into()),
+                Tok::Backtick,
+                Tok::Float(2.0),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_plusplus_as_one_token() {
+        // `++` must not degrade into two `Tok::Plus`, and `+` must still work.
+        assert_eq!(
+            kinds("a ++ b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::PlusPlus,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+        assert_eq!(
+            kinds("a + b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::Plus,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_nested_block_comment_as_whitespace() {
+        assert_eq!(
+            kinds("1.0 {- a {- b -} c -} + 2.0"),
+            vec![Tok::Float(1.0), Tok::Plus, Tok::Float(2.0), Tok::Eof]
+        );
+    }
+
+    #[test]
+    fn block_comment_keeps_newlines() {
+        // A multi-line block comment must not fuse the surrounding lines into
+        // one: the newline inside it still separates layout items.
+        assert_eq!(
+            kinds("x = 1.0; {- a\nb -} y = 2.0;"),
+            vec![
+                Tok::Ident("x".into()),
+                Tok::Eq,
+                Tok::Float(1.0),
+                Tok::Semi,
+                Tok::Newline,
+                Tok::Ident("y".into()),
+                Tok::Eq,
+                Tok::Float(2.0),
+                Tok::Semi,
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_block_comment() {
+        let err = tokenize("{- a {- b -}").unwrap_err();
+        match err {
+            CompileError::Lex { msg, .. } => {
+                assert!(msg.contains("unterminated block comment"), "{msg}")
+            }
+            other => panic!("expected a lex error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn pragma_is_not_a_block_comment() {
+        // `{-# … #-}` is a pragma even though it starts with `{-`.
+        assert_eq!(
+            kinds("{-# MODE complete #-}\n1.0"),
+            vec![
+                Tok::Pragma {
+                    name: "MODE".into(),
+                    value: "complete".into()
+                },
+                Tok::Newline,
+                Tok::Float(1.0),
                 Tok::Eof,
             ]
         );

@@ -28,6 +28,10 @@ enum InfixOp {
     LogicOr,
     /// `!` — infix indexing (`a ! i` ≡ `index a i`).
     Index,
+    /// `++` — list append (`a ++ b` ≡ `append_list a b`).
+    AppendList,
+    /// `` `f` `` — backtick infix application (`` a `f` b `` ≡ `f a b`).
+    Backtick,
 }
 
 impl InfixOp {
@@ -105,12 +109,25 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         Tok::Gt => (InfixOp::CmpGt, 3, 4),
         Tok::Le => (InfixOp::CmpLe, 3, 4),
         Tok::Ge => (InfixOp::CmpGe, 3, 4),
+        // `++` — list append, right-associative, tighter than comparison and
+        // looser than arithmetic. NOTE the deviation: Haskell 2010 gives `++`
+        // and `:` the SAME fixity (`infixr 5`), but this table already carries
+        // cons and comparison at one level (both `l_bp == 3`), so `++` cannot
+        // sit beside cons AND above comparison. It is placed above cons, which
+        // keeps `a : b ++ c` and `a ++ b ++ c` grouping as Haskell does; only
+        // `a ++ b : c` differs (here `(a ++ b) : c`).
+        Tok::PlusPlus => (InfixOp::AppendList, 4, 4),
         Tok::Comma => (InfixOp::Par, 9, 10),
         Tok::Plus => (InfixOp::Add, 11, 12),
         Tok::Minus => (InfixOp::Sub, 11, 12),
         Tok::Star => (InfixOp::Mul, 13, 14),
         Tok::Slash => (InfixOp::Div, 13, 14),
         Tok::Percent => (InfixOp::Rem, 13, 14),
+        // `` `f` `` — backtick infix application. A function used infix has the
+        // default fixity `infixl 9` (Haskell 2010 §4.4.2), the tightest of all
+        // operators: tighter than `*` and every arithmetic operator, looser
+        // than juxtaposed application (`f x `g` y` ≡ `(f x) `g` y`).
+        Tok::Backtick => (InfixOp::Backtick, 17, 18),
         // `!` — infix indexing. Tight (just below juxtaposed application, above
         // every arithmetic operator) and left-associative: `a ! i + 1` ≡
         // `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`. `!` is the index operator
@@ -1137,6 +1154,22 @@ impl<'a> Parser<'a> {
                 break;
             }
             self.bump();
+            // `` e1 `f` e2 `` ≡ `f e1 e2`. The function name sits BETWEEN the
+            // backticks, so it and the closing backtick are consumed before the
+            // right operand is parsed. A non-identifier between the backticks
+            // (`` x `+` y ``, `` x `` y ``) is a clean parse error.
+            if op == InfixOp::Backtick {
+                let (name, _) = self.expect_ident()?;
+                self.eat(&Tok::Backtick)?;
+                let rhs = self.parse_expr(r_bp, no_comma)?;
+                let span = lhs.span().merge(rhs.span());
+                lhs = Expr::Apply {
+                    name,
+                    args: vec![lhs, rhs],
+                    span,
+                };
+                continue;
+            }
             let rhs = self.parse_expr(r_bp, no_comma)?;
 
             let span = lhs.span().merge(rhs.span());
@@ -1184,6 +1217,14 @@ impl<'a> Parser<'a> {
                         args: vec![lhs, rhs],
                         span,
                     },
+                    // `++` — list append: `a ++ b` ≡ `append_list a b`.
+                    InfixOp::AppendList => Expr::Apply {
+                        name: "append_list".to_string(),
+                        args: vec![lhs, rhs],
+                        span,
+                    },
+                    // `` a `f` b `` ≡ `f a b` (handled above, before the rhs).
+                    InfixOp::Backtick => unreachable!("backtick is desugared before the rhs"),
                     _ => unreachable!(),
                 }
             };
@@ -2026,6 +2067,128 @@ mod tests {
                 assert_eq!(args.len(), 2);
             }
             other => panic!("expected Apply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backtick_is_application_with_the_function_in_the_middle() {
+        // `` 1.0 `add` 2.0 `` ≡ `add 1.0 2.0`.
+        match curry_head(&body("main = 1.0 `add` 2.0")) {
+            Some(("add", args)) => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], Expr::Float(1.0, _)));
+                assert!(matches!(args[1], Expr::Float(2.0, _)));
+            }
+            other => panic!("expected `add` application, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backtick_binds_tighter_than_arithmetic() {
+        // Default fixity `infixl 9` is tighter than `*` (7):
+        // `2.0 * 1.0 `add` 2.0` ≡ `2.0 * (add 1.0 2.0)`.
+        match body("main = 2.0 * 1.0 `add` 2.0") {
+            Expr::Arith {
+                op: ArithOp::Mul,
+                rhs,
+                ..
+            } => match curry_head(&rhs) {
+                Some(("add", args)) => assert_eq!(args.len(), 2),
+                other => panic!("expected a nested `add` application, got {other:?}"),
+            },
+            other => panic!("expected a multiplication at the root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn backtick_desugars_to_plain_application() {
+        // The desugaring produces the same tree as `add 1.0 2.0` — compare the
+        // rendered source, which is span-independent.
+        let backtick = crate::render::render(&prog("main = 1.0 `add` 2.0")).unwrap();
+        let applied = crate::render::render(&prog("main = add 1.0 2.0")).unwrap();
+        assert_eq!(backtick, applied);
+        assert!(backtick.contains("add"), "rendered: {backtick}");
+    }
+
+    #[test]
+    fn backtick_without_closing_backtick_is_an_error() {
+        let src = "main = 1.0 `add 2.0";
+        let err = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap_err();
+        assert!(matches!(err, CompileError::Parse { .. }), "got {err}");
+    }
+
+    #[test]
+    fn plusplus_is_right_associative_list_append() {
+        // `a ++ b ++ c` ≡ `a ++ (b ++ c)` — `infixr 5`.
+        match curry_head(&body("main = xs ++ ys ++ zs")) {
+            Some(("append_list", args)) => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], Expr::Ref(r, _) if r == "xs"));
+                match curry_head(args[1]) {
+                    Some(("append_list", inner)) => {
+                        assert_eq!(inner.len(), 2);
+                        assert!(matches!(inner[0], Expr::Ref(r, _) if r == "ys"));
+                        assert!(matches!(inner[1], Expr::Ref(r, _) if r == "zs"));
+                    }
+                    other => panic!("expected the right-nested append, got {other:?}"),
+                }
+            }
+            other => panic!("expected append_list, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plusplus_binds_looser_than_cons_on_the_right() {
+        // `x : xs ++ ys` ≡ `x : (xs ++ ys)` — cons (right-assoc, tighter here)
+        // keeps the whole append as its tail.
+        match curry_head(&body("main = x : xs ++ ys")) {
+            Some(("cons", args)) => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], Expr::Ref(r, _) if r == "x"));
+                match curry_head(args[1]) {
+                    Some(("append_list", inner)) => assert_eq!(inner.len(), 2),
+                    other => panic!("expected append_list in the cons tail, got {other:?}"),
+                }
+            }
+            other => panic!("expected cons, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plusplus_before_cons_groups_as_append_then_cons() {
+        // DEVIATION, pinned deliberately: Haskell 2010 gives `++` and `:` the
+        // same fixity (`infixr 5`), so there `xs ++ ys : zs` is
+        // `xs ++ (ys : zs)`. This table already carries cons and comparison at
+        // one level, so `++` cannot be both looser than `:` and tighter than
+        // comparison. It is placed above cons, making this expression
+        // `(xs ++ ys) : zs`. The two groupings that matter in practice —
+        // `a ++ b ++ c` and `a : b ++ c` — match Haskell.
+        match curry_head(&body("main = xs ++ ys : zs")) {
+            Some(("cons", args)) => {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[1], Expr::Ref(r, _) if r == "zs"));
+                match curry_head(args[0]) {
+                    Some(("append_list", inner)) => assert_eq!(inner.len(), 2),
+                    other => panic!("expected append_list as the cons head, got {other:?}"),
+                }
+            }
+            other => panic!("expected cons at the root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plusplus_binds_tighter_than_comparison() {
+        // `xs ++ ys == zs` ≡ `(xs ++ ys) == zs`: the comparison is the root.
+        match body("main = xs ++ ys == zs") {
+            Expr::Cmp {
+                op: CmpOp::Eq, lhs, ..
+            } => match curry_head(&lhs) {
+                Some(("append_list", args)) => assert_eq!(args.len(), 2),
+                other => {
+                    panic!("expected append_list as the comparison's left side, got {other:?}")
+                }
+            },
+            other => panic!("expected a comparison at the root, got {other:?}"),
         }
     }
 
