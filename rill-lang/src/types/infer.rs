@@ -6464,8 +6464,25 @@ fn infer_collection_call(
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
+            // `(++) :: [a] -> [a] -> [a]`. The first argument must be a list;
+            // an UNRESOLVED type variable (the callee reached here through a
+            // first-class reference, e.g. `fold (++) xs xss`) is constrained to
+            // `List a` rather than rejected — that is what makes `++` usable as
+            // an ordinary function value instead of only in infix position.
             let lt = arg_vty(ctx, 0)?;
-            Ok(ValueTy::App("List".into(), vec![list_elem(&lt)]))
+            let elem = match ctx.subst.resolve_value(&lt) {
+                ValueTy::App(n, inner) if n == "List" => {
+                    inner.first().cloned().unwrap_or(ValueTy::Float)
+                }
+                ValueTy::Var(_) => {
+                    let elem = ctx.fresh_vty();
+                    let list = ValueTy::App("List".into(), vec![elem.clone()]);
+                    unify_value(&list, &lt, &mut ctx.subst, args[0].span())?;
+                    elem
+                }
+                _ => ValueTy::Float,
+            };
+            Ok(ValueTy::App("List".into(), vec![elem]))
         }
         "concat_string" => {
             if args.len() != 2 {

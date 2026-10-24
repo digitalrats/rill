@@ -33,6 +33,43 @@ fn mode_name(mode: Mode) -> String {
     }
 }
 
+/// Render a definition NAME. An operator name (`++`, `+`, `==`) must be
+/// parenthesized to be a valid definition head, exactly as it is written in
+/// source (`(++) a b = …`).
+fn render_def_name(name: &str, buf: &mut String) {
+    if is_plain_ident(name) {
+        write!(buf, "{name}").ok();
+    } else {
+        write!(buf, "({name})").ok();
+    }
+}
+
+/// Whether `name` is a plain identifier, i.e. renderable without parentheses.
+fn is_plain_ident(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Render a name in expression position. An operator reference needs the
+/// parenthesized spelling (`(++)`, not `++`, which would re-parse as the infix
+/// operator).
+fn render_ref_name(name: &str, buf: &mut String) {
+    if is_plain_ident(name) {
+        write!(buf, "{name}").ok();
+    } else {
+        write!(buf, "({name})").ok();
+    }
+}
+
+/// Render a CALLEE name. An operator callee must be parenthesized as a whole
+/// atom: `(++) xs ys`, otherwise `++ xs ys` re-parses as an infix expression.
+fn render_callee_name(name: &str, buf: &mut String) {
+    if is_plain_ident(name) {
+        write!(buf, "{name}").ok();
+    } else {
+        write!(buf, "({name})").ok();
+    }
+}
+
 fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileError> {
     let pad = " ".repeat(indent);
     match def {
@@ -45,7 +82,8 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             ..
         } => {
             // A bang binding renders its marker before the bound name: `!x = e`.
-            write!(buf, "{pad}{}{name}", if def.is_bang() { "!" } else { "" }).ok();
+            write!(buf, "{pad}{}", if def.is_bang() { "!" } else { "" }).ok();
+            render_def_name(name, buf);
             for p in params {
                 write!(buf, " {}{}", if p.bang { "!" } else { "" }, p.name).ok();
             }
@@ -324,11 +362,11 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             Ok(())
         }
         Expr::Ref(name, _) => {
-            write!(buf, "{name}").ok();
+            render_ref_name(name, buf);
             Ok(())
         }
         Expr::Apply { name, args, .. } => {
-            write!(buf, "{name}").ok();
+            render_callee_name(name, buf);
             for a in args {
                 write!(buf, " ").ok();
                 render_expr(a, buf, 20)?; // application args are tight
@@ -732,6 +770,23 @@ mod tests {
     fn render_roundtrip_if() {
         let dsl = roundtrip_main("main = if true then 1.0 else 2.0;");
         assert_eq!(dsl, "main = if true then 1.0 else 2.0");
+    }
+
+    #[test]
+    fn render_operator_definition_head_is_parenthesized() {
+        // `(++) a b = …` — an operator definition head must keep its
+        // parentheses, or the rendered source re-parses as an infix expression
+        // (or not at all). The `++` prelude definition is the live case.
+        let dsl = render_roundtrip_program("(++) a b = append_list a b;");
+        assert!(dsl.starts_with("(++) "), "head lost its parentheses: {dsl}");
+
+        // The same for an operator used in INFIX position: the left operand's
+        // callee must be a parenthesized atom, not a bare operator.
+        let infix = render_roundtrip_program("xs = [1.0] ++ [2.0];");
+        assert!(
+            infix.contains("(++)"),
+            "an operator callee must be parenthesized: {infix}"
+        );
     }
 
     /// Render the WHOLE program (data/type declarations included), re-parse the

@@ -28,7 +28,7 @@ enum InfixOp {
     LogicOr,
     /// `!` — infix indexing (`a ! i` ≡ `index a i`).
     Index,
-    /// `++` — list append (`a ++ b` ≡ `append_list a b`).
+    /// `++` — list append (`a ++ b` ≡ `++ a b`, the Prelude `++` function).
     AppendList,
     /// `` `f` `` — backtick infix application (`` a `f` b `` ≡ `f a b`).
     Backtick,
@@ -97,44 +97,98 @@ struct Parser<'a> {
 }
 
 /// Binding powers. Higher = binds tighter. Returns (op, left_bp, right_bp).
+///
+/// The RELATIVE order and each operator's associativity follow Haskell 2010
+/// §4.4.2 exactly; the numbers themselves are internal (they are a scaled
+/// transcription of the report's 1–9 precedence levels). Left-associative
+/// operators use `r_bp == l_bp + 1`; right-associative ones use
+/// `r_bp == l_bp` (the Pratt loop's `l_bp < min_bp` test then lets an equal
+/// level continue, which is what makes the operator recurse to the right).
+///
+/// §4.4.2 mapping:
+///
+/// | report | operators | here |
+/// |---|---|---|
+/// | `infixr 2` | `\|\|` | `(1, 1)` |
+/// | `infixr 3` | `&&` | `(3, 3)` |
+/// | `infix 4` | `== != < > <= >=` | `(5, 6)`, non-associative (see the loop) |
+/// | `infixr 5` | `:`, `++` | `(7, 7)` both — SAME level |
+/// | `infixl 6` | `+`, `-` | `(11, 12)` |
+/// | `infixl 7` | `*`, `/`, `%` | `(13, 14)` |
+/// | `infixl 9` | `!` (the `!!` analog), backtick operators | `(15, 16)` both |
+///
+/// `,` is not an infix operator in Haskell 2010 (it is tuple syntax); its
+/// `(9, 10)` level is retained and keeps it looser than all arithmetic, as
+/// before.
 fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
     Some(match t {
-        Tok::AndAnd => (InfixOp::LogicAnd, 1, 2),
-        Tok::OrOr => (InfixOp::LogicOr, 1, 2),
-        // `:` — list cons, right-associative (`a : b : c` ≡ `a : (b : c)`).
-        Tok::Colon => (InfixOp::Cons, 3, 3),
-        Tok::EqEq => (InfixOp::CmpEq, 3, 4),
-        Tok::NotEq => (InfixOp::CmpNe, 3, 4),
-        Tok::Lt => (InfixOp::CmpLt, 3, 4),
-        Tok::Gt => (InfixOp::CmpGt, 3, 4),
-        Tok::Le => (InfixOp::CmpLe, 3, 4),
-        Tok::Ge => (InfixOp::CmpGe, 3, 4),
-        // `++` — list append, right-associative, tighter than comparison and
-        // looser than arithmetic. NOTE the deviation: Haskell 2010 gives `++`
-        // and `:` the SAME fixity (`infixr 5`), but this table already carries
-        // cons and comparison at one level (both `l_bp == 3`), so `++` cannot
-        // sit beside cons AND above comparison. It is placed above cons, which
-        // keeps `a : b ++ c` and `a ++ b ++ c` grouping as Haskell does; only
-        // `a ++ b : c` differs (here `(a ++ b) : c`).
-        Tok::PlusPlus => (InfixOp::AppendList, 4, 4),
+        // `||` — `infixr 2`.
+        Tok::OrOr => (InfixOp::LogicOr, 1, 1),
+        // `&&` — `infixr 3`.
+        Tok::AndAnd => (InfixOp::LogicAnd, 3, 3),
+        // `:` and `++` — both `infixr 5`, the SAME level (`a : b ++ c` is
+        // `a : (b ++ c)`, `a ++ b : c` is `a ++ (b : c)`).
+        Tok::Colon => (InfixOp::Cons, 7, 7),
+        Tok::PlusPlus => (InfixOp::AppendList, 7, 7),
+        // Comparisons — `infix 4` and NON-associative: `a == b == c` is a parse
+        // error. The binding powers only position the operators; the
+        // non-associativity check lives in the Pratt loop (a same-level
+        // comparison after the right operand is rejected).
+        Tok::EqEq => (InfixOp::CmpEq, 5, 6),
+        Tok::NotEq => (InfixOp::CmpNe, 5, 6),
+        Tok::Lt => (InfixOp::CmpLt, 5, 6),
+        Tok::Gt => (InfixOp::CmpGt, 5, 6),
+        Tok::Le => (InfixOp::CmpLe, 5, 6),
+        Tok::Ge => (InfixOp::CmpGe, 5, 6),
+        // `,` — rill's value-tuple combinator, not a Haskell operator. Kept at
+        // its historical level, which stays looser than every arithmetic
+        // operator.
         Tok::Comma => (InfixOp::Par, 9, 10),
+        // `+ -` — `infixl 6`.
         Tok::Plus => (InfixOp::Add, 11, 12),
         Tok::Minus => (InfixOp::Sub, 11, 12),
+        // `* / %` — `infixl 7` (`%` is rill-specific and shares the level).
         Tok::Star => (InfixOp::Mul, 13, 14),
         Tok::Slash => (InfixOp::Div, 13, 14),
         Tok::Percent => (InfixOp::Rem, 13, 14),
-        // `` `f` `` — backtick infix application. A function used infix has the
-        // default fixity `infixl 9` (Haskell 2010 §4.4.2), the tightest of all
-        // operators: tighter than `*` and every arithmetic operator, looser
-        // than juxtaposed application (`f x `g` y` ≡ `(f x) `g` y`).
-        Tok::Backtick => (InfixOp::Backtick, 17, 18),
-        // `!` — infix indexing. Tight (just below juxtaposed application, above
-        // every arithmetic operator) and left-associative: `a ! i + 1` ≡
-        // `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`. `!` is the index operator
-        // in expression position regardless of whitespace (`a!1` ≡ `a ! 1`);
-        // bang markers (`!x`, `!pat`) exist only in pattern positions, parsed
-        // through separate paths.
+        // `!` — rill's infix indexing (`index`), the analog of Haskell's `!!`.
+        // `infixl 9`: `a ! i + 1` ≡ `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`.
+        // `!` is the index operator in expression position regardless of
+        // whitespace (`a!1` ≡ `a ! 1`); bang markers (`!x`, `!pat`) exist only
+        // in pattern positions, parsed through separate paths.
         Tok::Bang => (InfixOp::Index, 15, 16),
+        // `` `f` `` — a function used infix has the DEFAULT fixity `infixl 9`
+        // (§4.4.2), i.e. the same level as `!`: `f x `g` y` ≡ `(f x) `g` y`.
+        Tok::Backtick => (InfixOp::Backtick, 15, 16),
+        _ => return None,
+    })
+}
+
+/// The operator NAME for a token that can be a bare parenthesized operator
+/// reference (`(++)`, `(+)`, `(:)`, …) — Haskell 2010 §3.5. Returns `None` for
+/// anything that is not an operator, so the caller parses the parenthesized
+/// expression normally.
+///
+/// Only the BARE form is supported: `(++)` is a `Ref("++")`. Operator
+/// sections (`(+ 1.0)`, `(1.0 +)`) are a separate construct.
+fn bare_operator_name(tok: &Tok) -> Option<&'static str> {
+    Some(match tok {
+        Tok::PlusPlus => "++",
+        Tok::Plus => "+",
+        Tok::Minus => "-",
+        Tok::Star => "*",
+        Tok::Slash => "/",
+        Tok::Percent => "%",
+        Tok::EqEq => "==",
+        Tok::NotEq => "!=",
+        Tok::Lt => "<",
+        Tok::Gt => ">",
+        Tok::Le => "<=",
+        Tok::Ge => ">=",
+        Tok::AndAnd => "&&",
+        Tok::OrOr => "||",
+        Tok::Colon => ":",
+        Tok::Bang => "!",
         _ => return None,
     })
 }
@@ -319,6 +373,22 @@ impl<'a> Parser<'a> {
 
     fn seek(&mut self, pos: usize) {
         self.pos = pos;
+    }
+
+    /// The operator name when the tokens at the cursor are `( op )` — a bare
+    /// parenthesized operator reference (Haskell 2010 §3.5). `None` otherwise,
+    /// leaving the cursor untouched.
+    ///
+    /// The caller has already consumed the `(`, so the cursor is on the
+    /// operator itself: the operator is `toks[cur]` and the `)` is `toks[cur +
+    /// 1]`.
+    fn bare_operator_ref(&self) -> Option<&'static str> {
+        let cur = self.cur();
+        let close = self.toks.get(cur + 1).map(|t| &t.tok)?;
+        if *close != Tok::RParen {
+            return None;
+        }
+        bare_operator_name(&self.toks.get(cur)?.tok)
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, CompileError> {
@@ -550,6 +620,27 @@ impl<'a> Parser<'a> {
                 let n = n.clone();
                 self.bump();
                 n
+            }
+            // A parenthesized operator definition head — `(++) a b = …`
+            // (Haskell 2010 §4.4.2 defines `++` as an ordinary function, so a
+            // program must be able to bind and reference it by that name).
+            Tok::LParen => {
+                self.bump();
+                let op = match bare_operator_name(&self.peek().tok) {
+                    Some(name) => name.to_string(),
+                    None => {
+                        let found = self.peek().tok.clone();
+                        return Err(CompileError::Parse {
+                            msg: format!(
+                                "expected an operator name between parentheses, found {found:?}"
+                            ),
+                            span: self.peek().span,
+                        });
+                    }
+                };
+                self.bump();
+                self.eat(&Tok::RParen)?;
+                op
             }
             other => {
                 return Err(CompileError::Parse {
@@ -1188,6 +1279,28 @@ impl<'a> Parser<'a> {
                     span,
                 }
             } else if op.is_cmp() {
+                // Haskell 2010 §4.4.2 gives the comparisons `infix 4`:
+                // NON-associative, so `a == b == c` (and any other chain or mix
+                // at that level, e.g. `a < b == c`) is a precedence error
+                // rather than a left-fold. Checked by looking at what follows
+                // the right operand: a comparison that no parenthesis stopped
+                // must not chain. Parenthesizing restores it — `(a == b) == c`
+                // returns from the inner `parse_expr` before this loop sees the
+                // second operator.
+                if let Some((next, _, _)) = infix_binding_power(&self.peek().tok) {
+                    if next.is_cmp() {
+                        let p = self.peek();
+                        return Err(CompileError::Parse {
+                            msg: format!(
+                                "comparison operators are non-associative (Haskell 2010 \
+                                 §4.4.2, `infix 4`): `{:?}` cannot be chained here; \
+                                 add parentheses",
+                                p.tok
+                            ),
+                            span: p.span,
+                        });
+                    }
+                }
                 Expr::Cmp {
                     op: op.to_cmp(),
                     lhs: Box::new(lhs),
@@ -1217,9 +1330,14 @@ impl<'a> Parser<'a> {
                         args: vec![lhs, rhs],
                         span,
                     },
-                    // `++` — list append: `a ++ b` ≡ `append_list a b`.
+                    // `++` — list append. Desugars to the NAME `++`, not to
+                    // `++`: Haskell 2010 defines `++` as an ordinary
+                    // function (Prelude `(++) :: [a] -> [a] -> [a]`), so the
+                    // infix form and the first-class `(++)` form must resolve
+                    // through the same binding — including a user definition
+                    // that shadows the Prelude one.
                     InfixOp::AppendList => Expr::Apply {
-                        name: "append_list".to_string(),
+                        name: "++".to_string(),
                         args: vec![lhs, rhs],
                         span,
                     },
@@ -1668,6 +1786,32 @@ impl<'a> Parser<'a> {
                     self.bump();
                     return Ok(Expr::Void(t.span));
                 }
+                // `(++)`, `(+)`, … — a parenthesized operator is a reference to
+                // that operator as an ordinary function value (Haskell 2010
+                // §3.5). Only the BARE form is handled here; operator sections
+                // (`(+ 1.0)`, `(1.0 +)`) belong to the section task.
+                if let Some(op_name) = self.bare_operator_ref() {
+                    let start = t.span.start;
+                    self.bump(); // the operator token
+                    self.bump(); // the `)`
+                    let callee = Expr::Ref(op_name.to_string(), self.span_from(start));
+                    // `(++) xs ys` applies the operator value, exactly like
+                    // `(+) 1.0 2.0`. As an argument (`f (++)`), the callee is
+                    // the whole atom.
+                    if !arg_list && is_juxtaposition_arg_start(self.toks, self.pos) {
+                        let mut args = Vec::new();
+                        while is_juxtaposition_arg_start(self.toks, self.pos) {
+                            args.push(self.parse_atom(true)?);
+                        }
+                        let span = self.span_from(start);
+                        return Ok(Expr::ApplyExpr {
+                            callee: Box::new(callee),
+                            args,
+                            span,
+                        });
+                    }
+                    return Ok(callee);
+                }
                 let start = t.span.start;
                 let inner = self.parse_expr(0, false)?;
                 self.eat(&Tok::RParen)?;
@@ -2101,6 +2245,25 @@ mod tests {
     }
 
     #[test]
+    fn backtick_and_index_share_level_nine() {
+        // §4.4.2: backtick operators and `!!` are BOTH `infixl 9`. rill's
+        // infix `!` is the `!!` analog, so `a `f` b ! i` has one level and
+        // left-associates: `(a `f` b) ! i`.
+        match curry_head(&body("main = xs `f` ys ! 0")) {
+            Some(("index", args)) => {
+                assert_eq!(args.len(), 2);
+                match curry_head(args[0]) {
+                    Some(("f", inner)) => assert_eq!(inner.len(), 2),
+                    other => {
+                        panic!("expected the backtick application as the index base, got {other:?}")
+                    }
+                }
+            }
+            other => panic!("expected indexing at the root, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn backtick_desugars_to_plain_application() {
         // The desugaring produces the same tree as `add 1.0 2.0` — compare the
         // rendered source, which is span-independent.
@@ -2121,11 +2284,11 @@ mod tests {
     fn plusplus_is_right_associative_list_append() {
         // `a ++ b ++ c` ≡ `a ++ (b ++ c)` — `infixr 5`.
         match curry_head(&body("main = xs ++ ys ++ zs")) {
-            Some(("append_list", args)) => {
+            Some(("++", args)) => {
                 assert_eq!(args.len(), 2);
                 assert!(matches!(args[0], Expr::Ref(r, _) if r == "xs"));
                 match curry_head(args[1]) {
-                    Some(("append_list", inner)) => {
+                    Some(("++", inner)) => {
                         assert_eq!(inner.len(), 2);
                         assert!(matches!(inner[0], Expr::Ref(r, _) if r == "ys"));
                         assert!(matches!(inner[1], Expr::Ref(r, _) if r == "zs"));
@@ -2133,7 +2296,7 @@ mod tests {
                     other => panic!("expected the right-nested append, got {other:?}"),
                 }
             }
-            other => panic!("expected append_list, got {other:?}"),
+            other => panic!("expected `++`, got {other:?}"),
         }
     }
 
@@ -2146,8 +2309,8 @@ mod tests {
                 assert_eq!(args.len(), 2);
                 assert!(matches!(args[0], Expr::Ref(r, _) if r == "x"));
                 match curry_head(args[1]) {
-                    Some(("append_list", inner)) => assert_eq!(inner.len(), 2),
-                    other => panic!("expected append_list in the cons tail, got {other:?}"),
+                    Some(("++", inner)) => assert_eq!(inner.len(), 2),
+                    other => panic!("expected `++` in the cons tail, got {other:?}"),
                 }
             }
             other => panic!("expected cons, got {other:?}"),
@@ -2155,24 +2318,120 @@ mod tests {
     }
 
     #[test]
-    fn plusplus_before_cons_groups_as_append_then_cons() {
-        // DEVIATION, pinned deliberately: Haskell 2010 gives `++` and `:` the
-        // same fixity (`infixr 5`), so there `xs ++ ys : zs` is
-        // `xs ++ (ys : zs)`. This table already carries cons and comparison at
-        // one level, so `++` cannot be both looser than `:` and tighter than
-        // comparison. It is placed above cons, making this expression
-        // `(xs ++ ys) : zs`. The two groupings that matter in practice —
-        // `a ++ b ++ c` and `a : b ++ c` — match Haskell.
+    fn plusplus_and_cons_share_level_five() {
+        // Haskell 2010 §4.4.2: `:` and `++` are BOTH `infixr 5`, so they nest
+        // to the right in either order:
+        //   `xs ++ ys : zs` ≡ `xs ++ (ys : zs)`
+        //   `x : xs ++ ys`  ≡ `x : (xs ++ ys)`
         match curry_head(&body("main = xs ++ ys : zs")) {
-            Some(("cons", args)) => {
+            Some(("++", args)) => {
                 assert_eq!(args.len(), 2);
-                assert!(matches!(args[1], Expr::Ref(r, _) if r == "zs"));
-                match curry_head(args[0]) {
-                    Some(("append_list", inner)) => assert_eq!(inner.len(), 2),
-                    other => panic!("expected append_list as the cons head, got {other:?}"),
+                assert!(matches!(args[0], Expr::Ref(r, _) if r == "xs"));
+                match curry_head(args[1]) {
+                    Some(("cons", inner)) => {
+                        assert_eq!(inner.len(), 2);
+                        assert!(matches!(inner[0], Expr::Ref(r, _) if r == "ys"));
+                        assert!(matches!(inner[1], Expr::Ref(r, _) if r == "zs"));
+                    }
+                    other => panic!("expected cons as the append tail, got {other:?}"),
                 }
             }
-            other => panic!("expected cons at the root, got {other:?}"),
+            other => panic!("expected `++` at the root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comparison_is_non_associative() {
+        // Haskell 2010 `infix 4`: `a == b == c` is a precedence error, not a
+        // left fold. Mixing comparison operators at the same level is the same
+        // error; parenthesizing restores it.
+        for src in [
+            "main = 1.0 == 2.0 == 3.0",
+            "main = 1.0 < 2.0 <= 3.0",
+            "main = a != b == c",
+        ] {
+            let err = parse(&tokenize(src).unwrap(), src.as_bytes())
+                .err()
+                .unwrap_or_else(|| panic!("`{src}` must be a parse error"));
+            assert!(
+                matches!(err, CompileError::Parse { .. }),
+                "`{src}`: expected a parse error, got {err}"
+            );
+        }
+        // Parenthesized chains are fine.
+        assert!(parse(
+            &tokenize("main = (1.0 == 2.0) == 3.0").unwrap(),
+            b"main = (1.0 == 2.0) == 3.0"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn logic_operators_are_right_associative_and_ordered() {
+        // `infixr 3 &&` binds tighter than `infixr 2 ||`:
+        // `a || b && c` ≡ `a || (b && c)`; `a && b && c` ≡ `a && (b && c)`.
+        match body("main = a || b && c") {
+            Expr::Logic {
+                op: LogicOp::Or,
+                rhs,
+                ..
+            } => match rhs.as_ref() {
+                Expr::Logic {
+                    op: LogicOp::And, ..
+                } => {}
+                other => panic!("expected `&&` under `||`, got {other:?}"),
+            },
+            other => panic!("expected `||` at the root, got {other:?}"),
+        }
+        match body("main = a && b && c") {
+            Expr::Logic {
+                op: LogicOp::And,
+                rhs,
+                ..
+            } => match rhs.as_ref() {
+                Expr::Logic {
+                    op: LogicOp::And, ..
+                } => {}
+                other => panic!("expected the right-nested `&&`, got {other:?}"),
+            },
+            other => panic!("expected `&&` at the root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn arithmetic_levels_are_six_and_seven() {
+        // `infixl 7 *` binds tighter than `infixl 6 +`; both are left
+        // associative: `a - b - c` ≡ `(a - b) - c`.
+        assert!(matches!(
+            body("main = a + b * c"),
+            Expr::Arith {
+                op: ArithOp::Add,
+                ..
+            }
+        ));
+        assert!(matches!(
+            body("main = a * b + c"),
+            Expr::Arith {
+                op: ArithOp::Add,
+                ..
+            }
+        ));
+        match body("main = a - b - c") {
+            Expr::Arith {
+                op: ArithOp::Sub,
+                lhs,
+                ..
+            } => assert!(
+                matches!(
+                    *lhs,
+                    Expr::Arith {
+                        op: ArithOp::Sub,
+                        ..
+                    }
+                ),
+                "left-associative `-` must nest on the left"
+            ),
+            other => panic!("expected `-` at the root, got {other:?}"),
         }
     }
 
@@ -2183,9 +2442,9 @@ mod tests {
             Expr::Cmp {
                 op: CmpOp::Eq, lhs, ..
             } => match curry_head(&lhs) {
-                Some(("append_list", args)) => assert_eq!(args.len(), 2),
+                Some(("++", args)) => assert_eq!(args.len(), 2),
                 other => {
-                    panic!("expected append_list as the comparison's left side, got {other:?}")
+                    panic!("expected `++` as the comparison's left side, got {other:?}")
                 }
             },
             other => panic!("expected a comparison at the root, got {other:?}"),

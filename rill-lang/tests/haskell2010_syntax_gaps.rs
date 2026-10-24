@@ -34,6 +34,41 @@ fn error_of(defs: &str, expr: &str) -> CompileError {
     }
 }
 
+/// The `Float` payloads of the `List` that `defs` + `expr` evaluates to.
+///
+/// Order-sensitive: the `++` fixity tests assert ELEMENT ORDER, because
+/// `length`/sum are invariant under regrouping and would pass under both the
+/// correct and the incorrect reading.
+fn list_of(defs: &str, expr: &str) -> Vec<f64> {
+    let world = eval(defs, expr).expect("the source must compile and run");
+    match out_value(&world) {
+        Value::List { elems } => elems
+            .iter()
+            .map(|r| match world.arena().get(*r) {
+                Some(Value::Float(f)) => *f,
+                other => panic!("expected a Float element, got {other:?}"),
+            })
+            .collect(),
+        other => panic!("expected a List result, got {other:?}"),
+    }
+}
+
+/// The `Float` payload of the value expression.
+fn float_of(defs: &str, expr: &str) -> f64 {
+    match value_of(defs, expr) {
+        Value::Float(f) => f,
+        other => panic!("expected a Float result, got {other:?}"),
+    }
+}
+
+/// The `Bool` payload of the value expression.
+fn bool_of(defs: &str, expr: &str) -> bool {
+    match value_of(defs, expr) {
+        Value::Bool(b) => b,
+        other => panic!("expected a Bool result, got {other:?}"),
+    }
+}
+
 /// Haskell 2010 §3.4 — backtick infix application.
 mod backticks {
     use super::*;
@@ -75,60 +110,170 @@ mod backticks {
     }
 }
 
-/// `++` — list append (`infixr 5` in the Haskell 2010 Prelude).
+/// `++` — list append (`infixr 5` in Haskell 2010 §4.4.2), a first-class
+/// Prelude function `(++) :: [a] -> [a] -> [a]`.
+///
+/// Every assertion below is ORDER-sensitive: element order (or a numeric value
+/// that differs between groupings), never `length` or a sum. Regrouping a
+/// concatenation cannot change its length, so a length assertion would pass
+/// under both the correct and the incorrect reading and prove nothing.
 mod list_append {
     use super::*;
 
     #[test]
     fn list_append_operator() {
-        // Length and element sum, so the test pins the CONTENT, not just the
-        // result type.
-        assert_eq!(value_of("", "length ([1.0, 2.0] ++ [3.0])"), Value::Int(3));
+        // Element order, not just the count.
+        assert_eq!(list_of("", "[1.0, 2.0] ++ [3.0]"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(list_of("", "[] ++ [7.0]"), vec![7.0]);
+        assert_eq!(list_of("", "[7.0] ++ []"), vec![7.0]);
+    }
+
+    #[test]
+    fn list_append_is_right_associative_at_value_level() {
+        // `infixr 5` associativity is only observable through an operator whose
+        // two groupings differ. List concatenation is associative, so the
+        // Prelude `++` cannot show it; a USER `++` shadows the Prelude one (the
+        // Prelude def is dropped when a user def has the same name) and packs
+        // `a` and `b` as `a * 10 + b`:
+        //   right: 1 * 10 + (2 * 10 + 3) = 33
+        //   left:  (1 * 10 + 2) * 10 + 3 = 123
+        let defs = "(++) a b = a * 10.0 + b;";
+        assert_eq!(float_of(defs, "1.0 ++ 2.0 ++ 3.0"), 33.0);
+        // The parenthesized spellings pin what the numbers mean.
+        assert_eq!(float_of(defs, "(1.0 ++ 2.0) ++ 3.0"), 123.0);
+        assert_eq!(float_of(defs, "1.0 ++ (2.0 ++ 3.0)"), 33.0);
+    }
+
+    #[test]
+    fn cons_and_append_share_level_five() {
+        // §4.4.2: `:` and `++` are BOTH `infixr 5`, so they mix without
+        // parentheses and nest to the right:
+        //   `[1.0] ++ 2.0 : [3.0]` ≡ `[1.0] ++ (2.0 : [3.0])` = [1,2,3]
+        // The WRONG grouping, `([1.0] ++ 2.0) : [3.0]`, does not even type:
+        // it conses a List onto a List, where `:` wants one element and a list.
+        assert_eq!(list_of("", "[1.0] ++ 2.0 : [3.0]"), vec![1.0, 2.0, 3.0]);
         assert_eq!(
-            value_of(
-                "",
-                "fold (\\a -> \\b -> a + b) 0.0 ([1.0, 2.0] ++ [3.0, 4.0])"
-            ),
-            Value::Float(10.0)
+            list_of("", "[1.0] ++ (2.0 : [3.0])"),
+            vec![1.0, 2.0, 3.0],
+            "the parenthesized form must agree with the inferred grouping"
+        );
+        assert!(
+            eval("", "([1.0] ++ 2.0) : [3.0]").is_err(),
+            "the WRONG grouping must not type — otherwise this test cannot \
+             distinguish the two readings"
+        );
+
+        // The mirror direction: `1.0 : [2.0] ++ [3.0]` ≡ `1.0 : ([2.0] ++ [3.0])`.
+        assert_eq!(list_of("", "1.0 : [2.0] ++ [3.0]"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(list_of("", "1.0 : ([2.0] ++ [3.0])"), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn append_binds_tighter_than_comparison() {
+        // `++` (5) binds tighter than `==` (4), so the comparison sees the
+        // CONCATENATED list. Order-sensitive: the right-hand list is a literal
+        // equal to the concatenation only in the correct grouping.
+        assert!(bool_of("", "[1.0] ++ [2.0] == [1.0, 2.0]"));
+        assert!(!bool_of("", "[1.0] ++ [2.0] == [2.0, 1.0]"));
+    }
+
+    #[test]
+    fn append_is_usable_as_a_first_class_function() {
+        // Haskell 2010 Prelude: `(++) :: [a] -> [a] -> [a]` is an ordinary
+        // function value, not only infix sugar.
+        assert_eq!(list_of("", "(++) [1.0] [2.0, 3.0]"), vec![1.0, 2.0, 3.0]);
+        assert_eq!(
+            list_of("app = (++);", "app [1.0, 2.0] [3.0]"),
+            vec![1.0, 2.0, 3.0]
+        );
+    }
+}
+
+/// Haskell 2010 §4.4.2 fixity: the logic operators and non-associativity.
+///
+/// `true || false && false` is the canonical discriminator: with `&&` at level
+/// 3 and `||` at level 2 it is `True`; with BOTH at the same level (the bug this
+/// table had) it is `False`, because `false && false` is grouped away.
+mod fixity_4_4_2 {
+    use super::*;
+
+    #[test]
+    fn and_binds_tighter_than_or() {
+        // `infixr 2 ||`, `infixr 3 &&`: `true || (false && false)` = True.
+        assert!(bool_of("", "true || false && false"));
+        // The mirror: with `||` tighter this would be `(true || false) && false`
+        // = False. Both spellings therefore pin the ORDER, not just the value
+        // `False` that the old flat table produced.
+        assert!(!bool_of("", "(true || false) && false"));
+        assert!(bool_of("", "true || (false && false)"));
+    }
+
+    #[test]
+    fn logic_operators_are_right_associative() {
+        // `infixr` on both. Associativity of `&&`/`||` is only observable under
+        // a NON-associative operand, so the SHAPE is pinned at the parser level
+        // (see `logic_operators_are_right_associative_and_ordered`). The
+        // computed values below confirm the two spellings agree, which is the
+        // value-level half of the contract.
+        assert!(!bool_of("", "true && false && true"));
+        assert_eq!(
+            bool_of("", "true && false && true"),
+            bool_of("", "true && (false && true)")
+        );
+        assert_eq!(
+            bool_of("", "false || true || false"),
+            bool_of("", "false || (true || false)")
         );
     }
 
     #[test]
-    fn list_append_is_right_associative() {
-        // `infixr 5`: `xs ++ ys ++ zs` ≡ `xs ++ (ys ++ zs)`.
-        assert_eq!(
-            value_of(
-                "",
-                "fold (\\a -> \\b -> a + b) 0.0 ([1.0] ++ ([2.0, 3.0] ++ [4.0, 5.0]))"
-            ),
-            Value::Float(15.0)
-        );
-        assert_eq!(
-            value_of("", "length ([1.0] ++ [2.0, 3.0] ++ [4.0, 5.0])"),
-            Value::Int(5)
-        );
+    fn comparison_operators_are_non_associative() {
+        // `infix 4`: `a == b == c` is a precedence error, not a left fold.
+        // Checked as a parse error through the compile path, with the exact
+        // diagnostic shape.
+        for src in ["1.0 == 2.0 == 3.0", "1.0 < 2.0 <= 3.0", "a != b == c"] {
+            let err = error_of("", src);
+            assert!(
+                matches!(err, CompileError::Parse { .. }),
+                "`{src}` must be a parse error, got {err}"
+            );
+            assert!(
+                err.to_string().contains("non-associative"),
+                "`{src}`: the diagnostic must name the rule, got {err}"
+            );
+        }
+        // Parenthesizing restores it — proving the error is about associativity,
+        // not about comparing three values.
+        assert!(!bool_of("", "(1.0 == 2.0) == 3.0"));
+        assert!(bool_of("", "1.0 < 2.0 && 2.0 < 3.0"));
     }
 
     #[test]
-    fn list_append_binds_tighter_than_comparison() {
-        // `++` (5) binds tighter than comparison (4): the comparison sees the
-        // CONCATENATED list, so `length ([1.0] ++ [2.0]) == 2` is true. A
-        // looser `++` would try to compare a Bool/Int and fail to type.
-        assert_eq!(
-            value_of("", "length ([1.0] ++ [2.0]) == 2"),
-            Value::Bool(true)
-        );
+    fn comparison_binds_looser_than_arithmetic() {
+        // `infix 4` vs `infixl 6`/`infixl 7`: `1.0 + 2.0 * 3.0 < 8.0` ≡
+        // `(1.0 + (2.0 * 3.0)) < 8.0` = True. With the operands chosen so a
+        // mis-grouping changes the RESULT: `1.0 + 2.0 * 3.0` is 7.0, but
+        // `(1.0 + 2.0) * 3.0` would be 9.0 and the comparison False.
+        assert!(bool_of("", "1.0 + 2.0 * 3.0 < 8.0"));
+        assert!(!bool_of("", "(1.0 + 2.0) * 3.0 < 8.0"));
+        assert_eq!(float_of("", "1.0 + 2.0 * 3.0"), 7.0);
     }
 
     #[test]
-    fn cons_tail_takes_the_whole_append() {
-        // `1.0 : [2.0] ++ [3.0]` ≡ `1.0 : ([2.0] ++ [3.0])` — the cons tail is
-        // the whole concatenation, so the list has three elements.
-        assert_eq!(
-            value_of("", "length (1.0 : ([2.0] ++ [3.0]))"),
-            Value::Int(3)
-        );
-        assert_eq!(value_of("", "length (1.0 : [2.0] ++ [3.0])"), Value::Int(3));
+    fn subtraction_is_left_associative() {
+        // `infixl 6`: `10.0 - 3.0 - 2.0` ≡ `(10.0 - 3.0) - 2.0` = 5.0.
+        // Right-associative would be `10.0 - (3.0 - 2.0)` = 9.0.
+        assert_eq!(float_of("", "10.0 - 3.0 - 2.0"), 5.0);
+        assert_eq!(float_of("", "(10.0 - 3.0) - 2.0"), 5.0);
+        assert_eq!(float_of("", "10.0 - (3.0 - 2.0)"), 9.0);
+    }
+
+    #[test]
+    fn division_is_left_associative_and_tighter_than_addition() {
+        // `infixl 7 /` over `infixl 6 +`: `2.0 + 8.0 / 4.0` = 4.0, and
+        // `8.0 / 4.0 / 2.0` = `(8.0 / 4.0) / 2.0` = 1.0 (right would be 4.0).
+        assert_eq!(float_of("", "2.0 + 8.0 / 4.0"), 4.0);
+        assert_eq!(float_of("", "8.0 / 4.0 / 2.0"), 1.0);
     }
 }
 

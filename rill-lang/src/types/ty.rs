@@ -519,9 +519,19 @@ data IO a = { unIO: World -> Pair World a };
 data InputStream  a;
 data OutputStream a;
 
+-- Haskell 2010 §4.4.2 / the Prelude: `(++) :: [a] -> [a] -> [a]` is an
+-- ordinary function, MONOMORPHIC to lists (it is NOT `Monoid.mappend`
+-- generalized). Defined here so `(++)` is usable as a first-class value
+-- (`fold (++) …`, `f = (++)`), not only as a parser-level infix. The infix
+-- `a ++ b` desugars to this same name.
+(++) a b = append_list a b;
+
 instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
 instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
-instance Monoid List where { mempty = list; mappend a b = append_list a b; }
+-- Haskell 2010's `instance Monoid [a]` delegates TO `++` (`mappend = (++)`),
+-- not the other way round: `++` is the primitive and the instance is the
+-- derived form.
+instance Monoid List where { mempty = list; mappend a b = a ++ b; }
 
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
