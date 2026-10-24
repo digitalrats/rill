@@ -13,7 +13,8 @@ use crate::builtin::BuiltinKind;
 /// A register index into the per-sample scratch file.
 pub type Reg = usize;
 
-/// A register index into the per-tick value register file.
+/// A register index into the value-register scratch file (cleared at the end
+/// of each run).
 pub type ValueReg = usize;
 
 /// A slot index into the persistent state vector.
@@ -82,7 +83,8 @@ pub enum ValueBuiltinOp {
     Head,
     /// Drop the first element of a list.
     Tail,
-    /// Count the elements of a list/set/map.
+    /// Count the elements of a list/set/map (an immutable array reports its
+    /// flat element count — see `arrayElems`).
     Length,
     /// Map a function over a list.
     Map,
@@ -118,16 +120,61 @@ pub enum ValueBuiltinOp {
     /// Render a Bool as a String (`show_bool`): `true` → `"True"`,
     /// `false` → `"False"` (the Haskell constructor spelling).
     ShowBool,
+    // ---- Immutable array storage (flat, type-agnostic primitives) ----
+    // Every index computation lives in the language (`Ix`); the interpreter
+    // only ever sees a stored `Pair i i`, flat element lists and flat offsets.
+    /// Build an immutable array from its bounds and flat element list:
+    /// `arrayFromList bounds elems`.
+    ArrayFromList,
+    /// Read the stored bounds (`Pair i i`) back out: `arrayBounds arr`.
+    ArrayBounds,
+    /// Read the flat elements back out as a `List e`: `arrayElems arr`.
+    ArrayElems,
+    /// Read the element at a FLAT offset (bounds-checked; an out-of-range
+    /// offset latches a clean runtime fault): `arrayIndexFlat arr i`.
+    ArrayIndexFlat,
+    /// Return a NEW array with the given flat `(offset, value)` pairs applied:
+    /// `arrayUpdate arr assocs`. The source array is never mutated.
+    ArrayUpdate,
+    /// Return a NEW array with a binary accumulator applied to the given flat
+    /// `(offset, value)` pairs: `arrayAccum arr f assocs`.
+    ArrayAccum,
+    /// Copy a signal buffer into an immutable array of `Int`-indexed `Float`s
+    /// (`lo = 0`, `hi = len - 1`): `arrayFromBuffer buf`.
+    ArrayFromBuffer,
+    /// Copy an immutable `Int`-indexed `Float` array into a signal buffer:
+    /// `bufferFromArray arr`.
+    BufferFromArray,
+    /// The inclusive `Int` range of a bounds pair: `listRange (l, u)` →
+    /// `[l, l+1, …, u]` (the empty list when `u < l`). The single
+    /// list-GENERATING primitive — the language has no recursion in strict mode
+    /// and no `enumFromTo`, so `Ix.range` needs it to build its result. It takes
+    /// a `Pair Int Int`, so it is Int-only by construction.
+    ListRange,
+    /// `arrayFromList` with the STRICT length check behind the language-level
+    /// `listArray`: `arrayFromListChecked bounds rangeSize elems`. A mismatch
+    /// between the element count and `rangeSize` (computed by the language from
+    /// the `Ix` instance) latches a clean fault instead of building a
+    /// mis-indexed array.
+    ArrayFromListChecked,
+    /// Build an immutable array from its bounds and an index-typed
+    /// `List (Pair i e)` of associations: every unlisted position becomes one
+    /// shared lazy hole whose force latches a clean fault (Task 2 lands the
+    /// hole mechanism; the arm latches `not implemented yet` until then).
+    ArrayFromAssocs,
+    /// Build an immutable array whose every position is the given seed value:
+    /// `arraySeed bounds init`.
+    ArraySeed,
 }
 
 /// A value-track effect operation (the ST/region and IO-stream primitives).
 ///
-/// The four STRef operations are first-class: lowered to
+/// The ST operations are first-class: lowered to
 /// [`Value::BuiltinCallable`](crate::arena::Value::BuiltinCallable), captured
 /// with their arguments and applied to the region's STState token by the
-/// enclosing `ST` record's `unST` closure. `RunST` is emitted directly as a
-/// [`ValueInstr::ValueEffectOp`] — it consumes an `ST` value and runs its
-/// region.
+/// enclosing `ST` record's `unST` closure. `RunST`/`RunSTArray` are emitted
+/// directly as a [`ValueInstr::ValueEffectOp`] — they consume an `ST` value and
+/// run its region, the latter freezing the region's `STArray` result.
 ///
 /// The IO-stream operations use the same shape: lowered to a `BuiltinCallable`
 /// and applied to the `World` token by the enclosing `IO` record's `unIO`
@@ -148,6 +195,32 @@ pub enum ValueEffectOp {
     WriteStRef,
     /// `modifySTRef r f`: overwrite the cell value with `f` applied to it.
     ModifyStRef,
+    /// `newArrayFlat bounds n init`: allocate a mutable array cell in the
+    /// current region. `bounds` is the stored `Pair i i` value, `n` the flat
+    /// element count (the language computes it via `rangeSize`), and `init`
+    /// the initial value of every element.
+    NewArrayFlat,
+    /// `readArrayFlat a i`: read the element at the flat offset `i`.
+    ReadArrayFlat,
+    /// `writeArrayFlat a i v`: overwrite the element at the flat offset `i`.
+    WriteArrayFlat,
+    /// `modifyArrayFlat a i f`: overwrite the element at the flat offset `i`
+    /// with `f` applied to its current value.
+    ModifyArrayFlat,
+    /// `getBounds a`: read the cell's stored bounds back out as a `Pair i i`.
+    GetArrayBounds,
+    /// `getElems a`: read the cell's current elements back out as a `List e`.
+    GetArrayElems,
+    /// `newArrayFromListFlat bounds n xs`: allocate a mutable array cell in
+    /// the current region and seed its elements from `xs` (the strict
+    /// `newListArray` counterpart of [`Self::NewArrayFlat`]). `n` is the
+    /// language-computed `rangeSize`; a list whose length differs latches a
+    /// clean fault.
+    NewArrayFromListFlat,
+    /// `runSTArray st`: like [`Self::RunST`], but FREEZE the region's
+    /// `STArray` result into an immutable `Array` (a refcount transfer — no
+    /// element copies).
+    RunSTArray,
     /// `fromList xs`: allocate a memory input stream over `xs` in the World's
     /// stream table and yield its opaque handle.
     StreamFromList,
@@ -249,8 +322,9 @@ pub enum ValueTerm {
     Halt,
 }
 
-/// A per-tick value instruction. Executed once per block in the value-track
-/// phase, alongside the whole-buffer block instructions.
+/// A value instruction. Runs in the value-track phase of the program's single
+/// execution (the entry fragment body), operating on value registers and the
+/// fixed arena.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueInstr {
     /// Push a scope frame onto the runtime cell stack.
@@ -274,14 +348,6 @@ pub enum ValueInstr {
         /// Destination value register.
         dst: usize,
         /// Value register holding the cell ref, or the fragment capture index.
-        cell: usize,
-    },
-    /// Read a main λ-parameter cell into a fresh value slot (the result is a
-    /// new owner; a `Void` cell reads as `Float(0.0)`).
-    ValueReadMainCell {
-        /// Destination value register.
-        dst: usize,
-        /// Index into the persistent main-cell store.
         cell: usize,
     },
     /// Write a variable: value ref into a cell.
@@ -471,11 +537,26 @@ pub enum ValueInstr {
         value: bool,
     },
     /// Read a named parameter slot as a Float value.
+    ///
+    /// The IR index selects a NAME in [`Ir::params`]; the run-time store is the
+    /// world's name-addressed [`rill_core::Params`]. `"sample_rate"` reads
+    /// [`Params::sample_rate`](rill_core::Params::sample_rate) (the field), so
+    /// `?sample_rate` never lives in the named map.
     ValueReadParam {
         /// Destination value register.
         dst: usize,
         /// Index into [`Ir::params`].
         idx: usize,
+    },
+    /// Read the world's sample rate as a Float value.
+    ///
+    /// Executes to `Value::Float(world.params.sample_rate as f64)`. The
+    /// `smooth` operator uses it to compute its one-pole coefficient at run
+    /// time (the compiler never sees a sample rate); user-level `?sample_rate`
+    /// resolves to the same field through [`ValueInstr::ValueReadParam`].
+    ValueReadSampleRate {
+        /// Destination value register.
+        dst: usize,
     },
     /// The unit value `()` (`Value::Void`).
     ValueConstVoid {
@@ -543,9 +624,15 @@ pub enum ValueInstr {
         /// Boolean operand value register.
         src: usize,
     },
-    /// Latch a `ProcessError::Processing` for this tick (runtime match
-    /// non-exhaustive). The tick fails at the end of `run_value_track`.
+    /// Latch a `ProcessError::Processing` for this run (runtime match
+    /// non-exhaustive). The run fails when the latch is consumed by the
+    /// entry-fragment runner.
     ValueSetError,
+    /// Latches the clean "array: undefined array element" fault. The only
+    /// ever-instantiated copy lives in the program's synthetic hole fragment
+    /// (see [`Ir::array_hole_frag`]) — forcing an unlisted position of an
+    /// M8 `array`/`arrayFromAssocs` array runs it and faults.
+    ValueArrayHoleFault,
     /// Move an arena ref between registers (`dst = src; src = None`) — an
     /// ownership transfer used at control-flow join points.
     ValueMove {
@@ -565,10 +652,11 @@ pub enum ValueInstr {
     },
     /// Dispatch an effect operation.
     ///
-    /// For [`ValueEffectOp::RunST`] the single argument register holds the `ST`
-    /// value; the interpreter runs the whole region and writes the region's
-    /// result to `dst`. For the STRef operations the arguments are the
-    /// operation's operands; the interpreter builds a
+    /// For [`ValueEffectOp::RunST`] / [`ValueEffectOp::RunSTArray`] the single
+    /// argument register holds the `ST` value; the interpreter runs the whole
+    /// region and writes the region's result (`runST`) or its frozen
+    /// `Array` (`runSTArray`) to `dst`. For the STRef/STArray operations the
+    /// arguments are the operation's operands; the interpreter builds a
     /// [`Value::BuiltinCallable`](crate::arena::Value::BuiltinCallable) capturing
     /// them and writes that to `dst` (the `unST` field of the `ST` record the
     /// lowering wraps around it).
@@ -706,13 +794,6 @@ pub enum ValueInstr {
         /// Index into [`Ir::params`].
         idx: usize,
     },
-    /// Fill the destination buffer with a main λ-parameter cell's value.
-    ValueBufferMainCellRead {
-        /// Destination value register (holds `Value::Buffer(dst)`).
-        dst: usize,
-        /// Index into the persistent main-cell store.
-        cell: usize,
-    },
 }
 
 /// Layout for value-track persistent storage.
@@ -779,12 +860,16 @@ pub struct StateLayout {
     pub block_state_slots: usize,
     /// Length (in samples) of each delay line.
     pub delay_lens: Vec<usize>,
-    /// Number of program outputs.
+    /// Number of program outputs. At most one: architecturally there are no
+    /// signal programs (no output channels), so this is at most 1 — the
+    /// program's single result is `Ir::result_reg`. Kept behind the channel
+    /// legacy until Task 3 (single-input/single-output IR shape).
     pub num_outputs: usize,
 }
 
 /// A resolved built-in call site: its name, folded constant params, and kind.
-/// Runtime instances are built from these by `RillProgram::new_with`.
+/// Runtime instances are built from these by
+/// [`WorldState::seat`](crate::program::WorldState::seat).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BuiltinInstance {
     /// Registered built-in name.
@@ -833,9 +918,15 @@ pub struct Ir {
     /// This static flag resolves the ambiguity — the erased unit encoding is
     /// accepted only when `main` is typed `IO ()`.
     pub main_io_unit: bool,
-    /// Number of program inputs (0 or 1 for MVP).
+    /// Number of program inputs. At most one: architecturally there are no
+    /// signal programs (no input channels) and lambdas take 0 or 1 arguments,
+    /// so this is `0` or `1`.
     pub num_inputs: usize,
-    /// Number of program outputs.
+    /// Number of program outputs. At most one: architecturally there are no
+    /// signal programs (no output channels) — the program's single result is
+    /// [`Ir::result_reg`]. Kept behind the channel legacy; collapsing these
+    /// fields to a fixed 0-input/single-value shape is deferred beyond Task 3
+    /// (the value-track body already drives [`Ir::result_reg`] directly).
     pub num_outputs: usize,
     /// Persistent state layout.
     pub state: StateLayout,
@@ -844,19 +935,25 @@ pub struct Ir {
     pub builtins: Vec<BuiltinInstance>,
     /// Named parameter definitions, indexed by [`Instr::ReadParam::idx`].
     pub params: Vec<ParamDef>,
-    /// Number of persistent main λ-parameter cells (see
-    /// [`RillProgram::main_cells`](crate::program::RillProgram)). Main λ-params
-    /// are the first `num_main_cells` entries of [`Ir::params`] — `set_param`
-    /// on the program writes into the cell for exactly these indices.
-    pub num_main_cells: usize,
-    /// Value-track blocks (per-tick), see `run_value_track`.
+    /// Top-level value-track blocks: the program's single execution surface,
+    /// executed once per run by
+    /// [`exec_entry`](crate::backend::interp::exec_entry) directly (an ordinary
+    /// top-level binding run at base 0 — no fragment wrapper, no `run_call`
+    /// frame). Kept here for `max_drops`/`max_frag_cells`
+    /// accounting, inspection, and the run itself.
     pub value_blocks: Vec<ValueBlock>,
-    /// Entry block of the value track.
+    /// Entry block of the top-level value track.
     pub value_entry: usize,
     /// Number of value registers required.
     pub num_value_regs: usize,
-    /// Value registers holding program outputs.
-    pub value_output_regs: Vec<usize>,
+    /// The register where the entry body's value landed: the program's single
+    /// result. Set at lower time (`lw.value_regs_out[0]`) and captured by
+    /// [`exec_entry`](crate::backend::interp::exec_entry) — which forces it to
+    /// WHNF and copies it into [`WorldState::result`](crate::program::WorldState::result).
+    /// Architecturally there are no signal programs (no output channels): every
+    /// program is a value program whose result is one register — buffer results
+    /// are `Value::Buffer(idx)` arena values, not channels.
+    pub result_reg: usize,
     /// Named function values referenced by [`ValueInstr::ValueCallFunc`].
     pub value_funcs: Vec<ValueFunc>,
     /// Compiled function bodies, indexed by [`ValueInstr::ValueMakeClosure`]'s
@@ -865,20 +962,26 @@ pub struct Ir {
     /// [`ValueInstr::ValueCallFunc`]. Shared via `Arc` so a dispatch shares the
     /// fragment without cloning it (no heap allocation on the RT path).
     pub fragments: Vec<std::sync::Arc<FragmentIr>>,
+    /// The index of the program's synthetic hole fragment, `Some` iff lowering
+    /// emitted it (the program lowered an `arrayFromAssocs` call). The one-shot
+    /// fragment body is a single `ValueArrayHoleFault`; `arrayFromAssocs`
+    /// shares ONE callable pointing at it across every unlisted position.
+    pub array_hole_frag: Option<u32>,
     /// Number of value-register slots pre-allocated for the runtime function
     /// call stack: `max_call_depth × max_fragment_regs`, where
     /// `max_call_depth` is the total fragment count (a strict upper bound on
     /// the number of concurrently-active fragment frames — the acyclic
     /// contract forbids any fragment from recursing) and `max_fragment_regs`
-    /// is the largest `FragmentIr::num_value_regs`. [`RillProgram`](crate::program::RillProgram)
-    /// sizes its per-tick value-register store to `num_value_regs + max_call_regs`
+    /// is the largest `FragmentIr::num_value_regs`.
+    /// [`WorldState`](crate::program::WorldState) sizes its value-register
+    /// store to `num_value_regs + max_call_regs`
     /// so [`run_call`](crate::backend::interp::run_call) never grows it
     /// on the RT path.
     pub max_call_regs: usize,
     /// Value-track persistent layout.
     pub value_state: ValueLayout,
     /// Number of program-level signal buffers (see
-    /// [`RillProgram::buffers`](crate::program::RillProgram)). Each
+    /// [`WorldState::buffers_len`](crate::program::WorldState::buffers_len)). Each
     /// `Value::Buffer` index points into this table; the memory is carved from
     /// a [`BufferAllocator`](rill_core::memory::BufferAllocator) at build.
     pub num_buffers: usize,
@@ -945,7 +1048,19 @@ mod value_builtin_tests {
             ValueBuiltinOp::ShowFloat,
             ValueBuiltinOp::ShowInt,
             ValueBuiltinOp::ShowBool,
+            ValueBuiltinOp::ArrayFromList,
+            ValueBuiltinOp::ArrayBounds,
+            ValueBuiltinOp::ArrayElems,
+            ValueBuiltinOp::ArrayIndexFlat,
+            ValueBuiltinOp::ArrayUpdate,
+            ValueBuiltinOp::ArrayAccum,
+            ValueBuiltinOp::ArrayFromBuffer,
+            ValueBuiltinOp::BufferFromArray,
+            ValueBuiltinOp::ListRange,
+            ValueBuiltinOp::ArrayFromListChecked,
+            ValueBuiltinOp::ArrayFromAssocs,
+            ValueBuiltinOp::ArraySeed,
         ];
-        assert_eq!(ops.len(), 22);
+        assert_eq!(ops.len(), 34);
     }
 }

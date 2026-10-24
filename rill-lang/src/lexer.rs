@@ -15,8 +15,9 @@ pub enum Tok {
     Str(String),
     /// `_`
     Wire,
-    /// `!`
-    Cut,
+    /// `!` — a bang marker (`!x`) when attached to its operand, otherwise the
+    /// infix indexing operator (`a ! i`).
+    Bang,
     /// `:`
     Colon,
     /// `<:`
@@ -47,8 +48,6 @@ pub enum Tok {
     Eq,
     /// `;`
     Semi,
-    /// `main` keyword — entry point.
-    KwMain,
     /// `where` keyword — optional definition block.
     KwWhere,
     /// `let` keyword — expression-level mutually-recursive bindings.
@@ -77,7 +76,9 @@ pub enum Tok {
     KwThen,
     /// `else` keyword — `if` branch separator.
     KwElse,
-    /// `=>` fat arrow — match arm separator.
+    /// `->` thin arrow — function-type, lambda, and case-alternative arrow.
+    ThinArrow,
+    /// `=>` fat arrow — class-constraint arrow (`instance C a => T`).
     FatArrow,
     /// `|` — sum-type constructor separator.
     Pipe,
@@ -275,7 +276,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
         if c == b'-' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
             i += 2;
             out.push(Token {
-                tok: Tok::FatArrow,
+                tok: Tok::ThinArrow,
                 span: Span::new(start, i),
             });
             continue;
@@ -401,7 +402,6 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
 
             let tok = match text {
                 "_" => Tok::Wire,
-                "main" if !followed_by_paren => Tok::KwMain,
                 "where" if !followed_by_paren => Tok::KwWhere,
                 "let" if !followed_by_paren => Tok::KwLet,
                 "in" if !followed_by_paren => Tok::KwIn,
@@ -461,7 +461,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             b'*' => Tok::Star,
             b'/' => Tok::Slash,
             b'%' => Tok::Percent,
-            b'!' => Tok::Cut,
+            b'!' => Tok::Bang,
             b'?' => Tok::Question,
             b'(' => Tok::LParen,
             b')' => Tok::RParen,
@@ -519,7 +519,7 @@ mod tests {
                 Tok::Star,
                 Tok::Slash,
                 Tok::Percent,
-                Tok::Cut,
+                Tok::Bang,
                 Tok::Question,
                 Tok::LParen,
                 Tok::RParen,
@@ -603,11 +603,13 @@ mod tests {
     }
 
     #[test]
-    fn lexes_main_keyword() {
+    fn main_is_an_ordinary_identifier() {
+        // `main` is no longer a keyword: the entry name is a compile-time
+        // pipeline parameter, not a lexer token.
         assert_eq!(
             kinds("main foo bar"),
             vec![
-                Tok::KwMain,
+                Tok::Ident("main".into()),
                 Tok::Ident("foo".into()),
                 Tok::Ident("bar".into()),
                 Tok::Eof,
@@ -702,6 +704,30 @@ mod tests {
     }
 
     #[test]
+    fn distinguishes_thin_and_fat_arrow() {
+        // Haskell 2010: `->` is the function-type/lambda/case arrow; `=>` is
+        // reserved for class constraints.
+        assert_eq!(
+            kinds("a -> b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::ThinArrow,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+        assert_eq!(
+            kinds("a => b"),
+            vec![
+                Tok::Ident("a".into()),
+                Tok::FatArrow,
+                Tok::Ident("b".into()),
+                Tok::Eof,
+            ]
+        );
+    }
+
+    #[test]
     fn paren_following_keyword_is_not_a_call_for_other_keywords() {
         // Keywords stay paren-guarded (`data(y)` is a call-style identifier).
         // `match` is no longer a keyword — it lexes as a plain identifier.
@@ -728,7 +754,7 @@ mod tests {
             vec![
                 Tok::Backslash,
                 Tok::Ident("x".into()),
-                Tok::FatArrow,
+                Tok::ThinArrow,
                 Tok::Ident("x".into()),
                 Tok::Eof,
             ]
@@ -811,7 +837,7 @@ mod tests {
             vec![
                 Tok::Backslash,
                 Tok::Ident("x".into()),
-                Tok::FatArrow,
+                Tok::ThinArrow,
                 Tok::Ident("x".into()),
                 Tok::Plus,
                 Tok::Float(1.0),

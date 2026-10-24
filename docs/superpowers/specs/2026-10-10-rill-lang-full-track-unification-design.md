@@ -132,7 +132,7 @@ Value::Buffer(usize)
   value just drops the handle's Rc. The `RegionHandle`'s internal RC is the
   buffer lifetime and sharing.
 - **Mutation is in-place** via `RegionHandle::with_data_mut`, and buffer work
-  runs inside an **ST region** (`runST (fn s -> …)`): the phantom `s` scopes
+  runs inside an **ST region** (`runST (\s -> …)`): the phantom `s` scopes
   the mutation so a mutated buffer cannot leak out of its region. `runST` is
   already lowering sugar over a `forall`-typed function (R3); buffer-producing
   signal expressions lower on the value track through the same path.

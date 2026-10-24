@@ -194,7 +194,7 @@ No `WriteFeedback`/`ReadFeedback` variants — feedback is node annotations, not
 
 ### Syntax
 
-```rill
+```haskell
 main = _ : lofi ?bitdepth=8 ?sr=44100 ?drywet=0.5 ?gain=1.0
 ```
 
@@ -220,7 +220,7 @@ Not affected by beta-reduction — stays as-is through `reduce.rs`.
 
 Compiler auto-prefixes `?name` based on nesting context:
 
-```rill
+```haskell
 tape_bridge {
     heads: {
         tap3: {
@@ -274,7 +274,7 @@ SetParameter {
 
 ### Config record
 
-```rill
+```haskell
 tape_bridge {
     capacity: 96000,          // tape capacity in samples
     heads: {

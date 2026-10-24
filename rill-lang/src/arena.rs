@@ -48,6 +48,8 @@ pub enum ValueKind {
     Map,
     /// First-class set of sorted element arena refs.
     Set,
+    /// First-class immutable array: bounds + flat elements.
+    Array,
     /// The unit value.
     Void,
     /// A first-class signal buffer (see [`Value::Buffer`]).
@@ -106,6 +108,18 @@ pub enum Value {
         /// Sorted element arena refs.
         elems: Vec<ArenaRef>,
     },
+    /// A first-class immutable array: stored bounds as an ordinary value (a
+    /// `Pair i i` record where each index is an `Int`; a matrix's index type
+    /// is itself `Pair Int Int`, so its bounds nest as
+    /// `Pair (Pair Int Int) (Pair Int Int)`) plus flat elements in `lo..=hi`
+    /// order, row-major for multi-dim arrays. Boxed and strict: the elements
+    /// are arena refs (like [`Value::List`]).
+    Array {
+        /// Stored bounds as an ordinary value (`Pair i i`).
+        bounds: ArenaRef,
+        /// Flat elements, row-major for multi-dim, in `lo..=hi` order.
+        elems: Vec<ArenaRef>,
+    },
     /// The unit value.
     Void,
     /// A first-class signal buffer: an index into the program-level buffer
@@ -161,6 +175,7 @@ impl Value {
             Value::List { .. } => ValueKind::List,
             Value::Map { .. } => ValueKind::Map,
             Value::Set { .. } => ValueKind::Set,
+            Value::Array { .. } => ValueKind::Array,
             Value::Void => ValueKind::Void,
             Value::Buffer(_) => ValueKind::Buffer,
             Value::ThunkCell(_) => ValueKind::Callable,
@@ -205,6 +220,12 @@ impl ArenaValue for Value {
                     f(e);
                 }
             }
+            Value::Array { bounds, elems } => {
+                f(*bounds);
+                for &e in elems {
+                    f(e);
+                }
+            }
             Value::ThunkCell(ThunkState::Forced(r)) => f(*r),
             Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
             Value::Cons(h, t) => {
@@ -222,6 +243,9 @@ impl ArenaValue for Value {
             Value::Sum(_, fields) => Some((1, fields.len())),
             Value::List { elems } => Some((2, elems.len())),
             Value::Set { elems } => Some((3, elems.len())),
+            // The pooled buffer serves the element refs, exactly like the List/Set
+            // arm; the bounds ref is copied by value (a plain `ArenaRef`).
+            Value::Array { elems, .. } => Some((4, elems.len())),
             _ => None,
         };
         let Some((kind, n)) = shape else {
@@ -248,6 +272,13 @@ impl ArenaValue for Value {
                 buf.extend_from_slice(elems);
                 Ok(Value::Set { elems: buf })
             }
+            (4, Value::Array { bounds, elems }) => {
+                buf.extend_from_slice(elems);
+                Ok(Value::Array {
+                    bounds: *bounds,
+                    elems: buf,
+                })
+            }
             _ => Ok(self.clone()),
         }
     }
@@ -257,6 +288,10 @@ impl ArenaValue for Value {
             Value::Record(fields) | Value::Sum(_, fields) => Some(std::mem::take(fields)),
             Value::List { elems } => Some(std::mem::take(elems)),
             Value::Set { elems } => Some(std::mem::take(elems)),
+            // The pooled payload is EXACTLY the element refs: `bounds` is
+            // copied by value, never pooled — symmetric with the shape arm in
+            // `clone_pooled` (the `(4, …)` slot), keeping take/put paired.
+            Value::Array { elems, .. } => Some(std::mem::take(elems)),
             _ => None,
         }
     }
@@ -293,5 +328,82 @@ mod tests {
         a.copy(res).unwrap();
         a.drop_ref(cell);
         assert_eq!(a.rc(res), 1, "forced result survives via the copy");
+    }
+
+    #[test]
+    fn array_visits_bounds_then_elems() {
+        let mut a = Arena::with_capacity(24);
+        let lo = a.alloc(Value::Int(0)).unwrap();
+        let hi = a.alloc(Value::Int(2)).unwrap();
+        let bounds = a.alloc(Value::Record(vec![lo, hi])).unwrap();
+        let e0 = a.alloc(Value::Int(10)).unwrap();
+        let e1 = a.alloc(Value::Int(20)).unwrap();
+        let e2 = a.alloc(Value::Int(30)).unwrap();
+        let arr = a
+            .alloc(Value::Array {
+                bounds,
+                elems: vec![e0, e1, e2],
+            })
+            .unwrap();
+
+        let mut seen = Vec::new();
+        a.get(arr).unwrap().visit_refs(|r| seen.push(r));
+        assert_eq!(seen, vec![bounds, e0, e1, e2]);
+    }
+
+    #[test]
+    fn array_clone_pooled_preserves_shape() {
+        let mut a = Arena::with_capacity(24);
+        a.pool = BufferPool::new(8, false); // budget one class-0 buffer
+        let lo = a.alloc(Value::Int(0)).unwrap();
+        let hi = a.alloc(Value::Int(2)).unwrap();
+        let bounds = a.alloc(Value::Record(vec![lo, hi])).unwrap();
+        let e0 = a.alloc(Value::Int(10)).unwrap();
+        let e1 = a.alloc(Value::Int(20)).unwrap();
+        let e2 = a.alloc(Value::Int(30)).unwrap();
+        let arr = a
+            .alloc(Value::Array {
+                bounds,
+                elems: vec![e0, e1, e2],
+            })
+            .unwrap();
+
+        let mut cloned = a.clone_pooled(arr).unwrap();
+        match &cloned {
+            Value::Array { bounds: b, elems } => {
+                assert_eq!(*b, bounds);
+                assert_eq!(*elems, vec![e0, e1, e2]);
+            }
+            other => panic!("expected Array, got {other:?}"),
+        }
+        // Round-trip the pooled payload: detach must return EXACTLY the three
+        // element refs (an `elems.len() + 1`/bounds-in-payload regression
+        // yields four refs here and fails immediately). This is the invariant
+        // that keeps the pool take/put pair symmetric with `clone_pooled`.
+        assert_eq!(cloned.detach_payload(), Some(vec![e0, e1, e2]));
+        // The detached payload is the pooled buffer: returning it (what
+        // `Arena::drop_ref` does via `put_buf`) keeps the pool reusable.
+        a.put_buf(vec![e0, e1, e2]);
+        assert!(a.take_buf(3).is_ok(), "pool re-take after put must succeed");
+    }
+
+    #[test]
+    fn array_detach_payload_reclaims_elems() {
+        let mut a = Arena::with_capacity(24);
+        let lo = a.alloc(Value::Int(0)).unwrap();
+        let hi = a.alloc(Value::Int(2)).unwrap();
+        let bounds = a.alloc(Value::Record(vec![lo, hi])).unwrap();
+        let e0 = a.alloc(Value::Int(10)).unwrap();
+        let e1 = a.alloc(Value::Int(20)).unwrap();
+        let e2 = a.alloc(Value::Int(30)).unwrap();
+        let arr = a
+            .alloc(Value::Array {
+                bounds,
+                elems: vec![e0, e1, e2],
+            })
+            .unwrap();
+
+        let payload = a.get_mut(arr).unwrap().detach_payload();
+        assert_eq!(payload, Some(vec![e0, e1, e2]));
     }
 }

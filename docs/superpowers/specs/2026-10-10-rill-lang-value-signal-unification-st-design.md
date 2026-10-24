@@ -29,7 +29,7 @@ buffer a first-class, mutable value** and modelling signal processing as an
 - **`:` becomes a single overload**: cons for `List`, seq for `Buffer`,
   dispatched through the typeclass machinery (`class_of_method` →
   `resolve_method`).
-- `ST` carries a **phantom type `s`**; `runST (fn s -> body)` opens an explicit
+- `ST` carries a **phantom type `s`**; `runST (\s -> body)` opens an explicit
   region with a fresh `s` and a check-escaping guarantee (one-point rank-2, not
   full rank-2 HM).
 
@@ -158,7 +158,7 @@ Buffer math **mutates its first operand** (ST-style `a += b`), it does not
 allocate a fresh result buffer. This matches the ST single-writer model and
 avoids per-op allocation:
 
-```rill
+```haskell
 typeclass Buffer b where {
     add:  b -> b -> ST ();
     sub:  b -> b -> ST ();
@@ -188,18 +188,18 @@ The existing `rill_core::math::vector` helpers remain available; we prefer simpl
 
 `ST` is an effect monad modelled on Haskell, with a phantom type parameter `s`:
 
-```rill
+```haskell
 data ST s a = { unST: a };   -- s is phantom: appears in types, not in data
 ```
 
 `runST` opens an explicit region:
 
-```rill
+```haskell
 runST : (forall s. ST s a) -> a
-runST (fn s -> body) : a
+runST (\s -> body) : a
 ```
 
-- `fn s -> ...` is an ordinary lambda, but `s` is bound as a **quantified type
+- `\s -> ...` is an ordinary lambda, but `s` is bound as a **quantified type
   variable** in the argument's `Scheme.vars`, not a value variable.
 - The body is inferred with `s` as a fresh `TyConVar`.
 - **Check-escaping is automatic**: because `runST`'s argument is polymorphic
@@ -342,7 +342,7 @@ inside the IO monad.
 
 1. **`Buffer` typeclass** (`types/ty.rs` prelude): methods + instances.
 2. **`ST` + `runST`** (`parser.rs`, `ast.rs`, `types/infer.rs`, `reduce.rs`):
-   `data ST s a`, `runST (fn s -> ...)`, phantom `s`, check-escaping.
+   `data ST s a`, `runST (\s -> ...)`, phantom `s`, check-escaping.
 3. **`:` overload** (`parser.rs` → `desugar.rs`, `infer.rs`, `lower.rs`):
    one spelling, type-directed dispatch (List→cons, Buffer→seq).
 4. **Faust ops → methods** (`desugar.rs`, `infer.rs`, `lower.rs`): `Seq`/`Par`/

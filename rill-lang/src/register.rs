@@ -2,7 +2,7 @@
 //! (rill-digital-effects, rill-core-dsp).
 
 #[cfg(feature = "dsp")]
-use crate::builtin::{BlockBuiltin, Registry};
+use crate::builtin::BlockBuiltin;
 #[cfg(any(feature = "dsp", feature = "model"))]
 use rill_core::math::Transcendental;
 #[cfg(any(feature = "dsp", feature = "model"))]
@@ -15,8 +15,8 @@ use rill_core::traits::{Algorithm, ProcessResult};
 /// Register the rill-digital-effects builtins (delay/distortion/limiter) as FFI
 /// factories. The algorithms live in `rill-digital-effects` (a pure library,
 /// no rill-lang dependency); rill-lang supplies the wrapper structs
-/// implementing `BlockBuiltin`. Call this on the `ForeignRegistry` you pass to
-/// `compile_with_ffi` (or any other FFI assembly point).
+/// implementing `BlockBuiltin`. Call this on the `ForeignRegistry` you hand to the
+/// world (`WorldConfig::ffi`) before seating (or at any other FFI assembly point).
 #[cfg(feature = "dsp")]
 pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
     ffi: &mut crate::ffi::ForeignRegistry<T>,
@@ -135,8 +135,9 @@ pub fn register_foreign_digital_effects<T: Transcendental + 'static>(
 /// integrators (integrator/leaky_integrator) as FFI factories. The algorithms
 /// live in `rill-core-dsp` (a pure library, no rill-lang dependency); the
 /// wrapper structs implementing `BlockBuiltin` live in
-/// [`crate::builtins::generators`]. Call this on the `ForeignRegistry` you pass
-/// to `compile_with_ffi` (or any other FFI assembly point).
+/// [`crate::builtins::generators`]. Call this on the `ForeignRegistry` you hand to
+/// the world (`WorldConfig::ffi`) before seating (or at any other FFI assembly
+/// point).
 #[cfg(feature = "dsp")]
 pub fn register_foreign_generators<T: Transcendental + 'static>(
     ffi: &mut crate::ffi::ForeignRegistry<T>,
@@ -270,134 +271,6 @@ pub fn register_foreign_filters<T: Transcendental + 'static>(
     });
 }
 
-/// Register the rill-core-dsp generators/integrators/filters into the legacy
-/// [`Registry`]. Factory-only bridge: downstream crates (rill-adrift) consume
-/// the legacy `Registry<T>` (signatures come from the catalog); the equivalent
-/// `register_foreign_*` functions above target `ForeignRegistry` for
-/// `compile_with_ffi`. Mirrors the deleted
-/// `rill-core-dsp::lang::register::register_lang_builtins` factories exactly.
-#[cfg(feature = "dsp")]
-pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registry<T>) {
-    use crate::builtins::filters::{
-        BiquadBuiltin, GeneralBiquadBuiltin, MoogBuiltin, OnePoleBuiltin,
-    };
-    use crate::builtins::generators::{
-        IntegratorBuiltin, LeakyIntegratorBuiltin, NoiseGenBuiltin, OscBuiltin,
-    };
-    use rill_core_dsp::filters::{Biquad, FilterParams, FilterType, MoogLadder, OnePole};
-    use rill_core_dsp::generators::{
-        BasicOscillator, Generator, NoiseGenerator, NoiseType, Waveform,
-    };
-
-    reg.register_block("onepole", |p, sr, _alloc| {
-        let mut inner = OnePole::<T>::new(FilterParams {
-            filter_type: FilterType::LowPass,
-            cutoff: p[0] as f32,
-            q: p[1] as f32,
-            gain_db: 0.0,
-        });
-        Algorithm::init(&mut inner, sr);
-        Box::new(OnePoleBuiltin { inner })
-    });
-    reg.register_block("moog", |p, sr, _alloc| {
-        let mut inner = MoogLadder::<T>::new(p[0] as f32, p[1] as f32);
-        Algorithm::init(&mut inner, sr);
-        Box::new(MoogBuiltin { inner })
-    });
-    reg.register_block("lowpass", |p, sr, _alloc| {
-        let mut b = Biquad::<T>::new(FilterParams {
-            filter_type: FilterType::LowPass,
-            cutoff: p[0] as f32,
-            q: p[1] as f32,
-            gain_db: 0.0,
-        });
-        Algorithm::init(&mut b, sr);
-        Box::new(BiquadBuiltin { inner: b })
-    });
-    reg.register_block("highpass", |p, sr, _alloc| {
-        let mut b = Biquad::<T>::new(FilterParams {
-            filter_type: FilterType::HighPass,
-            cutoff: p[0] as f32,
-            q: p[1] as f32,
-            gain_db: 0.0,
-        });
-        Algorithm::init(&mut b, sr);
-        Box::new(BiquadBuiltin { inner: b })
-    });
-    reg.register_block("biquad", |p, sr, _alloc| {
-        let ft = match p[0] as u8 {
-            0 => FilterType::LowPass,
-            1 => FilterType::HighPass,
-            2 => FilterType::BandPass,
-            3 => FilterType::Notch,
-            4 => FilterType::Peak,
-            5 => FilterType::LowShelf,
-            6 => FilterType::HighShelf,
-            _ => FilterType::LowPass,
-        };
-        let mut b = Biquad::<T>::new(FilterParams {
-            filter_type: ft,
-            cutoff: p[1] as f32,
-            q: p[2] as f32,
-            gain_db: p[3] as f32,
-        });
-        Algorithm::init(&mut b, sr);
-        Box::new(GeneralBiquadBuiltin { inner: b })
-    });
-
-    reg.register_block("sine", |p, sr, _alloc| {
-        let freq = p[0] as f32;
-        let amp = T::from_f64(p[1]);
-        let mut osc = BasicOscillator::<T>::new(Waveform::Sine, freq, amp);
-        osc.set_phase(T::from_f64(p[2]));
-        Algorithm::init(&mut osc, sr);
-        Box::new(OscBuiltin { osc })
-    });
-    reg.register_block("saw", |p, sr, _alloc| {
-        let freq = p[0] as f32;
-        let amp = T::from_f64(p[1]);
-        let mut osc = BasicOscillator::<T>::new(Waveform::Saw, freq, amp);
-        osc.set_phase(T::from_f64(p[2]));
-        Algorithm::init(&mut osc, sr);
-        Box::new(OscBuiltin { osc })
-    });
-    reg.register_block("square", |p, sr, _alloc| {
-        let freq = p[0] as f32;
-        let amp = T::from_f64(p[1]);
-        let mut osc = BasicOscillator::<T>::new(Waveform::Square, freq, amp);
-        osc.set_phase(T::from_f64(p[2]));
-        Algorithm::init(&mut osc, sr);
-        Box::new(OscBuiltin { osc })
-    });
-    reg.register_block("triangle", |p, sr, _alloc| {
-        let freq = p[0] as f32;
-        let amp = T::from_f64(p[1]);
-        let mut osc = BasicOscillator::<T>::new(Waveform::Triangle, freq, amp);
-        osc.set_phase(T::from_f64(p[2]));
-        Algorithm::init(&mut osc, sr);
-        Box::new(OscBuiltin { osc })
-    });
-    reg.register_block("noise", |p, _sr, _alloc| {
-        let amp = T::from_f64(p[1]);
-        let gen = NoiseGenerator::<T>::new(
-            match p[0].round() as i32 {
-                1 => NoiseType::Pink,
-                2 => NoiseType::Brown,
-                _ => NoiseType::White,
-            },
-            amp,
-        );
-        Box::new(NoiseGenBuiltin { gen })
-    });
-
-    reg.register_block("integrator", |_p, _sr, _alloc| {
-        Box::new(IntegratorBuiltin::<T>::new())
-    });
-    reg.register_block("leaky_integrator", |p, _sr, _alloc| {
-        Box::new(LeakyIntegratorBuiltin::<T>::new(T::from_f64(p[0])))
-    });
-}
-
 // ============================================================================
 // rill-core-model FFI factories (feature `model`)
 // ============================================================================
@@ -405,8 +278,9 @@ pub fn register_core_dsp_builtins<T: Transcendental + 'static>(reg: &mut Registr
 /// Register the rill-core-model analog filter builtin (`analog_moog`) as an
 /// FFI factory. The algorithm lives in `rill-core-model` (a pure library, no
 /// rill-lang dependency); the wrapper struct implementing `BlockBuiltin` lives
-/// in [`crate::builtins::model`]. Call this on the `ForeignRegistry` you pass
-/// to `compile_with_ffi` (or any other FFI assembly point). Mirrors the deleted
+/// in [`crate::builtins::model`]. Call this on the `ForeignRegistry` you hand to
+/// the world (`WorldConfig::ffi`) before seating (or at any other FFI assembly
+/// point). Mirrors the deleted
 /// `rill-core-model::register::register_lang_builtins` factory exactly.
 #[cfg(feature = "model")]
 pub fn register_foreign_model<T: Transcendental + 'static>(
@@ -509,7 +383,7 @@ impl<T: Transcendental> BlockBuiltin<T> for GraphicEqBuiltin<T> {
 /// Register the EQ FFI factories (`graphic_eq` / `eq_parametric`). The
 /// algorithms live in `rill-core-dsp` (moved from the deleted `rill-router`);
 /// the wrappers implementing `BlockBuiltin` live in [`crate::builtins::eq`].
-/// Call this on the `ForeignRegistry` you pass to `compile_with_ffi`.
+/// Call this on the `ForeignRegistry` you hand to the world (`WorldConfig::ffi`).
 #[cfg(feature = "dsp")]
 pub fn register_foreign_eq<T: Transcendental + 'static>(ffi: &mut crate::ffi::ForeignRegistry<T>) {
     use crate::builtins::eq::{BandType, EqBandConfig, EqBuiltin, EqConfig, EqState};

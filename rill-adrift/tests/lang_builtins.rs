@@ -1,20 +1,39 @@
 //! rill-lang builtins through rill-adrift's FFI registry, on the retained
-//! value path: `main = <buffer expression>` produces one whole-buffer output
-//! per tick, read back with `copy_output_samples`.
+//! value path: `main = <buffer expression>` produces one whole-buffer output,
+//! read back with `copy_buffer`.
 
 use rill_adrift::lang_builtins::full_ffi;
-use rill_lang::compile_with_ffi;
+use rill_adrift::rill_core::Params;
+use rill_lang::mode::Mode;
+use rill_lang::program::{WorldConfig, WorldState};
+use rill_lang::{compile_eval, test_eval};
 
 const BUF: usize = 256;
 
-/// Compile against rill-adrift's FFI registry and return one whole-buffer tick.
+/// The world sample rate this suite is pinned to (the pre-world `test_eval`
+/// surface's explicit rate argument).
+const RATE: f32 = 48_000.0;
+
+/// Evaluate `src` against rill-adrift's FFI registry and return the single
+/// whole-buffer result: the expression is compiled by `compile_eval`, seated
+/// and run once by `test_eval` in a world that owns the registry.
 fn run(src: &str) -> Vec<f32> {
-    let mut prog = compile_with_ffi::<f32>(src, &full_ffi::<f32>(), 48_000.0)
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ir = compile_eval::<f32, BUF>(defs, expr, Mode::Strict)
         .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
+    let mut world = WorldState::<f32, BUF>::new(WorldConfig {
+        ffi: Some(full_ffi::<f32>()),
+        params: Params::new(RATE),
+        ..Default::default()
+    });
+    test_eval(&ir, &mut world).unwrap_or_else(|e| panic!("program must run: {e}\nsource:\n{src}"));
+    let r = world.result().expect("whole-buffer result expected");
     let mut out = vec![0.0f32; BUF];
-    prog.run_value().unwrap();
     assert!(
-        prog.copy_output_samples(0, &mut out),
+        world.copy_buffer(r, &mut out),
         "program must produce a buffer output"
     );
     out
@@ -59,7 +78,7 @@ fn lowpass_block_matches_direct_biquad() {
         q: 0.7,
         gain_db: 0.0,
     });
-    Algorithm::init(&mut b, 48_000.0);
+    Algorithm::init(&mut b, RATE);
     let mut direct = vec![0.0f32; BUF];
     b.process(Some(&input), &mut direct).unwrap();
 
@@ -73,16 +92,21 @@ fn lowpass_block_matches_direct_biquad() {
 fn analog_moog_smoke() {
     // `analog_moog` moved out of rill-core-model into rill-lang's `model`
     // feature (SP-3b Task 9): the legacy registry no longer carries it, the FFI
-    // factory does.
+    // factory does. The factory is resolved by the world at seat time, so the
+    // smoke test must run the program, not merely compile it.
     use rill_lang::ffi::ForeignRegistry;
-    use rill_lang::register::register_foreign_model;
+    use rill_lang::register::{register_foreign_generators, register_foreign_model};
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register_foreign_model(&mut ffi);
-    assert!(compile_with_ffi::<f32>(
-        &format!("main = analog_moog 800.0 0.5 ({DC})"),
-        &ffi,
-        48_000.0,
-    )
-    .is_ok());
+    // The program's source (`square`) resolves at seat as well as `analog_moog`.
+    register_foreign_generators(&mut ffi);
+    let ir = compile_eval::<f32, BUF>("", &format!("analog_moog 800.0 0.5 ({DC})"), Mode::Strict)
+        .expect("analog_moog must compile against the builtin catalog");
+    let mut world = WorldState::<f32, BUF>::new(WorldConfig {
+        ffi: Some(ffi),
+        params: Params::new(RATE),
+        ..Default::default()
+    });
+    test_eval(&ir, &mut world).expect("analog_moog must resolve against the FFI registry");
 }

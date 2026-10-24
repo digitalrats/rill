@@ -3,8 +3,23 @@
 //! argument's static type selects the instance; the body is β-substituted at
 //! compile time (zero runtime dispatch — typeclasses and instances produce no
 //! arena values).
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
+
+/// Compile `src` (which must bind `main` to the evaluated expression) and RUN
+/// it once on the single-run value surface, returning the already-run program.
+fn run(src: &str) -> WorldState<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    eval_ffi(defs, expr, ffi).unwrap()
+}
 
 #[test]
 fn typeclass_method_resolves_at_compile_time() {
@@ -17,11 +32,8 @@ fn typeclass_method_resolves_at_compile_time() {
         instance Show Float where { show f = f; }
         main = show 1.0;
     "#;
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let vo = prog.value_outputs();
-    assert_eq!(vo.len(), 1);
-    let v = vo[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(1.0));
 }
@@ -37,11 +49,8 @@ fn typeclass_selects_instance_by_argument_type() {
         instance Show Int where { show f = 2.5; }
         main = show 1;
     "#;
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let vo = prog.value_outputs();
-    assert_eq!(vo.len(), 1);
-    let v = vo[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
     assert_eq!(val, &rill_lang::arena::Value::Float(2.5));
 }
@@ -55,9 +64,9 @@ fn recursive_typeclass_method_is_compile_error() {
         instance Show Float where { show f = show f; }
         main = show 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),
@@ -77,9 +86,9 @@ fn transitive_recursive_typeclass_methods_are_compile_error() {
         instance C Float where { a f = b f; b f = a f; }
         main = a 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),
@@ -100,13 +109,13 @@ fn recursive_constructor_class_method_is_compile_error() {
     let src = r"
         typeclass A a where { f: a b c -> a b c; }
         data K m a b = { unK: a -> m b };
-        instance (Monad m) -> A (K m) where { f k = f k; }
+        instance (Monad m) => A (K m) where { f k = f k; }
         apply k x = let u = k.unK in u x;
         main = case (apply (f (K { unK: \x -> Just x })) 3.0) of { Just v -> v; Nothing -> 0.0; };
     ";
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),
@@ -127,9 +136,9 @@ fn buffer_value_does_not_select_scalar_instance() {
         instance Show Float where { show f = f; }
         main = show (sin 1.0);
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_err(), "expected a compile error, got success");
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("cannot resolve method `show`"),
@@ -151,7 +160,7 @@ fn instance_body_accepts_value_expression() {
         instance Show Float where { show f = sin 1.0; }
         main = 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(res.is_ok(), "expected success");
 }
 
@@ -168,12 +177,12 @@ fn user_instance_redefining_a_prelude_class_is_validated() {
         instance Monad IO where { return x = return x; bind m f = bind m f; }
         main = 1.0;
     "#;
-    let res = compile::<f32>(src);
+    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
     assert!(
         res.is_err(),
         "a user instance overwriting the prelude's must be validated, got success"
     );
-    match res.err().expect("compile failed") {
+    match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
                 msg.contains("recursive typeclass method"),
@@ -192,9 +201,8 @@ fn user_def_shadows_builtin_eq_ord_method_names() {
         lt = \a -> \b -> a * b;
         main = lt 2.0 3.0;
     ";
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(src);
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(6.0)

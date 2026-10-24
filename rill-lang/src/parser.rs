@@ -26,6 +26,8 @@ enum InfixOp {
     CmpGe,
     LogicAnd,
     LogicOr,
+    /// `!` — infix indexing (`a ! i` ≡ `index a i`).
+    Index,
 }
 
 impl InfixOp {
@@ -109,6 +111,12 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         Tok::Star => (InfixOp::Mul, 13, 14),
         Tok::Slash => (InfixOp::Div, 13, 14),
         Tok::Percent => (InfixOp::Rem, 13, 14),
+        // `!` — infix indexing. Tight (just below juxtaposed application, above
+        // every arithmetic operator) and left-associative: `a ! i + 1` ≡
+        // `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`. An ATTACHED `!` is a bang
+        // marker, not an operator — the operator loop consults
+        // `is_attached_bang` first.
+        Tok::Bang => (InfixOp::Index, 15, 16),
         _ => return None,
     })
 }
@@ -143,6 +151,21 @@ fn peek_is_negative_literal(toks: &[Token], pos: usize) -> bool {
     matches!(next.tok, Tok::Int(_) | Tok::Float(_)) && next.span.start == toks[pos].span.end
 }
 
+/// Whether the `!` at `pos` is a bang marker rather than the infix indexing
+/// operator. Mirroring [`peek_is_negative_literal`]'s adjacency model, a bang
+/// is the marker `!pat` only when the following token is directly attached (no
+/// whitespace) AND can begin a pattern; a separated `!` is infix indexing
+/// (`a ! i`).
+fn is_attached_bang(toks: &[Token], pos: usize) -> bool {
+    if !matches!(toks[pos].tok, Tok::Bang) {
+        return false;
+    }
+    let Some(next) = toks.get(pos + 1) else {
+        return false;
+    };
+    is_pattern_start(&next.tok) && next.span.start == toks[pos].span.end
+}
+
 /// Whether a juxtaposed application argument may start here. `-` is included
 /// ONLY when it begins a negative literal (`-1.0`); a standalone `-` is infix
 /// subtraction and must reach the operator loop instead of being consumed as a
@@ -166,7 +189,38 @@ fn is_pattern_start(tok: &Tok) -> bool {
             | Tok::KwFalse
             | Tok::Wire
             | Tok::LParen
+            | Tok::Bang
     )
+}
+
+/// Whether a type expression is a bare type VARIABLE (Haskell 2010: a lowercase
+/// name). Used to tell a partial instance head (`(Kleisli m)`) from a fully
+/// concrete one (`(Pair Int Int)`).
+fn is_type_var(te: &TypeExpr) -> bool {
+    matches!(te, TypeExpr::TName(n) if n.chars().next().is_some_and(char::is_lowercase))
+}
+
+/// The registry key and bound type arguments of an instance head.
+///
+/// A head that binds type variables is a PARTIAL instance: it keys by its
+/// constructor (`(Kleisli m)` → `Kleisli`) and lists the bound slots in
+/// `head_args`. A head whose arguments are all concrete types is keyed by the
+/// FULL applied type (`(Pair Int Int)` → `Pair Int Int`), which is what lets
+/// `Ix Int`, `Ix (Pair Int Int)` and `Ix (Pair Int (Pair Int Int))` coexist
+/// without colliding on the `Pair` constructor.
+fn instance_head_key(head: &TypeExpr) -> (String, Vec<String>) {
+    let ctor = match head {
+        TypeExpr::TName(n) => n.clone(),
+        TypeExpr::TApp(h, _) => h.clone(),
+        _ => crate::render::render_type_key(head),
+    };
+    match head {
+        TypeExpr::TApp(_, args) if args.iter().any(is_type_var) => (
+            ctor,
+            args.iter().map(crate::render::render_type_key).collect(),
+        ),
+        _ => (crate::render::render_type_key(head), Vec::new()),
+    }
 }
 
 /// One statement inside a `do { … }` block.
@@ -238,6 +292,13 @@ impl<'a> Parser<'a> {
         self.pos
     }
 
+    /// Index of the next non-newline token — the token [`Self::peek`] reports.
+    /// Span-adjacency checks must use this index, not the raw `pos`, or a bang
+    /// marker that begins a line (after a layout newline) looks separated.
+    fn cur(&self) -> usize {
+        self.skip_newlines(self.pos)
+    }
+
     fn seek(&mut self, pos: usize) {
         self.pos = pos;
     }
@@ -275,6 +336,16 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::RParen)?;
                 Ok(p)
             }
+            Tok::Bang => {
+                // A bang pattern is always written attached: `!x`, `!Just y`.
+                if !is_attached_bang(self.toks, self.cur()) {
+                    return Err(
+                        self.error("a bang pattern must be written `!pat` (no space after `!`)")
+                    );
+                }
+                self.bump();
+                Ok(Pattern::Bang(Box::new(self.parse_pattern()?)))
+            }
             Tok::Ident(name) => {
                 let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
                 self.bump();
@@ -303,6 +374,39 @@ impl<'a> Parser<'a> {
             .map(|p| p + 1)
             .unwrap_or(0);
         off - line_start
+    }
+
+    /// Whether a parameter may start here: a bare identifier, or a bang marker
+    /// attached to one (`!x`).
+    fn at_param_start(&self) -> bool {
+        match self.peek().tok {
+            Tok::Ident(_) => true,
+            Tok::Bang => is_attached_bang(self.toks, self.cur()),
+            _ => false,
+        }
+    }
+
+    /// Parse one parameter: `x` or a bang parameter `!x`. The argument of a
+    /// bang parameter is forced to WHNF on application entry.
+    fn parse_param(&mut self) -> Result<Param, CompileError> {
+        if self.peek().tok == Tok::Bang && !is_attached_bang(self.toks, self.cur()) {
+            return Err(self.error("a bang parameter must be written `!name` (no space after `!`)"));
+        }
+        let bang_span = if self.peek().tok == Tok::Bang {
+            Some(self.bump().span)
+        } else {
+            None
+        };
+        let (name, name_span) = self.expect_ident()?;
+        let span = match bang_span {
+            Some(s) => s.merge(name_span),
+            None => name_span,
+        };
+        Ok(Param {
+            name,
+            span,
+            bang: bang_span.is_some(),
+        })
     }
 
     /// True when a `Newline` layout separator sits immediately after the last
@@ -391,12 +495,6 @@ impl<'a> Parser<'a> {
                 span: self.peek().span,
             });
         }
-        if !defs.iter().any(|d| d.name() == "main") {
-            return Err(CompileError::Parse {
-                msg: "program must contain a `main` definition".into(),
-                span: Span::new(0, self.src.len()),
-            });
-        }
         Ok(Program {
             mode,
             mode_explicit,
@@ -416,15 +514,24 @@ impl<'a> Parser<'a> {
             _ => {}
         }
         let start = self.peek().span.start;
+        // A leading bang marker (`let !x = e`) marks the binding itself: the
+        // right-hand side is forced to WHNF at the binding point.
+        let bang = if self.peek().tok == Tok::Bang {
+            if !is_attached_bang(self.toks, self.cur()) {
+                return Err(
+                    self.error("a bang binding must be written `!name` (no space after `!`)")
+                );
+            }
+            self.bump();
+            true
+        } else {
+            false
+        };
         let name = match &self.peek().tok {
             Tok::Ident(n) => {
                 let n = n.clone();
                 self.bump();
                 n
-            }
-            Tok::KwMain => {
-                self.bump();
-                "main".to_string()
             }
             other => {
                 return Err(CompileError::Parse {
@@ -434,11 +541,24 @@ impl<'a> Parser<'a> {
             }
         };
         let mut params = Vec::new();
-        while let Tok::Ident(_) = self.peek().tok {
-            let (pname, pspan) = self.expect_ident()?;
-            params.push(Param {
-                name: pname,
-                span: pspan,
+        while self.at_param_start() {
+            params.push(self.parse_param()?);
+        }
+        // A separated `!` cannot appear in a definition head (the head is a
+        // name plus parameters, never an operator expression), so it is always
+        // a mistyped bang parameter.
+        if self.peek().tok == Tok::Bang {
+            return Err(self.error("a bang parameter must be written `!name` (no space after `!`)"));
+        }
+        // A bang binding marks a single variable, not a function: the force
+        // applies to the bound VALUE, and a curried `\x -> …` RHS has none to
+        // force at the binding point (GHC rejects `!f x = e` for the same
+        // reason).
+        if bang && !params.is_empty() {
+            return Err(CompileError::Parse {
+                msg: "a bang binding must bind a single variable (`!x = e`), not a function (`!f x = e`)"
+                    .into(),
+                span: Span::new(start, params.last().map(|p| p.span.end).unwrap_or(start)),
             });
         }
         // Optional `:: TypeExpr` signature annotation (Haskell 2010). Typing is
@@ -448,7 +568,7 @@ impl<'a> Parser<'a> {
         let mut sig = None;
         if self.peek().tok == Tok::DoubleColon {
             self.bump();
-            sig = Some(self.parse_type_expr()?);
+            sig = Some(self.parse_sig_type()?);
         }
         self.eat(&Tok::Eq)?;
         let body = self.parse_expr(0, false)?;
@@ -470,6 +590,7 @@ impl<'a> Parser<'a> {
             body,
             where_defs,
             sig,
+            bang,
             span,
         })
     }
@@ -545,6 +666,14 @@ impl<'a> Parser<'a> {
     /// Only the binary tuple is supported. The opening `LParen` must already be
     /// consumed; this eats the closing `RParen`.
     fn parse_paren_type(&mut self) -> Result<TypeExpr, CompileError> {
+        // `()` — the unit type. Haskell 2010 spells the unit type as the empty
+        // tuple; `ValueTy::Void`'s type name is already `"()"` (see
+        // `TypeEnv::vty_of_name`), which is what the builtin ST signatures use
+        // internally, so the source-level spelling maps straight onto it.
+        if self.peek().tok == Tok::RParen {
+            self.bump();
+            return Ok(TypeExpr::TName("()".into()));
+        }
         let first = self.parse_type_expr()?;
         if self.peek().tok == Tok::Comma {
             let mut items = vec![first];
@@ -610,7 +739,9 @@ impl<'a> Parser<'a> {
     }
 
     /// `forall a b. T` — explicit universal quantification. Reads one or more
-    /// type-variable names, then a `.`, then the inner type expression.
+    /// type-variable names, then a `.`, then the inner type expression, which
+    /// may carry a Haskell 2010 class context (`Ix i => T`) exactly like a `::`
+    /// signature body.
     fn parse_forall_type(&mut self) -> Result<TypeExpr, CompileError> {
         self.bump(); // consume `forall`
         let mut names = Vec::new();
@@ -622,17 +753,137 @@ impl<'a> Parser<'a> {
             return Err(self.error("expected at least one type variable after `forall`"));
         }
         self.eat(&Tok::Dot)?;
-        let inner = self.parse_type_expr()?;
+        let inner = self.parse_sig_type()?;
         Ok(TypeExpr::TForall(names, Box::new(inner)))
+    }
+
+    /// Parse a `::` signature type: an optional Haskell 2010 class context
+    /// (`Ix i => T`, `(Ix i, Ix j) => T`) wrapping the body type.
+    fn parse_sig_type(&mut self) -> Result<TypeExpr, CompileError> {
+        match self.parse_sig_constraints()? {
+            Some(constraints) => {
+                let body = self.parse_type_expr()?;
+                Ok(TypeExpr::TConstrained(constraints, Box::new(body)))
+            }
+            None => self.parse_type_expr(),
+        }
+    }
+
+    /// Parse a signature's constraint context, if one is present. A constraint
+    /// is a class name applied to a single type variable — `C v`, or a
+    /// comma-separated parenthesized list `(C v, C w)`. The representation is
+    /// generic over the class name (`Ix` is not special).
+    fn parse_sig_constraints(&mut self) -> Result<Option<Vec<(String, String)>>, CompileError> {
+        if !self.at_sig_constraints() {
+            // `C v, C w => T` would otherwise parse `C v` as a type application
+            // and fail later on the comma with an unrelated message.
+            if self.at_unparenthesized_multi_constraints() {
+                return Err(self
+                    .error("a multi-constraint context must be parenthesized: `(C v, C w) => T`"));
+            }
+            return Ok(None);
+        }
+        let parenthesized = self.peek().tok == Tok::LParen;
+        if parenthesized {
+            self.bump();
+        }
+        let mut constraints = Vec::new();
+        loop {
+            let (class, _) = self.expect_ident()?;
+            let (var, _) = self.expect_ident()?;
+            constraints.push((class, var));
+            if !parenthesized {
+                break;
+            }
+            if self.peek().tok == Tok::Comma {
+                self.bump();
+            } else {
+                self.eat(&Tok::RParen)?;
+                break;
+            }
+        }
+        self.eat(&Tok::FatArrow)?;
+        Ok(Some(constraints))
+    }
+
+    /// Whether the next tokens spell a signature class context. Decided by
+    /// lookahead because a parenthesized TYPE opens with the same `(`: only the
+    /// shape `C v` / `(C v, …)` followed by `=>` is a context, so
+    /// `(Pair i i) -> …` falls through to the ordinary type parser.
+    fn at_sig_constraints(&self) -> bool {
+        let mut i = self.skip_newlines(self.pos);
+        match self.toks.get(i).map(|t| &t.tok) {
+            Some(Tok::Ident(_)) => {
+                i = self.skip_newlines(i + 1);
+                matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_)))
+                    && matches!(
+                        self.toks.get(self.skip_newlines(i + 1)).map(|t| &t.tok),
+                        Some(Tok::FatArrow)
+                    )
+            }
+            Some(Tok::LParen) => {
+                i = self.skip_newlines(i + 1);
+                loop {
+                    if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                        return false;
+                    }
+                    i = self.skip_newlines(i + 1);
+                    if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+                        return false;
+                    }
+                    i = self.skip_newlines(i + 1);
+                    match self.toks.get(i).map(|t| &t.tok) {
+                        Some(Tok::Comma) => i = self.skip_newlines(i + 1),
+                        Some(Tok::RParen) => {
+                            return matches!(
+                                self.toks.get(self.skip_newlines(i + 1)).map(|t| &t.tok),
+                                Some(Tok::FatArrow)
+                            );
+                        }
+                        _ => return false,
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the next tokens spell the INVALID unparenthesized form of a
+    /// multi-constraint context: `C v, C w => T`. Used only to report a
+    /// deliberate diagnostic; a valid context is always parenthesized.
+    fn at_unparenthesized_multi_constraints(&self) -> bool {
+        let mut i = self.skip_newlines(self.pos);
+        if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+            return false;
+        }
+        i = self.skip_newlines(i + 1);
+        if !matches!(self.toks.get(i).map(|t| &t.tok), Some(Tok::Ident(_))) {
+            return false;
+        }
+        matches!(
+            self.toks.get(self.skip_newlines(i + 1)).map(|t| &t.tok),
+            Some(Tok::Comma)
+        )
+    }
+
+    /// The first non-newline token index at or after `i`, clamped to the last
+    /// token. [`Self::peek`]/[`Self::bump`] skip layout newlines, so lookahead
+    /// must skip them too. Also backs [`Self::cur`], so the newline-skipping
+    /// rule lives in exactly one place.
+    fn skip_newlines(&self, mut i: usize) -> usize {
+        while i < self.toks.len() && self.toks[i].tok == Tok::Newline {
+            i += 1;
+        }
+        i.min(self.toks.len().saturating_sub(1))
     }
 
     /// Parse a type expression: a chain of juxta-applied type names and type
     /// variables, `(T -> U -> V)` curried function types, and capacity ints.
     fn parse_type_expr(&mut self) -> Result<TypeExpr, CompileError> {
         let first = self.parse_type_atom()?;
-        if self.peek().tok == Tok::FatArrow {
+        if self.peek().tok == Tok::ThinArrow {
             let mut args = vec![first];
-            while self.peek().tok == Tok::FatArrow {
+            while self.peek().tok == Tok::ThinArrow {
                 self.bump();
                 args.push(self.parse_type_atom()?);
             }
@@ -693,7 +944,11 @@ impl<'a> Parser<'a> {
                 let mut dparams = Vec::new();
                 while matches!(self.peek().tok, Tok::Ident(_)) {
                     let (p, ps) = self.expect_ident()?;
-                    dparams.push(Param { name: p, span: ps });
+                    dparams.push(Param {
+                        name: p,
+                        span: ps,
+                        bang: false,
+                    });
                 }
                 let body = self.parse_expr(0, true)?;
                 default = Some((dparams, body));
@@ -743,22 +998,18 @@ impl<'a> Parser<'a> {
             self.eat(&Tok::FatArrow)?;
         }
         let (class, _) = self.expect_ident()?;
-        // Head: either a bare type (`List`) or a parenthesized partial application
-        // (`(Kleisli m)`).
-        let (ty, head_args) = if self.peek().tok == Tok::LParen {
+        // Head: either a bare type (`List`, `Int`) or a parenthesized applied
+        // type (`(Kleisli m)`, `(Pair Int Int)`, `(Pair Int (Pair Int Int))`).
+        let head = if self.peek().tok == Tok::LParen {
             self.bump();
-            let (h, _) = self.expect_ident()?;
-            let mut args = Vec::new();
-            while matches!(self.peek().tok, Tok::Ident(_)) {
-                let (a, _) = self.expect_ident()?;
-                args.push(a);
-            }
+            let h = self.parse_type_atom()?;
             self.eat(&Tok::RParen)?;
-            (h, args)
+            h
         } else {
             let (t, _) = self.expect_ident()?;
-            (t, Vec::new())
+            TypeExpr::TName(t)
         };
+        let (ty, head_args) = instance_head_key(&head);
         self.eat(&Tok::KwWhere)?;
         self.eat(&Tok::LBrace)?;
         let mut method_bodies = Vec::new();
@@ -772,6 +1023,7 @@ impl<'a> Parser<'a> {
                 params.push(Param {
                     name: pname,
                     span: pspan,
+                    bang: false,
                 });
             }
             self.eat(&Tok::Eq)?;
@@ -782,6 +1034,7 @@ impl<'a> Parser<'a> {
         self.eat(&Tok::RBrace)?;
         Ok(Def::Instance {
             class,
+            head,
             ty,
             constraints,
             head_args,
@@ -851,6 +1104,17 @@ impl<'a> Parser<'a> {
     fn parse_expr(&mut self, min_bp: u8, no_comma: bool) -> Result<Expr, CompileError> {
         let mut lhs = self.parse_prefix(no_comma)?;
         while let Some((op, l_bp, r_bp)) = infix_binding_power(&self.peek().tok) {
+            // A `!` attached to the following token is a bang marker, not the
+            // infix index operator. It begins no expression, so it is an error
+            // in expression/operator position (`a!i`, `a !i`); only a separated
+            // `!` (`a ! i`) reaches the operator arm below.
+            if op == InfixOp::Index && is_attached_bang(self.toks, self.cur()) {
+                return Err(CompileError::Parse {
+                    msg: "a bang pattern `!x` is not an expression: index with `a ! i` (spaces around `!`)"
+                        .into(),
+                    span: self.peek().span,
+                });
+            }
             if no_comma && op == InfixOp::Par {
                 break;
             }
@@ -897,6 +1161,12 @@ impl<'a> Parser<'a> {
                             vec![("first".to_string(), lhs), ("second".to_string(), rhs)],
                             span,
                         )],
+                        span,
+                    },
+                    // `!` — infix indexing: `a ! i` ≡ `index a i`.
+                    InfixOp::Index => Expr::Apply {
+                        name: "index".to_string(),
+                        args: vec![lhs, rhs],
                         span,
                     },
                     _ => unreachable!(),
@@ -967,25 +1237,25 @@ impl<'a> Parser<'a> {
                     let pattern = self.parse_pattern()?;
                     let mut guards = Vec::new();
                     if self.peek().tok == Tok::Pipe {
-                        // Guarded arm: `pat | g1 => b1 | g2 => b2` — the first
+                        // Guarded arm: `pat | g1 -> b1 | g2 -> b2` — the first
                         // alternative's guard is written explicitly.
                         while self.peek().tok == Tok::Pipe {
                             self.bump();
                             let g = self.parse_expr(0, true)?;
-                            self.eat(&Tok::FatArrow)?;
+                            self.eat(&Tok::ThinArrow)?;
                             let b = self.parse_expr(0, true)?;
                             guards.push((g, b));
                         }
                     } else {
-                        // Bare arm: `pat => body | g1 => b1 | ...` — the first
+                        // Bare arm: `pat -> body | g1 -> b1 | ...` — the first
                         // alternative is unconditional (guard `true`).
-                        self.eat(&Tok::FatArrow)?;
+                        self.eat(&Tok::ThinArrow)?;
                         let first = self.parse_expr(0, true)?;
                         guards.push((Expr::Bool(true, pat_span), first));
                         while self.peek().tok == Tok::Pipe {
                             self.bump();
                             let g = self.parse_expr(0, true)?;
-                            self.eat(&Tok::FatArrow)?;
+                            self.eat(&Tok::ThinArrow)?;
                             let b = self.parse_expr(0, true)?;
                             guards.push((g, b));
                         }
@@ -1018,15 +1288,12 @@ impl<'a> Parser<'a> {
                 // currying lives in definitions (`foo x y = body` ≡
                 // `foo = \x -> \y -> body`) and applications (`f a b` ≡
                 // `((f a) b)`), never in a single lambda literal.
-                let (pname, pspan) = self.expect_ident()?;
-                self.eat(&Tok::FatArrow)?;
+                let param = self.parse_param()?;
+                self.eat(&Tok::ThinArrow)?;
                 let body = self.parse_expr(0, true)?;
                 let span = t.span.merge(body.span());
                 Ok(Expr::Lambda {
-                    params: vec![Param {
-                        name: pname,
-                        span: pspan,
-                    }],
+                    params: vec![param],
                     body: Box::new(body),
                     span,
                 })
@@ -1157,6 +1424,7 @@ impl<'a> Parser<'a> {
                         params: vec![Param {
                             name: x.clone(),
                             span,
+                            bang: false,
                         }],
                         body: Box::new(rest),
                         span,
@@ -1176,6 +1444,7 @@ impl<'a> Parser<'a> {
                             body: e.clone(),
                             where_defs: vec![],
                             sig: None,
+                            bang: false,
                             span,
                         }],
                         body: Box::new(rest),
@@ -1188,6 +1457,7 @@ impl<'a> Parser<'a> {
                         params: vec![Param {
                             name: "_".to_string(),
                             span,
+                            bang: false,
                         }],
                         body: Box::new(rest),
                         span,
@@ -1817,7 +2087,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_main() {
+    fn parses_program_without_main() {
+        // `main` is not required by the parser anymore: the entry name is a
+        // compile-time pipeline parameter (compile selects `main`; eval selects
+        // its synthesized marker). A def list without `main` is a valid program.
+        let p = prog("double x = x * 2.0");
+        assert_eq!(p.defs.len(), 1);
+        assert_eq!(p.defs[0].name(), "double");
+    }
+
+    #[test]
+    fn rejects_empty_program() {
+        // Def-less input is still rejected (the empty-program rule stays).
+        assert!(parse(&tokenize("").unwrap(), "".as_bytes()).is_err());
         assert!(parse(&tokenize("_ * 0.5").unwrap(), "_ * 0.5".as_bytes()).is_err());
     }
 
@@ -2262,6 +2544,111 @@ mod tests {
         }
     }
 
+    /// The `TypeExpr` stored as a `Def::Eval` signature.
+    fn eval_sig(src: &str) -> TypeExpr {
+        let p = prog(src);
+        match &p.defs[0] {
+            Def::Eval { sig: Some(sig), .. } => sig.clone(),
+            other => panic!("expected Eval with a signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_single_constraint_signature_context() {
+        // Haskell 2010: `f : C v => T` — one constraint, no parentheses.
+        let sig = eval_sig("f :: Ix i => Pair i i -> List e -> Array i e = f; main = 1.0");
+        match &sig {
+            TypeExpr::TConstrained(constraints, body) => {
+                assert_eq!(constraints, &vec![("Ix".to_string(), "i".to_string())]);
+                assert_eq!(body.arg_count(), 2);
+                match body.as_ref() {
+                    TypeExpr::TFunc(args, _) => {
+                        assert_eq!(
+                            args[0],
+                            TypeExpr::TApp(
+                                "Pair".into(),
+                                vec![TypeExpr::TName("i".into()), TypeExpr::TName("i".into())]
+                            )
+                        );
+                        assert_eq!(
+                            args[1],
+                            TypeExpr::TApp("List".into(), vec![TypeExpr::TName("e".into())])
+                        );
+                    }
+                    other => panic!("expected TFunc body, got {other:?}"),
+                }
+            }
+            other => panic!("expected a constrained signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_parenthesized_constraint_list_signature_context() {
+        // `(C v, C v) => T` — a comma-separated constraint list.
+        let sig =
+            eval_sig("ixmap :: (Ix i, Ix j) => Pair i i -> Pair j j -> Float = ixmap; main = 1.0");
+        match &sig {
+            TypeExpr::TConstrained(constraints, body) => {
+                assert_eq!(
+                    constraints,
+                    &vec![
+                        ("Ix".to_string(), "i".to_string()),
+                        ("Ix".to_string(), "j".to_string()),
+                    ]
+                );
+                assert_eq!(body.arg_count(), 2);
+            }
+            other => panic!("expected a constrained signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parenthesized_type_is_not_a_constraint_context() {
+        // `(Pair i i) -> Float` starts with `(` but holds ONE type, not a
+        // `C v` constraint pair — the constraint lookahead must not swallow it.
+        let sig = eval_sig("f :: (Pair i i) -> Float = f; main = 1.0");
+        match &sig {
+            TypeExpr::TFunc(args, _) => assert_eq!(args.len(), 1),
+            other => panic!("expected an unconstrained TFunc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unconstrained_signature_stays_unwrapped() {
+        // Backward-compatible shape: no `=>` means no `TConstrained` wrapper.
+        let sig = eval_sig("f :: Float -> Float = f; main = 1.0");
+        assert!(matches!(sig, TypeExpr::TFunc(ref args, _) if args.len() == 1));
+    }
+
+    #[test]
+    fn constraint_class_name_is_not_hardcoded() {
+        // The context is generic over the class: nothing may assume `Ix`.
+        let sig = eval_sig("f :: Monad m => m a -> m a = f; main = 1.0");
+        match &sig {
+            TypeExpr::TConstrained(constraints, body) => {
+                assert_eq!(constraints, &vec![("Monad".to_string(), "m".to_string())]);
+                assert_eq!(body.arg_count(), 1);
+            }
+            other => panic!("expected a constrained signature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unparenthesized_multi_constraint_is_rejected_with_a_diagnostic() {
+        // `C v, C w => T` is not valid Haskell 2010; without the guard it fails
+        // later on the comma with an unrelated "expected Eq" message.
+        let src = "f :: Ix i, Ix j => Float = f; main = 1.0";
+        let err = parse(&tokenize(src).unwrap(), src.as_bytes())
+            .expect_err("an unparenthesized multi-constraint context must fail");
+        match err {
+            CompileError::Parse { msg, .. } => assert!(
+                msg.contains("multi-constraint context must be parenthesized"),
+                "expected the parenthesization diagnostic, got: {msg}"
+            ),
+            other => panic!("expected a Parse error, got {other:?}"),
+        }
+    }
+
     #[test]
     fn parses_type_application() {
         let p = prog("data V = { xs: List Float }; main = 1.0");
@@ -2378,7 +2765,7 @@ mod tests {
         ));
         assert!(
             matches!(arms[0].guards[0].0, Expr::Bool(true, _)),
-            "a bare `Circle r => r` arm's first guard is `true`"
+            "a bare `Circle r -> r` arm's first guard is `true`"
         );
         assert!(matches!(arms[1].pattern, Pattern::LitInt(0)));
         assert!(matches!(arms[2].pattern, Pattern::Wild));
@@ -2387,6 +2774,35 @@ mod tests {
             matches!(arms[3].guards[0].0, Expr::Cmp { .. }),
             "a guarded arm's first alternative is the written guard (`n > 0`)"
         );
+    }
+
+    #[test]
+    fn rejects_fat_arrow_as_match_arm() {
+        // Haskell 2010: `=>` is the class-constraint arrow, so a match arm
+        // spelled with `=>` must be a parse error (the legacy spelling was
+        // dropped — backward compatibility is not required).
+        let src = "main = case x of { _ => 1.0 }";
+        match parse(&tokenize(src).unwrap(), src.as_bytes()) {
+            Err(CompileError::Parse { msg, .. }) => assert!(
+                msg.contains("ThinArrow"),
+                "expected the missing-arrow message to mention ThinArrow, got: {msg}"
+            ),
+            other => panic!("expected a Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_thin_arrow_in_instance_constraint_head() {
+        // The constraint list before an instance head is introduced by `=>`;
+        // `->` is the function-type arrow and must be rejected there.
+        let src = "instance (Monad m) -> Arrow (Kleisli m) where { arr f = f; }; main = 1.0";
+        match parse(&tokenize(src).unwrap(), src.as_bytes()) {
+            Err(CompileError::Parse { msg, .. }) => assert!(
+                msg.contains("FatArrow"),
+                "expected the missing-arrow message to mention FatArrow, got: {msg}"
+            ),
+            other => panic!("expected a Parse error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2486,6 +2902,187 @@ mod tests {
             }
             other => panic!("expected Lambda, got {other:?}"),
         }
+    }
+
+    /// Parse `src`, expecting an error, and return its rendered message.
+    fn parse_err(src: &str) -> String {
+        parse(&tokenize(src).unwrap(), src.as_bytes())
+            .expect_err("expected a parse error")
+            .to_string()
+    }
+
+    #[test]
+    fn bang_index_parses_as_index_application() {
+        // A separated `!` is infix indexing: `a ! i` desugars to `index a i`.
+        let e = body("main = a ! i");
+        let Some(("index", args)) = curry_head(&e) else {
+            panic!("expected an `index` application, got {e:?}");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[0], Expr::Ref(n, _) if n == "a"));
+        assert!(matches!(args[1], Expr::Ref(n, _) if n == "i"));
+    }
+
+    #[test]
+    fn bang_index_is_left_associative() {
+        // `a ! b ! c` ≡ `(a ! b) ! c` ≡ `index (index a b) c`.
+        let e = body("main = a ! b ! c");
+        let Some(("index", args)) = curry_head(&e) else {
+            panic!("expected an `index` application, got {e:?}");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(curry_head(args[0]), Some(("index", inner)) if inner.len() == 2));
+        assert!(matches!(args[1], Expr::Ref(n, _) if n == "c"));
+    }
+
+    #[test]
+    fn bang_index_binds_tighter_than_plus() {
+        // `a ! i + 1` ≡ `(a ! i) + 1` — indexing sits just below application.
+        match body("main = a ! i + 1") {
+            Expr::Arith {
+                op: ArithOp::Add,
+                lhs,
+                rhs,
+                ..
+            } => {
+                assert!(matches!(curry_head(&lhs), Some(("index", args)) if args.len() == 2));
+                assert!(matches!(rhs.as_ref(), Expr::Int(1, _)));
+            }
+            other => panic!("expected Arith, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attached_bang_in_expression_position_is_rejected() {
+        // A `!` attached to the following token is a bang marker, which begins
+        // no expression: both `a!i` and `a !i` are parse errors.
+        for src in ["main = a!i", "main = a !i"] {
+            let msg = parse_err(src);
+            assert!(
+                msg.contains("bang"),
+                "expected a bang-pattern diagnostic for `{src}`, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn bang_param_marks_definition_param() {
+        // `f !x = …` — the bang marker rides on the parameter.
+        let p = prog("main !x = 1.0");
+        let main = p.main_def().unwrap();
+        assert_eq!(main.params().len(), 1);
+        assert_eq!(main.params()[0].name, "x");
+        assert!(main.params()[0].bang, "`!x` must set Param.bang");
+    }
+
+    #[test]
+    fn bang_param_survives_currying() {
+        // `f a !x = …` curries into `f = \a -> \!x -> …`; the marker is kept.
+        match body("main a !x = 1.0") {
+            Expr::Lambda { params, body, .. } => {
+                assert_eq!(params[0].name, "a");
+                assert!(!params[0].bang);
+                match body.as_ref() {
+                    Expr::Lambda { params, .. } => {
+                        assert_eq!(params[0].name, "x");
+                        assert!(params[0].bang);
+                    }
+                    other => panic!("expected nested lambda, got {other:?}"),
+                }
+            }
+            other => panic!("expected curried lambda, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_lambda_param_parses() {
+        match body("main = \\ !x -> x") {
+            Expr::Lambda { params, .. } => {
+                assert_eq!(params.len(), 1);
+                assert_eq!(params[0].name, "x");
+                assert!(params[0].bang);
+            }
+            other => panic!("expected Lambda, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_let_binding_parses() {
+        match body("main = let !x = 1.0 in x") {
+            Expr::Let { defs, .. } => {
+                assert_eq!(defs.len(), 1);
+                assert_eq!(defs[0].name(), "x");
+                assert!(defs[0].is_bang(), "`let !x = e` must set Def::Eval.bang");
+            }
+            other => panic!("expected Let, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_case_pattern_parses() {
+        match body("main = case 1.0 of { !x -> x }") {
+            Expr::Match { arms, .. } => {
+                assert_eq!(arms.len(), 1);
+                assert!(
+                    matches!(&arms[0].pattern, Pattern::Bang(inner)
+                        if matches!(inner.as_ref(), Pattern::Var(v) if v == "x")),
+                    "expected Pattern::Bang(Var x), got {:?}",
+                    arms[0].pattern
+                );
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_nested_in_constructor_pattern() {
+        // `Just !x` — a bang sub-pattern inside a constructor pattern.
+        match body("main = case Just 1.0 of { Just !x -> x; Nothing -> 0.0 }") {
+            Expr::Match { arms, .. } => {
+                assert!(
+                    matches!(&arms[0].pattern, Pattern::Ctor(c, args)
+                        if c == "Just"
+                            && matches!(args.as_slice(), [Pattern::Bang(_)])),
+                    "expected Ctor(Just, [Bang …]), got {:?}",
+                    arms[0].pattern
+                );
+            }
+            other => panic!("expected Match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bang_on_function_binding_is_rejected() {
+        // A bang binding marks a single variable. `!f x = e` has nothing to
+        // force at the binding point (the RHS is a curried function), so it is
+        // rejected instead of silently dropping the parameter binding.
+        for src in ["main = let !f x = x in 1.0", "main = 1.0 where !f x = x"] {
+            let msg = parse_err(src);
+            assert!(
+                msg.contains("single variable"),
+                "expected a single-variable diagnostic for `{src}`, got: {msg}"
+            );
+        }
+        // The variable-only forms still parse.
+        assert!(matches!(body("main = let !x = 1.0 in x"), Expr::Let { .. }));
+        assert!(matches!(body("main = \\ !x -> x"), Expr::Lambda { .. }));
+    }
+
+    #[test]
+    fn spaced_bang_pattern_is_rejected() {
+        // Bang is always attached: `! x` is not a bang pattern.
+        let msg = parse_err("main = case 1.0 of { ! x -> x }");
+        assert!(
+            msg.contains("bang pattern must be written"),
+            "expected a bang-attachment diagnostic, got: {msg}"
+        );
+        // Nor is a spaced bang a parameter marker: the head rejects it with the
+        // bang-specific message, not a generic `expected Eq`.
+        let msg = parse_err("main ! x = 1.0");
+        assert!(
+            msg.contains("bang parameter must be written"),
+            "expected a bang-parameter diagnostic, got: {msg}"
+        );
     }
 
     #[test]

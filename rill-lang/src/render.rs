@@ -44,9 +44,10 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             sig,
             ..
         } => {
-            write!(buf, "{pad}{name}").ok();
+            // A bang binding renders its marker before the bound name: `!x = e`.
+            write!(buf, "{pad}{}{name}", if def.is_bang() { "!" } else { "" }).ok();
             for p in params {
-                write!(buf, " {}", p.name).ok();
+                write!(buf, " {}{}", if p.bang { "!" } else { "" }, p.name).ok();
             }
             // Haskell 2010 signature annotation: `name args :: sig = body`.
             if let Some(sig) = sig {
@@ -132,11 +133,21 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
         }
         Def::Instance {
             class,
-            ty,
+            head,
             method_bodies,
             ..
         } => {
-            write!(buf, "{pad}instance {class} {ty} where {{ ").ok();
+            write!(buf, "{pad}instance {class} ").ok();
+            // An applied head (`Kleisli m`, `Pair Int Int`) must be
+            // parenthesized to re-parse; a bare head is written as-is.
+            if matches!(head, TypeExpr::TApp(..)) {
+                write!(buf, "(").ok();
+                render_type_key_into(head, buf);
+                write!(buf, ")").ok();
+            } else {
+                render_type_key_into(head, buf);
+            }
+            write!(buf, " where {{ ").ok();
             for (mname, params, body) in method_bodies {
                 write!(buf, "{mname}").ok();
                 for p in params {
@@ -213,12 +224,36 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             write!(buf, ". ").ok();
             render_type_expr(inner, buf);
         }
+        TypeExpr::TConstrained(constraints, inner) => {
+            // Haskell 2010: a single constraint stands bare, two or more must be
+            // parenthesized and comma-separated to re-parse.
+            if constraints.len() == 1 {
+                let (class, var) = &constraints[0];
+                write!(buf, "{class} {var}").ok();
+            } else {
+                write!(buf, "(").ok();
+                for (i, (class, var)) in constraints.iter().enumerate() {
+                    if i > 0 {
+                        write!(buf, ", ").ok();
+                    }
+                    write!(buf, "{class} {var}").ok();
+                }
+                write!(buf, ")").ok();
+            }
+            write!(buf, " => ").ok();
+            render_type_expr(inner, buf);
+        }
     }
 }
 
 /// Render a type expression in argument position: a `forall` binder must be
 /// parenthesized so it does not absorb a following arrow chain on re-parse
 /// (`(forall b. a) -> a` must not re-read as `forall b. (a -> a)`).
+///
+/// A `TConstrained` context is unreachable here today: the parser only builds
+/// one at the ROOT of a `::` signature, never inside an argument. Should a later
+/// task admit one, it needs its own parenthesization here (a bare `C v => T`
+/// would otherwise absorb the enclosing arrow chain and not re-parse).
 fn render_type_arg(t: &TypeExpr, buf: &mut String) {
     if matches!(t, TypeExpr::TForall(..)) {
         write!(buf, "(").ok();
@@ -226,6 +261,37 @@ fn render_type_arg(t: &TypeExpr, buf: &mut String) {
         write!(buf, ")").ok();
     } else {
         render_type_expr(t, buf);
+    }
+}
+
+/// Canonical single-line spelling of a type, used as an instance-registry key:
+/// `Pair Int (Pair Int Int)`. Unlike [`render_type_expr`], a nested
+/// application is parenthesized so the spelling is unambiguous (a flat
+/// `Pair Int Pair Int Int` would not re-parse to the same tree).
+pub(crate) fn render_type_key(t: &TypeExpr) -> String {
+    let mut buf = String::new();
+    render_type_key_into(t, &mut buf);
+    buf
+}
+
+fn render_type_key_into(t: &TypeExpr, buf: &mut String) {
+    match t {
+        TypeExpr::TName(n) => buf.push_str(n),
+        TypeExpr::TApp(head, args) => {
+            buf.push_str(head);
+            for a in args {
+                buf.push(' ');
+                let nested = !matches!(a, TypeExpr::TName(_));
+                if nested {
+                    buf.push('(');
+                }
+                render_type_key_into(a, buf);
+                if nested {
+                    buf.push(')');
+                }
+            }
+        }
+        other => render_type_expr(other, buf),
     }
 }
 
@@ -377,7 +443,7 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
                 if i > 0 {
                     write!(buf, " ").ok();
                 }
-                write!(buf, "{}", p.name).ok();
+                write!(buf, "{}{}", if p.bang { "!" } else { "" }, p.name).ok();
             }
             write!(buf, " -> ").ok();
             render_expr(body, buf, 0)?;
@@ -490,6 +556,10 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
                 render_pattern_nested(a, buf);
             }
         }
+        Pattern::Bang(inner) => {
+            write!(buf, "!").ok();
+            render_pattern_nested(inner, buf);
+        }
     }
 }
 
@@ -497,9 +567,12 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
 /// arguments is parenthesized (`Just (Left y) 1`) so the inner constructor
 /// cannot swallow its sibling arguments on re-parse: the unparenthesized
 /// `Just Left y 1` would re-parse as `Just (Left y 1)`, silently changing the
-/// match.
+/// match. A bang marker in front of such a constructor is parenthesized with
+/// the constructor application, marker inside the parens (`Just (!(Left y)) 1`),
+/// because an unparenthesized `Just !Left y` would attach the bang to the whole
+/// `Left` application at re-parse.
 fn render_pattern_nested(p: &Pattern, buf: &mut String) {
-    if let Pattern::Ctor(_, args) = p {
+    if let Pattern::Ctor(_, args) = p.strip_bang() {
         if !args.is_empty() {
             write!(buf, "(").ok();
             render_pattern(p, buf);
@@ -536,6 +609,7 @@ mod tests {
                 span: span(),
                 where_defs: vec![],
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -558,6 +632,7 @@ mod tests {
                 span: span(),
                 where_defs: vec![],
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -574,6 +649,7 @@ mod tests {
                 params: vec![crate::ast::Param {
                     name: "gain".into(),
                     span: span(),
+                    bang: false,
                 }],
                 body: Expr::Arith {
                     op: ArithOp::Mul,
@@ -584,6 +660,7 @@ mod tests {
                 span: span(),
                 where_defs: vec![],
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -602,6 +679,7 @@ mod tests {
                     params: vec![crate::ast::Param {
                         name: "x".into(),
                         span: span(),
+                        bang: false,
                     }],
                     body: Box::new(Expr::Arith {
                         op: ArithOp::Mul,
@@ -614,6 +692,7 @@ mod tests {
                 where_defs: vec![],
                 span: span(),
                 sig: None,
+                bang: false,
             }],
         };
         let dsl = render(&prog).unwrap();
@@ -662,10 +741,47 @@ mod tests {
                 body: Expr::Float(1.0, span()),
                 where_defs: vec![],
                 sig: Some(TypeExpr::TName("Float".into())),
+                bang: false,
                 span: span(),
             }],
         };
         assert_eq!(render(&prog).unwrap(), "main :: Float = 1.0");
+    }
+
+    #[test]
+    fn type_key_spelling_matches_value_type_key() {
+        // The instance registry spells an instance head with `render_type_key`
+        // and dispatch spells the selector's value type with `value_type_key`.
+        // The two must agree byte for byte, or an instance that registers fine
+        // silently stops resolving.
+        let env = crate::types::ty::TypeEnv::with_builtins();
+        let nested_in_arg = TypeExpr::TApp(
+            "Pair".into(),
+            vec![
+                TypeExpr::TApp("List".into(), vec![TypeExpr::TName("Int".into())]),
+                TypeExpr::TName("Int".into()),
+            ],
+        );
+        let nested_in_arg2 = TypeExpr::TApp(
+            "Pair".into(),
+            vec![
+                TypeExpr::TName("Int".into()),
+                TypeExpr::TApp(
+                    "Pair".into(),
+                    vec![TypeExpr::TName("Int".into()), TypeExpr::TName("Int".into())],
+                ),
+            ],
+        );
+        for te in [&nested_in_arg, &nested_in_arg2] {
+            let vty = crate::types::infer::data_field_vty(&env, &[], te);
+            assert_eq!(
+                render_type_key(te),
+                crate::types::ty::value_type_key(&vty).expect("concrete type spells a key"),
+                "registry and dispatch must spell {te:?} identically"
+            );
+        }
+        assert_eq!(render_type_key(&nested_in_arg), "Pair (List Int) Int");
+        assert_eq!(render_type_key(&nested_in_arg2), "Pair Int (Pair Int Int)");
     }
 
     #[test]
@@ -687,6 +803,22 @@ mod tests {
     fn render_roundtrip_def_signature_with_where() {
         let dsl = roundtrip_main("main :: Float = g where { g = 1.0; };");
         assert_eq!(dsl, "main :: Float = g where {\n    g = 1.0;\n}");
+    }
+
+    #[test]
+    fn render_roundtrip_constrained_def_signature() {
+        // A single-constraint context renders unparenthesized (`C v => T`) and
+        // survives render → parse → render.
+        let dsl = roundtrip_main("main :: Ix i => Pair i i -> List e -> Array i e = g;");
+        assert_eq!(dsl, "main :: Ix i => (Pair i i -> List e -> Array i e) = g");
+    }
+
+    #[test]
+    fn render_roundtrip_multi_constraint_def_signature() {
+        // Two or more constraints render as a parenthesized, comma-separated
+        // list — the only Haskell 2010 form that re-parses.
+        let dsl = roundtrip_main("main :: (Ix i, Ix j) => Float = 1.0;");
+        assert_eq!(dsl, "main :: (Ix i, Ix j) => Float = 1.0");
     }
 
     #[test]
@@ -758,7 +890,7 @@ main = 1.0;";
     fn render_roundtrip_match_written_true_guard() {
         // A written `true` guard in a non-first position must not be conflated
         // with the bare arm's synthetic first-alternative `true` sentinel
-        // (regression: it previously rendered as `n => 1.0 => 2.0`).
+        // (regression: it previously rendered as `n -> 1.0 -> 2.0`).
         let dsl = roundtrip_main(r"main = case n of { n -> 1.0 | true -> 2.0; _ -> 0.0; };");
         assert_eq!(
             dsl,
@@ -774,6 +906,29 @@ main = 1.0;";
         // `Just (Left y 1)`).
         let dsl = roundtrip_main(r"main = case x of { Just (Left y) 1 -> y; _ -> 0.0; };");
         assert_eq!(dsl, r"main = case x of { Just (Left y) 1 -> y; _ -> 0.0; }");
+    }
+
+    #[test]
+    fn render_roundtrip_bang_forms() {
+        // Bang markers survive render → parse → render: on parameters, on
+        // lambdas, on `let` bindings, and on `case` patterns (including a bang
+        // in front of a nested constructor with a sibling argument).
+        let dsl = roundtrip_main("main !x = x + 1.0;");
+        assert_eq!(dsl, "main !x = x + 1.0");
+        let dsl = roundtrip_main(r"main = \ !x -> x + 1.0;");
+        assert_eq!(dsl, r"main = \!x -> x + 1.0");
+        let dsl = roundtrip_main("main = let !x = 1.0 in x;");
+        assert_eq!(dsl, "main = let !x = 1.0 in x");
+        let dsl = roundtrip_main(r"main = case Just 1.0 of { Just !x -> x; Nothing -> 0.0; };");
+        assert_eq!(
+            dsl,
+            r"main = case Just 1.0 of { Just !x -> x; Nothing -> 0.0; }"
+        );
+        let dsl = roundtrip_main(r"main = case x of { Just !(Left y) 1 -> y; _ -> 0.0; };");
+        assert_eq!(
+            dsl,
+            r"main = case x of { Just (!(Left y)) 1 -> y; _ -> 0.0; }"
+        );
     }
 
     #[test]

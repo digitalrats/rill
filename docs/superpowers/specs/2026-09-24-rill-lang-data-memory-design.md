@@ -112,7 +112,7 @@ enum ValueTy {
 
 ### 3.1 Type declarations
 
-```faust
+```haskell
 // type — synonym (pure substitution)
 type Angles = Float;
 
@@ -136,7 +136,7 @@ instance Show Float where {
 
 ### 3.2 Value expressions
 
-```faust
+```haskell
 p  = Point { x: 1.0, y: 2.0 };     // record constructor
 s  = Circle 1.0;                    // sum constructor
 r  = p.x;                           // field projection
@@ -145,9 +145,9 @@ h  = Hz 440.0;                      // newtype constructor
 f  = hz_to_f h;                     // newtype unwrap (automatic where Float expected)
 v  = area s;                        // pattern matching:
 
-area x = match x of {
-    Circle r    => 3.14159 * r * r;
-    Rect w h    => w * h;
+area x = case x of {
+    Circle r    -> 3.14159 * r * r;
+    Rect w h    -> w * h;
 };
 ```
 
@@ -274,7 +274,7 @@ for `~` and `@ n`.
 
 ## 7. Typeclass resolution (compile time)
 
-```faust
+```haskell
 typeclass Show a where { show: a -> Str; }
 instance Show Float where { show f = "float"; }
 ```

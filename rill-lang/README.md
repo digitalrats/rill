@@ -7,8 +7,18 @@ one of two paths:
 
 | Path | Entry point | What runs |
 |---|---|---|
-| **Program executor** | `compile_runner` → `ProgramRunner` | `main : (String…) -> IO ()`, run to completion against a realized `World` (memory streams + stdio) |
-| **Pure-value tick** | `compile` / `compile_with` / `compile_with_ffi` → `RillProgram::run_value` | One value-track tick; the result is read from `RillProgram::value_outputs()` |
+| **Program executor** | `compile` → `ProgramRunner` | `main : IO ()`, run to completion against a realized `WorldState` (memory streams + stdio) |
+| **Single-run value eval** | `compile_eval` + `test_eval` | Evaluate one expression to WHNF against a `defs` context, in a caller-owned `WorldState`; the result is read from `WorldState::result()` (`copy_buffer(r, dst)` for whole-buffer results) |
+
+Compilation is **explicit**: source lowers to a pure-code `Ir`, and every piece
+of runtime state lives in a `WorldState`. A world is **seated** for an IR
+(`world.seat(&ir)`) before anything runs, and the executor takes the pair —
+`(ir, &mut world)` — never a program object.
+
+`compile_eval` returns a pure-code `Ir`; `test_eval` seats a caller-owned world
+and evaluates the value entry once, leaving the run's result in
+`world.result()`. `ProgramRunner::run()` is repeatable: a host can `set_param`
+between runs (see *Dynamic parameters*).
 
 The interpreter is safe and allocation-free after warm-up: values live in a
 fixed, page-based arena, and a program that exceeds the budget reports a clean
@@ -17,24 +27,22 @@ future `jit` feature; both share the same linear IR, so the front-end is
 unaffected when the JIT lands.
 
 > **Removed in the IO/streams core change (this branch).** `rill-lang` no longer
-> implements `Algorithm<T>`/`MultichannelAlgorithm<T>` for `RillProgram`; there
-> is no `process()`, no `ProgramEngine`, no `readInput`/`writeOutput`, and no
-> buffer-λ `main`. The old `compile_graph()` graph-execution entry point is gone
-> as well: what remains of graph compilation sits behind the off-by-default
-> `graph` feature (`rill_lang::graph`), does not build at this revision (its
-> `reconstruct.rs` still targets the removed `Par`/`Split`/`Cut` AST), and is not
-> built by the workspace gates. Programs express their I/O as streams inside the
-> program, not as buffers handed in from outside. See *Migrating* below.
+> implements `Algorithm<T>`/`MultichannelAlgorithm<T>` for a compiled program;
+> there is no `process()`, no `ProgramEngine`, no `readInput`/`writeOutput`, and
+> no buffer-λ `main`. The `graph` module (`compile_graph()`,
+> `CompiledGraphEngine`) and its `graph` Cargo feature were removed entirely;
+> graph compilation is **deferred** to a separate follow-on, not shipped here.
+> Programs express their I/O as streams inside the program, not as buffers handed
+> in from outside. See *Migrating* below.
 
 ## Quick start: an IO program
 
 ```rust
-use rill_lang::{compile_runner, Registry};
+use rill_lang::{compile, ffi::ForeignRegistry};
 
-let mut runner = compile_runner::<f32, 256>(
+let mut runner = compile::<f32, 256>(
     r#"main = do { write (Just "hi") stdout; return () };"#,
-    &Registry::new(),
-    44_100.0,
+    ForeignRegistry::new(),
 )
 .unwrap();
 
@@ -42,53 +50,71 @@ runner.run().unwrap();
 assert_eq!(runner.stdout(), ["hi"]);
 ```
 
-`main` takes String launch arguments, bound with `set_args(&[String])`, and
-returns `IO ()`. The runner owns the program's `World`: `stdout`/`stderr` are
+`main` is a pure `IO ()` action — it takes no String launch arguments. The
+runner owns the program's `WorldState`: `stdout`/`stderr` are
 captured into the runner (not echoed to the process console) and read back with
 `stdout()` / `stderr()`, which report the console built up by **all runs since
 construction**. `set_stdin(&[String])` injects the line-oriented input that
 `read stdin` yields, rewinding the stream for the next run.
 
+The world owns the sample rate as well, and it starts at `0.0` ("not a signal
+program"). A host running signal-aware code pre-seeds it before the run:
+`runner.world_mut().params.sample_rate = 48_000.0;` — the seat that `run()`
+performs reads the rate from this field (there is no rate argument).
+
 A program whose `main` reaches `return ()` runs to completion cleanly, even when
-it performs no I/O; a `main` whose final action's result is not `()` is a clean
-`ProcessError` (`` `main` must have type `IO ()` ``) rather than a silently
-discarded value — `return 0.0` in a `do` block is rejected as well. Because the
-`Monad` method is resolved from the expected type, a bare `main = return ()`
-does not type-check: fix the monad with a preceding effect (as above) or with a
-`bind` whose result type is known.
+it performs no I/O; a `main` that does not type as `IO ()` is rejected by
+`compile` with a `CompileError` (`` `main` must have type `IO ()` ``) rather
+than a silently discarded value — `return 0.0` in a `do` block is rejected as
+well. Because the `Monad` method is resolved from the expected type, a bare
+`main = return ()` does not type-check: fix the monad with a preceding effect
+(as above) or with a `bind` whose result type is known.
 
 ### Entry points
 
 | Function | Produces | Use |
 |---|---|---|
-| `compile_runner(src, &registry, sample_rate)` | `ProgramRunner<T, BUF>` | The executor for `main : IO ()` programs; compiles in `Complete` (lazy) mode unless the source has a mode pragma |
-| `compile(src)` | `RillProgram<T, 256>` | Pure-value tick, strict mode, no built-in registry |
-| `compile_with(src, &registry, sample_rate)` | `RillProgram<T, 256>` | Pure-value tick with the DSP built-in registry |
-| `compile_with_ffi(src, &ffi, sample_rate)` | `RillProgram<T, 256>` | Pure-value tick with a foreign-function registry |
-| `RillProgram::run_value()` | `Result<(), ProcessError>` | Run one value tick; read outputs from `value_outputs()` |
+| `compile(src, ffi)` | `ProgramRunner<T, BUF>` | The executor for `main : IO ()` programs; owns the `Ir` and the `WorldState` (including the `ForeignRegistry`); compiles in `Complete` (lazy) mode unless the source has a mode pragma |
+| `compile_eval::<T, BUF>(defs, expr, mode)` | `Ir` | Compiles `expr` as a fresh entry in the context of `defs`; no sample rate, no run |
+| `test_eval(&ir, &mut world)` | `Result<(), CompileError>` | Seats the world for `ir` and runs the entry once; read the result with `world.result()` / `world.copy_buffer(r, dst)` |
+| `WorldState::seat(&ir)` | `Result<(), CompileError>` | Assembles the world's tables for an IR, resolving built-ins against `world.ffi` (idempotent for params) |
+| `WorldState::result()` | `Option<ArenaRef>` | The single run's result ref |
+| `WorldState::copy_buffer(r, dst)` | `bool` | Copy a whole-buffer result (`Value::Buffer`) into `dst`; `false` on non-buffer refs |
 
 ### The pure-value path
 
-`compile` builds a program whose `main` is evaluated as a single value-track
-tick. This is the path for pure computation — collections, records, closures,
-typeclass methods — without I/O:
+`compile_eval` builds `"{defs}\n__rill_eval = ({expr});"` and compiles it
+through the same pipeline as any program — `defs` carries the program's
+top-level bindings, `expr` the expression to evaluate. The entry marker is
+internal (never `main`), so `main` in `defs` is an ordinary binding. `test_eval`
+then seats a caller-owned world for that `Ir` and runs the entry once. This is
+the path for pure computation — collections, records, closures, typeclass
+methods — without I/O:
 
 ```rust
-use rill_lang::{arena::Value, compile};
+use rill_lang::arena::Value;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
+use rill_lang::program::{WorldConfig, WorldState};
+use rill_lang::{compile_eval, test_eval};
 
-let mut prog = compile::<f32>("main = 1.0 + 2.0").unwrap();
-prog.run_value().unwrap();
+let ir = compile_eval::<f32, 256>("", "1.0 + 2.0", Mode::Strict).unwrap();
+let mut world = WorldState::<f32, 256>::new(WorldConfig {
+    ffi: Some(ForeignRegistry::<f32>::new()),
+    ..Default::default()
+});
+test_eval(&ir, &mut world).unwrap();
 assert_eq!(
-    prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
+    world.arena().get(world.result().unwrap()).unwrap(),
     &Value::Float(3.0),
 );
 ```
 
-A value-typed `main` is the program's single value output; `run_value` may be
-called repeatedly. Signal-block built-ins (filters, oscillators, effects; see
-*Built-in functions*) still parse, type-check and lower, and their Rust
-implementations are still registered, but there is no signal-transform executor
-wired to them in this branch.
+Signal-block built-ins (filters, oscillators, effects; see *Built-in functions*)
+lower to whole-buffer values: `main = sine …` evaluates to a `Value::Buffer`,
+inspected with `copy_buffer(result().unwrap(), &mut out)`. There is no
+signal-transform executor: a value entry runs once per `test_eval`, while an IO
+program's `ProgramRunner::run()` is repeatable.
 
 ## Streams
 
@@ -96,7 +122,7 @@ Streams are ordinary values: `InputStream a` and `OutputStream a`, generic in th
 element type, with the io-streams operation surface. `Nothing` means EOF on a
 read and close on a write.
 
-```faust
+```haskell
 fromList        :: List a -> IO (InputStream a)
 toList          :: InputStream a -> IO (List a)
 read            :: InputStream a -> IO (Maybe a)
@@ -113,7 +139,7 @@ stdin           :: InputStream String
 
 A complete program — drain a memory stream and render each element:
 
-```faust
+```haskell
 show_all acc x = concat_string acc (show_float x);
 main = do {
     xs <- fromList [1.0, 2.0, 3.0];
@@ -143,13 +169,13 @@ stream program therefore overflows a default 2 MiB thread stack (an abort, not a
 clean error). Run such programs on a grown-stack thread:
 
 ```rust
-use rill_lang::{compile_runner, run_on_stack, Registry};
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::{compile, run_on_stack};
 
 let stdout = run_on_stack(16 << 20, || {
-    let mut runner = compile_runner::<f32, 256>(
+    let mut runner = compile::<f32, 256>(
         r#"main = do { write (Just "hi") stdout; return () };"#,
-        &Registry::new(),
-        44_100.0,
+        ForeignRegistry::new(),
     )
     .unwrap();
     runner.run().unwrap();
@@ -158,8 +184,9 @@ let stdout = run_on_stack(16 << 20, || {
 assert_eq!(stdout, ["hi"]);
 ```
 
-`ProgramRunner` is **not `Send`** (it owns `Rc<RefCell<…>>` state), so compile
-*inside* the closure, not before it. `run_on_stack` resumes a panic on the
+`ProgramRunner` is **not `Send`** (its `WorldState` owns `Box<dyn
+BlockBuiltin<T>>` trait objects and other non-shareable runtime handles), so
+compile *inside* the closure, not before it. `run_on_stack` resumes a panic on the
 calling thread, and a failed spawn panics (a host-resource failure, not a program
 error). Trampolining the `bind` chain to remove the limit is a planned follow-up.
 
@@ -167,18 +194,19 @@ error). Trampolining the `bind` chain to remove the limit is a planned follow-up
 
 | Removed | Replacement |
 |---|---|
-| `compile(...)` then `prog.process(inputs, outputs)` | `compile_runner(...)` then `runner.run()`; describe the work as stream reads/writes inside `main` |
-| `impl Algorithm<T> for RillProgram`, `BlockBuiltin` driving `RillProgram` | Built-ins remain callable *inside* a program; there is no transform wrapper around a whole program |
+| `compile(...)` then `prog.process(inputs, outputs)` | `compile(src, ffi)` then `runner.run()`; describe the work as stream reads/writes inside `main` |
+| `impl Algorithm<T>` for a compiled program, `BlockBuiltin` driving it | Built-ins remain callable *inside* a program; there is no transform wrapper around a whole program |
 | `readInput` / `writeOutput` and indexed variants | `fromList` / `toList`, `read` / `write`, `connect`, `makeInputStream` / `makeOutputStream` |
-| Buffer-λ `main` (`main = _ * 0.5`) | `main : (String…) -> IO ()`; a value `main` remains valid for the pure-value tick |
-| `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Not available here: the `graph` feature is off by default, the transform executor is gone, and the module does not build at this revision. Graph compilation is **deferred** with the graph follow-on |
-| Actor `?name=default` slots wired to a graph's `SetParameter` mailbox | `?name` slots still type-check and lower as dynamic built-in parameters; the graph-side mailbox wiring is not part of this branch |
+| Buffer-λ `main` (`main = _ * 0.5`) | `main : IO ()`; a value `main` remains valid for the pure-value tick |
+| The old program-object façade and its `compile_with_*` / `compile_runner` / `compile_source_to_program` variants | `Ir` + `WorldState`: `compile_eval(defs, expr, mode)` → `test_eval(&ir, &mut world)`; `compile(src, ffi)` → `ProgramRunner` |
+| `compile_graph()`, `CompiledGraphEngine`, `MultichannelAlgorithm` dispatch | Removed with the `graph` module and its Cargo feature; graph compilation is **deferred** with a separate follow-up |
+| Actor `?name=default` slots wired to a graph's `SetParameter` mailbox | `?name` slots still type-check and lower as dynamic built-in parameters; the graph-side mailbox wiring was removed with the `graph` module |
 
 ## The language in one screen
 
 A program is a list of definitions ending in `;`. One must be named `main`.
 
-```faust
+```haskell
 gain x = x * 0.5;            // a one-argument function (juxtaposed args — no parens)
 main = 1.0 + gain 1.0;       // a pure value: Float(1.5)
 ```
@@ -188,9 +216,9 @@ main = 1.0 + gain 1.0;       // a pure value: Float(1.5)
 Function calls use **bracket-free juxtaposition** — space-separated arguments,
 no parentheses:
 
-```faust
+```haskell
 f g x = g (g x);             // juxtaposed
-main = f (fn x -> x * 2.0) 3.0;
+main = f (\x -> x * 2.0) 3.0;
 ```
 
 Parenthesized form `name(arg, ...)` is also supported (for compatibility),
@@ -200,7 +228,7 @@ but juxtaposed is canonical.
 
 Records are written with **record literals** `{ key: val }`:
 
-```faust
+```haskell
 data Point = { x: Float, y: Float };
 p = Point { x: 2.0, y: 3.0 };
 main = p.x;                  // field projection -> Float(2.0)
@@ -238,7 +266,7 @@ newtype-style by passing the field value directly (`Box 3.0` ≡
 Complex values are pairs of values; the parallel combinator `,` builds them and
 `.first`/`.second` take them apart:
 
-```faust
+```haskell
 z = (complex 3.0 4.0, complex 2.0 0.0);
 main = norm (cmul z.first z.second);   // 6.0
 ```
@@ -255,8 +283,8 @@ which this branch does not provide.
 ## Built-in functions
 
 rill-lang supports calling stateful DSP/model built-ins from
-`rill-core-dsp`/`rill-core-model`/`rill-fft` via `compile_with(src, &registry,
-sample_rate)`.
+`rill-core-dsp`/`rill-core-model`/`rill-fft` via a `ForeignRegistry` the world
+owns (`WorldConfig::ffi`); seating resolves every declared built-in against it.
 
 | Category | Builtins | Feature |
 |---|---|---|
@@ -277,32 +305,34 @@ passed by juxtaposition (e.g. `lowpass _ 1000.0 0.7`). Some built-ins accept
 variadic signal inputs — `mixer` takes any number of signals followed by a
 record:
 
-```faust
+```haskell
 main = mixer _ ch2 ch3 ch4 { buses: 4, master_vol: 1.0 };
 main = dry_wet _ wet { mix: 0.7 };
 main = eq_parametric _ { bands: [{ freq: 500.0, q: 2.0, gain_db: -3.0 }] };
 ```
 
 All built-ins are whole-buffer `BlockBuiltin`s. Per-sample state (filters,
-integrators) lives inside the built-in. Bindings and registries live in
-`rill-adrift` (`lang_builtins::full_registry`), with per-crate
-`register_lang_builtins()` functions for selective registration. For declaring
-Rust-implemented built-ins in the language, see *FFI (foreign functions)* below.
+integrators) lives inside the built-in. The registry builders live in
+`rill-adrift` (`lang_builtins::full_ffi`), with per-crate
+`register_foreign_lang_builtins()` functions for selective registration. For
+declaring Rust-implemented built-ins in the language, see *FFI (foreign
+functions)* below.
 
 ### Dynamic parameters (`?name=default`)
 
 `?name=default` creates a named parameter slot for a built-in's scalar argument:
 
-```faust
+```haskell
 main = lowpass _ ?cutoff=1000.0 0.7;
 ```
 
 Names are stable and may be namespaced by a `where` block with dot notation
 (`?osc.freq=440.0` → `"osc.freq"`). `param("name", default)` is the older inline
 form for the same idea; both coexist. Parameter slots are addressable
-programmatically through `RillProgram::params_meta()` / `set_param()`; the
-graph-side `SetParameter` mailbox that consumed these names is not part of this
-branch.
+programmatically by NAME through `WorldState::params_meta()` / `set_param()`; a
+`set_param` between two runs is what the second run observes. The graph-side
+`SetParameter` mailbox that consumed these names was removed with the `graph`
+module.
 
 ## FFI (foreign functions)
 
@@ -316,7 +346,7 @@ The signature is a curried arrow (`a -> b -> r`). Signal channels are typed
 `FixedBuffer f32`; scalar parameters use the scalar value types `Float` /
 `Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer f32)`:
 
-```faust
+```haskell
 foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
 foreign fn add    : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
 foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32;
@@ -325,7 +355,7 @@ foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32
 Parameters occupy positional argument slots in declaration order — the signal
 channel at slot 0, the scalar at slot 1:
 
-```faust
+```haskell
 foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
 main = gain _ 0.5;
 ```
@@ -339,7 +369,7 @@ as a foreign built-in.
 
 `SIGNAL_PRELUDE` ships the buffer family and the `Buffer` typeclass:
 
-```faust
+```haskell
 typeclass Buffer b where { }
 instance Buffer (FixedBuffer a) where { }
 instance Buffer (Tape f32) where { }
@@ -359,23 +389,41 @@ instance Buffer (Tape f32) where { }
 Rust implementations are registered by name on `rill_lang::ffi::ForeignRegistry<T>`:
 
 ```rust
+use rill_core::memory::BufferAllocator;
 use rill_lang::ffi::ForeignRegistry;
 
 let mut ffi = ForeignRegistry::<f32>::new();
-ffi.register_block("gain", |params: &[f64], sample_rate: f32| {
-    // -> Box<dyn BlockBuiltin<f32>>  (a 1→1 block builtin)
-});
-ffi.register_multichannel_block("add", |ins: usize, params: &[f64], sample_rate: f32| {
-    // -> Box<dyn MultichannelBlockBuiltin<f32>>  (an N→M block builtin)
-});
-let prog = rill_lang::compile_with_ffi::<f32>(src, &ffi, 44100.0).unwrap();
+ffi.register_block(
+    "gain",
+    |params: &[f64], sample_rate: f32, alloc: Option<&mut BufferAllocator<f32>>| {
+        // Build and return `Box<dyn BlockBuiltin<f32>>` (a 1→1 block builtin);
+        // `alloc` sizes any buffers the builtin owns.
+        unimplemented!()
+    },
+);
+ffi.register_multichannel_block(
+    "add",
+    |ins: usize, params: &[f64], sample_rate: f32, alloc: Option<&mut BufferAllocator<f32>>| {
+        // Build and return `Box<dyn MultichannelBlockBuiltin<f32>>` (an N→M
+        // block builtin).
+        unimplemented!()
+    },
+);
+// `ffi` is handed to the world; each factory is called at seat time with the
+// program's scalar params and the world sample rate.
+let mut world = rill_lang::program::WorldState::<f32, 256>::new(
+    rill_lang::program::WorldConfig { ffi: Some(ffi), ..Default::default() },
+);
+let ir = rill_lang::compile_eval::<f32, 256>("", "gain _ 0.5", rill_lang::mode::Mode::Strict)
+    .unwrap();
+rill_lang::test_eval(&ir, &mut world).unwrap();
 ```
 
 `register_block` registers a single-channel (1→1) built-in;
 `register_multichannel_block` an N→M one — the runtime dispatches by the
-`BuiltinInst` variant. `compile_with_ffi` compiles source against the registry,
-returning `RillProgram<T, 256>`. A foreign call whose name is not registered
-fails at `RillProgram::build` with `foreign built-in '...' is not registered`.
+`BuiltinInst` variant. `test_eval` seats the world for the compiled `Ir` and
+runs the expression once. A foreign call whose name is not registered fails at
+seat (`WorldState::seat`) with `foreign built-in '...' is not registered`.
 
 ### The builtin catalog
 
@@ -401,7 +449,7 @@ A tape loop is created with the `tape_loop` foreign constructor
 (`Int -> Tape f32`) and shared by the tape head builtins `write_head` /
 `read_head` (registered by `rill-sampler`). NAMED bindings share one buffer:
 
-```faust
+```haskell
 tape = tape_loop 1024;
 main = (write_head _ _ tape 0.5 0.3) , read_head tape 0.1;
 ```
@@ -422,18 +470,19 @@ generation is blocked — so an ill-formed program never reaches the runtime.
 
 With the `serialization` feature, [`RillLangDef`] carries a program as its
 **source string** (the canonical, human-editable form) and [`compile_def`] turns
-it back into a runnable program:
+it back into a `ProgramRunner`:
 
 ```rust,no_run
 use rill_lang::{RillLangDef, compile_def};
 
 let def = RillLangDef::new("gain", "main = return ();");
-let prog = compile_def::<f32>(&def).unwrap();
+let mut runner = compile_def::<f32>(&def).unwrap();
+runner.run().unwrap();
 ```
 
-The `serialization` feature no longer implies `graph`: `RillLangDef` and
-`compile_def` are the source-level contract; graph serialization (`GraphDef`) is
-gated behind `graph` + `serialization` and is not built by the workspace gates.
+The `serialization` feature covers the source-level contract only: `RillLangDef`
+and `compile_def`. The graph module (and its `GraphDef` serialization) was removed
+together with the `graph` feature.
 
 ## Debug infrastructure (`debug` feature)
 
@@ -455,7 +504,7 @@ inspected via `rill-analyzer`. Zero overhead when the feature is disabled.
 Beyond signals, a program can carry **values** — arena-paced, typed, and
 processed in the value-track phase:
 
-```faust
+```haskell
 data Point = { x: Float, y: Float };          // record type
 data Shape = Circle Float | Rect Float Float; // sum type
 newtype Hz  = Float;                          // distinct wrapper
@@ -475,9 +524,13 @@ collection ops perform **no heap allocation** on the processing path in the
 default (RT) mode. Copy-on-write mutation (`p.x := 3.0`), reference counting,
 and acyclic-by-construction data types are unchanged; the pool is bounded by a
 conservative build-time budget, and a program that exhausts it (default mode)
-or grows it (`growable-arena` feature, non-RT) hits a detectable no-op /
-runtime error. `typeclass` methods resolve at compile time (no runtime
-dispatch).
+hits a detectable no-op / runtime error. With `growable: true` (the non-RT
+interpreter policy; its default follows the `growable-arena` build feature,
+`false` in default builds) an overrun appends pages instead — but the growth
+path currently panics for a non-power-of-two IR capacity (a pre-existing
+`ChunkedVec` page-door limitation, tracked as follow-up FU-1), so the bounded
+default is the safe path today. `typeclass` methods resolve at compile time (no
+runtime dispatch).
 
 ### Builtin value types and type constructors
 
@@ -507,14 +560,14 @@ default RT mode is a detectable no-op, not a per-container error).
 `insert` is overloaded by arity (Map 3-arg, Set 2-arg); `not` is a prefix
 builtin.
 
-```faust
+```haskell
 xs  = [1.0, 2.0, 3.0];            // List Float
 ys  = cons 10.0 (list);           // prepend; the list grows
 h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
 n   = length xs;                  // Int
-z   = map (fn x -> x * 2.0) xs;   // function first
-s   = fold (fn a b -> a + b) 0.0 xs;   // Float
-f   = filter (fn x -> x > 1.0) xs;     // List Float
+z   = map (\x -> x * 2.0) xs;   // function first
+s   = fold (\a b -> a + b) 0.0 xs;   // Float
+f   = filter (\x -> x > 1.0) xs;     // List Float
 
 m  = { "a": 1.0, "b": 2.0 };      // Map String Float
 m1 = insert "a" 9.0 m;            // replace-on-duplicate
@@ -528,6 +581,40 @@ derives `Eq`/`Ord` instances for every data type (except `Func`) — a structura
 total order, used to keep entries sorted for O(log n) `lookup`/`member`. A
 function-typed key is a compile error.
 
+### Arrays and `STArray` (Data.Array surface)
+
+Immutable arrays are first-class values: `Array i e` indexed by `Int` or
+`Pair Int Int` (a matrix is `Array (Pair Int Int) Float`). Use `listArray` for
+sequential construction, or `array` with explicit associations. Index with the
+infix `!`; note that `!` is also the bang marker in patterns — `f !x` forces
+`x` to WHNF, while `a ! i` indexes an array.
+
+Both `listArray` and the ST `newListArray` follow GHC's lenient construction: a
+list shorter than the bounds' `rangeSize` pads the tail with undefined elements
+(forcing one of them faults with "array: undefined array element"), and a list
+longer than the range is silently truncated to it.
+
+The core vocabulary includes `bounds`, `elems`, `indices`, `assocs`, `update`,
+`accum`, and `ixmap` for reindexing:
+
+```haskell
+b = Pair { first: 0, second: 2 };
+a = listArray b [10.0, 20.0, 30.0];
+main = a ! 1;                         // Float(20.0)
+```
+
+Mutable arrays live in `ST`: `STArray s i e` can be built and mutated inside a
+region, then frozen to `Array i e` with `runSTArray`. The region phantom `s`
+cannot escape — a use-after-free is a compile-time error.
+
+```haskell
+main = let a = runSTArray (\s -> do {
+    arr <- newArray (Pair { first: 0, second: 1 }) 0.0;
+    writeArray arr 1 3.0;
+    return arr;
+}) in a ! 1;
+```
+
 ### Higher-kinded types (HKT)
 
 `data` can take type parameters and `typeclass` can range over a type
@@ -535,14 +622,14 @@ function-typed key is a compile error.
 **inline** — `fmap` over a `List` compiles directly to the `map` builtin, with
 zero runtime dispatch:
 
-```faust
+```haskell
 data Box a = { value: a };
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
-    fmap g m = match m of { Nothing => Nothing; Just x => Just (g x); };
+    fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); };
 }
-main = length (fmap (fn x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
+main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
 ```
 
 Kind arity is inferred from method signatures and checked — `instance Functor
@@ -556,7 +643,7 @@ own instances. Methods resolve at compile time by **inline** lowering (zero
 runtime dispatch), and `instance Monad T` **auto-derives** `Applicative T` and
 `Functor T` (explicit instances always win):
 
-```faust
+```haskell
 typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
 typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
@@ -570,7 +657,7 @@ s`; `Monoid` for `List` (`append_list`), `String` (`concat_string`), `Float`,
 
 **Monad/IO interfaces:**
 
-```faust
+```haskell
 return :: a -> m a            // via Monad
 bind   :: m a -> (a -> m b) -> m b
 pure   :: a -> f a            // via Applicative
@@ -585,7 +672,7 @@ region is a compile-time error. Inside the region, `newSTRef`, `readSTRef`,
 argument, so it resolves by its *expected result type* — `mappend xs mempty`
 resolves `mempty` by the type of `xs`:
 
-```faust
+```haskell
 main = length (mappend [1.0, 2.0] mempty);   // List Float, mempty = list -> Int(2)
 main = mappend mempty 3.5;                    // Float, mempty = 0.0 -> Float(3.5)
 ```
@@ -594,11 +681,11 @@ Using `mempty` where its result type is unknown is a compile error.
 
 **`do`-notation** desugars to nested `bind` (Haskell `<-`):
 
-```faust
+```haskell
 mx = Just 1.0;
 my = Just 2.0;
-main = match (do { x <- mx; y <- my; pure (x + y); }) of { Nothing => 0.0; Just z => z; };
-// == bind mx (fn x -> bind my (fn y -> pure (x + y))) -> Just 3.0
+main = case (do { x <- mx; y <- my; pure (x + y); }) of { Nothing -> 0.0; Just z -> z; };
+// == bind mx (\x -> bind my (\y -> pure (x + y))) -> Just 3.0
 ```
 
 `do { x <- mx; let y = e; stmt; expr; }` supports `<-` binds, `let` bindings,
@@ -614,7 +701,7 @@ The prelude also declares **`Kleisli`**, the free category over a monad (an
 arrow `a -> m b` inside the container `m`), and **`Arrow`**, the category of
 container morphisms:
 
-```faust
+```haskell
 data Kleisli m a b = { unKleisli: a -> m b };
 
 typeclass Arrow a where {
@@ -622,17 +709,17 @@ typeclass Arrow a where {
     first:   a b c -> a (Pair b d) (Pair c d);
     compose: a b c -> a c d -> a b d;
     second:  a b c -> a (Pair d b) (Pair d c) =
-        k (compose (compose (arr (fn p -> Pair { first: p.second, second: p.first })) (first k)) (arr (fn p -> Pair { first: p.second, second: p.first })));
+        k (compose (compose (arr (\p -> Pair { first: p.second, second: p.first })) (first k)) (arr (\p -> Pair { first: p.second, second: p.first })));
     both:    a b c -> a d e -> a (Pair b d) (Pair c e) =
         f g (compose (first f) (second g));
     fan:     a b c -> a b d -> a b (Pair c d) =
-        f g (compose (arr (fn x -> Pair { first: x, second: x })) (both f g));
+        f g (compose (arr (\x -> Pair { first: x, second: x })) (both f g));
 }
 
 instance (Monad m) => Arrow (Kleisli m) where {
-    arr f        = Kleisli (fn x -> return (f x));
-    first k      = Kleisli (fn p -> bind (k.unKleisli p.first) (fn z -> return (Pair { first: z, second: p.second })));
-    compose k1 k2 = Kleisli (fn x -> bind (k1.unKleisli x) (fn y -> k2.unKleisli y));
+    arr f        = Kleisli (\x -> return (f x));
+    first k      = Kleisli (\p -> bind (k.unKleisli p.first) (\z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (\x -> bind (k1.unKleisli x) (\y -> k2.unKleisli y));
 }
 ```
 
@@ -651,10 +738,10 @@ and `second`/`both`/`fan` fall back to the class defaults built from them.
 The `second` default body is written `= k (compose …)` — `k` is the parameter
 and the body is parenthesized.
 
-```faust
+```haskell
 apply k x = let u = k.unKleisli in u x;
-main = match (apply (compose (arr (fn x -> x + 1.0)) (arr (fn y -> y * 2.0))) 3.0) of {
-    Just v => v; Nothing => 0.0;
+main = case (apply (compose (arr (\x -> x + 1.0)) (arr (\y -> y * 2.0))) 3.0) of {
+    Just v -> v; Nothing -> 0.0;
 };
 // -> Just 8.0, i.e. (3 + 1) * 2
 ```
@@ -674,7 +761,7 @@ The `,` combinator doubles as a **channel tuple** — it unifies on the track of
 its operands. `value,value` builds a `Pair { first, second }`; a **mixed**
 `value , signal` is a compile error (one channel cannot live on both tracks):
 
-```faust
+```haskell
 main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
 main = (1.0, 2.0).first;  // -> Float(1.0)
 ```
@@ -686,9 +773,9 @@ arguments (`a (Pair b d) (Pair c d)` ≡ `a (b, d) (c, d)`).
 A **field projection is a first-class function value** — a projected closure
 can be applied directly, parenthesized or bare:
 
-```faust
+```haskell
 data Box = { f: Float -> Float };
-b = Box { f: fn x -> x * 2.0 };
+b = Box { f: \x -> x * 2.0 };
 main = (b.f) 3.0;         // parenthesized projection applied: Float(6.0)
 main = b.f 3.0;           // bare projection applied too
 ```
@@ -700,18 +787,18 @@ Reserved method/builtin names from the prelude: `fmap`, `pure`, `ap`,
 
 ## First-class functions and closures
 
-Functions are first-class values: a **lambda literal** `fn p -> body` compiles
+Functions are first-class values: a **lambda literal** `\p -> body` compiles
 to a `Value::Callable` (a by-value environment snapshot plus a compiled body
 fragment; eager, with no memo cell), and `ValueCallFunc` performs real runtime
 dispatch:
 
-```faust
-adder = fn n -> fn x -> x + n;   // a function returning a closure
+```haskell
+adder = \n -> \x -> x + n;   // a function returning a closure
 add2  = adder 2.0;               // partial application (currying)
 main  = add2 3.0;                // -> Float(5.0)
 
-twice  = fn f x -> f (f x);      // a higher-order combinator
-double = fn x -> x * 2.0;
+twice  = \f x -> f (f x);      // a higher-order combinator
+double = \x -> x * 2.0;
 main   = twice double 3.0;       // -> Float(12.0)
 ```
 
@@ -726,10 +813,10 @@ main   = twice double 3.0;       // -> Float(12.0)
 
 ## Branching and pattern matching
 
-`if cond then a else b` and `match` are expressions on the value track. In an
+`if cond then a else b` and `case` are expressions on the value track. In an
 `IO` program they may choose between effects as well as values:
 
-```faust
+```haskell
 main = do {
     n <- read stdin;
     if (length n) > 0 then write (Just n) stdout else write (Just "empty") stdout;
@@ -737,7 +824,7 @@ main = do {
 };
 ```
 
-`match` supports constructor, literal (`0`, `1.5`, `true`, `"s"`), wildcard
+`case` supports constructor, literal (`0`, `1.5`, `true`, `"s"`), wildcard
 `_`, variable, and nested patterns plus Haskell-style guards. An uppercase
 initial is a constructor, a lowercase initial is a binding. Matches must be
 exhaustive (every constructor covered, or a `_`/variable arm); a guarded arm
@@ -746,15 +833,20 @@ runtime `ProcessError::Processing`.
 
 ## Status
 
-The IO/streams core is in place: `main : (String…) -> IO ()` executed by
+The IO/streams core is in place: `main : IO ()` executed by
 `ProgramRunner`, a Haskell-faithful `ST` with isolated state, io-streams-style
 memory/stdio streams, and the retained pure-value tick. The value track ships
 first-class collections (`List`/`Map`/`Set`, `Maybe`/`Pair`/`Either`,
-`Bool`/`String`), higher-kinded types, and `if`/`match`.
+`Bool`/`String`), higher-kinded types, and `if`/`case`.
+
+Compilation is explicit and the runtime state is world-owned: `compile` and
+`compile_eval` produce pure-code `Ir`, `WorldState` owns every piece of mutable
+state (arenas, buffers, streams, console, parameters, and the foreign factory
+registry), and the executor runs the pair `(ir, &mut world)`.
 
 Deferred to follow-on work: the Cranelift `jit` feature, trampolining the `bind`
 chain (removing the stack-depth limit), signal-transform execution over streams
-(the future audio plan), graph compilation repair, migrating the remaining rill
+(the future audio plan), graph compilation, migrating the remaining rill
 DSP primitives onto the FFI layer (the `foreign fn` mechanism itself is live —
 see *FFI*), a SIMD-aware IR, runtime typeclass dispatch, user-written `Eq`/`Ord`
 instances and hash-based containers, and `strict`/`complete` compiler modes.

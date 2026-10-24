@@ -23,6 +23,11 @@ pub enum TypeExpr {
     TFunc(Vec<TypeExpr>, Box<TypeExpr>),
     /// Explicit universal quantification: `forall a b. T`.
     TForall(Vec<String>, Box<TypeExpr>),
+    /// A class-constrained type: `C v => T`, `(C v, C w) => T`. Each
+    /// constraint is a `(class name, type variable)` pair and constrains the
+    /// type VARIABLE it names; the body type follows. Generic over the class
+    /// (`Ix` is not special).
+    TConstrained(Vec<(String, String)>, Box<TypeExpr>),
 }
 
 impl TypeExpr {
@@ -31,6 +36,7 @@ impl TypeExpr {
         match self {
             TypeExpr::TFunc(args, _) => args.len(),
             TypeExpr::TForall(_, inner) => inner.arg_count(),
+            TypeExpr::TConstrained(_, inner) => inner.arg_count(),
             _ => 0,
         }
     }
@@ -39,17 +45,30 @@ impl TypeExpr {
         match self {
             TypeExpr::TFunc(args, _) => args,
             TypeExpr::TForall(_, inner) => inner.arg_types(),
+            TypeExpr::TConstrained(_, inner) => inner.arg_types(),
             _ => &[],
         }
     }
     /// The number of arguments a method signature accepts: the arity of a
     /// `TFunc`, `1` for a bare (class-var selector) signature, delegating
-    /// through a `TForall` binder.
+    /// through a `TForall` binder or a class context.
     pub fn sig_arg_count(&self) -> usize {
         match self {
             TypeExpr::TFunc(args, _) => args.len(),
             TypeExpr::TForall(_, inner) => inner.sig_arg_count(),
+            TypeExpr::TConstrained(_, inner) => inner.sig_arg_count(),
             _ => 1,
+        }
+    }
+    /// Whether this signature carries a class context (`C v => T`), looking
+    /// through an explicit `forall` binder (`forall v. C v => T`). A
+    /// class-constrained definition has no standalone body: its class variable
+    /// is abstract until a call site solves it.
+    pub fn is_constrained(&self) -> bool {
+        match self {
+            TypeExpr::TConstrained(..) => true,
+            TypeExpr::TForall(_, inner) => inner.is_constrained(),
+            _ => false,
         }
     }
 }
@@ -118,11 +137,26 @@ pub enum Pattern {
     LitStr(String),
     /// Constructor application with (possibly nested) argument patterns.
     Ctor(String, Vec<Pattern>),
+    /// Bang pattern `!pat` — force the matched value to WHNF before matching
+    /// the inner pattern (GHC-style extension; no deep strictness).
+    Bang(Box<Pattern>),
 }
 
-/// One `match` arm: a pattern, then a sequence of `(guard, body)` alternatives.
-/// The first alternative's guard is `true` only for the bare `=> body` form; a
-/// guarded arm (`pat | g => body`) carries the user-written guard `g` as its
+impl Pattern {
+    /// This pattern with any leading bang markers stripped: `!x` → `x`,
+    /// `!!x` → `x`. Shape-based analyses (constructor/variable tests,
+    /// exhaustiveness) look through the markers; lowering re-emits the force.
+    pub fn strip_bang(&self) -> &Pattern {
+        match self {
+            Pattern::Bang(inner) => inner.strip_bang(),
+            other => other,
+        }
+    }
+}
+
+/// One `case` arm: a pattern, then a sequence of `(guard, body)` alternatives.
+/// The first alternative's guard is `true` only for the bare `-> body` form; a
+/// guarded arm (`pat | g -> body`) carries the user-written guard `g` as its
 /// first alternative.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -321,6 +355,10 @@ pub struct Param {
     pub name: String,
     /// Source span.
     pub span: Span,
+    /// Whether this is a bang parameter (`f !x = …`, `\ !x -> …`): the
+    /// argument is forced to WHNF on application entry.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub bang: bool,
 }
 
 /// A definition — top-level, `where`-block, or `let`-block.
@@ -344,6 +382,10 @@ pub enum Def {
         where_defs: Vec<Def>,
         /// Optional `:: TypeExpr` signature annotation.
         sig: Option<TypeExpr>,
+        /// Bang binding (`let !x = e`): force the right-hand side to WHNF at
+        /// the binding point (GHC-style extension; no deep strictness).
+        #[cfg_attr(feature = "serde", serde(default))]
+        bang: bool,
         /// Span of the whole definition.
         span: Span,
     },
@@ -420,13 +462,20 @@ pub enum Def {
     Instance {
         /// Class name.
         class: String,
-        /// Concrete type the instance is for.
+        /// The instance head as parsed: a bare type (`List`, `Int`) or an
+        /// applied one (`(Kleisli m)`, `(Pair Int Int)`).
+        head: TypeExpr,
+        /// Instance registry key, derived from `head`. A head that binds type
+        /// variables is a PARTIAL instance and keys by its constructor
+        /// (`Kleisli m` → `Kleisli`); a head whose arguments are all concrete
+        /// types is keyed by the FULL applied type (`Pair Int Int` → `Pair Int
+        /// Int`) so `Ix Int` and `Ix (Pair Int Int)` do not collide.
         ty: TypeName,
         /// Optional constraint list: (class, type variable) before `=>`,
         /// e.g. `Monad m` in `instance Monad m => Arrow (Kleisli m)`.
         constraints: Vec<(String, String)>,
-        /// Head type-constructor args (partial application). `Kleisli m` →
-        /// head `Kleisli`, `head_args = ["m"]`; a plain `List` → `head_args = []`.
+        /// Bound type variables of a partial head, in order (`Kleisli m` →
+        /// `["m"]`); empty for a bare or fully concrete head.
         head_args: Vec<String>,
         /// Method bodies: (method name, parameter bindings, body expr).
         method_bodies: Vec<(String, Vec<Param>, Expr)>,
@@ -481,11 +530,26 @@ impl Def {
         }
     }
 
+    /// Whether this is a bang binding (`let !x = e`): the right-hand side is
+    /// forced to WHNF at the binding point.
+    pub fn is_bang(&self) -> bool {
+        matches!(self, Def::Eval { bang: true, .. })
+    }
+
     /// Returns the where-block definitions of this definition.
     pub fn where_defs(&self) -> &[Def] {
         match self {
             Def::Eval { where_defs, .. } => where_defs,
             _ => &[],
+        }
+    }
+
+    /// Returns the optional `::` signature of this definition (`None` for a
+    /// declaration variant or an unannotated binding).
+    pub fn sig(&self) -> Option<&TypeExpr> {
+        match self {
+            Def::Eval { sig, .. } => sig.as_ref(),
+            _ => None,
         }
     }
 
@@ -546,5 +610,41 @@ mod type_expr_tests {
             )),
         );
         assert!(matches!(t, TypeExpr::TFunc(..)));
+    }
+
+    #[test]
+    fn constrained_type_delegates_arity_to_body() {
+        // A class context constrains the body type; the arity queries must
+        // answer for the BODY, not for the constraint list.
+        let body = TypeExpr::TFunc(
+            vec![
+                TypeExpr::TApp(
+                    "Pair".into(),
+                    vec![TypeExpr::TName("i".into()), TypeExpr::TName("i".into())],
+                ),
+                TypeExpr::TApp("List".into(), vec![TypeExpr::TName("e".into())]),
+            ],
+            Box::new(TypeExpr::TApp(
+                "Array".into(),
+                vec![TypeExpr::TName("i".into()), TypeExpr::TName("e".into())],
+            )),
+        );
+        let t = TypeExpr::TConstrained(vec![("Ix".into(), "i".into())], Box::new(body));
+        assert_eq!(t.arg_count(), 2);
+        assert_eq!(t.arg_types().len(), 2);
+        assert_eq!(t.sig_arg_count(), 2);
+    }
+
+    #[test]
+    fn constrained_bare_signature_delegates_selector_arity() {
+        // A bare (non-function) body: a constrained `f : Ix i => a` still takes
+        // the single class-method selector argument.
+        let t = TypeExpr::TConstrained(
+            vec![("Ix".into(), "i".into())],
+            Box::new(TypeExpr::TName("a".into())),
+        );
+        assert_eq!(t.arg_count(), 0);
+        assert!(t.arg_types().is_empty());
+        assert_eq!(t.sig_arg_count(), 1);
     }
 }

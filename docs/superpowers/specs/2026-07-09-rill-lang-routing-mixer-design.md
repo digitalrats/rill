@@ -354,7 +354,7 @@ impl<T: Transcendental, const BUF_SIZE: usize> Router<T, BUF_SIZE> for MultiLang
 
 ### Mixer (3 channels, 2 buses, EQ, dry/wet)
 
-```rill
+```haskell
 main = mixer _ _ _ {
     channels: {
         kick:  { vol: 0.8, pan: 0.0 },
@@ -382,7 +382,7 @@ Arity: 3 inputs → 4 outputs (L, R, bus0, bus1).
 
 ### Mixer with named channels and DSP sources
 
-```rill
+```haskell
 main = mixer ch0 ch1 ch2 { buses: 2, master_vol: 1.0 }
   where
     ch0 = _ * 0.8
@@ -392,7 +392,7 @@ main = mixer ch0 ch1 ch2 { buses: 2, master_vol: 1.0 }
 
 ### Standalone EQ
 
-```rill
+```haskell
 main = eq_parametric _ {
     bands: {
         b0: { freq: 1000, q: 1.0, gain_db: 3.0,  type: peaking },
@@ -403,7 +403,7 @@ main = eq_parametric _ {
 
 ### Standalone Dry/Wet
 
-```rill
+```haskell
 main = dry_wet dry_signal wet_signal { mix: 0.5 }
   where
     dry_signal = _ * 0.5
@@ -412,7 +412,7 @@ main = dry_wet dry_signal wet_signal { mix: 0.5 }
 
 ### Variadic sum
 
-```rill
+```haskell
 main = sum a b c d
   where
     a = sine 220 0.1 0
@@ -423,7 +423,7 @@ main = sum a b c d
 
 ### Backward-compatible forms (both valid)
 
-```rill
+```haskell
 -- Combinator style (unchanged)
 main = _ : lowpass 1000.0 0.7
 
@@ -498,13 +498,13 @@ lowpass _ 1000 0.7 : _ * 0.5
 Connects ALL outputs of the left expression to ALL inputs of the right.
 For SISO built-ins this works as before:
 
-```rill
+```haskell
 some_expr : lowpass _ 1000 0.7     // out(some_expr)=1, in(lowpass)=1 ✓
 ```
 
 For multi-IO built-ins, Seq requires exact arity match — rarely useful:
 
-```rill
+```haskell
 some_expr : mixer _ _ _ { buses: 2 }   // требует out(some_expr)=3
 ```
 
@@ -516,7 +516,7 @@ is fragile — the recommended approach is signal arguments directly in the Appl
 
 Concatenates wire bundles. Works transparently for any arity:
 
-```rill
+```haskell
 (mixer a b { buses: 1 }, lowpass c 1000 0.7)
 // (2→3) , (1→1) → (3→4)
 ```
@@ -526,7 +526,7 @@ Concatenates wire bundles. Works transparently for any arity:
 Requires the built-in to have at least one signal argument.
 Without a signal arg, the built-in is a source `(0→M)` — nowhere to connect feedback:
 
-```rill
+```haskell
 + ~ onepole _ 200 0.5     // _: signal arg создаёт вход для обратной связи ✓
 + ~ onepole 200 0.5       // ✗ onepole без signal arg — источник, in=0
 ```
@@ -535,7 +535,7 @@ Without a signal arg, the built-in is a source `(0→M)` — nowhere to connect 
 
 Operate on wire bundles, transparent to any arity:
 
-```rill
+```haskell
 mixer a b c { buses: 2 } <: some_block    // дублирует 4 провода
 (a, b, c) :> sum                           // группирует и суммирует
 ```
@@ -544,7 +544,7 @@ mixer a b c { buses: 2 } <: some_block    // дублирует 4 провода
 
 Works transparently — delays all output wires:
 
-```rill
+```haskell
 mixer a b c { buses: 2 } @ 3   // задерживает все 4 выхода на 3 сэмпла
 ```
 
@@ -595,7 +595,7 @@ ALL its parameters are **compile-time constants** (literals). If any parameter i
 a runtime value (formal parameter of `main` / `param` definition), the node must
 remain independent so `SetParameter` messages can reach it.
 
-```rill
+```haskell
 -- ALL values are literals → mixer CAN be inlined
 param myMixer = mixer _ _ _ {
     channels: { kick: { vol: 0.8, pan: 0.0 } },

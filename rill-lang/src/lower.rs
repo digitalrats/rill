@@ -10,7 +10,7 @@ use crate::ir::{
 };
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
-use crate::types::ty::{DataInfo, TypeEnv, ValueTy};
+use crate::types::ty::{concat_map_result_elem, DataInfo, TypeEnv, ValueTy};
 
 /// Match a concrete value type against a structural pattern that may contain
 /// fresh `Var` positions (a record's freshened field type), recording each
@@ -90,6 +90,77 @@ fn match_field_expected(
     }
 }
 
+/// The highest type-parameter placeholder id appearing in a declared field type:
+/// `Pair`'s `first: Var(1)` → 1, `Kleisli m a b`'s `unKleisli` → 3. Used to size
+/// a record's type-argument vector ([`record_args_from_fields`]).
+fn param_placeholder_max(ty: &ValueTy) -> u32 {
+    match ty {
+        ValueTy::Var(k) | ValueTy::TyConVar(k) => *k,
+        ValueTy::TyConApp(f, args) => args.iter().fold(*f, |m, a| m.max(param_placeholder_max(a))),
+        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+            args.iter().fold(0, |m, a| m.max(param_placeholder_max(a)))
+        }
+        ValueTy::Thunk(args, rets) => args
+            .iter()
+            .chain(rets.iter())
+            .fold(0, |m, a| m.max(param_placeholder_max(a))),
+        _ => 0,
+    }
+}
+
+/// Whether a value type is fully concrete — no unresolved type variable, no
+/// type-constructor variable, no function type. Exactly the types
+/// [`crate::types::ty::value_type_key`] can spell as an instance-registry key.
+fn is_concrete_ty(v: &ValueTy) -> bool {
+    match v {
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) | ValueTy::Thunk(..) => {
+            false
+        }
+        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+            args.iter().all(is_concrete_ty)
+        }
+        _ => true,
+    }
+}
+
+/// Derive a record's concrete type ARGUMENTS from its lowered field types when
+/// no expected type supplied them: a record literal `(0,9)` (`Pair { first: 0,
+/// second: 9 }`) in an ordinary argument position has no expected type, so
+/// without this it would lower to a bare `Data("Pair", [])` and a head-arg-aware
+/// class dispatch could not tell `C Int` from `C (Pair Int Int)`.
+///
+/// Each type-parameter placeholder in a declared field type (`Pair`'s
+/// `first: Var(1)`) is bound to the matching part of the field's actual type.
+/// Returns an EMPTY vector unless the WHOLE record matches: a field that does
+/// not match contributes no binding at all (a partial binding from it could
+/// pin the wrong parameter — e.g. `first: m a` matching `List Int` binds `m`
+/// before discovering `a` disagrees), and an unresolved placeholder keeps the
+/// parameterized type opaque (`Data("Kleisli", [])`), exactly as before.
+fn record_args_from_fields(fields: &[(String, ValueTy)], field_tys: &[ValueTy]) -> Vec<ValueTy> {
+    let mut bindings: Vec<(u32, ValueTy)> = Vec::new();
+    let mut arity = 0;
+    for ((_, fty), aty) in fields.iter().zip(field_tys.iter()) {
+        arity = arity.max(param_placeholder_max(fty));
+        if !match_field_expected(fty, aty, &mut bindings) {
+            return vec![];
+        }
+    }
+    let args: Vec<ValueTy> = (1..=arity)
+        .map(|k| {
+            bindings
+                .iter()
+                .find(|(v, _)| *v == k)
+                .map(|(_, t)| t.clone())
+                .unwrap_or(ValueTy::Var(k))
+        })
+        .collect();
+    if args.iter().all(is_concrete_ty) {
+        args
+    } else {
+        vec![]
+    }
+}
+
 /// Whether a value instruction allocates a fresh arena slot when executed.
 ///
 /// Drives the v1 `ValueLayout::capacity` heuristic: value registers are per-tick
@@ -114,7 +185,6 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueNewtype { .. }
             | ValueInstr::ValueBindCell { .. }
             | ValueInstr::ValueReadCell { .. }
-            | ValueInstr::ValueReadMainCell { .. }
             | ValueInstr::ValueStateRead { .. }
             | ValueInstr::ValueUpdateField { .. }
             | ValueInstr::ValueMakeClosure { .. }
@@ -123,6 +193,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueConstVoid { .. }
             | ValueInstr::ValueConstOpaque { .. }
             | ValueInstr::ValueReadParam { .. }
+            | ValueInstr::ValueReadSampleRate { .. }
             | ValueInstr::ValueConstString { .. }
             | ValueInstr::ValueListLit { .. }
             | ValueInstr::ValueMapLit { .. }
@@ -146,7 +217,6 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueBufferFill { .. }
             | ValueInstr::ValueCallForeign { .. }
             | ValueInstr::ValueBufferParamRead { .. }
-            | ValueInstr::ValueBufferMainCellRead { .. }
     )
 }
 
@@ -162,20 +232,18 @@ fn concrete_or_float(t: ValueTy) -> ValueTy {
     }
 }
 
-/// Whether `main`'s lowered type is `(String…) -> IO ()` — the
+/// Whether `main`'s lowered type is `IO ()` — the
 /// [`ProgramRunner`](crate::program_runner::ProgramRunner) contract.
 ///
-/// A `main` with λ-parameters is a `Thunk(_, [ret])`; the IO action is the
-/// result. The runtime payload of `()` is erased to `Float(0.0)` when it
-/// travels through a closure cell, so the static type recorded here is the
-/// only way the runner can accept the erased unit without also accepting an
-/// `IO Float` that returns `0.0`.
+/// The runtime payload of `()` is erased to `Float(0.0)` when it travels
+/// through a closure cell, so the static type recorded here is the only way
+/// the runner can accept the erased unit without also accepting an `IO Float`
+/// that returns `0.0`.
 fn main_result_is_io_unit(t: &ValueTy) -> bool {
     match t {
         ValueTy::Data(name, args) => {
             name == "IO" && args.len() == 1 && matches!(args.first(), Some(ValueTy::Void))
         }
-        ValueTy::Thunk(_, rets) => rets.len() == 1 && main_result_is_io_unit(&rets[0]),
         _ => false,
     }
 }
@@ -185,6 +253,192 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     match t {
         ValueTy::App(name, inner) if name == "List" => Some(inner),
         _ => None,
+    }
+}
+
+/// The type arguments of an `Array i e` value type (`[index, elem]`), if `t`
+/// is one.
+fn array_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
+    match t {
+        ValueTy::App(name, inner) if name == "Array" => Some(inner),
+        _ => None,
+    }
+}
+
+/// The index type `i` of an `Array i e` value type, or the builtin constant
+/// `Int` when the argument is not an array.
+///
+/// Deliberately NOT routed through `concrete_or_float`: an unresolved index
+/// type is not a `Float`. Arrays store their bounds verbatim as a `Pair i i`
+/// whose fields the buffer bridge always builds as `Int`, so a `Float`
+/// fallback would mistype the stored value the caller is about to read.
+fn array_index_ty(t: Option<&ValueTy>) -> ValueTy {
+    t.and_then(array_type_args)
+        .and_then(|inner| inner.first().cloned())
+        .unwrap_or(ValueTy::Int)
+}
+
+/// The element type `e` of an `Array i e` value type; `Float` when unknown.
+fn array_elem_ty(t: Option<&ValueTy>) -> ValueTy {
+    concrete_or_float(
+        t.and_then(array_type_args)
+            .and_then(|inner| inner.get(1).cloned())
+            .unwrap_or(ValueTy::Float),
+    )
+}
+
+/// The index type `i` of a `Pair i i` value type (`arrayFromList`'s bounds), or
+/// the builtin constant `Int` when the argument is not a pair.
+///
+/// As with [`array_index_ty`], the fallback is the builtin `Int`, not a
+/// `concrete_or_float` numeric fallback: the stored bounds are `Int` pairs on
+/// every path that the interpreter builds (`arrayFromBuffer`), so typing an
+/// unresolved parameter as `Float` would drift from the runtime value.
+fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
+    // `Pair` reaches this helper in BOTH flavours: a record literal lowers to
+    // `Data("Pair", …)` while an inferred/parameter type is `App("Pair", …)`.
+    // Matching only `App` silently degraded a 2-D bound (`Pair (Pair Int Int)
+    // (Pair Int Int)`) to a flat `Int` index.
+    match t {
+        Some(ValueTy::App(name, inner)) | Some(ValueTy::Data(name, inner)) if name == "Pair" => {
+            inner.first().cloned().unwrap_or(ValueTy::Int)
+        }
+        _ => ValueTy::Int,
+    }
+}
+
+/// The `Pair i e` association-list element's SECOND type argument (the
+/// element type `e` of an index-typed `List (Pair i e)`), or the builtin `Int`
+/// when the argument is not a `Pair` (mirrors [`pair_index_ty`] but reads the
+/// value side of the pair).
+fn pair_second_ty(t: Option<&ValueTy>) -> ValueTy {
+    match t {
+        Some(ValueTy::App(name, inner)) | Some(ValueTy::Data(name, inner)) if name == "Pair" => {
+            inner.get(1).cloned().unwrap_or(ValueTy::Int)
+        }
+        _ => ValueTy::Int,
+    }
+}
+
+/// Structurally match a signature parameter type against the actual argument
+/// type, recording the signature's fresh variables (`Var(id)` from
+/// `signature_param_tys_conv`) in `out`. First binding wins; a mismatch binds
+/// nothing (lowering never fails on a type it cannot pattern-match).
+///
+/// This is the one-directional, non-failing cousin of the unifier: it exists so
+/// an inlined method body sees the concrete types its earlier arguments
+/// revealed (`bind m f`: `f`'s parameter is `m`'s payload).
+fn bind_pattern_vars(
+    pat: &ValueTy,
+    actual: &ValueTy,
+    out: &mut HashMap<crate::types::TypeVarId, ValueTy>,
+) {
+    match (pat, actual) {
+        (ValueTy::Var(v), actual) if !matches!(actual, ValueTy::Var(w) if w == v) => {
+            out.entry(*v).or_insert_with(|| actual.clone());
+        }
+        (ValueTy::Data(pn, pa), ValueTy::Data(an, aa))
+        | (ValueTy::App(pn, pa), ValueTy::App(an, aa))
+        | (ValueTy::Data(pn, pa), ValueTy::App(an, aa))
+        | (ValueTy::App(pn, pa), ValueTy::Data(an, aa))
+            if pn == an && pa.len() == aa.len() =>
+        {
+            for (p, a) in pa.iter().zip(aa.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+        }
+        (ValueTy::Thunk(pa, pr), ValueTy::Thunk(aa, ar))
+            if pa.len() == aa.len() && pr.len() == ar.len() =>
+        {
+            for (p, a) in pa.iter().zip(aa.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+            for (p, a) in pr.iter().zip(ar.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+        }
+        (ValueTy::Newtype(pn, pa), ValueTy::Newtype(an, aa))
+            if pn == an && pa.len() == aa.len() =>
+        {
+            for (p, a) in pa.iter().zip(aa.iter()) {
+                bind_pattern_vars(p, a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Apply [`bind_pattern_vars`]' recorded bindings to a type (structural,
+/// transitive through bound variables).
+fn subst_value_vars(t: &ValueTy, vars: &HashMap<crate::types::TypeVarId, ValueTy>) -> ValueTy {
+    match t {
+        ValueTy::Var(v) => match vars.get(v) {
+            Some(bound @ ValueTy::Var(w)) if *w != *v => subst_value_vars(bound, vars),
+            Some(bound) => bound.clone(),
+            None => t.clone(),
+        },
+        ValueTy::Data(n, args) => ValueTy::Data(
+            n.clone(),
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        ValueTy::Newtype(n, args) => ValueTy::Newtype(
+            n.clone(),
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        ValueTy::App(n, args) => ValueTy::App(
+            n.clone(),
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        ValueTy::TyConApp(f, args) => {
+            ValueTy::TyConApp(*f, args.iter().map(|a| subst_value_vars(a, vars)).collect())
+        }
+        ValueTy::Thunk(args, rets) => ValueTy::Thunk(
+            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
+            rets.iter().map(|a| subst_value_vars(a, vars)).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The `(i, e)` halves of an `STArray s i e` value type.
+///
+/// The index falls back to the builtin `Int` (the stored bounds are `Int` pairs
+/// on every path the language builds) and the element to the runtime's numeric
+/// value type — the same fallbacks [`array_index_ty`]/[`array_elem_ty`] use for
+/// a frozen `Array i e`.
+fn starray_handle_types(t: Option<&ValueTy>) -> (ValueTy, ValueTy) {
+    let args = match t {
+        Some(ValueTy::Data(name, args)) | Some(ValueTy::App(name, args))
+            if name == "STArray" && args.len() == 3 =>
+        {
+            Some(args)
+        }
+        _ => None,
+    };
+    let index = args
+        .and_then(|inner| inner.get(1).cloned())
+        .unwrap_or(ValueTy::Int);
+    let elem = concrete_or_float(
+        args.and_then(|inner| inner.get(2).cloned())
+            .unwrap_or(ValueTy::Float),
+    );
+    (index, elem)
+}
+
+/// The operand count of an STArray effect op.
+///
+/// `newArrayFlat` takes the bounds, the flat size, and the initial element;
+/// `readArrayFlat` the handle and the flat offset; `writeArrayFlat` /
+/// `modifyArrayFlat` those plus the stored value / modifier. The whole-cell
+/// readers `getBounds` / `getElems` take the handle alone and land in the `_`
+/// fallback (which also absorbs the non-STArray variants — those never reach
+/// here).
+fn starray_op_arity(op: ValueEffectOp) -> usize {
+    match op {
+        ValueEffectOp::NewArrayFlat | ValueEffectOp::NewArrayFromListFlat => 3,
+        ValueEffectOp::ReadArrayFlat => 2,
+        ValueEffectOp::WriteArrayFlat | ValueEffectOp::ModifyArrayFlat => 3,
+        _ => 1,
     }
 }
 
@@ -373,29 +627,26 @@ struct Lowerer<'a> {
     builtins: Vec<BuiltinInstance>,
     params: Vec<ParamDef>,
     param_names: HashMap<String, usize>,
-    /// main λ-parameter cells: name → persistent cell index. These are NOT
-    /// per-tick value bindings — the cells are allocated once at program
-    /// construction ([`Ir::num_main_cells`]), so `SetParameter` writes persist
-    /// across ticks. Block-track reads materialise the cell's float via
-    /// [`ValueInstr::ValueBufferMainCellRead`]; value-track reads via `ValueReadMainCell`.
-    main_cell_locals: HashMap<String, usize>,
-    sample_rate: f32,
-    /// Value-track blocks, executed once per tick (see `run_value_track`).
+    /// Value-track blocks, executed once per run by
+    /// [`exec_entry`](crate::backend::interp::exec_entry) (see
+    /// [`Ir::value_blocks`](crate::ir::Ir)).
     value_blocks: Vec<ValueBlock>,
     /// The block currently being appended to.
     cur_value_block: usize,
     /// Entry block of the program's value track (always 0).
     value_entry: usize,
-    /// Next value register index (SSA value registers are per-tick scratch).
+    /// Next value register index (SSA value registers are per-run scratch).
     next_value_reg: usize,
     /// Fresh type-variable counter (for `signature_param_tys_conv` in the
     /// typeclass method-call lowering, which threads expected types).
     next_tyvar: u32,
-    /// Value registers holding the program's value outputs (value-channel main).
+    /// Value registers holding the program's value outputs (value-channel
+    /// entry). `[0]` becomes [`Ir::result_reg`](crate::ir::Ir) at the end of
+    /// lowering.
     value_regs_out: Vec<usize>,
     /// Static value type of each value output, parallel to [`Self::value_regs_out`].
     /// The arena-capacity heuristic needs it: a compound output (record/sum/
-    /// newtype) pins its whole subtree across ticks, so the bound must account
+    /// newtype) pins its whole subtree across runs, so the bound must account
     /// for the output's subtree size, not just one slot per channel.
     value_out_tys: Vec<ValueTy>,
     /// Static types of every container-typed value subexpression (`List`,
@@ -412,7 +663,7 @@ struct Lowerer<'a> {
     value_funcs: Vec<crate::ir::ValueFunc>,
     /// Scope stack of value locals: name → (value reg, value type). Match-arm
     /// bindings (and, in a later task, `main` λ-params) are aliased by name to
-    /// per-tick value registers — a `Ref` to one returns the register directly.
+    /// per-run value registers — a `Ref` to one returns the register directly.
     value_locals: Vec<HashMap<String, (usize, ValueTy)>>,
     /// Statically-known constructor of each value local, parallel to the scope
     /// stack [`Self::value_locals`]: a method param bound to `Just 1.0` records
@@ -432,6 +683,11 @@ struct Lowerer<'a> {
     /// Recursion guard for typeclass method inlining: resolved (class, type,
     /// method) calls currently on the expansion path.
     method_lifting: HashSet<(String, String, String)>,
+    /// Recursion guard for class-constrained definition specialization: the
+    /// `=>`-definitions currently being inlined at a call site. Their bodies
+    /// mention the constrained class, so a self- or mutually-recursive call
+    /// cannot be specialized eagerly (there is no dictionary to thread).
+    constrained_lifting: HashSet<String>,
     /// Head-argument bindings of a constraint instance (`instance (Monad m) =>
     /// Arrow (Kleisli m)`): head arg name → concrete type taken from the
     /// call-site concrete container's LEADING args. The instance body's own
@@ -496,7 +752,7 @@ struct Lowerer<'a> {
     /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
     /// the AST. A resource param's `Ref(name)` resolves to the capacity here to
     /// assign a tape index; a `Ref` NOT present stays a name-based resource
-    /// binding (the graph duplex path's externally-shared registry).
+    /// binding, which seating rejects as an undeclared resource.
     tape_decls: HashMap<String, usize>,
     /// Span (`start`, `end`) of every real-`ST` `runST` application → the
     /// region's payload type `a`, from inference. Lowering has no substitution,
@@ -517,6 +773,49 @@ struct Lowerer<'a> {
     /// Tape index per named declaration (`name -> index into [`Self::tapes`]`),
     /// so all `Ref(name)` uses of the same declared tape resolve to one cell.
     named_tapes: HashMap<String, usize>,
+    /// Whether lowering lowered an `arrayFromAssocs` call (the M8 polymorphic
+    /// array construction). Set during `value_builtin` name resolution; the
+    /// assembly step appends one synthetic hole fragment when set and points
+    /// [`Ir::array_hole_frag`](crate::ir::Ir) at it.
+    uses_array_hole: bool,
+    /// Index of the appended synthetic hole fragment; set together with
+    /// `uses_array_hole` during assembly and copied into the `Ir`. `None`
+    /// (the default) for a program that never lowers `arrayFromAssocs`.
+    array_hole_frag: Option<u32>,
+}
+
+/// Reject a specialized constrained-definition body whose static type
+/// contradicts the signature's declared result.
+///
+/// Inference never types the deferred body (the class variable is abstract
+/// until a call site solves it), so this is the only place the body/result
+/// contract is checked. Lowering has no unification substitution, so the check
+/// is deliberately conservative: it fires only when BOTH types are concrete —
+/// [`value_type_key`] canonicalizes `Data`/`App` and returns `None` for
+/// anything involving a type variable or a function type.
+///
+/// [`value_type_key`]: crate::types::ty::value_type_key
+fn check_specialized_result(
+    name: &str,
+    actual: &ValueTy,
+    declared: &ValueTy,
+    span: Span,
+) -> Result<(), CompileError> {
+    let (Some(actual), Some(declared)) = (
+        crate::types::ty::value_type_key(actual),
+        crate::types::ty::value_type_key(declared),
+    ) else {
+        return Ok(());
+    };
+    if actual == declared {
+        return Ok(());
+    }
+    Err(CompileError::Type {
+        msg: format!(
+            "body of `{name}` has type `{actual}`, but its signature declares `{declared}`"
+        ),
+        span,
+    })
 }
 
 impl<'a> Lowerer<'a> {
@@ -550,6 +849,129 @@ impl<'a> Lowerer<'a> {
         self.value_blocks[self.cur_value_block].instrs.push(i);
     }
 
+    /// Emit the runtime one-pole smoother over the Buffer register `x` and
+    /// return the output Buffer register.
+    ///
+    /// `smooth x ms` is `y = prev + a·(x − prev)` where `prev` is the site's
+    /// block-feedback slot and `a` is computed per run (see
+    /// [`Self::emit_smooth_coef`]) — the compiler never needs a sample rate.
+    fn emit_smooth(&mut self, x: usize, ms: f64) -> usize {
+        let acoef = self.emit_smooth_coef(ms);
+        let slot = self.block_state_slots;
+        self.block_state_slots += 1;
+        let prev = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
+        let diff = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: diff,
+            op: BinArith::Sub,
+            a: x,
+            b: prev,
+        });
+        let scaled = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: scaled,
+            op: BinArith::Mul,
+            a: acoef,
+            b: diff,
+        });
+        let y = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: y,
+            op: BinArith::Add,
+            a: prev,
+            b: scaled,
+        });
+        self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
+        y
+    }
+
+    /// Emit the smoother coefficient `a` as a whole-block buffer constant,
+    /// computed **at run time** from the world's sample rate:
+    /// `a = 1 − exp(−1 / max((ms/1000)·sr, 0))` — the formula the compiler used
+    /// to bake in f64 at build time.
+    ///
+    /// Guards: `ms <= 0` bakes `a = 1` (a static property of the call). A
+    /// non-positive rate must yield the same identity, and the rate is only
+    /// known at run time, so the *denominator* is clamped at zero in the
+    /// emitted sequence: at `sr == 0` the denominator is `0`, `-1/0 = −∞`,
+    /// `exp(−∞) = 0`, so `a = 1` exactly; at `sr < 0` the clamp turns the
+    /// negative denominator into the same `0`, instead of
+    /// `-1/den > 0 → exp(+240) → −inf → a = −inf`. No NaN or infinity escapes
+    /// into the output. The rate itself is read from the world's
+    /// `Params::sample_rate` field through [`ValueInstr::ValueReadSampleRate`],
+    /// the same field `?sample_rate` resolves to.
+    fn emit_smooth_coef(&mut self, ms: f64) -> usize {
+        let dst = self.fresh_value_reg();
+        if ms <= 0.0 {
+            self.emit_value(ValueInstr::ValueBufferConst { dst, value: 1.0 });
+            return dst;
+        }
+        let sr = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueReadSampleRate { dst: sr });
+        let sr_buf = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferFill {
+            dst: sr_buf,
+            src: sr,
+        });
+        let tau = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: tau,
+            value: ms / 1000.0,
+        });
+        let tau_sr = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: tau_sr,
+            op: BinArith::Mul,
+            a: tau,
+            b: sr_buf,
+        });
+        // `max((ms/1000)·sr, 0)`: a non-positive rate degenerates to the
+        // `sr == 0` identity instead of overflowing `exp`.
+        let zero = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: zero,
+            value: 0.0,
+        });
+        let den = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: den,
+            op: BinArith::Max,
+            a: tau_sr,
+            b: zero,
+        });
+        let neg_one = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: neg_one,
+            value: -1.0,
+        });
+        let inv = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst: inv,
+            op: BinArith::Div,
+            a: neg_one,
+            b: den,
+        });
+        let decay = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferUn {
+            dst: decay,
+            op: UnOp::Exp,
+            src: inv,
+        });
+        let one = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueBufferConst {
+            dst: one,
+            value: 1.0,
+        });
+        self.emit_value(ValueInstr::ValueBufferBin {
+            dst,
+            op: BinArith::Sub,
+            a: one,
+            b: decay,
+        });
+        dst
+    }
+
     /// Wrap an already-emitted primitive effect closure in the `ST s a` record
     /// (its `unST` field) and return the record's register with its `ST` type.
     ///
@@ -566,6 +988,116 @@ impl<'a> Lowerer<'a> {
             rec,
             ValueTy::Data("ST".into(), vec![ValueTy::Void, payload]),
         )
+    }
+
+    /// Lower `runSTArray (fn s -> body)` — the freezing sibling of `runST`.
+    ///
+    /// Like `runST`, the phantom-`s` lambda is dropped at lowering: the body is
+    /// the region computation and the emitted `RunSTArray` effect freezes its
+    /// `STArray` result into an immutable `Array i e`. Inference already
+    /// rejected a body that is not an `ST s (STArray s i e)` computation and
+    /// recorded the frozen result type in `runst_payload_tys`.
+    fn lower_runst_array(
+        &mut self,
+        call_args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if call_args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: "runSTArray expects 1 argument".into(),
+                span,
+            });
+        }
+        let Expr::Lambda { body: lam, .. } = &call_args[0] else {
+            return Err(CompileError::Type {
+                msg: "runSTArray expects a parenthesized lambda `fn s -> body`".into(),
+                span,
+            });
+        };
+        let Some(payload) = self.runst_payload_tys.get(&(span.start, span.end)).cloned() else {
+            return Err(CompileError::Type {
+                msg: "runSTArray body must be an `ST s (STArray s i e)` computation".into(),
+                span,
+            });
+        };
+        let (body_reg, _) = self.lower_value_expected(lam, None)?;
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueEffectOp {
+            dst,
+            op: ValueEffectOp::RunSTArray,
+            args: vec![body_reg],
+        });
+        Ok((dst, concrete_or_float(payload)))
+    }
+
+    /// Lower one STArray primitive (`newArrayFlat` … `getElems`): the operand
+    /// registers go to the effect op and the result is wrapped in the `ST s a`
+    /// record, exactly like the `STRef` family.
+    ///
+    /// The payload type comes from the operands: `newArrayFlat` derives the
+    /// handle's `i` from its bounds operand and `e` from the initial element,
+    /// every other operation reads both off the handle operand.
+    fn lower_starray_effect(
+        &mut self,
+        name: &str,
+        op: ValueEffectOp,
+        call_args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        // `newListArray` pads a short list with the shared hole fragment, so
+        // lowering must emit it (the same flag as `arrayFromAssocs` and
+        // `arrayFromListChecked`).
+        if op == ValueEffectOp::NewArrayFromListFlat {
+            self.uses_array_hole = true;
+        }
+        let arity = starray_op_arity(op);
+        if call_args.len() != arity {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "`{name}` expects {arity} argument(s), got {}",
+                    call_args.len()
+                ),
+                span,
+            });
+        }
+        let mut regs = Vec::with_capacity(arity);
+        let mut arg_tys = Vec::with_capacity(arity);
+        for a in call_args {
+            let (r, ty) = self.lower_value(a)?;
+            regs.push(r);
+            arg_tys.push(ty);
+        }
+        let allocates = matches!(
+            op,
+            ValueEffectOp::NewArrayFlat | ValueEffectOp::NewArrayFromListFlat
+        );
+        let (index, elem) = if allocates {
+            (
+                pair_index_ty(arg_tys.first()),
+                concrete_or_float(arg_tys.get(2).cloned().unwrap_or(ValueTy::Float)),
+            )
+        } else {
+            starray_handle_types(arg_tys.first())
+        };
+        let payload = if allocates {
+            ValueTy::Data("STArray".into(), vec![ValueTy::Void, index.clone(), elem])
+        } else if matches!(op, ValueEffectOp::ReadArrayFlat) {
+            elem
+        } else if matches!(op, ValueEffectOp::GetArrayBounds) {
+            ValueTy::App("Pair".into(), vec![index.clone(), index])
+        } else if matches!(op, ValueEffectOp::GetArrayElems) {
+            ValueTy::App("List".into(), vec![elem])
+        } else {
+            // `writeArrayFlat` / `modifyArrayFlat`.
+            ValueTy::Void
+        };
+        let effect = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueEffectOp {
+            dst: effect,
+            op,
+            args: regs,
+        });
+        Ok(self.finish_st_effect(effect, payload))
     }
 
     /// Lower `e` as a LAZY argument: in complete mode, wrap it in a
@@ -675,7 +1207,7 @@ impl<'a> Lowerer<'a> {
     fn note_container(&mut self, vty: &ValueTy) {
         if matches!(
             vty,
-            ValueTy::App(name, _) if matches!(name.as_str(), "List" | "Map" | "Set")
+            ValueTy::App(name, _) if matches!(name.as_str(), "List" | "Map" | "Set" | "Array")
         ) {
             self.container_tys.push(vty.clone());
         }
@@ -686,6 +1218,10 @@ impl<'a> Lowerer<'a> {
     /// this is a conservative per-op estimate; the runtime safety net is pool
     /// exhaustion (default mode) or pool growth (`growable-arena`).
     const ELEM_EST: usize = 16;
+    /// Element estimate for an immutable `Array`: larger than [`Self::ELEM_EST`]
+    /// because `arrayFromBuffer` copies a whole signal block (the default `BUF`
+    /// of the public compile entry points) into per-element arena slots.
+    const ARRAY_ELEM_EST: usize = 256;
     /// Multiplier on the estimated slot/buffer budgets for the default RT mode
     /// so legitimate open-collection programs do not trip the exhaustion error.
     /// Tuned against the collection stress tests (Task 8).
@@ -938,7 +1474,7 @@ impl<'a> Lowerer<'a> {
                 // is unaffected — the expected is only a hint.
                 let pre_sum: Option<String> = if arms
                     .iter()
-                    .any(|a| matches!(a.pattern, Pattern::Ctor(_, _)))
+                    .any(|a| matches!(a.pattern.strip_bang(), Pattern::Ctor(_, _)))
                 {
                     self.resolve_match_sum(arms, *span).ok()
                 } else {
@@ -965,7 +1501,7 @@ impl<'a> Lowerer<'a> {
                     ValueTy::Data(n, _) => Some(n.clone()),
                     _ if arms
                         .iter()
-                        .any(|a| matches!(a.pattern, Pattern::Ctor(_, _))) =>
+                        .any(|a| matches!(a.pattern.strip_bang(), Pattern::Ctor(_, _))) =>
                     {
                         Some(self.resolve_match_sum(arms, *span)?)
                     }
@@ -1021,13 +1557,14 @@ impl<'a> Lowerer<'a> {
                         // patterns (plus Var/Wild arms) in one pass; a
                         // nested-pattern arm needs recursive runtime payload
                         // extraction, so it is routed to runtime dispatch.
-                        let statically_lowerable = arms.iter().all(|arm| match &arm.pattern {
-                            Pattern::Ctor(_, args) => args
-                                .iter()
-                                .all(|a| matches!(a, Pattern::Var(_) | Pattern::Wild)),
-                            Pattern::Var(_) | Pattern::Wild => true,
-                            _ => true,
-                        });
+                        let statically_lowerable =
+                            arms.iter().all(|arm| match arm.pattern.strip_bang() {
+                                Pattern::Ctor(_, args) => args.iter().all(|a| {
+                                    matches!(a.strip_bang(), Pattern::Var(_) | Pattern::Wild)
+                                }),
+                                Pattern::Var(_) | Pattern::Wild => true,
+                                _ => true,
+                            });
                         if statically_lowerable {
                             let static_sum = sum_name.clone().unwrap_or_default();
                             return self.lower_static_match_arm(
@@ -1190,6 +1727,17 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // Class-constrained definition (`mk :: Ix i => Pair i i -> …`):
+                // the call site is the specialization point. See
+                // [`Self::lower_constrained_apply_site`]. Kept out of line so
+                // this arm's stack frame stays unchanged for the common
+                // (non-constrained) case — the typeclass-default expansion
+                // below is deep enough to be stack-sensitive.
+                if let Some(out) =
+                    self.lower_constrained_apply_site(name, call_args, expected, *span)
+                {
+                    return out;
+                }
                 // `runST (fn s -> body)`: `runST` is a built-in function whose
                 // signature `(forall s. ST s a) -> a` carries a type-level-only
                 // phantom — inference (the rank-2 application in `infer_apply`)
@@ -1232,6 +1780,15 @@ impl<'a> Lowerer<'a> {
                         args: vec![body_reg],
                     });
                     return Ok((dst, concrete_or_float(payload)));
+                }
+                // `runSTArray (fn s -> body)`: the freezing sibling of `runST`.
+                // Its signature `(forall s. ST s (STArray s i e)) -> Array i e`
+                // carries the same type-level-only phantom, so lowering drops
+                // the lambda and emits the region computation with the
+                // `RunSTArray` effect: running it freezes the region's STArray
+                // into an immutable `Array i e`.
+                if name == "runSTArray" {
+                    return self.lower_runst_array(call_args, *span);
                 }
                 // ST cell primitives (`STD_PRELUDE`): `newSTRef`/`readSTRef`/
                 // `writeSTRef`/`modifySTRef` lower to a primitive effect
@@ -1311,6 +1868,31 @@ impl<'a> Lowerer<'a> {
                         args: regs,
                     });
                     return Ok(self.finish_st_effect(effect, payload));
+                }
+                // STArray primitives (`builtin_sigs`): the flat mutable-array
+                // operations mirror the STRef family — each lowers to a
+                // primitive effect closure wrapped in the `ST s a` record.
+                // Their INDEX math lives in the language (the `Ix` class lands
+                // in a later task): `newArrayFlat` takes an already-computed
+                // flat size and the offsets are plain `Int`s.
+                //
+                // These six names are PERMANENTLY RESERVED builtins (as are the
+                // `STRef` ones above): a user definition with one of these names
+                // is shadowed at every call site, in inference and here alike,
+                // so it can never be reached. The reservation is deliberately
+                // consistent across both passes — no silent disagreement about
+                // which `getBounds` a call means.
+                if let Some(op) = match name.as_str() {
+                    "newArrayFlat" => Some(ValueEffectOp::NewArrayFlat),
+                    "newArrayFromListFlat" => Some(ValueEffectOp::NewArrayFromListFlat),
+                    "readArrayFlat" => Some(ValueEffectOp::ReadArrayFlat),
+                    "writeArrayFlat" => Some(ValueEffectOp::WriteArrayFlat),
+                    "modifyArrayFlat" => Some(ValueEffectOp::ModifyArrayFlat),
+                    "getBounds" => Some(ValueEffectOp::GetArrayBounds),
+                    "getElems" => Some(ValueEffectOp::GetArrayElems),
+                    _ => None,
+                } {
+                    return self.lower_starray_effect(name, op, call_args, *span);
                 }
                 // io-streams primitives. Each action lowers to an `IO a`
                 // record whose single `unIO` field is a primitive effect
@@ -1510,44 +2092,7 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
-                    let sr = self.sample_rate as f64;
-                    let a = if ms <= 0.0 {
-                        1.0
-                    } else {
-                        let tau = ms / 1000.0;
-                        1.0 - (-1.0 / (tau * sr)).exp()
-                    };
-                    let slot = self.block_state_slots;
-                    self.block_state_slots += 1;
-                    let prev = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
-                    let diff = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: diff,
-                        op: BinArith::Sub,
-                        a: x,
-                        b: prev,
-                    });
-                    let acoef = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferConst {
-                        dst: acoef,
-                        value: a,
-                    });
-                    let scaled = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: scaled,
-                        op: BinArith::Mul,
-                        a: acoef,
-                        b: diff,
-                    });
-                    let y = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: y,
-                        op: BinArith::Add,
-                        a: prev,
-                        b: scaled,
-                    });
-                    self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
+                    let y = self.emit_smooth(x, ms);
                     return Ok((y, ValueTy::Buffer));
                 }
                 // Unary math over a Buffer (`abs _`, `sin i1`): a Buffer-typed operand
@@ -1644,11 +2189,17 @@ impl<'a> Lowerer<'a> {
                 if let Some(op) = self.value_builtin(name, call_args.len()) {
                     let mut arg_regs = Vec::with_capacity(call_args.len());
                     let mut arg_tys = Vec::with_capacity(call_args.len());
-                    // `map f xs`: lower the source list FIRST so its element
-                    // type can type the closure's parameter — `map (fn x -> x *
-                    // 0.5) (sine 440.0 0.5 0.0)` over a `List Buffer` keeps `x` a Buffer
-                    // value and `x * 0.5` lowers to a Buffer op, not scalar.
-                    if name == "map" && call_args.len() == 2 {
+                    // `map f xs` / `concat_map f xs`: lower the source list
+                    // FIRST so its element type can type the closure's
+                    // parameter — `map (fn x -> x * 0.5) (sine 440.0 0.5 0.0)`
+                    // over a `List Buffer` keeps `x` a Buffer value and
+                    // `x * 0.5` lowers to a Buffer op, not scalar.
+                    // `concat_map` needs the same threading: its closure
+                    // returns a LIST, and an untyped parameter would make the
+                    // elements of that inner list default to `Float` (the 2-D
+                    // `Ix` instance builds `Pair Int Int` cells through a
+                    // lambda-in-lambda).
+                    if (name == "map" || name == "concat_map") && call_args.len() == 2 {
                         let (lr, lt) = self.lower_value(&call_args[1])?;
                         let elem = list_type_args(&lt)
                             .and_then(|inner| inner.first().cloned())
@@ -1724,6 +2275,7 @@ impl<'a> Lowerer<'a> {
                                 _ => None,
                             };
                             let mut field_regs = Vec::with_capacity(fields.len());
+                            let mut field_tys: Vec<ValueTy> = Vec::with_capacity(fields.len());
                             for (fname, _) in &fields {
                                 let fexpr = fields_expr
                                     .iter()
@@ -1746,11 +2298,12 @@ impl<'a> Lowerer<'a> {
                                     (Some(_), Some(ft)) => Some(ft),
                                     _ => None,
                                 };
-                                let (fr, _) = match field_expected {
+                                let (fr, ft) = match field_expected {
                                     Some(fe) => self.lower_value_expected(fexpr, Some(&fe))?,
                                     None => self.lower_value(fexpr)?,
                                 };
                                 field_regs.push(fr);
+                                field_tys.push(ft);
                             }
                             let dst = self.fresh_value_reg();
                             self.emit_value(ValueInstr::ValueConstructRecord {
@@ -1761,10 +2314,16 @@ impl<'a> Lowerer<'a> {
                             // outer expected carries them, so a projection /
                             // subsequent method call sees the parameterized type
                             // (`k1.unKleisli` of a `Kleisli Maybe Float Float`
-                            // parameter is `Float -> Maybe Float`).
+                            // parameter is `Float -> Maybe Float`). Without an
+                            // expected type, derive them from the fields so a
+                            // head-arg-aware dispatch sees `Pair Int Int` rather
+                            // than a bare `Pair`.
                             let ret = match rec_args {
                                 Some(a) if !a.is_empty() => ValueTy::Data(name.clone(), a),
-                                _ => ValueTy::Data(name.clone(), vec![]),
+                                _ => ValueTy::Data(
+                                    name.clone(),
+                                    record_args_from_fields(&fields, &field_tys),
+                                ),
                             };
                             return Ok((dst, ret));
                         }
@@ -1840,7 +2399,7 @@ impl<'a> Lowerer<'a> {
                 // modes: result-directed (`pure`/`return`/`mempty`), arity-0
                 // (`Monoid mappend`, `Show show`), and constructor classes
                 // (`Functor f`, by the class-var-applied argument).
-                if !self.defs.contains_key(name) {
+                if !self.method_shadowed_by_def(name, call_args) {
                     if let Some(class_name) = self.env.class_of_method(name) {
                         let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
                         let class_var = class_info.var.clone();
@@ -1883,16 +2442,29 @@ impl<'a> Lowerer<'a> {
                                     });
                                 }
                             };
-                            let ty_name = match self.env.type_name_of_vty(exp) {
-                                Some(t) => t,
-                                None => {
-                                    return Err(CompileError::Type {
-                                        msg: format!(
-                                            "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
-                                        ),
-                                        span: *span,
-                                    });
-                                }
+                            let cv_var = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            let Some((ty_name, cv_subst)) =
+                                crate::types::infer::method_dispatch_key(
+                                    self.env,
+                                    &class_name,
+                                    &class_var,
+                                    sig,
+                                    exp,
+                                    cv_var,
+                                    || {
+                                        let v = self.next_tyvar;
+                                        self.next_tyvar += 1;
+                                        ValueTy::Var(v)
+                                    },
+                                )
+                            else {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                                    ),
+                                    span: *span,
+                                });
                             };
                             // Constraint instance: bind head args from the
                             // expected container's leading args and discharge
@@ -1936,7 +2508,7 @@ impl<'a> Lowerer<'a> {
                             let arg_param_tys = crate::types::infer::signature_param_tys_conv(
                                 self.env,
                                 &class_var,
-                                &ty_name,
+                                &cv_subst,
                                 sig,
                                 || {
                                     let v = self.next_tyvar;
@@ -1944,12 +2516,27 @@ impl<'a> Lowerer<'a> {
                                     ValueTy::Var(v)
                                 },
                             );
+                            // The signature's fresh variables are solved as the
+                            // arguments arrive: `bind m f`'s second parameter is
+                            // `a -> m b`, and `a` is only known from `m`'s
+                            // payload. Without this the inlined body's lambda
+                            // parameter stayed an unresolved variable, so a
+                            // method call on it (`index b ix` where `b` is the
+                            // bounds payload) could not dispatch and fell back
+                            // to the definition.
+                            let mut arg_var_bindings: HashMap<crate::types::TypeVarId, ValueTy> =
+                                HashMap::new();
                             for (i, (p, a)) in params.iter().zip(call_args.iter()).enumerate() {
-                                let exp = arg_param_tys.get(i).cloned();
+                                let exp = arg_param_tys
+                                    .get(i)
+                                    .map(|t| subst_value_vars(t, &arg_var_bindings));
                                 let (r, t) = match exp {
                                     Some(e) => self.lower_value_expected(a, Some(&e))?,
                                     None => self.lower_value(a)?,
                                 };
+                                if let Some(pat) = arg_param_tys.get(i) {
+                                    bind_pattern_vars(pat, &t, &mut arg_var_bindings);
+                                }
                                 scope.insert(p.clone(), (r, t));
                                 ctor_scope.insert(p.clone(), self.static_scrutinee_ctor(a));
                             }
@@ -1971,24 +2558,49 @@ impl<'a> Lowerer<'a> {
                                     span: *span,
                                 });
                             }
-                            // Selector: the first argument that is not a bare
-                            // nullary method ref (`mappend xs mempty` — `xs`
-                            // selects; `mempty` resolves by that type name).
-                            let selector_idx = call_args
-                                .iter()
-                                .position(|a| !self.is_bare_nullary_method_ref(a, &class_name))
-                                .unwrap_or(0);
+                            // Selector: the argument whose signature type mentions
+                            // the class variable AND which is not a bare nullary
+                            // method ref — both criteria must agree, because the
+                            // same argument's concrete type solves the class
+                            // variable (`pick: Bool -> Pair a a -> Float` selects
+                            // on the `Pair`, `mappend mempty xs` on `xs`).
+                            let Some(selector_idx) = crate::types::infer::class_var_selector_index(
+                                sig,
+                                &class_var,
+                                call_args.len(),
+                                |i| self.is_bare_nullary_method_ref(&call_args[i], &class_name),
+                            ) else {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "cannot resolve method `{name}` of `{class_name}`: no argument can select the instance (every class-var argument is a nullary method reference)"
+                                    ),
+                                    span: *span,
+                                });
+                            };
                             let (arg_reg, arg_vty) = self.lower_value(&call_args[selector_idx])?;
-                            let ty_name = match self.env.type_name_of_vty(&arg_vty) {
-                                Some(t) => t,
-                                None => {
-                                    return Err(CompileError::Type {
+                            let cv_var = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            let Some((ty_name, cv_subst)) =
+                                crate::types::infer::method_dispatch_key(
+                                    self.env,
+                                    &class_name,
+                                    &class_var,
+                                    sig,
+                                    &arg_vty,
+                                    cv_var,
+                                    || {
+                                        let v = self.next_tyvar;
+                                        self.next_tyvar += 1;
+                                        ValueTy::Var(v)
+                                    },
+                                )
+                            else {
+                                return Err(CompileError::Type {
                                     msg: format!(
                                         "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
                                     ),
                                     span: call_args[selector_idx].span(),
                                 });
-                                }
                             };
                             let (_, params, body) = match self
                                 .env
@@ -2020,7 +2632,7 @@ impl<'a> Lowerer<'a> {
                             let param_tys = crate::types::infer::signature_param_tys_conv(
                                 self.env,
                                 &class_var,
-                                &ty_name,
+                                &cv_subst,
                                 sig,
                                 || {
                                     let v = self.next_tyvar;
@@ -2187,7 +2799,7 @@ impl<'a> Lowerer<'a> {
                         let mut param_tys = crate::types::infer::signature_param_tys_conv(
                             self.env,
                             &class_var,
-                            &ctor,
+                            &crate::types::infer::ClassVarSubst::Ctor(ctor.clone()),
                             sig,
                             || {
                                 let v = self.next_tyvar;
@@ -2214,6 +2826,19 @@ impl<'a> Lowerer<'a> {
                                 ValueTy::Var(v)
                             },
                         );
+                        // The signature's fresh variables are solved as the
+                        // arguments arrive. `bind m f`'s second parameter is
+                        // `a -> m b`, and `a` is ONLY known from `m`'s payload:
+                        // without binding it the inlined instance body's
+                        // continuation parameter stayed an unresolved variable,
+                        // so a call on it inside the callback (`index b ix`
+                        // where `b` is the bounds payload) could not dispatch by
+                        // type and fell back to the constrained definition.
+                        let mut arg_var_bindings: HashMap<crate::types::TypeVarId, ValueTy> =
+                            HashMap::new();
+                        if let Some(pat) = param_tys.get(container_idx) {
+                            bind_pattern_vars(pat, &container_vty, &mut arg_var_bindings);
+                        }
                         let mut arg_regs = Vec::with_capacity(call_args.len());
                         let mut arg_vtys = Vec::with_capacity(call_args.len());
                         for (i, a) in call_args.iter().enumerate() {
@@ -2221,8 +2846,14 @@ impl<'a> Lowerer<'a> {
                                 arg_regs.push(container_reg);
                                 arg_vtys.push(container_vty.clone());
                             } else {
-                                let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                                let exp = param_tys
+                                    .get(i)
+                                    .map(|t| subst_value_vars(t, &arg_var_bindings))
+                                    .unwrap_or(ValueTy::Float);
                                 let (r, t) = self.lower_value_expected(a, Some(&exp))?;
+                                if let Some(pat) = param_tys.get(i) {
+                                    bind_pattern_vars(pat, &t, &mut arg_var_bindings);
+                                }
                                 arg_regs.push(r);
                                 arg_vtys.push(t);
                             }
@@ -2324,7 +2955,7 @@ impl<'a> Lowerer<'a> {
                                         // this shape, so it is unreachable.
                                         break;
                                     }
-                                    // A main λ-param / actor param / named
+                                    // An actor param / named
                                     // param ref is a LIVE value: record a
                                     // param binding (set_param per tick). A
                                     // constant folds into the builtin's params.
@@ -2721,12 +3352,43 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 });
-                Ok((dst, ValueTy::Float))
+                // Int-preserving value arithmetic: `+`/`-`/`*` over two `Int`
+                // operands stays on the Int track (`Value::Int` at runtime,
+                // `ValueTy::Int` statically). `/` is float division, so it
+                // always yields a `Float`; `%` is unsupported. This mirrors
+                // `infer_arith` and the interpreter's `exec_value_arith` — the
+                // three must agree, or an `Int`-typed slot would hold a
+                // `Value::Float` (which the flat array primitives reject).
+                let int_track = matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
+                    && matches!(a_ty, ValueTy::Int)
+                    && matches!(b_ty, ValueTy::Int);
+                Ok((
+                    dst,
+                    if int_track {
+                        ValueTy::Int
+                    } else {
+                        ValueTy::Float
+                    },
+                ))
             }
             Expr::Neg(inner, _span) => {
                 // Negative literal / unary minus in value position. A numeric
                 // literal folds to a negative constant; anything else lowers as
-                // `0.0 - inner`.
+                // `zero - inner`.
+                //
+                // The result keeps the OPERAND's track: an integer literal
+                // negates to a `Value::Int` (an `Expr::Int` is Int-track
+                // unconditionally, so `-3` must be too), a float literal to a
+                // `Value::Float`, and a non-literal follows its lowered type.
+                // Without this, `-1` was the one place a statically-`Int` slot
+                // held a `Value::Float` — and an `Ix` offset computed from a
+                // negative lower bound then failed the interpreter's
+                // "index is not an Int" check.
+                if let Some(v) = const_i64(inner) {
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueConstInt { dst, value: -v });
+                    return Ok((dst, ValueTy::Int));
+                }
                 match const_f64(inner) {
                     Some(v) => {
                         let dst = self.fresh_value_reg();
@@ -2734,19 +3396,34 @@ impl<'a> Lowerer<'a> {
                         Ok((dst, ValueTy::Float))
                     }
                     None => {
-                        let (ir, _) = self.lower_value(inner)?;
+                        let (ir, inner_ty) = self.lower_value(inner)?;
+                        let int_track = matches!(inner_ty, ValueTy::Int);
                         let zero = self.fresh_value_reg();
-                        self.emit_value(ValueInstr::ValueConstFloat {
-                            dst: zero,
-                            value: 0.0,
-                        });
+                        if int_track {
+                            self.emit_value(ValueInstr::ValueConstInt {
+                                dst: zero,
+                                value: 0,
+                            });
+                        } else {
+                            self.emit_value(ValueInstr::ValueConstFloat {
+                                dst: zero,
+                                value: 0.0,
+                            });
+                        }
                         let dst = self.fresh_value_reg();
                         self.emit_value(ValueInstr::ValueSub {
                             dst,
                             a: zero,
                             b: ir,
                         });
-                        Ok((dst, ValueTy::Float))
+                        Ok((
+                            dst,
+                            if int_track {
+                                ValueTy::Int
+                            } else {
+                                ValueTy::Float
+                            },
+                        ))
                     }
                 }
             }
@@ -2902,6 +3579,25 @@ impl<'a> Lowerer<'a> {
                 Ok((dst, ValueTy::Bool))
             }
             Expr::Let { defs, body, span } => {
+                // A bang binding forces its right-hand side AT the binding
+                // point, so the RHS must be a value distinct from the binding
+                // itself: `let !x = x` has nothing to force (the RHS is the
+                // binding), and the thunk fragment cannot reference its own
+                // name. Reject it with a bang-specific diagnostic instead of a
+                // confusing "unknown `x`" (complete) or "recursive value
+                // definition" (strict) error.
+                if let Some(d) = defs
+                    .iter()
+                    .find(|d| d.is_bang() && bang_binding_refers_to_itself(d))
+                {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "a bang binding cannot be recursive: `!{}` refers to itself",
+                            d.name()
+                        ),
+                        span: *span,
+                    });
+                }
                 if self.mode == Mode::Strict {
                     // Expression-level `let x = e in body` in value position:
                     // the defs are plain inlined bindings (v1 value defs are
@@ -2911,7 +3607,21 @@ impl<'a> Lowerer<'a> {
                     for d in defs {
                         self.defs.insert(d.name().to_string(), d.clone());
                     }
+                    // A bang binding (`let !x = e`) is evaluated here, at the
+                    // binding point, and its name reads the forced result.
+                    let mut forced_scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    for d in defs.iter().filter(|d| d.is_bang()) {
+                        let (reg, ty) = self.lower_value(d.body())?;
+                        let forced = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueForce {
+                            dst: forced,
+                            src: reg,
+                        });
+                        forced_scope.insert(d.name().to_string(), (forced, ty));
+                    }
+                    self.value_locals.push(forced_scope);
                     let res = self.lower_value_expected(body, expected);
+                    self.value_locals.pop();
                     self.defs = saved;
                     res
                 } else {
@@ -2953,6 +3663,19 @@ impl<'a> Lowerer<'a> {
                             env: env_reg,
                             fragment: fragment_id,
                         });
+                        // A bang binding (`let !x = e`) forces the thunk here,
+                        // at the binding point, and the name reads the forced
+                        // value (WHNF only).
+                        let x_reg = if d.is_bang() {
+                            let forced = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueForce {
+                                dst: forced,
+                                src: x_reg,
+                            });
+                            forced
+                        } else {
+                            x_reg
+                        };
                         scope.insert(d.name().to_string(), (x_reg, _ret_ty));
                     }
                     self.value_locals.push(scope);
@@ -3022,17 +3745,30 @@ impl<'a> Lowerer<'a> {
             "not",
             "and",
             "or",
+            "listRange",
+            "arrayFromListChecked",
         ]
         .iter()
         .any(|n| name == s(n));
         collection
             || self.env.foreign_sigs.contains_key(name)
             || name == "runST"
+            || name == "runSTArray"
             // The ST cell primitives are lowered to `ValueEffectOp`s in
             // `Expr::Apply` — never captured as free variables by a lambda.
             || matches!(
                 name,
-                "newSTRef" | "readSTRef" | "writeSTRef" | "modifySTRef"
+                "newSTRef"
+                    | "readSTRef"
+                    | "writeSTRef"
+                    | "modifySTRef"
+                    | "newArrayFlat"
+                    | "newArrayFromListFlat"
+                    | "readArrayFlat"
+                    | "writeArrayFlat"
+                    | "modifyArrayFlat"
+                    | "getBounds"
+                    | "getElems"
             )
             // Value-track builtins lowered in `Expr::Apply` (one-pole
             // smoothing, buffer elementwise ops): compile-time primitives, never
@@ -3065,7 +3801,7 @@ impl<'a> Lowerer<'a> {
             )
     }
 
-    fn value_builtin(&self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
+    fn value_builtin(&mut self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {
         use ValueBuiltinOp::*;
         Some(match (name, nargs) {
             // In complete mode `cons` is the LAZY constructor (the tail is not
@@ -3093,6 +3829,37 @@ impl<'a> Lowerer<'a> {
             ("show_float", 1) => ShowFloat,
             ("show_int", 1) => ShowInt,
             ("show_bool", 1) => ShowBool,
+            // Immutable array storage (flat, type-agnostic). The arity is part
+            // of the key: `arrayUpdate`'s assoc list is a distinct operand from
+            // `arrayAccum`'s accumulator closure, so each name has exactly one
+            // shape.
+            ("arrayFromList", 2) => ArrayFromList,
+            ("arrayBounds", 1) => ArrayBounds,
+            ("arrayElems", 1) => ArrayElems,
+            ("arrayIndexFlat", 2) => ArrayIndexFlat,
+            ("arrayUpdate", 2) => ArrayUpdate,
+            ("arrayAccum", 3) => ArrayAccum,
+            ("arrayFromBuffer", 1) => ArrayFromBuffer,
+            ("bufferFromArray", 1) => BufferFromArray,
+            ("arrayFromAssocs", 2) => {
+                // The M8 polymorphic constructor resolves against the bounds
+                // shape in the interpreter; mark lowering so the assembly step
+                // appends the synthetic hole fragment (one shared callable per
+                // array, pointing at a single faulting body).
+                self.uses_array_hole = true;
+                ArrayFromAssocs
+            }
+            ("arraySeed", 2) => ArraySeed,
+            // `listRange (l, u)` — the inclusive Int range (the only
+            // list-GENERATING primitive; `Ix.range` is built on it).
+            ("listRange", 1) => ListRange,
+            // `listArray`'s lenient constructor: (bounds, rangeSize, elems) —
+            // the interpreter pads a short list with the shared hole fragment,
+            // so lowering must emit it (the same flag as `arrayFromAssocs`).
+            ("arrayFromListChecked", 3) => {
+                self.uses_array_hole = true;
+                ArrayFromListChecked
+            }
             _ => return None,
         })
     }
@@ -3182,10 +3949,13 @@ impl<'a> Lowerer<'a> {
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
             "concat_map" => {
-                let elem = match args.get(1).and_then(list_type_args) {
+                // See `concat_map_result_elem`: `(a -> List b) -> List a -> List b`.
+                let source_elem = match args.get(1).and_then(list_type_args) {
                     Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
                     _ => ValueTy::Float,
                 };
+                let closure_ty = args.first().unwrap_or(&ValueTy::Float);
+                let elem = concat_map_result_elem(closure_ty, source_elem);
                 Ok(ValueTy::App("List".into(), vec![elem]))
             }
             "append_list" => match args.first().and_then(list_type_args) {
@@ -3238,6 +4008,95 @@ impl<'a> Lowerer<'a> {
                 vec![ValueTy::String, ValueTy::Float],
             )),
             "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Float])),
+            // Immutable array storage (flat, type-agnostic): the static types
+            // mirror the builtin signatures. Index types fall back to the
+            // builtin `Int` (never a numeric `Float`), element types to the
+            // runtime's numeric value type.
+            "arrayFromList" => {
+                let index = pair_index_ty(args.first());
+                let elem = args
+                    .get(1)
+                    .and_then(list_type_args)
+                    .and_then(|i| i.first().cloned());
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
+            // Index-typed construction ops: the bounds pair gives the index
+            // type `i`; `arrayFromAssocs` reads the element type off the
+            // association-list element's `Pair` (second half), `arraySeed` off
+            // its seed operand directly.
+            "arrayFromAssocs" => {
+                let index = pair_index_ty(args.first());
+                let elem = args
+                    .get(1)
+                    .and_then(list_type_args)
+                    .and_then(|i| i.first())
+                    .map(|first| pair_second_ty(Some(first)));
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
+            "arraySeed" => {
+                let index = pair_index_ty(args.first());
+                let elem = args.get(1).cloned();
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
+            "arrayBounds" => {
+                let index = array_index_ty(args.first());
+                Ok(ValueTy::App("Pair".into(), vec![index.clone(), index]))
+            }
+            "arrayElems" => Ok(ValueTy::App(
+                "List".into(),
+                vec![array_elem_ty(args.first())],
+            )),
+            "arrayIndexFlat" | "arrayUpdate" | "arrayAccum" => {
+                // The three array-CONSUMING flat ops validate the first
+                // argument uniformly (defense-in-depth: inference already pins
+                // it). `arrayIndexFlat` then reads its element type from the
+                // same checked array type.
+                let arr = match args.first() {
+                    Some(ty @ ValueTy::App(name, _)) if name == "Array" => ty.clone(),
+                    other => {
+                        return Err(CompileError::Type {
+                            msg: format!("{name} expects an Array, got {other:?}"),
+                            span,
+                        })
+                    }
+                };
+                if name == "arrayIndexFlat" {
+                    Ok(array_elem_ty(Some(&arr)))
+                } else {
+                    Ok(arr)
+                }
+            }
+            "arrayFromBuffer" => Ok(ValueTy::App(
+                "Array".into(),
+                vec![ValueTy::Int, ValueTy::Float],
+            )),
+            "bufferFromArray" => Ok(ValueTy::Buffer),
+            // `listRange (l, u)`: the inclusive Int range as a flat list.
+            "listRange" => Ok(ValueTy::App("List".into(), vec![ValueTy::Int])),
+            // `arrayFromListChecked bounds rangeSize elems`: the element list is
+            // the THIRD operand (the size sits between bounds and elements), so
+            // the assembled type reads the index off the bounds and the element
+            // type off `args[2]`.
+            "arrayFromListChecked" => {
+                let index = pair_index_ty(args.first());
+                let elem = args
+                    .get(2)
+                    .and_then(list_type_args)
+                    .and_then(|i| i.first().cloned());
+                Ok(ValueTy::App(
+                    "Array".into(),
+                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                ))
+            }
             _ => Err(CompileError::Unsupported(format!(
                 "unknown collection op {name}"
             ))),
@@ -3336,6 +4195,342 @@ impl<'a> Lowerer<'a> {
         Ok((head_args, constraints))
     }
 
+    /// Lower a call to a class-constrained definition (`mk :: Ix i => Pair i i
+    /// -> Float`), if `name` names one.
+    ///
+    /// Returns `None` for every other callee — the common case — so the caller's
+    /// arm can fall through to the ordinary application paths. A value local of
+    /// the same name shadows the definition (and the call is not a
+    /// specialization).
+    ///
+    /// The call site is where such a definition becomes a concrete function:
+    ///
+    /// 1. every argument is lowered to get its static type,
+    /// 2. those types are matched against the signature's parameter patterns,
+    ///    solving the class variables (`Pair Int Int` vs `Pair i i` → `i := Int`),
+    /// 3. the class context is discharged against the registered instances (a
+    ///    concrete type with no instance is a compile error — there is no
+    ///    runtime dictionary to fall back to),
+    /// 4. the body is inlined with the parameters bound to the argument
+    ///    registers, so its method calls dispatch by the concrete
+    ///    class-variable type.
+    ///
+    /// This is compile-time β-substitution: one specialization per call site,
+    /// never a runtime dispatch. A call applied to FEWER arguments than the
+    /// definition binds returns a closure over the applied ones (the remaining
+    /// λ-chain is lowered as a lambda whose parameters the signature types).
+    #[inline(never)]
+    fn lower_constrained_apply_site(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Option<Result<(usize, ValueTy), CompileError>> {
+        let env = self.env;
+        let cd = env.constrained_defs.get(name)?.clone();
+        // A value binding named like the definition shadows it: a λ-parameter
+        // or a fragment capture (`\ listArray -> listArray 1.0`).
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
+            return None;
+        }
+        // A DUAL name (`index` is both the `Ix` offset method and the array
+        // accessor): when the first argument's static type selects a method
+        // instance, DECLINE the definition so the method path below handles the
+        // call. The first argument is probed in a sandbox (the instructions are
+        // discarded), and the routing predicate is the SAME one inference uses
+        // (`first_arg_solves_class_var`), so the passes cannot disagree.
+        if env.class_of_method(name).is_some() {
+            if let Some(first) = call_args.first() {
+                if let Some(ty) = self.peek_value_ty(first) {
+                    if crate::types::infer::first_arg_solves_class_var(env, name, &ty) {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(self.lower_constrained_apply(name, &cd, call_args, expected, span))
+    }
+
+    /// Whether `name` is shadowed by a DEFINITION at this call site, i.e. the
+    /// call must NOT be a class-method dispatch.
+    ///
+    /// Mirrors inference's `method_shadowed_by_def`: a plain user definition
+    /// shadows a method outright; a class-CONSTRAINED definition sharing its
+    /// name with a method (`index`) routes by the FIRST argument's static type —
+    /// an argument that solves the method's class variable goes to the method,
+    /// everything else to the definition.
+    fn method_shadowed_by_def(&mut self, name: &str, args: &[Expr]) -> bool {
+        // Lowering sees fragment captures; inference never does, so the
+        // asymmetry is intentional and safe: captures only exist in lowering.
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
+            return true;
+        }
+        let constrained = self.env.constrained_defs.contains_key(name);
+        if !constrained && !self.defs.contains_key(name) {
+            return false;
+        }
+        if constrained && self.env.class_of_method(name).is_some() {
+            if let Some(first) = args.first() {
+                if let Some(ty) = self.peek_value_ty(first) {
+                    return !crate::types::infer::first_arg_solves_class_var(self.env, name, &ty);
+                }
+            }
+        }
+        // Untypeable or absent first arg: fall back to the definition (matches
+        // inference's routing).
+        true
+    }
+
+    /// Recover an expression's static value type by lowering it in a throwaway
+    /// block, KEEPING the current locals visible.
+    ///
+    /// [`Self::sandbox_value_ty`] empties the local scopes because it types
+    /// self-contained scrutinees; a dispatch probe asks about an argument that
+    /// usually IS a local reference (`index b i` with `b` a λ-parameter), so
+    /// clearing them would make every probe of a local fail and silently route
+    /// every dual-name call to the definition.
+    ///
+    /// The emitted instructions, register allocation, `anchor_cells`, pending
+    /// parameter types, and head-arg bindings are all restored. The monotone
+    /// append-only tables (`container_tys`, `value_funcs`, `fragments`) are
+    /// shared across probes; entries produced by a probe are dead IR and affect
+    /// compile time only.
+    fn peek_value_ty(&mut self, e: &Expr) -> Option<ValueTy> {
+        let saved_blocks = std::mem::take(&mut self.value_blocks);
+        let saved_cur = self.cur_value_block;
+        self.cur_value_block = self.new_value_block();
+        let saved_next = self.next_value_reg;
+        // The probe must see the CURRENT scopes: a λ-parameter lives in
+        // `value_locals`, and — inside a nested fragment — a capture lives in
+        // `fragment_captures`. Taking either map away (as `sandbox_value_ty`
+        // does for self-contained scrutinees) makes the probe of a plain
+        // local reference fail, which silently routed every dual-name call
+        // inside a λ body to the definition. Both maps are cloned and restored
+        // instead, so a capture registered during the probe is discarded.
+        let saved_captures_len = self.fragment_captures.len();
+        let saved_inline = self.value_inline.clone();
+        let saved_pending = self.pending_param_tys.clone();
+        let saved_bindings = self.head_arg_bindings.clone();
+        let saved_anchor_cells = self.anchor_cells.clone();
+        let r = self.lower_value(e).ok();
+        self.value_blocks = saved_blocks;
+        self.cur_value_block = saved_cur;
+        self.next_value_reg = saved_next;
+        self.fragment_captures.truncate(saved_captures_len);
+        self.value_inline = saved_inline;
+        self.pending_param_tys = saved_pending;
+        self.head_arg_bindings = saved_bindings;
+        self.anchor_cells = saved_anchor_cells;
+        r.map(|(_, ty)| ty)
+    }
+
+    /// [`Self::lower_constrained_apply_site`] for a known constrained
+    /// definition.
+    fn lower_constrained_apply(
+        &mut self,
+        name: &str,
+        cd: &crate::types::ty::ConstrainedDef,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let (arg_tes, _) = crate::types::infer::sig_func_parts(&cd.sig);
+        if arg_tes.len() != cd.params.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "signature of `{name}` declares {} argument(s), but the definition binds {}",
+                    arg_tes.len(),
+                    cd.params.len()
+                ),
+                span,
+            });
+        }
+        if call_args.len() > cd.params.len() {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "`{name}` expects {} argument(s), got {}",
+                    cd.params.len(),
+                    call_args.len()
+                ),
+                span,
+            });
+        }
+        // A constrained body cannot specialize itself eagerly: the recursive
+        // call's class variable is only solved by the enclosing call site,
+        // which is exactly the expansion in flight. The guard is applied when
+        // the BODY is lowered (see [`Self::lower_constrained_body`]), not here:
+        // the call's arguments are ordinary expressions and may legitimately
+        // contain another use of the same definition.
+        self.lower_constrained_apply_inner(name, cd, call_args, expected, span)
+    }
+
+    /// Lower a constrained definition's body under the recursion guard.
+    ///
+    /// The guard spans the BODY only. A nested use of the same definition is
+    /// not recursion: `ixmap b f (ixmap b f a)` lowers the inner call as the
+    /// outer call's ARGUMENT, before the outer body exists, and the accessor
+    /// `index` over an `ixmap` reaches `ixmap`'s body (which calls `index` for
+    /// its source read) before the outer accessor's body. Guarding the
+    /// argument pass rejected both compositions as "recursive".
+    fn lower_constrained_body(
+        &mut self,
+        name: &str,
+        where_defs: &[Def],
+        body: &Expr,
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if self.constrained_lifting.contains(name) {
+            return Err(CompileError::Type {
+                msg: format!("recursive class-constrained definition `{name}`"),
+                span,
+            });
+        }
+        self.constrained_lifting.insert(name.to_string());
+        let result = self.lower_with_where_defs(where_defs, body, expected);
+        self.constrained_lifting.remove(name);
+        result
+    }
+
+    /// The body of [`Self::lower_constrained_apply`], run under its recursion
+    /// guard.
+    fn lower_constrained_apply_inner(
+        &mut self,
+        name: &str,
+        cd: &crate::types::ty::ConstrainedDef,
+        call_args: &[Expr],
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let env = self.env;
+        let (arg_tes, ret_te) = crate::types::infer::sig_func_parts(&cd.sig);
+        // Pass 1: lower the arguments and solve the signature's type variables
+        // from their static types.
+        //
+        // A FUNCTION-shaped parameter (`(i -> j)` in `ixmap`) is the one case
+        // where the expectation must be threaded: its argument is usually a
+        // λ-literal, and a λ parameter is only typed structurally when the
+        // expected type says what it is — otherwise `p` stayed the scalar
+        // default and `p.second` had no record to project from. The class
+        // variables of the preceding arguments are already solved here, so the
+        // expectation is concrete. Scalar/record parameters keep the
+        // expectation-free lowering (their argument's own form types them).
+        let mut bindings: HashMap<String, ValueTy> = HashMap::new();
+        let mut lowered: Vec<(usize, ValueTy)> = Vec::with_capacity(call_args.len());
+        for (i, a) in call_args.iter().enumerate() {
+            let expected_arg = arg_tes.get(i).and_then(|te| {
+                let mut vars: HashMap<String, ValueTy> = HashMap::new();
+                let vty =
+                    crate::types::infer::sig_ty_to_vty(env, te, &bindings, &mut vars, &mut || {
+                        self.fresh_sig_var()
+                    });
+                matches!(vty, ValueTy::Thunk(_, _)).then_some(vty)
+            });
+            let (r, t) = match &expected_arg {
+                Some(exp) => self.lower_value_expected(a, Some(exp))?,
+                None => self.lower_value(a)?,
+            };
+            if let Some(pat) = arg_tes.get(i) {
+                crate::types::infer::bind_sig_type_vars(env, pat, &t, &mut bindings);
+            }
+            lowered.push((r, t));
+        }
+        crate::types::infer::discharge_def_constraints(env, name, &cd.sig, &bindings, span)?;
+        // The signature's RESULT type with the solved class variables
+        // substituted. Variables the call site left unsolved (a genuinely
+        // polymorphic result) become fresh lowerer type variables.
+        let mut vars: HashMap<String, ValueTy> = HashMap::new();
+        let ret =
+            crate::types::infer::sig_ty_to_vty(env, ret_te, &bindings, &mut vars, &mut || {
+                self.fresh_sig_var()
+            });
+        let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+        let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
+        for (i, (r, t)) in lowered.iter().enumerate() {
+            scope.insert(cd.params[i].name.clone(), (*r, t.clone()));
+            ctor_scope.insert(
+                cd.params[i].name.clone(),
+                self.static_scrutinee_ctor(&call_args[i]),
+            );
+        }
+        if call_args.len() < cd.params.len() {
+            // Partial application: the remaining λ-parameters stay a function
+            // value. The applied arguments are captured by value (they are in
+            // scope as locals), and the remaining parameters are typed from the
+            // signature, whose class variables are already solved — so method
+            // dispatch inside the returned closure stays concrete.
+            let remaining_tys: Vec<ValueTy> = arg_tes[call_args.len()..]
+                .iter()
+                .map(|te| {
+                    crate::types::infer::sig_ty_to_vty(env, te, &bindings, &mut vars, &mut || {
+                        self.fresh_sig_var()
+                    })
+                })
+                .collect();
+            self.value_locals.push(scope);
+            self.value_local_ctors.push(ctor_scope);
+            let remaining = Expr::Lambda {
+                params: cd.params[call_args.len()..].to_vec(),
+                body: Box::new(cd.body.clone()),
+                span,
+            };
+            let saved_pending = self.pending_param_tys.take();
+            self.pending_param_tys = Some(remaining_tys);
+            let res = self.lower_constrained_body(name, &cd.where_defs, &remaining, expected, span);
+            self.pending_param_tys = saved_pending;
+            self.value_locals.pop();
+            self.value_local_ctors.pop();
+            return res;
+        }
+        // Full application: the definition body becomes the call's value,
+        // typed by the signature's result. A concrete caller expectation wins
+        // (inference pinned the signature result to it).
+        let sig_ret = ret;
+        let body_expected = expected.cloned().unwrap_or_else(|| sig_ret.clone());
+        self.value_locals.push(scope);
+        self.value_local_ctors.push(ctor_scope);
+        let res =
+            self.lower_constrained_body(name, &cd.where_defs, &cd.body, Some(&body_expected), span);
+        self.value_locals.pop();
+        self.value_local_ctors.pop();
+        let (r, t) = res?;
+        check_specialized_result(name, &t, &sig_ret, span)?;
+        Ok((r, t))
+    }
+
+    /// A fresh unification variable for signature-type conversion at a
+    /// constrained definition's call site.
+    fn fresh_sig_var(&mut self) -> ValueTy {
+        let v = self.next_tyvar;
+        self.next_tyvar += 1;
+        ValueTy::Var(v)
+    }
+
+    /// Lower `e` with a definition's `where`-block definitions in scope,
+    /// restoring the previous definition map afterwards.
+    fn lower_with_where_defs(
+        &mut self,
+        where_defs: &[Def],
+        e: &Expr,
+        expected: Option<&ValueTy>,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if where_defs.is_empty() {
+            return self.lower_value_expected(e, expected);
+        }
+        let saved = self.defs.clone();
+        for d in where_defs {
+            self.defs.insert(d.name().to_string(), d.clone());
+        }
+        let res = self.lower_value_expected(e, expected);
+        self.defs = saved;
+        res
+    }
+
     /// Resolve a `Ref` in value position: a value local (match-arm binding) or a
     /// value definition (inlined at each use site).
     fn lower_value_ref(
@@ -3355,7 +4550,31 @@ impl<'a> Lowerer<'a> {
         span: Span,
         expected: Option<&ValueTy>,
     ) -> Result<(usize, ValueTy), CompileError> {
-        if !self.defs.contains_key(name) && !self.value_locals.iter().any(|s| s.contains_key(name))
+        // A class-constrained definition has no standalone value: its body is
+        // specialized per CALL SITE, where the argument types solve the class
+        // variable. A bare reference (`f = mk`) has no such site, so report it
+        // here instead of lowering the deferred body against an unsolved
+        // variable — which would surface a misleading `no instance of … for
+        // Float`. A `where`-local of the same name shadows the definition.
+        if self.env.constrained_defs.contains_key(name)
+            && !self.value_locals.iter().any(|s| s.contains_key(name))
+        {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "cannot use class-constrained definition `{name}` without applying it: \
+                     its class variable is solved per call site"
+                ),
+                span,
+            });
+        }
+        // A value binding shadows a class method — a λ-parameter in
+        // `value_locals`, and equally a CAPTURE inside a nested fragment (a
+        // `\ arr -> …` that names its handle `arr` must not resolve to the
+        // `Arrow` class's `arr`).
+        let captured = self.fragment_captures.iter().any(|(n, _)| n == name);
+        if !self.defs.contains_key(name)
+            && !captured
+            && !self.value_locals.iter().any(|s| s.contains_key(name))
         {
             if let Some(class_name) = self.env.class_of_method(name) {
                 let class_info = self.env.typeclasses.get(&class_name).cloned().unwrap();
@@ -3369,7 +4588,7 @@ impl<'a> Lowerer<'a> {
                     Some(s) => crate::types::infer::sig_result_directed(s, &class_var),
                     None => false,
                 };
-                if result_directed {
+                if let Some(sig) = sig.as_ref().filter(|_| result_directed) {
                     let exp = match expected {
                         Some(t) => t,
                         None => {
@@ -3381,16 +4600,31 @@ impl<'a> Lowerer<'a> {
                             });
                         }
                     };
-                    let ty_name = match self.env.type_name_of_vty(exp) {
-                        Some(t) => t,
-                        None => {
-                            return Err(CompileError::Type {
-                                msg: format!(
-                                    "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
-                                ),
-                                span,
-                            });
-                        }
+                    // The full-type dispatch key: an arity-0 class with an
+                    // applied-head instance (`C (Pair Int Int)`) must resolve by
+                    // THAT key here too — the expected type's head name (`Pair`)
+                    // names no instance.
+                    let cv_var = self.next_tyvar;
+                    self.next_tyvar += 1;
+                    let Some((ty_name, cv_subst)) = crate::types::infer::method_dispatch_key(
+                        self.env,
+                        &class_name,
+                        &class_var,
+                        sig,
+                        exp,
+                        cv_var,
+                        || {
+                            let v = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            ValueTy::Var(v)
+                        },
+                    ) else {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "cannot resolve method `{name}` of `{class_name}`: the expected type is not concrete"
+                            ),
+                            span,
+                        });
                     };
                     let (_, params, body) = match self.env.resolve_method(name, ty_name.as_str()) {
                         Some(r) => r,
@@ -3415,10 +4649,25 @@ impl<'a> Lowerer<'a> {
                     let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
                     // Result-directed methods take no arguments (`mempty`) or a
                     // single element argument (`pure x`/`return x`) — bind any
-                    // params to fresh registers.
+                    // params to fresh registers typed from the signature (class
+                    // var substituted by the dispatch key), so a body that uses
+                    // a param sees the contract's type rather than a blanket
+                    // `Float` slot.
                     let arg_reg = self.fresh_value_reg();
-                    for p in params.iter() {
-                        scope.insert(p.clone(), (arg_reg, ValueTy::Float));
+                    let param_tys = crate::types::infer::signature_param_tys_conv(
+                        self.env,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || {
+                            let v = self.next_tyvar;
+                            self.next_tyvar += 1;
+                            ValueTy::Var(v)
+                        },
+                    );
+                    for (i, p) in params.iter().enumerate() {
+                        let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                        scope.insert(p.clone(), (arg_reg, ty));
                         ctor_scope.insert(p.clone(), None);
                     }
                     self.value_locals.push(scope);
@@ -3541,12 +4790,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        if let Some(&cell) = self.main_cell_locals.get(name) {
-            // A main λ-parameter (a String launch argument) in value
-            // position: copy the persistent cell's value into a fresh slot.
+        if let Some(&idx) = self.param_names.get(name) {
             let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueReadMainCell { dst, cell });
-            return Ok((dst, ValueTy::String));
+            self.emit_value(ValueInstr::ValueReadParam { dst, idx });
+            return Ok((dst, ValueTy::Float));
         }
         if self.env.data_types.contains_key(name) {
             return Err(CompileError::Type {
@@ -3582,7 +4829,7 @@ impl<'a> Lowerer<'a> {
                 span,
             })?;
         match def {
-            Def::Eval { body, .. } if def.params().is_empty() => {
+            Def::Eval { body, bang, .. } if def.params().is_empty() => {
                 // Complete mode: a RECURSIVE local definition (`fibs = cons …
                 // fibs …`) is a self-referential THUNK in a shared cell (the
                 // STG model) — the same shared-cell mechanism as Anchor
@@ -3596,6 +4843,21 @@ impl<'a> Lowerer<'a> {
                         .get(name)
                         .cloned()
                         .unwrap_or(ValueTy::Float);
+                    // A bang binding (`where !x = e`) forces its shared thunk
+                    // here, per reference (the same binding-point force the
+                    // inline path below emits). Dropping it would leave a
+                    // recursive bang binding silently unforced. Forcing a
+                    // self-cycle yields the memoized bottom, not a hang.
+                    let reg = if bang {
+                        let forced = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueForce {
+                            dst: forced,
+                            src: reg,
+                        });
+                        forced
+                    } else {
+                        reg
+                    };
                     return Ok((reg, ty));
                 }
                 // v1 value bindings are per-tick re-evaluated expressions (no
@@ -3629,7 +4891,20 @@ impl<'a> Lowerer<'a> {
                 let res = self.lower_value(&body);
                 self.pending_param_tys = saved_pending;
                 self.value_inline.remove(name);
-                res
+                // A bang binding (`!x = e`, `where !x = e`) forces its value to
+                // WHNF. Value bindings are re-evaluated per use site here, so a
+                // force at the inline site is the binding-point force.
+                match res {
+                    Ok((reg, ty)) if bang => {
+                        let forced = self.fresh_value_reg();
+                        self.emit_value(ValueInstr::ValueForce {
+                            dst: forced,
+                            src: reg,
+                        });
+                        Ok((forced, ty))
+                    }
+                    other => other,
+                }
             }
             Def::Eval {
                 params: def_params,
@@ -3664,7 +4939,18 @@ impl<'a> Lowerer<'a> {
                 let param_names: HashSet<String> =
                     def_params.iter().map(|p| p.name.clone()).collect();
                 let free = self.free_vars(&body, &param_names);
-                let param_tys = vec![ValueTy::Float; def_params.len()];
+                // A signature-annotated definition carries its λ-parameter
+                // types from inference; the scalar default is only the last
+                // resort. Without this a body that projects a field of its
+                // parameter (`swap p :: Pair Int Int -> Pair Int Int = Pair {
+                // first: p.second, … }`) had no record to project from when the
+                // closure form was compiled instead of inlined.
+                let param_tys: Vec<ValueTy> = self
+                    .anchor_param_tys
+                    .get(name)
+                    .filter(|tys| tys.len() == def_params.len())
+                    .cloned()
+                    .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()]);
                 let (fragment_id, ret_ty) = self.lower_fragment(
                     &def_params,
                     &body,
@@ -3714,7 +5000,7 @@ impl<'a> Lowerer<'a> {
     /// The static types of a lambda's free variables, in the same order as
     /// [`Self::free_vars`]: resolved from the enclosing value scopes (a captured
     /// record parameter keeps its `Data` type, so a field projection / method
-    /// call inside the fragment resolves), a main λ-parameter cell, defaulting
+    /// call inside the fragment resolves), defaulting
     /// to Float for an unknown capture (matching the v1 scalar-capture default).
     fn capture_tys(&self, free: &[String]) -> Vec<ValueTy> {
         free.iter()
@@ -3752,6 +5038,13 @@ impl<'a> Lowerer<'a> {
             || self.sum_ctor(name).is_some()
             || self.env.class_of_method(name).is_some()
             || self.env.builtin_sigs.contains_key(name)
+            // A class-constrained definition (`listArray`, `newArray`, …) is
+            // specialized per CALL SITE at lowering, exactly like an inlined
+            // top-level def: it has no standalone value, so it must never be
+            // captured as one. Without this a `do`-block continuation lambda
+            // captured `writeArray`/`modifyArray` as closures and the
+            // specialized application was then shadowed by the capture.
+            || self.env.constrained_defs.contains_key(name)
     }
 
     /// Record a name that appears in callee position of an application as a
@@ -3773,6 +5066,22 @@ impl<'a> Lowerer<'a> {
         if bound.contains(name) || !seen.insert(name.to_string()) {
             return;
         }
+        // An enclosing value binding (λ-parameter or fragment capture) is
+        // applied as a closure here, so it must be captured even when the name
+        // also denotes a class method or a definition.
+        if self.value_locals.iter().any(|s| s.contains_key(name))
+            || self.fragment_captures.iter().any(|(n, _)| n == name)
+        {
+            out.push(name.to_string());
+            return;
+        }
+        // A class-constrained definition is specialized per CALL SITE at
+        // lowering: it has no standalone value, so it is never a capture —
+        // not even in complete mode (where ordinary defs are captured as
+        // shared self-cells for recursion).
+        if self.env.constrained_defs.contains_key(name) {
+            return;
+        }
         if self.defs.contains_key(name) {
             if self.mode == Mode::Complete {
                 out.push(name.to_string());
@@ -3791,6 +5100,23 @@ impl<'a> Lowerer<'a> {
     ) {
         match e {
             Expr::Ref(name, _) => {
+                // A name bound by an ENCLOSING value scope (a λ-parameter of the
+                // definition being compiled, or a capture of the fragment we are
+                // already inside) is a runtime value HERE, whatever it may also
+                // mean globally: a def named `arr`/`show`/`index` must still be
+                // captured. This must be checked BEFORE the
+                // `resolves_at_lowering` suppression — a parameter named `arr`
+                // would otherwise be dropped as "the `Arrow` class method" and
+                // the fragment body would resolve it as a method instead of a
+                // capture.
+                let enclosing = self.value_locals.iter().any(|s| s.contains_key(name))
+                    || self.fragment_captures.iter().any(|(n, _)| n == name);
+                if enclosing {
+                    if seen.insert(name.clone()) {
+                        out.push(name.clone());
+                    }
+                    return;
+                }
                 // Top-level value defs are inlined at each use site (see
                 // `lower_value_ref_inner`), so they are never captured. A name
                 // that resolves at lowering (a builtin, constructor, typeclass
@@ -3964,6 +5290,24 @@ impl<'a> Lowerer<'a> {
             .zip(capture_tys.iter().cloned())
             .collect();
         self.next_value_reg = params.len();
+
+        // Bang parameters force their incoming argument to WHNF in the
+        // fragment's entry block, before the body binds/uses it.
+        for (i, p) in params.iter().enumerate() {
+            if !p.bang {
+                continue;
+            }
+            let forced = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueForce {
+                dst: forced,
+                src: i,
+            });
+            let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+            self.value_locals
+                .last_mut()
+                .unwrap()
+                .insert(p.name.clone(), (forced, ty));
+        }
 
         let res = self.lower_value_expected(body, expected_body);
         let body_result = match res {
@@ -4545,7 +5889,7 @@ impl<'a> Lowerer<'a> {
                 // result constructor.
                 let scrut_ctor = self.static_scrutinee_ctor_impl(scrutinee, visited)?;
                 for arm in arms {
-                    if let Pattern::Ctor(c, _) = &arm.pattern {
+                    if let Pattern::Ctor(c, _) = arm.pattern.strip_bang() {
                         if c == &scrut_ctor {
                             // A guarded arm's result constructor is NOT
                             // statically known (the guard may fail at runtime),
@@ -4782,7 +6126,7 @@ impl<'a> Lowerer<'a> {
     fn resolve_match_sum(&self, arms: &[MatchArm], span: Span) -> Result<String, CompileError> {
         let mut candidates: Option<Vec<String>> = None;
         for arm in arms {
-            let ctor = match &arm.pattern {
+            let ctor = match arm.pattern.strip_bang() {
                 Pattern::Ctor(c, _) => c,
                 _ => continue,
             };
@@ -4839,7 +6183,7 @@ impl<'a> Lowerer<'a> {
         // Var/Wild arm (a Var binds the whole scrutinee, a Wild ignores it).
         let selected = arms
             .iter()
-            .position(|arm| match &arm.pattern {
+            .position(|arm| match arm.pattern.strip_bang() {
                 Pattern::Ctor(c, _) => c == cname,
                 Pattern::Var(_) | Pattern::Wild => true,
                 _ => false,
@@ -4850,7 +6194,7 @@ impl<'a> Lowerer<'a> {
             })?;
         let arm = &arms[selected];
         // Reachable only from the guard-free static fast path (`!has_guards`),
-        // so every arm here is a bare `pattern => body`; a guarded arm is a
+        // so every arm here is a bare `pattern -> body`; a guarded arm is a
         // defensive error rather than a silent drop.
         let body = crate::reduce::unguarded_arm_body(arm).ok_or_else(|| CompileError::Type {
             msg: "guarded arm reached the static match fast path".into(),
@@ -4859,7 +6203,11 @@ impl<'a> Lowerer<'a> {
         // Bind the arm's pattern leaves in a fresh scope, visible to the body.
         self.value_locals.push(HashMap::new());
         self.value_local_ctors.push(HashMap::new());
-        let result = match &arm.pattern {
+        // A bang pattern forces the matched value before binding it (`!x`).
+        // The static path matched the constructor syntactically, so this is the
+        // only force the arm performs.
+        let scrutinee_reg = self.force_bang_markers(&arm.pattern, scrutinee_reg);
+        let result = match arm.pattern.strip_bang() {
             Pattern::Var(name) => {
                 // A variable arm binds the whole scrutinee (its ctor is
                 // statically known, so a nested match over it resolves too).
@@ -4896,9 +6244,11 @@ impl<'a> Lowerer<'a> {
                 // resolve them against the scrutinee's concrete type args
                 // (`Var(k)` → `scrutinee_args[k-1]`, mirroring inference).
                 for (idx, p) in args.iter().enumerate() {
-                    let Pattern::Var(name) = p else {
+                    let Pattern::Var(name) = p.strip_bang() else {
                         continue;
                     };
+                    // A bang sub-pattern (`Just !x`) forces its payload.
+                    let payload_reg = self.force_bang_markers(p, payload_regs[idx]);
                     let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
                     let pty = if is_builtin_sum {
                         match raw {
@@ -4914,7 +6264,7 @@ impl<'a> Lowerer<'a> {
                     self.value_locals
                         .last_mut()
                         .unwrap()
-                        .insert(name.clone(), (payload_regs[idx], pty));
+                        .insert(name.clone(), (payload_reg, pty));
                 }
                 self.lower_value(body)
             }
@@ -4945,6 +6295,10 @@ impl<'a> Lowerer<'a> {
         else_t: usize,
         span: Span,
     ) -> Result<usize, CompileError> {
+        // `!pat` forces the matched value to WHNF before the inner pattern is
+        // tested; the stripped pattern then binds against the forced register.
+        let scrutinee_reg = self.force_bang_markers(pattern, scrutinee_reg);
+        let pattern = pattern.strip_bang();
         match pattern {
             Pattern::Var(name) => {
                 // Binds the whole matched value; no test is emitted.
@@ -5050,7 +6404,27 @@ impl<'a> Lowerer<'a> {
                 }
                 Ok(pass)
             }
+            // `strip_bang` removed every marker before this match.
+            Pattern::Bang(_) => unreachable!("bang markers are stripped before the pattern test"),
         }
+    }
+
+    /// Emit one `ValueInstr::ValueForce` per bang marker on `pattern`,
+    /// returning the register the stripped pattern should test/bind against.
+    /// Forcing is to WHNF only — no deep strictness.
+    fn force_bang_markers(&mut self, pattern: &Pattern, reg: usize) -> usize {
+        let mut reg = reg;
+        let mut p = pattern;
+        while let Pattern::Bang(inner) = p {
+            let forced = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueForce {
+                dst: forced,
+                src: reg,
+            });
+            reg = forced;
+            p = inner;
+        }
+        reg
     }
 
     /// Emit the literal-equality test for a matched scalar: `ValueCompare { Eq }`
@@ -5100,7 +6474,7 @@ impl<'a> Lowerer<'a> {
                 else_t
             };
             if idx == 0 && matches!(g, Expr::Bool(true, _)) {
-                // Bare `pattern => body`: no guard to test.
+                // Bare `pattern -> body`: no guard to test.
                 let (body_reg, body_ty) = self.lower_value(body)?;
                 self.emit_value(ValueInstr::ValueMove {
                     dst: *out,
@@ -5226,6 +6600,27 @@ impl<'a> Lowerer<'a> {
                     let elem = &args[0];
                     1 + Self::ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
+                "Array" => {
+                    // An immutable array holds a flat element Vec plus its
+                    // stored bounds (a `Pair i i`). Unlike an open List —
+                    // bounded by the ELEM_EST heuristic — an array can
+                    // materialize a WHOLE signal block through the buffer
+                    // bridge (`arrayFromBuffer` copies every live sample into
+                    // its own arena slot).
+                    //
+                    // The bound below is the block size the DEFAULT entry
+                    // points use (the `compile`/`compile_eval` family fixes
+                    // `BUF` at 256). It is not a hard invariant: every entry is
+                    // const-generic over `BUF` and `compile_to_ir` is
+                    // block-size agnostic, so the same IR run with `BUF = 1024`
+                    // would under-budget the array 4x and `arrayFromBuffer`
+                    // would latch a clean exhaustion. Nothing breaks in-tree
+                    // today (every caller uses 256).
+                    // TODO: parameterise this estimate over `BUF` once lowering
+                    // is told the block size.
+                    let elem = args.last().unwrap_or(&ValueTy::Float);
+                    1 + Self::ARRAY_ELEM_EST * self.subtree_size_impl(elem, visiting)
+                }
                 "Map" => {
                     let k = &args[0];
                     let v = &args[1];
@@ -5327,49 +6722,31 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // A value-track builtin applied in a signal position
+                // (`main = bufferFromArray (arrayFromBuffer buf)`): the body is
+                // `Expr::Apply` because a ONE-argument application is not
+                // rewritten by the currying pass, and the signal track never
+                // consults `value_builtin`. Lower the whole application on the
+                // value track and require the single output to be a Buffer.
+                // `bufferFromArray` is the array bridge's buffer producer; every
+                // other value builtin yields a value and is a type error here.
+                if self.value_builtin(name, call_args.len()).is_some() {
+                    let (reg, ty) = self.lower_value(e)?;
+                    if matches!(ty, ValueTy::Buffer) {
+                        return Ok(vec![reg]);
+                    }
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "`{name}` produces {ty:?}; a signal position requires a Buffer"
+                        ),
+                        span: *span,
+                    });
+                }
                 if name == "smooth" {
                     let x_regs = self.lower(&call_args[0], args)?;
                     let x = x_regs[0];
                     let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
-                    let sr = self.sample_rate as f64;
-                    let a = if ms <= 0.0 {
-                        1.0
-                    } else {
-                        let tau = ms / 1000.0;
-                        1.0 - (-1.0 / (tau * sr)).exp()
-                    };
-                    let slot = self.block_state_slots;
-                    self.block_state_slots += 1;
-                    let prev = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferStateRead { dst: prev, slot });
-                    let diff = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: diff,
-                        op: BinArith::Sub,
-                        a: x,
-                        b: prev,
-                    });
-                    let acoef = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferConst {
-                        dst: acoef,
-                        value: a,
-                    });
-                    let scaled = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: scaled,
-                        op: BinArith::Mul,
-                        a: acoef,
-                        b: diff,
-                    });
-                    let y = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst: y,
-                        op: BinArith::Add,
-                        a: prev,
-                        b: scaled,
-                    });
-                    self.emit_value(ValueInstr::ValueBufferStateWrite { slot, src: y });
-                    return Ok(vec![y]);
+                    return Ok(vec![self.emit_smooth(x, ms)]);
                 }
                 // A data constructor in a signal position is a type error: value
                 // expressions lower on the value track (see `lower_value`).
@@ -5407,9 +6784,9 @@ impl<'a> Lowerer<'a> {
                                     let src = if pos >= call_args.len() {
                                         // Combinator-fed signal: no explicit
                                         // call arg — bind the next wiring
-                                        // register (the graph-reconstruct
-                                        // `(_, _) :> dry_wet` style feeds the
-                                        // channels via the combinator).
+                                        // register (the `(_, _) :> dry_wet`
+                                        // style feeds the channels via the
+                                        // combinator).
                                         if signal_index >= args.len() {
                                             return Err(CompileError::Type {
                                                 msg: format!(
@@ -5458,9 +6835,8 @@ impl<'a> Lowerer<'a> {
                                     signal_index += end.saturating_sub(pos);
                                     // Any remaining wiring registers are the
                                     // combinator-fed signal channels (the
-                                    // graph-reconstruct `(_, _) :> mixer` style
-                                    // feeds the channels via `Merge`, not as
-                                    // explicit call args).
+                                    // `(_, _) :> mixer` style feeds the channels
+                                    // via `Merge`, not as explicit call args).
                                     while signal_index < args.len() {
                                         signal_srcs.push(args[signal_index]);
                                         signal_index += 1;
@@ -5647,8 +7023,8 @@ impl<'a> Lowerer<'a> {
                                     // new DSL path resolves both to a tape INDEX
                                     // (the program's `Vec<SharedCell>`); a `Ref`
                                     // absent from the declared-tape map stays a
-                                    // name-based resource binding (the graph
-                                    // duplex path's externally-shared registry).
+                                    // name-based resource binding, which seating
+                                    // rejects as an undeclared resource.
                                     match &call_args[pos] {
                                         Expr::Ref(res_name, _) => {
                                             match self.tape_decls.get(res_name.as_str()) {
@@ -6072,15 +7448,6 @@ impl<'a> Lowerer<'a> {
             });
             return Ok(vec![dst]);
         }
-        if let Some(&cell) = self.main_cell_locals.get(name) {
-            // A main λ-parameter in signal position. `main`'s λ-parameters are
-            // String launch arguments, so a typed program never reaches here;
-            // the arm materialises the cell defensively for the value track's
-            // benefit.
-            let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueBufferMainCellRead { dst, cell });
-            return Ok(vec![dst]);
-        }
         if let Some(&idx) = self.param_names.get(name) {
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueBufferParamRead { dst, idx });
@@ -6250,6 +7617,15 @@ impl<'a> Lowerer<'a> {
     }
 }
 
+/// Whether a bang binding's right-hand side mentions the bound name (a
+/// self-recursive strict binding — `!x = x`, `!x = f x`). Such a binding has no
+/// value to force at the binding point, so it is rejected rather than lowered.
+fn bang_binding_refers_to_itself(d: &Def) -> bool {
+    let mut refs = HashSet::new();
+    collect_def_ref_names(d.body(), &mut refs);
+    refs.contains(d.name())
+}
+
 /// Collect every user-definition name referenced by `e` (a `Ref` or an applied
 /// callee) into `out`. Used by the recursion-cycle detection for shared-cell
 /// locals.
@@ -6324,6 +7700,18 @@ fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
     }
 }
 
+/// The INTEGER value of a constant expression, when it is an integer literal
+/// (possibly nested under unary minus). Unlike [`const_f64`] this does NOT
+/// accept float literals or arithmetic: it is used where the constant must stay
+/// on the Int track (`Expr::Neg` of an integer literal).
+fn const_i64(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Int(v, _) => Some(*v),
+        Expr::Neg(inner, _) => const_i64(inner).map(|v| -v),
+        _ => None,
+    }
+}
+
 fn const_f64(e: &Expr) -> Option<f64> {
     match e {
         Expr::Float(v, _) => Some(*v),
@@ -6344,24 +7732,24 @@ fn const_f64(e: &Expr) -> Option<f64> {
     }
 }
 
-/// Back-compat: lower with a default sample rate of 44.1 kHz.
+/// Lower a fully type-checked program into IR (the plain entry).
+///
+/// Lowering takes **no sample rate**: `?sample_rate` and the `smooth`
+/// coefficient read the world's `Params::sample_rate` at run time, so the
+/// compiler never sees a rate.
 pub fn lower(tp: &TypedProgram) -> Result<Ir, CompileError> {
-    lower_with(tp, 44_100.0)
+    lower_with(tp)
 }
 
-/// Lower a fully type-checked program into IR at the given sample rate.
-pub fn lower_with(tp: &TypedProgram, sample_rate: f32) -> Result<Ir, CompileError> {
-    lower_with_cafs(tp, sample_rate, &HashSet::new())
+/// Like [`lower`] (retained as the named entry point).
+pub fn lower_with(tp: &TypedProgram) -> Result<Ir, CompileError> {
+    lower_with_cafs(tp, &HashSet::new())
 }
 
 /// Like [`lower_with`], but treats the given names as closed CAFs that are
 /// lifted once and shared across reference sites.
-pub fn lower_with_cafs(
-    tp: &TypedProgram,
-    sample_rate: f32,
-    cafs: &HashSet<String>,
-) -> Result<Ir, CompileError> {
-    lower_with_cafs_mode(tp, sample_rate, cafs, tp.mode)
+pub fn lower_with_cafs(tp: &TypedProgram, cafs: &HashSet<String>) -> Result<Ir, CompileError> {
+    lower_with_cafs_mode(tp, cafs, tp.mode)
 }
 
 /// Like [`lower_with_cafs`], carrying the evaluation mode. The mode gates
@@ -6371,11 +7759,23 @@ pub fn lower_with_cafs(
 /// register).
 pub fn lower_with_cafs_mode(
     tp: &TypedProgram,
-    sample_rate: f32,
     cafs: &HashSet<String>,
     mode: Mode,
 ) -> Result<Ir, CompileError> {
-    lower_program_with_channels(tp, sample_rate, cafs, mode, 0, None)
+    lower_with_cafs_mode_entry(tp, cafs, mode, "main")
+}
+
+/// Like [`lower_with_cafs_mode`], with an explicit entry name. The entry
+/// definition supplies the program's single value result; upstream,
+/// [`infer_program_with_entry`](crate::types::infer::infer_program_with_entry)
+/// recorded the entry's scheme in `tp.def_schemes`, which this function reads.
+pub(crate) fn lower_with_cafs_mode_entry(
+    tp: &TypedProgram,
+    cafs: &HashSet<String>,
+    mode: Mode,
+    entry: &str,
+) -> Result<Ir, CompileError> {
+    lower_program_with_channels(tp, cafs, mode, 0, None, entry)
 }
 
 /// Like [`lower_with_cafs_mode`], with an explicit program input- and
@@ -6384,16 +7784,20 @@ pub fn lower_with_cafs_mode(
 /// retained value path.
 pub fn lower_program_with_channels(
     tp: &TypedProgram,
-    sample_rate: f32,
     cafs: &HashSet<String>,
     mode: Mode,
     input_channels: usize,
     output_channels: Option<usize>,
+    entry: &str,
 ) -> Result<Ir, CompileError> {
     let program: &Program = &tp.program;
     let main = program
-        .main_def()
-        .ok_or_else(|| CompileError::Unsupported("program must have a `main` definition".into()))?;
+        .defs
+        .iter()
+        .find(|d| d.name() == entry)
+        .ok_or_else(|| {
+            CompileError::Unsupported(format!("program must have a `{entry}` definition"))
+        })?;
 
     let mut defs: HashMap<String, Def> = HashMap::new();
     for d in &program.defs {
@@ -6404,11 +7808,8 @@ pub fn lower_program_with_channels(
     }
 
     let recursive_locals = Lowerer::compute_recursive_locals(&defs);
-    // `main` is an ordinary value definition; its λ-parameters are the
-    // program's String launch arguments, bound by
-    // [`ProgramRunner::set_args`](crate::program_runner::ProgramRunner::set_args)
-    // into persistent main cells. They are NOT control parameters: `?name` /
-    // `SetParameter` remains for dynamic builtin params only.
+    // `main` is an ordinary value definition; `?name` / `SetParameter` remains
+    // for dynamic builtin params only.
     //
     // An explicit `input_channels` still sizes the program's input table in
     // the IR; the value-track body no longer reaches those channels (the
@@ -6425,8 +7826,6 @@ pub fn lower_program_with_channels(
         builtins: Vec::new(),
         params: Vec::new(),
         param_names: HashMap::new(),
-        main_cell_locals: HashMap::new(),
-        sample_rate,
         value_blocks: vec![ValueBlock::default()],
         cur_value_block: 0,
         value_entry: 0,
@@ -6442,6 +7841,7 @@ pub fn lower_program_with_channels(
         mode,
         value_inline: HashSet::new(),
         method_lifting: HashSet::new(),
+        constrained_lifting: HashSet::new(),
         head_arg_bindings: HashMap::new(),
         fragments: Vec::new(),
         fragment_captures: Vec::new(),
@@ -6459,14 +7859,9 @@ pub fn lower_program_with_channels(
         tapes: Vec::new(),
         named_tapes: HashMap::new(),
         input_buffers: Vec::new(),
+        uses_array_hole: false,
+        array_hole_frag: None,
     };
-
-    for (cell_idx, p) in main.params().iter().enumerate() {
-        // A main String launch argument: one persistent main cell, initialized
-        // to the empty string at build and written by `set_args`.
-        lw.main_cell_locals.insert(p.name.clone(), cell_idx);
-    }
-    debug_assert_eq!(lw.main_cell_locals.len(), main.params().len());
 
     let mut main_args = Vec::with_capacity(num_inputs);
     for index in 0..num_inputs {
@@ -6483,7 +7878,11 @@ pub fn lower_program_with_channels(
     // An IO program is just a value program: `main`'s value is the `IO ()`
     // action the runner applies to the realized `World`. Its value register is
     // the program's single value output (no special-casing here).
-    let has_value_out = !matches!(tp.process_ty.vty, ValueTy::Buffer);
+    let entry_scheme = tp
+        .def_schemes
+        .get(entry)
+        .ok_or_else(|| CompileError::Unsupported(format!("no inferred scheme for `{entry}`")))?;
+    let has_value_out = !matches!(entry_scheme.ty.vty, ValueTy::Buffer);
     let outs = if has_value_out {
         let (vr, vty) = lw.lower_value(main.body())?;
         lw.value_regs_out.push(vr);
@@ -6504,7 +7903,6 @@ pub fn lower_program_with_channels(
         ));
     }
     let num_outputs = output_channels.unwrap_or(outs.len());
-    let num_main_cells = lw.main_cell_locals.len();
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
     // is a strict upper bound on simultaneously-live per-tick slots. On top of
@@ -6514,9 +7912,6 @@ pub fn lower_program_with_channels(
     //     children and the previous tick's output tree is still fully live
     //     while the next tick allocates. The bound therefore adds the static
     //     subtree size of each output's value type (a scalar adds 1).
-    //   * main λ-parameter cells are allocated once at construction and live
-    //     for the program's whole lifetime, so they occupy `num_main_cells`
-    //     permanent slots.
     // Value-state slots (`ValueStateRead`/`ValueStateWrite`) are not emitted by
     // lowering in v1; when a future task wires `~`/`@` over values, its slot
     // count must join the bound the same way.
@@ -6562,7 +7957,6 @@ pub fn lower_program_with_channels(
             .map(|t| lw.subtree_size(t))
             .sum::<usize>()
         + container_capacity
-        + num_main_cells
         + fragment_capacity;
     let slot_capacity = value_capacity * Lowerer::POOL_SAFETY_MULTIPLIER;
     // Payload buffer budget: every live slot may hold one pooled payload
@@ -6587,6 +7981,28 @@ pub fn lower_program_with_channels(
     // no fragment can recur on a dispatch chain), so the total fragment count
     // is a strict upper bound on the deepest nesting. Each frame needs at most
     // `max_fragment_regs` value-register slots, giving the product below.
+    // The M8 synthetic hole fragment (appended below, when an `arrayFromAssocs`
+    // was lowered) must be counted in `max_call_depth`: forcing an unlisted
+    // array position runs a real fragment frame.
+    if lw.uses_array_hole {
+        let hole_id = lw.fragments.len() as u32;
+        lw.fragments.push(std::sync::Arc::new(FragmentIr {
+            value_blocks: vec![ValueBlock {
+                instrs: vec![ValueInstr::ValueArrayHoleFault],
+                term: ValueTerm::Halt,
+            }],
+            entry: 0,
+            num_value_regs: 1,
+            output_value_regs: vec![],
+            num_capture_cells: 0,
+            sig: FuncSig {
+                value_ins: 0,
+                value_outs: 0,
+                signal_ins: 0,
+            },
+        }));
+        lw.array_hole_frag = Some(hole_id);
+    }
     let max_call_depth = lw.fragments.len();
     let max_fragment_regs = lw
         .fragments
@@ -6605,11 +8021,17 @@ pub fn lower_program_with_channels(
     // Terminate the program's value track: the entry block's fallthrough chain
     // ends here. Every existing program is a single block ending in `Halt`.
     lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
-    // The runner contract: `main : (String…) -> IO ()`. The static type is the
+    // The runner contract: `main : IO ()`. The static type is the
     // only place the unit payload survives — the value track represents `()`
     // as `Float(0.0)` once it travels through a closure cell (see
     // `Ir::main_io_unit`).
-    let main_io_unit = main_result_is_io_unit(&tp.process_ty.vty);
+    let main_io_unit = main_result_is_io_unit(&entry_scheme.ty.vty);
+    // The program's single result register: where the entry body's value
+    // landed. `lw.value_regs_out[0]` — architecturally there are no signal
+    // programs (no output channels), so the result is exactly one register
+    // (buffer results are `Value::Buffer(idx)` arena values). The 7815 check
+    // guarantees at least one output exists.
+    let result_reg = lw.value_regs_out.first().copied().unwrap_or(0);
     Ok(Ir {
         main_io_unit,
         num_inputs,
@@ -6621,13 +8043,13 @@ pub fn lower_program_with_channels(
         },
         builtins: lw.builtins,
         params: lw.params,
-        num_main_cells,
         value_blocks: std::mem::take(&mut lw.value_blocks),
         value_entry: lw.value_entry,
         num_value_regs: lw.next_value_reg,
-        value_output_regs: lw.value_regs_out,
+        result_reg,
         value_funcs: lw.value_funcs,
         fragments: lw.fragments,
+        array_hole_frag: lw.array_hole_frag,
         max_call_regs,
         value_state: ValueLayout {
             capacity: slot_capacity,
@@ -6663,7 +8085,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs,
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -6673,7 +8095,33 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        lower_with_cafs(&tp, 44_100.0, &tp.cafs).unwrap()
+        lower_with_cafs(&tp, &tp.cafs).unwrap()
+    }
+
+    #[test]
+    fn record_args_discard_a_partial_field_binding() {
+        // Declared fields `first: Var(1)`, `second: Var(1)` — a homogeneous
+        // record such as `Pair`. When a LATER field contradicts an earlier
+        // binding (`first: Int` then `second: Bool`), the record contributes NO
+        // type arguments: a leaked `first` binding would hand out `[Int]` and
+        // let the dispatch key claim the record is a `Pair Int …`.
+        let fields = [
+            ("first".to_string(), ValueTy::Var(1)),
+            ("second".to_string(), ValueTy::Var(1)),
+        ];
+        assert_eq!(
+            record_args_from_fields(&fields, &[ValueTy::Int, ValueTy::Int]),
+            vec![ValueTy::Int]
+        );
+        assert!(
+            record_args_from_fields(&fields, &[ValueTy::Int, ValueTy::Bool]).is_empty(),
+            "a contradictory field must void the whole record's type arguments"
+        );
+        // An unresolved field type keeps the parameterized type opaque.
+        assert!(
+            record_args_from_fields(&fields, &[ValueTy::Var(7), ValueTy::Var(7)]).is_empty(),
+            "an unresolved field type must not be pinned as a type argument"
+        );
     }
 
     /// Build a `Lowerer` for testing lowering helpers (`free_vars`) directly on
@@ -6691,8 +8139,6 @@ mod tests {
             builtins: Vec::new(),
             params: Vec::new(),
             param_names: HashMap::new(),
-            main_cell_locals: HashMap::new(),
-            sample_rate: 44_100.0,
             value_blocks: vec![ValueBlock::default()],
             cur_value_block: 0,
             value_entry: 0,
@@ -6708,6 +8154,7 @@ mod tests {
             mode: Mode::Strict,
             value_inline: HashSet::new(),
             method_lifting: HashSet::new(),
+            constrained_lifting: HashSet::new(),
             head_arg_bindings: HashMap::new(),
             fragments: Vec::new(),
             fragment_captures: Vec::new(),
@@ -6725,6 +8172,8 @@ mod tests {
             tapes: Vec::new(),
             named_tapes: HashMap::new(),
             input_buffers: Vec::new(),
+            uses_array_hole: false,
+            array_hole_frag: None,
         }
     }
 
@@ -6784,23 +8233,14 @@ mod tests {
     }
 
     #[test]
-    fn main_param_lowers_to_cell_binding() {
+    fn actor_param_lowers_to_param_read() {
         // An actor param (`?gain`) is a named control parameter read as a
-        // scalar VALUE (`ValueInstr::ValueReadParam`). `main`'s own λ-params
-        // are String launch arguments (bound by the runner), so dynamic
-        // control uses `?name`.
+        // scalar VALUE (`ValueInstr::ValueReadParam`). `main` has no λ-params
+        // (String launch arguments are gone), so dynamic control uses `?name`.
         let ir = ir_of(r"main = ?gain * 1.0;");
-        assert_eq!(ir.num_main_cells, 0);
         assert!(
             has_instr(&ir, |i| matches!(i, ValueInstr::ValueReadParam { .. })),
             "expected a ValueReadParam instruction for `?gain`"
-        );
-        assert!(
-            !has_instr(&ir, |i| matches!(
-                i,
-                ValueInstr::ValueBufferMainCellRead { .. }
-            )),
-            "actor params must not lower to MainCellRead"
         );
     }
 
@@ -6889,7 +8329,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -6899,7 +8339,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
@@ -6917,7 +8357,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -6927,7 +8367,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
@@ -6946,7 +8386,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -6956,7 +8396,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
@@ -6980,7 +8420,7 @@ mod tests {
         let reduced = reduce_with_cafs(&typed.program, &cafs);
         let tp = crate::types::infer::TypedProgram {
             program: reduced,
-            process_ty: typed.process_ty,
+            def_schemes: typed.def_schemes.clone(),
             cafs: cafs.clone(),
             type_env: typed.type_env.clone(),
             fn_param_tys: typed.fn_param_tys.clone(),
@@ -6990,7 +8430,7 @@ mod tests {
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
         };
-        let res = lower_with_cafs(&tp, 44100.0, &cafs);
+        let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
     }
 
@@ -7076,8 +8516,7 @@ mod tests {
             "Circle is the first declared ctor of Shape (index 0)"
         );
         assert_eq!(
-            ir.value_output_regs,
-            vec![2],
+            ir.result_reg, 2,
             "output must be the Circle arm's payload reg (r), not Rect's w"
         );
     }
@@ -7140,9 +8579,11 @@ mod tests {
 
     #[test]
     fn lower_if_emits_branch() {
-        // A non-constant Bool condition (`g > 0.5` on a main λ-param, read per
-        // tick) must lower to a runtime Branch term.
-        let ir = ir_of("main g = if g > 0.5 then 1.0 else 2.0;");
+        // A non-constant Bool condition (here: a comparison over a value def,
+        // whose result is a runtime value, not a literal) must lower to a
+        // runtime Branch term. (`main` λ-params are gone, so a runtime Bool
+        // comes from a value expression, not a launch-argument read.)
+        let ir = ir_of("g = 1.0; main = if g > 0.5 then 1.0 else 2.0;");
         assert!(
             ir.value_blocks
                 .iter()

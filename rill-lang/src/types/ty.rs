@@ -81,6 +81,21 @@ impl ValueTy {
     }
 }
 
+/// `(a -> List b) -> List a -> List b`: pick the result element type for
+/// `concat_map` from the closure's RETURN list element, falling back to the
+/// source list element when the return is not a `List`.
+pub(crate) fn concat_map_result_elem(closure_ty: &ValueTy, source_elem: ValueTy) -> ValueTy {
+    match closure_ty {
+        ValueTy::Thunk(_, rets) => match rets.first() {
+            Some(ValueTy::App(name, inner)) if name == "List" => {
+                inner.first().cloned().unwrap_or(source_elem)
+            }
+            _ => source_elem,
+        },
+        _ => source_elem,
+    }
+}
+
 /// The type of a single expression: a unary core value type.
 ///
 /// Every `infer_expr` produces one `Ty` (a single value); there is no channel
@@ -192,12 +207,18 @@ pub struct TypeclassInfo {
 pub struct InstanceInfo {
     /// The class this instance implements.
     pub class: String,
-    /// The concrete type name bound to the class variable.
+    /// The instance head as parsed (`List`, `Kleisli m`, `Pair Int Int`). Used
+    /// to derive the class variable's concrete value type (the instance head's
+    /// full type) for method-body validation.
+    pub head: crate::ast::TypeExpr,
+    /// The registry key. A partial head (`Kleisli m`) keys by its constructor;
+    /// a fully concrete head keys by its FULL applied type (`Pair Int Int`).
     pub ty: String,
     /// Constraint list: (class, type var), e.g. `(Monad, "m")`.
     pub constraints: Vec<(String, String)>,
-    /// Type-constructor args bound by the instance head (partial application):
-    /// `Kleisli m` → `["m"]` (arity 3 total, 1 bound ⇒ 2 remaining).
+    /// Type-constructor args bound by a PARTIAL instance head: `Kleisli m` →
+    /// `["m"]` (arity 3 total, 1 bound ⇒ 2 remaining). Empty for a bare or
+    /// fully concrete head.
     pub head_args: Vec<String>,
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
@@ -216,6 +237,106 @@ pub struct InstanceInfo {
     /// fresh `InstanceInfo` with `from_prelude: false`, so it is validated like
     /// any other user instance.
     pub from_prelude: bool,
+}
+
+impl InstanceInfo {
+    /// The value type an instance head binds to the class variable, in the
+    /// signature converter's spelling (a bare head resolves through the type
+    /// environment, an applied one becomes a constructor application).
+    pub(crate) fn class_var_ty(&self, env: &TypeEnv) -> ValueTy {
+        crate::types::infer::data_field_vty(env, &[], &self.head)
+    }
+}
+
+/// A class-constrained function definition (`mk p v :: Ix i => Pair i i -> …`).
+///
+/// Such a definition is NOT a plain function: its body mentions methods of the
+/// constrained class (`rangeSize` in `rangeSize p`), which cannot be resolved
+/// until a call site fixes the class variable to a concrete type. The body is
+/// therefore never inferred in isolation — each call site specializes it with
+/// the concrete class-variable type and the bound instance (compile-time
+/// β-substitution, never a runtime dictionary). See
+/// [`TypeEnv::constrained_defs`] and `lower::lower_constrained_apply`.
+///
+/// Limits of the per-call-site model (all deliberate, all diagnosed):
+///
+/// - A definition that references itself from its own body cannot be
+///   specialized: the recursive call's class variable is only solved by the
+///   enclosing call site, which is exactly the expansion in flight. Direct
+///   self-recursion is already rejected by the general fragment-recursion check
+///   (`recursive function call: …`); recursion that reaches lowering through an
+///   indirection (a `where` binding) is caught by the specialization guard
+///   (`recursive class-constrained definition …`) instead of looping.
+/// - The specialization is a VALUE-track construct. The signal-track `Apply`
+///   lowering has no intercept for these definitions; a signal-rate call is
+///   reported as an ordinary lowering failure rather than specialized.
+/// - A BARE reference (`f = mk`) has no call site at which to solve the class
+///   variable; lowering reports `cannot use class-constrained definition …
+///   without applying it`. The reducer likewise never inlines such a reference
+///   (β-reducing the deferred body would lower it against an unsolved variable).
+#[derive(Debug, Clone)]
+pub struct ConstrainedDef {
+    /// The declared signature, a [`crate::ast::TypeExpr::TConstrained`] node
+    /// carrying the class context.
+    pub sig: crate::ast::TypeExpr,
+    /// The definition's formal parameters, recovered from the parser's curried
+    /// body (see `split_curried_params`): multi-parameter definitions are
+    /// stored as nested lambdas with an empty `Def::Eval::params` list.
+    pub params: Vec<crate::ast::Param>,
+    /// The definition body with the formal parameters peeled off (it is the
+    /// body captured at registration, i.e. before `reduce`; references inside
+    /// it still resolve through the program's reduced definition map at
+    /// lowering time).
+    pub body: Expr,
+    /// The definition's `where`-block definitions.
+    pub where_defs: Vec<Def>,
+}
+
+/// Recover a definition's formal parameters from its curried body.
+///
+/// The parser turns `f a b = e` into a bare binding whose body is
+/// `\a -> \b -> e` and clears the definition's `params` (see
+/// `parser::curry_defs_in`), so the formal parameters of a multi-parameter
+/// definition live in the body's leading lambdas. `arity` is the definition
+/// signature's argument count — it says exactly how many lambdas belong to the
+/// definition head rather than to a function-valued body — and the returned
+/// body has them peeled off.
+///
+/// Shared by constrained-definition registration and by the eager inference
+/// path, which types an annotated multi-parameter definition's λ-chain from its
+/// signature.
+pub(crate) fn split_curried_params(
+    arity: usize,
+    params: &[crate::ast::Param],
+    body: &Expr,
+) -> (Vec<crate::ast::Param>, Expr) {
+    let mut params = params.to_vec();
+    let mut body = body.clone();
+    while params.len() < arity {
+        let (first, rest) = match &body {
+            Expr::Lambda {
+                params: lam,
+                body: inner,
+                span,
+            } if !lam.is_empty() => {
+                let first = lam[0].clone();
+                let rest = if lam.len() == 1 {
+                    (**inner).clone()
+                } else {
+                    Expr::Lambda {
+                        params: lam[1..].to_vec(),
+                        body: inner.clone(),
+                        span: *span,
+                    }
+                };
+                (first, rest)
+            }
+            _ => break,
+        };
+        params.push(first);
+        body = rest;
+    }
+    (params, body)
 }
 
 /// The compile-time type environment: aliases, newtypes, data-type shapes, and
@@ -272,6 +393,14 @@ pub struct TypeEnv {
     /// [`infer_program_with`](crate::types::infer::infer_program_with) threads
     /// them into the program's defs before typing.
     pub prelude_defs: Vec<crate::ast::Def>,
+    /// Class-constrained definitions (`mk :: Ix i => …`), keyed by name.
+    ///
+    /// Their bodies are deferred: the constrained class variable is abstract
+    /// until a call site solves it, so typing the body at load would dispatch
+    /// the body's method calls against an unresolved type. Inference types the
+    /// parameters from the signature and lowering specializes the body per call
+    /// site (see [`ConstrainedDef`]).
+    pub constrained_defs: HashMap<String, ConstrainedDef>,
 }
 
 /// Built-in category-theory typeclasses, declared in rill-lang itself and
@@ -283,6 +412,20 @@ typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 typeclass Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
 typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
+
+--  Index types (`Data.Ix`): the offset/range vocabulary the array surface is
+--  written against. `range` enumerates the index set in ROW-MAJOR order (last
+--  coordinate fastest), `index` gives an element's flat offset, `inRange` tests
+--  membership and `rangeSize` counts the elements — its value is also the
+--  required element count of `listArray`. Instances are declared in the
+--  standard prelude (`STD_PRELUDE`), and every offset they compute is an `Int`,
+--  so the flat array primitives only ever see integers.
+typeclass Ix i where {
+    range: Pair i i -> List i;
+    index: Pair i i -> i -> Int;
+    inRange: Pair i i -> i -> Bool;
+    rangeSize: Pair i i -> Int;
+}
 
 data Kleisli m a b = { unKleisli: a -> m b };
 
@@ -360,6 +503,10 @@ data STState;
 -- An opaque cell handle. Only `newSTRef` creates one; the region phantom `s`
 -- keeps it from escaping its `runST` region.
 data STRef s a;
+-- An opaque mutable-array handle, mirroring `STRef`. The ST effects create one
+-- (`newArrayFlat`) and `runSTArray` freezes it into an immutable `Array`; the
+-- region phantom `s` keeps an `STArray` from escaping its `runST` region.
+data STArray s i e;
 -- The state-threading monad: a state token in, the advanced token AND the
 -- result out. `runST` supplies the initial token and discards the final one.
 data ST s a = { unST: STState -> Pair STState a };
@@ -379,12 +526,12 @@ instance Monoid List where { mempty = list; mappend a b = append_list a b; }
 
 instance Functor List where { fmap g xs = map g xs; }
 instance Functor Maybe where {
-    fmap g m = case m of { Nothing => Nothing; Just x => Just (g x); };
+    fmap g m = case m of { Nothing -> Nothing; Just x -> Just (g x); };
 }
 
 instance Monad Maybe where {
     return x = Just x;
-    bind m f = case m of { Nothing => Nothing; Just x => f x; };
+    bind m f = case m of { Nothing -> Nothing; Just x -> f x; };
 }
 instance Monad List where {
     return x = cons x (list);
@@ -400,6 +547,158 @@ instance Monad IO where {
     return x = IO { unIO: \w -> Pair { first: w, second: x } };
     bind m f = IO { unIO: \w -> let io_state = m.unIO w in let io_next = f io_state.second in io_next.unIO io_state.first };
 };
+
+--  ---------------------------------------------------------------------------
+--  Data.Array — the constrained language-level array surface.
+--
+--  It is written entirely against `Ix` (declared in `CATEGORY_PRELUDE`), on top
+--  of the flat storage primitives (`arrayFromList`, `arrayIndexFlat`,
+--  `arrayUpdate`, `arrayAccum`, `arrayFromAssocs`, `arraySeed`, the `STArray`
+--  effects, and the buffer bridge).
+--
+--  OFFSETS for construction/update/accum (`arrayFromAssocs`, `arrayUpdate`,
+--  `arrayAccum`) are now resolved BY THE PRIMITIVES against the stored bounds
+--  for the two prelude index shapes (`Int`, `Pair Int Int`) — a structural
+--  limitation: building an array over a user-defined index type faults
+--  "unsupported index type". READS stay language-side, through
+--  `checkedOffset`/`index`, so user `Ix` instances keep working for `!`
+--  and the ST wrappers; only `array`-construction over a non-prelude index
+--  shape is out of reach.
+--
+--  Construction details worth spelling out:
+--    * `array`'s unlisted positions are UNDEFINED elements — one shared lazy
+--      callable that latches the clean fault "array: undefined array element"
+--      when forced (GHC's `undefined`), which makes `array` generic in the
+--      element type. Associations are applied in order; a repeated index
+--      leaves the last value. `accumArray` seeds every position with its
+--      initial value and therefore has no holes.
+--
+--  `listArray` / `newListArray` follow GHC's lenient construction (no length
+--  check): a list SHORTER than `rangeSize` pads the tail with the same shared
+--  lazy hole as `array`'s unlisted positions (forcing it faults "array:
+--  undefined array element"); a list LONGER than `rangeSize` is silently
+--  truncated to the array's size. This is exactly GHC's `arrEleBottom` model
+--  shared by `array`, `listArray`, and `newListArray`.
+--
+--  Fault policy: every CELL reference is bounds-checked, not just the flat
+--  offset. `checkedOffset` turns an out-of-range cell into `-1`, which the flat
+--  primitives reject with their own clean out-of-range fault — so `!`/`index`
+--  and every association's index fault instead of wrapping into a neighbouring
+--  row (a flat offset cannot tell the storage layer which cell it came from).
+--
+--  `range` enumerates ROW-MAJOR (last coordinate fastest), which is exactly the
+--  order `Ix.index` flattens to, so `indices`/`assocs` and the element list of
+--  a 2-D `listArray` all agree.
+--  ---------------------------------------------------------------------------
+
+--  1-D indices: `rangeSize` is defined per instance (rather than as a class
+--  default over `length (range b)`) so an instance body never has to invoke a
+--  sibling method of its own class; `range` itself is the definition of the
+--  enumeration, so counting it would be circular in spirit.
+instance Ix Int where {
+    range b = listRange b;
+    index b i = i - b.first;
+    inRange b i = (b.first <= i) && (i <= b.second);
+    rangeSize b = b.second - b.first + 1;
+}
+
+--  2-D indices, row-major over `Pair Int Int`. The instance is SELF-CONTAINED on
+--  purpose: the per-coordinate arithmetic is inlined instead of dispatching the
+--  `Ix Int` sibling method, so an instance body never depends on instance
+--  resolution of its own class (the same class variable would have to be solved
+--  twice). `range` builds the grid with `concat_map`/`map` over two inclusive
+--  `listRange`s — no recursion, which strict mode bans.
+instance Ix (Pair Int Int) where {
+    range b = concat_map (\ i1 -> map (\ i2 -> Pair { first: i1, second: i2 }) (listRange (Pair { first: (b.first).second, second: (b.second).second }))) (listRange (Pair { first: (b.first).first, second: (b.second).first }));
+    index b i = (i.first - (b.first).first) * ((b.second).second - (b.first).second + 1) + (i.second - (b.first).second);
+    inRange b i = ((b.first).first <= i.first) && (i.first <= (b.second).first) && ((b.first).second <= i.second) && (i.second <= (b.second).second);
+    rangeSize b = ((b.second).first - (b.first).first + 1) * ((b.second).second - (b.first).second + 1);
+}
+
+--  --- Immutable arrays ------------------------------------------------------
+--  `bounds` and `elems` are plain definitions (not builtins): the ST read-backs
+--  `getBounds`/`getElems` are the mutable-handle counterparts and stay distinct.
+
+--  Both carry EXPLICIT signatures: without one the inferred parameter type is
+--  the numeric fallback, so `arrayBounds` inside the body saw a non-array and
+--  typed the bounds as a flat `Pair Int Int` (right by accident for 1-D, wrong
+--  for a nested index). With the signature the index type is a signature
+--  variable, which never solves an `Ix` instance — a caller that indexes with
+--  `bounds a` therefore routes to the array definition, never to a bogus
+--  `Ix Int` method.
+bounds a :: Array i e -> Pair i i = arrayBounds a;
+elems a :: Array i e -> List e = arrayElems a;
+
+--  `index` is DOUBLE DUTY: the `Ix` offset method (`Pair i i -> i -> Int`) and
+--  this array accessor (`Array i e -> i -> e`, the `!` operator). The dispatch is
+--  type-directed on the first argument — a `Pair` bounds value selects the
+--  method, an `Array` selects this definition — and the body below relies on
+--  exactly that to reach the METHOD for its offset. The offset is computed by
+--  `checkedOffset` (the PRIMITIVE `arrayBounds`, not the `bounds` definition: a
+--  plain definition is lowered through its (polymorphic) scheme, so its index
+--  type would stay a variable and the METHOD dispatch would be lost).
+index a ix :: Ix i => Array i e -> i -> e = arrayIndexFlat a (checkedOffset (arrayBounds a) ix);
+
+--  `checkedOffset bounds ix`: the flat offset of `ix`, or `-1` when the cell is
+--  outside the bounds. Every flat primitive rejects a negative offset, so an
+--  out-of-range CELL takes the same clean fault channel as an out-of-range flat
+--  offset. Without the check a 2-D cell such as `(0, 3)` in a 3x3 grid would
+--  compute the in-range offset `3` and silently read the next row's first
+--  element — a wrapped read the storage layer cannot detect, because a flat
+--  offset carries no information about the cell it came from.
+checkedOffset b ix :: Ix i => Pair i i -> i -> Int = if inRange b ix then index b ix else -1;
+
+--  Lenient constructor (GHC-faithful): a list SHORTER than `rangeSize` pads
+--  the tail with the shared lazy hole (forcing it faults "array: undefined
+--  array element"); a list LONGER than `rangeSize` is silently truncated.
+--  `arrayFromListChecked` carries the pre-computed size to the interpreter,
+--  which pads or truncates.
+listArray b es :: Ix i => Pair i i -> List e -> Array i e = arrayFromListChecked b (rangeSize b) es;
+
+--  `array assocs`: every unlisted position is ONE SHARED lazy hole whose
+--  FORCE latches the clean fault "array: undefined array element" (GHC's
+--  `undefined` for unlisted positions — not a `0.0` fill). Associations are
+--  applied in order; a repeated index leaves the last value. The interpreter
+--  resolves the index-typed associations against the construction bounds for
+--  the two prelude index shapes (`Int`, `Pair Int Int`).
+array b xs :: Ix i => Pair i i -> List (Pair i e) -> Array i e = arrayFromAssocs b xs;
+
+--  `accumArray f init assocs`: seed every position with `init`, then fold the
+--  associations in order (`f old new`). `arraySeed` fills all positions, so
+--  an `accumArray` has no holes.
+accumArray f init b xs :: Ix i => (e -> (e -> e)) -> e -> Pair i i -> List (Pair i e) -> Array i e
+                          = arrayAccum (arraySeed b init) f xs;
+
+--  `(//)` — apply (index, value) associations, last wins, source untouched.
+update a xs :: Ix i => Array i e -> List (Pair i e) -> Array i e = arrayUpdate a xs;
+
+--  `accum f` — fold associations into an existing array.
+accum f a xs :: Ix i => (e -> (e -> e)) -> Array i e -> List (Pair i e) -> Array i e = arrayAccum a f xs;
+
+indices a :: Ix i => Array i e -> List i = range (arrayBounds a);
+
+assocs a :: Ix i => Array i e -> List (Pair i e) = map (\ ix -> Pair { first: ix, second: index a ix }) (indices a);
+
+--  `ixmap b f a`: reindex — the result is indexed by `Pair i i`, and position
+--  `ix` takes `a`'s element at `f ix`. TWO `Ix` instances are in play, one per
+--  index type.
+ixmap b f a :: (Ix i, Ix j) => Pair i i -> (i -> j) -> Array j e -> Array i e = arrayFromList b (map (\ ix -> index a (f ix)) (range b));
+
+--  --- Mutable arrays (ST) ---------------------------------------------------
+--  The wrappers compute the flat offset with `Ix.index` on the handle's own
+--  bounds (`getBounds`) and then call the corresponding `…Flat` effect.
+
+newArray b e :: Ix i => Pair i i -> e -> ST s (STArray s i e) = newArrayFlat b (rangeSize b) e;
+
+--  Lenient, like `listArray`: a short list pads the tail with the shared lazy
+--  hole; a long list is silently truncated to `rangeSize`.
+newListArray b es :: Ix i => Pair i i -> List e -> ST s (STArray s i e) = newArrayFromListFlat b (rangeSize b) es;
+
+readArray arr ix :: Ix i => STArray s i e -> i -> ST s e = bind (getBounds arr) (\ b -> readArrayFlat arr (index b ix));
+
+writeArray arr ix v :: Ix i => STArray s i e -> i -> e -> ST s () = bind (getBounds arr) (\ b -> writeArrayFlat arr (index b ix) v);
+
+modifyArray arr ix f :: Ix i => STArray s i e -> i -> (e -> e) -> ST s () = bind (getBounds arr) (\ b -> modifyArrayFlat arr (index b ix) f);
 
 main = ();
 "#;
@@ -503,7 +802,14 @@ fn instance_from_template(
         .find(|d| matches!(d, Def::Instance { .. }))
         .cloned()
         .unwrap();
-    let Def::Instance { method_bodies, .. } = inst else {
+    let Def::Instance {
+        head,
+        ty,
+        head_args,
+        method_bodies,
+        ..
+    } = inst
+    else {
         unreachable!("derived instance template produced an instance")
     };
     let mut methods: HashMap<String, (Vec<String>, Expr)> = HashMap::new();
@@ -513,9 +819,10 @@ fn instance_from_template(
     }
     InstanceInfo {
         class: class.to_string(),
-        ty: ty.to_string(),
+        head,
+        ty,
         constraints: vec![],
-        head_args: head_args.to_vec(),
+        head_args,
         methods,
         from_prelude,
     }
@@ -617,6 +924,8 @@ impl TypeEnv {
             ("Map".to_string(), 2usize),
             ("Pair".to_string(), 2usize),
             ("Either".to_string(), 2usize),
+            ("Array".to_string(), 2usize),   // i e
+            ("STArray".to_string(), 3usize), // s i e
             ("FixedBuffer".to_string(), 1usize),
         ]
         .into_iter()
@@ -781,6 +1090,107 @@ impl TypeEnv {
                 Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
             ),
         );
+        // The STArray primitives. Flat, type-agnostic operations mirroring the
+        // STRef family: every flat size and offset is computed by the LANGUAGE
+        // (the `Ix` class lands in a later task), so there is no `Ix i =>`
+        // constraint and no range math in the interpreter. `s` is quantified in
+        // result position exactly like the STRef signatures, which links each
+        // operation to the enclosing `runST` region's phantom — that is what
+        // makes an escaping `STArray s i e` a compile-time error.
+        //
+        //   newArrayFlat    :: Pair i i -> Int -> e -> ST s (STArray s i e)
+        //   readArrayFlat   :: STArray s i e -> Int -> ST s e
+        //   writeArrayFlat  :: STArray s i e -> Int -> e -> ST s ()
+        //   modifyArrayFlat :: STArray s i e -> Int -> (e -> e) -> ST s ()
+        //   getBounds       :: STArray s i e -> ST s (Pair i i)
+        //   getElems        :: STArray s i e -> ST s (List e)
+        let starray = |args: Vec<crate::ast::TypeExpr>| {
+            crate::ast::TypeExpr::TApp("STArray".to_string(), args)
+        };
+        let pair_of =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("Pair".to_string(), args);
+        let list_of =
+            |arg: crate::ast::TypeExpr| crate::ast::TypeExpr::TApp("List".to_string(), vec![arg]);
+        let arr_ie = || crate::ast::TypeExpr::TApp("Array".to_string(), vec![tv("i"), tv("e")]);
+        let sa_ie = || starray(vec![tv("s"), tv("i"), tv("e")]);
+        env.builtin_sigs.insert(
+            "newArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![pair_of(vec![tv("i"), tv("i")]), tv("Int"), tv("e")],
+                Box::new(forall_s(st(vec![tv("s"), sa_ie()]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "readArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie(), tv("Int")],
+                Box::new(forall_s(st(vec![tv("s"), tv("e")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "writeArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie(), tv("Int"), tv("e")],
+                Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "modifyArrayFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![
+                    sa_ie(),
+                    tv("Int"),
+                    crate::ast::TypeExpr::TFunc(vec![tv("e")], Box::new(tv("e"))),
+                ],
+                Box::new(forall_s(st(vec![tv("s"), tv("()")]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "getBounds".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie()],
+                Box::new(forall_s(st(vec![tv("s"), pair_of(vec![tv("i"), tv("i")])]))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "getElems".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![sa_ie()],
+                Box::new(forall_s(st(vec![tv("s"), list_of(tv("e"))]))),
+            ),
+        );
+        // `newArrayFromListFlat` — the strict `newListArray` allocation:
+        //
+        //   newArrayFromListFlat :: Pair i i -> Int -> List e -> ST s (STArray s i e)
+        //
+        // The `Int` is the language-computed `rangeSize`; the interpreter
+        // compares it with the list length and faults on a mismatch.
+        env.builtin_sigs.insert(
+            "newArrayFromListFlat".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![pair_of(vec![tv("i"), tv("i")]), tv("Int"), list_of(tv("e"))],
+                Box::new(forall_s(st(vec![tv("s"), sa_ie()]))),
+            ),
+        );
+        // `runSTArray` — the freeze. Its signature is the rank-N shape of
+        // `runST` with the region's payload pinned to an `STArray`:
+        //
+        //   runSTArray :: (forall s. ST s (STArray s i e)) -> Array i e
+        //
+        // The region phantom is quantified in the ARGUMENT (like `runST`), so
+        // the body's `s` cannot escape into `Array i e`. The rank-2 application
+        // itself lives in `infer_apply_impl` (mirroring `runST`); this entry is
+        // the signature of record and the shape the application detects.
+        env.builtin_sigs.insert(
+            "runSTArray".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![crate::ast::TypeExpr::TForall(
+                    vec!["s".to_string()],
+                    Box::new(st(vec![tv("s"), sa_ie()])),
+                )],
+                Box::new(arr_ie()),
+            ),
+        );
         // IO / io-streams primitives. `IO` is the state-threading monad
         // declared in `STD_PRELUDE` (`IO a = { unIO: World -> Pair World a }`);
         // `()` is `ValueTy::Void` (`TName "()"` resolves to it in
@@ -925,6 +1335,170 @@ impl TypeEnv {
             "show_bool".to_string(),
             crate::ast::TypeExpr::TFunc(vec![tv("Bool")], Box::new(tv("String"))),
         );
+        // Immutable array storage primitives: the flat, type-agnostic surface
+        // (design §Storage primitives, immutable list). Every INDEX computation
+        // lives in the interpreter for the two prelude shapes (`Int`,
+        // `Pair Int Int`), resolved against the STORED bounds of the array; the
+        // language's `Ix` instances stay for READS (`checkedOffset`, `index`)
+        // and for user-defined index types over the read surface. These
+        // signatures are deliberately UNCONSTRAINED — no `Ix i =>` context and
+        // no range math in the interpreter. They are polymorphic over the index
+        // type `i` and the element type `e`, bound with an explicit `TForall` so
+        // the ordinary builtin-sig path instantiates one fresh variable per
+        // call site (keeping the argument and result types linked).
+        //
+        //   arrayFromList  :: Pair i i -> List e -> Array i e
+        //   arrayBounds    :: Array i e -> Pair i i
+        //   arrayElems     :: Array i e -> List e
+        //   arrayIndexFlat :: Array i e -> Int -> e
+        //   arrayUpdate    :: Array i e -> List (Pair i e) -> Array i e
+        //   arrayAccum     :: Array i e -> (e -> e -> e) -> List (Pair i e)
+        //                     -> Array i e
+        //
+        //   arrayFromAssocs :: Pair i i -> List (Pair i e) -> Array i e
+        //   arraySeed       :: Pair i i -> e -> Array i e
+        //
+        // Construction and update associations (`arrayFromAssocs`,
+        // `arrayUpdate`, `arrayAccum`) are INDEX-TYPED — the interpreter
+        // resolves each one against the bounds shape shared by every arm
+        // (`array_shape`/`ArrayShape::offset`), reproducing the prelude `Ix`
+        // instances for the two supported shapes. Reads stay language-side:
+        // `checkedOffset`/`index` go through `arrayIndexFlat` with a flat
+        // offset computed by the `Ix` instances.
+        // The accumulator of `arrayAccum` is written CURRIED (`e -> e -> e`
+        // right-associates to `e -> (e -> e)`), matching the language's
+        // representation of a binary closure as a nest of unary lambdas.
+        let forall_ie = |inner: crate::ast::TypeExpr| {
+            crate::ast::TypeExpr::TForall(vec!["i".to_string(), "e".to_string()], Box::new(inner))
+        };
+        let array =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("Array".to_string(), args);
+        let pair =
+            |args: Vec<crate::ast::TypeExpr>| crate::ast::TypeExpr::TApp("Pair".to_string(), args);
+        let list =
+            |arg: crate::ast::TypeExpr| crate::ast::TypeExpr::TApp("List".to_string(), vec![arg]);
+        let arr_ie = || array(vec![tv("i"), tv("e")]);
+        // `List (Pair i e)`: the index-typed (cell, value) association list.
+        let assocs_ie = || list(pair(vec![tv("i"), tv("e")]));
+        env.builtin_sigs.insert(
+            "arrayFromList".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("i"), tv("i")]), list(tv("e"))],
+                Box::new(arr_ie()),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayBounds".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie()],
+                Box::new(pair(vec![tv("i"), tv("i")])),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayElems".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie()],
+                Box::new(list(tv("e"))),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayIndexFlat".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie(), tv("Int")],
+                Box::new(tv("e")),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayUpdate".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![arr_ie(), assocs_ie()],
+                Box::new(arr_ie()),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arrayAccum".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![
+                    arr_ie(),
+                    crate::ast::TypeExpr::TFunc(
+                        vec![tv("e")],
+                        Box::new(crate::ast::TypeExpr::TFunc(
+                            vec![tv("e")],
+                            Box::new(tv("e")),
+                        )),
+                    ),
+                    assocs_ie(),
+                ],
+                Box::new(arr_ie()),
+            )),
+        );
+        // Index-typed construction ops (the M8 shape): `arrayFromAssocs` takes
+        // an index-typed `List (Pair i e)` association list whose offsets are
+        // resolved against the construction bounds by the interpreter;
+        // `arraySeed` fills every position with one value. Both are
+        // UNCONSTRAINED like their siblings — the language defs carry the
+        // `Ix i =>` context.
+        env.builtin_sigs.insert(
+            "arrayFromAssocs".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![
+                    pair(vec![tv("i"), tv("i")]),
+                    list(pair(vec![tv("i"), tv("e")])),
+                ],
+                Box::new(arr_ie()),
+            )),
+        );
+        env.builtin_sigs.insert(
+            "arraySeed".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("i"), tv("i")]), tv("e")],
+                Box::new(arr_ie()),
+            )),
+        );
+        // Buffer bridge: concrete over the `Int`-indexed `Float` array the
+        // `FixedBuffer f32` maps to. The value-level type of a signal buffer is
+        // `Buffer` (that is what the FFI apply path produces for a fully applied
+        // generator and what a buffer-returning `main` yields), so these are
+        // written against `Buffer` rather than the `FixedBuffer f32` spelling
+        // used inside `foreign` declarations.
+        env.builtin_sigs.insert(
+            "arrayFromBuffer".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![tv("Buffer")],
+                Box::new(array(vec![tv("Int"), tv("Float")])),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "bufferFromArray".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![array(vec![tv("Int"), tv("Float")])],
+                Box::new(tv("Buffer")),
+            ),
+        );
+        // The two primitives the language-level array surface needs but the
+        // flat storage layer cannot express:
+        //
+        //   listRange           :: Pair Int Int -> List Int
+        //   arrayFromListChecked :: Pair i i -> Int -> List e -> Array i e
+        //
+        // `listRange` is the only list-GENERATING primitive (strict mode bans
+        // recursion and there is no `enumFromTo`), so `Ix.range` builds on it.
+        // `arrayFromListChecked` is `arrayFromList` plus the strict length check
+        // behind `listArray` (and `newArrayFromListFlat` is its ST twin).
+        env.builtin_sigs.insert(
+            "listRange".to_string(),
+            crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("Int"), tv("Int")])],
+                Box::new(list(tv("Int"))),
+            ),
+        );
+        env.builtin_sigs.insert(
+            "arrayFromListChecked".to_string(),
+            forall_ie(crate::ast::TypeExpr::TFunc(
+                vec![pair(vec![tv("i"), tv("i")]), tv("Int"), list(tv("e"))],
+                Box::new(arr_ie()),
+            )),
+        );
 
         env
     }
@@ -967,6 +1541,7 @@ impl TypeEnv {
                 }
                 Def::Instance {
                     class,
+                    head,
                     ty,
                     constraints,
                     head_args,
@@ -982,6 +1557,7 @@ impl TypeEnv {
                         ty.clone(),
                         InstanceInfo {
                             class: class.clone(),
+                            head: head.clone(),
                             ty: ty.clone(),
                             constraints: constraints.clone(),
                             head_args: head_args.clone(),
@@ -995,6 +1571,35 @@ impl TypeEnv {
                 }
                 Def::Foreign { name, sig, .. } => {
                     self.foreign_sigs.insert(name.clone(), sig.clone());
+                }
+                // A class-constrained definition (`mk :: Ix i => …`, also under
+                // a `forall` binder): register it for per-call-site
+                // specialization. Its body is NOT typed here (nor by the eager
+                // body pass) — the class variable is abstract until a call site
+                // solves it.
+                Def::Eval {
+                    name,
+                    sig: Some(sig),
+                    params,
+                    body,
+                    where_defs,
+                    ..
+                } if crate::types::infer::is_constrained_sig(sig) => {
+                    // The parser curries a multi-parameter definition into
+                    // nested lambdas and clears `params` (`curry_defs_in`), so
+                    // the formal parameters of `f a b :: …` live in the body's
+                    // leading lambdas. The signature's arity says exactly how
+                    // many to recover.
+                    let (params, body) = split_curried_params(sig.arg_count(), params, body);
+                    self.constrained_defs.insert(
+                        name.clone(),
+                        ConstrainedDef {
+                            sig: sig.clone(),
+                            params,
+                            body,
+                            where_defs: where_defs.clone(),
+                        },
+                    );
                 }
                 _ => {}
             }
@@ -1128,6 +1733,7 @@ impl TypeEnv {
                 crate::ast::TypeExpr::TApp(_, args) => {
                     args.iter().map(|a| depth(var, a)).max().unwrap_or(0)
                 }
+                crate::ast::TypeExpr::TConstrained(_, inner) => depth(var, inner),
                 crate::ast::TypeExpr::TFunc(args, ret) => args
                     .iter()
                     .map(|a| depth(var, a))
@@ -1150,10 +1756,63 @@ impl TypeEnv {
         class_var: &str,
     ) -> Option<usize> {
         match sig {
+            crate::ast::TypeExpr::TConstrained(_, inner) => {
+                self.class_var_arg_index(inner, class_var)
+            }
             crate::ast::TypeExpr::TFunc(args, _) => args
                 .iter()
                 .position(|a| matches!(a, crate::ast::TypeExpr::TApp(h, _) if h == class_var)),
             _ => None,
+        }
+    }
+
+    /// Solve an arity-0 class variable from a method call's selector argument:
+    /// unify the method's class-var parameter pattern (`Pair i i`) against the
+    /// selector's concrete value type (`Pair Int Int` → `i := Int`).
+    ///
+    /// This is what makes `Ix Int` and `Ix (Pair Int Int)` dispatch distinctly:
+    /// the selector's head constructor (`Pair`) cannot tell them apart, but the
+    /// SOLVED class variable's full type can (render it with
+    /// [`value_type_key`]). `class_var_var` must be a fresh id the caller's
+    /// `fresh` supply will not reissue.
+    pub(crate) fn class_var_solved_ty(
+        &self,
+        sig: &crate::ast::TypeExpr,
+        class_var: &str,
+        selector_ty: &ValueTy,
+        class_var_var: TypeVarId,
+        fresh: impl FnMut() -> ValueTy,
+    ) -> Option<ValueTy> {
+        let idx = class_var_param_pattern(sig, class_var)?;
+        let sig = match sig {
+            crate::ast::TypeExpr::TConstrained(_, inner)
+            | crate::ast::TypeExpr::TForall(_, inner) => inner.as_ref(),
+            other => other,
+        };
+        let arg = match sig {
+            crate::ast::TypeExpr::TFunc(args, _) => args.get(idx)?,
+            _ => return None,
+        };
+        let pattern =
+            crate::types::infer::class_var_pattern_vty(self, class_var, class_var_var, arg, fresh);
+        let mut subst = Subst::default();
+        // The value side spells a concrete constructor application `App`
+        // (builtin ctor) or `Data`/`Newtype` (declared shape), while an instance
+        // head's pattern is always an application: an `App`-vs-`Data` pair with
+        // the same head is the same type to the registry, but the unifier
+        // compares variants strictly. Normalize both sides before unifying.
+        unify_value(
+            &normalize_ctor_app(&pattern),
+            &normalize_ctor_app(selector_ty),
+            &mut subst,
+            Span::new(0, 0),
+        )
+        .ok()?;
+        let solved = subst.resolve_value(&ValueTy::Var(class_var_var));
+        // Still an unresolved variable: no concrete class variable.
+        match solved {
+            ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) => None,
+            other => Some(other),
         }
     }
 
@@ -1179,6 +1838,7 @@ impl TypeEnv {
             for n in &names {
                 by_ty.entry(n.clone()).or_insert_with(|| InstanceInfo {
                     class: class.to_string(),
+                    head: crate::ast::TypeExpr::TName(n.clone()),
                     ty: n.clone(),
                     constraints: vec![], // derived marker — no constraint list
                     head_args: vec![],   // derived marker — full application
@@ -1443,6 +2103,111 @@ impl TypeEnv {
     }
 }
 
+/// Every argument index in a method signature whose type MENTIONS the class
+/// variable (`[0, 1]` for `mappend: m -> m -> m`, `[1]` for
+/// `pick: Bool -> Pair a a -> Float`). Empty when no argument mentions it (a
+/// nullary method such as `mempty: m`).
+///
+/// Callers select the dispatch selector from these indices: the class variable
+/// must be solved from an argument whose signature type constrains it, not just
+/// from whichever argument happens to come first.
+pub(crate) fn class_var_param_indices(sig: &crate::ast::TypeExpr, class_var: &str) -> Vec<usize> {
+    match sig {
+        crate::ast::TypeExpr::TConstrained(_, inner) | crate::ast::TypeExpr::TForall(_, inner) => {
+            class_var_param_indices(inner, class_var)
+        }
+        crate::ast::TypeExpr::TFunc(args, _) => args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| crate::types::infer::type_expr_mentions(a, class_var))
+            .map(|(i, _)| i)
+            .collect(),
+        _ => vec![],
+    }
+}
+
+/// The index of the first argument in a method signature whose type MENTIONS
+/// the class variable (`Pair i i` in `index: Pair i i -> i -> Int`), i.e. the
+/// argument whose pattern is unified against the call site's concrete selector
+/// type to solve the class variable. `None` when no argument mentions it (a
+/// nullary method such as `mempty: m`).
+pub(crate) fn class_var_param_pattern(
+    sig: &crate::ast::TypeExpr,
+    class_var: &str,
+) -> Option<usize> {
+    class_var_param_indices(sig, class_var).into_iter().next()
+}
+
+/// Normalize a value type for instance-head matching: every concrete
+/// constructor application becomes an `App` (`Data`/`Newtype` → `App`), with the
+/// arguments normalized too. The value side distinguishes a builtin ctor
+/// application (`App`) from a declared shape (`Data`/`Newtype`), but the
+/// registry treats `Pair Int Int` as one type; [`unify_value`] compares variants
+/// strictly, so both sides of an instance-head match are normalized first.
+fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
+    match v {
+        ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+            ValueTy::App(n.clone(), args.iter().map(normalize_ctor_app).collect())
+        }
+        ValueTy::TyConApp(f, args) => {
+            ValueTy::TyConApp(*f, args.iter().map(normalize_ctor_app).collect())
+        }
+        ValueTy::Thunk(args, rets) => ValueTy::Thunk(
+            args.iter().map(normalize_ctor_app).collect(),
+            rets.iter().map(normalize_ctor_app).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Canonical registry-key spelling of a concrete value type: `Int`,
+/// `Pair Int Int`, `Pair Int (Pair Int Int)`. A nested application is
+/// parenthesized so the spelling matches the parser's instance-head rendering
+/// ([`crate::render::render_type_key`]).
+///
+/// `None` when the type is not concrete (an unresolved variable, a
+/// type-constructor variable, a function type): such a selector cannot name an
+/// instance, and the caller falls back to the head-constructor lookup.
+pub(crate) fn value_type_key(v: &ValueTy) -> Option<String> {
+    fn key(v: &ValueTy) -> Option<String> {
+        Some(match v {
+            ValueTy::Int => "Int".to_string(),
+            ValueTy::Float => "Float".to_string(),
+            ValueTy::Bool => "Bool".to_string(),
+            ValueTy::String => "String".to_string(),
+            ValueTy::Buffer => "Buffer".to_string(),
+            ValueTy::Void => "()".to_string(),
+            ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+                if args.is_empty() {
+                    n.clone()
+                } else {
+                    let mut out = n.clone();
+                    for a in args {
+                        out.push(' ');
+                        let nested = matches!(
+                            a,
+                            ValueTy::Data(_, inner)
+                                | ValueTy::Newtype(_, inner)
+                                | ValueTy::App(_, inner)
+                                if !inner.is_empty()
+                        );
+                        if nested {
+                            out.push('(');
+                        }
+                        out.push_str(&key(a)?);
+                        if nested {
+                            out.push(')');
+                        }
+                    }
+                    out
+                }
+            }
+            _ => return None,
+        })
+    }
+    key(v)
+}
+
 impl Subst {
     /// Follow the substitution chain for a single value type to its
     /// representative, resolving variables inside `Func` signatures too.
@@ -1538,6 +2303,88 @@ mod funcsig_tests {
         );
         let g = ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float]);
         assert_ne!(f, g);
+    }
+}
+
+#[cfg(test)]
+mod builtin_array_sig_tests {
+    use super::*;
+
+    /// Navigate a builtin sig entry `forall i e. TFunc(args, ret)` down to its
+    /// argument list, panicking on any other shape.
+    fn tfunc_args(sig: &crate::ast::TypeExpr) -> &[crate::ast::TypeExpr] {
+        match sig {
+            crate::ast::TypeExpr::TForall(_, inner) => match inner.as_ref() {
+                crate::ast::TypeExpr::TFunc(args, _) => args.as_slice(),
+                other => panic!("expected a TFunc under the forall, got {other:?}"),
+            },
+            other => panic!("expected a TForall sig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn array_construction_ops_register_index_typed_signatures() {
+        let env = TypeEnv::with_builtins();
+        for name in ["arrayFromAssocs", "arraySeed"] {
+            let sig = env
+                .builtin_sigs
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must be in the builtin sig table"));
+            let args = tfunc_args(sig);
+            assert_eq!(args.len(), 2, "{name} takes (bounds, init/assocs)");
+            // Arg 0 is the bounds pair `Pair i i`.
+            assert!(
+                matches!(&args[0], crate::ast::TypeExpr::TApp(n, inner)
+                    if n == "Pair" && inner.len() == 2),
+                "{name}: first argument must be the `Pair i i` bounds"
+            );
+        }
+        // arrayFromAssocs's second argument is the index-typed assoc list.
+        let sig = env
+            .builtin_sigs
+            .get("arrayFromAssocs")
+            .expect("arrayFromAssocs sig");
+        let args = tfunc_args(sig);
+        assert!(
+            matches!(
+                &args[1],
+                crate::ast::TypeExpr::TApp(n, inner)
+                    if n == "List" && inner.len() == 1
+                        && matches!(&inner[0], crate::ast::TypeExpr::TApp(p, el)
+                            if p == "Pair" && el.len() == 2)
+            ),
+            "arrayFromAssocs: second argument must be `List (Pair i e)`, got {:?}",
+            args[1]
+        );
+    }
+
+    #[test]
+    fn array_update_accum_signatures_are_index_typed() {
+        // The M8 flip: `arrayUpdate`/`arrayAccum` now take INDEX-typed
+        // associations (`List (Pair i e)`), resolved against the source array's
+        // stored bounds by the interpreter — not flat `(Int offset, value)`.
+        let env = TypeEnv::with_builtins();
+        for name in ["arrayUpdate", "arrayAccum"] {
+            let sig = env
+                .builtin_sigs
+                .get(name)
+                .unwrap_or_else(|| panic!("{name} must be in the builtin sig table"));
+            let args = tfunc_args(sig);
+            let assoc_idx = if name == "arrayUpdate" { 1 } else { 2 };
+            assert!(
+                matches!(
+                    &args[assoc_idx],
+                    crate::ast::TypeExpr::TApp(n, inner)
+                        if n == "List" && inner.len() == 1
+                            && matches!(&inner[0], crate::ast::TypeExpr::TApp(p, el)
+                                if p == "Pair" && el.len() == 2
+                                    && !matches!(&el[0], crate::ast::TypeExpr::TName(t)
+                                        if t == "Int"))
+                ),
+                "{name}: association list must be index-typed `List (Pair i e)` (not flat `List (Pair Int e)`), got {:?}",
+                args[assoc_idx]
+            );
+        }
     }
 }
 
@@ -1641,7 +2488,14 @@ mod ctor_table_tests {
         assert!(env.ctor_arity("Map") == Some(2));
         assert!(env.ctor_arity("Pair") == Some(2));
         assert!(env.ctor_arity("Either") == Some(2));
+        assert!(env.ctor_arity("Array") == Some(2)); // i e
+        assert!(env.ctor_arity("STArray") == Some(3)); // s i e
         assert!(env.ctor_arity("Nope").is_none());
+        // `STArray`'s arity lives in BOTH tables: `ctor_kinds` above AND the
+        // abstract prelude declaration (`data STArray s i e;` registers
+        // `data_arities`). Pin the declarations to each other so they cannot
+        // drift apart.
+        assert_eq!(env.data_arities.get("STArray"), Some(&3));
     }
 
     #[test]

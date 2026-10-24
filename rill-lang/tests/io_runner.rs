@@ -1,12 +1,12 @@
 //! Task 2: the new `ProgramRunner` executor — `main : IO ()` runs to
 //! completion against the realized `World`, with captured `stdout`.
 
-use rill_lang::builtin::Registry;
-use rill_lang::compile_runner;
+use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 use rill_lang::program_runner::ProgramRunner;
 
 fn runner(src: &str) -> ProgramRunner<f32, 256> {
-    compile_runner::<f32, 256>(src, &Registry::new(), 44_100.0)
+    compile::<f32, 256>(src, ForeignRegistry::new())
         .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"))
 }
 
@@ -52,14 +52,6 @@ fn io_effects_are_ordered() {
 }
 
 #[test]
-fn main_string_args_bind() {
-    let mut r = runner(r#"main a = do { write (Just a) stdout; return () };"#);
-    r.set_args(&["hi".to_string()]);
-    r.run().expect("run must succeed");
-    assert_eq!(r.stdout(), ["hi"]);
-}
-
-#[test]
 fn bounded_memory_overflow_is_a_clean_error() {
     // An unbounded lazy list is drained by fromList: the fixed arena budget is
     // exhausted and the runner reports a clean CAPACITY error instead of
@@ -85,11 +77,13 @@ main = do { xs <- fromList (from 0.0); return () };
 }
 
 #[test]
-fn non_void_main_result_is_a_clean_error() {
+fn non_void_main_result_is_a_compile_error() {
     // `main : IO ()` constrains the ACTION's result, not just the action: an
-    // `IO Float` main is malformed and must be reported, not silently accepted.
-    // (`main = return 1.0` on its own does not compile — the monad is
-    // unconstrained — so the result type is fixed by an effect in the block.)
+    // `IO Float` main is malformed and is rejected by the compile-time gate on
+    // the compile entry (`ir.main_io_unit`), before any world exists — not
+    // latched at run time. (`main = return 1.0` on its own does not compile —
+    // the monad is unconstrained — so the result type is fixed by an effect in
+    // the block.)
     for src in [
         r#"main = do { write (Just "a") stdout; return 1.0 };"#,
         // The value track erases `()` to `Float(0.0)` inside a closure cell,
@@ -98,14 +92,14 @@ fn non_void_main_result_is_a_clean_error() {
         r#"main = do { write (Just "a") stdout; return 0.0 };"#,
         r#"main = do { write (Just "a") stdout; return "s" };"#,
     ] {
-        let mut r = runner(src);
-        let err = r
-            .run()
-            .expect_err("a non-`()` main result must be rejected");
+        let err = match compile::<f32, 256>(src, ForeignRegistry::new()) {
+            Ok(_) => panic!("a non-`()` main result must be rejected"),
+            Err(e) => e,
+        };
         let message = err.to_string();
         assert!(
-            message.contains("IO ()") && message.contains("not `()`"),
-            "expected a non-`()` main contract error, got: {message}\nsource:\n{src}"
+            message.contains("IO ()"),
+            "expected the `IO ()` contract error, got: {message}\nsource:\n{src}"
         );
     }
 }

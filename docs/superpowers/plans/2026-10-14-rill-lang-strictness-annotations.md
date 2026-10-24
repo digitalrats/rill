@@ -27,7 +27,7 @@ This plan is written for the tree **after Task 14 of `docs/superpowers/plans/202
 The five inputs a reasonable user would expect to work that no single task's tests exercise alone:
 
 1. **A bang arm must never enter the static match fast path** — it must route to runtime dispatch and force per-arm; otherwise `statically_lowerable`'s `_ => true` silently miscompiles. → Task 6.
-2. **`case bottom of { _ => 5 }` must still be 5** — forcing happens only when a bang arm is reached, never at match top, never by a wildcard arm. → Task 6.
+2. **`case bottom of { _ -> 5 }` must still be 5** — forcing happens only when a bang arm is reached, never at match top, never by a wildcard arm. → Task 6.
 3. **Strict `data` fields must actually force at construction** in complete mode — driven by `DataInfo`, which the ctor lowering reads, not the AST defs. → Task 7.
 4. **`MODE strict` + `!` is behaviorally identical to no `!`** anywhere in the program. → Task 9.
 5. **`!=` still lexes `NotEq` and a lone `!` in expression position is a parse error** — no accidental operator resurrection. → Tasks 1, 3.
@@ -173,9 +173,9 @@ fn parse_bang_lambda_param() {
 
 #[test]
 fn parse_bang_match_patterns() {
-    // assert `main = case v of { !x => x; };` parses arm pattern Pattern::Bang(_)
-    // and `main = case v of { Just !x => x; };` parses Ctor("Just", [Bang(Var "x")])
-    // and `main = case v of { !(Just v) => v; };` parses Bang(Ctor("Just", [Var "v"]))
+    // assert `main = case v of { !x -> x; };` parses arm pattern Pattern::Bang(_)
+    // and `main = case v of { Just !x -> x; };` parses Ctor("Just", [Bang(Var "x")])
+    // and `main = case v of { !(Just v) -> v; };` parses Bang(Ctor("Just", [Var "v"]))
 }
 
 #[test]
@@ -336,7 +336,7 @@ git commit -am 'feat(rill-lang): lower strict params and strict let to ValueForc
 ```rust
 #[test]
 fn bang_arm_routes_to_runtime_dispatch() {
-    let ir = ir_of("{-# MODE complete #-}\nmain = case 1.0 of { !x => x; _ => 0.0; };");
+    let ir = ir_of("{-# MODE complete #-}\nmain = case 1.0 of { !x -> x; _ -> 0.0; };");
     // lowering must produce runtime BranchCtor-style dispatch (see the existing
     // "a guarded match must lower to BranchCtor dispatch" assertion pattern),
     // never the static fast path
@@ -344,14 +344,14 @@ fn bang_arm_routes_to_runtime_dispatch() {
 
 #[test]
 fn bang_arm_forces_scrutinee_per_arm_not_match_top() {
-    // `case bottom of { _ => 5; !x => x }` — NO ValueForce before the first
+    // `case bottom of { _ -> 5; !x -> x }` — NO ValueForce before the first
     // (wildcard) arm; a ValueForce appears only at the bang arm. Assert with
     // block-scoped instruction inspection.
 }
 
 #[test]
 fn payload_bang_forces_after_extraction() {
-    // `case c of { Just !x => x; _ => 0.0 }` in complete mode — the payload
+    // `case c of { Just !x -> x; _ -> 0.0 }` in complete mode — the payload
     // extraction is followed by ValueForce on the payload register
 }
 

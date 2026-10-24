@@ -1,7 +1,7 @@
 #![cfg(feature = "lang")]
 use rill_core::traits::algorithm::Algorithm;
 use rill_core::traits::{ParamValue, ProcessResult};
-use rill_lang::builtin::{BlockBuiltin, Registry};
+use rill_lang::builtin::BlockBuiltin;
 
 fn pv_f32(v: &ParamValue) -> f32 {
     match v {
@@ -187,36 +187,6 @@ impl BlockBuiltin<f32> for LofiProcessor {
     }
 }
 
-pub fn register_lofi_builtins(reg: &mut Registry<f32>) {
-    use crate::ClassicSystem;
-
-    reg.register_block("lofi", |p, sr, _alloc| {
-        let config = crate::LofiConfig {
-            system: ClassicSystem::Custom {
-                bit_depth: p[0].round() as u8,
-                sample_rate: p[1].clamp(8000.0, 192000.0) as f32,
-                nonlinear: false,
-                noise_floor: -48.0,
-            },
-            hardware: crate::HardwareEmulation {
-                bit_depth: p[0].round() as u8,
-                sample_rate: p[1].clamp(8000.0, 192000.0) as f32,
-                ..crate::HardwareEmulation::default()
-            },
-            enable_bitcrush: p[4] > 0.5,
-            enable_sr_reduction: p[5] > 0.5,
-            enable_noise: p[6] > 0.5,
-            output_gain: p[3].max(0.0) as f32,
-            dc_offset: 0.0,
-            output_ceiling: 1.0,
-            dry_wet: p[2].clamp(0.0, 1.0) as f32,
-        };
-        let mut inner = LofiProcessor::new(config);
-        Algorithm::init(&mut inner, sr);
-        Box::new(LofiProcessor { ..inner })
-    });
-}
-
 struct Ay38910Builtin {
     chip: crate::Ay38910Chip,
 }
@@ -244,18 +214,8 @@ impl BlockBuiltin<f32> for Ay38910Builtin {
     }
 }
 
-pub fn register_chip_builtins(reg: &mut Registry<f32>) {
-    use rill_core::traits::Algorithm;
-    reg.register_block("ay38910", |p, sr, _alloc| {
-        let clock = p[0] as f32;
-        let mut chip = crate::Ay38910Chip::new(clock);
-        Algorithm::init(&mut chip, sr);
-        Box::new(Ay38910Builtin { chip })
-    });
-}
-
 /// Register the lofi + chip builtins (lofi/ay38910) as FFI factories (for
-/// `compile_with_ffi`).
+/// `compile`).
 pub fn register_foreign_lofi_builtins(ffi: &mut rill_lang::ffi::ForeignRegistry<f32>) {
     use crate::ClassicSystem;
     use rill_core::traits::Algorithm;

@@ -1,12 +1,24 @@
-//! `if` as a pure expression: static selection, result binding, and runtime
-//! per-tick switching driven by SetParameter and value-state feedback.
+//! `if` as a pure expression: static selection and result binding.
+//!
+//! The former SetParameter-driven per-tick switching tests
+//! (`if_switches_on_setparameter_between_ticks`, `if_and_runtime_match_combined`,
+//! `if_nested_in_expression_at_runtime`) were deleted with the re-run surface:
+//! the single-run value model cannot inject a named parameter (`?g`) into its
+//! one run, so the cross-tick branch switching they asserted is no longer
+//! testable.
+pub mod common;
 
-use rill_core::traits::ParamValue;
-use rill_lang::{compile, RillProgram};
+use common::*;
+use rill_lang::ffi::ForeignRegistry;
 
-fn float_output(prog: &mut RillProgram<f32, 256>) -> f64 {
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+fn float_output(src: &str) -> f64 {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
+    let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(f) => *f,
         other => panic!("unexpected output {other:?}"),
@@ -15,60 +27,20 @@ fn float_output(prog: &mut RillProgram<f32, 256>) -> f64 {
 
 #[test]
 fn if_static_branches() {
-    let mut prog = compile::<f32>("main = if true then 1.0 else 2.0;").unwrap();
-    assert_eq!(float_output(&mut prog), 1.0);
-    let mut prog = compile::<f32>("main = if false then 1.0 else 2.0;").unwrap();
-    assert_eq!(float_output(&mut prog), 2.0);
+    assert_eq!(float_output("main = if true then 1.0 else 2.0;"), 1.0);
+    assert_eq!(float_output("main = if false then 1.0 else 2.0;"), 2.0);
 }
 
 #[test]
 fn if_binds_result_and_nests() {
-    let mut prog = compile::<f32>("x = if false then 1.0 else 2.0; main = 0.5 * x;").unwrap();
-    assert_eq!(float_output(&mut prog), 1.0);
-}
-
-#[test]
-fn if_switches_on_setparameter_between_ticks() {
-    // SetParameter → main cell → per-tick re-evaluation → branch switches.
-    let mut prog = compile::<f32>("main = if ?g > 0.5 then 1.0 else 2.0").unwrap();
-    // default g = 0 → else branch
-    assert_eq!(float_output(&mut prog), 2.0);
-    let idx = prog.param_index("g").unwrap();
-    prog.set_param(idx, ParamValue::Float(1.0));
-    assert_eq!(float_output(&mut prog), 1.0);
-    prog.set_param(idx, ParamValue::Float(0.0));
-    assert_eq!(float_output(&mut prog), 2.0);
+    assert_eq!(
+        float_output("x = if false then 1.0 else 2.0; main = 0.5 * x;"),
+        1.0
+    );
 }
 
 // NOTE: a value-track feedback accumulator (`acc = ~ (acc + 1.0)`) is not
 // testable in v1 — `~`/`@` over values is not wired in lowering (lower.rs:
 // "Value-state slots are not emitted by lowering in v1"), so no value-track
 // program can switch across ticks except via a SetParameter-driven main cell,
-// which `if_switches_on_setparameter_between_ticks` already covers.
-
-#[test]
-fn if_and_runtime_match_combined() {
-    // A SetParameter-driven Bool selects a sum at runtime; the outer match
-    // dispatches on the runtime constructor.
-    let mut prog = compile::<f32>(
-        r"main = case (if ?g > 0.5 then Just 1.0 else Nothing) of { Just x -> x; Nothing -> 0.0; }",
-    )
-    .unwrap();
-    assert_eq!(float_output(&mut prog), 0.0);
-    prog.set_param(prog.param_index("g").unwrap(), ParamValue::Float(1.0));
-    assert_eq!(float_output(&mut prog), 1.0);
-}
-
-#[test]
-fn if_nested_in_expression_at_runtime() {
-    // A RUNTIME if nested inside an arithmetic expression: the surrounding
-    // expression must continue in the if's join block. This guards the
-    // `cur_value_block = join` wiring (a regression there would silently run
-    // the continuation on only one path).
-    let mut prog = compile::<f32>("main = 0.5 * (if ?g > 0.5 then 2.0 else 4.0)").unwrap();
-    // default g = 0 → else → 0.5 * 4.0 = 2.0
-    assert_eq!(float_output(&mut prog), 2.0);
-    prog.set_param(prog.param_index("g").unwrap(), ParamValue::Float(1.0));
-    // then → 0.5 * 2.0 = 1.0
-    assert_eq!(float_output(&mut prog), 1.0);
-}
+// which the deleted `if_switches_on_setparameter_between_ticks` covered.

@@ -1,12 +1,26 @@
 //! End-to-end list-collection tests: literals, cons/head/tail/length/map/fold/filter.
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
+
+/// Compile `src` against an empty foreign registry and RUN it once (the
+/// single-run value surface), returning the already-run program.
+fn run(src: &str) -> WorldState<f32, 256> {
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    eval_ffi(defs, expr, ffi).unwrap()
+}
 
 #[test]
 fn list_literal_length_and_head() {
-    let mut prog = compile::<f32>("main = length [1.0, 2.0, 3.0];").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = length [1.0, 2.0, 3.0];");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(3)
@@ -15,12 +29,8 @@ fn list_literal_length_and_head() {
 
 #[test]
 fn cons_builds_list_and_head_is_maybe() {
-    let mut prog = compile::<f32>(
-        r"main = case (head (cons 1.0 (list))) of { Nothing -> 0.0; Just x -> x; };",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(r"main = case (head (cons 1.0 (list))) of { Nothing -> 0.0; Just x -> x; };");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(1.0)
@@ -29,12 +39,8 @@ fn cons_builds_list_and_head_is_maybe() {
 
 #[test]
 fn map_fold_filter_over_list() {
-    let mut prog = compile::<f32>(
-        r"main = fold (\a -> \b -> a + b) 0.0 (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(r"main = fold (\a -> \b -> a + b) 0.0 (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(12.0)
@@ -45,10 +51,8 @@ fn map_fold_filter_over_list() {
 fn list_grows_past_literal_capacity() {
     // Open collections: a `cons` past the former strict capacity is no longer
     // a runtime error — the list grows.
-    let mut prog =
-        compile::<f32>("xs = [1.0, 2.0]; main = length (cons 3.0 (cons 4.0 xs));").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("xs = [1.0, 2.0]; main = length (cons 3.0 (cons 4.0 xs));");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(4)
@@ -56,30 +60,11 @@ fn list_grows_past_literal_capacity() {
 }
 
 #[test]
-fn repeated_growth_ticks_do_not_leak_arena() {
-    // Open collections: repeated cons growth across ticks must not leak — the
-    // tick-end clear releases every per-tick register, keeping the fixed arena
-    // balanced. The pinned List output (list slot + element slots) stays live
-    // across ticks, so live() must be stable, not growing.
-    let mut prog = compile::<f32>("main = cons 3.0 [1.0, 2.0];").unwrap();
-    prog.run_value().unwrap();
-    let baseline = prog.arena().live();
-    assert!(baseline > 0, "the pinned List output must hold slots");
-    for _ in 0..20 {
-        prog.run_value().unwrap();
-        assert_eq!(prog.arena().live(), baseline, "tick must leak nothing");
-    }
-}
-
-#[test]
 fn cons_list_fold_sum() {
     // End-to-end: `list` gives an empty List; cons builds
     // 9 : 1 : [] and `fold (+)` reduces it to 10.0.
-    let mut prog =
-        compile::<f32>(r"main = fold (\a -> \b -> a + b) 0.0 (cons 9.0 (cons 1.0 (list)));")
-            .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(r"main = fold (\a -> \b -> a + b) 0.0 (cons 9.0 (cons 1.0 (list)));");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(10.0)
@@ -91,9 +76,8 @@ fn cons_prepends_new_head() {
     // `cons x xs = x : xs` — the new element becomes the head. `head` of
     // `cons 9.0 (cons 1.0 (list))` must be `Just 9.0`; append semantics would
     // leave the old head 1.0 first.
-    let mut prog = compile::<f32>("main = head (cons 9.0 (cons 1.0 (list)));").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = head (cons 9.0 (cons 1.0 (list)));");
+    let v = prog.result().unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Sum(0, payload) => {
             assert_eq!(
@@ -109,9 +93,8 @@ fn cons_prepends_new_head() {
 fn colon_is_cons_for_list_operands() {
     // `x : xs` — Haskell-style cons via the `:` overload. `:` is right-
     // associative for a List rhs: `1.0 : 2.0 : list` ≡ `1.0 : (2.0 : list)`.
-    let mut prog = compile::<f32>("main = length (1.0 : 2.0 : list);").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = length (1.0 : 2.0 : list);");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(2),
@@ -124,9 +107,8 @@ fn colon_cons_chains_right_associatively() {
     // The parser builds `:` LEFT-associatively; a List-terminated chain is
     // re-associated right: `1.0 : 2.0 : 3.0 : list` ≡ 1.0 : (2.0 : (3.0 :
     // list)). Head must be the first element.
-    let mut prog = compile::<f32>("main = head (1.0 : 2.0 : 3.0 : list);").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = head (1.0 : 2.0 : 3.0 : list);");
+    let v = prog.result().unwrap();
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Sum(0, payload) => {
             assert_eq!(
@@ -144,21 +126,19 @@ fn colon_seq_still_composes_buffers() {
     // `:` on Buffer operands stays Faust sequencing: a partial arrow
     // `onepole 200.0 0.7` applied to a constant +1.0 buffer (a zero-frequency
     // square wave).
-    use rill_lang::ffi::ForeignRegistry;
     use rill_lang::register;
 
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_filters(&mut ffi);
     register::register_foreign_generators(&mut ffi);
-    let mut prog = rill_lang::compile_with_ffi::<f32>(
-        "main = onepole 200.0 0.7 (square 0.0 1.0 0.0);",
-        &ffi,
-        44100.0,
-    )
-    .unwrap();
+    let (defs, expr) = "main = onepole 200.0 0.7 (square 0.0 1.0 0.0);"
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
     let mut out = [0.0f32; 64];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    let r = prog.result().unwrap();
+    assert!(prog.copy_buffer(r, &mut out));
     assert!(
         out.iter().all(|v| v.is_finite()),
         "onepole seq output must be finite"
@@ -175,7 +155,11 @@ fn fold_rejects_wrong_arity_closure_at_compile_time() {
     // `fold` calls its closure with (acc, elem), so a unary closure is a type
     // error. It used to compile and then panic the runtime path with an
     // index-out-of-bounds in `call_closure_args`.
-    let err = match compile::<f32>(r"main = fold (\a -> a) 0.0 [1.0, 2.0, 3.0];") {
+    let err = match compile_eval::<f32, 256>(
+        r"main = fold (\a -> a) 0.0 [1.0, 2.0, 3.0];",
+        "main",
+        Mode::Strict,
+    ) {
         Ok(_) => panic!("wrong-arity fold closure must not compile"),
         Err(e) => e,
     };
@@ -189,7 +173,11 @@ fn fold_rejects_wrong_arity_closure_at_compile_time() {
 fn map_rejects_wrong_arity_closure_at_compile_time() {
     // `map` calls its closure with one element, so a binary closure is a type
     // error. It used to compile and silently produce an empty list.
-    let err = match compile::<f32>(r"main = map (\a -> \b -> b) [1.0, 2.0];") {
+    let err = match compile_eval::<f32, 256>(
+        r"main = map (\a -> \b -> b) [1.0, 2.0];",
+        "main",
+        Mode::Strict,
+    ) {
         Ok(_) => panic!("wrong-arity map closure must not compile"),
         Err(e) => e,
     };
@@ -200,40 +188,10 @@ fn map_rejects_wrong_arity_closure_at_compile_time() {
 }
 
 #[test]
-fn consed_list_shares_source_elements_across_ticks() {
-    // The CAF `l = cons 1.0 (cons 2.0 (list))` is [1.0, 2.0]; main's output
-    // `cons 9.0 l` is [9.0, 1.0, 2.0], sharing l's elements 1.0/2.0. Each tick
-    // rebuilds and then clears the source list at tick end, so the Cons arm
-    // MUST recount (RC++) the shared source elements or the pinned output's
-    // refs dangle and read None on the next tick.
-    let mut prog = compile::<f32>("l = cons 1.0 (cons 2.0 (list)); main = cons 9.0 l;").unwrap();
-    for tick in 0..3 {
-        prog.run_value().unwrap();
-        let v = prog.value_outputs()[0].unwrap();
-        match prog.arena().get(v).unwrap() {
-            rill_lang::arena::Value::List { elems, .. } => {
-                assert_eq!(
-                    prog.arena().get(elems[1]).unwrap(),
-                    &rill_lang::arena::Value::Float(1.0),
-                    "tick {tick}: shared source element [1] must survive the tick-end clear"
-                );
-                assert_eq!(
-                    prog.arena().get(elems[2]).unwrap(),
-                    &rill_lang::arena::Value::Float(2.0),
-                    "tick {tick}: shared source element [2] must survive the tick-end clear"
-                );
-            }
-            other => panic!("tick {tick}: expected a List, got {other:?}"),
-        }
-    }
-}
-
-#[test]
 fn list_empty_has_zero_length() {
     // `list` (no capacity arg) is an empty list with length 0.
-    let mut prog = compile::<f32>("main = length (list);").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run("main = length (list);");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(0)
@@ -247,17 +205,20 @@ fn map_result_element_type_comes_from_closure_return() {
     // element type): a later `cons 4.0` must typecheck — it used to fail with a
     // spurious "cannot unify Int with Float".
     assert!(
-        compile::<f32>(r"main = cons 4.0 (map (\x -> x + 0.5) [1, 2, 3]);").is_ok(),
+        compile_eval::<f32, 256>(
+            r"main = cons 4.0 (map (\x -> x + 0.5) [1, 2, 3]);",
+            "main",
+            Mode::Strict,
+        )
+        .is_ok(),
         "a type-changing map followed by a Float cons must compile"
     );
     // End-to-end length 4: the source needs spare capacity for the cons (map
     // preserves the source cap).
-    let mut prog = compile::<f32>(
+    let prog = run(
         r"main = length (cons 4.0 (map (\x -> x + 0.5) (cons 3.0 (cons 2.0 (cons 1.0 (list))))));",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    );
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(4)
@@ -268,9 +229,8 @@ fn map_result_element_type_comes_from_closure_return() {
 fn map_preserves_type_when_closure_returns_same_type() {
     // A same-type closure (`x * 2.0` : Float -> Float) keeps the map result a
     // `List Float` — the common case must keep typechecking.
-    let mut prog = compile::<f32>(r"main = length (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);").unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let prog = run(r"main = length (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);");
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(3)
@@ -282,12 +242,10 @@ fn match_over_non_analyzable_scrutinee_dispatches_at_runtime() {
     // `head (filter ...)` is not statically analyzable — the runtime dispatch
     // must select `Just` and expose its payload (regression for the old
     // static-only behavior which rejected it).
-    let mut prog = compile::<f32>(
+    let prog = run(
         r"main = case (head (filter (\x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing -> 0.0; Just x -> x; };",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    );
+    let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Float(2.0)

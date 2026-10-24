@@ -1,10 +1,14 @@
-//! `RillProgram<T, BUF>` — a compiled rill-lang program.
+//! `WorldState<T, BUF>` — the runtime realization of a compiled rill-lang
+//! program's world.
 //!
-//! It owns its IR, schedule, and pre-allocated state. The program is executed
-//! either by [`run_value`](RillProgram::run_value) (one whole-buffer value
-//! tick, the retained pure-value path) or by the
-//! [`ProgramRunner`](crate::program_runner::ProgramRunner) (which runs
-//! `main : IO ()` to completion). Neither path allocates after warm-up.
+//! The compiled [`Ir`] is pure code; the world holds every piece of mutable
+//! runtime state. A program is executed once to completion: its entry fragment
+//! runs and the terminal register is captured into the world's `main`
+//! (inspected with [`result`](WorldState::result)). The
+//! [`ProgramRunner`](crate::program_runner::ProgramRunner) runs `main : IO ()`
+//! through this same path. Nothing allocates after warm-up.
+
+use std::collections::HashMap;
 
 use crate::builtin::{BlockBuiltin, BuiltinFactoryKind, MultichannelBlockBuiltin};
 use rill_core::buffer::TapeRing;
@@ -21,6 +25,13 @@ use crate::ir::{BuiltinInstance, Ir, ParamDef, ValueBlock};
 ///
 /// Used for stack scratch storage in the interpreter's foreign-block path.
 pub(crate) const MAX_BUILTIN_CHANNELS: usize = 8;
+
+/// The reserved parameter name behind the `?sample_rate` read.
+///
+/// It is **not** a named entry of [`rill_core::Params::parameters`]: the
+/// dedicated [`rill_core::Params::sample_rate`] field owns the value, so a seat
+/// never seeds the name and a write goes to the field.
+pub(crate) const SAMPLE_RATE_PARAM: &str = "sample_rate";
 
 /// Tag distinguishing a stream handle from an `ST` region/cell handle in the
 /// shared `Value::Opaque(u32)` payload space. Stream handles occupy the high
@@ -89,7 +100,7 @@ pub(crate) enum StreamHandle {
     /// is `String` and each line is one element.
     Stdin {
         /// The injected console lines, in order (reset by
-        /// [`RillProgram::inject_stdin`](crate::program::RillProgram)).
+        /// [`WorldState::inject_stdin`]).
         lines: Vec<String>,
         /// Number of lines already consumed.
         pos: usize,
@@ -129,14 +140,76 @@ impl StreamHandle {
     }
 }
 
-/// The runtime realization of `realWorld`: the memory-stream table and the
-/// captured stdio console.
+/// Caller-supplied configuration for a [`WorldState`].
+///
+/// The config carries **policy and external wiring only — no storage sizes**.
+/// Every structural size is read from the compiled [`Ir`] at
+/// [`seat`](WorldState::seat) time (the register store from
+/// `ir.num_value_regs + ir.max_call_regs`, block state from
+/// `ir.state.block_state_slots`, the buffer table from `ir.num_buffers`, the
+/// arena from `ir.value_state.capacity`), so a world can never be sized by a
+/// guess that disagrees with the program it runs.
+///
+/// [`Default`] carries the caller-independent policy: arena growth follows the
+/// `growable-arena` crate feature, no FFI registry is attached, and the
+/// parameter bag is empty.
+pub struct WorldConfig<T: Transcendental> {
+    /// Whether the value arena and its payload-buffer pool may append pages
+    /// when a run outgrows the IR's build-time bound.
+    ///
+    /// `false` keeps the bound hard: an overrun latches a `ProcessError`
+    /// (RT-safe). `true` is the non-RT interpreter policy: an overrun appends
+    /// pages to the arena instead of failing. **Caveat:** the growth path
+    /// currently panics for a non-power-of-two IR capacity — a pre-existing
+    /// `ChunkedVec` page-door limitation tracked as follow-up FU-1 — so
+    /// `growable: true` is not yet safe for arbitrary programs. The default is
+    /// `cfg!(feature = "growable-arena")` (`false` in default builds), the
+    /// safe bounded-memory path.
+    pub growable: bool,
+    /// The built-in factory registry as a world-owned value.
+    ///
+    /// [`WorldState::seat`] resolves every `foreign`-declared built-in against
+    /// this registry (an unresolvable name is a [`CompileError`] at seat). The
+    /// world owns the registry, so a caller hands it over here rather than
+    /// passing it to the executor on every run. `None` means "no foreign
+    /// builtins": a program that declares one fails at seat.
+    pub ffi: Option<crate::ffi::ForeignRegistry<T>>,
+    /// The world's parameter bag (`sample_rate` + named parameters).
+    ///
+    /// This is the **initial state** the world is created with: the seat seeds
+    /// the program's declared parameter defaults only where the bag carries no
+    /// value yet, so a caller-supplied entry survives seating. The sample rate
+    /// is pre-seeded on [`Params::sample_rate`](rill_core::Params::sample_rate)
+    /// (default `0.0` = "not a signal program"); the seat reads the rate from
+    /// this field (there is no `sample_rate` argument).
+    pub params: rill_core::Params,
+}
+
+impl<T: Transcendental> Default for WorldConfig<T> {
+    fn default() -> Self {
+        Self {
+            growable: cfg!(feature = "growable-arena"),
+            ffi: None,
+            params: rill_core::Params::default(),
+        }
+    }
+}
+
+/// The runtime realization of `realWorld`: **all** mutable runtime state.
 ///
 /// `main : IO ()` threads the opaque `World` token for ordering only; the state
-/// the effects actually mutate lives here, on the program. The runner captures
-/// the console (`stdout`/`stderr`) so tests and drivers can assert on it, and
-/// injects the console input (`stdin`).
-pub struct WorldState {
+/// the effects actually mutate lives here. The world owns the memory-stream
+/// table and the captured stdio console, the signal runtime (block feedback,
+/// delay lines, the buffer table, built-in instances), the foreign factory
+/// registry, the parameter store and its metadata, and the whole value track
+/// (arena, registers, capture cells, deferred drops, ST regions). The compiled
+/// [`Ir`] is pure code and lives outside the world; every executor function
+/// takes `(&Ir, &mut WorldState)`. The runner captures the console
+/// (`stdout`/`stderr`) so tests and drivers can assert on it, and injects the
+/// console input (`stdin`).
+pub struct WorldState<T: Transcendental, const BUF: usize> {
+    /// The caller-supplied configuration this world was created with.
+    pub(crate) config: WorldConfig<T>,
     /// The memory-stream table. A stream handle's payload indexes this table
     /// (offset by [`STREAM_HANDLE_TAG`]); slots 0, 1 and 2 are
     /// `stdout`/`stderr`/`stdin`.
@@ -145,43 +218,6 @@ pub struct WorldState {
     pub stdout: Vec<String>,
     /// Lines written to `stderr`, in program order.
     pub stderr: Vec<String>,
-}
-
-impl WorldState {
-    /// A fresh world: an empty memory-stream table, the two stdio sinks, and an
-    /// empty console input.
-    ///
-    /// The table order fixes the stdio handle slots: 0 = `stdout`
-    /// ([`STDOUT_HANDLE`]), 1 = `stderr` ([`STDERR_HANDLE`]), 2 = `stdin`
-    /// ([`STDIN_HANDLE`]).
-    pub(crate) fn new() -> Self {
-        Self {
-            streams: vec![
-                StreamHandle::Stdout,
-                StreamHandle::Stderr,
-                StreamHandle::Stdin {
-                    lines: Vec::new(),
-                    pos: 0,
-                    pushback: Vec::new(),
-                },
-            ],
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        }
-    }
-}
-
-/// A runtime built-in instance, indexed directly by IR `instance` fields.
-pub(crate) enum BuiltinInst<T: Transcendental> {
-    /// An opaque whole-buffer built-in.
-    Block(Box<dyn BlockBuiltin<T>>),
-    /// A whole-buffer multi-channel built-in.
-    MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
-}
-
-/// A compiled program ready to run.
-pub struct RillProgram<T: Transcendental, const BUF: usize> {
-    pub(crate) ir: Ir,
     /// Block-level feedback state (previous tick's whole block per slot).
     pub(crate) block_state: Vec<FixedBuffer<T, BUF>>,
     /// Current-tick feedback writes, swapped with `block_state` at tick end.
@@ -198,20 +234,25 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     pub(crate) block_len: usize,
     /// Runtime built-in instances (indexed by `ir.builtins` indices).
     pub(crate) builtins: Vec<BuiltinInst<T>>,
-    /// Current parameter values, indexed by [`Ir::params`].
-    pub(crate) params: Vec<ParamValue>,
-    /// Dirty flags: true when a param was changed since last push.
+    /// The world's parameter store: `sample_rate` (the field owns `?sample_rate`)
+    /// plus the named parameter map. Addressed **by name** only —
+    /// [`set_param`](Self::set_param) writes here, [`param`](Self::param) reads
+    /// here, and the value track resolves its IR parameter declarations to
+    /// these names at run time.
+    pub params: rill_core::Params,
+    /// Dirty flags: true when a parameter was changed since the last push to
+    /// the bound built-in. Parallel to [`Ir::params`](crate::ir::Ir::params).
     pub(crate) params_dirty: Vec<bool>,
-    /// Parameter metadata (name, default, range).
+    /// Parameter declarations (name, default, range), sourced from the IR at
+    /// seat.
     pub(crate) params_meta: Vec<ParamDef>,
+    /// Name → index into [`Self::params_meta`] / [`Self::params_dirty`], built
+    /// at seat. The runtime store is the name-keyed [`Self::params`]; this only
+    /// maps a declared name back to its IR declaration (for the range clamp and
+    /// the built-in push dirt).
+    pub(crate) param_names: HashMap<String, usize>,
     /// Value arena (fixed capacity from IR).
     pub(crate) arena: Arena<Value>,
-    /// Persistent main λ-parameter cells, one per [`Ir::num_main_cells`]. Each
-    /// cell is a `Void` arena slot allocated ONCE at construction — the value
-    /// track never rebinds them, so a `SetParameter` write survives across
-    /// ticks. The block track (`Instr::ReadMainCell`) and value track
-    /// (`ValueReadMainCell`) read these directly.
-    pub(crate) main_cells: Vec<Option<crate::arena::ArenaRef>>,
     /// Per-tick value registers. The store is pre-sized to
     /// `ir.num_value_regs + ir.max_call_regs`: the leading `num_value_regs`
     /// slots are the program's own registers, the tail is the pre-allocated
@@ -244,9 +285,12 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// fragment dispatch). Pre-sized at construction; used as a stack (nested
     /// dispatches append above the caller's mark and drain on return).
     pub(crate) drops_scratch: Vec<crate::arena::ArenaRef>,
-    /// Value outputs of the last processed tick: one counted arena ref per
-    /// value output channel, held across ticks (see [`value_outputs`](Self::value_outputs)).
-    pub(crate) value_outputs: Vec<Option<crate::arena::ArenaRef>>,
+    /// The run's terminal register: the result of executing the program's
+    /// entry fragment once. Set at run end by
+    /// [`exec_entry`](crate::backend::interp::exec_entry) (see
+    /// [`result`](Self::result)); released at the start of the next run and by
+    /// [`reset`](Self::reset).
+    pub(crate) main: Option<crate::arena::ArenaRef>,
     /// Runtime value-track error (capacity overflow), set by a collection op
     /// and consumed at the end of the value phase. Cleared each tick.
     pub(crate) value_error: Option<ProcessError>,
@@ -255,375 +299,123 @@ pub struct RillProgram<T: Transcendental, const BUF: usize> {
     /// token threaded through the region's `ST` computation is
     /// `Value::Opaque(region id)`.
     pub(crate) regions: Vec<RegionState>,
-    /// The ST cell table. An `STRef` handle is a `Value::Opaque` whose payload
-    /// is an index into this table; a region owns the ids it allocated and
-    /// releases them on exit, so the table is truncated back after each region
-    /// and never grows across ticks.
-    pub(crate) st_cells: Vec<Option<crate::arena::ArenaRef>>,
-    /// The realized `realWorld`: the memory-stream table and captured console.
-    /// `IO` actions reach it through this shared handle; the `World` token only
-    /// orders them.
-    pub(crate) world: std::rc::Rc<std::cell::RefCell<WorldState>>,
+    /// The ST cell table. An `STRef`/`STArray` handle is a `Value::Opaque`
+    /// whose payload is an index into this table; a region owns the ids it
+    /// allocated and releases them on exit, so the table is truncated back
+    /// after each region and never grows across ticks.
+    pub(crate) st_cells: Vec<Option<StCell>>,
 }
 
-/// One running `runST` region: the STRef cells it allocated.
-#[derive(Debug, Default)]
-pub(crate) struct RegionState {
-    /// Global cell-table ids allocated in this region, in allocation order.
-    /// The cells themselves live in `RillProgram::st_cells`
-    /// (`STRef` handles are plain global ids); the region releases them on
-    /// exit.
-    pub(crate) cells: Vec<u32>,
-    /// `st_cells.len()` when the region was entered. Cells are always appended,
-    /// and regions nest LIFO, so the table truncates back to this mark on exit.
-    pub(crate) cell_base: usize,
-}
-
-/// A region-backed `@` delay site: a [`TapeRing`] over a [`RegionHandle`].
-/// The ring's usable length equals the site's compile-time delay length; the
-/// backing memory is carved from the program's [`BufferAllocator`] at build.
-pub(crate) struct RegionDelay<T: Transcendental>(TapeRing<T, RegionHandle<T>>);
-
-impl<T: Transcendental> RegionDelay<T> {
-    pub(crate) fn new(buf: RegionHandle<T>) -> Self {
-        Self(TapeRing::new(buf))
-    }
-
-    /// Read a whole block of delayed samples into `out` (delay 0).
-    pub(crate) fn read_block(&self, out: &mut [T]) {
-        self.0.read_block(0, out);
-    }
-
-    /// Write a whole block into the ring buffer and advance the head.
-    pub(crate) fn write_block(&mut self, input: &[T]) {
-        self.0.write_block(input);
-    }
-
-    /// Zero the ring and reset the head.
-    pub(crate) fn clear(&mut self) {
-        self.0.clear();
-    }
-}
-
-/// Build a single runtime built-in instance for `bi`, resolving the factory
-/// from the legacy rill-core `Registry` or the FFI `ForeignRegistry`.
-///
-/// The runtime `BuiltinInst` variant is selected by the registered FACTORY KIND,
-/// not by the signal arity: a `Block` factory (legacy or FFI) builds the
-/// `Block` variant even for a multi-channel arity — the interpreter's
-/// interleaved `Block` path serves those channels. Selecting by arity instead
-/// routed a multi-channel `Block` factory into `build_multichannel_block`,
-/// which has no matching variant and `.expect` panics.
-fn build_builtin<T: Transcendental>(
-    bi: &BuiltinInstance,
-    registry: &crate::builtin::Registry<T>,
-    foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    resources: &mut Option<&mut rill_core::buffer::ResourceRegistry<T>>,
-    tapes: &[SharedCell<T>],
-    sample_rate: f32,
-    allocator: Option<&mut BufferAllocator<T>>,
-) -> Result<BuiltinInst<T>, CompileError> {
-    let legacy_kind = registry.kind(&bi.name);
-    let ffi_kind = foreign.and_then(|f| f.kind(&bi.name));
-    let kind = legacy_kind.or(ffi_kind);
-    // A resource-backed factory resolves its named resource through the
-    // resource branch, as does any built-in carrying a resource binding.
-    let is_resource = legacy_kind.is_some_and(|k| {
-        matches!(
-            k,
-            BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
-        )
-    }) || bi.resource.is_some();
-    // An FFI resource factory resolves its shared cell by tape index (the new
-    // `tape_loop` path) instead of a name against an external registry.
-    let ffi_is_resource = bi.tape_index.is_some()
-        || ffi_kind.is_some_and(|k| {
-            matches!(
-                k,
-                BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
-            )
-        });
-    let resolve_tape = |bi: &BuiltinInstance| -> Result<
-        (
-            rill_core::buffer::SharedWriter<T>,
-            rill_core::buffer::SharedReader<T>,
-        ),
-        CompileError,
-    > {
-        // A name-based resource binding (`bi.resource = Some(name)`) with no
-        // external registry means the source referenced a tape name that was
-        // never declared (`tape = tape_loop <capacity>`) and no registry was
-        // supplied — report the real cause instead of the index-based
-        // fallthrough error.
-        if let Some(name) = &bi.resource {
-            if resources.is_none() {
-                return Err(CompileError::Unsupported(format!(
-                    "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>` or pass a registry)",
-                    bi.name, name
-                )));
-            }
-        }
-        let idx = bi.tape_index.ok_or_else(|| {
-            CompileError::Unsupported(format!(
-                "built-in '{}' is registered as resource-backed but carries no tape index",
-                bi.name
-            ))
-        })?;
-        let cell = tapes.get(idx).ok_or_else(|| {
-            CompileError::Unsupported(format!(
-                "built-in '{}' references tape index {idx}, but only {} tape(s) are declared",
-                bi.name,
-                tapes.len()
-            ))
-        })?;
-        Ok((cell.writer(), cell.reader()))
-    };
-    match kind {
-        Some(
-            BuiltinFactoryKind::MultichannelBlock | BuiltinFactoryKind::ResourceMultichannelBlock,
-        ) => {
-            let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(entry) =
-                registry.get(&bi.name)
-            {
-                if is_resource {
-                    let res = bi.resource.as_deref().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource name",
-                            bi.name
-                        ))
-                    })?;
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_multichannel_block(
-                            bi.signal_ins,
-                            &bi.params,
-                            sample_rate,
-                            reg,
-                            res,
-                            allocator,
-                        )
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
-                                bi.name
-                            ))
-                        })?
-                } else {
-                    entry
-                        .build_multichannel_block(bi.signal_ins, &bi.params, sample_rate, allocator)
-                        .expect("registry build_multichannel_block failed")
-                }
-            } else if let Some(ffi) = foreign {
-                if ffi_is_resource {
-                    let (w, r) = resolve_tape(bi)?;
-                    ffi.build_resource_multichannel_block(
-                        &bi.name,
-                        bi.signal_ins,
-                        &bi.params,
-                        sample_rate,
-                        w,
-                        r,
-                        allocator,
-                    )
-                    .ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "foreign resource built-in '{}' is not registered",
-                            bi.name
-                        ))
-                    })?
-                } else {
-                    ffi.build_multichannel_block(
-                        &bi.name,
-                        bi.signal_ins,
-                        &bi.params,
-                        sample_rate,
-                        allocator,
-                    )
-                    .ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "foreign built-in '{}' is not registered",
-                            bi.name
-                        ))
-                    })?
-                }
-            } else {
-                return Err(CompileError::Unsupported(format!(
-                    "unknown built-in '{}'",
-                    bi.name
-                )));
-            };
-            b.reset();
-            Ok(BuiltinInst::MultichannelBlock(b))
-        }
-        Some(BuiltinFactoryKind::Block | BuiltinFactoryKind::ResourceBlock) | None => {
-            let mut b: Box<dyn BlockBuiltin<T>> = if let Some(entry) = registry.get(&bi.name) {
-                if is_resource {
-                    let res = bi.resource.as_deref().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource name",
-                            bi.name
-                        ))
-                    })?;
-                    let reg = resources.as_deref_mut().ok_or_else(|| {
-                        CompileError::Unsupported(format!(
-                            "built-in '{}' requires a resource registry",
-                            bi.name
-                        ))
-                    })?;
-                    entry
-                        .build_resource_block(&bi.params, sample_rate, reg, res, allocator)
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "resource built-in '{}' is not registered as resource-backed",
-                                bi.name
-                            ))
-                        })?
-                } else {
-                    entry
-                        .build_block(&bi.params, sample_rate, allocator)
-                        .expect("registry build_block failed for block builtin")
-                }
-            } else if let Some(ffi) = foreign {
-                if ffi_is_resource {
-                    let (w, r) = resolve_tape(bi)?;
-                    ffi.build_resource_block(&bi.name, &bi.params, sample_rate, w, r, allocator)
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "foreign resource built-in '{}' is not registered",
-                                bi.name
-                            ))
-                        })?
-                } else {
-                    ffi.build_block(&bi.name, &bi.params, sample_rate, allocator)
-                        .ok_or_else(|| {
-                            CompileError::Unsupported(format!(
-                                "foreign built-in '{}' is not registered",
-                                bi.name
-                            ))
-                        })?
-                }
-            } else {
-                return Err(CompileError::Unsupported(format!(
-                    "unknown built-in '{}'",
-                    bi.name
-                )));
-            };
-            Algorithm::init(b.as_mut(), sample_rate);
-            Ok(BuiltinInst::Block(b))
-        }
-    }
-}
-
-impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
-    /// Create a program from a compiled IR. Allocates state, delays, registers,
-    /// and builds the execution schedule. Built-ins are NOT instantiated — use
-    /// [`new_with`](Self::new_with) if the IR references built-in functions.
-    pub fn new(ir: Ir) -> Self {
-        let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let (delays, _allocator) = Self::alloc_delays(&ir);
-        let buffers = Self::alloc_buffers(&ir);
-        let params_meta = ir.params.clone();
-        let params: Vec<ParamValue> = ir
-            .params
-            .iter()
-            .map(|p| ParamValue::Float(p.default as f32))
-            .collect();
-        let params_dirty = vec![false; params.len()];
-        let mut arena = Arena::with_capacity(ir.value_state.capacity);
-        arena.pool = BufferPool::new(
-            ir.value_state.buffer_budget,
-            cfg!(feature = "growable-arena"),
-        );
-        let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
-        // Pre-allocate the value-register store: the program's own registers
-        // plus the function-call scratch (see `Ir::max_call_regs`).
-        let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
-        let value_regs_top = ir.num_value_regs;
-        let value_state = vec![None; ir.value_state.value_state_slots];
-        let cell_stack = Vec::new();
-        let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
-        let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
-        let value_outputs = vec![None; ir.value_output_regs.len()];
+impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
+    /// A fresh world: an empty memory-stream table, the two stdio sinks, an
+    /// empty console input, and empty (zero-sized) runtime state.
+    ///
+    /// The table order fixes the stdio handle slots: 0 = `stdout`
+    /// (`STDOUT_HANDLE`), 1 = `stderr` (`STDERR_HANDLE`), 2 = `stdin`
+    /// (`STDIN_HANDLE`). The IR-derived state (delays, buffers, registers,
+    /// parameter store, arena) is filled in by [`seat`](Self::seat); a world
+    /// built here alone is the degenerate zero-program world.
+    pub fn new(config: WorldConfig<T>) -> Self {
+        // The config's parameter bag is the world's initial state; the seat
+        // seeds declared defaults only where it carries no value.
+        let params = config.params.clone();
         Self {
-            ir,
-            block_state,
-            block_state_next,
-            delays,
-            buffers,
+            config,
+            streams: vec![
+                StreamHandle::Stdout,
+                StreamHandle::Stderr,
+                StreamHandle::Stdin {
+                    lines: Vec::new(),
+                    pos: 0,
+                    pushback: Vec::new(),
+                },
+            ],
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            block_state: Vec::new(),
+            block_state_next: Vec::new(),
+            delays: Vec::new(),
+            buffers: Vec::new(),
             block_len: 0,
             builtins: Vec::new(),
             params,
-            params_dirty,
-            params_meta,
-            arena,
-            main_cells,
-            value_regs,
-            value_regs_top,
-            value_state,
-            cell_stack,
-            frag_cells,
+            params_dirty: Vec::new(),
+            params_meta: Vec::new(),
+            param_names: HashMap::new(),
+            arena: Arena::with_capacity(0),
+            value_regs: Vec::new(),
+            value_regs_top: 0,
+            value_state: Vec::new(),
+            cell_stack: Vec::new(),
+            frag_cells: Vec::new(),
             frag_cells_base: 0,
-            drops_scratch,
-            value_outputs,
+            drops_scratch: Vec::new(),
+            main: None,
             value_error: None,
             regions: Vec::new(),
             st_cells: Vec::new(),
-            world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
         }
     }
 
-    /// Create a program from a compiled [`Ir`], instantiating all built-ins
-    /// via the provided `Registry`. Also sets the initial `sample_rate`.
-    ///
-    /// Parses `builtins` from the IR, allocates registers, state, and delays,
-    /// and builds the execution schedule. The resulting program implements
-    /// [`Algorithm<T>`](rill_core::traits::Algorithm).
-    ///
-    /// When `foreign` is provided, built-in names not in `registry` resolve
-    /// against the foreign registry (foreign-declared builtins).
-    pub fn new_with(
-        ir: Ir,
-        registry: &crate::builtin::Registry<T>,
-        sample_rate: f32,
-        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, None, foreign)
+    /// The configuration this world was created with.
+    pub fn config(&self) -> &WorldConfig<T> {
+        &self.config
     }
 
-    /// Create a program with a resource registry, resolving resource-backed
-    /// built-ins (e.g. tape heads) from the named resources. When `foreign`
-    /// is provided, non-resource built-in names not in `registry` resolve
-    /// against the foreign registry.
-    pub fn new_with_resources(
-        ir: Ir,
-        registry: &crate::builtin::Registry<T>,
-        sample_rate: f32,
-        resources: &mut rill_core::buffer::ResourceRegistry<T>,
-        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    ) -> Result<Self, CompileError> {
-        Self::build(ir, registry, sample_rate, Some(resources), foreign)
+    /// Number of pre-allocated value registers: the program's own registers
+    /// (`ir.num_value_regs`) plus the function-call scratch
+    /// (`ir.max_call_regs`). Exposed for layout inspection (tests, tooling).
+    pub fn value_regs_len(&self) -> usize {
+        self.value_regs.len()
     }
 
-    fn build(
-        ir: Ir,
-        registry: &crate::builtin::Registry<T>,
-        sample_rate: f32,
-        mut resources: Option<&mut rill_core::buffer::ResourceRegistry<T>>,
-        foreign: Option<&crate::ffi::ForeignRegistry<T>>,
-    ) -> Result<Self, CompileError> {
-        // Allocate one shared cell per `tape_loop <capacity>` call (indexed by
+    /// Number of block-feedback slots (`ir.state.block_state_slots`).
+    pub fn block_state_len(&self) -> usize {
+        self.block_state.len()
+    }
+
+    /// Number of program-level signal buffers (`ir.num_buffers`).
+    pub fn buffers_len(&self) -> usize {
+        self.buffers.len()
+    }
+
+    /// Seat this world for `ir`: assemble every structural table the program
+    /// needs, resolving built-ins against the world's own
+    /// [`ffi`](WorldConfig::ffi) registry.
+    ///
+    /// The seat is the code-meets-memory boundary. It reads **only** the IR's
+    /// layout (register store, block state, buffer table, tapes, delay sites,
+    /// arena capacity, parameter declarations) and applies the world's
+    /// [`growable`](WorldConfig::growable) memory policy; no storage size comes
+    /// from configuration. An unresolvable built-in name is a [`CompileError`]
+    /// here — before any run can reach an effect.
+    ///
+    /// The foreign factory registry comes from [`WorldConfig::ffi`] (the world
+    /// owns it); a world without one resolves no foreign built-in, so a program
+    /// that declares one fails here. The sample rate comes from
+    /// [`params.sample_rate`](rill_core::Params::sample_rate), which a caller
+    /// pre-seeds; a non-signal world keeps the `0.0` default.
+    ///
+    /// Re-seating is supported: the structural tables (and the arena) are
+    /// re-sized to the new IR, the value-track bookkeeping is cleared, and the
+    /// console/stdout/stderr state is left untouched. Seating the same IR twice
+    /// yields the same layout, but a re-seat invalidates value refs from an
+    /// earlier run (`result()` returns `None` afterwards). Each seat builds a
+    /// fresh arena, buffer table, delay lines, and block-feedback state, so a
+    /// re-seat restarts the built-in instances and the signal state from the
+    /// compiled layout (repeated runs are independent). Declared parameter
+    /// **defaults** are seeded only where the world's bag has no value yet, so
+    /// a pre-seeded parameter survives; `sample_rate` is never seeded from a
+    /// declaration (the field owns it).
+    pub fn seat(&mut self, ir: &Ir) -> Result<(), CompileError> {
+        // The world's parameter store owns the rate: a caller pre-seeds
+        // `params.sample_rate` before seating (there is no rate argument).
+        let sample_rate = self.params.sample_rate;
+        // One shared cell per `tape_loop <capacity>` call (indexed by
         // `BuiltinInstance::tape_index`). Tape heads referencing the same index
-        // get writer/reader handles over the same cell. The cells are LOCAL to
-        // assembly: the `SharedWriter`/`SharedReader` handles held by the tape
-        // heads are `Rc` clones into these cells and keep the buffers alive,
-        // so the program itself stays `Send` (rill buffers are single-threaded
-        // and must not be transferred between threads).
+        // get writer/reader handles over the same cell. The cells are local to
+        // assembly: the handles the heads hold are `Rc` clones into these
+        // cells and keep the buffers alive, so the program itself stays `Send`.
         let tapes: Vec<SharedCell<T>> = ir
             .tapes
             .iter()
@@ -636,109 +428,99 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .collect::<Result<_, CompileError>>()?;
         // Carve the delay sites first so the allocator is available to
         // built-in factories below.
-        let (delays, mut allocator) = Self::alloc_delays(&ir);
+        let (delays, mut allocator) = Self::alloc_delays(ir);
+        // Build every built-in before committing anything, so a failed seat
+        // leaves the previous seat's state intact. The world's `ffi` registry is
+        // the only factory surface; a name-based resource binding is rejected on
+        // the source path (`compile`), and the tape path resolves by index.
         let mut builtins = Vec::with_capacity(ir.builtins.len());
         for bi in &ir.builtins {
-            let b = build_builtin(
+            builtins.push(build_builtin(
                 bi,
-                registry,
-                foreign,
-                &mut resources,
+                self.config.ffi.as_ref(),
                 &tapes,
                 sample_rate,
                 Some(&mut allocator),
-            )?;
-            builtins.push(b);
+            )?);
         }
+        self.delays = delays;
+        self.builtins = builtins;
+        self.fill_layout(ir);
+        Ok(())
+    }
 
-        let block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
-        let buffers = Self::alloc_buffers(&ir);
-        let params_meta = ir.params.clone();
-        let params: Vec<ParamValue> = ir
+    /// Size the IR-derived structural tables (everything the seat owns except
+    /// the tapes, delay sites and built-in instances built from the
+    /// allocator).
+    fn fill_layout(&mut self, ir: &Ir) {
+        // A seat (re)defines the whole value track. Refs from an earlier
+        // seat/run belong to the arena replaced below, so the bookkeeping is
+        // cleared wholesale instead of ref-by-ref.
+        self.main = None;
+        self.value_error = None;
+        self.value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
+        self.value_regs_top = ir.num_value_regs;
+        self.value_state = vec![None; ir.value_state.value_state_slots];
+        self.cell_stack.clear();
+        self.frag_cells = Vec::with_capacity(max_frag_cells(ir));
+        self.frag_cells_base = 0;
+        self.drops_scratch = Vec::with_capacity(max_drops(ir));
+        self.regions.clear();
+        self.st_cells.clear();
+        self.block_state = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        self.block_state_next = vec![FixedBuffer::new(); ir.state.block_state_slots];
+        self.block_len = 0;
+        self.buffers = Self::alloc_buffers(ir);
+        // Parameter declarations come from the IR; the VALUES live in the
+        // world's name-addressed bag and are seeded **absent-only**, so a
+        // caller's pre-seed (world creation or `set_param` before seat) is the
+        // world's initial state and survives seating.
+        self.params_meta = ir.params.clone();
+        self.param_names = ir
             .params
             .iter()
-            .map(|p| ParamValue::Float(p.default as f32))
+            .enumerate()
+            .map(|(idx, def)| (def.name.clone(), idx))
             .collect();
-        let params_dirty = vec![false; params.len()];
-        let mut arena = Arena::with_capacity(ir.value_state.capacity);
-        arena.pool = BufferPool::new(
-            ir.value_state.buffer_budget,
-            cfg!(feature = "growable-arena"),
-        );
-        let main_cells = Self::alloc_main_cells(&mut arena, ir.num_main_cells);
-        // Pre-allocate the value-register store: the program's own registers
-        // plus the function-call scratch (see `Ir::max_call_regs`).
-        let value_regs = vec![None; ir.num_value_regs + ir.max_call_regs];
-        let value_regs_top = ir.num_value_regs;
-        let value_state = vec![None; ir.value_state.value_state_slots];
-        let cell_stack = Vec::new();
-        let frag_cells = Vec::with_capacity(Self::max_frag_cells(&ir));
-        let drops_scratch = Vec::with_capacity(Self::max_drops(&ir));
-        let value_outputs = vec![None; ir.value_output_regs.len()];
-        Ok(Self {
-            ir,
-            block_state,
-            block_state_next,
-            delays,
-            buffers,
-            block_len: 0,
-            builtins,
-            params,
-            params_dirty,
-            params_meta,
-            arena,
-            main_cells,
-            value_regs,
-            value_regs_top,
-            value_state,
-            cell_stack,
-            frag_cells,
-            frag_cells_base: 0,
-            drops_scratch,
-            value_outputs,
-            value_error: None,
-            regions: Vec::new(),
-            st_cells: Vec::new(),
-            world: std::rc::Rc::new(std::cell::RefCell::new(WorldState::new())),
-        })
-    }
-
-    /// Swap the double-buffered block feedback state at the end of a tick.
-    pub(crate) fn swap_block_state(&mut self) {
-        std::mem::swap(&mut self.block_state, &mut self.block_state_next);
-        for b in &mut self.block_state_next {
-            b.fill(T::ZERO);
+        self.params_dirty = vec![false; ir.params.len()];
+        for (idx, def) in ir.params.iter().enumerate() {
+            if def.name == SAMPLE_RATE_PARAM {
+                // The `sample_rate` field owns the rate: it is never a named
+                // entry and never seeded from a declaration.
+                continue;
+            }
+            match self.params.parameters.entry(def.name.clone()) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(ParamValue::Float(def.default as f32));
+                }
+                // A pre-supplied value outranks the declared default: it is an
+                // explicit initial state, so it must also reach a built-in
+                // bound to this parameter at the first run. The declaration is
+                // only known now, so this is where the range clamp applies to a
+                // value written before the seat; in-range values are unchanged.
+                std::collections::hash_map::Entry::Occupied(mut slot) => {
+                    let current = slot.get().clone();
+                    *slot.get_mut() = clamp_param_value(def, current);
+                    if let Some(dirty) = self.params_dirty.get_mut(idx) {
+                        *dirty = true;
+                    }
+                }
+            }
         }
-    }
-
-    /// Allocate the persistent main λ-parameter cells at construction.
-    ///
-    /// Each cell holds one of `main`'s String launch arguments and is owned
-    /// solely by `main_cells`, initialized to the empty string. Capacity is
-    /// computed at build time to include these `count` slots, so allocation
-    /// cannot fail in a correctly-lowered program.
-    fn alloc_main_cells(
-        arena: &mut Arena<Value>,
-        count: usize,
-    ) -> Vec<Option<crate::arena::ArenaRef>> {
-        (0..count)
-            .map(|_| {
-                Some(
-                    arena
-                        .alloc(crate::arena::Value::String(String::new()))
-                        .expect("main-cell allocation exceeds build-time capacity bound"),
-                )
-            })
-            .collect()
+        // The arena is sized EXACTLY from the IR's build-time capacity bound
+        // (computed during lowering); the page door appends pages only when a
+        // run outgrows it and the world's `growable` policy allows it.
+        let mut arena = Arena::with_capacity(ir.value_state.capacity);
+        arena.pool = BufferPool::new(ir.value_state.buffer_budget, self.config.growable);
+        self.arena = arena;
     }
 
     /// Carve the program-level buffer table out of a fresh region allocator:
     /// one `BUF`-length `RegionHandle<T>` per `Ir::num_buffers` (each
-    /// `Value::Buffer` index). Chunk capacity is `BUF`
-    /// rounded up to a power of two, so every handle fits within a single chunk
-    /// (non-spanning). Memory is static with program lifetime (SP-4 Tier-1);
-    /// a tick never touches the allocator.
+    /// `Value::Buffer` index). Chunk capacity is `BUF` rounded up to a power of
+    /// two, so every handle fits within a single chunk (non-spanning). Memory
+    /// is static with program lifetime (SP-4 Tier-1); a tick never touches the
+    /// allocator.
     fn alloc_buffers(ir: &Ir) -> Vec<RegionHandle<T>> {
         let n = ir.num_buffers;
         if n == 0 {
@@ -782,136 +564,374 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             .collect();
         (delays, allocator)
     }
+}
 
-    /// Upper bound on the shared fragment capture-cell store: the worst-case
-    /// call stack holds one frame per fragment (recursion is rejected), and
-    /// each frame needs at most its fragment's capture cells, so the sum over
-    /// all fragments bounds the deepest nesting.
-    fn max_frag_cells(ir: &Ir) -> usize {
-        ir.fragments
+/// Upper bound on the shared fragment capture-cell store: the worst-case call
+/// stack holds one frame per fragment (recursion is rejected), and each frame
+/// needs at most its fragment's capture cells, so the sum over all fragments
+/// bounds the deepest nesting.
+fn max_frag_cells(ir: &Ir) -> usize {
+    ir.fragments
+        .iter()
+        .map(|f| f.num_capture_cells)
+        .sum::<usize>()
+}
+
+/// Clamp a parameter value against its declared range.
+///
+/// `Float` is clamped directly. `Int` is clamped in `f64` and truncated back to
+/// an integer, then nudged one step inside the range when a fractional bound
+/// would leave it outside — so an integer value always ends up in `[min, max]`.
+/// Every other variant carries no numeric range and passes through unchanged.
+///
+/// This is the single clamp used by both `set_param` (after the seat supplied
+/// the declaration) and the seat itself (a pre-seat `set_param` could not know
+/// the range, so `fill_layout` clamps the caller's initial state). An in-range
+/// value is returned unchanged, so clamping never rewrites a legitimate value.
+fn clamp_param_value(def: &ParamDef, value: ParamValue) -> ParamValue {
+    match value {
+        ParamValue::Float(v) => ParamValue::Float((v as f64).clamp(def.min, def.max) as f32),
+        ParamValue::Int(v) => {
+            let clamped = (v as f64).clamp(def.min, def.max);
+            let mut i = clamped as i32;
+            if (i as f64) < def.min {
+                i = i.saturating_add(1);
+            } else if (i as f64) > def.max {
+                i = i.saturating_sub(1);
+            }
+            ParamValue::Int(i)
+        }
+        other => other,
+    }
+}
+
+/// Upper bound on the shared deferred-drop scratch: the deepest call stack
+/// queues at most one drop per value instruction of each frame, so the sum over
+/// the main track and every fragment's instructions is a strict bound.
+fn max_drops(ir: &Ir) -> usize {
+    let instrs = |b: &ValueBlock| b.instrs.len();
+    ir.value_blocks.iter().map(instrs).sum::<usize>()
+        + ir.fragments
             .iter()
-            .map(|f| f.num_capture_cells)
+            .map(|f| f.value_blocks.iter().map(instrs).sum::<usize>())
             .sum::<usize>()
+}
+
+impl<T: Transcendental, const BUF: usize> Default for WorldState<T, BUF> {
+    fn default() -> Self {
+        Self::new(WorldConfig::default())
+    }
+}
+
+/// A runtime built-in instance, indexed directly by IR `instance` fields.
+pub(crate) enum BuiltinInst<T: Transcendental> {
+    /// An opaque whole-buffer built-in.
+    Block(Box<dyn BlockBuiltin<T>>),
+    /// A whole-buffer multi-channel built-in.
+    MultichannelBlock(Box<dyn MultichannelBlockBuiltin<T>>),
+}
+
+/// One running `runST` region: the STRef/STArray cells it allocated.
+#[derive(Debug, Default)]
+pub(crate) struct RegionState {
+    /// Global cell-table ids allocated in this region, in allocation order.
+    /// The cells themselves live in `WorldState::st_cells`
+    /// (`STRef`/`STArray` handles are plain global ids); the region releases
+    /// them on exit.
+    pub(crate) cells: Vec<u32>,
+    /// `st_cells.len()` when the region was entered. Cells are always appended,
+    /// and regions nest LIFO, so the table truncates back to this mark on exit.
+    pub(crate) cell_base: usize,
+}
+
+/// One ST cell: the mutable state behind an opaque region handle.
+///
+/// Both variants own exactly ONE arena claim per ref they hold. A cell is
+/// released by `release_st_cell` when its region exits (or when a `writeSTRef`
+/// overwrites it).
+pub(crate) enum StCell {
+    /// An `STRef s a` cell: the current value.
+    Ref(crate::arena::ArenaRef),
+    /// An `STArray s i e` cell: the stored bounds (a `Pair i i` value) and the
+    /// flat elements in `lo..=hi` order. `runSTArray` freezes the pair into an
+    /// immutable `Array` by transferring these claims.
+    Array {
+        /// Stored bounds as an ordinary value (`Pair i i`).
+        bounds: crate::arena::ArenaRef,
+        /// Flat elements, one claim each.
+        elems: Vec<crate::arena::ArenaRef>,
+    },
+}
+
+/// A region-backed `@` delay site: a [`TapeRing`] over a [`RegionHandle`].
+/// The ring's usable length equals the site's compile-time delay length; the
+/// backing memory is carved from the program's [`BufferAllocator`] at build.
+pub(crate) struct RegionDelay<T: Transcendental>(TapeRing<T, RegionHandle<T>>);
+
+impl<T: Transcendental> RegionDelay<T> {
+    pub(crate) fn new(buf: RegionHandle<T>) -> Self {
+        Self(TapeRing::new(buf))
     }
 
-    /// Upper bound on the shared deferred-drop scratch: the deepest call stack
-    /// queues at most one drop per value instruction of each frame, so the sum
-    /// over the main track and every fragment's instructions is a strict bound.
-    fn max_drops(ir: &Ir) -> usize {
-        let instrs = |b: &ValueBlock| b.instrs.len();
-        ir.value_blocks.iter().map(instrs).sum::<usize>()
-            + ir.fragments
-                .iter()
-                .map(|f| f.value_blocks.iter().map(instrs).sum::<usize>())
-                .sum::<usize>()
+    /// Read a whole block of delayed samples into `out` (delay 0).
+    pub(crate) fn read_block(&self, out: &mut [T]) {
+        self.0.read_block(0, out);
     }
 
-    /// Release this tick's per-tick value registers.
+    /// Write a whole block into the ring buffer and advance the head.
+    pub(crate) fn write_block(&mut self, input: &[T]) {
+        self.0.write_block(input);
+    }
+
+    /// Zero the ring and reset the head.
+    pub(crate) fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Build a single runtime built-in instance for `bi`, resolving the factory
+/// from the world's FFI [`ForeignRegistry`](crate::ffi::ForeignRegistry).
+///
+/// The runtime `BuiltinInst` variant is selected by the registered FACTORY KIND,
+/// not by the signal arity: a `Block` factory builds the `Block` variant even
+/// for a multi-channel arity — the interpreter's interleaved `Block` path serves
+/// those channels. Selecting by arity instead routed a multi-channel `Block`
+/// factory into `build_multichannel_block`, which has no matching variant and
+/// `.expect` panics.
+fn build_builtin<T: Transcendental>(
+    bi: &BuiltinInstance,
+    foreign: Option<&crate::ffi::ForeignRegistry<T>>,
+    tapes: &[SharedCell<T>],
+    sample_rate: f32,
+    allocator: Option<&mut BufferAllocator<T>>,
+) -> Result<BuiltinInst<T>, CompileError> {
+    let kind = foreign.and_then(|f| f.kind(&bi.name));
+    // A resource factory resolves its shared cell by tape index (the
+    // `tape_loop` path); a built-in carrying a resource binding is routed to
+    // the resource branch as well.
+    let ffi_is_resource = bi.tape_index.is_some()
+        || kind.is_some_and(|k| {
+            matches!(
+                k,
+                BuiltinFactoryKind::ResourceBlock | BuiltinFactoryKind::ResourceMultichannelBlock
+            )
+        });
+    let resolve_tape = |bi: &BuiltinInstance| -> Result<
+        (
+            rill_core::buffer::SharedWriter<T>,
+            rill_core::buffer::SharedReader<T>,
+        ),
+        CompileError,
+    > {
+        // A name-based resource binding (`bi.resource = Some(name)`) has no
+        // external registry: the DSL resolves tapes by index
+        // (`tape = tape_loop <capacity>`), so the name references a tape that
+        // was never declared. Report the real cause instead of the index-based
+        // fallthrough error.
+        if let Some(name) = &bi.resource {
+            return Err(CompileError::Unsupported(format!(
+                "built-in '{}' references undeclared resource '{}' (declare it with `tape = tape_loop <capacity>`)",
+                bi.name, name
+            )));
+        }
+        let idx = bi.tape_index.ok_or_else(|| {
+            CompileError::Unsupported(format!(
+                "built-in '{}' is registered as resource-backed but carries no tape index",
+                bi.name
+            ))
+        })?;
+        let cell = tapes.get(idx).ok_or_else(|| {
+            CompileError::Unsupported(format!(
+                "built-in '{}' references tape index {idx}, but only {} tape(s) are declared",
+                bi.name,
+                tapes.len()
+            ))
+        })?;
+        Ok((cell.writer(), cell.reader()))
+    };
+    match kind {
+        Some(
+            BuiltinFactoryKind::MultichannelBlock | BuiltinFactoryKind::ResourceMultichannelBlock,
+        ) => {
+            let mut b: Box<dyn MultichannelBlockBuiltin<T>> = if let Some(ffi) = foreign {
+                if ffi_is_resource {
+                    let (w, r) = resolve_tape(bi)?;
+                    ffi.build_resource_multichannel_block(
+                        &bi.name,
+                        bi.signal_ins,
+                        &bi.params,
+                        sample_rate,
+                        w,
+                        r,
+                        allocator,
+                    )
+                    .ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "foreign resource built-in '{}' is not registered",
+                            bi.name
+                        ))
+                    })?
+                } else {
+                    ffi.build_multichannel_block(
+                        &bi.name,
+                        bi.signal_ins,
+                        &bi.params,
+                        sample_rate,
+                        allocator,
+                    )
+                    .ok_or_else(|| {
+                        CompileError::Unsupported(format!(
+                            "foreign built-in '{}' is not registered",
+                            bi.name
+                        ))
+                    })?
+                }
+            } else {
+                return Err(CompileError::Unsupported(format!(
+                    "unknown built-in '{}'",
+                    bi.name
+                )));
+            };
+            b.reset();
+            Ok(BuiltinInst::MultichannelBlock(b))
+        }
+        Some(BuiltinFactoryKind::Block | BuiltinFactoryKind::ResourceBlock) | None => {
+            let mut b: Box<dyn BlockBuiltin<T>> = if let Some(ffi) = foreign {
+                if ffi_is_resource {
+                    let (w, r) = resolve_tape(bi)?;
+                    ffi.build_resource_block(&bi.name, &bi.params, sample_rate, w, r, allocator)
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "foreign resource built-in '{}' is not registered",
+                                bi.name
+                            ))
+                        })?
+                } else {
+                    ffi.build_block(&bi.name, &bi.params, sample_rate, allocator)
+                        .ok_or_else(|| {
+                            CompileError::Unsupported(format!(
+                                "foreign built-in '{}' is not registered",
+                                bi.name
+                            ))
+                        })?
+                }
+            } else {
+                return Err(CompileError::Unsupported(format!(
+                    "unknown built-in '{}'",
+                    bi.name
+                )));
+            };
+            Algorithm::init(b.as_mut(), sample_rate);
+            Ok(BuiltinInst::Block(b))
+        }
+    }
+}
+
+impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
+    /// Swap the double-buffered block feedback state at the end of a tick.
+    pub(crate) fn swap_block_state(&mut self) {
+        std::mem::swap(&mut self.block_state, &mut self.block_state_next);
+        for b in &mut self.block_state_next {
+            b.fill(T::ZERO);
+        }
+    }
+
+    /// Release this run's per-run value registers.
     ///
-    /// Value registers are per-tick scratch: every occupied register holds a
-    /// counted arena ref that must be released before the next tick (otherwise
-    /// a multi-tick value program leaks one slot per register per tick and
-    /// exhausts the fixed arena). Called at the very end of a tick, after the
-    /// value outputs have been read. Only the program's own registers
-    /// (`0..ir.num_value_regs`) are cleared — the pre-allocated call scratch
-    /// is drained by `run_call` on every dispatch return, so its slots are
+    /// Value registers are per-run scratch: every occupied register holds a
+    /// counted arena ref that must be released before the next run (otherwise
+    /// a repeated-run value program leaks one slot per register per run and
+    /// exhausts the fixed arena). Called at the very end of a run, after the
+    /// result has been captured into `main`. Only the program's own registers
+    /// (`0..num_value_regs`) are cleared — the pre-allocated call scratch is
+    /// drained by `run_call` on every dispatch return, so its slots are
     /// already `None`.
-    pub(crate) fn clear_value_regs(&mut self) {
+    pub(crate) fn clear_value_regs(&mut self, num_value_regs: usize) {
         debug_assert!(
-            self.value_regs_top == self.ir.num_value_regs,
-            "call scratch watermark not unwound at tick end"
+            self.value_regs_top == num_value_regs,
+            "call scratch watermark not unwound at run end"
         );
-        for r in self.value_regs.iter_mut().take(self.ir.num_value_regs) {
+        for r in self.value_regs.iter_mut().take(num_value_regs) {
             if let Some(r) = r.take() {
                 self.arena.drop_ref(r);
             }
         }
     }
 
-    /// Index of a named parameter, if present.
-    pub fn param_index(&self, name: &str) -> Option<usize> {
-        self.params_meta.iter().position(|p| p.name == name)
-    }
-
-    /// Set a parameter by index. RT-safe (plain store).
+    /// Set a parameter by name. RT-safe for a declared name: an in-place map
+    /// write plus a dirty flag.
     ///
-    /// The `params` store is kept in sync for readback (`param`) and for
-    /// pushing dynamic built-in parameter bindings. `main`'s λ-parameters are
-    /// launch arguments, not parameters: bind them with
-    /// [`set_main_arg`](Self::set_main_arg).
-    pub fn set_param(&mut self, idx: usize, value: ParamValue) {
-        if let Some(def) = self.params_meta.get(idx) {
-            let clamped = match &value {
-                ParamValue::Float(v) => {
-                    ParamValue::Float((*v as f64).clamp(def.min, def.max) as f32)
-                }
-                ParamValue::Int(v) if *v as f64 >= def.min && (*v as f64) <= def.max => value,
-                _ => value,
+    /// The value is clamped against the parameter's seated declaration range
+    /// (`Float` and `Int` alike); an undeclared name is stored as-is.
+    /// `"sample_rate"` is the world's
+    /// [`Params::sample_rate`](rill_core::Params::sample_rate) field, not a
+    /// named map entry.
+    ///
+    /// **Allocation:** the only allocating case is an *undeclared* name, whose
+    /// key is not in the map yet (it needs a fresh `String` and may grow the
+    /// map). Every declared name was pre-seeded by the seat, so the live
+    /// parameter path — which only ever addresses declared names — rewrites the
+    /// existing entry in place.
+    pub fn set_param(&mut self, name: &str, value: ParamValue) {
+        if name == SAMPLE_RATE_PARAM {
+            let rate = match &value {
+                ParamValue::Float(v) => *v as f64,
+                ParamValue::Int(v) => *v as f64,
+                _ => return,
             };
-            self.params[idx] = clamped.clone();
-            if let Some(d) = self.params_dirty.get_mut(idx) {
-                *d = true;
+            self.params.sample_rate = rate as f32;
+            if let Some(&idx) = self.param_names.get(name) {
+                if let Some(dirty) = self.params_dirty.get_mut(idx) {
+                    *dirty = true;
+                }
             }
+            return;
         }
-    }
-
-    /// Bind one of `main`'s String λ-parameters (`cell` = its position).
-    ///
-    /// The persistent main cell holds the String directly: the previous slot is
-    /// released first and the fresh `String` slot is allocated into the freed
-    /// slot (the arena free-list reuses it immediately), so the cell's footprint
-    /// stays at exactly one slot and the build-time capacity bound holds. An
-    /// out-of-range cell index is a no-op (the source has no such parameter).
-    pub fn set_main_arg(&mut self, cell: usize, value: &str) {
-        if let Some(slot) = self.main_cells.get_mut(cell) {
-            if let Some(old) = slot.take() {
-                self.arena.drop_ref(old);
-            }
-            *slot = self
-                .arena
-                .alloc(crate::arena::Value::String(value.to_string()))
-                .ok();
-        }
-    }
-
-    /// Number of `main` λ-parameters (the String launch arguments).
-    pub fn num_main_args(&self) -> usize {
-        self.main_cells.len()
-    }
-
-    /// Replace the console input (`stdin`) lines and rewind the stream cursor.
-    ///
-    /// The runner's captured console realizes the program's stdio, so the
-    /// caller supplies the finite, line-oriented input that `read stdin`
-    /// yields; after the lines are drained the stream reports EOF. Pushback
-    /// entries left over from an earlier run are released (the stream keeps its
-    /// `unread` stack across runs otherwise).
-    pub(crate) fn inject_stdin(&mut self, lines: &[String]) {
-        let mut stale = Vec::new();
+        let clamped = match self
+            .param_names
+            .get(name)
+            .and_then(|&i| self.params_meta.get(i))
         {
-            let mut world = self.world.borrow_mut();
-            let slot = (STDIN_HANDLE & !STREAM_HANDLE_TAG) as usize;
-            if let Some(StreamHandle::Stdin {
-                lines: injected,
-                pos,
-                pushback,
-            }) = world.streams.get_mut(slot)
-            {
-                injected.clear();
-                injected.extend(lines.iter().cloned());
-                *pos = 0;
-                stale.append(pushback);
+            Some(def) => clamp_param_value(def, value),
+            None => value,
+        };
+        match self.params.parameters.get_mut(name) {
+            Some(slot) => *slot = clamped,
+            // Every declared name is seeded by `fill_layout`, so a miss is
+            // necessarily an undeclared name: insert it (the allocating case).
+            None => {
+                self.params.parameters.insert(name.to_string(), clamped);
             }
         }
-        for r in stale {
-            self.arena.drop_ref(r);
+        if let Some(&idx) = self.param_names.get(name) {
+            if let Some(dirty) = self.params_dirty.get_mut(idx) {
+                *dirty = true;
+            }
         }
     }
 
-    /// Current value of a parameter by index.
-    pub fn param(&self, idx: usize) -> ParamValue {
+    /// Current value of a parameter by name.
+    ///
+    /// `"sample_rate"` always resolves to the world's rate field; every other
+    /// name is looked up in the named map, so an undeclared name is `None`.
+    pub fn param(&self, name: &str) -> Option<ParamValue> {
+        if name == SAMPLE_RATE_PARAM {
+            return Some(ParamValue::Float(self.params.sample_rate));
+        }
+        self.params.parameters.get(name).cloned()
+    }
+
+    /// The runtime value of a parameter declared in the IR, resolved **by
+    /// name**: `"sample_rate"` reads [`Params::sample_rate`], everything else
+    /// the named map (an absent entry reads as `Float(0.0)`, the historical
+    /// unset-parameter default).
+    pub(crate) fn param_value(&self, name: &str) -> ParamValue {
+        if name == SAMPLE_RATE_PARAM {
+            return ParamValue::Float(self.params.sample_rate);
+        }
         self.params
-            .get(idx)
+            .parameters
+            .get(name)
             .cloned()
             .unwrap_or(ParamValue::Float(0.0))
     }
@@ -921,13 +941,43 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         &self.params_meta
     }
 
-    /// Value outputs of the last processed tick, one per value output channel.
+    /// Replace the console input (`stdin`) lines and rewind the stream cursor.
     ///
-    /// Each entry is a counted arena ref (an independent owner of the slot): it
-    /// survives until the next `process` tick, after which it is replaced. An
-    /// empty value-output program (signal-only `main`) yields an empty slice.
-    pub fn value_outputs(&self) -> &[Option<crate::arena::ArenaRef>] {
-        &self.value_outputs
+    /// The runner's captured console realizes the program's stdio, so the
+    /// caller supplies the finite, line-oriented input that `read stdin`
+    /// yields; after the lines are drained the stream reports EOF. Pushback
+    /// entries left over from an earlier run are released (the stream keeps its
+    /// `unread` stack across runs otherwise).
+    pub fn inject_stdin(&mut self, lines: &[String]) {
+        let mut stale = Vec::new();
+        let slot = (STDIN_HANDLE & !STREAM_HANDLE_TAG) as usize;
+        if let Some(StreamHandle::Stdin {
+            lines: injected,
+            pos,
+            pushback,
+        }) = self.streams.get_mut(slot)
+        {
+            injected.clear();
+            injected.extend(lines.iter().cloned());
+            *pos = 0;
+            stale.append(pushback);
+        }
+        for r in stale {
+            self.arena.drop_ref(r);
+        }
+    }
+
+    /// The result of the program's most recent run: the terminal arena ref
+    /// captured by [`exec_entry`](crate::backend::interp::exec_entry) into
+    /// `main`.
+    ///
+    /// Each run replaces the previous run's terminal, so this is the latest
+    /// value-level result — the whole-buffer (`Value::Buffer`) forms are
+    /// inspected with [`copy_buffer`](Self::copy_buffer). Returns `None`
+    /// before the first run, after a re-seat, or when the run produced no
+    /// output register.
+    pub fn result(&self) -> Option<crate::arena::ArenaRef> {
+        self.main
     }
 
     /// Access to the value arena, for inspecting output values (tests, tooling).
@@ -935,8 +985,17 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         &self.arena
     }
 
-    /// Forward initialisation to all built-in instances.
-    pub fn init(&mut self, sample_rate: f32) {
+    /// Forward initialisation to all single-channel block built-in instances
+    /// at the world's current
+    /// [`params.sample_rate`](rill_core::Params::sample_rate).
+    ///
+    /// `BuiltinInst::MultichannelBlock` has no `init` hook, so a
+    /// multichannel built-in keeps whatever state it was built with.
+    ///
+    /// The seat already initialises every block built-in, so this is only
+    /// needed to re-initialise after the host changed the rate.
+    pub fn init(&mut self) {
+        let sample_rate = self.params.sample_rate;
         for b in &mut self.builtins {
             match b {
                 BuiltinInst::Block(inst) => Algorithm::init(inst.as_mut(), sample_rate),
@@ -945,33 +1004,13 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         }
     }
 
-    /// Run one whole-buffer value tick.
+    /// Copy the samples of a whole-buffer run result into `dst`.
     ///
-    /// This is the retained pure-value execution path: it evaluates the
-    /// program's value track for a full [`BUF`]-sample tick, applies the
-    /// block-feedback swap, and republishes [`value_outputs`](Self::value_outputs).
-    /// No external signal buffers are read or written — a whole-buffer
-    /// (`Value::Buffer`) output is inspected with
-    /// [`copy_output_samples`](Self::copy_output_samples).
-    ///
-    /// A latched value-track error (a collection/arena capacity overflow, a
-    /// stream fault) is returned as a [`ProcessError`] after the tick-end
-    /// cleanup, so a repeatedly failing program cannot leak the arena.
-    pub fn run_value(&mut self) -> Result<(), ProcessError> {
-        crate::backend::interp::run_value_tick(self)
-    }
-
-    /// Copy the samples of value output `i` into `dst` when that output is a
-    /// whole-buffer value.
-    ///
-    /// Returns `true` when `dst` was filled (up to `dst.len()` or the tick
-    /// length, whichever is smaller); `false` when the output is not a buffer
-    /// (a scalar/list/record value) or `i` is out of range. Intended for tests
+    /// Returns `true` when `dst` was filled (up to `dst.len()` or the run
+    /// length, whichever is smaller); `false` when `r` is not a buffer value
+    /// (a scalar/list/record value) or its buffer is gone. Intended for tests
     /// and tooling that inspect the retained buffer path.
-    pub fn copy_output_samples(&self, i: usize, dst: &mut [T]) -> bool {
-        let Some(Some(r)) = self.value_outputs.get(i).copied() else {
-            return false;
-        };
+    pub fn copy_buffer(&self, r: crate::arena::ArenaRef, dst: &mut [T]) -> bool {
         let Some(Value::Buffer(idx)) = self.arena.get(r) else {
             return false;
         };
@@ -983,13 +1022,22 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
         true
     }
 
-    /// Reset the program to its initial state.
+    /// Reset the world to its initial state.
     ///
     /// Clears the signal state (feedback slots, delay lines), re-initialises
     /// every built-in instance, and releases the value-track state (value
     /// state slots, per-tick registers, outputs, capture cells, deferred
     /// drops) so a mid-lifetime reset cannot exhaust the fixed arena.
-    pub fn reset(&mut self) {
+    ///
+    /// `num_value_regs` is [`Ir::num_value_regs`]: it is the watermark the
+    /// per-tick register store returns to after the value-track state is
+    /// released.
+    ///
+    /// Kept `pub` rather than crate-private because it is the world's reset
+    /// capability (its only in-workspace caller is the world's own test
+    /// suite); a host-facing reset would more naturally take `&Ir` and read the
+    /// register count itself.
+    pub fn reset(&mut self, num_value_regs: usize) {
         for b in &mut self.block_state {
             b.fill(T::ZERO);
         }
@@ -1021,11 +1069,8 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             }
             *r = None;
         }
-        for r in &mut self.value_outputs {
-            if let Some(r) = r {
-                self.arena.drop_ref(*r);
-            }
-            *r = None;
+        if let Some(r) = self.main.take() {
+            self.arena.drop_ref(r);
         }
         for frame in &mut self.cell_stack {
             for (_, r) in frame {
@@ -1033,7 +1078,7 @@ impl<T: Transcendental, const BUF: usize> RillProgram<T, BUF> {
             }
         }
         self.cell_stack.clear();
-        self.value_regs_top = self.ir.num_value_regs;
+        self.value_regs_top = num_value_regs;
         // The shared fragment-capture cells and deferred-drop scratch are
         // drained by every dispatch, but reset must still empty them (a reset
         // mid-dispatch is impossible — a single dispatcher runs the track — yet
@@ -1063,13 +1108,13 @@ mod program_value_tests {
             state: StateLayout::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks: Vec::new(),
             value_entry: 0,
             num_value_regs: 0,
-            value_output_regs: Vec::new(),
+            result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
@@ -1080,9 +1125,184 @@ mod program_value_tests {
             input_buffers: Vec::new(),
             tapes: Vec::new(),
         };
-        let prog = RillProgram::<f32, 256>::new(ir);
-        assert_eq!(prog.arena.capacity(), 4);
-        assert_eq!(prog.value_state.len(), 2);
+        let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+        world.seat(&ir).expect("seat");
+        assert_eq!(world.arena.capacity(), 4);
+        assert_eq!(world.value_state.len(), 2);
+    }
+
+    #[test]
+    fn seat_marks_a_preseeded_param_pending_for_the_builtin_push() {
+        // A value supplied BEFORE the seat must reach a built-in bound to that
+        // parameter: the built-in is constructed from the IR defaults, so the
+        // seat marks every pre-supplied parameter dirty and the next run pushes
+        // it (`push_builtin_params`). Without this, a pre-seeded world would
+        // read the new value through `?name` but the bound built-in would keep
+        // its constructed default.
+        let ir = Ir {
+            main_io_unit: false,
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: vec![ParamDef {
+                name: "level".to_string(),
+                default: 0.0,
+                min: f64::NEG_INFINITY,
+                max: f64::INFINITY,
+            }],
+            value_blocks: Vec::new(),
+            value_entry: 0,
+            num_value_regs: 0,
+            result_reg: 0,
+            value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            array_hole_frag: None,
+            max_call_regs: 0,
+            value_state: ValueLayout {
+                capacity: 4,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+        };
+        let mut preseeded = WorldState::<f32, 256>::new(WorldConfig {
+            params: rill_core::Params::new(44_100.0),
+            ..WorldConfig::default()
+        });
+        preseeded.set_param("level", ParamValue::Float(0.5));
+        preseeded.seat(&ir).expect("seat");
+        assert_eq!(preseeded.param("level"), Some(ParamValue::Float(0.5)));
+        assert!(
+            preseeded.params_dirty[0],
+            "a pre-supplied value is an initial state and must be pushed"
+        );
+
+        let mut defaulted = WorldState::<f32, 256>::new(WorldConfig {
+            params: rill_core::Params::new(44_100.0),
+            ..WorldConfig::default()
+        });
+        defaulted.seat(&ir).expect("seat");
+        assert_eq!(defaulted.param("level"), Some(ParamValue::Float(0.0)));
+        assert!(
+            !defaulted.params_dirty[0],
+            "a seeded default already matches the built-in's construction"
+        );
+        assert_eq!(
+            defaulted.params.sample_rate, 44_100.0,
+            "the world's pre-seeded rate survives the seat"
+        );
+    }
+
+    #[test]
+    fn set_param_clamps_to_the_declared_range() {
+        let ir = Ir {
+            main_io_unit: false,
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: vec![ParamDef {
+                name: "cutoff".to_string(),
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+            }],
+            value_blocks: Vec::new(),
+            value_entry: 0,
+            num_value_regs: 0,
+            result_reg: 0,
+            value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            array_hole_frag: None,
+            max_call_regs: 0,
+            value_state: ValueLayout {
+                capacity: 4,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+        };
+        let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+        world.seat(&ir).expect("seat");
+
+        world.set_param("cutoff", ParamValue::Float(9.0));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Float(2.0)));
+        world.set_param("cutoff", ParamValue::Float(-9.0));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Float(0.0)));
+        // Integers are clamped too: an out-of-range `Int` must not slip past
+        // the range, while an in-range one keeps its variant and value.
+        world.set_param("cutoff", ParamValue::Int(9));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Int(2)));
+        world.set_param("cutoff", ParamValue::Int(-9));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Int(0)));
+        world.set_param("cutoff", ParamValue::Int(1));
+        assert_eq!(world.param("cutoff"), Some(ParamValue::Int(1)));
+        // An undeclared name is stored as-is (no declaration to clamp against).
+        world.set_param("other", ParamValue::Float(9.0));
+        assert_eq!(world.param("other"), Some(ParamValue::Float(9.0)));
+    }
+
+    #[test]
+    fn seat_clamps_a_preseeded_param_to_the_declared_range() {
+        // A value supplied before the seat cannot be clamped — the declaration
+        // is not known yet — so `fill_layout` applies the clamp when it meets
+        // the caller's entry. An in-range pre-seed is the identity and stays
+        // untouched; an out-of-range one is pulled into the declared range.
+        let ir = Ir {
+            main_io_unit: false,
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: vec![ParamDef {
+                name: "level".to_string(),
+                default: 1.0,
+                min: 0.0,
+                max: 2.0,
+            }],
+            value_blocks: Vec::new(),
+            value_entry: 0,
+            num_value_regs: 0,
+            result_reg: 0,
+            value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            array_hole_frag: None,
+            max_call_regs: 0,
+            value_state: ValueLayout {
+                capacity: 4,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+        };
+        let mut out_of_range = WorldState::<f32, 256>::new(WorldConfig::default());
+        out_of_range.set_param("level", ParamValue::Float(9.0));
+        out_of_range.seat(&ir).expect("seat");
+        assert_eq!(
+            out_of_range.param("level"),
+            Some(ParamValue::Float(2.0)),
+            "the seated declaration range applies to a pre-seat value"
+        );
+        assert!(
+            out_of_range.params_dirty[0],
+            "a clamped pre-supplied value is still an initial state and must be pushed"
+        );
+
+        let mut in_range = WorldState::<f32, 256>::new(WorldConfig::default());
+        in_range.set_param("level", ParamValue::Float(0.25));
+        in_range.seat(&ir).expect("seat");
+        assert_eq!(
+            in_range.param("level"),
+            Some(ParamValue::Float(0.25)),
+            "clamping an in-range pre-seed is the identity"
+        );
     }
 
     #[test]
@@ -1094,13 +1314,13 @@ mod program_value_tests {
             state: StateLayout::default(),
             builtins: Vec::new(),
             params: Vec::new(),
-            num_main_cells: 0,
             value_blocks: Vec::new(),
             value_entry: 0,
             num_value_regs: 0,
-            value_output_regs: Vec::new(),
+            result_reg: 0,
             value_funcs: Vec::new(),
             fragments: Vec::new(),
+            array_hole_frag: None,
             max_call_regs: 0,
             value_state: ValueLayout {
                 capacity: 4,
@@ -1111,19 +1331,20 @@ mod program_value_tests {
             input_buffers: Vec::new(),
             tapes: Vec::new(),
         };
-        let mut prog = RillProgram::<f32, 256>::new(ir);
+        let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
+        world.seat(&ir).expect("seat");
         // Three counted refs to the same value: one per value-state slot,
         // value register, and cell-stack frame.
-        let r = prog.arena.alloc(crate::arena::Value::Int(1)).unwrap();
-        prog.value_state[0] = Some(r);
-        let r2 = prog.arena.copy(r).unwrap();
-        prog.value_regs.push(Some(r2));
-        let r3 = prog.arena.copy(r).unwrap();
-        prog.cell_stack.push(vec![(0, r3)]);
-        prog.reset();
-        assert_eq!(prog.value_state[0], None);
-        assert_eq!(prog.value_regs[0], None);
-        assert_eq!(prog.cell_stack.len(), 0);
-        assert_eq!(prog.arena.rc(r), 0, "all refs dropped, slot freed");
+        let r = world.arena.alloc(crate::arena::Value::Int(1)).unwrap();
+        world.value_state[0] = Some(r);
+        let r2 = world.arena.copy(r).unwrap();
+        world.value_regs.push(Some(r2));
+        let r3 = world.arena.copy(r).unwrap();
+        world.cell_stack.push(vec![(0, r3)]);
+        world.reset(ir.num_value_regs);
+        assert_eq!(world.value_state[0], None);
+        assert_eq!(world.value_regs[0], None);
+        assert_eq!(world.cell_stack.len(), 0);
+        assert_eq!(world.arena.rc(r), 0, "all refs dropped, slot freed");
     }
 }

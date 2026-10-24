@@ -33,13 +33,13 @@
 In `ty.rs` `CATEGORY_PRELUDE`:
 ```haskell
 data World;                                  -- primitive opaque token
-data IO a = fn w -> Pair a w;                -- State: World -> (a, World)
+data IO a = \w -> Pair a w;                -- State: World -> (a, World)
 ```
 `Monad IO`:
 ```haskell
 instance Monad IO where {
-    return x = fn w -> Pair { first: x, second: w };
-    bind m f = fn w -> let p = m w in (f p.first) p.second;
+    return x = \w -> Pair { first: x, second: w };
+    bind m f = \w -> let p = m w in (f p.first) p.second;
 };
 ```
 `World` has no constructors, no fields, no pattern-matching arms — only the

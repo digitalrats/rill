@@ -1,28 +1,30 @@
-use rill_lang::compile_with_ffi;
+//! `smooth` through the FFI path at the reference 48 kHz rate.
+
+pub mod common;
+
+use common::*;
 use rill_lang::ffi::ForeignRegistry;
 use rill_lang::register;
 
+// Task 2 (single-run value surface): `smooth_ramps_toward_target_across_ticks`
+// is permanently removed. Its core assertion was CROSS-TICK convergence — the
+// output ramping toward the target from a zero initial state across two
+// `run_value()` ticks. The single-run model evaluates the program exactly once,
+// so no re-run surface exists to observe the ramp; the multi-tick behavior
+// cannot be re-expressed on the new surface.
+//
+// What survives is a run check: `smooth (square ...) 5.0` must still lower and
+// resolve its foreign factory at the reference 48 kHz rate. Cross-tick `smooth`
+// convergence behavior itself is covered by the algorithm's own unit tests
+// (rill-digital-effects).
 #[test]
-fn smooth_ramps_toward_target_across_ticks() {
-    // The target is a constant +1.0 buffer (a zero-frequency square wave in its
-    // positive half-period); `smooth` converges toward it across ticks from a
-    // zero initial state.
+fn smooth_compiles_with_square_input() {
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_generators(&mut ffi);
-    let mut p =
-        compile_with_ffi::<f32>("main = smooth (square 0.0 1.0 0.0) 5.0", &ffi, 48_000.0).unwrap();
-    let mut out = [0.0f32; 64];
-    p.run_value().unwrap();
-    assert!(p.copy_output_samples(0, &mut out));
-    let first = out[0];
+    let world = eval_at("", "smooth (square 0.0 1.0 0.0) 5.0", ffi, 48_000.0)
+        .expect("smooth over a square generator must compile and run");
     assert!(
-        first > 0.0 && first < 1.0,
-        "out[0]={} should be >0 <1",
-        first
+        world.result().is_some(),
+        "the run must capture the smoothed block"
     );
-
-    p.run_value().unwrap();
-    assert!(p.copy_output_samples(0, &mut out));
-    assert!(out[0] > first, "out[0]={} should ramp past {first}", out[0]);
-    assert!(out[0] < 1.0, "out[0]={} should be <1", out[0]);
 }

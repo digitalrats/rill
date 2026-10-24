@@ -1,12 +1,20 @@
 //! Runtime `match`: dispatch on non-static scrutinees, literal/wildcard/var
 //! patterns, nested patterns, and guards.
+pub mod common;
 
-use rill_lang::compile;
+use common::*;
+use rill_lang::compile_eval;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
 
 fn run_float(src: &str) -> f64 {
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
+    let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::Float(f) => *f,
         rill_lang::arena::Value::Int(i) => *i as f64,
@@ -86,8 +94,10 @@ fn guarded_arm_without_unguarded_fallback_is_compile_error() {
     // A guarded arm does not satisfy compile-time totality (spec §4.3): the
     // `Just` arm is guarded, `Nothing` is unguarded, and there is no wildcard
     // — the match is non-exhaustive and must NOT compile.
-    assert!(compile::<f32>(
+    assert!(compile_eval::<f32, 256>(
         r"main = case Just 5.0 of { Just x | x > 10.0 -> 1.0; Nothing -> 2.0; };",
+        "main",
+        Mode::Strict
     )
     .is_err());
 }
@@ -101,26 +111,9 @@ fn guarded_arm_without_unguarded_fallback_is_compile_error() {
 // compile time (totality). The runtime "match on an unbound cell errors" path
 // depended on the wire cell, so it cannot be expressed anymore.
 
-#[test]
-fn match_over_sum_param_switches_with_setparameter() {
-    // The scrutinee is a runtime `if` (driven by SetParameter), and the outer
-    // match dispatches on the runtime constructor each tick.
-    let mut prog = compile::<f32>(
-        r"main = case (if ?g > 0.5 then Just 1.0 else Nothing) of { Just x -> x; Nothing -> 0.0; };",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
-    assert_eq!(
-        prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(0.0)
-    );
-    let idx = prog.param_index("g").unwrap();
-    prog.set_param(idx, rill_core::traits::ParamValue::Float(1.0));
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
-    assert_eq!(
-        prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
-    );
-}
+// Deleted with the re-run surface:
+// `match_over_sum_param_switches_with_setparameter` asserted a runtime match
+// whose scrutinee was switched by SetParameter (`?g`) between ticks — the
+// single-run value model cannot inject a named parameter into its one run, so
+// the cross-tick switching it exercised is no longer testable. The same match
+// with a STATIC scrutinee is covered by `runtime_match_on_head_of_filter`.

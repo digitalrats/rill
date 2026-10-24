@@ -204,7 +204,7 @@ main = _;
 
 Also add the record/data types the record-param builtins need (mixer/eq/dry_wet) — these are in `SIGNAL_PRELUDE` or the catalog (they are `data` declarations, so they go through the `data_types` registration path):
 
-```rill
+```haskell
 // in the same catalog (parsed as `Def::Data` too):
 data MixerConfig = { buses: Int, master_vol: Float };
 data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };
@@ -254,7 +254,7 @@ git commit -m 'feat(rill-lang): inline builtin foreign catalog auto-registered i
 
 **Problem.** Legacy programs call signal-input builtins combinatorially — the signal wire is fed through `:`, `~`, `,`, `<:`, `:>` rather than as a positional FFI arg:
 
-```rill
+```haskell
 main = _ : onepole 200.0 0.7;      // legacy: Apply("onepole",[200.0,0.7]) as a 1→1 arrow
 main = + ~ onepole 500.0 0.5;      // feedback
 ```
@@ -301,7 +301,7 @@ Expected: FAIL — `onepole` is not declared (`unknown identifier`) or an arity 
 
 Extend `BUILTIN_FOREIGN_DECLS` (from Task 3) with the signal-input builtins, each verified against the real registration file:
 
-```rill
+```haskell
 foreign fn integrator : FixedBuffer f32 -> FixedBuffer f32;
 foreign fn leaky_integrator : FixedBuffer f32 -> Float -> FixedBuffer f32;
 foreign fn onepole : FixedBuffer f32 -> Float -> Float -> FixedBuffer f32;
@@ -640,7 +640,7 @@ Commit: `git add -A && git commit -m 'refactor: delete dead crates (rill-analog-
 
 - [ ] **Step 1: Add `Tape` to SIGNAL_PRELUDE**
 
-```rill
+```haskell
 data Tape a = { };              // or a marker record — decides how Tape is constructed
 instance Buffer (Tape f32);
 ```

@@ -21,14 +21,15 @@ pub(crate) fn pattern_vars(p: &Pattern) -> Vec<String> {
                 out.extend(pattern_vars(a));
             }
         }
+        Pattern::Bang(inner) => out.extend(pattern_vars(inner)),
         _ => {}
     }
     out
 }
 
-/// The body of a match arm that is usable as a plain `pattern => body` arm.
+/// The body of a match arm that is usable as a plain `pattern -> body` arm.
 /// Returns `Some(body)` when the arm is bare (its single alternative carries the
-/// trivial `true` guard), and `None` when the arm is guarded (`pattern | g =>
+/// trivial `true` guard), and `None` when the arm is guarded (`pattern | g ->
 /// body`) — a guarded body runs only when its guard succeeds at runtime, so it
 /// has no statically-usable unguarded form.
 pub(crate) fn unguarded_arm_body(arm: &MatchArm) -> Option<&Expr> {
@@ -208,6 +209,7 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
             body,
             where_defs,
             sig,
+            bang,
             span,
         } => Def::Eval {
             name: name.clone(),
@@ -218,6 +220,7 @@ fn substitute_def(def: &Def, subst: &HashMap<String, Expr>) -> Def {
                 .map(|w| substitute_def(w, subst))
                 .collect(),
             sig: sig.clone(),
+            bang: *bang,
             span: *span,
         },
         other => other.clone(),
@@ -251,27 +254,62 @@ fn is_closure_def(ctx: &HashMap<String, Def>, name: &str, seen: &mut HashSet<Str
     }
 }
 
+/// Whether `def` is a class-constrained definition (`mk :: Ix i => …`).
+///
+/// Such a definition has no standalone body: lowering specializes it per CALL
+/// SITE, where the argument types solve the class variable. Inlining or
+/// β-reducing it here would drop the class dispatch and lower the deferred body
+/// against an unsolved variable.
+fn is_constrained_def(def: &Def) -> bool {
+    def.sig().is_some_and(|s| s.is_constrained())
+}
+
+/// Whether any of `def`'s parameters is a BANG parameter (`f !x = …`).
+///
+/// The parser curries a multi-parameter definition into a λ-nest and CLEARS its
+/// parameter list, so for `f !x y = …` the flags live on the body's leading λs;
+/// only a single-parameter definition keeps them in `params`.
+fn has_bang_param(def: &Def) -> bool {
+    if def.params().iter().any(|p| p.bang) {
+        return true;
+    }
+    let mut body = def.body();
+    while let Expr::Lambda {
+        params,
+        body: inner,
+        ..
+    } = body
+    {
+        if params.iter().any(|p| p.bang) {
+            return true;
+        }
+        body = inner;
+    }
+    false
+}
+
 /// Resolve a unary β-reduct: the (definition name, parameter name, body) of a
 /// function-valued callee that can be reduced by substituting one argument.
 ///
 /// A syntactic lambda is reducible; so is a reference to a niladic definition
 /// whose body is a lambda — a curried definition (`twice = \f -> \x -> f (f x)`)
 /// after the parser's currying pass emptied its parameter list. CAFs (shared
-/// closed definitions) and non-lambda definitions are not reducible here.
+/// closed definitions), class-constrained definitions, and non-lambda
+/// definitions are not reducible here.
 fn unary_reduct<'a>(
     callee: &'a Expr,
     ctx: &'a HashMap<String, Def>,
     cafs: &HashSet<String>,
 ) -> Option<(Option<&'a str>, &'a str, &'a Expr)> {
     match callee {
-        Expr::Lambda { params, body, .. } if params.len() == 1 => {
+        Expr::Lambda { params, body, .. } if params.len() == 1 && !params[0].bang => {
             Some((None, params[0].name.as_str(), body.as_ref()))
         }
         Expr::Ref(name, _) if !cafs.contains(name) => {
             let def = ctx.get(name.as_str())?;
-            if def.params().is_empty() && !def.is_decl() {
+            if def.params().is_empty() && !def.is_decl() && !is_constrained_def(def) {
                 if let Expr::Lambda { params, body, .. } = def.body() {
-                    if params.len() == 1 {
+                    if params.len() == 1 && !params[0].bang {
                         return Some((Some(name.as_str()), params[0].name.as_str(), body.as_ref()));
                     }
                 }
@@ -305,6 +343,7 @@ fn reduce_def(
             name,
             params,
             sig,
+            bang,
             span,
             ..
         } => Def::Eval {
@@ -313,6 +352,7 @@ fn reduce_def(
             body: reduced_body,
             where_defs: reduced_where,
             sig: sig.clone(),
+            bang: *bang,
             span: *span,
         },
         _ => def.clone(),
@@ -337,11 +377,26 @@ fn reduce_expr(
                 // lowering can lift it once instead of duplicating state here.
                 e.clone()
             } else if let Some(def) = ctx.get(name) {
-                if def.params().is_empty() && !def.is_decl() {
-                    // Local binding with no params — inline the body
+                if def.params().is_empty()
+                    && !def.is_decl()
+                    && !def.is_bang()
+                    && !is_constrained_def(def)
+                    && !has_bang_param(def)
+                {
+                    // Local binding with no params — inline the body. A bang
+                    // binding (`let !x = e`) is NOT inlined: its force happens
+                    // at the binding point, which only lowering can emit. A
+                    // class-constrained definition is not inlined either: it is
+                    // specialized at its call sites, where the class variable is
+                    // solved (see `lower::lower_constrained_apply`). A
+                    // definition with a bang parameter is not inlined for the
+                    // same reason `Expr::Apply` below leaves it alone — the
+                    // parser curries its parameters into λs and clears `params`,
+                    // so this guard is the only thing standing between
+                    // `f !x y = …` and a body lowered with defaulted types.
                     reduce_expr(def.body(), ctx, cafs, reducing, mode)
                 } else {
-                    // Has unapplied λ-params — can't inline, leave as ref
+                    // Has unapplied λ-params, or is a bang binding — leave as ref
                     e.clone()
                 }
             } else {
@@ -353,6 +408,16 @@ fn reduce_expr(
                 .iter()
                 .map(|a| reduce_expr(a, ctx, cafs, reducing, mode))
                 .collect();
+            // A class-constrained definition keeps its call: the class variable
+            // is solved at this call site during lowering, which β-substitutes
+            // the body with the parameter bindings in scope.
+            if ctx.get(name).is_some_and(is_constrained_def) {
+                return Expr::Apply {
+                    name: name.clone(),
+                    args: reduced_args,
+                    span: *span,
+                };
+            }
             // Closure-valued applications (`add2 = adder 2.0`) are runtime
             // dispatches on closure values: leave the Apply in place so
             // lowering emits a `ValueCallFunc`. β-reducing a closure body would
@@ -398,6 +463,19 @@ fn reduce_expr(
                     // keep the Apply so lowering emits a curry closure.
                     // β-reducing it would substitute the applied args and leave
                     // the remaining parameters dangling in the body.
+                    Expr::Apply {
+                        name: name.clone(),
+                        args: reduced_args,
+                        span: *span,
+                    }
+                } else if has_bang_param(def) {
+                    // A bang parameter forces its argument on entry. Inlining
+                    // the body would drop that force (the argument may be
+                    // unused in the body), so the call is left for lowering to
+                    // dispatch through the closure fragment — which is also the
+                    // only path that knows the definition's parameter types
+                    // (a bang parameter keeps its signature type instead of the
+                    // scalar default).
                     Expr::Apply {
                         name: name.clone(),
                         args: reduced_args,
@@ -502,18 +580,25 @@ fn reduce_expr(
                 span: *span,
             }
         }
-        Expr::Let {
-            defs,
-            body,
-            span: _,
-        } => {
+        Expr::Let { defs, body, span } => {
             // Reduce let defs, build context, reduce body
             let reduced_defs: Vec<Def> = defs
                 .iter()
                 .map(|d| reduce_def(d, ctx, cafs, reducing, mode))
                 .collect();
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
-            reduce_expr(body, &let_ctx, cafs, reducing, mode)
+            let reduced_body = reduce_expr(body, &let_ctx, cafs, reducing, mode);
+            if defs.iter().any(|d| d.is_bang()) {
+                // A bang binding forces its right-hand side at the binding
+                // point: keep the `let` node so lowering can emit the force.
+                Expr::Let {
+                    defs: reduced_defs,
+                    body: Box::new(reduced_body),
+                    span: *span,
+                }
+            } else {
+                reduced_body
+            }
         }
         Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,

@@ -155,7 +155,7 @@ is strict.** Placement:
   Strict mode: bind inline, force is identity.
 - **`case`/`match`** — see §6: bang arms route to runtime dispatch with a
   **per-arm** force (never match-top), matching GHC ordered-clause semantics:
-  `case bottom of { _ => 5 }` must still be 5 (a wildcard arm never forces).
+  `case bottom of { _ -> 5 }` must still be 5 (a wildcard arm never forces).
 - **Data ctors**: for strict fields, the argument register is forced before the
   constructor head is built — driven by `DataInfo`'s strictness bits (§2).
 
@@ -207,9 +207,9 @@ Nothing. `ValueForce` and `force()` already exist.
   `C 1 x` never forces a second time.
 - `f !x = body` (complete mode) — `body` runs with `x` already in WHNF; the
   thunk memo cell (if any) holds the forced head.
-- `case v of !p => body` — forcing happens **when that arm is reached**, before
+- `case v of !p -> body` — forcing happens **when that arm is reached**, before
   `p` is tested; other arms' evaluation order is unchanged.
-- `case v of Just !x => f x` — forces the payload after extraction.
+- `case v of Just !x -> f x` — forces the payload after extraction.
 - `let !x = e in body` — `e` is forced once at the `let`, the memoized head is
   shared by every use (call-by-need, just eager).
 - Strict mode: identical behavior with or without `!` everywhere.
@@ -223,7 +223,7 @@ Nothing. `ValueForce` and `force()` already exist.
   `ValueTy`; `DataInfo` carries the strictness bits.
 - Lowering: complete-mode `f !x` emits `ValueForce` before the body; `let !x`
   forces at bind; bang arms route to runtime dispatch with per-arm force
-  (`case bottom of { _ => 5 }` stays 5); strict ctor args are forced. Strict
+  (`case bottom of { _ -> 5 }` stays 5); strict ctor args are forced. Strict
   mode: `!` produces identically-behaving output to no `!`.
 - End-to-end: the existing lazy evaluation tests (`force_unforced_thunk_runs_and_memoizes`,
   `force_black_hole_is_bottom`, etc.) already cover the VM; add a compile→run

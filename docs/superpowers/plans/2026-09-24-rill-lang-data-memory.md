@@ -1219,7 +1219,7 @@ fn parses_type_and_newtype() {
 
 #[test]
 fn parses_match_expression() {
-    let p = prog("area x = match x of { Circle r => r; Rect w h => w; }; main = area");
+    let p = prog("area x = case x of { Circle r -> r; Rect w h -> w; }; main = area");
     let main = p.main_def().unwrap();
     assert!(matches!(main.body(), Expr::Match { .. }));
 }
@@ -1329,7 +1329,7 @@ KwTypeclass,
 KwInstance,
 /// `match` keyword.
 KwMatch,
-/// `of` keyword (in `match x of { .. }`).
+/// `of` keyword (in `case x of { .. }`).
 KwOf,
 ```
 
@@ -1435,7 +1435,7 @@ fn field_project_produces_float_value() {
 
 #[test]
 fn sum_match_branches_on_constructor() {
-    let t = ty_of("data Shape = Circle Float | Rect Float Float; main = match _ of { Circle r => r; Rect w h => w; }");
+    let t = ty_of("data Shape = Circle Float | Rect Float Float; main = case _ of { Circle r -> r; Rect w h -> w; }");
     assert_eq!(t.process_ty.outs[0].rate, Rate::Value);
     assert_eq!(t.process_ty.outs[0].vty, ValueTy::Float);
 }
@@ -1622,7 +1622,7 @@ use rill_core::traits::MultichannelAlgorithm;
 #[test]
 fn sum_match_runs() {
     let mut prog = compile::<f32>(
-        "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = match s of { Circle r => r; Rect w h => w; }",
+        "data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = case s of { Circle r -> r; Rect w h -> w; }",
     )
     .unwrap();
     let mut out = [0.0f32; 4];

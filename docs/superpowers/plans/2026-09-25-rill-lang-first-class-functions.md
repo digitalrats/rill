@@ -348,7 +348,7 @@ Add to `rill-lang/src/parser.rs`:
 ```rust
 #[test]
 fn parses_lambda_literal() {
-    let p = prog("double = fn x -> x * 2.0; main = double");
+    let p = prog("double = \\x -> x * 2.0; main = double");
     let main = p.main_def().unwrap();
     assert!(matches!(main.body(), Expr::Ref(name, _) if name == "double"));
     // double's body is a Lambda.
@@ -358,7 +358,7 @@ fn parses_lambda_literal() {
 
 #[test]
 fn parses_nested_lambda() {
-    let p = prog("adder = fn n -> fn x -> x + n; main = adder 2.0");
+    let p = prog("adder = \\n -> \\x -> x + n; main = adder 2.0");
     let d = p.defs.iter().find(|d| d.name() == "adder").unwrap();
     assert!(matches!(d.body(), Expr::Lambda { .. }));
 }
@@ -440,7 +440,7 @@ In `reduce.rs`, `substitute` must NOT inline inside a `Lambda` body's captured n
 
 - [ ] **Step 8: Render — round-trip**
 
-Add `Expr::Lambda` to `render.rs` so isomorphism tests pass: `fn p1 p2 -> body`.
+Add `Expr::Lambda` to `render.rs` so isomorphism tests pass: `\p1 p2 -> body`.
 
 - [ ] **Step 9: Run tests**
 
@@ -475,9 +475,9 @@ use rill_core::traits::MultichannelAlgorithm;
 
 #[test]
 fn lambda_captures_parent_param_by_value() {
-    // adder = fn n -> fn x -> x + n;  add2 = adder 2.0;  main = add2 3.0 -> 5.0
+    // adder = \n -> \x -> x + n;  add2 = adder 2.0;  main = add2 3.0 -> 5.0
     let mut prog = compile::<f32>(
-        "adder = fn n -> fn x -> x + n; add2 = adder 2.0; main = add2 3.0",
+        "adder = \\n -> \\x -> x + n; add2 = adder 2.0; main = add2 3.0",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -558,9 +558,9 @@ use rill_core::traits::MultichannelAlgorithm;
 
 #[test]
 fn currying_applies_partially() {
-    // add = fn a b -> a + b;  add3 = add 3.0;  main = add3 4.0 -> 7.0
+    // add = \a b -> a + b;  add3 = add 3.0;  main = add3 4.0 -> 7.0
     let mut prog = compile::<f32>(
-        "add = fn a b -> a + b; add3 = add 3.0; main = add3 4.0",
+        "add = \\a b -> a + b; add3 = add 3.0; main = add3 4.0",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -571,8 +571,8 @@ fn currying_applies_partially() {
 
 #[test]
 fn signal_wire_argument_scales_block() {
-    // amp = fn g x -> x * g;  main = amp 2.0 _  ->  input * 2.0  (block output)
-    let mut prog = compile::<f32>("amp = fn g x -> x * g; main = amp 2.0 _").unwrap();
+    // amp = \g x -> x * g;  main = amp 2.0 _  ->  input * 2.0  (block output)
+    let mut prog = compile::<f32>("amp = \\g x -> x * g; main = amp 2.0 _").unwrap();
     let mut out = [0.0f32; 4];
     MultichannelAlgorithm::process(&mut prog, &[&[1.0, 2.0, 3.0, 4.0]], &mut [&mut out]).unwrap();
     assert_eq!(out, [2.0, 4.0, 6.0, 8.0]);
@@ -632,9 +632,9 @@ use rill_core::traits::MultichannelAlgorithm;
 
 #[test]
 fn twice_applies_twice() {
-    // twice = fn f x -> f (f x);  double = fn x -> x * 2.0;  main = twice double 3.0 -> 12.0
+    // twice = \f x -> f (f x);  double = \x -> x * 2.0;  main = twice double 3.0 -> 12.0
     let mut prog = compile::<f32>(
-        "twice = fn f x -> f (f x); double = fn x -> x * 2.0; main = twice double 3.0",
+        "twice = \\f x -> f (f x); double = \\x -> x * 2.0; main = twice double 3.0",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -645,8 +645,8 @@ fn twice_applies_twice() {
 
 #[test]
 fn recursion_is_rejected() {
-    // f = fn x -> f x  -> compile error (acyclic contract)
-    let res = compile::<f32>("f = fn x -> f x; main = f 1.0");
+    // f = \x -> f x  -> compile error (acyclic contract)
+    let res = compile::<f32>("f = \\x -> f x; main = f 1.0");
     assert!(res.is_err());
 }
 ```

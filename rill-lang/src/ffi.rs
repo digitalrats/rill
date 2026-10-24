@@ -2,8 +2,9 @@
 //! builtins declared in the language (`foreign name : TypeExpr;`).
 //!
 //! The language owns the signature; this registry owns the implementation. A
-//! foreign call's `Instr::CallBlock` is resolved here at `RillProgram::build`
-//! when the name is not in the legacy rill-core `Registry<T>`.
+//! foreign call's `Instr::CallBlock` is resolved against
+//! [`WorldState::ffi`](crate::program::WorldState) when the world is seated for
+//! an IR (see [`WorldState::seat`](crate::program::WorldState::seat)).
 //!
 //! The runtime dispatches by [`crate::program::BuiltinInst`] variant: a `Block`
 //! builtin runs through `Algorithm::process`, a multichannel builtin through

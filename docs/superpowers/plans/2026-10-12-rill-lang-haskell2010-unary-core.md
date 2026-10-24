@@ -518,7 +518,7 @@ git commit -m 'feat(rill-lang): unary inference over Thunk, no channel arity'
 > Result: `cargo test -p rill-lang --features dsp --lib` → 208 passed / 41 failed
 > (was 174/78; +32). Zero regressions. The 41 remaining reds are not inference
 > failures: 38 are test *sources* still using the pre-migration syntax
-> (`fn x ->`, `match … of`) — Task 13c; 2 are `unknown \`bind\` in value
+> (`\x ->`, `match … of`) — Task 13c; 2 are `unknown \`bind\` in value
 > lowering` — Task 10 (lowering); 1 is `reduce::builtin_not_reduced`, whose AST
 > expectation predates the Task 6 currying — Task 13c. `Ty`/`ArrowTy` alias and
 > the `types/arrow.rs` arrow-law test module were dropped.

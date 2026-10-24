@@ -670,7 +670,7 @@ In `src/parser.rs` `#[cfg(test)]`, add:
     fn parse_match_patterns_and_guards() {
         let p = parse(
             "data Shape = Circle Float | Rect Float Float; \
-             main = match s of { Circle r => r; 0 => 0.0; _ => 1.0; n | n > 0 => n; };",
+             main = case s of { Circle r -> r; 0 -> 0.0; _ -> 1.0; n | n > 0 -> n; };",
         )
         .unwrap();
         // The parser accepts mixed ctor/literal/wildcard arms and guards.
@@ -1456,7 +1456,7 @@ In `src/lower.rs` `#[cfg(test)]`:
     #[test]
     fn lower_match_runtime_dispatch_emits_branch_ctor() {
         let src = "data Shape = Circle Float | Rect Float Float; \
-                   main = match _ of { Circle r => r; Rect w h => w; };";
+                   main = case _ of { Circle r -> r; Rect w h -> w; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
         let tp = infer_program(&p).unwrap();
@@ -1469,7 +1469,7 @@ In `src/lower.rs` `#[cfg(test)]`:
 
     #[test]
     fn lower_match_literal_and_wildcard() {
-        let src = "main = match 0 of { 0 => 1.0; _ => 2.0; };";
+        let src = "main = case 0 of { 0 -> 1.0; _ -> 2.0; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
         let tp = infer_program(&p).unwrap();
@@ -1614,7 +1614,7 @@ fn match_over_non_analyzable_scrutinee_dispatches_at_runtime() {
     // must select `Just` and expose its payload (regression for the old
     // static-only behavior which rejected it).
     let mut prog = compile::<f32>(
-        "main = match (head (filter (fn x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing => 0.0; Just x => x; };",
+        "main = case (head (filter (\\x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing -> 0.0; Just x -> x; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -1653,7 +1653,7 @@ fn run_float(src: &str) -> f64 {
 #[test]
 fn runtime_match_on_head_of_filter() {
     assert_eq!(
-        run_float("main = match (head (filter (fn x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing => 0.0; Just x => x; };"),
+        run_float("main = case (head (filter (\\x -> x > 1.0) [1.0, 2.0, 3.0])) of { Nothing -> 0.0; Just x -> x; };"),
         2.0
     );
 }
@@ -1661,11 +1661,11 @@ fn runtime_match_on_head_of_filter() {
 #[test]
 fn literal_int_patterns() {
     assert_eq!(
-        run_float("main = match 0 of { 0 => 1.0; 1 => 2.0; _ => 3.0; };"),
+        run_float("main = case 0 of { 0 -> 1.0; 1 -> 2.0; _ -> 3.0; };"),
         1.0
     );
     assert_eq!(
-        run_float("main = match 5 of { 0 => 1.0; 1 => 2.0; _ => 3.0; };"),
+        run_float("main = case 5 of { 0 -> 1.0; 1 -> 2.0; _ -> 3.0; };"),
         3.0
     );
 }
@@ -1673,11 +1673,11 @@ fn literal_int_patterns() {
 #[test]
 fn literal_bool_patterns_without_wildcard() {
     assert_eq!(
-        run_float("main = match true of { true => 1.0; false => 0.0; };"),
+        run_float("main = case true of { true -> 1.0; false -> 0.0; };"),
         1.0
     );
     assert_eq!(
-        run_float("main = match false of { true => 1.0; false => 0.0; };"),
+        run_float("main = case false of { true -> 1.0; false -> 0.0; };"),
         0.0
     );
 }
@@ -1685,28 +1685,28 @@ fn literal_bool_patterns_without_wildcard() {
 #[test]
 fn nested_pattern() {
     assert_eq!(
-        run_float("main = match Just (Left 2.0) of { Just (Left x) => x; _ => 0.0; };"),
+        run_float("main = case Just (Left 2.0) of { Just (Left x) -> x; _ -> 0.0; };"),
         2.0
     );
 }
 
 #[test]
 fn var_pattern_binds_whole_value() {
-    assert_eq!(run_float("main = match 7 of { v => v; };"), 7.0);
+    assert_eq!(run_float("main = case 7 of { v -> v; };"), 7.0);
 }
 
 #[test]
 fn guards_evaluate_in_order_with_fallthrough() {
     assert_eq!(
-        run_float("main = match 3.0 of { n | n > 2.0 => 1.0; n | n > 1.0 => 2.0; _ => 3.0; };"),
+        run_float("main = case 3.0 of { n | n > 2.0 -> 1.0; n | n > 1.0 -> 2.0; _ -> 3.0; };"),
         1.0
     );
     assert_eq!(
-        run_float("main = match 1.5 of { n | n > 2.0 => 1.0; n | n > 1.0 => 2.0; _ => 3.0; };"),
+        run_float("main = case 1.5 of { n | n > 2.0 -> 1.0; n | n > 1.0 -> 2.0; _ -> 3.0; };"),
         2.0
     );
     assert_eq!(
-        run_float("main = match 0.5 of { n | n > 2.0 => 1.0; n | n > 1.0 => 2.0; _ => 3.0; };"),
+        run_float("main = case 0.5 of { n | n > 2.0 -> 1.0; n | n > 1.0 -> 2.0; _ -> 3.0; };"),
         3.0
     );
 }
@@ -1716,7 +1716,7 @@ fn guarded_arm_fallthrough_to_nonmatching_arm_errors() {
     // Structurally total (Just guarded, Nothing unguarded); at runtime the
     // guard fails and Nothing does not match Just → ProcessError.
     let mut prog = compile::<f32>(
-        "main = match Just 5.0 of { Just x | x > 10.0 => 1.0; Nothing => 2.0; };",
+        "main = case Just 5.0 of { Just x | x > 10.0 -> 1.0; Nothing -> 2.0; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -1812,7 +1812,7 @@ fn if_and_runtime_match_combined() {
     // A SetParameter-driven Bool selects a sum at runtime; the outer match
     // dispatches on the runtime constructor.
     let mut prog = compile::<f32>(
-        "main g = match (if g > 0.5 then Just 1.0 else Nothing) of { Just x => x; Nothing => 0.0; };",
+        "main g = case (if g > 0.5 then Just 1.0 else Nothing) of { Just x -> x; Nothing -> 0.0; };",
     )
     .unwrap();
     let mut out = [0.0f32; 4];
@@ -1865,21 +1865,21 @@ fn if_branch_type_mismatch() {
 fn match_missing_ctor() {
     assert!(compile::<f32>(
         "data Shape = Circle Float | Rect Float Float; \
-         main = match Circle 1.0 of { Circle r => r; };"
+         main = case Circle 1.0 of { Circle r -> r; };"
     )
     .is_err());
 }
 
 #[test]
 fn match_scalar_without_wildcard() {
-    assert!(compile::<f32>("main = match 0 of { 0 => 1.0; };").is_err());
+    assert!(compile::<f32>("main = case 0 of { 0 -> 1.0; };").is_err());
 }
 
 #[test]
 fn match_guarded_no_unguarded_fallback() {
     assert!(compile::<f32>(
         "data Shape = Circle Float | Rect Float Float; \
-         main = match Circle 1.0 of { Circle r | r > 0.0 => r; Rect w h => w; };"
+         main = case Circle 1.0 of { Circle r | r > 0.0 -> r; Rect w h -> w; };"
     )
     .is_err());
 }
@@ -1887,7 +1887,7 @@ fn match_guarded_no_unguarded_fallback() {
 #[test]
 fn match_ctor_arity_mismatch() {
     assert!(compile::<f32>(
-        "main = match Just 1.0 of { Just x y => x; _ => 0.0; };"
+        "main = case Just 1.0 of { Just x y -> x; _ -> 0.0; };"
     )
     .is_err());
 }
@@ -1895,18 +1895,18 @@ fn match_ctor_arity_mismatch() {
 #[test]
 fn match_unknown_ctor() {
     assert!(compile::<f32>(
-        "main = match Just 1.0 of { Nope x => x; _ => 0.0; };"
+        "main = case Just 1.0 of { Nope x -> x; _ -> 0.0; };"
     )
     .is_err());
 }
 
 #[test]
 fn match_signal_scrutinee() {
-    assert!(compile::<f32>("main = match _ of { _ => 0.0; };").is_err());
+    assert!(compile::<f32>("main = case _ of { _ -> 0.0; };").is_err());
 }
 ```
 
-Note: `match_signal_scrutinee` — `match _ of { _ => 0.0 }` has a `Wire` scrutinee (a fresh value channel, value rate) — if this compiles under the new rules, replace it with a genuinely signal-rate scrutinee case (e.g. match over a signal expression) and assert the "must be a value" error. Adjust in implementation based on the inference result.
+Note: `match_signal_scrutinee` — `case _ of { _ -> 0.0 }` has a `Wire` scrutinee (a fresh value channel, value rate) — if this compiles under the new rules, replace it with a genuinely signal-rate scrutinee case (e.g. match over a signal expression) and assert the "must be a value" error. Adjust in implementation based on the inference result.
 
 - [ ] **Step 2: Run**
 
@@ -1940,7 +1940,7 @@ re-evaluated every tick. A runtime `Bool` — e.g. a main λ-parameter compared 
 a threshold and written via `SetParameter` — switches branches from block to
 block:
 
-```faust
+```haskell
 ?gate = 1.0;
 main = if gate > 0.5 then 1.0 else 0.0;
 ```

@@ -466,16 +466,16 @@ stderr          :: OutputStream String                  -- stdio
 
 ## 7. Reference program (target)
 
-```rill
+```haskell
 -- io-streams core: read lines from stdin, transform, echo to stdout
 handle = makeOutputStream (\ mb -> case mb of
-    Nothing => return ()
-    Just x  => do { write (Just x) stdout; handle });
+    Nothing -> return ()
+    Just x  -> do { write (Just x) stdout; handle });
 
 main = do
     xs   <- fromList (map (\x -> x * 2.0) [1.0, 2.0, 3.0])   -- memory source
     ys   <- toList xs                                         -- memory sink
-    ref  <- runST (fn s -> do
+    ref  <- runST (\s -> do
         r <- newSTRef 0.0
         writeSTRef r 42.0
         readSTRef r)

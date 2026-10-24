@@ -151,7 +151,7 @@ from dropping the capacity plumbing.
 
 ### 1.1 Builtin classes
 
-```rill
+```haskell
 typeclass Functor f     where { fmap:  (a -> b) -> f a -> f b; }
 typeclass Applicative f where { pure:  a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m       where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
@@ -166,8 +166,8 @@ resolution stays compile-time inline; instances produce no runtime dispatch.
 On instance registration (inference phase 1):
 
 - `instance Monad T` → synthesize `Applicative T` (`pure = return`,
-  `ap mf mx = bind mf (fn f -> bind mx (fn x -> return (f x)))`) and
-  `Functor T` (`fmap g x = bind x (fn y -> return (g y))`).
+  `ap mf mx = bind mf (\f -> bind mx (\x -> return (f x)))`) and
+  `Functor T` (`fmap g x = bind x (\y -> return (g y))`).
 - `instance Applicative T` → synthesize `Functor T` (`fmap g x = ap (pure g) x`).
 - **Explicit instances always win** — derivation fills gaps only. Builtin
   instances for `List`/`Maybe` are still written out in full (a `bind`-based
@@ -178,11 +178,11 @@ On instance registration (inference phase 1):
 | Class | Type | Body |
 |---|---|---|
 | Functor | `List` | `fmap g xs = map g xs;` |
-| Functor | `Maybe` | `match m of { Nothing => Nothing; Just x => Just (g x); }` |
-| Functor | `Either a` | `match e of { Left x => Left x; Right y => Right (g y); }` |
-| Monad | `Maybe` | `bind m f = match m of { Nothing => Nothing; Just x => f x; }` |
+| Functor | `Maybe` | `case m of { Nothing -> Nothing; Just x -> Just (g x); }` |
+| Functor | `Either a` | `case e of { Left x -> Left x; Right y -> Right (g y); }` |
+| Monad | `Maybe` | `bind m f = case m of { Nothing -> Nothing; Just x -> f x; }` |
 | Monad | `List` | `bind xs f = concat_map f xs;` (new IR op) |
-| Monad | `Either a` | `bind e f = match e of { Left x => Left x; Right y => f y; }` |
+| Monad | `Either a` | `bind e f = case e of { Left x -> Left x; Right y -> f y; }` |
 | Monoid | `List a` | `mappend xs ys = append_list xs ys;` (new IR op) |
 | Monoid | `String` | `mappend a b = concat_string a b;` (new IR op) |
 | Monoid | `Float` | `mempty` → `0.0`; `mappend a b = a + b;` |
@@ -241,8 +241,8 @@ Lexer: `KwDo`, `<-` token. Parser: `Expr::Do { statements }`. Desugar (in
 `reduce`, before lowering):
 
 ```
-do { x <- mx; let y = e; rest }  →  bind mx (fn x -> <desugar rest> with y := e)
-do { e; rest }                   →  bind e (fn _ -> <desugar rest>)
+do { x <- mx; let y = e; rest }  →  bind mx (\x -> <desugar rest> with y := e)
+do { e; rest }                   →  bind e (\_ -> <desugar rest>)
 do { e }                         →  e
 ```
 
@@ -260,7 +260,7 @@ method` (existing), do-block type errors (`do` block body must be monadic).
 
 ## SP-2. Kleisli and value-track Arrow
 
-```rill
+```haskell
 data Kleisli m a b = { unKleisli: a -> m b };
 
 typeclass Arrow a where {
@@ -274,9 +274,9 @@ typeclass Arrow a where {
 }
 
 instance Monad m => Arrow (Kleisli m) where {
-    arr f      = Kleisli (fn x -> return (f x));
-    first k    = Kleisli (fn p -> bind (unKleisli k p.first) (fn z -> return (Pair { first: z, second: p.second })));
-    compose k1 k2 = Kleisli (fn x -> bind (unKleisli k1 x) (fn y -> unKleisli k2 y));
+    arr f      = Kleisli (\x -> return (f x));
+    first k    = Kleisli (\p -> bind (unKleisli k p.first) (\z -> return (Pair { first: z, second: p.second })));
+    compose k1 k2 = Kleisli (\x -> bind (unKleisli k1 x) (\y -> unKleisli k2 y));
 }
 ```
 
@@ -326,7 +326,7 @@ against the concrete monad at each inlining site.
   body lowers `unKleisli k p.first` as `(k.unKleisli) p.first`.
 - **Kleisli constructor.** A single-field record type is constructed in
   newtype-style by applying the constructor to the field value:
-  `Kleisli (fn x -> …)` ≡ `Kleisli { unKleisli: fn x -> … }`.
+  `Kleisli (\x -> …)` ≡ `Kleisli { unKleisli: \x -> … }`.
 - **Placement.** `data Kleisli`, `typeclass Arrow`, and
   `instance Monad m => Arrow (Kleisli m)` all live in `CATEGORY_PRELUDE`
   (registered in `TypeEnv::with_builtins`), so programs use `arr`/`first`/

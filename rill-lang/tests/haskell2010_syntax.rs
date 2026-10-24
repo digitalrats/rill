@@ -2,8 +2,8 @@
 //! (backslash lambdas, `--` line comments, layout/offside `do`, curried
 //! application, nested `map`s) compiles and runs through the runner.
 
-use rill_lang::compile_runner;
-use rill_lang::Registry;
+use rill_lang::compile;
+use rill_lang::ffi::ForeignRegistry;
 
 #[test]
 fn haskell2010_syntax_end_to_end() {
@@ -22,7 +22,7 @@ fn haskell2010_syntax_end_to_end() {
             write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" zs)) stdout
             return ()
     "#;
-    let mut runner = compile_runner::<f32, 256>(src, &Registry::new(), 44100.0)
+    let mut runner = compile::<f32, 256>(src, ForeignRegistry::new())
         .expect("the Haskell 2010 program must compile");
     runner.run().expect("the compiled program must run");
     assert_eq!(runner.stdout(), ["1.52.5"]);

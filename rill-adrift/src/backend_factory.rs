@@ -45,7 +45,7 @@ pub struct RegisteredBackend {
     pub meta: BackendMeta,
 }
 
-/// Registry of named backend constructors with caching.
+/// Factory of named backend constructors with caching.
 #[derive(Clone)]
 pub struct BackendFactory {
     ctors: HashMap<&'static str, RegisteredBackend>,

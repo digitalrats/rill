@@ -2,19 +2,25 @@
 //! family allocates, reads, writes, and modifies cells inside it at runtime.
 //!
 //! These tests exercise the whole pipeline (infer → reduce → lower → executor)
-//! through `compile`, asserting the resulting value outputs.
+//! through `compile`, asserting the resulting run values.
+pub mod common;
 
+use common::*;
 use rill_lang::arena::Value;
-use rill_lang::compile;
+use rill_lang::compile_eval;
+use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
 
-/// Compile `src`, run one tick, and return the single value output's arena
-/// value (cloned out of the program's arena).
+/// Compile `src`, run it once, and return the single run result's arena value
+/// (cloned out of the program's arena).
 fn run_value_output(src: &str) -> Value {
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let outputs = prog.value_outputs();
-    assert_eq!(outputs.len(), 1, "expected exactly one value output");
-    let v = outputs[0].expect("the value output must be bound");
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
+    let v = prog.result().unwrap();
     prog.arena().get(v).unwrap().clone()
 }
 
@@ -32,12 +38,14 @@ fn stref_read_write_modify_roundtrip() {
 fn two_runst_regions_are_isolated() {
     // Each `runST` allocates a FRESH region: the two cells never share state,
     // so the pair holds each region's own initial value.
-    let mut prog = compile::<f32>(
-        "{-# MODE complete #-}\nmain = Pair { first: runST (\\s -> do { r <- newSTRef 1.0; readSTRef r }), second: runST (\\s -> do { r <- newSTRef 2.0; readSTRef r }) };",
-    )
-    .unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].expect("the value output must be bound");
+    let src = "{-# MODE complete #-}\nmain = Pair { first: runST (\\s -> do { r <- newSTRef 1.0; readSTRef r }), second: runST (\\s -> do { r <- newSTRef 2.0; readSTRef r }) };";
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = eval_ffi(defs, expr, ffi).unwrap();
+    let v = prog.result().unwrap();
     let fields = match prog.arena().get(v).unwrap() {
         Value::Record(fields) => fields.clone(),
         other => panic!("expected the Pair record, got {other:?}"),
@@ -53,8 +61,10 @@ fn two_runst_regions_are_isolated() {
 fn stref_escaping_region_is_compile_error() {
     // `return r` makes the region result an `STRef s a`, which mentions the
     // phantom `s`: it must not escape the region.
-    let err = match compile::<f32>(
+    let err = match compile_eval::<f32, 256>(
         "{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 0.0; return r });",
+        "main",
+        Mode::Strict,
     ) {
         Ok(_) => panic!("an escaping STRef must be a compile error"),
         Err(err) => err,
@@ -75,9 +85,7 @@ fn nested_region_cannot_use_an_outer_region_cell() {
     // instantiated independently for the parameter and the result, the inner
     // `writeSTRef r 99.0` would type-check against region B while mutating
     // region A's cell (the cell table is global).
-    let err = match compile::<f32>(
-        "{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 1.0; c <- newSTRef (runST (\\s2 -> writeSTRef r 99.0)); v <- readSTRef r; return v });",
-    ) {
+    let err = match compile_eval::<f32, 256>("{-# MODE complete #-}\nmain = runST (\\s -> do { r <- newSTRef 1.0; c <- newSTRef (runST (\\s2 -> writeSTRef r 99.0)); v <- readSTRef r; return v });", "main", Mode::Strict) {
         Ok(_) => panic!("a nested region must not be able to use an outer region's cell"),
         Err(err) => err,
     };

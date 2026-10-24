@@ -2056,7 +2056,7 @@ Update to layout-based:
 
 Check if `LParen`/`RParen` tokens are still used for grouping `(expr)`. If they are, keep them. Only remove the application-specific usage in the parser. Grouping parentheses are still needed:
 
-```rill
+```haskell
 mixer (sine 440 0.5 0) _ _ { buses: 2 }
 //      ^^^^^^^^^^^^^^^^^^
 //      grouping parens — sine parsed as one arg, not atoms consumed by mixer

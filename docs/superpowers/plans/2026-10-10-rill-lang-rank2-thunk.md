@@ -114,8 +114,8 @@ use rill_lang::mode::Mode;
 fn polymorphic_value_fn_instantiates_fresh() {
     // id2 used at two different types must instantiate fresh each time.
     let src = "{-# MODE complete #-}\n\
-        id2 = fn x -> x;\n\
-        main = match (head (id2 [1.0, 2.0])) of { Nothing => 0.0; Just x => x };";
+        id2 = \\x -> x;\n\
+        main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
     let toks = tokenize(src).unwrap();
     let prog = parse(&toks, src.as_bytes()).unwrap();
     assert!(infer_program(&prog, Mode::Complete).is_ok(),
@@ -166,14 +166,14 @@ git commit -m 'feat(rill-lang): generalize value-type variables in Scheme.vars/i
 ## Task R3: `runST` as syntax sugar over a forall-typed function
 
 **Files:**
-- Modify: `rill-lang/src/parser.rs` (desugar `runST (fn s -> body)` → `Expr::Apply { name: "runST", args: [lambda] }`, like `do {}` → `bind`)
+- Modify: `rill-lang/src/parser.rs` (desugar `runST (\s -> body)` → `Expr::Apply { name: "runST", args: [lambda] }`, like `do {}` → `bind`)
 - Modify: `rill-lang/src/types/ty.rs` (TypeEnv: `runST` built-in signature `(forall s. ST s a) -> a`)
 - Modify: `rill-lang/src/types/infer.rs` (rank-N application in `infer_apply_impl`; remove `Expr::RunST` special form + one-point scan)
 - Modify: `rill-lang/src/lower.rs` (remove `Expr::RunST` special lowering; `runST` lowers as an ordinary function)
 - Test: `rill-lang/tests/st_monad.rs`, `rill-lang/tests/rank2_poly.rs`
 
 > **Design decision (JIT-friendly):** `runST` is NOT a special form. The parser
-> desugars `runST (fn s -> body)` into an ordinary call `Apply runST [fn s -> body]`
+> desugars `runST (\s -> body)` into an ordinary call `Apply runST [\s -> body]`
 > (the same pattern as `do {}` → `bind`). `runST` is a built-in function whose
 > signature `(forall s. ST s a) -> a` lives in the `TypeEnv`. Rank-N application
 > lives in `infer_apply_impl`: the argument lambda is inferred with `s` as a fresh
@@ -197,7 +197,7 @@ fn run(src: &str) -> rill_lang::program_engine::ProgramEngine<f32, 256> {
 
 #[test]
 fn runst_region_erases_phantom() {
-    let mut p = run("{-# MODE complete #-}\nmain = runST (fn s -> 1.0);");
+    let mut p = run("{-# MODE complete #-}\nmain = runST (\\s -> 1.0);");
     let mut out = [0.0f32; 1];
     let _ = MultichannelAlgorithm::process(&mut p, &[], &mut [&mut out]);
     assert_eq!(out[0], 1.0);
@@ -205,7 +205,7 @@ fn runst_region_erases_phantom() {
 
 #[test]
 fn runst_region_rejects_escaping_phantom() {
-    let src = "{-# MODE complete #-}\nmain = runST (fn s -> (s));";
+    let src = "{-# MODE complete #-}\nmain = runST (\\s -> (s));";
     let p = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
     let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
@@ -218,7 +218,7 @@ fn runst_region_rejects_escaping_phantom() {
 ```rust
 #[test]
 fn phantom_chain_through_higher_id_var_rejected() {
-    let src = "{-# MODE complete #-}\nmain = (fn t -> runST (fn s -> [t, s])) 1.0;";
+    let src = "{-# MODE complete #-}\nmain = (\\t -> runST (\\s -> [t, s])) 1.0;";
     let p = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
     let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
@@ -227,7 +227,7 @@ fn phantom_chain_through_higher_id_var_rejected() {
 
 #[test]
 fn phantom_shadows_outer_value_binder() {
-    let src = "{-# MODE complete #-}\ns = 2.0;\nmain = runST (fn s -> (s));";
+    let src = "{-# MODE complete #-}\ns = 2.0;\nmain = runST (\\s -> (s));";
     let p = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&p, src.as_bytes()).unwrap();
     let r = rill_lang::types::infer::infer_program(&prog, rill_lang::mode::Mode::Complete);
@@ -247,7 +247,7 @@ In `parser.rs`, replace the `Tok::KwRunST` special-form arm (currently ~line 998
 building `Expr::RunST`) with sugar: parse `runST` + parenthesized lambda, and emit
 `Expr::Apply { name: "runST".into(), args: vec![lambda], span }`. This is exactly
 how `do {}` builds `bind` (see the `parse_do_block` pattern). Verify the parse
-produces `Apply runST [fn s -> body]`.
+produces `Apply runST [\s -> body]`.
 
 - [ ] **Step 4: Add `runST`'s forall signature to the TypeEnv**
 
@@ -302,7 +302,7 @@ Commit:
 cargo fmt
 git add rill-lang/src/parser.rs rill-lang/src/ast.rs rill-lang/src/types/ty.rs rill-lang/src/types/infer.rs rill-lang/src/lower.rs rill-lang/src/reduce.rs rill-lang/src/render.rs rill-lang/tests/st_monad.rs rill-lang/tests/rank2_poly.rs
 git commit -m 'feat(rill-lang): runST as sugar over a forall-typed function — rank-N application
-Parser desugars runST (fn s -> body) into an ordinary Apply; runST has signature
+Parser desugars runST (\s -> body) into an ordinary Apply; runST has signature
 (forall s. ST s a) -> a in the TypeEnv; rank-N application in infer_apply_impl
 rejects escaping automatically. JIT-friendly: no special IR instruction.'
 ```
@@ -341,8 +341,8 @@ use rill_core::traits::MultichannelAlgorithm;
 fn eager_and_lazy_calls_still_work() {
     // eager: a named function applied to args; lazy: a thunk over a closure.
     let src = "{-# MODE complete #-}\n\
-        id2 = fn x -> x;\n\
-        main = match (head (id2 [1.0, 2.0])) of { Nothing => 0.0; Just x => x };";
+        id2 = \\x -> x;\n\
+        main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -360,8 +360,8 @@ fn closure_and_thunk_are_one_variant() {
     // produce Value::Callable; the arena has no Closure/Thunk variants.
     // (Compile a program using a lambda + a lazy let to exercise both.)
     let src = "{-# MODE complete #-}\n\
-        id2 = fn x -> x;\n\
-        main = match (head (let y = id2 [1.0, 2.0] in y)) of { Nothing => 0.0; Just x => x };";
+        id2 = \\x -> x;\n\
+        main = case (head (let y = id2 [1.0, 2.0] in y)) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];
@@ -461,8 +461,8 @@ fn fragment_call_with_record_construction_still_works() {
     // Exercises a ValueConstructRecord (Vec payload) inside a fragment call —
     // the instruction must not be mis-remapped when base is threaded.
     let src = "{-# MODE complete #-}\n\
-        mk = fn x -> Pair { first: x, second: x };\n\
-        main = match (head (mk [1.0, 2.0])) of { Nothing => 0.0; Just x => x };";
+        mk = \\x -> Pair { first: x, second: x };\n\
+        main = case (head (mk [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
     let mut prog =
         rill_lang::compile_with_mode::<f32>(src, rill_lang::mode::Mode::Complete).unwrap();
     let mut out = [0.0f32; 1];

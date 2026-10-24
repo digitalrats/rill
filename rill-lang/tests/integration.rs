@@ -1,13 +1,26 @@
-use rill_lang::compile;
+pub mod common;
+use common::*;
+use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
+use rill_lang::mode::Mode;
 use rill_lang::register;
 
 /// Run a pure value program over literal data and read back its single output
 /// as a list of floats.
 fn run_values(src: &str) -> Vec<f64> {
-    let mut prog = compile::<f32>(src).unwrap();
-    prog.run_value().unwrap();
-    let v = prog.value_outputs()[0].unwrap();
+    // A `where` block belongs to the `main` DEFINITION: `test_eval`'s entry
+    // `__rill_eval = (expr)` cannot carry one (the parenthesised expression
+    // must not contain a parse-level `where`), so keep the whole definition in
+    // `defs` and evaluate `main` itself.
+    let (defs, expr) = match src.rsplit_once("main = ") {
+        Some((defs, tail)) if !tail.contains(" where ") => {
+            (defs, tail.trim().trim_end_matches(';'))
+        }
+        _ => (src.trim().trim_end_matches(';'), "main"),
+    };
+    let ffi = ForeignRegistry::<f32>::new();
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap() {
         rill_lang::arena::Value::List { elems } => elems
             .iter()
@@ -34,12 +47,15 @@ fn math_builtin_abs() {
     // buffer (a zero-frequency square wave at amplitude -1).
     let mut ffi = ForeignRegistry::<f32>::new();
     register::register_foreign_generators(&mut ffi);
-    let mut prog =
-        rill_lang::compile_with_ffi::<f32>("main = abs (square 0.0 (-1.0) 0.0)", &ffi, 44100.0)
-            .unwrap();
+    let src = "main = abs (square 0.0 (-1.0) 0.0)";
+    let (defs, expr) = src
+        .rsplit_once("main = ")
+        .expect("the source must bind `main` to the evaluated expression");
+    let expr = expr.trim().trim_end_matches(';');
+    let prog = eval_ffi(defs, expr, ffi).unwrap_or_else(|e| panic!("run failed: {e}\nsrc:\n{src}"));
+    let r = prog.result().expect("whole-buffer result expected");
     let mut out = [0.0f32; 4];
-    prog.run_value().unwrap();
-    assert!(prog.copy_output_samples(0, &mut out));
+    assert!(prog.copy_buffer(r, &mut out));
     assert_eq!(out, [1.0, 1.0, 1.0, 1.0]);
 }
 
@@ -58,15 +74,15 @@ fn application_in_fanout_lowers_correctly() {
 
 #[test]
 fn type_error_is_reported() {
-    assert!(compile::<f32>("main = !").is_err());
+    assert!(compile_eval::<f32, 256>("main = !", "main", Mode::Strict).is_err());
 }
 
 #[test]
 fn parse_error_is_reported() {
-    assert!(compile::<f32>("_").is_err());
+    assert!(compile_eval::<f32, 256>("_", "main", Mode::Strict).is_err());
 }
 
 #[test]
 fn plain_expression_rejected() {
-    assert!(compile::<f32>("_ * 0.5").is_err());
+    assert!(compile_eval::<f32, 256>("_ * 0.5", "main", Mode::Strict).is_err());
 }
