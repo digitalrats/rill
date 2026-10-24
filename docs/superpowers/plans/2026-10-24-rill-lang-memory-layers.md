@@ -4,7 +4,7 @@
 
 **Goal:** Make every `runST` region a memory **layer** over the value arena — zero RC traffic inside regions, an O(live + dead-on-survivor-chunks + pure-dead-chunks) teardown at region exit, and a zero-copy result escape via mark-region + chunk ownership handoff.
 
-**Architecture:** `rill_core::memory::Arena<V>` gains a LIFO stack of bump layers. The base layer keeps the embedded RC free list; while a region is active, allocations bump above the region's mark and are never reference-counted. At region exit the interpreter runs `region_collapse(result)`: trace the (already-forced) result with mark bits + per-chunk live counters, bulk-recycle pure-dead chunks, hand survivor chunks to the parent layer by ownership (refs stay valid — they are arena indices), sweep dead slots in place releasing base child refs, release cell base refs, and retire the mark. The result value is never copied and never re-allocated.
+**Architecture:** `rill_core::memory::Arena<V>` gains a LIFO stack of bump layers. The base layer keeps the embedded RC free list; while a region is active, allocations bump above the region's mark and are never reference-counted. The slot store is a **first-class multi-chunk page store** (power-of-two `SLOT_CHUNK_CAP` chunks): memory inside a chunk is always contiguous, pages can be handed off wholesale, and fragmentation risk is lowered. At region exit the interpreter runs `region_collapse(result)`: trace the (already-forced) result with mark bits + per-chunk live counters, hand survivor chunks to the parent layer by ownership (refs stay valid — they are arena indices), sweep **every dead layer slot** — on survivor and pure-dead chunks alike — releasing base child refs in place (wholly-dead chunks relink into the free list in one pass), release cell base refs, and retire the mark. The result value is never copied and never re-allocated.
 
 **Tech Stack:** Rust workspace crates `rill-core` (arena) and `rill-lang` (interpreter). No new dependencies. No `unsafe` (`#![deny(unsafe_code)]` in both crates).
 
@@ -27,7 +27,7 @@ Failure modes the spec implies but no single task's tests exercise — each pins
 2. **Nested regions with inner result read by the outer** — the inner collapse hands survivor chunks to the outer layer (not the base); the outer's sweep covers handed-over chunks; no double release, no lost marks. Test in Task 1.3 (`nested_collapse_hands_to_outer_layer`) and Task 2.1 integration.
 3. **Region separated from its `copy_owned` result copy** — current code shallow-copies the result at exit; layers make that copy unnecessary. A result that is an **escaping closure** (`Value::Callable` with a region env) must stay valid after exit. Test in Task 2.1 (`escaping_closure_env_survives_collapse`).
 4. **Register drain and `drops_scratch` inside a region** — `run_call`'s epilogue and `drops_scratch` drains currently `drop_ref` unconditionally; with layers they must skip in-layer refs (`r >= active mark`). Missing this leaks nothing (layer dies) but **corrupts the free list** if skipped refs are freed twice. Test in Task 2.2 (`drain_skips_in_layer_refs`).
-5. **Pure-dead chunks** — a region's temps interleave with result-reachable values, so pages are almost never survivor-pure; the mark pass must make "chunk has zero live slots" an O(1) counter check and bulk-recycle it wholesale. Test in Task 1.2/1.3 (`zero_live_chunk_bulk_recycled`).
+5. **Pure-dead chunks** — a region's temps interleave with result-reachable values, so pages are almost never survivor-pure; the mark pass makes "chunk has zero live slots" an O(1) counter check for wholesale-eligible chunks. Dead slots in **every** chunk (including pure-dead ones) are still swept per-slot to release base children (R4), then wholly-dead chunks relink in one pass. Test in Task 1.2/1.3 (`zero_live_chunk_bulk_recycled`).
 6. **Bottom results** — `Bottom` collapses trivially: the layer dies wholesale, no trace work beyond copies-out. Test in Task 1.3 (`bottom_result_retires_layer`) and Task 2.1.
 
 ---
@@ -80,16 +80,18 @@ git commit -m 'bench(lang): ST array workload baseline for memory layers'
 **Interfaces:**
 - Consumes: `Arena<V: ArenaValue>` as built in SP-4 (`with_capacity`, `alloc`, `drop_ref`, `copy`, `get`, `get_mut`, `rc`, `mutate`, `free`, `slots: ChunkedVec<Slot<V>>`, `Slot::Occupied{rc, val: Option<V>}` / `Slot::Free{next}`).
 - Produces (used by Tasks 1.2+ and all of Phase 2):
-  - `pub fn push_layer(&mut self) -> usize` — push a new region layer; returns its for the caller. Allocates nothing.
-  - `pub fn pop_layer(&mut self)` — retire the top layer's bump extent wholesale (no trace), relinking its slots into the free list.
+  - `pub fn push_layer(&mut self) -> usize` — push a new region layer; returns its mark for the caller. Allocates nothing.
+  - `pub fn pop_layer(&mut self)` — retire the top layer's bump extent wholesale (no trace), relinking its slots into the free list in DESCENDING index order (R3), so the head of the new run is the mark.
   - `pub fn layers(&self) -> usize` — number of active layers (0 = base layer active).
   - `pub fn is_base_ref(&self, r: ArenaRef) -> bool` — `r < global_base` where `global_base` is the bottom-most layer mark (or `u32::MAX` when no layer is active).
   - `pub fn base_mark(&self) -> usize` — the bottom layer mark (`usize::MAX` if none).
+  - `pub(crate) fn with_capacity_and_chunk(capacity: usize, chunk_cap: usize) -> Self` — explicit chunk capacity (power of two). `with_capacity` keeps its exact signature and delegates with the production `SLOT_CHUNK_CAP` const (see Design). **Multi-chunk is a first-class production feature (R1), not a test fixture.**
 - Constant: `global_base` semantics per spec §3.1 — RC-managed iff `r < global_base`; refs `>= global_base` are layer-owned and never RC'd.
 
 **Design (pinned):**
 - `Arena` gains: `marks: Vec<usize>` (LIFO marks; empty = base), `bump: usize` (next slot to allocate in the top layer).
-- The **base free list keeps its exact current shape** (`free: Option<ArenaRef>` and `Slot::Free{next}` links). It is only ever used for allocation *below* the bottom mark / with no layer active.
+- **Multi-chunk slot store (R1):** the arena's slot store is built across power-of-two chunks. `const SLOT_CHUNK_CAP: usize = 64` (production default, power of two) is used by `with_capacity` (capacity 900 → 15 chunks); `with_capacity_and_chunk(capacity, chunk_cap)` exposes chunk sizing for callers/tests. The test helper `arena(n)` builds via `with_capacity_and_chunk(n, 8)` so layer marks align with chunk boundaries deterministically. The growable path already appends `slots.chunk_cap()`-sized chunks. Rationale (user-confirmed): direct page-sized chunk allocation keeps buffers/arrays contiguous within a chunk and lowers memory-fragmentation risk; chunks can later be handed off wholesale.
+- The **base free list keeps its exact current shape** (`free: Option<ArenaRef>` and `Slot::Free{next}` links). It is only ever used for allocation *below* the bottom mark / with no layer active. **`push_layer` severs the free list at the mark (R2):** walk the chain and terminate it below the first slot `>= mark`, so base allocs during a layer can only ever pop slots `< mark`; the region's bump extent `[mark, …)` is never reachable from the base free list.
 - While a layer is active, `alloc` must bump: take `bump` if `bump < capacity` (or growable path), else fall back to an arena-full error. The spec pins the base free list for the base layer; region allocation is bump-only (§5 "Bump region mode: a region mark (usize) above which allocations bump; the base layer keeps the embedded RC free list").
 
 - [ ] **Step 1: Write the failing tests**
@@ -177,7 +179,7 @@ pub struct Arena<V: ArenaValue> {
 ```
 
 - `push_layer`: `let mark = self.bump; self.marks.push(mark); mark`.
-- `pop_layer`: set every slot in `[mark, bump)` to `Slot::Free` linked into `self.free` (in order, preserving the linked list), decrement `live` by the count of `Occupied` slots reclaimed, then truncate `bump` back to `mark` and pop the mark.
+- `pop_layer`: set every slot in `[mark, bump)` to `Slot::Free` linked into `self.free` in **descending index order (highest first, so head = mark)** (R3), decrement `live` by the count of `Occupied` slots reclaimed, then truncate `bump` back to `mark` and pop the mark.
 - `alloc`: if `!self.marks.is_empty()`, bump: take `self.bump`, `self.bump += 1`; on `self.bump > capacity` return `Err((ArenaError::CapacityExceeded, val))` (growable path: append a page as today only when the arena is growable — see Task 1.4). If no layer is active, keep the existing free-list behavior exactly.
 - `is_base_ref(r)`: `r < self.base_mark() as u32` where `base_mark()` returns `marks.first().copied().unwrap_or(usize::MAX)`.
 - A `debug_assert!` in `drop_ref`/`copy` that `is_base_ref(r)`— dropping or copying a layer-owned ref is a bug in debug builds (the interpreter must never RC layer refs; see Phase 2).
@@ -289,33 +291,35 @@ git commit -m 'feat(rill-core): region trace with mark bits and per-chunk live c
 - Consumes: `push_layer`/`pop_layer`/`is_base_ref` (Task 1.1); `trace`/`mark_bits`/`chunk_live`/`chunk_of` (Task 1.2).
 - Produces:
   - `pub fn collapse_layer(&mut self, result: Option<ArenaRef>)` — the full collapse (§3.3): trace → bulk-recycle zero-live chunks → hand over survivor chunks to the parent layer **by ownership** → sweep dead slots on survivor chunks in place (release base child refs via `drop_ref`, recycle each slot into the base free list) → retire the mark. Returns nothing; the caller (rill-lang) handles cell base-ref release and `st_cells.truncate`.
-  - `pub fn layer_dying(&self) -> bool` — internal helper: `chunk` is entirely within the dying layer (`chunk_base >= mark && chunk_end <= bump` — chunks are never handed off partially; allocation never splits a chunk).
-- Invariant pinned by this task: **a chunk is either wholly in the dying layer or wholly outside it** — chunk boundaries align with layer boundaries because base allocation never bumps past a mark-pushed layer and region bumping starts at the mark; verify with a `debug_assert!` in `collapse_layer` that each chunk in `[mark, bump)` is fully in-layer.
+  - `pub fn layer_dying_chunk(&self, c: usize) -> bool` — internal helper: true iff chunk `c` is entirely within the dying layer (`chunk_base >= mark && chunk_end <= bump`). Only wholly-in-layer chunks are eligible for the one-pass wholesale free-list relink; a chunk partially below the mark (base portion) or partially above `bump` is a *mixed* chunk and is always swept per-slot.
+- Invariant pinned by this task: **a chunk is bulk-relinked wholesale only when it lies entirely within the dying layer.** Base allocation below the mark and region bumping above it can share a boundary chunk (base free slots `< mark` alongside layer slots `>= mark`), so a "chunk wholly in or wholly out" invariant does NOT hold for boundary chunks — mixed chunks are swept per-slot like survivor chunks. Verify the `chunk_base >= mark` guard with a `debug_assert!` before any wholesale relink.
 - Also exposed for rill-lang tests: `pub fn live(&self) -> usize` (already public) — the collapse must decrement `live` for every slot it frees.
 
-**Collapse algorithm (pinned, §3.3):**
+**Collapse algorithm (pinned, §3.3, per ruling R4):**
 
 1. `trace(result)` → mark bits + per-chunk counters. (Already at the strict exit boundary: the result was forced before this is called; rill-lang guarantees it.)
-2. For each chunk `c` with `chunk_live[c] == 0` whose range falls in `[mark, bump)`: **bulk-recycle** — link every slot in the chunk back into the base free list (whole chunk, O(chunk_cap)); no per-slot value work (region-owned child refs die with the chunk; §3.3 "Region-owned child refs die with the chunk; they are not touched").
-3. For each chunk `c` with `chunk_live[c] > 0`: **hand over by ownership** — the chunk stays allocated (parent-owned); refs stay valid. Then **sweep** its slots: every slot NOT marked that was allocated in this layer (`Occupied` and `slot_ref >= mark`): release its base child refs (`drop_ref` on each child `< base_mark`; §3.3 step 4), detach pooled payloads via `detach_payload`/`put_buf` if the value owns one, then recycle the slot into the base free list and decrement `live`.
-4. Marked slots keep their values untouched and stay `Occupied` (now parent-owned).
+2. **Sweep every dead layer slot in `[mark, bump)` — survivor chunks and pure-dead chunks alike.** For each `Occupied` slot that is *not* marked: move the value out, release **only its base children** (`drop_ref` on each child `< base_mark`; region children are never touched — they die with the chunk), detach pooled payloads via `detach_payload`/`put_buf` if the value owns one, and decrement `live`. This is where base children of dead region values are released exactly once — there is **no store-time recording** (§3.1's recording would over-release survivor-held base claims).
+3. **Recycle:** slots from wholly-dead chunks (`layer_dying_chunk` true and `chunk_live[c] == 0`) are relinked into the base free list as ONE chain in a single pass (O(chunk_cap), one head update instead of N) — the per-slot sweep above already visited them, so nothing is skipped. All other dead slots join the base free list individually.
+4. **Hand over by ownership:** chunks containing marked (live) slots stay allocated (parent-owned); refs stay valid; marked slots stay `Occupied` untouched — the result was forced before collapse, so no re-materialization is needed.
 5. Retire the mark: pop `marks`; reset `bump` to the top layer's mark (or the base's extent boundary if no layer remains).
+
+> **Cost note (R4):** pure-dead chunks cost O(chunk_cap) per chunk (the per-slot sweep to release base children) instead of O(1). The benchmark gate (Task 3.2, spec §7 cost 5) decides whether an O(1) fast path that skips base-child release on pure-dead chunks is ever needed; today every dead slot must be visited to guarantee base children are released exactly once.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
 fn zero_live_chunk_bulk_recycled() {
+    // arena(16) with the test helper's chunk_cap 8: chunk 0 = r0..r7, chunk 1 = r8..r15.
     let mut a = arena(16);
-    for _ in 0..4 { a.alloc(leaf()).unwrap(); }       // base r0..r3
-    let _ = a.push_layer();
-    let t1 = a.alloc(leaf()).unwrap();
-    let t2 = a.alloc(leaf()).unwrap();
+    for _ in 0..8 { a.alloc(leaf()).unwrap(); }       // base fills chunk 0 exactly
+    let _ = a.push_layer();                           // mark = 8 = chunk 1 base
+    for _ in 0..8 { a.alloc(leaf()).unwrap(); }       // layer fills chunk 1 exactly
     a.collapse_layer(None);
-    assert_eq!(a.live(), 4, "all region slots freed");
-    let r = a.alloc(leaf()).unwrap();                // base reuses a freed slot
-    assert_ne!(r, t1, "... but the free list is LIFO; just assert it allocs");
-    assert_eq!(a.rc(t2), 0);
+    assert_eq!(a.live(), 8, "all 8 region slots freed");
+    let r = a.alloc(leaf()).unwrap();                 // base reuses a chunk-1 slot
+    assert!(r >= 8, "recycled slot comes from the wholly-dead chunk 1");
+    assert_eq!(a.rc(r), 1, "recycled slot is a fresh Occupied slot");
 }
 
 #[test]
@@ -369,12 +373,14 @@ fn nested_collapse_hands_to_outer_layer() {
 
 #[test]
 fn bottom_result_retires_layer() {
+    // Bottom is not an arena ref in rill-lang: the caller passes None and the
+    // layer dies wholesale (spec §3.4) — no trace work, no survivor.
     let mut a = arena(16);
     for _ in 0..4 { a.alloc(leaf()).unwrap(); }
     let _ = a.push_layer();
-    let t = a.alloc(leaf()).unwrap();
-    a.collapse_layer(Some(t));                          // "Bottom is copied out"
-    assert_eq!(a.live(), 4);
+    a.alloc(leaf()).unwrap();                           // region temp
+    a.collapse_layer(None);
+    assert_eq!(a.live(), 4, "layer retired wholesale, base state unchanged");
 }
 ```
 
@@ -385,7 +391,7 @@ Expected: compile error — no `collapse_layer`.
 
 - [ ] **Step 3: Implement `collapse_layer`**
 
-Follow the pinned algorithm above. Use the existing `Slot::Occupied`/`Slot::Free` and the embedded free list — bulk recycle links a contiguous run of chunk slots into `self.free`. The sweep calls `drop_ref` only on base children (`r < base_mark`), per §3.5. Pooled payloads (`detach_payload`) are returned to `self.pool` for dead slots; survivor slots keep theirs.
+Follow the pinned algorithm above. Use the existing `Slot::Occupied`/`Slot::Free` and the embedded free list — the wholesale relink builds ONE chain of a wholly-dead chunk's slots into `self.free` in a single pass. The sweep processes **every** dead layer slot (survivor and pure-dead chunks alike, R4) and calls `drop_ref` only on base children (`r < base_mark`), per §3.5; region children are never touched. Pooled payloads (`detach_payload`) are returned to `self.pool` for dead slots; survivor slots keep theirs.
 
 **Pay attention** to interleaved temps+result (§3.2): allocation order mixes temps and result-reachable values within a chunk, so the sweep must handle `Occupied` dead slots inside survivor chunks — this is precisely why the mark pass exists.
 
@@ -401,7 +407,7 @@ git add rill-core/src/memory/arena.rs
 git commit -m 'feat(rill-core): region collapse with chunk ownership handoff'
 ```
 
-### Task 1.4: growable-arena path + pre-allocated scratch sizing
+### Task 1.4: growable path + pre-allocated scratch sizing
 
 **Files:**
 - Modify: `rill-core/src/memory/arena.rs`
@@ -409,12 +415,11 @@ git commit -m 'feat(rill-core): region collapse with chunk ownership handoff'
 
 **Interfaces:**
 - Consumes: everything from Tasks 1.1–1.3.
-- Produces: a guarantee used by the interpreter test Tasks (2.3): layer bumping under the `growable-arena` feature appends pages without breaking marks, bitmap, or counters.
+- Produces: a guarantee used by the interpreter test Tasks (2.3): layer bumping on a **growable arena** (`pool.growable` runtime flag) appends pages without breaking marks, bitmap, or counters.
 
 - [ ] **Step 1: Write the failing test**
 
 ```rust
-#[cfg(feature = "growable-arena")]
 #[test]
 fn growable_layer_bumps_across_pages() {
     let mut a = arena(2);
@@ -431,8 +436,8 @@ fn growable_layer_bumps_across_pages() {
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cargo test -p rill-core --features growable-arena memory::arena::tests::growable_layer_bumps_across_pages`
-(If the feature name differs from the crate's actual feature — check `rill-core/Cargo.toml`; the arena already has a growable branch — adjust the test path accordingly.)
+Run: `cargo test -p rill-core memory::arena::tests::growable_layer_bumps_across_pages`
+Note: there is **no `growable-arena` Cargo feature** in `rill-core/Cargo.toml` (R5) — growability is the runtime `BufferPool.growable` flag the test sets directly. Do not add any `#[cfg(feature = ...)]`.
 Expected: FAIL — layer bump does not grow pages yet.
 
 - [ ] **Step 3: Implement**
@@ -443,8 +448,8 @@ Expected: FAIL — layer bump does not grow pages yet.
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `cargo test -p rill-core --features growable-arena memory::arena` and `cargo test -p rill-core memory::arena`.
-Expected: green in both.
+Run: `cargo test -p rill-core memory::arena`.
+Expected: green in both the growable and non-growable test paths.
 
 - [ ] **Step 5: Commit**
 
@@ -458,6 +463,8 @@ git commit -m 'feat(rill-core): growable arena under layer bumping'
 ## Phase 2 — Interpreter: `region_collapse` + layer-aware RC
 
 ### Task 2.1: `exec_runst` uses `region_collapse`; remove exit share-copy
+
+> **Dispatch note (R6):** Tasks 2.1 and 2.2 execute as **ONE implementer dispatch** (the brief carries both task texts; two commits). Task 1.1 adds `debug_assert!(is_base_ref)` to `drop_ref`/`copy`, so any unconditional drain of in-layer refs panics — Task 2.1's own Step-4 gate ("existing ST tests must not regress") is unreachable until Task 2.2's layer-aware drains land in the same change set.
 
 **Files:**
 - Modify: `rill-lang/src/backend/interp.rs` (`exec_runst` at 5391, `finish_region` at 5496, `copy_owned` at 605, `freeze_starray` at 5466)
@@ -753,14 +760,14 @@ git commit -m 'bench(lang): memory layers after measurement'
 
 ## Self-review checklist
 
-- [ ] §3.1 layer model (base RC free list + per-region bump, `is_base_ref` boundary, region→base refs recorded/released once) → Tasks 1.1, 2.1, 2.3.
+- [ ] §3.1 layer model (base RC free list + per-region bump, `is_base_ref` boundary, region→base refs released **exactly once by the collapse sweep** — no store-time recording, R4) → Tasks 1.1, 2.1, 2.3.
 - [ ] §3.2 interleaved temps/result (why pure page handoff fails) → the sweep in Task 1.3; `survivor_chunk_handed_off_by_ownership`.
 - [ ] §3.3 collapse algorithm (trace → bulk-recycle → handoff → in-place sweep → cell base-ref release → reset) → Tasks 1.2, 1.3, 2.1, 2.3.
 - [ ] §3.4 result safe to leave in place (strict boundary, escaping closures are WHNF, rank-2 prevents STRef escape) → Task 2.1 (`escaping_closure_env_survives_collapse`), Task 2.4.
 - [ ] §3.5 base values never reference region values (trace soundness) → `trace_base_root_marks_nothing` in Task 1.2.
 - [ ] §3.6 nested regions hand survivor chunks to the outer layer → `nested_collapse_hands_to_outer_layer` (Task 1.3), `nested_regions_outer_reads_inner_result` (Task 2.4).
 - [ ] §4 interaction table (exec_runst, finish_region, register drain, newSTRef/writeSTRef, ValueUpdateField, registers at exit) → Tasks 2.1, 2.2, 2.3.
-- [ ] §5 allocator requirements (bump mode, mark bits, per-chunk counters, chunk-level + slot-level recycling) → Tasks 1.1–1.4.
+- [ ] §5 allocator requirements (bump mode, mark bits, per-chunk counters, multi-chunk slot store with `SLOT_CHUNK_CAP`, chunk-level wholesale relink + slot-level recycling) → Tasks 1.1–1.4.
 - [ ] §7.4 correctness surface (nested regions, base refs shared into results, bottom results, escaping closures) → Task 2.4.
 - [ ] §7.5 benchmark bar → Tasks 0.1, 3.2.
 - [ ] No `unsafe`, no new dependencies, RT-safe (no new allocations beyond pre-sized bitmap/counters) → Phase 1 design + Global Constraints.
