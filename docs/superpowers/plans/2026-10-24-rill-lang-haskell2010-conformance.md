@@ -171,6 +171,86 @@ git commit -m 'feat(lang): lex backticks, list append and nested block comments'
 
 ---
 
+### Task 2.5: Close the pre-existing conformance gaps (before Task 3)
+
+> **Why this task exists:** a gap audit after Task 2 measured 13 remaining
+> deviations. Three of them are **silent wrong answers** (a failed/absent
+> operand coerces to `0`/empty instead of faulting), which the repo rule in
+> `AGENTS.md` ("a divergence is a defect; no silent partial support") forbids
+> outright. Nothing may proceed to Task 3 while these are open.
+
+**Files:**
+- Modify: `rill-lang/src/types/infer.rs`, `rill-lang/src/lower.rs`, `rill-lang/src/backend/interp.rs`, `rill-lang/src/parser.rs`, `rill-lang/src/types/ty.rs`
+- Test: `rill-lang/tests/haskell2010_syntax_gaps.rs` (operator gaps), `rill-lang/tests/conformance_gaps.rs` (new)
+
+**Interfaces:**
+- Consumes: Task 2's fixity table and first-class `(++)`.
+- Produces: operators and typeclass methods as first-class values; no silent
+  wrong answers in list operations.
+
+#### Measured gaps (audit 2026-10-24, all reproduced)
+
+| # | Expression | Current | Required |
+|---|---|---|---|
+| G1 | `(+) 1.0 2.0` | `unknown '+' in value lowering` | `3.0` |
+| G2 | `fold (+) 0 (listRange …)` | `fold expects a binary function` | the sum |
+| G3 | `(+ 1.0)` section | parse error | `\x -> x + 1.0` |
+| G4 | `(1.0 +)` section | parse error | `\x -> 1.0 + x` |
+| G5 | `(++ [1.0])` section | parse error | `\x -> x ++ [1.0]` |
+| G6 | `fold mappend …` | `method 'mappend' of 'Monoid' requires an argument` | method as a first-class value |
+| G7 | ``1.0 `mappend` 2.0`` | **silently `0`** | the monoid result, or a loud type error |
+| G8 | `fold (++) list [1.0,2.0]` | **silently `0`** | `[1.0,2.0]` |
+| G9 | `length (cons 1.0 (cons 2.0 list))` | **silently `0`** | `2` |
+
+G10–G13 are the `where`-capture, `let`-lambda, function-guard and list-comprehension
+rows already scheduled as S1–S4/S11 in Tasks 3–4; they are **not** duplicated here.
+
+- [ ] **Step 1: Write the failing tests**
+
+`rill-lang/tests/conformance_gaps.rs`: one behavioural test per G1–G9, each asserting
+a computed value that changes when the behaviour is wrong. For G7–G9 write the test
+twice: once asserting the correct value, and once asserting that an *unsupported*
+input **faults** rather than returning `0` (see Step 3).
+
+- [ ] **Step 2: Operators as first-class values (G1–G5)**
+
+The parser already yields `Expr::Ref("+")`; inference already types the arithmetic
+operators (`types/infer.rs` ~3955, `ArrowTy::uniform(2,1,·)`). Lowering does not
+produce a callable for an operator ref. Add operator values in lowering and make
+`fold (+)` accept them (relax `expect_closure` for a builtin operator's known
+arity). Sections `(+ e)` / `(e +)` / `(++ e)` desugar to unary lambdas in the parser
+per Haskell 2010 §3.5.
+
+- [ ] **Step 3: No silent wrong answers (G7–G9)**
+
+Three defects share one root: a failed or absent operand yields `None`, and
+downstream code coerces `None` to `0`/empty.
+
+- Every bulk list op (`length`, `fold`, `map`, `filter`, `concat_map`,
+  `append_list`) must **latch a clean value-track fault** when an argument is
+  absent/bottom, instead of returning a zero result. The existing `latch_*` /
+  `value-track fault` channel is the mechanism.
+- `length` on `Value::Cons` must return the real length (this is the Task 5 rule,
+  pulled forward only to the extent needed to stop the silent `0`; the full lazy
+  consumer work stays in Task 5).
+- Typeclass methods used as values (G6/G7): a bare method reference resolves by its
+  class dictionary — implement it or reject it with a clear diagnostic; never `0`.
+
+- [ ] **Step 4: Verify and commit**
+
+Run the new test file, then:
+```
+cargo test -p rill-lang --features dsp
+cargo clippy -p rill-lang --features dsp
+cargo fmt --check
+```
+```bash
+git add rill-lang/src rill-lang/tests/conformance_gaps.rs
+git commit -m 'fix(lang): first-class operators and no silent list-operation answers'
+```
+
+---
+
 ### Task 3: Parser — where capture, guards, sections, arg patterns, standalone signatures
 
 **Files:**
