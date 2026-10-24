@@ -279,7 +279,7 @@ fn sum_ctor_payload(ctx: &Ctx, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy
         Some(DataInfo::Sum(ctors)) => ctors
             .iter()
             .find(|(c, _)| c == ctor)
-            .map(|(_, payload)| payload.clone()),
+            .map(|(_, payload)| payload.iter().map(|(t, _)| t.clone()).collect()),
         _ => None,
     }
 }
@@ -1825,9 +1825,9 @@ pub fn infer_program_with_entry(
             } => {
                 let fields_ty = fields
                     .iter()
-                    .map(|(f, t)| {
+                    .map(|(f, t, strict)| {
                         let ft = data_field_vty(&env, tyvars, t);
-                        (f.clone(), ft)
+                        (f.clone(), ft, *strict)
                     })
                     .collect();
                 env.data_types
@@ -1857,7 +1857,9 @@ pub fn infer_program_with_entry(
                     .map(|(c, ts)| {
                         (
                             c.clone(),
-                            ts.iter().map(|t| data_field_vty(&env, tyvars, t)).collect(),
+                            ts.iter()
+                                .map(|(t, strict)| (data_field_vty(&env, tyvars, t), *strict))
+                                .collect(),
                         )
                     })
                     .collect();
@@ -2988,7 +2990,7 @@ fn infer_expr_expected(
                 .data_types
                 .iter()
                 .filter_map(|(n, info)| match info {
-                    DataInfo::Record(fields) if fields.iter().any(|(f, _)| f == field) => {
+                    DataInfo::Record(fields) if fields.iter().any(|(f, _, _)| f == field) => {
                         Some(n.clone())
                     }
                     _ => None,
@@ -3036,8 +3038,8 @@ fn infer_expr_expected(
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
                             .iter()
-                            .find(|(f, _)| f == field)
-                            .map(|(_, t)| t.clone());
+                            .find(|(f, _, _)| f == field)
+                            .map(|(_, t, _)| t.clone());
                         match fty {
                             // Parameterized user data (`data Box a = { value: a }`,
                             // `data Kleisli m a b = { unKleisli: a -> m b }`):
@@ -3073,7 +3075,7 @@ fn infer_expr_expected(
                     // the concrete type args.
                     match ctx.env.data_types.get(name.as_str()) {
                         Some(DataInfo::Record(fields)) => {
-                            match fields.iter().position(|(f, _)| f == field) {
+                            match fields.iter().position(|(f, _, _)| f == field) {
                                 Some(idx) => {
                                     let fty = match &fields[idx].1 {
                                         ValueTy::Var(k) => args
@@ -3109,15 +3111,16 @@ fn infer_expr_expected(
                     let field_ty = match &rec_expected {
                         Some(ValueTy::Data(name, args)) | Some(ValueTy::App(name, args)) => {
                             match ctx.env.data_types.get(name.as_str()) {
-                                Some(DataInfo::Record(fields)) => {
-                                    fields.iter().find(|(f, _)| f == field).map(|(_, ft)| {
+                                Some(DataInfo::Record(fields)) => fields
+                                    .iter()
+                                    .find(|(f, _, _)| f == field)
+                                    .map(|(_, ft, _)| {
                                         if args.is_empty() {
                                             ft.clone()
                                         } else {
                                             substitute_field_params(ft, args)
                                         }
-                                    })
-                                }
+                                    }),
                                 _ => None,
                             }
                         }
@@ -3169,8 +3172,8 @@ fn infer_expr_expected(
                         .and_then(|info| match info {
                             DataInfo::Record(fields) => fields
                                 .iter()
-                                .find(|(f, _)| f == field)
-                                .map(|(_, t)| t.clone()),
+                                .find(|(f, _, _)| f == field)
+                                .map(|(_, t, _)| t.clone()),
                             _ => None,
                         });
                     let fty = match fty {
@@ -3199,7 +3202,7 @@ fn infer_expr_expected(
                         .and_then(|info| match info {
                             DataInfo::Record(fields) => fields
                                 .iter()
-                                .position(|(f, _)| f == field)
+                                .position(|(f, _, _)| f == field)
                                 .map(|idx| match &fields[idx].1 {
                                     ValueTy::Var(k) => args
                                         .get(k.saturating_sub(1) as usize)
@@ -4829,7 +4832,7 @@ fn infer_apply_impl(
                     }
                     seen.push(f);
                 }
-                for (fname, _) in &fields {
+                for (fname, _, _) in &fields {
                     if !seen.iter().any(|s| s.as_str() == fname.as_str()) {
                         return Err(CompileError::Type {
                             msg: format!("missing field `{fname}` in `{name}` constructor"),
@@ -4920,7 +4923,7 @@ fn infer_apply_impl(
                 }
                 let field_tys: Vec<(String, ValueTy)> = fields
                     .iter()
-                    .map(|(fname, fty)| {
+                    .map(|(fname, fty, _)| {
                         (
                             fname.to_string(),
                             freshen_placeholder(fty, &mut placeholder_bindings, ctx),
@@ -6605,6 +6608,37 @@ mod tests {
             t.def_schemes["main"].ty.vty,
             ValueTy::Data("IO".into(), vec![ValueTy::Void])
         );
+    }
+
+    #[test]
+    fn data_strictness_flows_into_data_info() {
+        // The Haskell 2010 strictness flag parsed by the data declaration must
+        // reach the type environment, because ctor lowering reads `DataInfo`
+        // (never the AST) when deciding where to force.
+        let t = ty_of(
+            "data T = C !Float; data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }",
+        )
+        .unwrap();
+        match t.type_env.data_types.get("T") {
+            Some(DataInfo::Sum(ctors)) => {
+                assert_eq!(ctors.len(), 1);
+                assert_eq!(ctors[0].0, "C");
+                assert_eq!(ctors[0].1, vec![(ValueTy::Float, true)]);
+            }
+            other => panic!("expected Sum for T, got {other:?}"),
+        }
+        match t.type_env.data_types.get("P") {
+            Some(DataInfo::Record(fields)) => {
+                assert_eq!(
+                    fields,
+                    &vec![
+                        ("x".to_string(), ValueTy::Float, true),
+                        ("y".to_string(), ValueTy::Float, false),
+                    ]
+                );
+            }
+            other => panic!("expected Record for P, got {other:?}"),
+        }
     }
 
     #[test]

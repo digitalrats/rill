@@ -136,10 +136,13 @@ fn is_concrete_ty(v: &ValueTy) -> bool {
 /// pin the wrong parameter — e.g. `first: m a` matching `List Int` binds `m`
 /// before discovering `a` disagrees), and an unresolved placeholder keeps the
 /// parameterized type opaque (`Data("Kleisli", [])`), exactly as before.
-fn record_args_from_fields(fields: &[(String, ValueTy)], field_tys: &[ValueTy]) -> Vec<ValueTy> {
+fn record_args_from_fields(
+    fields: &[(String, ValueTy, bool)],
+    field_tys: &[ValueTy],
+) -> Vec<ValueTy> {
     let mut bindings: Vec<(u32, ValueTy)> = Vec::new();
     let mut arity = 0;
-    for ((_, fty), aty) in fields.iter().zip(field_tys.iter()) {
+    for ((_, fty, _), aty) in fields.iter().zip(field_tys.iter()) {
         arity = arity.max(param_placeholder_max(fty));
         if !match_field_expected(fty, aty, &mut bindings) {
             return vec![];
@@ -1278,7 +1281,7 @@ impl<'a> Lowerer<'a> {
                     .data_types
                     .iter()
                     .filter_map(|(n, info)| match info {
-                        DataInfo::Record(fields) if fields.iter().any(|(f, _)| f == field) => {
+                        DataInfo::Record(fields) if fields.iter().any(|(f, _, _)| f == field) => {
                             Some(n.clone())
                         }
                         _ => None,
@@ -1316,8 +1319,8 @@ impl<'a> Lowerer<'a> {
                         let fty = match self.env.data_types.get(rname) {
                             Some(DataInfo::Record(fields)) => fields
                                 .iter()
-                                .find(|(f, _)| f == field)
-                                .map(|(_, t)| t.clone()),
+                                .find(|(f, _, _)| f == field)
+                                .map(|(_, t, _)| t.clone()),
                             _ => None,
                         };
                         let bound = fty.and_then(|ft| {
@@ -1386,12 +1389,14 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let field_index = fields.iter().position(|(f, _)| f == field).ok_or_else(|| {
-                    CompileError::Type {
-                        msg: format!("no field `{field}` in `{rec_name}`"),
-                        span: *span,
-                    }
-                })?;
+                let field_index =
+                    fields
+                        .iter()
+                        .position(|(f, _, _)| f == field)
+                        .ok_or_else(|| CompileError::Type {
+                            msg: format!("no field `{field}` in `{rec_name}`"),
+                            span: *span,
+                        })?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueProject {
                     dst,
@@ -1448,12 +1453,14 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                 };
-                let field_index = fields.iter().position(|(f, _)| f == field).ok_or_else(|| {
-                    CompileError::Type {
-                        msg: format!("no field `{field}` in `{rec_name}`"),
-                        span: *span,
-                    }
-                })?;
+                let field_index =
+                    fields
+                        .iter()
+                        .position(|(f, _, _)| f == field)
+                        .ok_or_else(|| CompileError::Type {
+                            msg: format!("no field `{field}` in `{rec_name}`"),
+                            span: *span,
+                        })?;
                 let (src, _) = self.lower_value(value)?;
                 self.emit_value(ValueInstr::ValueUpdateField {
                     slot: rec_reg,
@@ -1511,7 +1518,10 @@ impl<'a> Lowerer<'a> {
                 };
                 let ctors: Vec<(String, Vec<ValueTy>)> = match &sum_name {
                     Some(n) => match self.env.data_types.get(n) {
-                        Some(DataInfo::Sum(ctors)) => ctors.clone(),
+                        Some(DataInfo::Sum(ctors)) => ctors
+                            .iter()
+                            .map(|(c, p)| (c.clone(), p.iter().map(|(t, _)| t.clone()).collect()))
+                            .collect(),
                         _ => {
                             return Err(CompileError::Type {
                                 msg: format!("`{n}` is not a sum type"),
@@ -2293,7 +2303,7 @@ impl<'a> Lowerer<'a> {
                             };
                             let mut field_regs = Vec::with_capacity(fields.len());
                             let mut field_tys: Vec<ValueTy> = Vec::with_capacity(fields.len());
-                            for (fname, _) in &fields {
+                            for (fname, _, strict) in &fields {
                                 let fexpr = fields_expr
                                     .iter()
                                     .find(|(n, _)| n == fname)
@@ -2306,8 +2316,8 @@ impl<'a> Lowerer<'a> {
                                     })?;
                                 let fty = fields
                                     .iter()
-                                    .find(|(f, _)| f == fname)
-                                    .map(|(_, t)| t.clone());
+                                    .find(|(f, _, _)| f == fname)
+                                    .map(|(_, t, _)| t.clone());
                                 let field_expected = match (&rec_args, fty) {
                                     (Some(a), Some(ft)) if !a.is_empty() => {
                                         Some(crate::types::infer::substitute_field_params(&ft, a))
@@ -2318,6 +2328,18 @@ impl<'a> Lowerer<'a> {
                                 let (fr, ft) = match field_expected {
                                     Some(fe) => self.lower_value_expected(fexpr, Some(&fe))?,
                                     None => self.lower_value(fexpr)?,
+                                };
+                                // A strict field (`{ x: !Float }`, Haskell 2010)
+                                // forces its argument to WHNF at construction.
+                                let fr = if *strict {
+                                    let forced = self.fresh_value_reg();
+                                    self.emit_value(ValueInstr::ValueForce {
+                                        dst: forced,
+                                        src: fr,
+                                    });
+                                    forced
+                                } else {
+                                    fr
                                 };
                                 field_regs.push(fr);
                                 field_tys.push(ft);
@@ -2370,9 +2392,22 @@ impl<'a> Lowerer<'a> {
                             span: *span,
                         });
                     }
+                    let bangs = self.ctor_payload_bangs(&sum_name, ctor_idx);
                     let mut payload_regs = Vec::with_capacity(call_args.len());
-                    for a in call_args {
+                    for (i, a) in call_args.iter().enumerate() {
                         let (pr, _) = self.lower_value(a)?;
+                        // A strict payload (`C !Int`, Haskell 2010) forces its
+                        // argument to WHNF at construction.
+                        let pr = if bangs.get(i).copied().unwrap_or(false) {
+                            let forced = self.fresh_value_reg();
+                            self.emit_value(ValueInstr::ValueForce {
+                                dst: forced,
+                                src: pr,
+                            });
+                            forced
+                        } else {
+                            pr
+                        };
                         payload_regs.push(pr);
                     }
                     let dst = self.fresh_value_reg();
@@ -6812,12 +6847,30 @@ impl<'a> Lowerer<'a> {
                         if found.is_some() {
                             return None;
                         }
-                        found = Some((tname.clone(), idx, payload.clone()));
+                        found = Some((
+                            tname.clone(),
+                            idx,
+                            payload.iter().map(|(t, _)| t.clone()).collect(),
+                        ));
                     }
                 }
             }
         }
         found
+    }
+
+    /// Strictness flags per payload position of a sum constructor: `true`
+    /// where the payload type carried a Haskell 2010 strictness flag
+    /// (`data T = C !Int`), so lowering forces that argument to WHNF at
+    /// construction. Empty for non-sum or out-of-range lookups.
+    fn ctor_payload_bangs(&self, sum_name: &str, ctor_idx: usize) -> Vec<bool> {
+        match self.env.data_types.get(sum_name) {
+            Some(DataInfo::Sum(ctors)) => ctors
+                .get(ctor_idx)
+                .map(|(_, payload)| payload.iter().map(|(_, b)| *b).collect())
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
     }
 
     /// Number of arena slots a value of the given static type occupies when
@@ -6940,7 +6993,7 @@ impl<'a> Lowerer<'a> {
                     Some(DataInfo::Record(fields)) => {
                         1 + fields
                             .iter()
-                            .map(|(_, t)| self.subtree_size_impl(t, visiting))
+                            .map(|(_, t, _)| self.subtree_size_impl(t, visiting))
                             .sum::<usize>()
                     }
                     Some(DataInfo::Sum(ctors)) => {
@@ -6951,7 +7004,7 @@ impl<'a> Lowerer<'a> {
                             .map(|(_, payload)| {
                                 payload
                                     .iter()
-                                    .map(|t| self.subtree_size_impl(t, visiting))
+                                    .map(|(t, _)| self.subtree_size_impl(t, visiting))
                                     .sum::<usize>()
                             })
                             .max()
@@ -8403,8 +8456,8 @@ mod tests {
         // type arguments: a leaked `first` binding would hand out `[Int]` and
         // let the dispatch key claim the record is a `Pair Int …`.
         let fields = [
-            ("first".to_string(), ValueTy::Var(1)),
-            ("second".to_string(), ValueTy::Var(1)),
+            ("first".to_string(), ValueTy::Var(1), false),
+            ("second".to_string(), ValueTy::Var(1), false),
         ];
         assert_eq!(
             record_args_from_fields(&fields, &[ValueTy::Int, ValueTy::Int]),

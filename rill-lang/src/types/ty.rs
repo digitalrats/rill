@@ -1,14 +1,11 @@
-//! Arrow type model: a program is a block transform.
+//! Arrow type model: a program is a transform over value types (linear lambda
+//! model — all data is equal; there is no signal/value split).
 //!
-//! Signal types are structured in three levels: the per-sample scalar type
-//! (`Scalar`), one channel (`Channel`), and a block transform (`ArrowTy`,
-//! n input channels → m output channels). Arities (channel counts) are
-//! synthesized separately (see `infer.rs`) because `<:`/`:>` divisibility is
-//! not expressible by unification.
-//!
-//! Channels carry a **rate**: [`Rate::Signal`] (a block of samples per tick,
-//! the existing SIMD path) or [`Rate::Value`] (one arena value per tick).
-//! [`Block`] is a back-compat alias for a signal-rate `Channel`.
+//! An expression's type is a single [`ValueTy`] wrapped in [`Ty`]; channel
+//! arity is gone (`ins`/`outs` vectors were removed with the block track). A
+//! signal is an ordinary value type ([`ValueTy::Buffer`]), executed as
+//! `Value::Buffer` on the value track. [`ArrowTy`] is a back-compat alias for
+//! [`Ty`]; [`Block`] a back-compat alias for [`ValueTy`].
 
 use std::collections::{HashMap, HashSet};
 
@@ -174,10 +171,12 @@ pub struct Subst {
 /// Shape of a declared data type.
 #[derive(Debug, Clone)]
 pub enum DataInfo {
-    /// A product type: field name → value type.
-    Record(Vec<(String, ValueTy)>),
-    /// A sum type: constructor name → payload value types.
-    Sum(Vec<(String, Vec<ValueTy>)>),
+    /// A product type: field name → value type, plus the strictness flag
+    /// (a strict field's argument is forced to WHNF at construction).
+    Record(Vec<(String, ValueTy, bool)>),
+    /// A sum type: constructor name → payload value types, each carrying its
+    /// strictness flag (a strict payload is forced to WHNF at construction).
+    Sum(Vec<(String, Vec<(ValueTy, bool)>)>),
     /// An ABSTRACT (opaque) type: nameable in signatures, but with no
     /// constructors and no fields. Source programs cannot build, project, or
     /// pattern-match one — only compiler-provided primitives produce values of
@@ -860,9 +859,9 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
         {
             let fields_ty = fields
                 .iter()
-                .map(|(f, t)| {
+                .map(|(f, t, strict)| {
                     let ft = crate::types::infer::data_field_vty(env, tyvars, t);
-                    (f.clone(), ft)
+                    (f.clone(), ft, *strict)
                 })
                 .collect();
             env.data_types
@@ -940,22 +939,22 @@ impl TypeEnv {
             (
                 "Maybe".to_string(),
                 DataInfo::Sum(vec![
-                    ("Just".to_string(), vec![ValueTy::Var(1)]),
+                    ("Just".to_string(), vec![(ValueTy::Var(1), false)]),
                     ("Nothing".to_string(), vec![]),
                 ]),
             ),
             (
                 "Pair".to_string(),
                 DataInfo::Record(vec![
-                    ("first".to_string(), ValueTy::Var(1)),
-                    ("second".to_string(), ValueTy::Var(2)),
+                    ("first".to_string(), ValueTy::Var(1), false),
+                    ("second".to_string(), ValueTy::Var(2), false),
                 ]),
             ),
             (
                 "Either".to_string(),
                 DataInfo::Sum(vec![
-                    ("Left".to_string(), vec![ValueTy::Var(1)]),
-                    ("Right".to_string(), vec![ValueTy::Var(2)]),
+                    ("Left".to_string(), vec![(ValueTy::Var(1), false)]),
+                    ("Right".to_string(), vec![(ValueTy::Var(2), false)]),
                 ]),
             ),
         ]);
@@ -2017,7 +2016,7 @@ impl TypeEnv {
         }
         match self.data_types.get(name) {
             Some(DataInfo::Record(fields)) => {
-                for (_, t) in fields {
+                for (_, t, _) in fields {
                     match t {
                         ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
                         ValueTy::Newtype(inner, _) => {
@@ -2029,7 +2028,7 @@ impl TypeEnv {
             }
             Some(DataInfo::Sum(ctors)) => {
                 for (_, payload) in ctors {
-                    for t in payload {
+                    for (t, _) in payload {
                         match t {
                             ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
                             ValueTy::Newtype(inner, _) => {
@@ -2528,12 +2527,15 @@ mod eq_ord_tests {
         let mut env = TypeEnv::with_builtins();
         env.data_types.insert(
             "Point".to_string(),
-            DataInfo::Record(vec![("x".to_string(), ValueTy::Float)]),
+            DataInfo::Record(vec![("x".to_string(), ValueTy::Float, false)]),
         );
         env.data_types.insert(
             "List".to_string(),
             DataInfo::Sum(vec![
-                ("Cons".to_string(), vec![ValueTy::Var(1), ValueTy::Var(2)]),
+                (
+                    "Cons".to_string(),
+                    vec![(ValueTy::Var(1), false), (ValueTy::Var(2), false)],
+                ),
                 ("Nil".to_string(), vec![]),
             ]),
         );

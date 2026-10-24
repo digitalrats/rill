@@ -626,8 +626,14 @@ impl<'a> Parser<'a> {
             while self.peek().tok != Tok::RBrace {
                 let (fname, _) = self.expect_ident()?;
                 self.eat(&Tok::Colon)?;
+                let strict = if self.peek().tok == Tok::Bang {
+                    self.bump();
+                    true
+                } else {
+                    false
+                };
                 let t = self.parse_type_expr()?;
-                fields.push((fname, t));
+                fields.push((fname, t, strict));
                 if self.peek().tok == Tok::Comma {
                     self.bump();
                 }
@@ -642,15 +648,34 @@ impl<'a> Parser<'a> {
         } else {
             // sum: C1 T1 | C2 T2 T3
             let mut ctors = Vec::new();
-            while self.peek().tok != Tok::Semi && self.peek().tok != Tok::Eof {
+            loop {
                 let (cname, _) = self.expect_ident()?;
                 let mut payload = Vec::new();
-                while matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_)) {
-                    payload.push(self.parse_type_single()?);
+                // A payload type stops at a newline boundary: `peek` skips
+                // layout newlines, so without this check the NEXT definition's
+                // name (e.g. `main` on the following line) would be swallowed
+                // as one more payload type. The renderer's def separator is the
+                // bare newline — the same boundary a definition would hit.
+                while !self.at_line_start()
+                    && matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::Bang)
+                {
+                    let strict = if self.peek().tok == Tok::Bang {
+                        self.bump();
+                        true
+                    } else {
+                        false
+                    };
+                    let t = self.parse_type_single()?;
+                    payload.push((t, strict));
                 }
                 ctors.push((cname, payload));
+                // A sum declaration ends when no further constructor follows
+                // (`|`): a bare newline (the renderer's def separator) or `;`
+                // terminates it exactly like a definition boundary would.
                 if self.peek().tok == Tok::Pipe {
                     self.bump();
+                } else {
+                    break;
                 }
             }
             Ok(Def::Sum {
@@ -2421,6 +2446,50 @@ mod tests {
     }
 
     #[test]
+    fn parse_strict_product_field() {
+        let p = prog("data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }");
+        match &p.defs[0] {
+            Def::Data { fields, .. } => {
+                assert_eq!(
+                    fields,
+                    &vec![
+                        ("x".to_string(), TypeExpr::TName("Float".into()), true),
+                        ("y".to_string(), TypeExpr::TName("Float".into()), false),
+                    ]
+                );
+            }
+            other => panic!("expected Data, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_strict_sum_payload() {
+        let p = prog("data T = C !Int | D Float; main = C 1");
+        match &p.defs[0] {
+            Def::Sum { ctors, .. } => {
+                assert_eq!(
+                    ctors,
+                    &vec![
+                        ("C".to_string(), vec![(TypeExpr::TName("Int".into()), true)]),
+                        (
+                            "D".to_string(),
+                            vec![(TypeExpr::TName("Float".into()), false)]
+                        ),
+                    ]
+                );
+            }
+            other => panic!("expected Sum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newtype_strict_field_is_parse_error() {
+        // Haskell 2010: newtypes cannot declare strict fields.
+        let src = "newtype Hz = Hz !Float; main = Hz 1.0";
+        assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
+    }
+
+    #[test]
     fn parses_type_and_newtype() {
         let p = prog("type Angles = Float; newtype Hz = Float; main = Hz 440.0");
         assert!(p.defs.iter().any(|d| matches!(d, Def::TypeAlias { .. })));
@@ -2447,7 +2516,7 @@ mod tests {
                 assert_eq!(tyvars, &vec!["a".to_string()]);
                 assert_eq!(
                     fields[0],
-                    ("value".to_string(), TypeExpr::TName("a".into()))
+                    ("value".to_string(), TypeExpr::TName("a".into()), false)
                 );
             }
             other => panic!("expected Data, got {other:?}"),

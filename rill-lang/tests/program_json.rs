@@ -49,6 +49,11 @@ fn roundtrips_data_declaration() {
 }
 
 #[test]
+fn roundtrips_strict_data_declaration() {
+    roundtrip("data P = { x: !Float, y: Float }; data T = C !Int | D Float; main = C 1");
+}
+
+#[test]
 fn roundtrips_let_and_hole() {
     roundtrip("main = let g = 4.0 * ?gain in g + 1.0");
 }
