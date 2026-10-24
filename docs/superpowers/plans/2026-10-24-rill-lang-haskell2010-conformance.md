@@ -66,21 +66,16 @@
 use rill_lang::{compile, ffi::ForeignRegistry};
 
 #[test]
-fn user_take_shadows_the_prelude_take() {
-    // `deep_recursion_parity` pins this end to end; this test pins the rule
-    // directly and must fail before the shadowing fix when a Prelude `take`
-    // exists (in Task 5).  Runs now as a control: it passes with no Prelude
-    // `take`, so it does not gate Task 1 by itself — Step 2 uses the B1 test.
-}
-
-#[test]
 fn strict_mode_still_rejects_user_recursion() {
     let src = r#"loop n = loop n; main = do { write (Just "x") stdout; return () };"#;
     assert!(compile::<f32, 256>(src, ForeignRegistry::new()).is_err());
 }
 ```
 
-And a B1 probe (in the same file) that compiles the Prelude with a recursive def present — see Step 3.
+The user-vs-Prelude shadowing assertion is **not** written here: with no Prelude
+`take` yet, the test cannot fail for the right reason. It is written and wired in
+Task 5, Step 1 (`user_take_shadows_the_prelude_take`), once the Prelude `take`
+exists. Task 1's regression evidence for B2 is `deep_recursion_parity` (Step 5).
 
 - [ ] **Step 2: Fix B1 — scope `check_recursion` to user defs**
 
@@ -280,6 +275,8 @@ git commit -m 'feat(lang): let-bound values and list comprehensions'
 
 `rill-lang/tests/lazy_lists.rs`:
 ```rust
+use rill_lang::{compile, ffi::ForeignRegistry};
+
 #[test] fn from_and_head_work() { /* head (from 1.0) == 1.0 */ }
 #[test] fn take_terminates_on_infinite_from() { /* length (take 5 (from 1.0)) == 5 */ }
 #[test] fn fold_over_take_of_from() { /* fold (+) 0 (take 10 (from 1)) == 55 */ }
@@ -287,9 +284,24 @@ git commit -m 'feat(lang): let-bound values and list comprehensions'
 #[test] fn map_over_cons_chain() { /* fold over map (+1) of a cons chain */ }
 #[test] fn take_of_map_of_from_terminates() { /* take 5 (map f (from 1)) — must terminate */ }
 #[test] fn benchmark_list_size_works() { /* take 64 (from 1.0) and fold over it */ }
+#[test]
+fn user_take_shadows_the_prelude_take() {
+    // The user's own `take` must win over the Prelude `take` in BOTH inference
+    // and lowering. Before the Task-1 shadowing fix this mistyped silently
+    // (Prelude scheme + user body). Repeated here so the rule is pinned where
+    // it matters; `deep_recursion_parity` remains the end-to-end regression.
+    let src = r#"{-# MODE complete #-}
+take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (n - 1.0) (tail xs));
+from n = cons n (from (n + 1.0));
+main = do { write (Just (show_float (fold (\a -> \x -> a + x) 0.0 (take 3.0 (from 10.0))))) stdout; return () };
+"#;
+    let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).unwrap();
+    r.run().unwrap();
+    assert_eq!(r.stdout(), ["33.0"], "user take: 10 + 11 + 12");
+}
 ```
 
-- [ ] **Step 2: Run to verify they fail** — `unbound operand`, `length == 0`, or a hang for the lazy-producer test.
+- [ ] **Step 2: Run to verify they fail** — `unbound operand`, `length == 0`, or a hang for the lazy-producer test; `user_take_shadows_the_prelude_take` fails only if Task 1's shadowing fix regressed.
 
 - [ ] **Step 3: Make consumers representation-agnostic**
 
