@@ -618,16 +618,13 @@ fn collect_static_calls(
 /// `twice = fn f x -> f (f x)`) dispatches whatever closure the caller
 /// passes, and is not itself a recursion source.
 fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
-    let nodes = fragment_valued_names(defs);
-    let mut edges: Vec<(String, String)> = Vec::new();
+    let (nodes, edges) = def_call_graph(defs);
+    // Self-recursion is a self-loop; report it directly for a clear message.
     for d in defs {
         let name = d.name();
         if !nodes.contains(name) {
             continue;
         }
-        let bound = HashSet::new();
-        collect_static_calls(d.body(), name, &bound, &nodes, &mut edges);
-        // Self-recursion is a self-loop; report it directly for a clear message.
         if edges.iter().any(|(src, dst)| src == name && dst == name) {
             return Err(CompileError::Type {
                 msg: format!("recursive function call: `{name}` calls itself"),
@@ -641,7 +638,7 @@ fn check_recursion(defs: &[Def]) -> Result<(), CompileError> {
     let mut visited = HashSet::new();
     fn dfs(
         n: &str,
-        edges: &Vec<(String, String)>,
+        edges: &[(String, String)],
         visiting: &mut HashSet<String>,
         visited: &mut HashSet<String>,
     ) -> Result<(), CompileError> {
@@ -1748,6 +1745,116 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
     infer_program_with_entry(program, mode, "main")
 }
 
+/// The single Prelude-vs-user SHADOWING rule, applied identically in both
+/// phases of the pipeline.
+///
+/// A Prelude definition supplies a name only while the program does not: a
+/// user definition of the same name SHADOWS it, and the Prelude definition is
+/// dropped entirely. The returned list is therefore the exact merged top-level
+/// definition list both inference and lowering must consume — Prelude defs
+/// first, then the user's.
+///
+/// Dropping rather than relying on "last one wins" is what makes the rule
+/// explicit at both call sites. Before this rule existed, inference filtered
+/// user defs OUT by Prelude name (so the name was typed with the Prelude's
+/// scheme) while lowering's `name -> Def` map overwrote last-wins (so the
+/// name RAN the user's body): a user `merge`/`seq` was silently typed with the
+/// Prelude's arity and then failed to unify, or worse, ran a body of the wrong
+/// shape.
+///
+/// Definitions that cannot own a value name (data/typeclass/instance/foreign
+/// declarations) never shadow anything: only [`Def::Eval`] defs enter the
+/// name space here, so a Prelude `data`/`instance` is always kept.
+///
+/// **Strict mode also drops recursive Prelude definitions.** Strict's contract
+/// is an acyclic call graph, so it cannot execute one, and this compiler
+/// rejects that at the name level: a Strict program that calls a recursive
+/// Prelude helper must get a compile error, not an unbounded lowering
+/// recursion. Keeping the definition out of the merged list makes every
+/// reference to it a plain "unknown identifier", which is total (a call, a
+/// bare reference, a first-class passing all fail the same way). Complete mode
+/// keeps them — recursion is its normal evaluation strategy.
+pub(crate) fn merge_prelude_defs(
+    prelude_defs: &[crate::ast::Def],
+    user_defs: &[crate::ast::Def],
+    mode: Mode,
+) -> Vec<crate::ast::Def> {
+    let user_names: HashSet<&str> = user_defs
+        .iter()
+        .filter(|d| matches!(d, crate::ast::Def::Eval { .. }))
+        .map(|d| d.name())
+        .collect();
+    let unavailable: HashSet<String> = if mode == Mode::Strict {
+        cyclic_def_names(prelude_defs)
+    } else {
+        HashSet::new()
+    };
+    prelude_defs
+        .iter()
+        .filter(|d| !user_names.contains(d.name()) && !unavailable.contains(d.name()))
+        .cloned()
+        .collect()
+}
+
+/// Names of definitions that take part in a static call cycle, direct or
+/// mutual (`from n = cons n (from (n + 1.0))` → `{from}`).
+///
+/// Uses the same fragment-valued call graph as [`check_recursion`], so "cyclic"
+/// here means exactly what Strict mode rejects for a user definition.
+fn cyclic_def_names(defs: &[Def]) -> HashSet<String> {
+    let (nodes, edges) = def_call_graph(defs);
+    cyclic_in_call_graph(&nodes, &edges)
+}
+
+/// Build the static call graph over fragment-valued definitions: the names that
+/// can own a runtime dispatch chain, and an edge `A → B` for every statically
+/// named call from `A`'s body to `B`.
+///
+/// Shared by [`check_recursion`] (which reports a cycle as a Strict-mode error)
+/// and [`cyclic_def_names`] (which uses the cycle as the whole-prelude
+/// availability test), so the two can never disagree about what "recursive"
+/// means.
+fn def_call_graph(defs: &[Def]) -> (HashSet<String>, Vec<(String, String)>) {
+    let nodes = fragment_valued_names(defs);
+    let mut edges: Vec<(String, String)> = Vec::new();
+    for d in defs {
+        if !nodes.contains(d.name()) {
+            continue;
+        }
+        collect_static_calls(d.body(), d.name(), &HashSet::new(), &nodes, &mut edges);
+    }
+    (nodes, edges)
+}
+
+/// The subset of `nodes` that can reach itself through `edges`.
+fn cyclic_in_call_graph(nodes: &HashSet<String>, edges: &[(String, String)]) -> HashSet<String> {
+    let mut cyclic = HashSet::new();
+    for start in nodes {
+        let mut visited = HashSet::new();
+        let mut stack: Vec<String> = edges
+            .iter()
+            .filter(|(src, _)| src == start)
+            .map(|(_, dst)| dst.clone())
+            .collect();
+        while let Some(cur) = stack.pop() {
+            if cur == *start {
+                cyclic.insert(start.clone());
+                break;
+            }
+            if !visited.insert(cur.clone()) {
+                continue;
+            }
+            stack.extend(
+                edges
+                    .iter()
+                    .filter(|(src, _)| src == &cur)
+                    .map(|(_, dst)| dst.clone()),
+            );
+        }
+    }
+    cyclic
+}
+
 /// Infer a program with an explicit entry name.
 ///
 /// Inference is blind to the entry name: every top-level definition is typed
@@ -1774,15 +1881,28 @@ pub fn infer_program_with_entry(
     // Typeclass/instance declarations are registered by `register_decls` (the
     // same path the category prelude uses).
     env.register_decls(&program.defs);
+    // The USER's own definitions, captured BEFORE the Prelude merge below. This
+    // is the list Strict mode's recursion check inspects (the Prelude is
+    // trusted library code — a recursive prelude def such as `from` must not
+    // make every Strict-mode program fail) and the shadowing set
+    // [`merge_prelude_defs`] consults.
+    let user_defs: Vec<crate::ast::Def> = program.defs.clone();
     // Prelude function definitions (the Buffer-arrow combinators:
     // `seq`/`par`/`split`/`merge`) are typed HERE, BEFORE the user's `data`
     // declarations register (a user `data Pair` would otherwise shadow the
     // builtin `Pair a b` the combinators' bodies use). They are pure functions,
     // so typing them against the builtin env is sound; they then flow into
     // `program.defs` so reduce/lower see them as ordinary top-level defs.
-    let prelude_defs: Vec<crate::ast::Def> = env.prelude_defs.clone();
+    //
+    // The Prelude is typed as a WHOLE: one of its defs may call another
+    // (`from` is recursive), and a user shadowing one name must not make a
+    // sibling's body untypeable. Only the SURVIVING definitions
+    // ([`merge_prelude_defs`]) are merged into the program and exposed as
+    // schemes; the rest are typed for the Prelude's own sake and discarded.
+    let prelude_defs: Vec<crate::ast::Def> =
+        merge_prelude_defs(&env.prelude_defs, &user_defs, mode);
     let mut prelude_ctx: Option<Ctx> = None;
-    if !prelude_defs.is_empty() {
+    if !env.prelude_defs.is_empty() {
         let mut pc = Ctx {
             next: 0,
             subst: Subst::default(),
@@ -1796,13 +1916,15 @@ pub fn infer_program_with_entry(
             mode,
             runst_payload_tys: HashMap::new(),
         };
-        infer_def_group(&mut pc, &prelude_defs)?;
+        infer_def_group(&mut pc, &env.prelude_defs)?;
         prelude_ctx = Some(pc);
-        let mut all_defs: Vec<crate::ast::Def> =
-            Vec::with_capacity(program.defs.len() + prelude_defs.len());
-        all_defs.extend(prelude_defs.iter().cloned());
-        all_defs.extend(program.defs.iter().cloned());
-        program.defs = all_defs;
+        if !prelude_defs.is_empty() {
+            let mut all_defs: Vec<crate::ast::Def> =
+                Vec::with_capacity(program.defs.len() + prelude_defs.len());
+            all_defs.extend(prelude_defs.iter().cloned());
+            all_defs.extend(program.defs.iter().cloned());
+            program.defs = all_defs;
+        }
     }
     for def in &program.defs {
         match def {
@@ -1891,8 +2013,14 @@ pub fn infer_program_with_entry(
     // runtime dispatch chain must terminate, so the call stack is statically
     // bounded (see `check_recursion`). Complete mode lifts the ban: recursion
     // is supported via lazy thunks (bottom at runtime for a divergent def).
+    //
+    // USER defs only: the Prelude is trusted library code and may declare
+    // recursive helpers (the lazy list producer `from`). Checking the merged
+    // list would reject every Strict-mode program the moment such a helper
+    // exists. A user definition that shadows a Prelude name is still a user
+    // definition, so its recursion is still rejected.
     if mode == Mode::Strict {
-        check_recursion(&program.defs)?;
+        check_recursion(&user_defs)?;
     }
 
     // Derive `Eq`/`Ord` instances for every concrete data type (user + builtin)
@@ -1918,8 +2046,10 @@ pub fn infer_program_with_entry(
     // into the main context and exclude them from the per-program re-inference
     // so `seq`/`par`/`split`/`merge` resolve without re-typing (a user `data
     // Pair` would otherwise shadow the builtin `Pair` the bodies use).
-    let prelude_names: std::collections::HashSet<String> =
-        prelude_defs.iter().map(|d| d.name().to_string()).collect();
+    //
+    // `prelude_defs` is already the SHADOWED list (see `merge_prelude_defs`): a
+    // Prelude def whose name a user def owns is absent, so seeding it cannot
+    // hand the user's name the Prelude's scheme.
     if let Some(pc) = prelude_ctx {
         for def in &prelude_defs {
             if let Some(scheme) = pc.defs.get(def.name()).cloned() {
@@ -1930,12 +2060,10 @@ pub fn infer_program_with_entry(
             }
         }
     }
-    let user_defs: Vec<crate::ast::Def> = program
-        .defs
-        .iter()
-        .filter(|d| prelude_names.is_empty() || !prelude_names.contains(d.name()))
-        .cloned()
-        .collect();
+    // Every USER definition is inferred, including one that shadows a Prelude
+    // name: the shadowing rule already removed the Prelude def from the merged
+    // list, and lowering builds its `name -> Def` map from that same list, so
+    // inference and execution see one definition per name.
     infer_def_group(&mut ctx, &user_defs)?;
 
     // Validate instance method bodies even when the instance is never called:

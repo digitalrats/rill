@@ -8146,6 +8146,18 @@ pub fn lower_program_with_channels(
             CompileError::Unsupported(format!("program must have a `{entry}` definition"))
         })?;
 
+    // Definition lookup for the whole body walk. `program.defs` is the MERGED
+    // top-level list inference settled on: Prelude definitions first, the user's
+    // after, with any Prelude definition the user SHADOWS already dropped (see
+    // `types::infer::merge_prelude_defs`). Building the map in that order makes
+    // last-wins the deliberate expression of the shadowing rule rather than an
+    // accident of insertion order — but the rule itself is enforced upstream,
+    // so a shadowed Prelude body can never reach this map and be executed
+    // against the scheme inference gave the user's name.
+    //
+    // Only `Def::Eval` names are unique in the merged list (declaration kinds
+    // such as `instance` deliberately repeat their class name), so the guard
+    // below scopes the uniqueness check to value definitions.
     let mut defs: HashMap<String, Def> = HashMap::new();
     for d in &program.defs {
         defs.insert(d.name().to_string(), d.clone());
@@ -8153,6 +8165,21 @@ pub fn lower_program_with_channels(
             defs.insert(wd.name().to_string(), wd.clone());
         }
     }
+    debug_assert!(
+        {
+            let evals: Vec<&str> = program
+                .defs
+                .iter()
+                .filter(|d| matches!(d, Def::Eval { .. }))
+                .map(|d| d.name())
+                .collect();
+            let unique: std::collections::HashSet<&&str> = evals.iter().collect();
+            unique.len() == evals.len()
+        },
+        "merged definition list carries a duplicate value-definition name: \
+         inference dropped no Prelude shadow, so lowering would run one body \
+         while inference typed the other"
+    );
 
     let recursive_locals = Lowerer::compute_recursive_locals(&defs);
     // `main` is an ordinary value definition; `?name` / `SetParameter` remains
@@ -8316,6 +8343,21 @@ pub fn lower_program_with_channels(
     // (their subtree is already in `value_capacity`) and runtime match/ctor
     // payloads without separate tracking.
     let buffer_budget = value_capacity * Lowerer::ELEM_EST;
+    // Measured behaviour of this accounting for a RECURSIVE PRELUDE definition
+    // (B3): the count is a STATIC per-program bound over allocation sites, not
+    // a per-call or per-element charge, so a recursive producer such as
+    // `from n = cons n (from (n + 1.0))` contributes the same constant whether
+    // it lives in the Prelude or is shadowed by an identical user body. Both
+    // compile to capacity 400 / buffer budget 1600 for `main = from 1.0`.
+    //
+    // A demand-limited drain `length (take n (from 1.0))` compiles to a
+    // CONSTANT capacity (2120 / 8480) for every `n` from 1 to 256 — the arena
+    // budget does not grow with demand. The runtime cost per demanded element
+    // comes out of that fixed budget, so there is a demand WALL: measured on
+    // this build, the largest working `n` is 84 and `n = 85` latches
+    // "value-track resource exhausted: value arena capacity". `n = 64` (the
+    // GHC-parity benchmark size) has 21 elements of headroom.
+    //
     // Complete mode (Stage A): the lazy value track keeps each thunk's memo
     // cell AND its forced result live for the thunk's lifetime (a strict
     // program would release the result at tick end), and a forced thunk may

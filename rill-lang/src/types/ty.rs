@@ -699,6 +699,8 @@ writeArray arr ix v :: Ix i => STArray s i e -> i -> e -> ST s () = bind (getBou
 
 modifyArray arr ix f :: Ix i => STArray s i e -> i -> (e -> e) -> ST s () = bind (getBounds arr) (\ b -> modifyArrayFlat arr (index b ix) f);
 
+from n = cons n (from (n + 1.0));
+
 main = ();
 "#;
 
