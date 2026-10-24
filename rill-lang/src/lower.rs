@@ -2237,6 +2237,18 @@ impl<'a> Lowerer<'a> {
                         arg_regs.push(lr);
                         arg_tys.push(ft);
                         arg_tys.push(lt);
+                    } else if name == "fold"
+                        && call_args.len() == 3
+                        && matches!(&call_args[0],
+                            Expr::Ref(n, _) if self.env.class_of_method(n).is_some())
+                    {
+                        // Out of line: this arm lives inside the deeply
+                        // recursive `lower_value` dispatch, whose stack frame
+                        // must not grow (a large inline branch pushed an
+                        // existing nested-map `do` program over the limit).
+                        let (regs, tys) = self.lower_fold_with_method(call_args)?;
+                        arg_regs.extend(regs);
+                        arg_tys.extend(tys);
                     } else {
                         for a in call_args {
                             let (r, t) = self.lower_value(a)?;
@@ -4996,9 +5008,177 @@ impl<'a> Lowerer<'a> {
                     self.method_lifting.remove(&key);
                     return res;
                 }
+                // A NON-result-directed method used as a first-class VALUE
+                // (`fold mappend "" xs`) — Haskell 2010 §4.3.3: a class method
+                // is an ordinary variable. Dispatch on the concrete type the
+                // expected function signature carries (the same rule as
+                // inference), then build the instance body's closure exactly
+                // like a user definition. `$`-prefixed parameter names cannot
+                // collide with source identifiers.
+                if let (Some(sig), Some(exp)) = (sig.as_ref(), expected) {
+                    if let Some((ty_name, cand_ty)) =
+                        crate::types::infer::method_value_dispatch_env(self.env, exp)
+                    {
+                        return self.lower_method_value(
+                            name,
+                            &class_name,
+                            &ty_name,
+                            &cand_ty,
+                            sig,
+                            span,
+                        );
+                    }
+                }
             }
         }
         self.lower_value_ref_inner(name, span)
+    }
+
+    /// Lower a typeclass method used as a first-class value into a closure over
+    /// its instance body, mirroring how a named definition with parameters is
+    /// lowered.
+    fn lower_method_value(
+        &mut self,
+        name: &str,
+        class_name: &str,
+        ty_name: &str,
+        cand_ty: &ValueTy,
+        sig: &crate::ast::TypeExpr,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let (_, body_params, body) = match self.env.resolve_method(name, ty_name) {
+            Some(r) => r,
+            None => {
+                return Err(CompileError::Type {
+                    msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                    span,
+                });
+            }
+        };
+        let key = (
+            class_name.to_string(),
+            ty_name.to_string(),
+            name.to_string(),
+        );
+        if self.method_lifting.contains(&key) {
+            return Err(CompileError::Type {
+                msg: format!("recursive typeclass method `{name}` for type `{ty_name}`"),
+                span,
+            });
+        }
+        // Synonymize the method's own parameters to fresh locals and build the
+        // equivalent `\p1 -> \p2 -> body` lambda so the standard closure path
+        // handles arity, partial application and dispatch. The class variable
+        // is substituted by the CANDIDATE's full type: `instance Monoid List`
+        // must see `List a`, not the arity-0 `List`.
+        let cv_subst = crate::types::infer::ClassVarSubst::Ty(cand_ty.clone());
+        let param_tys = crate::types::infer::signature_param_tys_conv(
+            self.env,
+            &self
+                .env
+                .typeclasses
+                .get(class_name)
+                .map(|c| c.var.clone())
+                .unwrap_or_default(),
+            &cv_subst,
+            sig,
+            || {
+                let v = self.next_tyvar;
+                self.next_tyvar += 1;
+                ValueTy::Var(v)
+            },
+        );
+        let mut lam = body;
+        for p in body_params.iter().rev() {
+            lam = Expr::Lambda {
+                params: vec![Param {
+                    name: p.clone(),
+                    span,
+                    bang: false,
+                }],
+                body: Box::new(lam),
+                span,
+            };
+        }
+        self.method_lifting.insert(key.clone());
+        let saved_pending = self.pending_param_tys.take();
+        self.pending_param_tys = Some(param_tys);
+        let res = self.lower_value(&lam);
+        self.pending_param_tys = saved_pending;
+        self.method_lifting.remove(&key);
+        res
+    }
+
+    /// Lower an arithmetic operator reference (`+`, `-`, `*`, `/`, `%`) as a
+    /// first-class curried function value — Haskell 2010 Prelude: `(+)` is an
+    /// ordinary function of two arguments.
+    ///
+    /// The operator is expanded into the equivalent `\a -> \b -> a <op> b` AST
+    /// and lowered through the normal lambda path, so arity, partial
+    /// application, capture and dispatch are all handled by machinery that
+    /// already exists. The two parameters use the same reserved `$`-prefixed
+    /// names as operator sections: `$` cannot occur in a source identifier, so
+    /// they can never shadow a user binding.
+    /// Lower `fold f z xs` when `f` is a bare METHOD reference
+    /// (`fold mappend "" xs`): the seed and the source are lowered first so the
+    /// method can be dispatched against its `b -> a -> b` signature. Kept out of
+    /// line so the enclosing `lower_value` frame does not grow.
+    fn lower_fold_with_method(
+        &mut self,
+        call_args: &[Expr],
+    ) -> Result<(Vec<usize>, Vec<ValueTy>), CompileError> {
+        let (zr, zt) = self.lower_value(&call_args[1])?;
+        let (lr, lt) = self.lower_value(&call_args[2])?;
+        let elem = list_type_args(&lt)
+            .and_then(|inner| inner.first().cloned())
+            .unwrap_or(ValueTy::Float);
+        let fexp = ValueTy::Thunk(vec![zt.clone(), elem], vec![zt.clone()]);
+        let (fr, ft) = self.lower_value_expected(&call_args[0], Some(&fexp))?;
+        Ok((vec![fr, zr, lr], vec![ft, zt, lt]))
+    }
+
+    fn lower_operator_value(
+        &mut self,
+        op: &str,
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        let a = "$op_a".to_string();
+        let b = "$op_b".to_string();
+        let lhs = Expr::Ref(a.clone(), span);
+        let rhs = Expr::Ref(b.clone(), span);
+        let ast_op = match op {
+            "+" => ArithOp::Add,
+            "-" => ArithOp::Sub,
+            "*" => ArithOp::Mul,
+            "/" => ArithOp::Div,
+            "%" => ArithOp::Rem,
+            other => unreachable!("not an arithmetic operator: {other}"),
+        };
+        let arith = Expr::Arith {
+            op: ast_op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        };
+        let inner = Expr::Lambda {
+            params: vec![Param {
+                name: b,
+                span,
+                bang: false,
+            }],
+            body: Box::new(arith),
+            span,
+        };
+        let outer = Expr::Lambda {
+            params: vec![Param {
+                name: a,
+                span,
+                bang: false,
+            }],
+            body: Box::new(inner),
+            span,
+        };
+        self.lower_value(&outer)
     }
 
     /// The original [`Self::lower_value_ref`] body.
@@ -5011,6 +5191,16 @@ impl<'a> Lowerer<'a> {
             if let Some(&(reg, ref vty)) = scope.get(name) {
                 return Ok((reg, vty.clone()));
             }
+        }
+        // An arithmetic operator used as a VALUE (`(+)`, `fold (+) 0 xs`,
+        // `inc = (+) 1.0`): Haskell 2010 Prelude — `(+) :: a -> a -> a` is an
+        // ordinary curried function, not only infix sugar. Build the equivalent
+        // `\a -> \b -> a + b` so it flows through the same closure machinery as
+        // any other function value (arity, partial application and dispatch are
+        // then already implemented). A USER definition of the same name wins:
+        // it is a real binding, so it is handled below.
+        if matches!(name, "+" | "-" | "*" | "/" | "%") && !self.defs.contains_key(name) {
+            return self.lower_operator_value(name, span);
         }
         // Bare zero-argument collection constructors: `list`, `empty_map`,
         // `empty_set` in value position are empty-container builtin calls (the

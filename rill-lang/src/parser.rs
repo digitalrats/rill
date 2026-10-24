@@ -94,6 +94,11 @@ struct Parser<'a> {
     toks: &'a [Token],
     src: &'a [u8],
     pos: usize,
+    /// Token index the Pratt loop must not consume past — set while parsing the
+    /// operand of a LEFT section `(e op)`, whose trailing operator belongs to
+    /// the section rather than to `e` (Haskell 2010 §3.5). `None` outside a
+    /// section operand.
+    section_stop: Option<usize>,
 }
 
 /// Binding powers. Higher = binds tighter. Returns (op, left_bp, right_bp).
@@ -162,6 +167,129 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         Tok::Backtick => (InfixOp::Backtick, 15, 16),
         _ => return None,
     })
+}
+
+/// The `InfixOp` a bare operator NAME denotes (`"+"` → [`InfixOp::Add`]).
+///
+/// Used by operator sections, which the parser desugars from a name into the
+/// same AST shape as the infix spelling, so `(+ 1.0)` and `\x -> x + 1.0`
+/// produce identical trees.
+fn infix_op_from_name(name: &str) -> Option<InfixOp> {
+    Some(match name {
+        "+" => InfixOp::Add,
+        "-" => InfixOp::Sub,
+        "*" => InfixOp::Mul,
+        "/" => InfixOp::Div,
+        "%" => InfixOp::Rem,
+        "==" => InfixOp::CmpEq,
+        "!=" => InfixOp::CmpNe,
+        "<" => InfixOp::CmpLt,
+        ">" => InfixOp::CmpGt,
+        "<=" => InfixOp::CmpLe,
+        ">=" => InfixOp::CmpGe,
+        "&&" => InfixOp::LogicAnd,
+        "||" => InfixOp::LogicOr,
+        ":" => InfixOp::Cons,
+        "++" => InfixOp::AppendList,
+        "!" => InfixOp::Index,
+        _ => return None,
+    })
+}
+
+/// Desugar one infix application `lhs op rhs` into the AST node the operator
+/// denotes: elementwise arithmetic, logic, a comparison, or a call to the
+/// Prelude function behind `:`, `++` and `!`.
+///
+/// Shared by the Pratt loop and by operator sections (Haskell 2010 §3.5), so a
+/// section's body is byte-identical to the parenthesized infix spelling.
+fn desugar_infix_op(op: InfixOp, lhs: Expr, rhs: Expr) -> Expr {
+    let span = lhs.span().merge(rhs.span());
+    if op.is_arith() {
+        return Expr::Arith {
+            op: op.to_arith(),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        };
+    }
+    if op.is_logic() {
+        return Expr::Logic {
+            op: op.to_logic(),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        };
+    }
+    if op.is_cmp() {
+        return Expr::Cmp {
+            op: op.to_cmp(),
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            span,
+        };
+    }
+    // A backticked function was already desugared before the right operand was
+    // parsed, and every remaining shape is handled below.
+    debug_assert_ne!(op, InfixOp::Backtick);
+    match op {
+        // `:` — list cons: `a : b` ≡ `cons a b`.
+        InfixOp::Cons => Expr::Apply {
+            name: "cons".to_string(),
+            args: vec![lhs, rhs],
+            span,
+        },
+        // `,` — value tuple: `a , b` ≡ `Pair { first: a, second: b }`.
+        InfixOp::Par => Expr::Apply {
+            name: "Pair".to_string(),
+            args: vec![Expr::Record(
+                vec![("first".to_string(), lhs), ("second".to_string(), rhs)],
+                span,
+            )],
+            span,
+        },
+        // `!` — infix indexing: `a ! i` ≡ `index a i`.
+        InfixOp::Index => Expr::Apply {
+            name: "index".to_string(),
+            args: vec![lhs, rhs],
+            span,
+        },
+        // `++` — list append. Desugars to the NAME `++`, not to
+        // `append_list`: Haskell 2010 defines `++` as an ordinary function
+        // (Prelude `(++) :: [a] -> [a] -> [a]`), so the infix form and the
+        // first-class `(++)` form must resolve through the same binding —
+        // including a user definition that shadows the Prelude one.
+        InfixOp::AppendList => Expr::Apply {
+            name: "++".to_string(),
+            args: vec![lhs, rhs],
+            span,
+        },
+        // A backticked function was already desugared before the right operand
+        // was parsed; `,` is handled above.
+        InfixOp::Backtick => unreachable!("backtick is desugared before the rhs"),
+        // The elementwise forms returned above.
+        InfixOp::Add
+        | InfixOp::Sub
+        | InfixOp::Mul
+        | InfixOp::Div
+        | InfixOp::Rem
+        | InfixOp::CmpEq
+        | InfixOp::CmpNe
+        | InfixOp::CmpLt
+        | InfixOp::CmpGt
+        | InfixOp::CmpLe
+        | InfixOp::CmpGe
+        | InfixOp::LogicAnd
+        | InfixOp::LogicOr => unreachable!("elementwise operators are desugared above"),
+    }
+}
+
+/// The parameter name a section lambda binds.
+///
+/// `$` cannot start or appear in a source identifier (the lexer rejects it), so
+/// this name can never collide with a variable the user wrote in the section's
+/// operand — a section must not shadow anything.
+fn implicit_section_param() -> String {
+    "$section".to_string()
 }
 
 /// The operator NAME for a token that can be a bare parenthesized operator
@@ -307,7 +435,12 @@ enum DoStmt {
 
 impl<'a> Parser<'a> {
     fn new(toks: &'a [Token], src: &'a [u8]) -> Self {
-        Self { toks, src, pos: 0 }
+        Self {
+            toks,
+            src,
+            pos: 0,
+            section_stop: None,
+        }
     }
     fn peek(&self) -> &Token {
         // Skip layout newlines: the parser is whitespace-agnostic outside
@@ -389,6 +522,110 @@ impl<'a> Parser<'a> {
             return None;
         }
         bare_operator_name(&self.toks.get(cur)?.tok)
+    }
+
+    /// The operator name when the tokens at the cursor OPEN a right section —
+    /// `( op expr )`, e.g. `(+ 1.0)` ≡ `\x -> x + 1.0` (Haskell 2010 §3.5).
+    /// `None` otherwise, leaving the cursor untouched.
+    ///
+    /// `-` is excluded: `(- e)` is unary negation in Haskell (§3.5), never a
+    /// subtraction section, so it falls through to the ordinary expression
+    /// parser.
+    fn right_section_operator(&self) -> Option<&'static str> {
+        let cur = self.cur();
+        let op = bare_operator_name(&self.toks.get(cur)?.tok)?;
+        if op == "-" {
+            return None;
+        }
+        // A `)` straight after the operator is the BARE reference `(op)`,
+        // handled by `bare_operator_ref`; sections need an operand.
+        let next = self.toks.get(cur + 1).map(|t| &t.tok)?;
+        if *next == Tok::RParen {
+            return None;
+        }
+        Some(op)
+    }
+
+    /// Detect a LEFT section `(e op)` — `(1.0 +)`, `(++ xs)`'s mirror,
+    /// `(xs ++)` — by scanning from the cursor to the matching `)` at paren
+    /// depth 0. When the token immediately before that `)` is a bare operator,
+    /// the group is a section: returns `(operator_name, operator_token_index)`.
+    /// `None` for an ordinary parenthesized expression.
+    ///
+    /// The scan is necessary because the operator has no right operand, so no
+    /// expression parser can consume the group; it also means the section is
+    /// recognised before `e` is parsed, never after a failed parse.
+    fn left_section_shape(&self) -> Option<(&'static str, usize)> {
+        let mut i = self.cur();
+        let mut depth = 0usize;
+        loop {
+            let tok = self.toks.get(i)?;
+            match tok.tok {
+                Tok::LParen | Tok::LBracket | Tok::LBrace => depth += 1,
+                Tok::RParen if depth == 0 => {
+                    let op_idx = self.skip_newlines_back(i);
+                    if op_idx <= self.cur() {
+                        return None;
+                    }
+                    let op = bare_operator_name(&self.toks.get(op_idx)?.tok)?;
+                    return Some((op, op_idx));
+                }
+                Tok::RParen | Tok::RBracket | Tok::RBrace => {
+                    depth = depth.checked_sub(1)?;
+                }
+                Tok::Eof => return None,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    /// The index of the last non-newline token before `i`, or `0`.
+    fn skip_newlines_back(&self, i: usize) -> usize {
+        let mut j = i;
+        while j > 0 {
+            j -= 1;
+            if self.toks[j].tok != Tok::Newline {
+                return j;
+            }
+        }
+        0
+    }
+
+    /// Wrap a section's desugared body in the unary lambda that gives it a
+    /// value, and — when the section is not itself an application argument —
+    /// absorb any following atoms as its arguments, exactly like the bare
+    /// `(op)` path does.
+    fn finish_section(
+        &mut self,
+        start: usize,
+        param: String,
+        body: Expr,
+        arg_list: bool,
+    ) -> Result<Expr, CompileError> {
+        let span = self.span_from(start);
+        let callee = Expr::Lambda {
+            params: vec![Param {
+                name: param,
+                span,
+                bang: false,
+            }],
+            body: Box::new(body),
+            span,
+        };
+        if !arg_list && is_juxtaposition_arg_start(self.toks, self.pos) {
+            let mut args = Vec::new();
+            while is_juxtaposition_arg_start(self.toks, self.pos) {
+                args.push(self.parse_atom(true)?);
+            }
+            let span = self.span_from(start);
+            return Ok(Expr::ApplyExpr {
+                callee: Box::new(callee),
+                args,
+                span,
+            });
+        }
+        Ok(callee)
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, CompileError> {
@@ -1244,6 +1481,11 @@ impl<'a> Parser<'a> {
             if l_bp < min_bp {
                 break;
             }
+            // A left section's trailing operator is the section's, not this
+            // expression's: stop before consuming it.
+            if self.section_stop == Some(self.cur()) {
+                break;
+            }
             self.bump();
             // `` e1 `f` e2 `` ≡ `f e1 e2`. The function name sits BETWEEN the
             // backticks, so it and the closing backtick are consumed before the
@@ -1263,30 +1505,14 @@ impl<'a> Parser<'a> {
             }
             let rhs = self.parse_expr(r_bp, no_comma)?;
 
-            let span = lhs.span().merge(rhs.span());
-            lhs = if op.is_arith() {
-                Expr::Arith {
-                    op: op.to_arith(),
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                    span,
-                }
-            } else if op.is_logic() {
-                Expr::Logic {
-                    op: op.to_logic(),
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                    span,
-                }
-            } else if op.is_cmp() {
-                // Haskell 2010 §4.4.2 gives the comparisons `infix 4`:
-                // NON-associative, so `a == b == c` (and any other chain or mix
-                // at that level, e.g. `a < b == c`) is a precedence error
-                // rather than a left-fold. Checked by looking at what follows
-                // the right operand: a comparison that no parenthesis stopped
-                // must not chain. Parenthesizing restores it — `(a == b) == c`
-                // returns from the inner `parse_expr` before this loop sees the
-                // second operator.
+            // Haskell 2010 §4.4.2 gives the comparisons `infix 4`:
+            // NON-associative, so `a == b == c` (and any other chain or mix at
+            // that level, e.g. `a < b == c`) is a precedence error rather than
+            // a left-fold. Checked by looking at what follows the right
+            // operand: a comparison that no parenthesis stopped must not
+            // chain. Parenthesizing restores it — `(a == b) == c` returns from
+            // the inner `parse_expr` before this loop sees the second operator.
+            if op.is_cmp() {
                 if let Some((next, _, _)) = infix_binding_power(&self.peek().tok) {
                     if next.is_cmp() {
                         let p = self.peek();
@@ -1301,51 +1527,8 @@ impl<'a> Parser<'a> {
                         });
                     }
                 }
-                Expr::Cmp {
-                    op: op.to_cmp(),
-                    lhs: Box::new(lhs),
-                    rhs: Box::new(rhs),
-                    span,
-                }
-            } else {
-                match op {
-                    // `:` — list cons: `a : b` ≡ `cons a b`.
-                    InfixOp::Cons => Expr::Apply {
-                        name: "cons".to_string(),
-                        args: vec![lhs, rhs],
-                        span,
-                    },
-                    // `,` — value tuple: `a , b` ≡ `Pair { first: a, second: b }`.
-                    InfixOp::Par => Expr::Apply {
-                        name: "Pair".to_string(),
-                        args: vec![Expr::Record(
-                            vec![("first".to_string(), lhs), ("second".to_string(), rhs)],
-                            span,
-                        )],
-                        span,
-                    },
-                    // `!` — infix indexing: `a ! i` ≡ `index a i`.
-                    InfixOp::Index => Expr::Apply {
-                        name: "index".to_string(),
-                        args: vec![lhs, rhs],
-                        span,
-                    },
-                    // `++` — list append. Desugars to the NAME `++`, not to
-                    // `++`: Haskell 2010 defines `++` as an ordinary
-                    // function (Prelude `(++) :: [a] -> [a] -> [a]`), so the
-                    // infix form and the first-class `(++)` form must resolve
-                    // through the same binding — including a user definition
-                    // that shadows the Prelude one.
-                    InfixOp::AppendList => Expr::Apply {
-                        name: "++".to_string(),
-                        args: vec![lhs, rhs],
-                        span,
-                    },
-                    // `` a `f` b `` ≡ `f a b` (handled above, before the rhs).
-                    InfixOp::Backtick => unreachable!("backtick is desugared before the rhs"),
-                    _ => unreachable!(),
-                }
-            };
+            }
+            lhs = desugar_infix_op(op, lhs, rhs);
         }
         Ok(lhs)
     }
@@ -1788,8 +1971,7 @@ impl<'a> Parser<'a> {
                 }
                 // `(++)`, `(+)`, … — a parenthesized operator is a reference to
                 // that operator as an ordinary function value (Haskell 2010
-                // §3.5). Only the BARE form is handled here; operator sections
-                // (`(+ 1.0)`, `(1.0 +)`) belong to the section task.
+                // §3.5).
                 if let Some(op_name) = self.bare_operator_ref() {
                     let start = t.span.start;
                     self.bump(); // the operator token
@@ -1812,7 +1994,42 @@ impl<'a> Parser<'a> {
                     }
                     return Ok(callee);
                 }
+                // `(+ 1.0)`, `(++ [1.0])` — a RIGHT section (Haskell 2010 §3.5):
+                // `(op e)` ≡ `\x -> x op e`. The literal is the operator's
+                // SECOND operand, which is what makes `(1.0 -)` and `(- 1.0)`
+                // different values.
+                if let Some(op_name) = self.right_section_operator() {
+                    let start = t.span.start;
+                    self.bump(); // the operator token
+                    let operand = self.parse_expr(0, false)?;
+                    self.eat(&Tok::RParen)?;
+                    let param = implicit_section_param();
+                    let op = infix_op_from_name(op_name)
+                        .expect("a bare operator name always maps to an InfixOp");
+                    let body = desugar_infix_op(op, Expr::Ref(param.clone(), t.span), operand);
+                    return self.finish_section(start, param, body, arg_list);
+                }
                 let start = t.span.start;
+                // `(expr op)` — a LEFT section (Haskell 2010 §3.5): `(e op)` ≡
+                // `\x -> e op x`. Detected by LOOKAHEAD because the group's
+                // trailing operator has no right operand, so the ordinary
+                // expression parser would stop on it (or report it as an
+                // unexpected `)`).
+                if let Some((op_name, op_idx)) = self.left_section_shape() {
+                    let saved_stop = self.section_stop;
+                    self.section_stop = Some(op_idx);
+                    let inner = self.parse_expr(0, false);
+                    self.section_stop = saved_stop;
+                    let inner = inner?;
+                    self.seek(op_idx);
+                    self.bump(); // the operator token
+                    self.bump(); // the `)`
+                    let param = implicit_section_param();
+                    let op = infix_op_from_name(op_name)
+                        .expect("a bare operator name always maps to an InfixOp");
+                    let body = desugar_infix_op(op, inner, Expr::Ref(param.clone(), t.span));
+                    return self.finish_section(start, param, body, arg_list);
+                }
                 let inner = self.parse_expr(0, false)?;
                 self.eat(&Tok::RParen)?;
                 if self.peek().tok == Tok::Dot {

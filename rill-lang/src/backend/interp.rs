@@ -2428,19 +2428,67 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // reports its entry count. An immutable array reports its FLAT
             // element count — the least-surprise reading of "direct primitive
             // reads" (`arrayElems` returns exactly that many elements), and the
-            // only count an array has that does not require `Ix` math. Falling
-            // through to the `_ => 0` arm would silently report an empty
-            // non-empty array.
-            let n = world.value_regs[base + args[0]]
-                .and_then(|r| world.arena.get(r))
-                .map(|v| match v {
-                    Value::List { elems } => elems.len() as i64,
-                    Value::Map { pairs, .. } => pairs.len() as i64,
-                    Value::Set { elems } => elems.len() as i64,
-                    Value::Array { elems, .. } => elems.len() as i64,
-                    _ => 0,
-                })
-                .unwrap_or(0);
+            // only count an array has that does not require `Ix` math.
+            //
+            // A lazy `Cons` chain is WALKED (forcing each tail), which is what
+            // stops Complete mode — the mode `compile` defaults to — from
+            // reporting 0 for every cons-built list. The full lazy
+            // consumer/producer work (infinite `from`, lazy `map`) is Task 5;
+            // this is only enough to report the real count, so an INFINITE
+            // chain still terminates by arena exhaustion rather than looping
+            // forever.
+            //
+            // Nothing else has a length. The old arm answered 0 for every
+            // non-container (`length 1.0`, `length (mappend 1.0 2.0)`), which
+            // is a silent wrong answer; inference now rejects those, and this
+            // arm faults loudly as a belt-and-suspenders so a path that ever
+            // slipped through could not answer 0 either.
+            let n: i64 = match world.value_regs[base + args[0]].and_then(|r| world.arena.get(r)) {
+                Some(Value::List { elems }) => elems.len() as i64,
+                Some(Value::Map { pairs, .. }) => pairs.len() as i64,
+                Some(Value::Set { elems }) => elems.len() as i64,
+                Some(Value::Array { elems, .. }) => elems.len() as i64,
+                Some(Value::Nil) => 0,
+                Some(Value::Cons(..)) => {
+                    let Some(head) = world.value_regs[base + args[0]] else {
+                        latch_fault(ir, world, "length: absent list operand");
+                        world.value_regs[dst] = None;
+                        return;
+                    };
+                    let mut cur = head;
+                    let mut count: i64 = 0;
+                    loop {
+                        let next = force(ir, world, cur, drops);
+                        match world.arena.get(next) {
+                            Some(Value::Cons(_, t)) => {
+                                count += 1;
+                                let tail = *t;
+                                if tail == next {
+                                    // A self-referential tail: stop instead of
+                                    // spinning (the arena bound would otherwise
+                                    // stop it, less legibly).
+                                    break;
+                                }
+                                cur = tail;
+                            }
+                            Some(Value::Nil) => break,
+                            // A cons chain ending in a flat list: count the
+                            // remaining elements and stop.
+                            Some(Value::List { elems }) => {
+                                count += elems.len() as i64;
+                                break;
+                            }
+                            _ => break,
+                        }
+                    }
+                    count
+                }
+                _ => {
+                    latch_fault(ir, world, "length: operand is not a list");
+                    world.value_regs[dst] = None;
+                    return;
+                }
+            };
             world.value_regs[dst] = alloc_owned(ir, world, Value::Int(n));
         }
         Head => {

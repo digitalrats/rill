@@ -744,14 +744,49 @@ fn infer_method_value_vty_expected(
     }
 }
 
-/// Whether `e` is a bare reference to a nullary method of `class_name` (e.g.
-/// `mempty` in `mappend xs mempty`) — such an argument resolves by the selector
+/// Whether `e` is a bare reference to a nullary method of `class_name` (e.g./// `mempty` in `mappend xs mempty`) — such an argument resolves by the selector
 /// argument's concrete type.
 fn is_bare_nullary_method_ref(ctx: &Ctx, e: &Expr, class_name: &str) -> bool {
     match e {
         Expr::Ref(name, _) => ctx.env.is_nullary_method(class_name, name.as_str()),
         _ => false,
     }
+}
+
+/// The class-variable type a CLASS METHOD's first-class value dispatches on,
+/// taken from the expected function type.
+///
+/// A method used as a value (`fold mappend "" xs`) carries no selector
+/// argument, so the only evidence for the instance is the signature the
+/// surrounding context demands. The expected `Thunk` is flattened and its
+/// parameter and result types are tried in order; the first concrete candidate
+/// naming an instance is the dispatch key. `mappend` under `b -> a -> b` with
+/// `(a, b) = (String, String)` therefore selects `Monoid String`.
+///
+/// Returns BOTH the instance lookup key (the head constructor name) and the
+/// candidate's full type. The full type matters: a parameterized instance head
+/// (`instance Monoid List`) must substitute the class variable with `List a`,
+/// not with the arity-0 `Data("List", [])` that the bare head name would give.
+///
+/// Returns `None` when no candidate is concrete — the caller then falls through
+/// to the loud "requires an argument" diagnostic, never a silent default.
+pub(crate) fn method_value_dispatch_env(
+    env: &crate::types::ty::TypeEnv,
+    expected: &ValueTy,
+) -> Option<(String, ValueTy)> {
+    let (args, rets) = match expected {
+        ValueTy::Thunk(..) => flatten_thunk(expected),
+        _ => return None,
+    };
+    for cand in args.iter().chain(rets.iter()) {
+        if matches!(cand, ValueTy::Var(_) | ValueTy::TyConVar(_)) {
+            continue;
+        }
+        if let Some(name) = env.type_name_of_vty(cand) {
+            return Some((name, cand.clone()));
+        }
+    }
+    None
 }
 
 /// Bind a constraint instance's head args from the LEADING args of the
@@ -3822,6 +3857,72 @@ fn infer_ref_expected(
                 let body_vty = body_vty?;
                 return Ok(ArrowTy::value_channel(body_vty));
             }
+            // A NON-result-directed method used as a first-class VALUE
+            // (`fold mappend "" xs`) — Haskell 2010 §4.3.3: a class method is
+            // an ordinary variable. The instance is selected by the type the
+            // surrounding context demands, so dispatch on the concrete types
+            // the EXPECTED function signature carries. Without this the bare
+            // reference was rejected outright, and `fold mappend` could never
+            // work.
+            //
+            // Candidates come from the expected type's flattened parameter and
+            // result types in order; the first one that names a registered
+            // instance wins. `mappend :: m -> m -> m` under
+            // `Thunk([String], [Thunk([String], [String])])` therefore selects
+            // `Monoid String`.
+            if let (Some(sig), Some(exp)) = (sig.as_ref(), expected.as_ref()) {
+                if let Some((ty_name, cand_ty)) = method_value_dispatch_env(&ctx.env, exp) {
+                    let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
+                        Some(r) => r,
+                        None => {
+                            return Err(CompileError::Type {
+                                msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
+                                span,
+                            });
+                        }
+                    };
+                    let key = (class_name.clone(), ty_name.clone(), name.to_string());
+                    if ctx.method_lifting.contains(&key) {
+                        return Err(CompileError::Type {
+                            msg: format!(
+                                "recursive typeclass method `{name}` for type `{ty_name}`"
+                            ),
+                            span,
+                        });
+                    }
+                    ctx.method_lifting.insert(key.clone());
+                    let cv_subst = ClassVarSubst::Ty(cand_ty);
+                    let saved = ctx.locals.clone();
+                    for (p, pt) in params
+                        .iter()
+                        .zip(signature_param_tys(ctx, &class_var, &cv_subst, sig))
+                    {
+                        ctx.locals.insert(p.clone(), ArrowTy::value_channel(pt));
+                    }
+                    let res = infer_expr(ctx, &body);
+                    ctx.locals = saved;
+                    ctx.method_lifting.remove(&key);
+                    res?;
+                    // The method's CONTRACT is its class signature with the
+                    // class variable substituted by the dispatched instance —
+                    // not the instance body's incidental type, which would make
+                    // `fold mappend …` compare against the implementation's own
+                    // parameter names.
+                    let env = ctx.env.clone();
+                    let (arg_tys, ret_ty) = signature_param_and_result_tys_conv(
+                        &env,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || ctx.fresh_vty(),
+                    );
+                    let contract = match ret_ty {
+                        Some(ret) => nest_thunk(&arg_tys, vec![ret]),
+                        None => arg_tys.first().cloned().unwrap_or(ValueTy::Float),
+                    };
+                    return Ok(ArrowTy::value_channel(contract));
+                }
+            }
         }
     }
     // A reference to a compile-time NUMERIC constant (`c = 440.0`) in a
@@ -3953,8 +4054,14 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         }
     }
     if matches!(name, "+" | "-" | "*" | "/" | "%") {
+        // Haskell 2010 Prelude: an arithmetic operator is an ordinary CURRIED
+        // function value (`(+) :: a -> a -> a`), not a bare scalar. Typing it
+        // as a 2-argument thunk is what lets `(+) 1.0 2.0`, `fold (+) 0 xs`
+        // and `inc = (+) 1.0` work — the same shape the binary math builtins
+        // (`min`/`max`) already use.
         let s = ctx.fresh_vty();
-        return Ok(ArrowTy::uniform(2, 1, s));
+        let ty = nest_thunk(&[s.clone(), s.clone()], vec![s]);
+        return Ok(ArrowTy::value(ty));
     }
     if matches!(
         name,
@@ -4047,7 +4154,12 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
             .get(cur.as_str())
             .is_some_and(|s| matches!(s.ty.vty, ValueTy::Thunk(_, _)));
         match ctx.def_bodies.get(cur.as_str()) {
-            Some(Expr::Ref(next, _)) if is_func_value => {
+            // Follow the alias ONLY while the referenced name is itself a
+            // definition. A body that names a BUILTIN (`plus = (+)`) has no
+            // scheme to instantiate: stopping here types the call from the
+            // alias's own scheme, which is the builtin operator's curried
+            // signature.
+            Some(Expr::Ref(next, _)) if is_func_value && ctx.defs.contains_key(next.as_str()) => {
                 cur = next.clone();
                 continue;
             }
@@ -6338,13 +6450,61 @@ fn infer_collection_call(
             _ => ValueTy::Float,
         }
     };
+    // `length`-style guards: a bulk list op's SOURCE must be a `List`. Without
+    // this, `map f 1.0` / `fold f z 1.0` reached the interpreter, whose
+    // `pooled_elems_of` returned `None` and the op answered an empty list (read
+    // as `0` downstream) instead of being rejected.
+    //
+    // An unresolved type variable is CONSTRAINED to `List a` rather than
+    // rejected, so a generic helper (`go xs = map f xs`) still types.
+    let require_list = |ctx: &mut Ctx, idx: usize, what: &str| -> Result<ValueTy, CompileError> {
+        let t = arg_vty(ctx, idx)?;
+        match ctx.subst.resolve_value(&t) {
+            ValueTy::App(n, inner) if n == "List" => {
+                Ok(inner.first().cloned().unwrap_or(ValueTy::Float))
+            }
+            ValueTy::Var(_) => {
+                let elem = ctx.fresh_vty();
+                let list = ValueTy::App("List".into(), vec![elem.clone()]);
+                unify_value(&list, &t, &mut ctx.subst, args[idx].span())?;
+                Ok(elem)
+            }
+            other => Err(CompileError::Type {
+                msg: format!("`{name}` expects a List as its {what}, got {other:?}"),
+                span: args[idx].span(),
+            }),
+        }
+    };
     let list_of = |t: &ValueTy| ValueTy::App("List".into(), vec![list_elem(t)]);
     match name {
         "length" => {
             if args.len() != 1 {
                 return Err(arity_err("1", args.len()));
             }
-            let _ = arg_vty(ctx, 0)?;
+            // `length :: [a] -> Int` (Prelude). A non-collection has no
+            // length, so it must be a TYPE error rather than a silent `0`:
+            // the old arm discarded the argument's type entirely, which is how
+            // `length (mappend 1.0 2.0)` — a Float — answered 0.
+            //
+            // `Map`/`Set`/`Array` are rill's other sized containers and keep
+            // their documented `length` (the interpreter counts their entries).
+            //
+            // An UNRESOLVED variable is left unconstrained: several containers
+            // have a length, so pinning it to `List a` here would make a later
+            // use that names another one (`length arr` before `arr` is known to
+            // be an `Array`) a spurious unification failure.
+            let at = arg_vty(ctx, 0)?;
+            match ctx.subst.resolve_value(&at) {
+                ValueTy::App(n, _) if n == "List" => {}
+                ValueTy::App(n, _) if n == "Map" || n == "Set" || n == "Array" => {}
+                ValueTy::Var(_) => {}
+                other => {
+                    return Err(CompileError::Type {
+                        msg: format!("`length` expects a List, got {other:?}"),
+                        span: args[0].span(),
+                    })
+                }
+            }
             Ok(ValueTy::Int)
         }
         "cons" => {
@@ -6397,13 +6557,9 @@ fn infer_collection_call(
             // type (`map : (a -> b) -> List a -> List b`). Without this, a
             // lambda over a `List Buffer` (`fn x -> x * 0.5` over a Buffer)
             // types `x` as a bare Var and the body's Buffer ops conflict.
-            let src_ty = arg_vty(ctx, 1)?;
-            let elem_ty = match &src_ty {
-                ValueTy::App(n, inner) if n == "List" => {
-                    inner.first().cloned().unwrap_or(ValueTy::Float)
-                }
-                _ => ValueTy::Float,
-            };
+            // The source must be a List: a non-list is a type error, never an
+            // empty result.
+            let elem_ty = require_list(ctx, 1, "source")?;
             let fresh_ret = ctx.fresh_vty();
             let ft0 = infer_expr_expected(
                 ctx,
@@ -6432,9 +6588,61 @@ fn infer_collection_call(
             if args.len() != 3 {
                 return Err(arity_err("3", args.len()));
             }
-            expect_closure(ctx, 2, "binary")?;
+            // The accumulator type and the source element type are known
+            // BEFORE the closure, so the closure can be typed against
+            // `fold : (b -> a -> b) -> b -> List a -> b`. That expected
+            // signature is what lets a method used as a value dispatch to its
+            // instance (`fold mappend "" xs` → `Monoid String`) and what
+            // rejects a mismatched closure (`fold (++) [] [1.0,2.0]`,
+            // ill-typed in Haskell 2010, was silently producing no result).
             let zt = arg_vty(ctx, 1)?;
-            let _ = arg_vty(ctx, 2)?;
+            let elem = require_list(ctx, 2, "source")?;
+            let want = nest_thunk(&[zt.clone(), elem], vec![zt.clone()]);
+            let got = infer_expr_expected(ctx, &args[0], Some(want.clone()))?;
+            // The closure must be binary. Flatten the curried nest so a unary
+            // or ternary closure is rejected here rather than at the runtime
+            // call (which would pass the wrong number of operands).
+            //
+            // A bare METHOD reference resolves to the instance body's type
+            // (body order), not the class signature's, so only an actual
+            // `Thunk` chain is arity-checked — the value is what matters, and
+            // the unification below pins it.
+            let got_ty = ctx.subst.resolve_value(&got.vty);
+            if let ValueTy::Thunk(..) = got_ty {
+                let (c_args, _) = flatten_thunk(&got_ty);
+                if !c_args.is_empty() && c_args.len() != 2 {
+                    return Err(CompileError::Type {
+                        msg: "`fold` expects a binary function".to_string(),
+                        span: args[0].span(),
+                    });
+                }
+            }
+            // A named definition — and a method used as a value — resolves
+            // through its own scheme/instance and does not consume the expected
+            // type, so the conformance check has to be an explicit unification.
+            // This is what rejects `fold (++) [] [1.0,2.0]` (ill-typed in
+            // Haskell 2010; it used to produce no result, which `length`-
+            // wrapping read as `0`).
+            //
+            // Both sides are FLATTENED first: a class-signature parameter is a
+            // flat `Thunk([a, b], [r])` while a lambda literal is a curried nest
+            // `Thunk([a], [Thunk([b], [r])])`, and the two denote the same
+            // function. Comparing the raw shapes would reject the flat spelling
+            // (`instance Foldable List where { foldr f z xs = fold f z xs }`).
+            let (want_args, want_rets) = flatten_thunk(&want);
+            let (got_args, got_rets) = flatten_thunk(&got_ty);
+            if got_args.len() != want_args.len() {
+                return Err(CompileError::Type {
+                    msg: "`fold` expects a binary function".to_string(),
+                    span: args[0].span(),
+                });
+            }
+            for (g, w) in got_args.iter().zip(want_args.iter()) {
+                unify_value(g, w, &mut ctx.subst, args[0].span())?;
+            }
+            for (g, w) in got_rets.iter().zip(want_rets.iter()) {
+                unify_value(g, w, &mut ctx.subst, args[0].span())?;
+            }
             Ok(zt)
         }
         "filter" => {
@@ -6442,18 +6650,15 @@ fn infer_collection_call(
                 return Err(arity_err("2", args.len()));
             }
             expect_closure(ctx, 1, "unary")?;
-            let lt = arg_vty(ctx, 1)?;
-            Ok(list_of(&lt))
+            let elem = require_list(ctx, 1, "source")?;
+            Ok(ValueTy::App("List".into(), vec![elem]))
         }
         "concat_map" => {
             if args.len() != 2 {
                 return Err(arity_err("2", args.len()));
             }
             expect_closure(ctx, 1, "unary")?;
-            let elem = {
-                let lt = arg_vty(ctx, 1)?;
-                list_elem(&lt)
-            };
+            let elem = require_list(ctx, 1, "source")?;
             let ft0 = arg_vty(ctx, 0)?;
             let ft = ctx.subst.resolve_value(&ft0);
             // See `concat_map_result_elem`: `(a -> List b) -> List a -> List b`.
@@ -6480,9 +6685,27 @@ fn infer_collection_call(
                     unify_value(&list, &lt, &mut ctx.subst, args[0].span())?;
                     elem
                 }
-                _ => ValueTy::Float,
+                // `(++) :: [a] -> [a] -> [a]`: a non-list FIRST operand is a
+                // type error, not an empty result.
+                other => {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "`++` expects a List as its first operand \
+                             (`(++) :: [a] -> [a] -> [a]`), got {other:?}"
+                        ),
+                        span: args[0].span(),
+                    })
+                }
             };
-            Ok(ValueTy::App("List".into(), vec![elem]))
+            // The SECOND operand is constrained to the SAME list type. Without
+            // this, `list ++ 1.0` reached the runtime and answered `None`
+            // (which downstream code read as `0`) instead of being rejected,
+            // and `fold (++) [] [1.0,2.0]` — ill-typed in Haskell 2010 —
+            // silently produced no result.
+            let rt = arg_vty(ctx, 1)?;
+            let list_ty = ValueTy::App("List".into(), vec![elem.clone()]);
+            unify_value(&list_ty, &rt, &mut ctx.subst, args[1].span())?;
+            Ok(list_ty)
         }
         "concat_string" => {
             if args.len() != 2 {
