@@ -404,19 +404,18 @@ fn array_update_rejects_an_out_of_rectangle_cell_even_with_an_in_range_flat() {
 }
 
 #[test]
-fn array_from_list_with_a_cons_built_list_is_a_clean_fault() {
-    // In Complete mode `:` builds a lazy cons chain, which has no flat element
-    // Vec. `arrayFromList` reports that as a clean fault instead of leaving the
-    // destination register silently unbound — a wrong result on the canonical
-    // Haskell list syntax. (The reducer does not fold the chain into a list, so
-    // this is the path that actually runs.)
+fn array_from_list_accepts_a_cons_built_list() {
+    // In Complete mode `:` builds a lazy cons chain. `arrayFromList` walks it
+    // (forcing each tail) and stores its elements — the canonical Haskell list
+    // syntax must work, not fault. Before the central list-operand fix this
+    // reported a fault; that was honest but still a divergence, so it is now
+    // implemented.
     let src = "{-# MODE complete #-}\n\
-               main = length (arrayFromList (Pair { first: 0, second: 2 }) (1.0 : 2.0 : []));";
-    let msg = fault(src);
-    assert!(
-        msg.contains("arrayFromList") && msg.contains("expected a list of elements"),
-        "expected the cons-built-list fault, got: {msg}"
-    );
+               main = Pair { first: length (arrayFromList (Pair { first: 0, second: 2 }) (1.0 : 2.0 : [])), \
+                             second: arrayIndexFlat (arrayFromList (Pair { first: 0, second: 1 }) (1.0 : 2.0 : [])) 1 };";
+    let (len, second) = pair_values(&run(src), &output(&run(src)));
+    assert_eq!(len, Value::Int(2), "the cons chain contributes 2 elements");
+    assert_eq!(second, Value::Float(2.0), "element 1 is 2.0");
 }
 
 #[test]

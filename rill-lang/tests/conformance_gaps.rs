@@ -454,28 +454,83 @@ mod io_executable_path {
     }
 
     #[test]
-    fn a_bulk_op_with_no_result_faults_instead_of_printing_zero() {
-        // The other half of the rule: when a bulk list op genuinely produces no
-        // result (a lazy `Cons` consumer, which is Task 5's remaining work), the
-        // FAULT must surface — never a `0` on stdout. This is the common-point
-        // guarantee, not a per-call-site patch: `length` latches a value-track
-        // fault for an absent operand.
+    fn a_fold_result_fed_to_arithmetic_never_becomes_zero() {
+        // THE discriminating test for the "no silent partial support" rule.
+        //
+        // `fold` over a cons-built list must produce the real sum (6.0), and an
+        // operand it cannot consume must FAULT. What it must never do is let
+        // `arithmetic_operand` read the absent result as `0.0` — which is
+        // exactly what the reviewer reproduced: Complete printed `0.0` while
+        // Strict printed `6.0`.
+        //
+        // Deliberately NOT wrapped in `length` (that guard would mask the
+        // arithmetic coercion). This drives the value straight into `* 2.0`.
+        assert_eq!(
+            stdout_of(
+                "{-# MODE complete #-}\n\
+                 main = do { write (Just (show_float ((fold (\\a -> \\x -> a + x) 0.0 \
+                 (cons 1.0 (cons 2.0 (list)))) * 2.0))) stdout; return () };"
+            ),
+            ["6.0"],
+            "Complete must compute the real fold ((0+1+2) * 2.0), not a coerced 0.0"
+        );
+        // Strict mode is the reference answer for the same program. The
+        // duplicate line is an UNRELATED pre-existing defect in `MODE strict`
+        // + `do` (it reproduces on the base commit; see the report's open
+        // defects), so the assertion is on the printed VALUE, not the count.
+        let strict_out = stdout_of(
+            "{-# MODE strict #-}\n\
+             main = do { write (Just (show_float ((fold (\\a -> \\x -> a + x) 0.0 \
+             (cons 1.0 (cons 2.0 (list)))) * 2.0))) stdout; return () };",
+        );
+        assert!(
+            !strict_out.is_empty() && strict_out.iter().all(|s| s == "6.0"),
+            "Strict mode's answer must stay 6.0, got {strict_out:?}"
+        );
+    }
+
+    #[test]
+    fn an_unsupported_operand_faults_instead_of_printing_zero() {
+        // The other half: when the operand genuinely cannot be consumed (here an
+        // infinite cons chain, which is Task 5's remaining work), the FAULT must
+        // surface — never a `0` on stdout. Note the operand goes straight into
+        // arithmetic, so the old `arithmetic_operand` fallback would have printed
+        // `0.0`; and it is not wrapped in `length`, whose guard would hide that.
         let mut runner = rill_lang::compile::<f32, 256>(
-            "main = write (Just (show_int (length (map (\\x -> x) (cons 1.0 list))))) stdout;",
+            "{-# MODE complete #-}\n\
+             main = do { write (Just (show_float ((fold (\\a -> \\x -> a + x) 0.0 \
+             (fibs)) * 1.0))) stdout; return () };\n\
+             fibs = cons 1.0 fibs;",
             ForeignRegistry::new(),
         )
         .expect("the program itself type-checks");
         let err = runner
             .run()
-            .expect_err("an absent list operand must FAULT, not answer 0");
+            .expect_err("an unconsumable list operand must FAULT, not answer 0");
         assert!(
             err.to_string().contains("fault"),
-            "the failure must be the value-track fault channel, got: {err}"
+            "the failure must use the value-track fault channel, got: {err}"
         );
         assert!(
             runner.stdout().is_empty(),
             "nothing may be printed when the operand faults, got {:?}",
             runner.stdout()
+        );
+    }
+
+    #[test]
+    fn empty_list_append_works_in_complete_mode() {
+        // `([] ++ [1.0])` is legitimate conformant Haskell. Complete mode used
+        // to produce no result (the empty lazy `Nil` had no flat element Vec);
+        // it must now answer `[1.0]`, matching Strict.
+        assert_eq!(
+            complete("", "length ([] ++ [1.0])").expect("empty append must work in Complete"),
+            Value::Int(1),
+        );
+        // Order-sensitive: the appended element is present and last.
+        assert_eq!(
+            complete("", "length ([1.0] ++ [])").expect("empty right operand must work"),
+            Value::Int(1),
         );
     }
 }

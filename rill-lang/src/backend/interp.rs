@@ -906,13 +906,19 @@ enum ValueArith {
 /// A forced value-arithmetic operand, keeping the Int/Float KIND so integer
 /// arithmetic can stay on the Int track.
 ///
-/// `Bottom` propagates through strict arithmetic; an unbound or non-numeric
-/// slot reads as the float `0.0` (the pre-existing "unbound reads as zero"
-/// rule).
+/// `Bottom` propagates through strict arithmetic. An ABSENT slot (an operand
+/// register that was never bound) or a non-numeric value is a FAULT, not a
+/// zero: silently reading it as `0.0` turns every upstream "this operation
+/// produced no result" into a plausible-looking number, which is exactly the
+/// "silent partial support" the conformance rule forbids. See
+/// [`ArithmeticOperand::Absent`].
 enum ArithmeticOperand {
     Int(i64),
     Float(f64),
     Bottom,
+    /// The register held nothing, or held a non-numeric value. The caller
+    /// latches a value-track fault; it must NOT substitute a number.
+    Absent,
 }
 
 /// Force a slot's value and classify it as an arithmetic operand. The operand
@@ -925,14 +931,14 @@ fn arithmetic_operand<T: Transcendental, const BUF: usize>(
     drops: &mut Vec<ArenaRef>,
 ) -> ArithmeticOperand {
     let Some(r) = world.value_regs.get(reg).copied().flatten() else {
-        return ArithmeticOperand::Float(0.0);
+        return ArithmeticOperand::Absent;
     };
     let head = force(ir, world, r, drops);
     match world.arena.get(head) {
         Some(Value::Bottom) => ArithmeticOperand::Bottom,
         Some(Value::Int(i)) => ArithmeticOperand::Int(*i),
         Some(Value::Float(f)) => ArithmeticOperand::Float(*f),
-        _ => ArithmeticOperand::Float(0.0),
+        _ => ArithmeticOperand::Absent,
     }
 }
 
@@ -986,6 +992,20 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
         world.value_regs[dst] = alloc_owned(ir, world, Value::Bottom);
         return;
     }
+    // An ABSENT operand is a fault, never a zero. This is the single point
+    // where "some upstream operation produced no result" would otherwise
+    // become a plausible number (`fold … over an unsupported operand * 2.0`
+    // printed `0.0`). Latching here means the invariant cannot be forgotten by
+    // an operator or a call site added later.
+    if matches!(av, ArithmeticOperand::Absent) || matches!(bv, ArithmeticOperand::Absent) {
+        latch_fault(
+            ir,
+            world,
+            "arithmetic operand is absent (an operand produced no value)",
+        );
+        world.value_regs[dst] = None;
+        return;
+    }
     // Int-preserving `+`/`-`/`*` (see the doc comment above).
     if let (ArithmeticOperand::Int(x), ArithmeticOperand::Int(y)) = (&av, &bv) {
         let int_result = match op {
@@ -1002,12 +1022,16 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     let av = match av {
         ArithmeticOperand::Int(i) => i as f64,
         ArithmeticOperand::Float(f) => f,
-        ArithmeticOperand::Bottom => unreachable!("bottom handled above"),
+        ArithmeticOperand::Bottom | ArithmeticOperand::Absent => {
+            unreachable!("bottom and absent operands are handled above")
+        }
     };
     let bv = match bv {
         ArithmeticOperand::Int(i) => i as f64,
         ArithmeticOperand::Float(f) => f,
-        ArithmeticOperand::Bottom => unreachable!("bottom handled above"),
+        ArithmeticOperand::Bottom | ArithmeticOperand::Absent => {
+            unreachable!("bottom and absent operands are handled above")
+        }
     };
     let result = match op {
         ValueArith::Add => av + bv,
@@ -1104,8 +1128,13 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 Some(cr) => {
                     // Copy the value OUT of the cell into a fresh slot: a
                     // read result is a new owner, it does not share. An
-                    // uninitialised (Void) cell reads as 0.0. Payloads are
-                    // pooled (no per-tick heap allocation).
+                    // uninitialised (Void) cell reads as 0.0 — this is the
+                    // do-block/continuation machinery's initial state, NOT an
+                    // absent-operand coercion: `ValueBindCell` deliberately
+                    // starts a cell as `Void` and the writer fills it on the
+                    // same path. (An absent OPERAND is a different case and is
+                    // faulted at the arithmetic/list/state-write points.)
+                    // Payloads are pooled (no per-tick heap allocation).
                     world.value_regs[*dst + base] =
                         if matches!(world.arena.get(cr), Some(&Value::Void)) {
                             alloc_owned(ir, world, Value::Float(0.0))
@@ -1549,7 +1578,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     let sr = *stored;
                     world.value_regs[*dst + base] = copy_owned(ir, world, sr);
                 }
-                // An empty state slot reads as 0.0.
+                // An empty state slot reads as 0.0 — this is DELAY semantics,
+                // not a silent coercion: a `~`/`@` feedback register's initial
+                // value is zero, like a delay line's. The leak path (a producer
+                // that failed and therefore never wrote) is closed at the WRITE
+                // below, which faults instead of leaving the slot stale.
                 _ => world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Float(0.0)),
             }
         }
@@ -1562,6 +1595,21 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     world.arena.drop_ref(old);
                 }
                 world.value_state[*slot] = stored;
+            } else {
+                // The producer yielded NO value. Keeping the previous tick's
+                // value would feed a stale number into the next tick, which is a
+                // silent wrong answer; fault instead. (Reached only when an
+                // upstream operation is already absent — the rest of this task's
+                // fault channel makes that loud at the source.)
+                latch_fault(
+                    ir,
+                    world,
+                    "value-state write from an absent operand (the producer produced no value)",
+                );
+                if let Some(old) = world.value_state[*slot].take() {
+                    world.arena.drop_ref(old);
+                }
+                world.value_state[*slot] = None;
             }
         }
         ValueInstr::ValueMatch { dst, slot, ctor } => {
@@ -1913,11 +1961,23 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             let n = world.block_len;
             let v = match world.value_regs.get(*src + base).copied().flatten() {
                 Some(r) => match world.arena.get(r) {
-                    Some(Value::Float(f)) => *f,
-                    Some(Value::Int(i)) => *i as f64,
-                    _ => 0.0,
+                    Some(Value::Float(f)) => Some(*f),
+                    Some(Value::Int(i)) => Some(*i as f64),
+                    // A non-numeric scalar is a fault, not a zero-filled buffer:
+                    // the latter is a plausible-looking signal built from
+                    // nothing.
+                    _ => None,
                 },
-                _ => 0.0,
+                None => None,
+            };
+            let Some(v) = v else {
+                latch_fault(
+                    ir,
+                    world,
+                    "buffer fill from an absent or non-numeric operand",
+                );
+                world.value_regs[*dst + base] = None;
+                return;
             };
             let di = buffer_index(ir, world, *dst, base);
             world.buffers[di].with_data_mut(|b| b[..n].fill(T::from_f64(v)));
@@ -1981,28 +2041,135 @@ fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
 /// the caller can iterate them while mutating the arena (calling closures,
 /// recounting) without a borrow conflict and without a per-tick heap
 /// allocation. `None` when the register/slot is not the right container kind.
+/// Copy a register's LIST-like element refs into a freshly pooled buffer.
+///
+/// The single point that the bulk list operations (`map`, `fold`, `filter`,
+/// `concat_map`, `append_list`, `cons`, `tail`) use to obtain their source
+/// elements. It accepts the two runtime list shapes:
+///
+/// * `Value::List { elems }` — the flat, array-backed form (Strict mode, and
+///   list literals);
+/// * `Value::Cons` / `Value::Nil` — the LAZY form Complete mode builds (`cons`
+///   there allocates a cons cell whose tail is not forced). A finite chain is
+///   walked here, forcing each tail, which is what makes `fold`/`map` work over
+///   a cons-built list instead of silently answering nothing.
+///
+/// An EMPTY list (`Nil`, or an empty `List`) is a legitimate empty result, not
+/// an error — the caller receives an empty buffer.
+///
+/// Anything else — an absent register, a `Float`/`Bool`/record, or a chain whose
+/// tail is still an unforced non-list — LATCHES a value-track fault under
+/// `what` and returns `None`. This is deliberately central: the previous shape
+/// returned a bare `None`, and every caller that mapped it to "empty result"
+/// (or to a `None` register that `arithmetic_operand` then read as `0.0`)
+/// produced a silent wrong answer. A future list operation gets the loud
+/// behaviour by construction.
+///
+/// An INFINITE chain is bounded by the arena's slot capacity and faults with
+/// exhaustion; the full lazy producer/consumer work is Task 5.
 fn pooled_elems_of<T: Transcendental, const BUF: usize>(
     ir: &Ir,
     world: &mut WorldState<T, BUF>,
     reg: usize,
+    what: &str,
 ) -> Option<Vec<ArenaRef>> {
-    let r = world.value_regs[reg]?;
-    let len = match world.arena.get(r) {
-        Some(Value::List { elems }) | Some(Value::Set { elems }) => elems.len(),
-        _ => return None,
+    let Some(r) = world.value_regs[reg] else {
+        latch_fault(ir, world, &format!("{what}: absent list operand"));
+        return None;
     };
-    let mut out = match world.arena.take_buf(len) {
+    match world.arena.get(r) {
+        Some(Value::List { elems }) | Some(Value::Set { elems }) => {
+            let len = elems.len();
+            let mut out = match world.arena.take_buf(len) {
+                Ok(b) => b,
+                Err(_) => {
+                    latch_exhaustion(ir, world, "value buffer pool");
+                    return None;
+                }
+            };
+            if let Some(elems) = match world.arena.get(r) {
+                Some(Value::List { elems }) | Some(Value::Set { elems }) => Some(elems),
+                _ => None,
+            } {
+                out.extend_from_slice(elems);
+            }
+            Some(out)
+        }
+        Some(Value::Nil) => world.arena.take_buf(0).ok(),
+        Some(Value::Cons(..)) => collect_cons_chain(ir, world, r, what),
+        _ => {
+            latch_fault(ir, world, &format!("{what}: operand is not a list"));
+            None
+        }
+    }
+}
+
+/// Walk a lazy `Value::Cons` chain and copy its element refs into a pooled
+/// buffer, forcing each tail. Latch-bounded: a chain longer than the arena's
+/// slot capacity is a fault (an infinite list), never an endless loop.
+fn collect_cons_chain<T: Transcendental, const BUF: usize>(
+    ir: &Ir,
+    world: &mut WorldState<T, BUF>,
+    start: ArenaRef,
+    what: &str,
+) -> Option<Vec<ArenaRef>> {
+    let cap = world.arena.capacity();
+    let mut out = match world.arena.take_buf(0) {
         Ok(b) => b,
         Err(_) => {
             latch_exhaustion(ir, world, "value buffer pool");
             return None;
         }
     };
-    if let Some(elems) = match world.arena.get(r) {
-        Some(Value::List { elems }) | Some(Value::Set { elems }) => Some(elems),
-        _ => None,
-    } {
-        out.extend_from_slice(elems);
+    let mut cur = start;
+    let mut seen = 0usize;
+    loop {
+        let node = force(ir, world, cur, &mut Vec::new());
+        match world.arena.get(node) {
+            Some(Value::Cons(h, t)) => {
+                let (head, tail) = (*h, *t);
+                match world.arena.copy(head) {
+                    Ok(c) => out.push(c),
+                    Err(_) => {
+                        world.arena.put_buf(out);
+                        latch_exhaustion(ir, world, "arena ref copy");
+                        return None;
+                    }
+                }
+                seen += 1;
+                if seen > cap {
+                    world.arena.put_buf(out);
+                    latch_fault(ir, world, &format!("{what}: list is too long"));
+                    return None;
+                }
+                if tail == node {
+                    break;
+                }
+                cur = tail;
+            }
+            // A flat `List` in the tail position joins as the remaining
+            // elements.
+            Some(Value::List { elems }) => {
+                let rest = elems.clone();
+                for e in rest {
+                    match world.arena.copy(e) {
+                        Ok(c) => out.push(c),
+                        Err(_) => {
+                            world.arena.put_buf(out);
+                            latch_exhaustion(ir, world, "arena ref copy");
+                            return None;
+                        }
+                    }
+                }
+                break;
+            }
+            Some(Value::Nil) => break,
+            _ => {
+                world.arena.put_buf(out);
+                latch_fault(ir, world, &format!("{what}: cons tail is not a list"));
+                return None;
+            }
+        }
     }
     Some(out)
 }
@@ -2394,7 +2561,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // elems and the new element so both the source container and the
             // result own them (the source register is dropped at tick end).
             // Payloads are pooled — no per-tick heap allocation.
-            let Some(mut src) = pooled_elems_of(ir, world, base + args[1]) else {
+            let Some(mut src) = pooled_elems_of(ir, world, base + args[1], "cons") else {
                 world.value_regs[dst] = None;
                 return;
             };
@@ -2525,7 +2692,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         }
         Map => {
             // map f xs: dispatch f per element via a one-arg closure call.
-            let Some(src) = pooled_elems_of(ir, world, base + args[1]) else {
+            let Some(src) = pooled_elems_of(ir, world, base + args[1], "map") else {
                 world.value_regs[dst] = None;
                 return;
             };
@@ -2548,7 +2715,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         Fold => {
             // fold f z xs: seed the accumulator with a copy of z, then for each
             // element call f with (acc, elem); the result becomes the new acc.
-            let Some(src) = pooled_elems_of(ir, world, base + args[2]) else {
+            let Some(src) = pooled_elems_of(ir, world, base + args[2], "fold") else {
                 world.value_regs[dst] = None;
                 return;
             };
@@ -2610,7 +2777,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                     world.value_regs[dst] = alloc_owned(ir, world, Value::Nil);
                 }
                 _ => {
-                    let Some(mut kept) = pooled_elems_of(ir, world, base + args[0]) else {
+                    let Some(mut kept) = pooled_elems_of(ir, world, base + args[0], "tail") else {
                         world.value_regs[dst] = None;
                         return;
                     };
@@ -2634,7 +2801,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // returns Bool(true). A kept element is recounted (RC++) into the
             // result list so both the source and the result own it; the
             // predicate's Bool result is released after each call.
-            let Some(src) = pooled_elems_of(ir, world, base + args[1]) else {
+            let Some(src) = pooled_elems_of(ir, world, base + args[1], "filter") else {
                 world.value_regs[dst] = None;
                 return;
             };
@@ -2861,7 +3028,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // bind xs f: for each element, call f -> a List, splicing all the
             // resulting lists into one (`concat_map`). Element and result
             // payloads are pooled.
-            let Some(src) = pooled_elems_of(ir, world, base + args[1]) else {
+            let Some(src) = pooled_elems_of(ir, world, base + args[1], "concat_map") else {
                 world.value_regs[dst] = None;
                 return;
             };
@@ -2892,11 +3059,11 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         AppendList => {
             // append_list xs ys: the concatenation of two lists (Monoid
             // mappend). Every element is recounted for the result.
-            let Some(mut left) = pooled_elems_of(ir, world, base + args[0]) else {
+            let Some(mut left) = pooled_elems_of(ir, world, base + args[0], "append_list") else {
                 world.value_regs[dst] = None;
                 return;
             };
-            let Some(mut right) = pooled_elems_of(ir, world, base + args[1]) else {
+            let Some(mut right) = pooled_elems_of(ir, world, base + args[1], "append_list") else {
                 world.value_regs[dst] = None;
                 return;
             };
@@ -3008,7 +3175,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // chain) has no flat element Vec, so it is a clean fault — leaving
             // the destination silently unbound would be a wrong result on the
             // canonical Haskell list syntax.
-            let Some(elems) = pooled_elems_of(ir, world, base + args[1]) else {
+            let Some(elems) = pooled_elems_of(ir, world, base + args[1], "arrayFromList") else {
                 // (Pool exhaustion, if that was the cause, already latched;
                 // first latch wins.)
                 latch_fault(ir, world, "arrayFromList: expected a list of elements");
@@ -3200,7 +3367,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // shape, replace the hole claim at that position. In-order
             // application gives last-wins (mirrors `arrayUpdate`'s duplicate-
             // offset rule, but index-typed).
-            let Some(assocs) = pooled_elems_of(ir, world, base + args[1]) else {
+            let Some(assocs) = pooled_elems_of(ir, world, base + args[1], "array") else {
                 for r in &elems {
                     world.arena.drop_ref(*r);
                 }
@@ -3297,7 +3464,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             // hole ref and the builder's own claim (`rc 1` from `alloc_owned`)
             // is released only AFTER that loop — never before, when a freed
             // hole slot would make the loop's `copy` a dangling ref.
-            let Some(mut elems) = pooled_elems_of(ir, world, base + args[2]) else {
+            let Some(mut elems) = pooled_elems_of(ir, world, base + args[2], "listArray") else {
                 latch_fault(ir, world, "listArray: expected a list of elements");
                 world.value_regs[dst] = None;
                 return;
@@ -3558,7 +3725,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             } else {
                 base + args[2]
             };
-            let Some(assocs) = pooled_elems_of(ir, world, assoc_reg) else {
+            let Some(assocs) = pooled_elems_of(ir, world, assoc_reg, "array associations") else {
                 latch_fault(
                     ir,
                     world,
