@@ -251,6 +251,72 @@ git commit -m 'fix(lang): first-class operators and no silent list-operation ans
 
 ---
 
+### Task 2.6: `min` / `max` — scalar, first-class, and Ord-polymorphic
+
+**Files:**
+- Modify: `rill-lang/src/lower.rs` (scalar fallthrough at ~2181–2190; first-class operator table at ~7938), `rill-lang/src/types/infer.rs` (~4076), `rill-lang/src/backend/interp.rs` (`value_cmp_ref` already provides the order)
+- Test: `rill-lang/tests/conformance_gaps.rs`
+
+**Interfaces:**
+- Consumes: Task 2.5's first-class operator machinery and the central
+  absent-operand fault.
+- Produces: `min`/`max` usable as scalar functions, as first-class values
+  (`fold max`), and over any `Ord` type.
+
+**Measured state (audit 2026-10-25):** every scalar form is an error —
+`min 1.0 2.0`, `1.0 \`min\` 2.0`, `(min 1.0) 2.0`, `fold max …`, `min 1 2`,
+`min "a" "b"` all fail with `unknown 'min' in value lowering` (or an arity
+error for the partial application). The buffer form (`min _ 0.5`) works.
+
+- [ ] **Step 1: Write the failing tests**
+
+One behavioural test each, asserting the Haskell 2010 result:
+```rust
+#[test] fn min_max_scalar_float()      { /* min 1.0 2.0 == 1.0; max 1.0 2.0 == 2.0 */ }
+#[test] fn min_max_backtick_and_partial() { /* 1.0 `min` 2.0; (min 1.0) 2.0 */ }
+#[test] fn min_max_first_class()       { /* fold max 0.0 [1.0,3.0,2.0] == 3.0 */ }
+#[test] fn min_max_ord_int()           { /* min 1 2 == 1 */ }
+#[test] fn min_max_ord_string()        { /* min "a" "b" == "a" */ }
+#[test] fn min_max_ord_record()        { /* min of two Pair values compares the first field */ }
+#[test] fn min_max_arity_errors()      { /* min 1.0 == arity error */ }
+```
+
+- [ ] **Step 2: Run to verify they fail** — `unknown 'min' in value lowering`.
+
+- [ ] **Step 3: Wire scalar `min`/`max`**
+
+At `lower.rs:2181–2190` the code returns an error only for `atan2`; `min`/`max`
+fall through and die later. Give `min`/`max` a scalar path (element-wise
+`BinArith::Min`/`Max` already exists in the IR and interpreter for buffers; the
+scalar case is the same comparison on two scalars). Keep `atan2`'s existing
+error only if it stays genuinely unimplemented — and if it does, record it in
+`DOCS-GAPS.md` (the rule forbids leaving it undocumented).
+
+- [ ] **Step 4: Make `min`/`max` first-class values**
+
+Extend the operator-value table (`lower.rs` ~7938, the one that already handles
+`+ - * / % min max atan2` as `BinArith`) so a bare `min`/`max` resolves to a
+callable. This is what `fold max` needs.
+
+- [ ] **Step 5: Ord polymorphism**
+
+`interp.rs::value_cmp_ref` already orders Int, Float, Bool, String, newtype,
+sum, record, list, set, array, and map. Reuse it: `min`/`max` must compare by
+`value_cmp`, not by f64 coercion, so `min "a" "b"` and record comparison work.
+Ints stay on the Int track (do not widen to Float and back).
+
+- [ ] **Step 6: Verify and commit**
+
+```bash
+cargo test -p rill-lang --features dsp
+cargo clippy -p rill-lang --features dsp
+cargo fmt --check
+git add rill-lang/src rill-lang/tests/conformance_gaps.rs docs/superpowers/DOCS-GAPS.md
+git commit -m 'feat(lang): scalar, first-class and Ord-polymorphic min/max'
+```
+
+---
+
 ### Task 3: Parser — where capture, guards, sections, arg patterns, standalone signatures
 
 **Files:**
