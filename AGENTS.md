@@ -202,6 +202,12 @@ correctness requirement, not an aspiration.
   Prelude function exists in Haskell 2010 / the GHC Prelude and rill behaves
   differently, fix rill. Do not document the divergence as acceptable, and do
   not route around it in library or benchmark code.
+- **There is no "pre-existing" exemption.** A defect that predates the current
+  change is still a defect. Never justify a behaviour with "it was already like
+  that", "out of scope for this task", or "unrelated to this change" — those
+  describe where the fix belongs, not whether the behaviour is correct. Either
+  fix it, or record it as an **open defect** with an owner and a reproduction;
+  never as settled or acceptable.
 - **Fixities are part of the standard.** Haskell 2010 §4.4.2 pins operator
   precedence and associativity (`infixr 2 ||`, `infixr 3 &&`, `infix 4`
   comparisons and non-associativity, `infixr 5 :` and `++`, `infixl 6 + -`,
@@ -212,8 +218,13 @@ correctness requirement, not an aspiration.
   correct and the incorrect reading, is not evidence. Every conformance test
   must assert a value that changes when the behaviour is wrong.
 - **When a construct is genuinely not implementable yet,** record it in a
-  tracked gap list with the exact reproduction, and treat the gap as open work —
-  never as settled behaviour.
+  tracked gap list with the exact reproduction and an owner, and treat the gap
+  as **open work with a deadline** — never as settled behaviour. "Pre-existing"
+  is not a status; it only says the defect is older than the current branch.
+- **A failing baseline test does not license a new failure.** `--all-targets`
+  currently fails on `lang_bench` (it does not compile against the current API).
+  That is an open defect in its own right, not permission to leave any other
+  target failing. Do not use an existing broken thing to excuse a new one.
 - **North-star sources:** Haskell 2010 Report (syntax §3, fixities §4.4.2,
   derived instances §11), and the GHC Prelude as the reference for library
   functions. When the two disagree, follow the Report for syntax/semantics and
