@@ -113,9 +113,10 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         Tok::Percent => (InfixOp::Rem, 13, 14),
         // `!` — infix indexing. Tight (just below juxtaposed application, above
         // every arithmetic operator) and left-associative: `a ! i + 1` ≡
-        // `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`. An ATTACHED `!` is a bang
-        // marker, not an operator — the operator loop consults
-        // `is_attached_bang` first.
+        // `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`. `!` is the index operator
+        // in expression position regardless of whitespace (`a!1` ≡ `a ! 1`);
+        // bang markers (`!x`, `!pat`) exist only in pattern positions, parsed
+        // through separate paths.
         Tok::Bang => (InfixOp::Index, 15, 16),
         _ => return None,
     })
@@ -1104,17 +1105,6 @@ impl<'a> Parser<'a> {
     fn parse_expr(&mut self, min_bp: u8, no_comma: bool) -> Result<Expr, CompileError> {
         let mut lhs = self.parse_prefix(no_comma)?;
         while let Some((op, l_bp, r_bp)) = infix_binding_power(&self.peek().tok) {
-            // A `!` attached to the following token is a bang marker, not the
-            // infix index operator. It begins no expression, so it is an error
-            // in expression/operator position (`a!i`, `a !i`); only a separated
-            // `!` (`a ! i`) reaches the operator arm below.
-            if op == InfixOp::Index && is_attached_bang(self.toks, self.cur()) {
-                return Err(CompileError::Parse {
-                    msg: "a bang pattern `!x` is not an expression: index with `a ! i` (spaces around `!`)"
-                        .into(),
-                    span: self.peek().span,
-                });
-            }
             if no_comma && op == InfixOp::Par {
                 break;
             }
@@ -2953,16 +2943,28 @@ mod tests {
     }
 
     #[test]
-    fn attached_bang_in_expression_position_is_rejected() {
-        // A `!` attached to the following token is a bang marker, which begins
-        // no expression: both `a!i` and `a !i` are parse errors.
-        for src in ["main = a!i", "main = a !i"] {
-            let msg = parse_err(src);
-            assert!(
-                msg.contains("bang"),
-                "expected a bang-pattern diagnostic for `{src}`, got: {msg}"
-            );
+    fn attached_bang_in_expression_position_is_indexing() {
+        // A `!` in expression position is the infix index operator regardless
+        // of whitespace: `a!i`, `a !i`, `a! 1`, `a ! 1` all desugar to a
+        // two-arg `index` application — matching the other infix operators
+        // (`a+1` ≡ `a + 1`). Bang markers only exist in pattern positions
+        // (params, case patterns, bindings), which parse through separate
+        // paths.
+        for src in ["main = a!i", "main = a !i", "main = a! i", "main = a ! i"] {
+            let e = body(src);
+            let Some(("index", args)) = curry_head(&e) else {
+                panic!("expected an `index` application for `{src}`, got {e:?}");
+            };
+            assert_eq!(args.len(), 2, "`{src}` must desugar to a two-arg `index`");
+            assert!(matches!(args[0], Expr::Ref(n, _) if n == "a"));
         }
+        // A numeric index parses the same way: `a!1` ≡ `index a 1`.
+        let e = body("main = a!1");
+        let Some(("index", args)) = curry_head(&e) else {
+            panic!("expected an `index` application for `main = a!1`, got {e:?}");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[1], Expr::Int(1, _)));
     }
 
     #[test]

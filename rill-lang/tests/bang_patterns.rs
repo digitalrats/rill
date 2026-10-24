@@ -227,7 +227,12 @@ fn the_bang_marker_and_the_infix_index_operator_stay_distinct() {
     // `a` was typed `Float` and `a ! i` asked for `Ix Float`. Keeping the
     // definition un-inlined (it must stay a closure anyway, because a bang
     // parameter forces its argument on entry) is what carries
-    // `Array Int Float` into the body.
+    // `Array Int Float` into the body. The signature is no longer the only
+    // route in — since the first-class λ-parameter work, a signature-less
+    // accessor (`at a i = a ! i`) specializes its body per call site and
+    // carries the array type without a `::`. This sig-typed form still pins
+    // the bang contract: its closure path lowers to exactly one `ValueForce`,
+    // the count asserted below.
     let src = "{-# MODE strict #-}\n\
                at !a i :: Array Int Float -> Int -> Float = a ! i;\n\
                main = at (listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1";
