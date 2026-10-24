@@ -1774,6 +1774,27 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
 /// reference to it a plain "unknown identifier", which is total (a call, a
 /// bare reference, a first-class passing all fail the same way). Complete mode
 /// keeps them — recursion is its normal evaluation strategy.
+///
+/// # User-visible consequence: recursive Prelude helpers are not exposed in
+/// Strict mode
+///
+/// A `{-# MODE strict #-}` program does NOT see the Prelude's recursive
+/// helpers — today `from`, and any recursive helper the Prelude gains later
+/// (the planned `take`). Referencing one is a compile error:
+///
+/// ```text
+/// type error: unknown identifier `from`
+/// ```
+///
+/// This is deliberate, not an oversight. Exposing one to a Strict program makes
+/// LOWERING recurse without bound and overflow the compiler's stack: Strict mode
+/// has no runtime recursion to break the dispatch cycle, so the definition is
+/// withheld rather than half-supported. The rule is total — a call, a bare
+/// reference, and passing the name as a first-class value all report the same
+/// unknown-identifier error.
+///
+/// `{-# MODE complete #-}` — the default for [`compile`](crate::compile) —
+/// keeps recursive Prelude helpers and is the mode to use for them.
 pub(crate) fn merge_prelude_defs(
     prelude_defs: &[crate::ast::Def],
     user_defs: &[crate::ast::Def],
@@ -1799,8 +1820,10 @@ pub(crate) fn merge_prelude_defs(
 /// Names of definitions that take part in a static call cycle, direct or
 /// mutual (`from n = cons n (from (n + 1.0))` → `{from}`).
 ///
-/// Uses the same fragment-valued call graph as [`check_recursion`], so "cyclic"
-/// here means exactly what Strict mode rejects for a user definition.
+/// Shares the call graph CONSTRUCTION with [`check_recursion`] (see
+/// [`def_call_graph`]); the cycle DETECTION below is its own implementation, not
+/// [`check_recursion`]'s DFS. The two therefore agree on what a call edge is,
+/// but not on how a cycle is found.
 fn cyclic_def_names(defs: &[Def]) -> HashSet<String> {
     let (nodes, edges) = def_call_graph(defs);
     cyclic_in_call_graph(&nodes, &edges)
@@ -1810,10 +1833,13 @@ fn cyclic_def_names(defs: &[Def]) -> HashSet<String> {
 /// can own a runtime dispatch chain, and an edge `A → B` for every statically
 /// named call from `A`'s body to `B`.
 ///
-/// Shared by [`check_recursion`] (which reports a cycle as a Strict-mode error)
-/// and [`cyclic_def_names`] (which uses the cycle as the whole-prelude
-/// availability test), so the two can never disagree about what "recursive"
-/// means.
+/// Only the CONSTRUCTION is shared, by [`check_recursion`] (which diagnoses a
+/// cycle as a Strict-mode error) and [`cyclic_def_names`] (which uses reachability
+/// as the Prelude availability test). Cycle DETECTION is duplicated: here
+/// [`cyclic_in_call_graph`] (an explicit-stack reachability search feeding a
+/// name set) and in [`check_recursion`] (a recursive DFS that reports the first
+/// offending edge with its span). The two could in principle disagree about a
+/// pathological graph, so a change to the notion of "recursive" must touch both.
 fn def_call_graph(defs: &[Def]) -> (HashSet<String>, Vec<(String, String)>) {
     let nodes = fragment_valued_names(defs);
     let mut edges: Vec<(String, String)> = Vec::new();

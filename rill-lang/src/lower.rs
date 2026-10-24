@@ -8350,13 +8350,27 @@ pub fn lower_program_with_channels(
     // it lives in the Prelude or is shadowed by an identical user body. Both
     // compile to capacity 400 / buffer budget 1600 for `main = from 1.0`.
     //
-    // A demand-limited drain `length (take n (from 1.0))` compiles to a
-    // CONSTANT capacity (2120 / 8480) for every `n` from 1 to 256 — the arena
-    // budget does not grow with demand. The runtime cost per demanded element
-    // comes out of that fixed budget, so there is a demand WALL: measured on
-    // this build, the largest working `n` is 84 and `n = 85` latches
-    // "value-track resource exhausted: value arena capacity". `n = 64` (the
-    // GHC-parity benchmark size) has 21 elements of headroom.
+    // The budget is also independent of DEMAND — but the exact constant is a
+    // property of the whole program, so each shape below has its own:
+    //
+    //   * `length (take n (from 1.0))` (a single builtin consumer, compiled via
+    //     `compile_eval`) is CONSTANT at capacity 1104 / buffer budget 4416 for
+    //     every `n` from 1 to 512. It has no demand wall to report: `length` is
+    //     not yet `Cons`-aware (Task 5), so it walks nothing and returns
+    //     `Int(0)` without forcing the chain.
+    //   * The benchmark-shaped drain
+    //     `fromList (take n (from 1.0)) |> toList |> fold (+) 0.0` is CONSTANT
+    //     at capacity 2120 / buffer budget 8480 for every `n` from 1 to 256,
+    //     and DOES force the chain, so it shows the real demand WALL: measured
+    //     on this build the largest working `n` is 84 and `n = 85` latches
+    //     "value-track resource exhausted: value arena capacity". `n = 64` (the
+    //     GHC-parity benchmark size) sums to 2080.0 with 21 elements of
+    //     headroom.
+    //
+    // The per-element runtime cost comes out of that fixed budget; it does not
+    // enlarge it. Numbers above were measured with `compile_eval` reading
+    // `Ir::value_state` (`capacity`, `buffer_budget`) and with `compile` +
+    // `run` bisecting `n` for the walls.
     //
     // Complete mode (Stage A): the lazy value track keeps each thunk's memo
     // cell AND its forced result live for the thunk's lifetime (a strict

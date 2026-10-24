@@ -122,8 +122,8 @@ fn capacity_bound_does_not_count_prelude_definition_bodies() {
     // B3: the arena budget is a static per-program bound over allocation sites,
     // so a recursive Prelude def is charged the same constant as an identical
     // user body and does NOT scale with demand. This pins the property the
-    // benchmark size relies on: `take n (from 1)` compiles to the SAME capacity
-    // for every `n`.
+    // benchmark size relies on: the `fromList`/`toList`/`fold` drain over
+    // `take n (from 1)` compiles to the SAME capacity for every `n`.
     fn capacity(n: usize) -> (usize, usize) {
         let src = format!(
             r#"take k xs = if k == 0.0 then list else cons (case (head xs) of {{ Nothing -> 0.0; Just x -> x }}) (take (k - 1.0) (tail xs));
@@ -137,6 +137,31 @@ main = do {{ xs <- fromList (take {n}.0 (from 1.0)); ys <- toList xs; write (Jus
     for n in [5, 16, 64, 128, 256] {
         assert_eq!(capacity(n), one, "arena budget grew with demand at n = {n}");
     }
+    // A DIFFERENT program shape has a different constant (`length` alone pulls
+    // in fewer allocation sites than the full drain), but it is equally
+    // demand-independent. Pinning both is what keeps the `lower.rs` capacity
+    // comment honest about which expression owns which numbers.
+    fn length_capacity(n: usize) -> (usize, usize) {
+        let defs = r#"take k xs = if k == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (k - 1.0) (tail xs));"#;
+        let expr = format!("length (take {n}.0 (from 1.0))");
+        let ir = rill_lang::compile_eval::<f32, 256>(defs, &expr, rill_lang::mode::Mode::Complete)
+            .expect("program must compile");
+        (ir.value_state.capacity, ir.value_state.buffer_budget)
+    }
+    let length_one = length_capacity(1);
+    for n in [5, 64, 256, 512] {
+        assert_eq!(
+            length_capacity(n),
+            length_one,
+            "arena budget grew with demand for `length (take n (from 1.0))` at n = {n}"
+        );
+    }
+    assert_eq!(
+        length_one,
+        (1104, 4416),
+        "recorded length-expression budget"
+    );
+    assert_eq!(one, (2120, 8480), "recorded drain-program budget");
 }
 
 #[test]
