@@ -251,6 +251,51 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 
 ---
 
+### Task 6 (close-out): Detailed Haskell 2010 conformance audit
+
+> **User requirement (2026-10-25): after the stages are done, perform a detailed
+> audit of Haskell 2010 conformance. Divergences are inadmissible — they are
+> fixed, not documented.** This is the audit task: it is allowed to open new work
+> items when it finds one, and it does not close until every finding is either
+> fixed or promoted to a named task.
+
+**Files:**
+- Create: `docs/superpowers/audits/2026-10-25-haskell2010-conformance-audit.md`
+- Modify: whatever the findings require
+
+**Interfaces:**
+- Consumes: the whole branch.
+- Produces: an audit report with a verdict per area and a list of fixed items.
+
+#### Audit areas (each gets a verdict + evidence)
+
+| # | Area | What to check |
+|---|---|---|
+| A1 | **Lexical** | `--` comments, nested `{- -}`, precedence of pragmas, identifiers, literals, string escapes |
+| A2 | **Syntax** | layout/offside, `where`, guards (definitions and case), `let`/`in`, `do`, `case`, patterns, sections, backticks, comprehensions, `::` on expressions, fixities §4.4.2 |
+| A3 | **Declarations** | `data`/`newtype`/`type`, `typeclass` with superclasses, `instance` (incl. constraint heads), derived `Eq`/`Ord`, standalone signatures |
+| A4 | **Types** | HM inference, class constraints and entailment, defaulting, the numeric tower, `Int`-vs-`Float` numeral mapping, `Ix` |
+| A5 | **Expressions** | application/currying, `if`/`case` typing, `bottom` propagation, laziness in `MODE complete`, short-circuit `&&`/`||` |
+| A6 | **Prelude surface** | every function the design claims: `+ - * /`, `==`, `/=`, `<`, `<=`, `>`, `>=`, `compare`, `min`, `max`, `sort`, `maximum`, `minimum`, `show`, `negate`, `abs`, `signum`, `fromInteger`, `div`, `mod`, `quot`, `rem`, `fromIntegral`, `toInteger`, `floor`, `ceiling`, `round`, `truncate`, `succ`, `pred`, `enumFromTo`, `minBound`, `maxBound`, `foldr`, `foldl`, `concat`, `sum`, `product`, `elem`, `null`, `map`, `filter`, `length`, `take`, `from` |
+| A7 | **Typeclass semantics** | default methods, superclass projection, no-instance errors, recursive constrained definitions |
+| A8 | **Error behaviour** | every rejection is a compile error with an actionable message; no silent wrong answers anywhere |
+
+#### Method
+
+- For each area, **run programs**, not just read code. The reference is
+  `runghc` on GHC 9.10.3: where a program is valid Haskell 2010 it must run with
+  the same value; where it is invalid, rill must reject it.
+- **A silent wrong answer is the worst finding** and is fixed first.
+- Every finding goes into the audit document as `FOUND → FIXED (commit)` or
+  `FOUND → TASK (name)`. Nothing stays as "documented divergence".
+
+- [ ] **Step 1: Run the audit and write the document**
+- [ ] **Step 2: Fix every finding, or promote it to a named task in this plan**
+- [ ] **Step 3: Re-run the full gates and the audit matrix**
+- [ ] **Step 4: Commit** — `docs: Haskell 2010 conformance audit`
+
+---
+
 ### Task 5 (Stage 2 close-out): Static-typing and no-behaviour-change audit
 
 **Files:** tests only; `docs/superpowers/DOCS-GAPS.md`
