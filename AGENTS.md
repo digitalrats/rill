@@ -244,6 +244,23 @@ correctness requirement, not an aspiration.
   functions. When the two disagree, follow the Report for syntax/semantics and
   the Prelude for library surface.
 
+### Backward compatibility is not a requirement
+
+At this stage **exact Haskell 2010 conformance takes priority over backward
+compatibility**. Concretely:
+
+- Breaking a rill-specific behaviour that diverges from Haskell 2010 is **the
+  intended work**, not a regression. Do not preserve it, do not add a
+  compatibility shim, and do not keep a "legacy" mode.
+- A test that encodes a divergent behaviour is **corrected to the Haskell 2010
+  value**, not treated as a contract. Deleting such a test is acceptable when the
+  behaviour it pinned no longer exists; never delete the *guarantee* if the
+  guarantee itself is valid Haskell 2010.
+- Public API surface may change freely when the change follows the standard.
+- "Existing users depend on it" is not an argument at this stage.
+- Do not add deprecation paths, feature flags to restore old behaviour, or
+  dual implementations.
+
 ### There is no signal path
 
 **rill has no separate "signal track", "signal path", or signal/value split.**
