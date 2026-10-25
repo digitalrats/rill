@@ -4,7 +4,7 @@
 
 **Goal:** Express every binary operator as sugar over a class method and fill the Haskell 2010 class layer (`Eq`, `Ord`, `Show`, `Num`, `Fractional`, `Integral`, `RealFrac`, `Floating`, `Enum`, `Bounded`, `Semigroup`) so comparison, arithmetic, rendering and enumeration dispatch through instances — including the `Buffer` class for element-wise buffer math.
 
-**Architecture:** Six phases, each independently shippable and green. **P-1 makes numeric literals polymorphic and adds class-constraint solving plus numeric defaulting** — without it, operators cannot be class methods at all, because `infer_arith` pins every type variable to `Float`. P0 deletes the operator constructs and routes them through class dispatch. P1 lands `Eq`/`Ord` (comparison, `min`/`max`, `sort`). P2 adds `Show`. P3 moves arithmetic to `Num`/`Fractional` and adds the `Buffer` arithmetic methods, deleting the scalar-vs-buffer fork. P4 adds `Integral`/`RealFrac`/`Enum`/`Bounded`. P5 adds `Semigroup`/`Foldable` and the `Ord`-based Prelude functions.
+**Architecture:** Seven phases, each independently shippable and green. **P-2 adds general typeclass towers** (superclass constraints + transitive entailment), because every operator scheme needs them (`Ord a` entails `Eq a`, `Fractional a` entails `Num a`) and today the language cannot express a superclass at all. **P-1 makes numeric literals polymorphic and adds class-constraint solving plus numeric defaulting** — without it, operators cannot be class methods at all, because `infer_arith` pins every type variable to `Float`. P0 deletes the operator constructs and routes them through class dispatch. P1 lands `Eq`/`Ord` (comparison, `min`/`max`, `sort`). P2 adds `Show`. P3 moves arithmetic to `Num`/`Fractional` and adds the `Buffer` arithmetic methods, deleting the scalar-vs-buffer fork. P4 adds `Integral`/`RealFrac`/`Enum`/`Bounded`. P5 adds `Semigroup`/`Foldable` and the `Ord`-based Prelude functions.
 
 **Tech Stack:** Rust, `rill-lang`; tests via `cargo test -p rill-lang --features dsp`.
 
@@ -44,6 +44,86 @@
 | `rill-lang/src/backend/interp.rs` | Primitive kernels (unchanged, reached through instances) |
 | `rill-lang/tests/typeclass_layer.rs` | New: per-phase behavioural tests |
 | `rill-lang/tests/conformance_gaps.rs` | Existing: extend where a gap closes |
+
+---
+
+### Task P-2 (P₋₂): General typeclass towers (superclass constraints and entailment)
+
+> **Why this comes before P-1:** every operator scheme is a class with
+> superclasses — `Ord a =>` requires `Eq a`, `Fractional a =>` requires `Num a`,
+> `Integral a =>` requires `Real a` and `Enum a`, `RealFrac a =>` requires
+> `Real a` and `Fractional a`, `Floating a =>` requires `Fractional a`. Today the
+> language cannot express a superclass at all:
+>
+> - `TypeclassInfo` has **no** `superclasses` field (only `var`, `arity`,
+>   `methods`, `defaults`);
+> - `Def::Typeclass` (ast.rs) has no superclass field;
+> - `parse_typeclass_def` starts at `name var where` — no `(C a) =>` form;
+> - `derive_superclass_instances` is **hard-coded to `Monad → Applicative →
+>   Functor`**, not a general mechanism.
+>
+> Without entailment, a context `Ord a` cannot satisfy `==` (an `Eq` method), and
+> P-1's constraint solving has nothing to solve against.
+
+**Files:**
+- Modify: `rill-lang/src/ast.rs` (`Def::Typeclass` gains `supers: Vec<(String, TypeExpr)>` or equivalent)
+- Modify: `rill-lang/src/parser.rs` (`typeclass (C1 a, C2 a) => D a where { … }`; also the parenthesised-operator method-name form `(==) : a -> a -> Bool;`)
+- Modify: `rill-lang/src/types/ty.rs` (`TypeclassInfo.superclasses`; replace the hard-coded `derive_superclass_instances` with a general walk over declared superclasses; entailment helper)
+- Modify: `rill-lang/src/types/infer.rs` (constraint discharge walks superclasses transitively; a superclass method resolves when the subclass is in context)
+- Modify: `rill-lang/src/lower.rs` (method dispatch through the entailed instance)
+- Test: `rill-lang/tests/typeclass_towers.rs` (new)
+
+**Interfaces:**
+- Consumes: existing `TypeclassInfo`, `InstanceInfo`, `resolve_method`, `class_of_method`, `infer_constrained_apply`.
+- Produces: `TypeclassInfo.superclasses: Vec<(String, String)>` (class, its variable); `fn entail(&self, class, ty) -> Vec<(String, ty)>` returning the transitive superclass contexts; general `derive_superclass_instances`.
+
+- [ ] **Step 1: Prove the gap with failing tests**
+
+```rust
+#[test] fn superclass_declaration_parses()        { /* typeclass (Eq a) => Ord a where { … } parses and registers */ }
+#[test] fn ord_implies_eq()                       { /* a definition with `Ord a =>` can call (==) */ }
+#[test] fn fractional_implies_num()               { /* `Fractional a =>` can call (+) */ }
+#[test] fn integral_implies_real_and_enum()       { /* `Integral a =>` can call toInteger and succ */ }
+#[test] fn realfrac_implies_real_and_fractional() { /* floor on `RealFrac a =>` */ }
+#[test] fn floating_implies_fractional()          { /* pi and (/) together */ }
+#[test] fn a_value_without_the_superclass_is_rejected() { /* a type with Ord but no Eq is a clean error */ }
+#[test] fn existing_monad_superclass_derivation_still_works() { /* Functor/Applicative from Monad unchanged */ }
+```
+
+- [ ] **Step 2: Implement the declaration and the type-level data**
+
+Parse `typeclass (C1 a, C2 a) => D a where { … }`; store the supers in
+`Def::Typeclass` and `TypeclassInfo`. Keep the existing single-variable form
+working unchanged.
+
+- [ ] **Step 3: Implement transitive entailment**
+
+`Ord a` entails `Eq a`; `Integral a` entails `Real a` and `Enum a` (and therefore
+whatever those entail); `RealFrac a` entails `Real a` + `Fractional a`;
+`Floating a` entails `Fractional a`. Entailment must be **transitive and
+cycle-safe**.
+
+- [ ] **Step 4: Generalise superclass instance derivation**
+
+Replace the hard-coded `Monad → Applicative → Functor` walk with a general pass
+over every declared superclass. Default method bodies for the derived
+superclasses stay as templates (`fmap` via `bind`/`pure`), but they are now
+selected through the general mechanism.
+
+- [ ] **Step 5: Dispatch through the entailment**
+
+`resolve_method` / method dispatch must find a superclass method given a
+subclass context: with `Ord a` in scope, `==` resolves to `Eq`'s instance for the
+actual type.
+
+- [ ] **Step 6: Checkpoint and commit**
+
+Run the gates once. The eight tests above must pass; every existing test stays
+green (the `Monad`/`Applicative`/`Functor` behaviour is unchanged because the
+general mechanism must reproduce it).
+```bash
+git commit -m 'feat(lang): general typeclass towers with superclass entailment'
+```
 
 ---
 
