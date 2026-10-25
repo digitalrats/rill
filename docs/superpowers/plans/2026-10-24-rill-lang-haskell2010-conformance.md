@@ -417,6 +417,29 @@ git add rill-lang/src/lower.rs rill-lang/tests/ docs/superpowers/DOCS-GAPS.md
 git commit -m 'fix(lang): capture-avoiding method instantiation'
 ```
 
+CAN START IF: the four constructs §3.11 desugaring needs are already verified
+working — this was measured on 2026-10-25 (Strict mode, so `length` over the
+result is meaningful):
+
+| Needed construct | Verified |
+|---|---|
+| local function in `let`, single equation | ✅ `let ok x = cons x (list)` → `3` |
+| local function in `let`, TWO equations (§3.11's `ok p = …; ok _ = …`) | ✅ → `3` |
+| two equations at top level | ✅ → `3` |
+| `concat_map` with a lambda | ✅ → `3` |
+| guard inside a `let`-bound local function | ❌ **OD-11** — silently yields nothing |
+
+So Task 4 is **not** blocked by the operator/typeclass unification. It depends
+only on `let`-bound local functions and `concat_map`, which work. The one real
+dependency is OD-11 (guards in local functions), and §3.11 does not need guards
+for the generator/guard/`let`-qualifier rules — the guard qualifier desugars to
+`Expr::If`, not to a function guard.
+
+**Ordering ruling:** Task 4 proceeds **before** the typeclass/operator work. The
+operator unification changes how `Arith`/`Cmp` nodes are lowered; comprehension
+desugaring produces `concat_map` calls and `if`/`let` nodes, none of which are
+operator nodes, so the two changes touch disjoint surfaces.
+
 ---
 
 ### Task 4: `let` bindings of function/record values, list comprehensions
