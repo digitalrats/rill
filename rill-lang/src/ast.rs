@@ -361,6 +361,28 @@ pub struct Param {
     pub bang: bool,
 }
 
+/// One equation of a function-definition group, as written in the source.
+///
+/// This is the intermediate form the parser produces for the Haskell 2010
+/// equation surface (guards, argument patterns). It is consumed by
+/// [`crate::desugar`], which rewrites the whole group into a plain
+/// [`Def::Eval`]; it never reaches inference or lowering.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct Equation {
+    /// The argument patterns, one per formal parameter (`f 0.0 y = …` has two).
+    pub patterns: Vec<Pattern>,
+    /// The `(guard, body)` alternatives in source order. A plain `= body`
+    /// equation is one alternative whose guard is the literal `true`; a
+    /// guarded equation (`| g1 = e1 | g2 = e2`) carries one alternative per
+    /// guard (Haskell 2010 §4.4.3). Never empty.
+    pub guards: Vec<(Expr, Expr)>,
+    /// The equation's own `where` block (empty when absent).
+    pub where_defs: Vec<Def>,
+    /// Span of the whole equation.
+    pub span: Span,
+}
+
 /// A definition — top-level, `where`-block, or `let`-block.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -387,6 +409,36 @@ pub enum Def {
         #[cfg_attr(feature = "serde", serde(default))]
         bang: bool,
         /// Span of the whole definition.
+        span: Span,
+    },
+    /// `name p1 p2 | g = e | …` — a Haskell 2010 function equation, in the
+    /// intermediate form the parser records for the whole equation surface
+    /// (argument patterns, guards, per-equation `where`). Consecutive
+    /// equations of one name form a group; [`crate::desugar`] rewrites the
+    /// group into a single [`Def::Eval`] whose body is a `case`-shaped
+    /// [`Expr::Match`]. This variant never reaches inference or lowering.
+    Equations {
+        /// Definition name.
+        name: String,
+        /// The equations of this name, in source order (at least one).
+        equations: Vec<Equation>,
+        /// Optional `:: TypeExpr` signature annotation written inline
+        /// (`f x :: Float -> Float = …`). A standalone signature
+        /// ([`Def::Signature`]) is attached to its group by
+        /// [`crate::desugar`].
+        sig: Option<TypeExpr>,
+        /// Span of the whole equation.
+        span: Span,
+    },
+    /// `f :: T;` — a standalone Haskell 2010 type signature. It carries no body
+    /// of its own; [`crate::desugar`] attaches it to the binding(s) of the same
+    /// name that follow it. Never reaches inference or lowering.
+    Signature {
+        /// The signed name.
+        name: String,
+        /// The declared type.
+        sig: TypeExpr,
+        /// Span of the declaration.
         span: Span,
     },
     /// `data Name tv1 tv2 = { f1: T1, f2: T2 }` — product type.
@@ -504,6 +556,8 @@ impl Def {
     pub fn name(&self) -> &str {
         match self {
             Def::Eval { name, .. } => name,
+            Def::Equations { name, .. } => name,
+            Def::Signature { name, .. } => name,
             Def::Data { name, .. } => name,
             Def::Sum { name, .. } => name,
             Def::Abstract { name, .. } => name,
@@ -553,6 +607,8 @@ impl Def {
     pub fn sig(&self) -> Option<&TypeExpr> {
         match self {
             Def::Eval { sig, .. } => sig.as_ref(),
+            Def::Equations { sig, .. } => sig.as_ref(),
+            Def::Signature { sig, .. } => Some(sig),
             _ => None,
         }
     }
@@ -561,6 +617,11 @@ impl Def {
     /// `newtype`, `typeclass`, `instance`, `foreign`) rather than a signal
     /// expression definition. Declaration variants carry no inferable body —
     /// the inference/lowering pipeline skips them via this flag.
+    ///
+    /// The parser's intermediate forms ([`Def::Equations`], [`Def::Signature`])
+    /// count as declarations too: they carry no `Def::Eval` body, and
+    /// [`crate::desugar`] removes them before inference. A leak past that pass
+    /// is then skipped rather than misread as an empty binding.
     pub fn is_decl(&self) -> bool {
         matches!(
             self,
@@ -572,6 +633,8 @@ impl Def {
                 | Def::Typeclass { .. }
                 | Def::Instance { .. }
                 | Def::Foreign { .. }
+                | Def::Equations { .. }
+                | Def::Signature { .. }
         )
     }
 }

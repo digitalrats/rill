@@ -210,6 +210,13 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             write!(buf, ";").ok();
             Ok(())
         }
+        // The parser's intermediate equation forms never survive
+        // [`crate::desugar`], which runs before this renderer in every
+        // pipeline. Rendering them anyway keeps the error local to the
+        // renderer rather than panicking on an unreachable arm.
+        Def::Equations { .. } | Def::Signature { .. } => Err(CompileError::Unsupported(
+            "a program reached the renderer before its equation surface was desugared".into(),
+        )),
     }
 }
 

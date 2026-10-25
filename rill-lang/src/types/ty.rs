@@ -482,6 +482,13 @@ split = \ f -> \ g -> \ x -> Pair { first: f x, second: g x };
 --  `\ p -> f p.first + g p.second`.
 merge = \ f -> \ g -> \ p -> f p.first + g p.second;
 
+--  `otherwise` — the GHC Prelude's guard fallback is an ordinary Bool VALUE,
+--  not a keyword: `otherwise = True`. A definition here (rather than a token in
+--  the lexer) lets a guard read `| otherwise = e` exactly like any other guard,
+--  and lets the totality rule recognise the final unconditional alternative
+--  without special-casing surface syntax.
+otherwise = true;
+
 main = ();
 "#;
 

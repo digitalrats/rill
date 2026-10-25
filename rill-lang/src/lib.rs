@@ -25,6 +25,9 @@ pub mod buffer_math;
 pub mod builtin;
 /// Built-in multi-IO signal processors (mixer, EQ, dry/wet).
 pub mod builtins;
+/// The single desugaring pass: the parser's equation surface (guards,
+/// argument patterns, `where`, standalone signatures) to core AST nodes.
+pub mod desugar;
 pub mod error;
 /// FFI factory registry: foreign-declared builtins' Rust implementations.
 pub mod ffi;
@@ -196,8 +199,9 @@ fn apply_api_mode(program: &mut crate::ast::Program, api_mode: Mode) {
 }
 
 /// The shared source-compile pipeline: tokenize → parse → resource extraction
-/// → mode resolution → infer → reduce → lower. The effective mode (pragma or
-/// API key) is threaded onto the [`TypedProgram`](types::infer::TypedProgram).
+/// → mode resolution → desugar → infer → reduce → lower. The effective mode
+/// (pragma or API key) is threaded onto the
+/// [`TypedProgram`](types::infer::TypedProgram).
 ///
 /// `entry` names the definition whose value is the program's single result
 /// (the executable path uses `"main"`; [`compile_eval`] uses an internal
@@ -217,6 +221,14 @@ fn compile_to_ir_entry(src: &str, mode: Mode, entry: &str) -> Result<Ir, Compile
     let program = parser::parse(&tokens, src.as_bytes())?;
     let (mut program, tape_decls) = extract_resources(&program)?;
     apply_api_mode(&mut program, mode);
+    // The ONE place the parser's equation surface becomes core AST nodes:
+    // guard alternatives and equation sets become `Expr::Match`, argument
+    // patterns a chain of matches over the formal parameters, `where` an
+    // `Expr::Let` around the body, and standalone signatures are attached to
+    // their bindings. Inference and lowering therefore never see the surface
+    // forms — System FC makes `case` the only branching form, so the type
+    // checker needs no knowledge of them.
+    desugar::desugar_program(&mut program)?;
     let mut typed = types::infer::infer_program_with_entry(&program, program.mode, entry)?;
     typed.tape_decls = tape_decls
         .iter()

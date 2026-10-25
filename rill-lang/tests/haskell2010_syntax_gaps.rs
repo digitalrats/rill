@@ -359,3 +359,386 @@ mod pragmas {
         );
     }
 }
+
+/// Haskell 2010 §4.4.3.3 — a `where` clause sees the declaration's own formal
+/// parameters.
+///
+/// The clause is desugared to a `let` INSIDE the definition body (`desugar.rs`),
+/// so the bindings resolve in the enclosing λ-environment. `f x = g where …`
+/// must therefore read `x`; a `where` written around an explicit lambda
+/// (`f = \x -> …`) must NOT — those are different scopes in Haskell 2010.
+mod where_clause_scope {
+    use super::*;
+
+    #[test]
+    fn where_sees_the_declaration_parameters() {
+        // `g` closes over `x`; `f 1.0` = 1.0 + 1.0.
+        assert_eq!(
+            value_of("f x = g where { g = x + 1.0; };", "f 1.0"),
+            Value::Float(2.0)
+        );
+        // A parameterised `where` binding closes over it too.
+        assert_eq!(
+            value_of("f x = g 1.0 where { g y = y + x; };", "f 1.0"),
+            Value::Float(2.0)
+        );
+        // Two parameters, one of them used only inside the `where` clause.
+        assert_eq!(
+            value_of("f x z = g z where { g y = y + x; };", "f 1.0 2.0"),
+            Value::Float(3.0)
+        );
+    }
+
+    #[test]
+    fn where_bindings_are_visible_in_the_body() {
+        assert_eq!(
+            value_of("f x = g 10.0 where { g y = y * h; h = x + 1.0; };", "f 1.0"),
+            Value::Float(20.0)
+        );
+    }
+
+    #[test]
+    fn where_captures_only_the_enclosing_lambda_parameters() {
+        // `where` around the CURRIED nest (`f x y = … where …`) sees both
+        // parameters.
+        assert_eq!(
+            value_of("f x y = g where { g = x * 10.0 + y; };", "f 2.0 3.0"),
+            Value::Float(23.0)
+        );
+        // `where` written around an EXPLICIT lambda captures nothing from it:
+        // `f = \x -> e where { g = … }` leaves `x` out of the `where`'s scope,
+        // so the `where` body sees only globals. The value proves the `x`
+        // inside the `where` is the GLOBAL `x` (= 100.0), not the λ-parameter.
+        assert_eq!(
+            value_of(
+                "x = 100.0; f = \\y -> z + y where { z = x + 1.0; };",
+                "f 1.0"
+            ),
+            Value::Float(102.0)
+        );
+    }
+
+    #[test]
+    fn where_inside_a_let_block_sees_the_let_bound_names() {
+        // A `where` binding whose own right-hand side is a `let` expression,
+        // over names bound in that `let`.
+        assert_eq!(
+            value_of(
+                "f x = g where { g = let { a = x + 1.0; } in a * 2.0; };",
+                "f 1.0"
+            ),
+            Value::Float(4.0)
+        );
+    }
+}
+
+/// Haskell 2010 §4.4.3.1 — guards on a function definition.
+///
+/// Every alternative is a `(guard, body)` pair, desugared into a `case` arm's
+/// `guards`; `otherwise` is the ordinary Prelude constant `otherwise = True`.
+mod function_guards {
+    use super::*;
+
+    #[test]
+    fn function_guards_with_otherwise() {
+        let defs = "f x | x > 0.0 = 1.0 | otherwise = 2.0;";
+        // Both sides of the guard, so the test distinguishes a working guard
+        // from one that always takes the first alternative.
+        assert_eq!(value_of(defs, "f 1.0"), Value::Float(1.0));
+        assert_eq!(value_of(defs, "f (0.0 - 1.0)"), Value::Float(2.0));
+    }
+
+    #[test]
+    fn guards_are_tried_in_source_order() {
+        // `x > 1.0` is checked first: 2.0 takes the first body, 0.5 the second.
+        let defs = "f x | x > 2.0 = 10.0 | x > 1.0 = 20.0 | otherwise = 30.0;";
+        assert_eq!(value_of(defs, "f 3.0"), Value::Float(10.0));
+        assert_eq!(value_of(defs, "f 1.5"), Value::Float(20.0));
+        assert_eq!(value_of(defs, "f 0.0"), Value::Float(30.0));
+    }
+
+    #[test]
+    fn guard_bodies_may_reference_the_parameters() {
+        assert_eq!(
+            value_of("f x | x > 0.0 = x * 2.0 | otherwise = 0.0 - x;", "f 3.0"),
+            Value::Float(6.0)
+        );
+    }
+
+    #[test]
+    fn guarded_function_without_fallback_is_rejected() {
+        // No `otherwise` and no `case`, so nothing covers the negative input:
+        // the definition is non-exhaustive and must be a compile error rather
+        // than a silent fall-through.
+        let err = error_of("f x | x > 0.0 = 1.0;", "f 0.0");
+        assert!(
+            err.to_string().contains("non-exhaustive"),
+            "expected a non-exhaustive diagnostic, got {err}"
+        );
+    }
+
+    #[test]
+    fn a_literal_true_guard_counts_as_the_fallback() {
+        // `otherwise` has no special status in the rule: a literal `true`
+        // covers the definition just as well.
+        assert_eq!(
+            value_of("f x | x > 0.0 = 1.0 | true = 2.0;", "f (0.0 - 1.0)"),
+            Value::Float(2.0)
+        );
+    }
+
+    #[test]
+    fn a_guard_that_is_not_a_bool_is_a_type_error() {
+        let err = error_of("f x | x + 1.0 = 1.0 | otherwise = 2.0;", "f 1.0");
+        assert!(
+            err.to_string().contains("guard must be a Bool"),
+            "expected a guard type diagnostic, got {err}"
+        );
+    }
+
+    #[test]
+    fn otherwise_is_a_value_not_a_keyword() {
+        // The Prelude binds `otherwise = True`, so it is readable, rebindable
+        // and usable away from a guard.
+        assert!(bool_of("", "otherwise"));
+        assert!(bool_of("otherwise = false;", "otherwise") == false);
+    }
+
+    #[test]
+    fn guards_combine_with_argument_patterns() {
+        let defs = "f (Just x) | x > 2.0 = 10.0 | otherwise = 0.0; f Nothing = 99.0;";
+        assert_eq!(value_of(defs, "f (Just 3.0)"), Value::Float(10.0));
+        assert_eq!(value_of(defs, "f (Just 1.0)"), Value::Float(0.0));
+        assert_eq!(value_of(defs, "f Nothing"), Value::Float(99.0));
+    }
+
+    #[test]
+    fn where_scopes_over_a_guarded_equation() {
+        assert_eq!(
+            value_of(
+                "f x | x > 0.0 = x + y | otherwise = 0.0 where { y = 10.0; };",
+                "f 1.0"
+            ),
+            Value::Float(11.0)
+        );
+    }
+}
+
+/// Haskell 2010 §4.4.3.1 — patterns in function arguments.
+///
+/// `f 0.0 = …; f x = …` matches the equations in source order; the desugar pass
+/// builds that as a chain of `case` arms over the formal parameters.
+mod argument_patterns {
+    use super::*;
+
+    #[test]
+    fn patterns_in_function_arguments() {
+        let defs = "f 0.0 = 1.0; f x = x;";
+        // The first equation wins for 0.0; the variable equation covers the
+        // rest. Both directions are asserted, so a group that always took the
+        // first (or the last) equation fails.
+        assert_eq!(value_of(defs, "f 0.0"), Value::Float(1.0));
+        assert_eq!(value_of(defs, "f 3.0"), Value::Float(3.0));
+    }
+
+    #[test]
+    fn equations_are_tried_in_source_order() {
+        // `f 0.0 0.0`, then `f 0.0 y`, then the catch-all — each more general
+        // than the last, so a wrong order changes every answer.
+        let defs = "f 0.0 0.0 = 1.0; f 0.0 y = 2.0; f x y = x + y;";
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(1.0));
+        assert_eq!(value_of(defs, "f 0.0 5.0"), Value::Float(2.0));
+        assert_eq!(value_of(defs, "f 5.0 6.0"), Value::Float(11.0));
+    }
+
+    #[test]
+    fn constructor_patterns_in_arguments() {
+        let defs = "f Nothing = 1.0; f (Just x) = x;";
+        assert_eq!(value_of(defs, "f Nothing"), Value::Float(1.0));
+        assert_eq!(value_of(defs, "f (Just 3.0)"), Value::Float(3.0));
+    }
+
+    #[test]
+    fn wildcard_and_integer_patterns_in_arguments() {
+        assert_eq!(
+            value_of("f 0 = 1.0; f 1 = 2.0; f _ = 3.0;", "f 1"),
+            Value::Float(2.0)
+        );
+        assert_eq!(
+            value_of("f 0 = 1.0; f 1 = 2.0; f _ = 3.0;", "f 7"),
+            Value::Float(3.0)
+        );
+    }
+
+    #[test]
+    fn an_incomplete_pattern_group_is_rejected() {
+        // Only `Just` is covered, so `Nothing` has no equation: Haskell 2010
+        // calls that a non-exhaustive pattern match and so must this compiler.
+        let err = error_of("f (Just x) = x;", "f Nothing");
+        assert!(
+            err.to_string().contains("non-exhaustive"),
+            "expected a non-exhaustive diagnostic, got {err}"
+        );
+    }
+
+    #[test]
+    fn equations_must_agree_on_arity() {
+        let err = error_of("f 0.0 = 1.0; f x y = x;", "f 1.0");
+        assert!(
+            err.to_string().contains("argument pattern"),
+            "expected an arity diagnostic, got {err}"
+        );
+    }
+}
+
+/// Haskell 2010 §4.4.1 — a standalone type signature attached to the binding(s)
+/// that follow it.
+mod standalone_signatures {
+    use super::*;
+
+    #[test]
+    fn standalone_type_signature() {
+        assert_eq!(
+            value_of("f :: Float -> Float;\nf x = x;", "f 2.0"),
+            Value::Float(2.0)
+        );
+    }
+
+    #[test]
+    fn standalone_signature_types_the_parameters() {
+        // The signature is a real constraint, not decoration: `Int -> Int`
+        // makes the arithmetic integer arithmetic, so the result is an `Int`.
+        assert_eq!(
+            value_of("f :: Int -> Int;\nf x = x + 1;", "f 1"),
+            Value::Int(2)
+        );
+        // The same body without the signature stays on the inferred track.
+        assert_eq!(value_of("f x = x + 1;", "f 1"), Value::Int(2));
+    }
+
+    #[test]
+    fn standalone_signature_attaches_to_a_later_binding() {
+        // The signature precedes its binding, separated by another declaration.
+        assert_eq!(
+            value_of("f :: Float -> Float;\ng = 5.0;\nf x = x + g;", "f 1.0"),
+            Value::Float(6.0)
+        );
+    }
+
+    #[test]
+    fn standalone_signature_attaches_to_an_equation_group() {
+        let defs = "f :: Float -> Float;\nf 0.0 = 1.0; f x = x;";
+        assert_eq!(value_of(defs, "f 0.0"), Value::Float(1.0));
+        assert_eq!(value_of(defs, "f 3.0"), Value::Float(3.0));
+    }
+
+    #[test]
+    fn standalone_signature_attaches_to_a_guarded_group() {
+        let defs = "f :: Float -> Float;\nf x | x > 0.0 = 1.0 | otherwise = 2.0;";
+        assert_eq!(value_of(defs, "f 1.0"), Value::Float(1.0));
+        assert_eq!(value_of(defs, "f (0.0 - 1.0)"), Value::Float(2.0));
+    }
+
+    #[test]
+    fn standalone_signature_needs_no_semicolon() {
+        // Haskell layout: the signature ends where the next declaration begins.
+        assert_eq!(
+            value_of("f :: Float -> Float\nf x = x + 1.0\n", "f 1.0"),
+            Value::Float(2.0)
+        );
+    }
+
+    #[test]
+    fn a_signature_without_a_binding_declares_nothing() {
+        // Nothing binds `g`, so the declaration is inert; the program still
+        // compiles and evaluates its own expression.
+        assert_eq!(value_of("g :: Float -> Float;", "1.0"), Value::Float(1.0));
+    }
+}
+
+/// Haskell 2010 §3.5 — operator sections, as a REGRESSION guard.
+///
+/// Sections already worked before this task (they landed with the fixity
+/// work); these assertions pin them so the desugar pass cannot regress them.
+mod operator_sections {
+    use super::*;
+
+    #[test]
+    fn operator_section_right() {
+        // `(+ 1.0)` ≡ `\x -> x + 1.0`.
+        assert_eq!(value_of("", "(+ 1.0) 2.0"), Value::Float(3.0));
+    }
+
+    #[test]
+    fn operator_section_left() {
+        // `(1.0 +)` ≡ `\x -> 1.0 + x`.
+        assert_eq!(value_of("", "(1.0 +) 2.0"), Value::Float(3.0));
+    }
+
+    #[test]
+    fn sections_keep_their_operand_order() {
+        // Subtraction is not commutative, so the order pins which side the
+        // operand took: `(10.0 -)` is `\x -> 10.0 - x` = 7.0, `(- 3.0)` (unary
+        // negation, not a section) differs. The left section is the
+        // discriminating case.
+        assert_eq!(value_of("", "(10.0 -) 3.0"), Value::Float(7.0));
+    }
+
+    #[test]
+    fn sections_are_usable_as_values() {
+        assert_eq!(value_of("inc = (+ 1.0);", "inc 41.0"), Value::Float(42.0));
+    }
+}
+
+/// Equation ORDER and backtracking, the subtle half of Haskell 2010 §4.4.3.1.
+///
+/// Equations are tried in source order and each is matched argument by argument;
+/// a failure anywhere in one equation falls through to the NEXT equation, from
+/// its FIRST argument. A column-by-column reading (match every equation's first
+/// pattern, then every second) gives different answers once a catch-all equation
+/// is interleaved with more specific ones.
+mod equation_order {
+    use super::*;
+
+    #[test]
+    fn a_catch_all_equation_keeps_its_place_in_the_order() {
+        // `f x y = x + y` is written LAST but its first argument is a variable,
+        // so it must still apply to every first argument except those consumed
+        // earlier — including 0.0, which the first two equations only cover for
+        // their SECOND argument.
+        let defs = "f 0.0 0.0 = 1.0; f 0.0 2.0 = 3.0; f x y = x + y;";
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(1.0));
+        assert_eq!(value_of(defs, "f 0.0 2.0"), Value::Float(3.0));
+        // Not covered by either literal equation, so the catch-all runs.
+        assert_eq!(value_of(defs, "f 0.0 5.0"), Value::Float(5.0));
+        assert_eq!(value_of(defs, "f 5.0 6.0"), Value::Float(11.0));
+    }
+
+    #[test]
+    fn a_narrower_equation_wins_over_a_later_general_one() {
+        // The reverse order: the general equation comes first, so the specific
+        // one is unreachable (Haskell warns about that; it does not warn about
+        // the order above). The computed value proves which equation ran.
+        let defs = "f x y = x + y; f 0.0 0.0 = 1.0;";
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(0.0));
+    }
+
+    #[test]
+    fn equations_match_their_own_arguments_in_order() {
+        // Two arguments, each equation pinning a different one: Haskell tries
+        // `f 0.0 y` first (it covers 0.0 in the first position) and only then
+        // `f x 0.0`.
+        let defs = "f 0.0 y = 10.0 + y; f x 0.0 = 20.0 + x; f x y = x + y;";
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(10.0));
+        assert_eq!(value_of(defs, "f 1.0 0.0"), Value::Float(21.0));
+        assert_eq!(value_of(defs, "f 1.0 2.0"), Value::Float(3.0));
+    }
+
+    #[test]
+    fn a_where_block_belongs_to_its_own_equation() {
+        // Each equation's `where` scopes over that equation only.
+        let defs = "f 0.0 = y where { y = 10.0; }; f x = x;";
+        assert_eq!(value_of(defs, "f 0.0"), Value::Float(10.0));
+        assert_eq!(value_of(defs, "f 5.0"), Value::Float(5.0));
+    }
+}

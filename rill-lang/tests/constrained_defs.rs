@@ -233,18 +233,26 @@ fn recursive_constrained_def_is_a_compile_error() {
 }
 
 #[test]
-fn self_recursion_through_a_where_binding_hits_the_specialization_guard() {
-    // The general recursion check only walks top-level bodies, so a `where`
-    // binding that calls back into the definition slips past it. The lowering
-    // specialization guard is the backstop: it refuses to expand a definition
-    // that is already being expanded.
+fn self_recursion_through_a_where_binding_is_a_compile_error() {
+    // A `where` binding that calls back into the definition it belongs to is
+    // recursion, and the class variable of the recursive call is only solved by
+    // the enclosing call site — the very expansion in flight. The `where`
+    // clause is desugared to an `Expr::Let` INSIDE the definition body (so its
+    // bindings see the definition's parameters), which puts the back-reference
+    // on the ordinary fragment call graph: the general recursion check now
+    // reports it directly instead of leaving it to lowering's specialization
+    // guard. Either way the program must not compile.
     let src = format!(
         "{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Float = g p where {{ g x = mk x; }};\nmain = mk (0,9);"
     );
     let msg = compile_err(&src);
     assert!(
-        msg.contains("recursive class-constrained definition `mk`"),
-        "expected the specialization-guard diagnostic, got: {msg}"
+        msg.contains("recursive"),
+        "expected a recursion diagnostic, got: {msg}"
+    );
+    assert!(
+        msg.contains('`') && msg.contains("mk`"),
+        "the diagnostic must name the recursing definition `mk`, got: {msg}"
     );
 }
 

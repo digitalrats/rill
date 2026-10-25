@@ -99,6 +99,11 @@ struct Parser<'a> {
     /// the section rather than to `e` (Haskell 2010 §3.5). `None` outside a
     /// section operand.
     section_stop: Option<usize>,
+    /// Offside column of a top-level `::` signature, when one is being parsed.
+    /// A juxtaposed type application (`Float f x`) would otherwise swallow the
+    /// NEXT declaration's head, so the type parser stops at a line indented less
+    /// than the declaration that owns the signature (Haskell layout).
+    type_layout_col: Option<usize>,
 }
 
 /// Binding powers. Higher = binds tighter. Returns (op, left_bp, right_bp).
@@ -433,6 +438,48 @@ enum DoStmt {
     Stmt(Expr),
 }
 
+/// The classic `f x y = body` shape of an equation group, if that is what the
+/// group spells.
+///
+/// Returns the parameter list (with each argument's own source span and bang
+/// marker) and the right-hand side. Any other shape — several equations, a
+/// guarded alternative, or a non-variable argument pattern — yields `None`, and
+/// the group stays in the intermediate [`Def::Equations`] form for the desugar
+/// pass.
+fn plain_definition(
+    equations: &[crate::ast::Equation],
+    spans: &[Span],
+) -> Option<(Vec<Param>, Expr)> {
+    let [eq] = equations else {
+        return None;
+    };
+    let [(guard, body)] = eq.guards.as_slice() else {
+        return None;
+    };
+    if !matches!(guard, Expr::Bool(true, _)) {
+        return None;
+    }
+    if eq.patterns.len() != spans.len() {
+        return None;
+    }
+    let mut params = Vec::with_capacity(eq.patterns.len());
+    for (pat, span) in eq.patterns.iter().zip(spans) {
+        let (bang, inner) = match pat {
+            Pattern::Bang(inner) => (true, inner.as_ref()),
+            other => (false, other),
+        };
+        let Pattern::Var(name) = inner else {
+            return None;
+        };
+        params.push(Param {
+            name: name.clone(),
+            span: *span,
+            bang,
+        });
+    }
+    Some((params, body.clone()))
+}
+
 impl<'a> Parser<'a> {
     fn new(toks: &'a [Token], src: &'a [u8]) -> Self {
         Self {
@@ -440,6 +487,7 @@ impl<'a> Parser<'a> {
             src,
             pos: 0,
             section_stop: None,
+            type_layout_col: None,
         }
     }
     fn peek(&self) -> &Token {
@@ -701,16 +749,6 @@ impl<'a> Parser<'a> {
         off - line_start
     }
 
-    /// Whether a parameter may start here: a bare identifier, or a bang marker
-    /// attached to one (`!x`).
-    fn at_param_start(&self) -> bool {
-        match self.peek().tok {
-            Tok::Ident(_) => true,
-            Tok::Bang => is_attached_bang(self.toks, self.cur()),
-            _ => false,
-        }
-    }
-
     /// Parse one parameter: `x` or a bang parameter `!x`. The argument of a
     /// bang parameter is forced to WHNF on application entry.
     fn parse_param(&mut self) -> Result<Param, CompileError> {
@@ -753,6 +791,21 @@ impl<'a> Parser<'a> {
     /// token: a line indented less than the block's column.
     fn layout_closes(&self, layout_col: usize) -> bool {
         self.at_line_start() && self.cur_col() < layout_col
+    }
+
+    /// Whether the next token closes the enclosing layout context because it
+    /// starts a new line indented less than the declaration's offside column.
+    ///
+    /// Used by the type parser while a top-level `::` signature is being read:
+    /// a signature ends at the next declaration, so a juxtaposed type
+    /// application (`Float f x` out of `f :: Float` followed by `f x = …`) must
+    /// not swallow that declaration's head. Inside one source LINE a type may
+    /// still continue (`Pair Int\n    Int` stays one application).
+    fn type_arg_closes_layout(&self) -> bool {
+        match self.type_layout_col {
+            Some(col) => self.at_line_start() && self.cur_col() <= col,
+            None => false,
+        }
     }
 
     fn span_from(&self, start: usize) -> Span {
@@ -886,13 +939,12 @@ impl<'a> Parser<'a> {
                 })
             }
         };
-        let mut params = Vec::new();
-        while self.at_param_start() {
-            params.push(self.parse_param()?);
-        }
+        // Argument patterns of the equation (Haskell 2010 §4.4.3): any pattern,
+        // not only a bare name — `f 0.0 = …`, `f (Just x) = …`, `f _ = …`.
+        let (patterns, pattern_spans) = self.parse_equation_arg_patterns()?;
         // A separated `!` cannot appear in a definition head (the head is a
-        // name plus parameters, never an operator expression), so it is always
-        // a mistyped bang parameter.
+        // name plus patterns, never an operator expression), so it is always a
+        // mistyped bang parameter.
         if self.peek().tok == Tok::Bang {
             return Err(self.error("a bang parameter must be written `!name` (no space after `!`)"));
         }
@@ -900,45 +952,242 @@ impl<'a> Parser<'a> {
         // applies to the bound VALUE, and a curried `\x -> …` RHS has none to
         // force at the binding point (GHC rejects `!f x = e` for the same
         // reason).
-        if bang && !params.is_empty() {
+        if bang && !patterns.is_empty() {
             return Err(CompileError::Parse {
                 msg: "a bang binding must bind a single variable (`!x = e`), not a function (`!f x = e`)"
                     .into(),
-                span: Span::new(start, params.last().map(|p| p.span.end).unwrap_or(start)),
+                span: Span::new(start, self.span_from(start).end),
             });
         }
         // Optional `:: TypeExpr` signature annotation (Haskell 2010). Typing is
         // still inferred (HM); the signature is a hint/constraint checked by a
-        // later task. Kept on the `Def::Eval` node so the renderer can round-trip
-        // it.
+        // later task.
         let mut sig = None;
         if self.peek().tok == Tok::DoubleColon {
             self.bump();
-            sig = Some(self.parse_sig_type()?);
+            // A signature ends where the next declaration begins (Haskell
+            // layout). Track the declaration's offside column so a juxtaposed
+            // type application cannot swallow the following head.
+            let saved_col = self.type_layout_col;
+            self.type_layout_col = Some(self.cur_col());
+            let parsed = self.parse_sig_type();
+            self.type_layout_col = saved_col;
+            sig = Some(parsed?);
+            // A STANDALONE signature — `f :: T;` with no `=` — declares the type
+            // of the binding(s) that follow. It carries no body, so it is
+            // recorded separately and attached to its group by the desugar pass
+            // (Haskell 2010 §4.4.1).
+            if self.peek().tok != Tok::Eq && self.peek().tok != Tok::Pipe {
+                if !patterns.is_empty() {
+                    return Err(CompileError::Parse {
+                        msg: "a standalone signature has no argument patterns before `::` \
+                              (write `f :: T;` on its own line)"
+                            .into(),
+                        span: Span::new(start, self.span_from(start).end),
+                    });
+                }
+                return Ok(Def::Signature {
+                    name,
+                    sig: sig.expect("the signature was just parsed"),
+                    span: self.span_from(start),
+                });
+            }
         }
-        self.eat(&Tok::Eq)?;
-        let body = self.parse_expr(0, false)?;
+        self.parse_equations(bang, name, patterns, pattern_spans, sig, start)
+    }
 
-        let where_defs = if self.peek().tok == Tok::KwWhere {
-            self.bump();
-            self.parse_where_block()?
-        } else {
-            vec![]
-        };
+    /// The argument patterns of a definition head, in source order, with each
+    /// argument's own span.
+    ///
+    /// The head is one or more patterns terminated by `=`, `|`, or `::`. A
+    /// parenthesized pattern (`f (Just x) = …`) is one argument, so the
+    /// pattern parser consumes it whole.
+    fn parse_equation_arg_patterns(&mut self) -> Result<(Vec<Pattern>, Vec<Span>), CompileError> {
+        let mut patterns = Vec::new();
+        let mut spans = Vec::new();
+        while self.at_equation_arg_start() {
+            let span = self.peek().span;
+            patterns.push(self.parse_pattern()?);
+            spans.push(span);
+        }
+        Ok((patterns, spans))
+    }
 
-        let span = Span::new(start, body.span().end);
+    /// Whether an equation argument pattern may start here. Adjacency rules
+    /// mirror [`Parser::at_param_start`]: a bare `!` is only a bang marker when
+    /// attached to what follows, and a `-` is never a pattern (unary negation is
+    /// an expression, not a pattern constructor).
+    fn at_equation_arg_start(&self) -> bool {
+        match self.peek().tok {
+            Tok::Bang => is_attached_bang(self.toks, self.cur()),
+            Tok::Ident(_)
+            | Tok::Int(_)
+            | Tok::Float(_)
+            | Tok::Str(_)
+            | Tok::KwTrue
+            | Tok::KwFalse
+            | Tok::Wire
+            | Tok::LParen => true,
+            _ => false,
+        }
+    }
 
-        // Unify Anchor/Local into the single `Def::Eval` form. Multi-parameter
-        // definitions are curried later (Task 6); params are kept here.
-        Ok(Def::Eval {
+    /// Record every equation of one binding name.
+    ///
+    /// The whole Haskell 2010 equation surface is accepted here: argument
+    /// patterns (§4.4.3), guard alternatives (§4.4.3.1), and a per-equation
+    /// `where` block. The plain `f x = e` shape stays a `Def::Eval` (its `where`
+    /// clause included) so the long-standing AST contract is untouched; any
+    /// other shape becomes the intermediate [`Def::Equations`] form, and
+    /// exactly one place turns an equation group into core AST nodes: the
+    /// [`crate::desugar`] pass.
+    fn parse_equations(
+        &mut self,
+        bang: bool,
+        name: String,
+        patterns: Vec<Pattern>,
+        pattern_spans: Vec<Span>,
+        sig: Option<TypeExpr>,
+        start: usize,
+    ) -> Result<Def, CompileError> {
+        // A bang binding (`!x = e`) is a single variable binding, not a function
+        // equation; its shape is the plain `Def::Eval`, which carries the
+        // binding-point force.
+        if bang {
+            self.eat(&Tok::Eq)?;
+            let body = self.parse_expr(0, false)?;
+            let where_defs = self.parse_trailing_where()?;
+            let span = Span::new(start, body.span().end);
+            return Ok(Def::Eval {
+                name,
+                params: Vec::new(),
+                body,
+                where_defs,
+                sig,
+                bang: true,
+                span,
+            });
+        }
+        let mut equations = vec![self.parse_one_equation(patterns, start)?];
+        // Following equations of the SAME name continue the group:
+        // `f 0.0 = 1.0; f x = x`. `parse_program` consumes the separating `;`,
+        // so the lookahead starts at the next definition head.
+        while let Some(next) = self.peek_equation_continuation(&name) {
+            self.seek(next);
+            let eq_start = self.cur_token_start();
+            let (pats, _) = self.parse_equation_arg_patterns()?;
+            equations.push(self.parse_one_equation(pats, eq_start)?);
+        }
+        // The plain shape — one equation, every argument a (possibly bang)
+        // variable, one unconditional alternative — keeps the classic
+        // `Def::Eval` form with its parameter list.
+        if let Some((params, body)) = plain_definition(&equations, &pattern_spans) {
+            let span = Span::new(start, body.span().end);
+            return Ok(Def::Eval {
+                name,
+                params,
+                body,
+                where_defs: equations[0].where_defs.clone(),
+                sig,
+                bang: false,
+                span,
+            });
+        }
+        let span = equations
+            .first()
+            .map(|e| e.span)
+            .unwrap_or_else(|| Span::new(start, start));
+        Ok(Def::Equations {
             name,
-            params,
-            body,
-            where_defs,
+            equations,
             sig,
-            bang,
             span,
         })
+    }
+
+    /// Parse one equation body: `= e [where { … }]` or the guarded form
+    /// `| g1 = e1 | g2 = e2 [where { … }]`.
+    fn parse_one_equation(
+        &mut self,
+        patterns: Vec<Pattern>,
+        start: usize,
+    ) -> Result<crate::ast::Equation, CompileError> {
+        let mut guards = Vec::new();
+        if self.peek().tok == Tok::Pipe {
+            // Guarded equation: every alternative is written `| guard = body`.
+            while self.peek().tok == Tok::Pipe {
+                self.bump();
+                let g = self.parse_expr(0, true)?;
+                self.eat(&Tok::Eq)?;
+                let b = self.parse_expr(0, true)?;
+                guards.push((g, b));
+            }
+        } else {
+            // Plain equation: one unconditional alternative (guard `true`).
+            // The right-hand side is a full expression, so the top-level `,`
+            // tuple operator stays available (`main = 1.0, 2.0`).
+            let eq_span = self.peek().span;
+            self.eat(&Tok::Eq)?;
+            let body = self.parse_expr(0, false)?;
+            guards.push((Expr::Bool(true, eq_span), body));
+        }
+        let end = guards.last().map(|(_, b)| b.span().end).unwrap_or(start);
+        let where_defs = self.parse_trailing_where()?;
+        Ok(crate::ast::Equation {
+            patterns,
+            guards,
+            where_defs,
+            span: Span::new(start, end.max(start)),
+        })
+    }
+
+    /// Whether the next definition head spells another equation of `name`, and
+    /// the token index of that equation's FIRST ARGUMENT PATTERN (just past the
+    /// repeated name) when it does.
+    ///
+    /// Looks past the separating `;` and layout newlines for `name` followed by
+    /// at least one argument pattern, or a guard (`f | g = e`). A bare
+    /// `name = e` is a SEPARATE binding, not a further equation, and so is a
+    /// standalone signature `name :: T` — neither continues the group.
+    fn peek_equation_continuation(&self, name: &str) -> Option<usize> {
+        let mut i = self.pos;
+        while matches!(
+            self.toks.get(i).map(|t| &t.tok),
+            Some(Tok::Semi) | Some(Tok::Newline)
+        ) {
+            i += 1;
+        }
+        let Tok::Ident(head) = self.toks.get(i)?.tok.clone() else {
+            return None;
+        };
+        if head != name {
+            return None;
+        }
+        let after = self.skip_newlines(i + 1);
+        match self.toks.get(after).map(|t| &t.tok) {
+            // The head is followed by a body: a fresh binding or a standalone
+            // signature, not a further equation.
+            Some(Tok::Eq) | Some(Tok::DoubleColon) => None,
+            // A guard with no patterns (`f | g = e`).
+            Some(Tok::Pipe) => Some(after),
+            Some(tok) if is_pattern_start(tok) => Some(after),
+            _ => None,
+        }
+    }
+
+    /// The start offset of the next non-newline token.
+    fn cur_token_start(&self) -> usize {
+        self.peek().span.start
+    }
+
+    /// Parse the `where` clause that trails an equation, if present.
+    fn parse_trailing_where(&mut self) -> Result<Vec<Def>, CompileError> {
+        if self.peek().tok == Tok::KwWhere {
+            self.bump();
+            self.parse_where_block()
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     fn parse_def(&mut self) -> Result<Def, CompileError> {
@@ -1096,7 +1345,9 @@ impl<'a> Parser<'a> {
             Tok::Ident(name) => {
                 self.bump();
                 let mut args = Vec::new();
-                while matches!(self.peek().tok, Tok::Ident(_) | Tok::LParen) {
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::LParen)
+                    && !self.type_arg_closes_layout()
+                {
                     args.push(self.parse_type_single()?);
                 }
                 if args.is_empty() {

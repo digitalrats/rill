@@ -106,6 +106,10 @@ struct Ctx {
     /// type: the `ST` record's own lowered type carries no argument (its `a`
     /// lives only inside the `unST` field type).
     runst_payload_tys: HashMap<(usize, usize), ValueTy>,
+    /// How many NESTED definition groups (`let`/`where`) enclose the expression
+    /// being inferred. A nested group's bodies see the enclosing λ-parameters,
+    /// so `infer_def_body` keeps `ctx.locals` instead of clearing it.
+    nested_group_depth: usize,
 }
 
 impl Ctx {
@@ -1976,6 +1980,7 @@ pub fn infer_program_with_entry(
             retry_inferred_defs: HashSet::new(),
             mode,
             runst_payload_tys: HashMap::new(),
+            nested_group_depth: 0,
         };
         infer_def_group(&mut pc, &env.prelude_defs)?;
         prelude_ctx = Some(pc);
@@ -2100,6 +2105,7 @@ pub fn infer_program_with_entry(
         retry_inferred_defs: HashSet::new(),
         mode,
         runst_payload_tys: HashMap::new(),
+        nested_group_depth: 0,
     };
 
     // The prelude combinators were already typed above (against the builtin
@@ -2371,7 +2377,12 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // matching top-level semantics.
     let saved_defs = ctx.defs.clone();
     let saved_bodies = ctx.def_bodies.clone();
-    ctx.locals.clear();
+    // A nested group (`let`/`where`) keeps the enclosing λ-parameters in scope:
+    // a `where` definition may reference the declaration's parameters (Haskell
+    // 2010 §4.4.3.3). A top-level group starts from an empty local scope.
+    if ctx.nested_group_depth == 0 {
+        ctx.locals.clear();
+    }
     // Signature-driven parameter typing: a definition annotated `:: Float ->
     // List a -> …` binds its λ-parameters to the signature's argument types
     // (shared type variables become fresh unification vars), instead of the
@@ -2547,10 +2558,30 @@ fn collect_ref_names(e: &Expr, out: &mut HashSet<String>) {
 /// Two-phase: first register placeholder schemes for all names, then infer
 /// each body with the full mutual environment.
 fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
+    infer_def_group_scoped(ctx, defs, false)
+}
+
+/// Infer a group of definitions, saying whether the group is NESTED inside
+/// another definition.
+///
+/// A nested group (`let`/`where`) captures the enclosing λ-parameters, so its
+/// bodies are inferred with the enclosing `ctx.locals` still in scope (Haskell
+/// 2010 §4.4.3.3: a `where` clause sees the declaration's formal parameters).
+/// A top-level group starts from an empty local scope.
+fn infer_def_group_scoped(ctx: &mut Ctx, defs: &[Def], nested: bool) -> Result<(), CompileError> {
     if defs.is_empty() {
         return Ok(());
     }
+    let saved_depth = ctx.nested_group_depth;
+    if nested {
+        ctx.nested_group_depth += 1;
+    }
+    let result = infer_def_group_inner(ctx, defs);
+    ctx.nested_group_depth = saved_depth;
+    result
+}
 
+fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
     // Phase 1: placeholder schemes for all names
     for def in defs {
         if def.is_decl() {
@@ -2605,7 +2636,9 @@ fn infer_def_group(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError> {
             continue;
         }
         if !def.where_defs().is_empty() {
-            infer_def_group(ctx, def.where_defs())?;
+            // A `where` block captures the declaration's λ-parameters, so its
+            // group is nested (Haskell 2010 §4.4.3.3).
+            infer_def_group_scoped(ctx, def.where_defs(), true)?;
         }
         let body_ty = infer_def_body(ctx, def)?;
         // M10 marker: a signature-less CURRIED definition (`at a i = a ! i`,
@@ -2871,6 +2904,34 @@ fn arm_is_guarded(arm: &MatchArm) -> bool {
     arm.guards.len() > 1 || !matches!(arm.guards.first(), Some((Expr::Bool(true, _), _)))
 }
 
+/// Whether an arm's guard alternatives END in an unconditional fallback — a
+/// literal `True` guard or the Prelude constant `otherwise`.
+///
+/// Such an arm covers its pattern completely: at runtime the preceding guards
+/// either match or fall through into the final `True` alternative. Haskell 2010
+/// gives `otherwise` no special status in the totality rule (§4.4.3.1): the
+/// compiler recognises the fallback because the Prelude binds
+/// `otherwise = True`. GHC's coverage checker does the same (its
+/// always-true-guard test looks for the literal `True` and the name
+/// `otherwise`), and so does this one — `otherwise` otherwise behaves as the
+/// ordinary Bool value it is.
+fn arm_ends_unconditionally(arm: &MatchArm) -> bool {
+    matches!(
+        arm.guards.last(),
+        Some((flag, _)) if guard_is_always_true(flag)
+    )
+}
+
+/// Whether a guard expression is unconditionally true by construction: the
+/// literal `True`, or the Prelude constant `otherwise`.
+fn guard_is_always_true(guard: &Expr) -> bool {
+    match guard {
+        Expr::Bool(true, _) => true,
+        Expr::Ref(name, _) => name == "otherwise",
+        _ => false,
+    }
+}
+
 /// Bind a pattern's variables into `ctx.locals` and type-check the pattern
 /// against `vty` (recursively for nested constructor patterns).
 ///
@@ -3023,7 +3084,7 @@ fn check_exhaustive_scalar(
     let mut has_true = false;
     let mut has_false = false;
     for a in arms {
-        if arm_is_guarded(a) {
+        if arm_is_guarded(a) && !arm_ends_unconditionally(a) {
             continue;
         }
         match a.pattern.strip_bang() {
@@ -3063,7 +3124,7 @@ fn check_exhaustive_sum(
     let mut covered: HashSet<&str> = HashSet::new();
     let mut has_wild = false;
     for a in arms {
-        if arm_is_guarded(a) {
+        if arm_is_guarded(a) && !arm_ends_unconditionally(a) {
             continue;
         }
         match a.pattern.strip_bang() {
@@ -3138,7 +3199,8 @@ fn infer_expr_expected(
             span: _,
         } => {
             let saved_defs = ctx.defs.clone();
-            infer_def_group(ctx, defs)?;
+            // A `let` block captures the enclosing λ-parameters.
+            infer_def_group_scoped(ctx, defs, true)?;
             let ty = infer_expr(ctx, body)?;
             ctx.defs = saved_defs;
             Ok(ty)
@@ -7152,6 +7214,7 @@ mod tests {
                 retry_inferred_defs: HashSet::new(),
                 mode: Mode::Strict,
                 runst_payload_tys: HashMap::new(),
+                nested_group_depth: 0,
             };
             let def = &prog.defs[0];
             let body = infer_def_body(&mut ctx, def).unwrap();
