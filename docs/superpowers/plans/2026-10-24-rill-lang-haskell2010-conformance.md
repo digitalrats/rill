@@ -429,16 +429,30 @@ result is meaningful):
 | `concat_map` with a lambda | ✅ → `3` |
 | guard inside a `let`-bound local function | ❌ **OD-11** — silently yields nothing |
 
-So Task 4 is **not** blocked by the operator/typeclass unification. It depends
-only on `let`-bound local functions and `concat_map`, which work. The one real
-dependency is OD-11 (guards in local functions), and §3.11 does not need guards
-for the generator/guard/`let`-qualifier rules — the guard qualifier desugars to
-`Expr::If`, not to a function guard.
+So Task 4 is **not mechanically blocked** by the operator/typeclass unification —
+it depends only on `let`-bound local functions and `concat_map`, which work. The
+one real dependency inside Task 4 is OD-11 (guards in local functions), and
+§3.11 does not need guards for the generator/guard/`let`-qualifier rules — the
+guard qualifier desugars to `Expr::If`, not to a function guard.
 
-**Ordering ruling:** Task 4 proceeds **before** the typeclass/operator work. The
-operator unification changes how `Arith`/`Cmp` nodes are lowered; comprehension
-desugaring produces `concat_map` calls and `if`/`let` nodes, none of which are
-operator nodes, so the two changes touch disjoint surfaces.
+**Ordering ruling (revised 2026-10-25, supersedes the earlier ruling):** the
+typeclass layer's **P0–P3 runs BEFORE Task 4**. The earlier ruling ("Task 4
+first") was based only on surface disjointness and missed the quality dependency,
+measured afterwards:
+
+- while `+`/`==` are built-in opcodes, `1 + 1.0` silently succeeds (Haskell 2010
+  rejects it) and `1 == 1.0` returns `False` instead of being a type error;
+- `f x y = x + y` cannot be `Num a => a -> a -> a` — it is pinned to `Float`, and
+  calling it with `Int` is a hard error;
+- therefore a comprehension such as `[x + 1 | x <- [1,2,3]]` fails on the
+  Int/Float mismatch, and `[x * 2 | x <- xs]` only works for `Float`.
+
+With `Num`/`Ord` as classes, operators resolve through the type system: the
+ambiguity disappears and comprehensions work for both numeric types. So Task 4's
+*quality* depends on the typeclass layer even though its *mechanism* does not.
+
+Revised order: **typeclass P0–P3 → conformance Task 4 → Task 5 → typeclass P4–P5
+→ conformance Task 6 → typeclass Task 6 (audit)**.
 
 ---
 
