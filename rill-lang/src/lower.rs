@@ -823,6 +823,12 @@ fn check_specialized_result(
     })
 }
 
+/// Whether a `let`/`where` binding denotes a FUNCTION: an explicit parameter
+/// list, or the λ-nest the parser's currying pass leaves for `g y = e`.
+fn is_local_function(d: &Def) -> bool {
+    !d.params().is_empty() || matches!(d.body(), Expr::Lambda { .. })
+}
+
 impl<'a> Lowerer<'a> {
     fn fresh_value_reg(&mut self) -> usize {
         let r = self.next_value_reg;
@@ -3668,6 +3674,10 @@ impl<'a> Lowerer<'a> {
                     // per-tick re-evaluated expressions), so lower each into
                     // the def table and lower the body.
                     let saved = self.defs.clone();
+                    // A local FUNCTION binding is installed in the def table so
+                    // the body's `g 1.0` dispatches to it through the ordinary
+                    // definition path; a parameterless binding keeps its classic
+                    // inlined form.
                     for d in defs {
                         self.defs.insert(d.name().to_string(), d.clone());
                     }
@@ -3707,8 +3717,21 @@ impl<'a> Lowerer<'a> {
                     for d in defs {
                         bound.insert(d.name().to_string());
                     }
-                    let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    // A local FUNCTION binding (`g y = e`, which the currying
+                    // pass spells `g = \y -> e`) is not a thunk: it is applied by
+                    // name and has no standalone scheme, so lowering can only
+                    // install it from here. Sibling bindings are mutually
+                    // visible, so a function's body may reference a sibling
+                    // VALUE binding (`h = x + 1.0`) and vice versa; installing
+                    // the whole group keeps that resolution working inside the
+                    // nested fragment compiles. Only the parameterless bindings
+                    // take the call-by-need thunk path below.
+                    let saved_defs = self.defs.clone();
                     for d in defs {
+                        self.defs.insert(d.name().to_string(), d.clone());
+                    }
+                    let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
+                    for d in defs.iter().filter(|d| !is_local_function(d)) {
                         let e = d.body();
                         let free = self.free_vars(e, &bound);
                         let (fragment_id, _ret_ty) = self.lower_fragment(
@@ -3745,6 +3768,7 @@ impl<'a> Lowerer<'a> {
                     self.value_locals.push(scope);
                     let res = self.lower_value_expected(body, expected);
                     self.value_locals.pop();
+                    self.defs = saved_defs;
                     res
                 }
             }
@@ -5444,8 +5468,27 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or(ValueTy::Float);
                     return Ok((reg, ty));
                 }
-                let param_names: HashSet<String> =
+                // The parameters are the explicit ones plus the leading λs of
+                // the body: the currying pass rewrites `g y = e` into
+                // `g = \y -> e` and clears `params`, so a λ parameter is just as
+                // bound as a listed one. Leaving it out would make it look like a
+                // free variable of its own fragment (`unknown \`y\``).
+                let mut param_names: HashSet<String> =
                     def_params.iter().map(|p| p.name.clone()).collect();
+                {
+                    let mut nested = &body;
+                    while let Expr::Lambda {
+                        params: lam_params,
+                        body: inner,
+                        ..
+                    } = nested
+                    {
+                        for p in lam_params {
+                            param_names.insert(p.name.clone());
+                        }
+                        nested = inner;
+                    }
+                }
                 let free = self.free_vars(&body, &param_names);
                 // A definition carries its λ-parameter types in its scheme
                 // (rebuilt into `fn_param_tys`); the scalar default is only
@@ -5673,14 +5716,29 @@ impl<'a> Lowerer<'a> {
                 self.free_vars_impl(rhs, bound, out, seen);
             }
             Expr::Let { defs, body, .. } => {
-                // Inner `let` bindings shadow outer names inside the body; the
-                // def bodies themselves may reference outer frees.
+                // Inner `let` bindings shadow outer names inside the body, and
+                // each binding's own parameters (a local FUNCTION `g y = e`, or
+                // the λ-nest the currying pass leaves for it) shadow inside that
+                // binding's body. The def bodies may still reference outer frees.
                 let mut inner = bound.clone();
                 for d in defs {
                     inner.insert(d.name().to_string());
                 }
                 for d in defs {
-                    self.free_vars_impl(d.body(), bound, out, seen);
+                    // A binding's own body sees its own parameters, the λ-nest
+                    // the currying pass leaves for them, and its SIBLINGS (the
+                    // block is mutually recursive, and a `where`-bound function
+                    // routinely calls a sibling value binding).
+                    let mut def_bound = inner.clone();
+                    for p in d.params() {
+                        def_bound.insert(p.name.clone());
+                    }
+                    if let Expr::Lambda { params, .. } = d.body() {
+                        for p in params {
+                            def_bound.insert(p.name.clone());
+                        }
+                    }
+                    self.free_vars_impl(d.body(), &def_bound, out, seen);
                 }
                 self.free_vars_impl(body, &inner, out, seen);
             }
@@ -8154,8 +8212,9 @@ fn bang_binding_refers_to_itself(d: &Def) -> bool {
 
 /// Collect every user-definition name referenced by `e` (a `Ref` or an applied
 /// callee) into `out`. Used by the recursion-cycle detection for shared-cell
-/// locals.
-fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
+/// locals, and by `reduce` to decide whether a `let`-bound function is still
+/// needed after β-reduction.
+pub(crate) fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
     match e {
         Expr::Ref(n, _) => {
             out.insert(n.clone());

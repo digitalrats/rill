@@ -742,3 +742,165 @@ mod equation_order {
         assert_eq!(value_of(defs, "f 5.0"), Value::Float(5.0));
     }
 }
+
+/// The PRODUCTION path: `compile()` of a `main : IO ()` program.
+///
+/// Every module above asserts through `compile_eval` (a definition list plus a
+/// value expression). That surface shares the parser, desugar and inference with
+/// `compile`, but not the *entry*: `compile` runs a `main : IO ()` action to
+/// completion. A desugaring bug that changes the shape of a top-level `Def`
+/// (`params` vs a λ-nest) can work on one and break the other, so each construct
+/// this task added is asserted here as a real program whose `stdout` is checked.
+///
+/// Definitions use a distinctive name (`dbl`, not `f`) because `f` and `m` are
+/// PRE-EXISTING defects on this path — see
+/// [`io_program_path::name_collisions_are_a_pre_existing_defect`].
+mod io_program_path {
+    use super::*;
+    use rill_lang::compile;
+    use rill_lang::ffi::ForeignRegistry;
+    use rill_lang::run_on_stack;
+
+    /// Compile and run a `main : IO ()` program, returning its `stdout`.
+    ///
+    /// The run happens on a grown stack: the lazy `IO` interpreter nests one
+    /// `bind` per `do` statement, which exceeds libtest's default 2 MiB thread
+    /// stack in a debug build.
+    fn run_stdout(body: &str) -> Vec<String> {
+        let src = format!(
+            "{body}\nmain = do {{ write (Just (show_float (dbl 1.5))) stdout; return () }};\n"
+        );
+        run_on_stack(16 << 20, move || {
+            let mut runner = compile::<f32, 256>(&src, ForeignRegistry::new())
+                .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
+            runner
+                .run()
+                .unwrap_or_else(|e| panic!("run must succeed: {e}\nsource:\n{src}"));
+            runner.stdout().to_vec()
+        })
+    }
+
+    #[test]
+    fn a_plain_parameterised_definition_runs() {
+        // The controller's regression: `f x = x` became unusable on this path.
+        assert_eq!(run_stdout("dbl x = x;"), ["1.5"]);
+    }
+
+    #[test]
+    fn function_guards_run() {
+        // 1.5 takes the first alternative; the `otherwise` fallback is exercised
+        // by the value, not merely parsed.
+        assert_eq!(
+            run_stdout("dbl x | x > 0.0 = 1.0 | otherwise = 2.0;"),
+            ["1.0"]
+        );
+        assert_eq!(
+            run_stdout("dbl x | x > 2.0 = 1.0 | otherwise = 2.0;"),
+            ["2.0"]
+        );
+    }
+
+    #[test]
+    fn argument_patterns_run() {
+        // The literal equation matches (1.5 is not 0.0, so the variable
+        // equation runs); a 0.0 call takes the literal one.
+        assert_eq!(run_stdout("dbl 0.0 = 42.0; dbl x = x;"), ["1.5"]);
+        assert_eq!(
+            run_on_stack(16 << 20, || {
+                let src = "dbl 0.0 = 42.0; dbl x = x;\n\
+                           main = do { write (Just (show_float (dbl 0.0))) stdout; return () };";
+                let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).unwrap();
+                r.run().unwrap();
+                r.stdout().to_vec()
+            }),
+            ["42.0"]
+        );
+    }
+
+    #[test]
+    fn a_standalone_signature_run() {
+        let src = "dbl :: Float -> Float;\n\
+                   dbl x = x;\n\
+                   main = do { write (Just (show_float (dbl 1.5))) stdout; return () };";
+        assert_eq!(
+            run_on_stack(16 << 20, || {
+                let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).unwrap();
+                r.run().unwrap();
+                r.stdout().to_vec()
+            }),
+            ["1.5"]
+        );
+    }
+
+    #[test]
+    fn where_capture_runs() {
+        // The `where` binding reads the definition's own parameter.
+        assert_eq!(run_stdout("dbl x = g where { g = x + 1.0; };"), ["2.5"]);
+    }
+
+    #[test]
+    fn a_where_bound_function_runs() {
+        // A `where`-bound FUNCTION (not a plain value) takes its own parameter
+        // and closes over the enclosing one — the shape that exercises the
+        // local-function lowering on this path.
+        assert_eq!(run_stdout("dbl x = g 1.0 where { g y = y + x; };"), ["2.5"]);
+        // ... including a sibling `where` binding, which is not a parameter.
+        assert_eq!(
+            run_stdout("dbl x = g 10.0 where { g y = y * h; h = x + 1.0; };"),
+            ["25.0"]
+        );
+    }
+
+    #[test]
+    fn argument_patterns_with_a_where_block_run() {
+        assert_eq!(
+            run_stdout("dbl 0.0 = y where { y = 42.0; }; dbl x = x;"),
+            ["1.5"]
+        );
+    }
+
+    #[test]
+    fn a_two_equation_guard_group_runs() {
+        assert_eq!(
+            run_stdout("dbl x | x > 0.5 = 10.0 | x > 2.0 = 20.0 | otherwise = 30.0;"),
+            ["10.0"]
+        );
+    }
+
+    /// `f` and `m` are PRE-EXISTING defects on this path, unrelated to the
+    /// desugaring pass: the Prelude's `Monad IO` instance is spelled
+    /// `bind m f = …`, and a top-level user definition named `f` (or `m`) is
+    /// mistaken for that instance parameter when the inlined body captures its
+    /// free variables. It is a NAME collision, not an arithmetic or currying
+    /// defect: `dbl x = x + 1.0;`, `fa x = x;` and `w x = x;` all print the
+    /// expected value, and only `f`/`m` fail. Reproductions: `f x = x;` and
+    /// `m x = x;` fail with `` `main` is not an executable `IO ()` action ``
+    /// while `dbl x = x;` prints `1.5`. Both fail identically at commit
+    /// `7fe2293` (before this task), so they are recorded (`DOCS-GAPS.md` OD-9),
+    /// not fixed, here.
+    #[test]
+    fn name_collisions_are_a_pre_existing_defect() {
+        // A non-colliding name works, which is what makes the collision a
+        // separate defect rather than a desugaring failure.
+        assert_eq!(run_stdout("dbl x = x;"), ["1.5"]);
+        // The colliding name does NOT work. Pinned so the defect stays visible
+        // and its resolution has something to flip.
+        for name in ["f", "m"] {
+            let src = format!(
+                "{name} x = x;\n\
+                 main = do {{ write (Just (show_float ({name} 1.5))) stdout; return () }};\n"
+            );
+            let outcome = run_on_stack(16 << 20, move || {
+                match compile::<f32, 256>(&src, ForeignRegistry::new()) {
+                    Ok(mut r) => r.run().map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            });
+            assert!(
+                outcome.is_err(),
+                "`{name}` unexpectedly works; the name-collision defect is fixed \
+                 and this pin (plus the DOCS-GAPS entry) must be removed"
+            );
+        }
+    }
+}

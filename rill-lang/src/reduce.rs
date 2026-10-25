@@ -588,9 +588,20 @@ fn reduce_expr(
                 .collect();
             let let_ctx = merge_contexts(ctx, &defs_map(&reduced_defs));
             let reduced_body = reduce_expr(body, &let_ctx, cafs, reducing, mode);
-            if defs.iter().any(|d| d.is_bang()) {
-                // A bang binding forces its right-hand side at the binding
-                // point: keep the `let` node so lowering can emit the force.
+            // β-reduction inlines a parameterless binding at each use site, but it
+            // deliberately leaves a FUNCTION call alone in one case: a local
+            // function has no top-level scheme, so lowering can only install it
+            // from this node. Keep the node exactly when a surviving `Apply`
+            // still names one of its function bindings. A bang binding always
+            // keeps it — its force happens at the binding point.
+            let mut applied = HashSet::new();
+            crate::lower::collect_def_ref_names(&reduced_body, &mut applied);
+            let keep = defs.iter().any(|d| {
+                d.is_bang()
+                    || ((!d.params().is_empty() || matches!(d.body(), Expr::Lambda { .. }))
+                        && applied.contains(d.name()))
+            });
+            if keep {
                 Expr::Let {
                     defs: reduced_defs,
                     body: Box::new(reduced_body),
