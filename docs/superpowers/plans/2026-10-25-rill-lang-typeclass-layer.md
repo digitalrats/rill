@@ -58,11 +58,27 @@
 > that deletes a construct before its replacement exists is *supposed* to be
 > inconsistent while it is being written.
 >
+> **Ruling (2026-10-25, after measuring GHC): the operator results are expected to
+> CHANGE, and the new values are the correct ones.** `infer_arith` currently
+> pins every type variable that reaches arithmetic to `Float` (design §3.1c),
+> which loses polymorphism and breaks mixed-literal comparison. GHC itself
+> accepts `1 + 1.0` (`2.0`) and `1 == 1.0` (`True`) because numeric literals are
+> polymorphic. Measured divergences to fix:
+> - `1 == 1.0` returns `False` today; it must be **`True`**;
+> - `let add x y = x + y in add 1 2` is a type error today; it must be **`3`**;
+> - `let f x = x * 2.0 in f (1::Int)` coerces silently today; it must be a
+>   **type error** (`Fractional Int`), exactly as GHC reports.
+>
+> Do **not** try to preserve today's results. Preserving them requires the
+> forced-`Float` pin the change exists to remove, and that is what produced every
+> blocked attempt so far. The checkpoint is: the suite is green, and the operator
+> results are **Haskell-2010-correct**.
+>
 > Concretely:
 > - Do **not** run the probe matrix, the test suite, or any behavioural check
->   part-way through the migration to "see whether it still works".
+>   part-way through the migration.
 > - Do **not** add a compatibility shim, a dual path, a temporary bridge, or an
->   `#[allow(dead_code)]` placeholder to keep a half-migrated tree working.
+>   `#[allow(dead_code)]` placeholder.
 > - Implement all steps, then run the gates **once** on the finished task.
 > - If a gate fails then, fix the finished tree — not by resurrecting the old
 >   construct.

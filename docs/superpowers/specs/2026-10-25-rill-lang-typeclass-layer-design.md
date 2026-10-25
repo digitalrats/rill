@@ -127,6 +127,101 @@ sections, `fmap` on `List`/`Maybe`, array surface via `Ix`, and the `Monoid`/
 
 ## 3. Design
 
+### 3.1c Typing model for operators (the crux)
+
+**Measured divergence from GHC (2026-10-25).** `infer_arith` (`types/infer.rs`
+~6909) contains:
+
+```rust
+// A structural parameter variable in arithmetic is a numeric scalar:
+// bind it to Float so the lambda's Func signature resolves concretely.
+if matches!(&t.vty, ValueTy::Var(_)) {
+    unify_value(&t.vty, &ValueTy::Float, &mut ctx.subst, e.span())?;
+}
+```
+
+Any type variable reaching arithmetic is **forcibly pinned to `Float`** — not
+defaulted, pinned inside `unify_operand`. That single line is the architectural
+blocker.
+
+**GHC's actual behaviour** (verified with `runghc`, GHC 9.10.3):
+
+| Expression | GHC result | Why |
+|---|---|---|
+| `1 + 1.0` | `2.0` | the `1.0` pins `a := Double`; `1` is a *literal*, so it takes `Double` too |
+| `1.0 + 1` | `2.0` | same, order-independent |
+| `1 == 1.0` | `True` | same |
+| `let add x y = x + y in add 1 2` | `3` | `add :: Num a => a -> a -> a`; defaulting picks `Integer` |
+| `let add x y = x + y in add 1.0 2.0` | `3.0` | same scheme, `a := Double` |
+| `(1::Int) + 1.0` | **error** | `No instance for 'Fractional Int' arising from the literal '1.0'` |
+| `let f x = x * 2.0 in f (1::Int)` | **error** | `No instance for 'Fractional Int'` |
+| `1 + 2` (unconstrained) | `3` | `Num`-only → numeric defaulting to `Integer` |
+| `1 / 2` | `0.5` | `Fractional` → defaulting to `Double` |
+| `min 1 2` | `1` | `Ord`+`Num` → defaulting to `Integer` |
+
+**So the mechanism is exactly three steps, in this order:**
+
+1. **Solve the class variable from the non-literal operands.** `1 + 1.0`: the
+   `Float` literal solves `a := Double`. If both operands are solvable and
+   disagree (`Int` pinned vs `Double`), it is a **type error** — there is no
+   coercion between *types*.
+2. **Apply the solved type to the still-polymorphic literals.** `1` is an
+   `Int`-looking *literal*, not an `Int` *value*: under `a := Double` it becomes
+   `Double`. This is the step that makes `1 + 1.0` work. It is **literal
+   polymorphism, not a cast** — a variable already bound to `Int` (as in
+   `(1::Int) + 1.0`) cannot widen, and GHC reports `Fractional Int`.
+3. **Dispatch the class method at the solved type.** `Num Double`, `Num Integer`,
+   etc. succeed; a missing instance is the error above.
+
+If nothing solves the variable (`1 + 2` with no other constraint), **numeric
+defaulting** applies at the end: `Integer` for `Num`-only, `Double` when
+`Fractional` is involved.
+
+**Where rill diverges today (measured):**
+
+| Expression | rill result | Status |
+|---|---|---|
+| `1 + 1.0` | `2.0` | coincides, but by a *forced* `Float` pin, not by step 2 |
+| `1 == 1.0` | `False` | **wrong** — `Cmp` has no such pin, so `Int` literal ≠ `Float` literal |
+| `let add x y = x + y in add 1 2` | **type error** | **wrong** — step 1/3 incomplete: the scheme is not `Num`-polymorphic |
+| `let add x y = x + y in add 1.0 2.0` | `3.0` | coincides |
+| `(1::Int) + 1.0` | `2.0` (silent) | **wrong** — must be `Fractional Int` error (step 2 must not apply to a pinned variable) |
+
+**Required model (System FC: dictionary-passing).**
+
+1. An operator reference has a **constrained scheme**:
+   `(+) :: Num a => a -> a -> a`, `(==) :: Eq a => a -> a -> Bool`,
+   `(<) :: Ord a => a -> a -> Bool`, `(/) :: Fractional a => a -> a -> a`,
+   `(rem) :: Integral a => a -> a -> a`.
+2. Solve the class variable from the call-site argument types — reuse
+   `infer_constrained_apply`, which already does this for `Ix`-constrained array
+   helpers (unify the signature's parameters against the arguments, solve the
+   class variable, discharge each constraint, report `no instance of …`).
+3. **Literals are polymorphic** (step 2 above): an `Int`/`Float` literal is a
+   numeric literal with a fresh variable, not a fixed `Int`/`Float`; it adopts
+   whatever the solved class variable requires. This must be modelled in the
+   type of literals, **not** as a coercion in the operator.
+4. **No widening between solved types.** If an operand is already bound to a
+   concrete type, a conflicting literal is `no instance of Fractional Int` /
+   `cannot unify Int with Float` — never a silent cast.
+5. **Numeric defaulting only at the end** for a still-unsolved numeric variable:
+   `Integer` for `Num`-only, `Double` when `Fractional` is involved. This is
+   literal defaulting, never operator coercion.
+6. Remove the forced-`Float` pin in `infer_arith` entirely.
+
+**Consequence for the migration.** The following results *change*, and the new
+values are the correct ones:
+
+- `1 == 1.0`: `False` → **`True`** (step 2 applies in `Cmp` too);
+- `let add x y = x + y in add 1 2`: type error → **`3`**;
+- `(1::Int) + 1.0`: silent `2.0` → **type error** (a bound `Int` cannot take a
+  `Fractional` literal);
+- `let f x = x * 2.0 in f (1::Int)`: silent → **type error**.
+
+A migration step that tries to preserve today's results reintroduces the forced
+`Float` pin and blocks the work. The checkpoint is "the suite is green and the
+operator results are **Haskell-2010-correct**", not "identical to today".
+
 ### 3.1b Binary operators are sugar over class methods (core principle)
 
 **All binary operators are syntactic sugar for function application of the
