@@ -237,6 +237,26 @@ correctness requirement, not an aspiration.
   functions. When the two disagree, follow the Report for syntax/semantics and
   the Prelude for library surface.
 
+### There is no signal path
+
+**rill has no separate "signal track", "signal path", or signal/value split.**
+That model was deleted with the arrow language. Do not reintroduce the vocabulary
+in code, comments, docs, or design discussion.
+
+- A **buffer is an ordinary first-class value**, exactly like a scalar: it flows
+  through the same value track, the same functions, and the same closures.
+- Buffer operations are ordinary functions/methods over that value. The
+  `Buffer` type class is a normal class next to `Functor`/`Monad`/`Monoid` — not
+  a marker for a parallel execution engine.
+- A block built-in (`sine`, `lowpass`, …) is a value-level function producing or
+  consuming a buffer; there is no second lowering path for it.
+- Correct vocabulary: **"buffer operations"**, **"value track"**, **"the
+  `Buffer` class"**. Forbidden: "signal track", "signal path", "signal
+  lowering", "signal-rate call".
+
+A comment or document that needs the phrase "signal track" to explain something
+is describing a design that no longer exists — rewrite the explanation instead.
+
 ### Reference models when reasoning is unclear
 
 When the right shape of a change is not obvious, reason from the matching level

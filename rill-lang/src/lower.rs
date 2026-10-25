@@ -7387,9 +7387,10 @@ impl<'a> Lowerer<'a> {
                 // A value-track builtin applied in a signal position
                 // (`main = bufferFromArray (arrayFromBuffer buf)`): the body is
                 // `Expr::Apply` because a ONE-argument application is not
-                // rewritten by the currying pass, and the signal track never
-                // consults `value_builtin`. Lower the whole application on the
-                // value track and require the single output to be a Buffer.
+                // rewritten by the currying pass, and a one-argument
+                // application never consults `value_builtin`. Lower the whole
+                // application as a value and require the single output to be a
+                // Buffer.
                 // `bufferFromArray` is the array bridge's buffer producer; every
                 // other value builtin yields a value and is a type error here.
                 if self.value_builtin(name, call_args.len()).is_some() {

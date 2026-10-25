@@ -1667,7 +1667,7 @@ impl<'a> Parser<'a> {
 
     /// `foreign name : TypeExpr;` — a foreign builtin signature declared in the
     /// language. Parsed by the standard type parser; the carried arrow's `FixedBuffer`
-    /// channels are the signal-track parameters. Like every sibling def parser
+    /// channels are ordinary buffer arguments. Like every sibling def parser
     /// (data/sum/typeclass/instance/alias/newtype), leaves the trailing `;` for the
     /// caller (`parse_program` / `parse_where_block`) to consume.
     fn parse_foreign_def(&mut self) -> Result<Def, CompileError> {

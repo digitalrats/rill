@@ -222,7 +222,7 @@ pub struct InstanceInfo {
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
     /// True when this instance was declared by a compiler prelude
-    /// ([`STD_PRELUDE`] / [`SIGNAL_PRELUDE`] / [`CATEGORY_PRELUDE`]) or derived
+    /// ([`PRELUDE`]) or derived
     /// from one (a superclass template, a structural `Eq`/`Ord` marker).
     ///
     /// Such bodies are trusted compiler machinery and are not re-validated
@@ -266,9 +266,9 @@ impl InstanceInfo {
 ///   (`recursive function call: …`); recursion that reaches lowering through an
 ///   indirection (a `where` binding) is caught by the specialization guard
 ///   (`recursive class-constrained definition …`) instead of looping.
-/// - The specialization is a VALUE-track construct. The signal-track `Apply`
-///   lowering has no intercept for these definitions; a signal-rate call is
-///   reported as an ordinary lowering failure rather than specialized.
+/// - The specialization is an ordinary value construct. There is no separate
+///   buffer-`Apply` path: a buffer is a value, so a call that cannot be
+///   specialized is reported as an ordinary lowering failure.
 /// - A BARE reference (`f = mk`) has no call site at which to solve the class
 ///   variable; lowering reports `cannot use class-constrained definition …
 ///   without applying it`. The reducer likewise never inlines such a reference
@@ -402,11 +402,15 @@ pub struct TypeEnv {
     pub constrained_defs: HashMap<String, ConstrainedDef>,
 }
 
-/// Built-in category-theory typeclasses, declared in rill-lang itself and
-/// registered by [`TypeEnv::with_builtins`]. Users never redeclare them but may
-/// add their own instances. `instance Monad T` auto-derives `Applicative T` and
+/// The single language prelude, declared in rill-lang itself and registered by
+/// [`TypeEnv::with_builtins`]. Users never redeclare it but may add their own
+/// instances. `instance Monad T` auto-derives `Applicative T` and
 /// `Functor T` (see [`TypeEnv::derive_superclass_instances`]).
-pub(crate) const CATEGORY_PRELUDE: &str = r#"
+///
+/// One text, one parse unit: there is no separate "category" / "signal" /
+/// "standard" prelude. A buffer is an ordinary value; `Buffer` is an ordinary
+/// type class next to `Functor`/`Monad`/`Monoid`.
+pub(crate) const PRELUDE: &str = r#"
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 typeclass Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
@@ -417,7 +421,7 @@ typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
 --  coordinate fastest), `index` gives an element's flat offset, `inRange` tests
 --  membership and `rangeSize` counts the elements — its value is also the
 --  required element count of `listArray`. Instances are declared in the
---  standard prelude (`STD_PRELUDE`), and every offset they compute is an `Int`,
+--  standard prelude, and every offset they compute is an `Int`,
 --  so the flat array primitives only ever see integers.
 typeclass Ix i where {
     range: Pair i i -> List i;
@@ -446,18 +450,11 @@ instance (Monad m) => Arrow (Kleisli m) where {
     compose k1 k2 = Kleisli (\ x -> bind (k1.unKleisli x) (\ y -> k2.unKleisli y));
 }
 
-main = ();
-"#;
-
-/// Built-in signal-track declarations: the first-class buffer type and the
-/// `Buffer` typeclass. Registered by [`TypeEnv::with_builtins`]. The home of the
-/// Buffer-arrow combinators and buffer math in later stages.
-///
-/// `Tape a` is the shared-buffer handle — a `Buffer` family member alongside
-/// `FixedBuffer a`. It is a marker record (empty field list): its runtime
-/// representation is an index into the program's `Vec<SharedCell>` (Task 11),
-/// so it needs no carrier fields.
-pub(crate) const SIGNAL_PRELUDE: &str = r#"
+--  --- Buffer values -------------------------------------------------------
+--  A buffer is an ordinary first-class VALUE, exactly like a scalar: there is no
+--  separate "signal path" and no signal/value split. `Buffer` is an ordinary
+--  type class; arithmetic over buffers comes from its instances (P3 of the
+--  typeclass layer).
 typeclass Buffer b where { }
 instance Buffer (FixedBuffer a) where { }
 data Tape a = { };
@@ -489,17 +486,11 @@ merge = \ f -> \ g -> \ p -> f p.first + g p.second;
 --  without special-casing surface syntax.
 otherwise = true;
 
-main = ();
-"#;
 
-/// Standard-library prelude: the common standard-library layer — the primitive
-/// opaque tokens (`World`/`STState`/`STRef`), the `ST`/`IO` monads and their
-/// instances, and the opaque io-streams handles (`InputStream`/`OutputStream`).
-/// This is deliberately distinct from [`CATEGORY_PRELUDE`] (pure category
-/// theory) and [`SIGNAL_PRELUDE`] (first-class buffer types). Every type is
-/// declared in rill-lang itself like the other preludes. Registered by
-/// [`TypeEnv::with_builtins`].
-pub(crate) const STD_PRELUDE: &str = r#"
+--  --- Standard library -----------------------------------------------------
+--  The primitive opaque tokens (`World`/`STState`/`STRef`), the `ST`/`IO`
+--  monads and their instances, and the opaque io-streams handles
+--  (`InputStream`/`OutputStream`).
 -- Primitive opaque tokens. `World` is the real-world token (the GHC
 -- `State# RealWorld` analog), `STState` the per-region state token threaded by
 -- the ST monad. Neither has constructors or fields: only the runtime creates
@@ -567,7 +558,7 @@ instance Monad IO where {
 --  ---------------------------------------------------------------------------
 --  Data.Array — the constrained language-level array surface.
 --
---  It is written entirely against `Ix` (declared in `CATEGORY_PRELUDE`), on top
+--  It is written entirely against `Ix` (declared in this prelude), on top
 --  of the flat storage primitives (`arrayFromList`, `arrayIndexFlat`,
 --  `arrayUpdate`, `arrayAccum`, `arrayFromAssocs`, `arraySeed`, the `STArray`
 --  effects, and the buffer bridge).
@@ -718,7 +709,11 @@ modifyArray arr ix f :: Ix i => STArray s i e -> i -> (e -> e) -> ST s () = bind
 
 from n = cons n (from (n + 1.0));
 
-main = ();
+--  Syntax terminator: `register_prelude` parses this text as a program, and a
+--  program needs at least one definition. The name is reserved (`__` prefix) so
+--  it can NEVER collide with, or shadow, a user program's `main` — the prelude
+--  must not participate in the entry-point contract.
+__prelude_end = ();
 "#;
 
 /// Inline catalog of foreign builtin declarations auto-registered into
@@ -1015,23 +1010,13 @@ impl TypeEnv {
             typeclasses,
             ..TypeEnv::default()
         };
-        // Category-theory prelude: declared in rill-lang itself so the classes
-        // and instances are first-class entities. A parse failure here is a
-        // compiler bug (the constant is fixed) — assert loudly.
-        register_prelude(&mut env, CATEGORY_PRELUDE);
-        env.derive_superclass_instances();
-        // Signal-track prelude: the `Buffer` typeclass + `FixedBuffer` type.
-        register_prelude(&mut env, SIGNAL_PRELUDE);
-        env.derive_superclass_instances();
-        // Standard-library prelude: the primitive opaque tokens
-        // (`World`/`STState`/`STRef`), the `ST`/`IO` monads with their
-        // instances, and the stream contract types (`InputStream`/
-        // `OutputStream`) the boundary operations below
-        // are typed against.
-        register_prelude(&mut env, STD_PRELUDE);
-        // The moved `Monad` instances (`ST`, `Maybe`, `List`, `IO`) derive their
-        // `Applicative`/`Functor` superclasses exactly as they did while they
-        // lived in `CATEGORY_PRELUDE`.
+        // The single language prelude: classes, instances, the primitive
+        // tokens, and the buffer type — declared in rill-lang itself so they are
+        // first-class entities. A parse failure here is a compiler bug (the
+        // constant is fixed) — assert loudly.
+        register_prelude(&mut env, PRELUDE);
+        // Every `Monad` instance derives its `Applicative`/`Functor`
+        // superclasses; one derivation pass after the whole prelude is parsed.
         env.derive_superclass_instances();
         // Builtin foreign catalog: the migrated legacy builtins' declarations
         // plus the record types their params need. Parsed the same way as the
@@ -1040,7 +1025,7 @@ impl TypeEnv {
         // Builtin polymorphic functions: `runST : (forall s. ST s a) -> a` is a
         // forall-typed ordinary function (NOT a foreign decl — FFI conversion
         // hits its `other` arm on `forall`, and it is not instance-dispatched).
-        // The `ST s a` type is declared in `STD_PRELUDE`; rank-N application
+        // The `ST s a` type is declared in `PRELUDE`; rank-N application
         // of the signature lives in `infer_apply_impl`.
         env.builtin_sigs.insert(
             "runST".to_string(),
@@ -1210,7 +1195,7 @@ impl TypeEnv {
             ),
         );
         // IO / io-streams primitives. `IO` is the state-threading monad
-        // declared in `STD_PRELUDE` (`IO a = { unIO: World -> Pair World a }`);
+        // declared in `PRELUDE` (`IO a = { unIO: World -> Pair World a }`);
         // `()` is `ValueTy::Void` (`TName "()"` resolves to it in
         // `type_expr_to_vty`). The element type of a memory stream is generic,
         // so each polymorphic signature is a `TForall`: the ordinary
