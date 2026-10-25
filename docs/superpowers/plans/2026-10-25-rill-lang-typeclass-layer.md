@@ -50,21 +50,29 @@
 ### Task 0 (P0): Operator constructs replaced by class-method dispatch
 
 > **Ruling (user, 2026-10-25): full replacement, no reuse.**
+>
 > **Ruling (user, 2026-10-25, supersedes the per-step preservation rule):**
-> behavioural preservation is required **at the end of the task, not at every
-> intermediate step**. An intermediate step that deletes a construct before its
-> replacement is complete is *expected* to be briefly inconsistent; do not invent
-> compatibility shims, dual paths, or "temporary" bridges to keep every step
-> observably identical. That requirement is what produced workarounds before.
-> What must hold: **the final tree** behaves as before (except for the explicit
-> semantic corrections owned by P1/P3), with no dual paths left behind.
+> **Do not test behaviour between steps.** The only behavioural checkpoint is the
+> **finished task** — the state you commit when every step below is done.
+> Intermediate states are not checkpoints and are not required to work; a step
+> that deletes a construct before its replacement exists is *supposed* to be
+> inconsistent while it is being written.
+>
+> Concretely:
+> - Do **not** run the probe matrix, the test suite, or any behavioural check
+>   part-way through the migration to "see whether it still works".
+> - Do **not** add a compatibility shim, a dual path, a temporary bridge, or an
+>   `#[allow(dead_code)]` placeholder to keep a half-migrated tree working.
+> - Implement all steps, then run the gates **once** on the finished task.
+> - If a gate fails then, fix the finished tree — not by resurrecting the old
+>   construct.
 
 The existing operator-specific constructs are **deleted**, not kept alongside the
-class path. At the end there is no `Expr::Arith`, no `Expr::Cmp`, no
-`ArithOp`/`CmpOp` operator node, and no operator-keyed lowering arm. The runtime
-kernels (`ValueAdd`-family, `ValueCompare`, `ValueBufferBin`, `ValueBufferUn`,
-`BinArith`) survive **only as bodies of primitive instances** — they are
-primitives, not operator constructs.
+class path. When the task is finished there is no `Expr::Arith`, no `Expr::Cmp`,
+no `ArithOp`/`CmpOp` operator node, and no operator-keyed lowering arm. The
+runtime kernels (`ValueAdd`-family, `ValueCompare`, `ValueBufferBin`,
+`ValueBufferUn`, `BinArith`) survive **only as bodies of primitive instances** —
+they are primitives, not operator constructs.
 
 **Files:**
 - Modify: `rill-lang/src/ast.rs` (delete `Expr::Arith`, `Expr::Cmp`, `ArithOp`, `CmpOp`; keep `Expr::Logic`/`LogicOp`)
@@ -100,12 +108,17 @@ Remove `Expr::Arith`/`Expr::Cmp` and `ArithOp`/`CmpOp`; update every match arm (
 
 The parser keeps infix syntax and the §4.4.2 fixity; `desugar` is the ONE place that turns an infix operator into `Expr::ApplyExpr { callee: Ref(op), args: [lhs, rhs] }`. Declare `Num`/`Fractional` in the single `PRELUDE` constant; extend the built-in `Eq`/`Ord` `TypeclassInfo` with the operator spellings.
 
-- [ ] **Step 5: Restore behaviour at the end**
+- [ ] **Step 5: Behavioural checkpoint — run this ONCE, after Steps 3–4 are complete**
 
-Primitive instances (`Int`, `Float`, `Bool`, `String`, `Buffer`) emit exactly the kernels that ran before, so the **final** probe matrix matches the starting one: `1 + 2` → `Int(3)`, `1.0 + 2.0` → `Float(3.0)`, `1 + 1.0` → its current result, comparisons → the same booleans, buffer arithmetic unchanged. Semantic corrections (`1 + 1.0` becoming a type error, `Num` polymorphism) belong to P1/P3.
+Do not run it earlier. Primitive instances (`Int`, `Float`, `Bool`, `String`,
+`Buffer`) emit exactly the kernels that ran before, so the probe matrix matches
+the starting one: `1 + 2` → `Int(3)`, `1.0 + 2.0` → `Float(3.0)`, `1 + 1.0` →
+its current result, comparisons → the same booleans, buffer arithmetic
+unchanged. Semantic corrections (`1 + 1.0` becoming a type error, `Num`
+polymorphism) belong to P1/P3.
 
-Intermediate states may be red while the migration is in flight; the tree must
-be green **at each commit** and free of dual paths at the end.
+If a probe mismatches, fix the finished tree. Do not restore the deleted
+construct to make it match.
 
 - [ ] **Step 6: Verify and commit**
 
