@@ -30,6 +30,8 @@ enum InfixOp {
     Index,
     /// `++` — list append (`a ++ b` ≡ `++ a b`, the Prelude `++` function).
     AppendList,
+    /// `<>` — Semigroup append (`a <> b` ≡ `<> a b`, Haskell 2010 `infixr 6`).
+    AppendSemigroup,
     /// `` `f` `` — backtick infix application (`` a `f` b `` ≡ `f a b`).
     Backtick,
 }
@@ -140,6 +142,9 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         // `a : (b ++ c)`, `a ++ b : c` is `a ++ (b : c)`).
         Tok::Colon => (InfixOp::Cons, 7, 7),
         Tok::PlusPlus => (InfixOp::AppendList, 7, 7),
+        // `<>` — `infixr 6` in Haskell 2010 (Semigroup): looser than `:`/`++`,
+        // tighter than comparison.
+        Tok::LessGreater => (InfixOp::AppendSemigroup, 9, 9),
         // Comparisons — `infix 4` and NON-associative: `a == b == c` is a parse
         // error. The binding powers only position the operators; the
         // non-associativity check lives in the Pratt loop (a same-level
@@ -196,6 +201,7 @@ fn infix_op_from_name(name: &str) -> Option<InfixOp> {
         "||" => InfixOp::LogicOr,
         ":" => InfixOp::Cons,
         "++" => InfixOp::AppendList,
+        "<>" => InfixOp::AppendSemigroup,
         "!" => InfixOp::Index,
         _ => return None,
     })
@@ -268,6 +274,13 @@ fn desugar_infix_op(op: InfixOp, lhs: Expr, rhs: Expr) -> Expr {
             args: vec![lhs, rhs],
             span,
         },
+        // `<>` — Semigroup append, resolved like `++` (Haskell 2010 defines it as
+        // an ordinary class method, so the infix and bare forms share a binding).
+        InfixOp::AppendSemigroup => Expr::Apply {
+            name: "<>".to_string(),
+            args: vec![lhs, rhs],
+            span,
+        },
         // A backticked function was already desugared before the right operand
         // was parsed; `,` is handled above.
         InfixOp::Backtick => unreachable!("backtick is desugared before the rhs"),
@@ -307,6 +320,7 @@ fn implicit_section_param() -> String {
 fn bare_operator_name(tok: &Tok) -> Option<&'static str> {
     Some(match tok {
         Tok::PlusPlus => "++",
+        Tok::LessGreater => "<>",
         Tok::Plus => "+",
         Tok::Minus => "-",
         Tok::Star => "*",
@@ -1546,8 +1560,18 @@ impl<'a> Parser<'a> {
     /// declare a class-level default body after its signature:
     /// `second: sig = k body;` — the default instances omit (precedence:
     /// instance body > default > error).
+    ///
+    /// The Haskell 2010 superclass form carries a context before the class
+    /// head: `typeclass (C1 a, C2 a) => D a where { … }`. The context is
+    /// stored on the declaration; the plain form leaves it empty.
     fn parse_typeclass_def(&mut self) -> Result<Def, CompileError> {
         let start = self.bump().span.start;
+        // Superclass context. The `(C1 a, C2 a) =>` prefix is a class context
+        // exactly like a signature's, so it reuses the same reader. A
+        // parenthesized TYPE never opens a `typeclass` head (the head is a
+        // plain class name), so an unparenthesized `C a =>` is accepted too —
+        // Haskell 2010 allows a one-element context without parentheses.
+        let supers = self.parse_sig_constraints()?.unwrap_or_default();
         let (name, _) = self.expect_ident()?;
         let (var, _) = self.expect_ident()?;
         self.eat(&Tok::KwWhere)?;
@@ -1555,7 +1579,7 @@ impl<'a> Parser<'a> {
         let mut methods = Vec::new();
         let mut defaults = Vec::new();
         while self.peek().tok != Tok::RBrace {
-            let (mname, _) = self.expect_ident()?;
+            let (mname, _) = self.expect_method_name()?;
             self.eat(&Tok::Colon)?;
             let sig = self.parse_type_expr()?;
             let mut default = None;
@@ -1585,10 +1609,37 @@ impl<'a> Parser<'a> {
         Ok(Def::Typeclass {
             name,
             var,
+            supers,
             methods,
             defaults,
             span: self.span_from(start),
         })
+    }
+
+    /// A class-method name in a `typeclass` body or an `instance` body: a plain
+    /// identifier (`show`, `fmap`) or — Haskell 2010 §4.4.1 — an operator name
+    /// in parentheses (`(==)`, `(<)`, `(+)`), which is the same string the
+    /// expression parser produces for a bare operator reference. Both spell the
+    /// method's name, which is what `Expr::Ref("==")` resolves.
+    fn expect_method_name(&mut self) -> Result<(String, Span), CompileError> {
+        if self.peek().tok != Tok::LParen {
+            return self.expect_ident();
+        }
+        let lparen = self.peek().clone();
+        self.bump();
+        let op = match bare_operator_name(&self.peek().tok) {
+            Some(name) => name.to_string(),
+            None => {
+                let found = self.peek().tok.clone();
+                return Err(CompileError::Parse {
+                    msg: format!("expected an operator name between parentheses, found {found:?}"),
+                    span: self.peek().span,
+                });
+            }
+        };
+        self.bump();
+        self.eat(&Tok::RParen)?;
+        Ok((op, lparen.span))
     }
 
     /// `instance C T where { m p1 p2 = body; }` — concrete instance. Each
@@ -1636,7 +1687,7 @@ impl<'a> Parser<'a> {
         self.eat(&Tok::LBrace)?;
         let mut method_bodies = Vec::new();
         while self.peek().tok != Tok::RBrace {
-            let (mname, _) = self.expect_ident()?;
+            let (mname, _) = self.expect_method_name()?;
             // Zero or more parameter bindings before `=`: `show f = f`,
             // `fmap g xs = map g xs`.
             let mut params = Vec::new();

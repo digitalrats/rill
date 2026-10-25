@@ -34,6 +34,8 @@ pub enum Tok {
     Plus,
     /// `++` — list append (Prelude, `infixr 5`).
     PlusPlus,
+    /// `<>` — Semigroup append (Haskell 2010 `Semigroup`, `infixr 6`).
+    LessGreater,
     /// `-`
     Minus,
     /// `*`
@@ -291,6 +293,16 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             });
             continue;
         }
+        if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b'>' {
+            // `<>` — Semigroup append. Two characters, so it must be matched
+            // before the single-character comparison operators.
+            i += 2;
+            out.push(Token {
+                tok: Tok::LessGreater,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
         if c == b'<' && i + 1 < bytes.len() && bytes[i + 1] == b':' {
             i += 2;
             out.push(Token {
@@ -466,7 +478,11 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "data" if !followed_by_paren => Tok::KwData,
                 "type" if !followed_by_paren => Tok::KwType,
                 "newtype" if !followed_by_paren => Tok::KwNewtype,
-                "typeclass" if !followed_by_paren => Tok::KwTypeclass,
+                // `typeclass` is a DECLARATION keyword only: the
+                // `(C a) =>` superclass form puts a `(` right after it, so no
+                // call-guard may apply here (unlike `where`/`let`, which are
+                // also usable as call heads).
+                "typeclass" => Tok::KwTypeclass,
                 // `instance` is always a keyword — its head may start with a
                 // parenthesized constraint list (`instance (Monad m) => …`), so
                 // the `followed_by_paren` call-guard must not apply here.

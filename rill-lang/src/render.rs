@@ -164,11 +164,29 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             Ok(())
         }
         Def::Typeclass {
-            name, var, methods, ..
+            name,
+            var,
+            supers,
+            methods,
+            ..
         } => {
-            write!(buf, "{pad}typeclass {name} {var} where {{ ").ok();
+            write!(buf, "{pad}typeclass ").ok();
+            // A superclass context renders in the same shape the parser reads
+            // back: `(C1 a, C2 a) =>`.
+            if !supers.is_empty() {
+                write!(buf, "(").ok();
+                for (i, (c, v)) in supers.iter().enumerate() {
+                    if i > 0 {
+                        write!(buf, ", ").ok();
+                    }
+                    write!(buf, "{c} {v}").ok();
+                }
+                write!(buf, ") => ").ok();
+            }
+            write!(buf, "{name} {var} where {{ ").ok();
             for (mname, sig) in methods {
-                write!(buf, "{mname}: ").ok();
+                render_def_name(mname, buf);
+                write!(buf, ": ").ok();
                 render_type_expr(sig, buf);
                 write!(buf, "; ").ok();
             }
@@ -193,7 +211,7 @@ fn render_def(def: &Def, buf: &mut String, indent: usize) -> Result<(), CompileE
             }
             write!(buf, " where {{ ").ok();
             for (mname, params, body) in method_bodies {
-                write!(buf, "{mname}").ok();
+                render_def_name(mname, buf);
                 for p in params {
                     write!(buf, " {}", p.name).ok();
                 }

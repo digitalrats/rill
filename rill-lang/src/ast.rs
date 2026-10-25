@@ -498,11 +498,21 @@ pub enum Def {
         span: Span,
     },
     /// `typeclass C a where { m: sig; }` — method dictionary.
+    ///
+    /// The Haskell 2010 superclass form `typeclass (C1 a, C2 a) => D a where
+    /// { … }` declares the same dictionary plus a superclass context: every
+    /// `D a` dictionary CONTAINS a `C1 a` and a `C2 a` dictionary (System FC:
+    /// a superclass constraint is a field of the subclass dictionary). The
+    /// context is empty for the plain form.
     Typeclass {
         /// Class name.
         name: String,
         /// Type variable (e.g. `a`).
         var: String,
+        /// Superclass context: `(class, its type variable)` pairs from the
+        /// `(C1 a, C2 a) =>` prefix, in declaration order. Empty for a class
+        /// with no superclasses.
+        supers: Vec<(String, String)>,
         /// Methods: (method name, signature type expression).
         methods: Vec<(String, TypeExpr)>,
         /// Default method bodies: (method name, parameter bindings, body expr).

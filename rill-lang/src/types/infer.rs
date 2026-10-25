@@ -1471,11 +1471,16 @@ pub(crate) fn discharge_def_constraints(
         let Some(key) = key else {
             continue;
         };
-        let registered = env
-            .instances
-            .get(class.as_str())
-            .map(|m| m.contains_key(key.as_str()))
-            .unwrap_or(false);
+        // A class constraint is satisfiable by an instance of the class OR of
+        // any class that ENTAILS it (System FC: the subclass dictionary
+        // contains the superclass one). `Ord a` therefore satisfies an `Eq a`
+        // constraint, `Fractional a` satisfies `Num a`, etc.
+        let registered = env.entailed_classes(class.as_str()).iter().any(|c| {
+            env.instances
+                .get(c.as_str())
+                .map(|m| m.contains_key(key.as_str()))
+                .unwrap_or(false)
+        });
         if !registered {
             return Err(CompileError::Type {
                 msg: format!(

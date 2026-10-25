@@ -117,6 +117,7 @@ fn desugar_decl(def: Def) -> Result<Def, CompileError> {
         Def::Typeclass {
             name,
             var,
+            supers,
             methods,
             defaults,
             span,
@@ -128,6 +129,7 @@ fn desugar_decl(def: Def) -> Result<Def, CompileError> {
             Def::Typeclass {
                 name,
                 var,
+                supers,
                 methods,
                 defaults: out,
                 span,

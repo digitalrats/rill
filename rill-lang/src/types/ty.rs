@@ -192,6 +192,15 @@ pub struct TypeclassInfo {
     /// Kind arity of the class variable, inferred from its use in method
     /// signatures (`f a` -> 1, `f a b` -> 2, bare `a` -> 0).
     pub arity: usize,
+    /// Superclass context: `(class, its type variable)` pairs declared in the
+    /// `(C1 a, C2 a) =>` prefix, in declaration order. These are the DIRECT
+    /// superclasses; see [`TypeEnv::entailed_classes`] for the transitive
+    /// closure.
+    ///
+    /// System FC: a superclass constraint is a FIELD of the subclass
+    /// dictionary, so `Ord a`'s dictionary holds `Eq a`'s — that is what makes
+    /// `Eq`'s methods resolvable wherever `Ord a` is in scope.
+    pub superclasses: Vec<(String, String)>,
     /// Method dictionary: method name → signature type expression.
     pub methods: Vec<(String, crate::ast::TypeExpr)>,
     /// Default method bodies: method name → (params, body). An instance that
@@ -412,8 +421,8 @@ pub struct TypeEnv {
 /// type class next to `Functor`/`Monad`/`Monoid`.
 pub(crate) const PRELUDE: &str = r#"
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
-typeclass Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
-typeclass Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
+typeclass (Functor f) => Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
+typeclass (Applicative m) => Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
 typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
 
 --  Index types (`Data.Ix`): the offset/range vocabulary the array surface is
@@ -779,6 +788,25 @@ const APPLICATIVE_FROM_MONAD: &str =
 const FUNCTOR_FROM_MONAD: &str = "fmap g x = bind x (\\ y -> return (g y));";
 const FUNCTOR_FROM_APPLICATIVE: &str = "fmap g x = ap (pure g) x;";
 
+/// The derived body for `instance <sup> <ty>` when `<sub> <ty>` holds, keyed by
+/// the (subclass, superclass) pair. `None` when this tower level has no
+/// derivable body — the superclass instance must then be written explicitly by
+/// the user (a class may require a superclass without being able to synthesise
+/// its methods).
+///
+/// Only the Functor/Applicative tower has synthesised bodies; the numeric
+/// towers (`Ord ⊑ Eq`, `Fractional ⊑ Num`, …) are *constraints*, not
+/// derivations — a value has both dictionaries from its own instance
+/// declarations, they are not built from one another.
+fn superclass_template(sub: &str, sup: &str) -> Option<&'static str> {
+    match (sub, sup) {
+        ("Monad", "Applicative") => Some(APPLICATIVE_FROM_MONAD),
+        ("Monad", "Functor") => Some(FUNCTOR_FROM_MONAD),
+        ("Applicative", "Functor") => Some(FUNCTOR_FROM_APPLICATIVE),
+        _ => None,
+    }
+}
+
 /// Parse an `instance C T where { <template> }` source fragment and build the
 /// [`InstanceInfo`]. Used by superclass auto-derivation.
 ///
@@ -978,6 +1006,7 @@ impl TypeEnv {
                 TypeclassInfo {
                     var: "a".to_string(),
                     arity: 0,
+                    superclasses: vec![],
                     methods: vec![(
                         "eq".to_string(),
                         crate::ast::TypeExpr::TFunc(
@@ -993,6 +1022,8 @@ impl TypeEnv {
                 TypeclassInfo {
                     var: "a".to_string(),
                     arity: 0,
+                    // Haskell 2010: `class Eq a => Ord a`.
+                    superclasses: vec![("Eq".to_string(), "a".to_string())],
                     methods: vec![(
                         "lt".to_string(),
                         crate::ast::TypeExpr::TFunc(
@@ -1516,6 +1547,7 @@ impl TypeEnv {
                 Def::Typeclass {
                     name,
                     var,
+                    supers,
                     methods,
                     defaults,
                     ..
@@ -1529,6 +1561,8 @@ impl TypeEnv {
                                 .map(|(_, sig)| Self::class_var_arity(var, sig))
                                 .max()
                                 .unwrap_or(0),
+                            // Direct superclasses, in declaration order.
+                            superclasses: supers.clone(),
                             methods: methods.clone(),
                             defaults: defaults
                                 .iter()
@@ -1616,113 +1650,96 @@ impl TypeEnv {
     /// (`instance Monad (ST s)`) carries its bound head args into the derived
     /// instances so the kind check sees the same remaining arity.
     pub(crate) fn derive_superclass_instances(&mut self) {
-        let monad_insts = self
-            .instances
-            .get("Monad")
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or(vec![]);
-        let monad_tys: Vec<String> = monad_insts.iter().map(|(t, _)| t.clone()).collect();
-        let applicative_tys = self
-            .instances
-            .get("Applicative")
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or(vec![]);
-        for t in monad_tys {
-            let Some(src_info) = monad_insts
+        // General walk over DECLARED superclasses (System FC: a superclass
+        // constraint is a field of the subclass dictionary, so an instance of
+        // the subclass yields an instance of every superclass). The old code
+        // hard-coded `Monad -> Applicative -> Functor`; the table below supplies
+        // the template bodies for those three derivations, but the DRIVER is the
+        // declaration, so a new tower needs no code change here.
+        //
+        // Repeat until a fixpoint: a chain `Integral -> Real -> ...` may need
+        // several passes because the superclass instance must exist before the
+        // next level is derived.
+        loop {
+            let mut derived_any = false;
+            // Snapshot the declarations so the loop can mutate `self`.
+            let classes: Vec<(String, Vec<(String, String)>)> = self
+                .typeclasses
                 .iter()
-                .find(|(ty, _)| *ty == t)
-                .map(|(_, info)| info.clone())
-            else {
-                continue;
-            };
-            let head_args = src_info.head_args.clone();
-            // A template derived from a prelude instance stays trusted; one
-            // derived from a USER instance is validated like any user body.
-            let from_prelude = src_info.from_prelude;
-            if !self
-                .instances
-                .entry("Applicative".to_string())
-                .or_default()
-                .contains_key(&t)
-            {
-                self.instances
-                    .entry("Applicative".to_string())
-                    .or_default()
-                    .insert(
-                        t.clone(),
-                        instance_from_template(
-                            t.as_str(),
-                            "Applicative",
-                            APPLICATIVE_FROM_MONAD,
-                            &head_args,
-                            from_prelude,
-                        ),
-                    );
-            }
-            if !self
-                .instances
-                .entry("Functor".to_string())
-                .or_default()
-                .contains_key(&t)
-            {
-                self.instances
-                    .entry("Functor".to_string())
-                    .or_default()
-                    .insert(
-                        t.clone(),
-                        instance_from_template(
-                            t.as_str(),
-                            "Functor",
-                            FUNCTOR_FROM_MONAD,
-                            &head_args,
-                            from_prelude,
-                        ),
-                    );
-            }
-        }
-        let applicative_insts = self
-            .instances
-            .get("Applicative")
-            .map(|m| {
-                m.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or(vec![]);
-        for t in applicative_tys {
-            if !self
-                .instances
-                .entry("Functor".to_string())
-                .or_default()
-                .contains_key(&t)
-            {
-                let Some(src_info) = applicative_insts
-                    .iter()
-                    .find(|(ty, _)| *ty == t)
-                    .map(|(_, info)| info.clone())
-                else {
+                .map(|(name, info)| (name.clone(), info.superclasses.clone()))
+                .collect();
+            for (sub, supers) in classes {
+                let Some(insts) = self.instances.get(&sub).map(|m| {
+                    m.iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect::<Vec<_>>()
+                }) else {
                     continue;
                 };
-                let head_args = src_info.head_args.clone();
-                self.instances
-                    .entry("Functor".to_string())
-                    .or_default()
-                    .insert(
-                        t.clone(),
-                        instance_from_template(
-                            t.as_str(),
-                            "Functor",
-                            FUNCTOR_FROM_APPLICATIVE,
+                for supers in supers.iter() {
+                    let sup = supers.0.clone();
+                    for (ty, src_info) in &insts {
+                        let mut already = self
+                            .instances
+                            .get(&sup)
+                            .map(|m| m.contains_key(ty))
+                            .unwrap_or(false);
+                        if already {
+                            continue;
+                        }
+                        let Some(template) = superclass_template(&sub, &sup) else {
+                            continue;
+                        };
+                        let head_args = src_info.head_args.clone();
+                        let info = instance_from_template(
+                            ty.as_str(),
+                            &sup,
+                            template,
                             &head_args,
                             src_info.from_prelude,
-                        ),
-                    );
+                        );
+                        self.instances
+                            .entry(sup.clone())
+                            .or_default()
+                            .insert(ty.clone(), info);
+                        already = true;
+                        let _ = already;
+                        derived_any = true;
+                    }
+                }
+            }
+            if !derived_any {
+                break;
             }
         }
+    }
+
+    /// The transitive superclass closure of `class` (including `class` itself),
+    /// in breadth-first order. Cycle-safe (a malformed declaration cannot loop).
+    ///
+    /// System FC: projecting the superclass fields of a dictionary repeatedly.
+    pub fn entailed_classes(&self, class: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut queue: Vec<String> = vec![class.to_string()];
+        while let Some(c) = queue.pop() {
+            if out.iter().any(|x| x == &c) {
+                continue;
+            }
+            out.push(c.clone());
+            if let Some(info) = self.typeclasses.get(&c) {
+                for (sup, _var) in &info.superclasses {
+                    if !out.iter().any(|x| x == sup) {
+                        queue.push(sup.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Whether `class` entails `target` (reflexive and transitive).
+    pub fn entails(&self, class: &str, target: &str) -> bool {
+        class == target || self.entailed_classes(class).iter().any(|c| c == target)
     }
 
     /// The kind arity of a class variable as used in a method signature: the
