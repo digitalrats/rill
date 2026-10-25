@@ -230,6 +230,15 @@ pub struct InstanceInfo {
     pub head_args: Vec<String>,
     /// Method bodies: method name → (parameter bindings, body).
     pub methods: HashMap<String, (Vec<String>, Expr)>,
+    /// True when this instance's method bodies are COMPILER KERNELS rather
+    /// than source equations: a primitive numeric instance (`Num Int`,
+    /// `Num Float`, `Fractional Float`), a buffer instance (element-wise
+    /// kernels), or a structurally derived `Eq`/`Ord` instance.
+    ///
+    /// Dispatch for such an instance does not look for a body — it selects the
+    /// kernel for the (class, type, method) triple. This is the System FC
+    /// analogue of a primitive dictionary.
+    pub primitive: bool,
     /// True when this instance was declared by a compiler prelude
     /// ([`PRELUDE`]) or derived
     /// from one (a superclass template, a structural `Eq`/`Ord` marker).
@@ -448,7 +457,10 @@ typeclass (Eq a) => Ord a where {
 }
 
 --  Numeric tower. `Num` carries the operators; `Fractional` adds `/`.
-typeclass Num a where {
+--  `Num` is Eq- and Ord-bounded: Haskell's numeric tower requires comparison
+--  (`Real a => Ord a`), and rill keeps one flat tower so the numeric operators
+--  and the ordering operators can never disagree about a receiver's class.
+typeclass (Eq a, Ord a) => Num a where {
     (+) : a -> a -> a;
     (-) : a -> a -> a;
     (*) : a -> a -> a;
@@ -501,20 +513,26 @@ instance (Monad m) => Arrow (Kleisli m) where {
 --  separate "signal path" and no signal/value split. `Buffer` is an ordinary
 --  type class; arithmetic over buffers comes from its instances (P3 of the
 --  typeclass layer).
---  A buffer is an ordinary value. Its arithmetic is the SAME vocabulary as
---  `Num`/`Fractional`, provided by this class's methods; a buffer instance's
+--  Primitive numeric instances. The bodies are the compiler's arithmetic
+--  kernels (there are no source equations for a primitive), so the instance
+--  declarations are markers; the kernel is selected by the class + type pair.
+instance Num Int where { }
+instance Num Float where { }
+instance Fractional Float where { }
+
+--  A buffer is an ordinary value and a NUMERIC one: `Buffer` is a subclass of
+--  `Num` (and therefore of `Eq`/`Ord`), so it uses the SAME operator vocabulary
+--  with no re-declaration and no possibility of a name collision. An instance's
 --  body emits the whole-buffer kernel. There is no buffer-specific operator.
-typeclass Buffer b where {
-    (+) : b -> b -> b;
-    (-) : b -> b -> b;
-    (*) : b -> b -> b;
-    (/) : b -> b -> b;
-    min : b -> b -> b;
-    max : b -> b -> b;
-    abs : b -> b;
-}
-instance Buffer (FixedBuffer a) where { }
+typeclass (Num b) => Buffer b where { }
 data Tape a = { };
+--  `Buffer` is a marker subclass of `Num`; the arithmetic comes from the
+--  `Num` instance. Today the prelude declares the marker instances only — the
+--  whole-buffer `Num` bodies are emitted by the compiler for these types (the
+--  instance body is the kernel call), which is why no equations appear here.
+instance Num (FixedBuffer a) where { }
+instance Num (Tape f32) where { }
+instance Buffer (FixedBuffer a) where { }
 instance Buffer (Tape f32) where { }
 
 --  Legacy Buffer-arrow combinators (`Buffer -> Buffer` as first-class
@@ -913,6 +931,8 @@ fn instance_from_template(
         constraints: vec![],
         head_args,
         methods,
+        // A template-derived instance has a real body, so it is not a primitive.
+        primitive: false,
         from_prelude,
     }
 }
@@ -1615,6 +1635,11 @@ impl TypeEnv {
                             ty: ty.clone(),
                             constraints: constraints.clone(),
                             head_args: head_args.clone(),
+                            // A body-less declaration is a MARKER: the class's
+                            // methods are compiler kernels for that type
+                            // (`instance Num Int where { }`). A declaration
+                            // with equations carries a real body.
+                            primitive: methods.is_empty(),
                             methods,
                             // A declaration registered here comes from user
                             // source; `register_prelude` flips the flag for the
@@ -1880,6 +1905,8 @@ impl TypeEnv {
                     constraints: vec![], // derived marker — no constraint list
                     head_args: vec![],   // derived marker — full application
                     methods: HashMap::new(), // derived marker — empty body
+                    // Structural comparison is a compiler kernel.
+                    primitive: true,
                     // Compiler-derived structural marker: no body to validate.
                     from_prelude: true,
                 });
@@ -1979,6 +2006,9 @@ impl TypeEnv {
             ValueTy::Float => Some("Float".to_string()),
             ValueTy::Bool => Some("Bool".to_string()),
             ValueTy::String => Some("String".to_string()),
+            // A buffer value's nominal type is `FixedBuffer`: that is the
+            // instance head that provides its `Num` dictionary.
+            ValueTy::Buffer => Some("FixedBuffer".to_string()),
             ValueTy::Data(n, _) => Some(n.clone()),
             ValueTy::Newtype(n, _) => Some(n.clone()),
             ValueTy::App(n, _) => Some(n.clone()),
@@ -2183,6 +2213,10 @@ pub(crate) fn class_var_param_pattern(
 /// strictly, so both sides of an instance-head match are normalized first.
 fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
     match v {
+        // A buffer value and the `FixedBuffer a` instance head are the SAME
+        // type to the registry: the runtime represents every buffer as
+        // `ValueTy::Buffer`, while an instance head spells the constructor.
+        ValueTy::Buffer => ValueTy::App("FixedBuffer".to_string(), vec![]),
         ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
             ValueTy::App(n.clone(), args.iter().map(normalize_ctor_app).collect())
         }

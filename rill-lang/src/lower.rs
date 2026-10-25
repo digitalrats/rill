@@ -2545,6 +2545,19 @@ impl<'a> Lowerer<'a> {
                             // expected container's leading args and discharge
                             // the constraints before inlining the body.
                             self.bind_head_args_and_discharge(&class_name, &ty_name, exp, *span)?;
+                            // A primitive (kernel-backed) instance has no
+                            // source body: dispatch it to the arithmetic /
+                            // comparison kernel for (class, type, method) pHere
+                            // instead of inlining equations.
+                            if self.is_primitive_instance(&class_name, ty_name.as_str()) {
+                                return self.lower_primitive_method(
+                                    &class_name,
+                                    name,
+                                    ty_name.as_str(),
+                                    call_args,
+                                    *span,
+                                );
+                            }
                             let (params, body) = match self.instantiate_method(
                                 &class_name,
                                 name,
@@ -2623,6 +2636,37 @@ impl<'a> Lowerer<'a> {
                         }
                         if class_info.arity == 0 {
                             if call_args.len() != n_sig_args {
+                                // A PRIMITIVE method is curried: a partial
+                                // application yields the remaining function.
+                                // Build `\ $pN -> (+) supplied… $pN`.
+                                if call_args.len() < n_sig_args {
+                                    let mut lambdas: Vec<String> = Vec::new();
+                                    for i in call_args.len()..n_sig_args {
+                                        lambdas.push(format!("$p{i}"));
+                                    }
+                                    // append the remaining params in order
+                                    let mut args = call_args.to_vec();
+                                    for l in &lambdas {
+                                        args.push(Expr::Ref(l.clone(), *span));
+                                    }
+                                    let mut expr = Expr::Apply {
+                                        name: name.to_string(),
+                                        args,
+                                        span: *span,
+                                    };
+                                    for l in lambdas.iter().rev() {
+                                        expr = Expr::Lambda {
+                                            params: vec![Param {
+                                                name: l.clone(),
+                                                span: *span,
+                                                bang: false,
+                                            }],
+                                            body: Box::new(expr),
+                                            span: *span,
+                                        };
+                                    }
+                                    return self.lower_value(&expr);
+                                }
                                 return Err(CompileError::Type {
                                     msg: format!(
                                         "method `{name}` of `{class_name}` expects {n_sig_args} argument(s), got {}",
@@ -2675,6 +2719,16 @@ impl<'a> Lowerer<'a> {
                                     span: call_args[selector_idx].span(),
                                 });
                             };
+                            // Primitive instance: dispatch to the kernel.
+                            if self.is_primitive_instance(&class_name, ty_name.as_str()) {
+                                return self.lower_primitive_method(
+                                    &class_name,
+                                    name,
+                                    ty_name.as_str(),
+                                    call_args,
+                                    *span,
+                                );
+                            }
                             let (params, body) = match self.instantiate_method(
                                 &class_name,
                                 name,
@@ -5148,6 +5202,39 @@ impl<'a> Lowerer<'a> {
         sig: &crate::ast::TypeExpr,
         span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
+        // A primitive instance used as a value has no source body: build the
+        // curried kernel call `\ a -> \ b -> kernel a b` from the class
+        // signature, so `fold (+)` receives a real function value.
+        if self.is_primitive_instance(class_name, ty_name) {
+            let a = "$prim_a".to_string();
+            let b = "$prim_b".to_string();
+            let lhs = Expr::Ref(a.clone(), span);
+            let rhs = Expr::Ref(b.clone(), span);
+            // Rebuild the operator call the kernel understands.
+            let call = Expr::Apply {
+                name: name.to_string(),
+                args: vec![lhs, rhs],
+                span,
+            };
+            let lam = Expr::Lambda {
+                params: vec![Param {
+                    name: a,
+                    span,
+                    bang: false,
+                }],
+                body: Box::new(Expr::Lambda {
+                    params: vec![Param {
+                        name: b,
+                        span,
+                        bang: false,
+                    }],
+                    body: Box::new(call),
+                    span,
+                }),
+                span,
+            };
+            return self.lower_value(&lam);
+        }
         let (body_params, body) = match self.instantiate_method(class_name, name, ty_name) {
             Some(r) => r,
             None => {
@@ -5237,6 +5324,165 @@ impl<'a> Lowerer<'a> {
         let fexp = ValueTy::Thunk(vec![zt.clone(), elem], vec![zt.clone()]);
         let (fr, ft) = self.lower_value_expected(&call_args[0], Some(&fexp))?;
         Ok((vec![fr, zr, lr], vec![ft, zt, lt]))
+    }
+
+    /// Whether `(class, ty)` is a PRIMITIVE instance: its method bodies are
+    /// compiler kernels rather than source equations (the numeric primitives,
+    /// the buffer arithmetic instances, the structural `Eq`/`Ord`).
+    fn is_primitive_instance(&self, class_name: &str, ty_name: &str) -> bool {
+        self.env
+            .instances
+            .get(class_name)
+            .and_then(|m| m.get(ty_name))
+            .map(|i| i.primitive)
+            .unwrap_or(false)
+    }
+
+    /// Lower a call to a primitive instance's method by emitting the
+    /// corresponding kernel. This is the System FC "primitive dictionary": the
+    /// instance has no equations, so the (class, type, method) triple selects
+    /// the kernel.
+    ///
+    /// Covers the operators the typeclass layer dispatches today:
+    /// `Eq`/`Ord` comparison over the structural order, `Num`/`Fractional`
+    /// scalar arithmetic, and buffer arithmetic (which the existing buffer fork
+    /// emitted before the class layer existed).
+    fn lower_primitive_method(
+        &mut self,
+        class_name: &str,
+        name: &str,
+        ty_name: &str,
+        call_args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        // Lower the arguments once; a primitive kernel consumes registers.
+        let mut arg_regs: Vec<usize> = Vec::with_capacity(call_args.len());
+        let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(call_args.len());
+        for a in call_args {
+            let (r, t) = self.lower_value(a)?;
+            arg_regs.push(r);
+            arg_tys.push(t);
+        }
+        // Comparison: `== ^= < <= > >=` over the structural total order.
+        if let Some(op) = match (class_name, name) {
+            ("Eq", "==") => Some(crate::ir::CmpOp::Eq),
+            ("Eq", "/=") => Some(crate::ir::CmpOp::Ne),
+            ("Ord", "<") => Some(crate::ir::CmpOp::Lt),
+            ("Ord", ">") => Some(crate::ir::CmpOp::Gt),
+            ("Ord", "<=") => Some(crate::ir::CmpOp::Le),
+            ("Ord", ">=") => Some(crate::ir::CmpOp::Ge),
+            _ => None,
+        } {
+            if arg_regs.len() < 2 {
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
+                    span,
+                });
+            }
+            let dst = self.fresh_value_reg();
+            self.emit_value(ValueInstr::ValueCompare {
+                dst,
+                op,
+                a: arg_regs[0],
+                b: arg_regs[1],
+            });
+            return Ok((dst, ValueTy::Bool));
+        }
+        // Scalar numeric arithmetic / negation.
+        if let Some(op) = match (class_name, name) {
+            ("Num", "+") => Some(ArithOp::Add),
+            ("Num", "-") => Some(ArithOp::Sub),
+            ("Num", "*") => Some(ArithOp::Mul),
+            ("Fractional", "/") => Some(ArithOp::Div),
+            _ => None,
+        } {
+            if arg_regs.len() < 2 {
+                return Err(CompileError::Type {
+                    msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
+                    span,
+                });
+            }
+            let ret = if matches!(arg_tys.first(), Some(ValueTy::Int))
+                && matches!(arg_tys.get(1), Some(ValueTy::Int))
+            {
+                ValueTy::Int
+            } else {
+                ValueTy::Float
+            };
+            let dst = self.fresh_value_reg();
+            self.emit_value(match op {
+                ArithOp::Add => ValueInstr::ValueAdd {
+                    dst,
+                    a: arg_regs[0],
+                    b: arg_regs[1],
+                },
+                ArithOp::Sub => ValueInstr::ValueSub {
+                    dst,
+                    a: arg_regs[0],
+                    b: arg_regs[1],
+                },
+                ArithOp::Mul => ValueInstr::ValueMul {
+                    dst,
+                    a: arg_regs[0],
+                    b: arg_regs[1],
+                },
+                ArithOp::Div => ValueInstr::ValueDiv {
+                    dst,
+                    a: arg_regs[0],
+                    b: arg_regs[1],
+                },
+                ArithOp::Rem => unreachable!("no primitive instance binds `%`"),
+            });
+            return Ok((dst, ret));
+        }
+        // Buffer arithmetic: the `Num`/`Fractional` instance for a buffer emits
+        // the whole-buffer kernel. A buffer is an ordinary value; the kernel is
+        // its dictionary entry. Scalar operands materialize as buffer constants.
+        if matches!(ty_name, "FixedBuffer" | "Tape") {
+            if let Some(op) = match (class_name, name) {
+                ("Num", "+") => Some(crate::ir::BinArith::Add),
+                ("Num", "-") => Some(crate::ir::BinArith::Sub),
+                ("Num", "*") => Some(crate::ir::BinArith::Mul),
+                ("Fractional", "/") => Some(crate::ir::BinArith::Div),
+                _ => None,
+            } {
+                if arg_regs.len() < 2 {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
+                        span,
+                    });
+                }
+                let a = self.buffer_operand(arg_regs[0], &arg_tys[0])?;
+                let b = self.buffer_operand(arg_regs[1], &arg_tys[1])?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBufferBin { dst, op, a, b });
+                return Ok((dst, ValueTy::Buffer));
+            }
+            if let Some(op) = match (class_name, name) {
+                ("Num", "abs") => Some(crate::ir::UnOp::Abs),
+                _ => None,
+            } {
+                if arg_regs.is_empty() {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 1 argument"),
+                        span,
+                    });
+                }
+                let a = self.buffer_operand(arg_regs[0], &arg_tys[0])?;
+                let dst = self.fresh_value_reg();
+                self.emit_value(ValueInstr::ValueBufferUn { dst, op, src: a });
+                return Ok((dst, ValueTy::Buffer));
+            }
+        }
+        // `min`/`max` from `Ord`'s defaults are NOT primitive: they have real
+        // default bodies and go through the ordinary method path.
+        let _ = (ty_name, call_args);
+        Err(CompileError::Type {
+            msg: format!(
+                "primitive instance `{class_name} {ty_name}` has no kernel for method `{name}`"
+            ),
+            span,
+        })
     }
 
     fn lower_operator_value(

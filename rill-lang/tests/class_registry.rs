@@ -76,18 +76,66 @@ fn num_and_fractional_form_a_tower() {
 }
 
 #[test]
-fn buffer_uses_the_same_arithmetic_vocabulary() {
+fn buffer_is_a_numeric_subclass_and_reuses_the_operators() {
+    // `Buffer` declares NO operators of its own: it is a subclass of `Num`
+    // (which is itself Eq/Ord-bounded), so it uses the same vocabulary through
+    // entailment. Re-declaring `+`/`-`/… here would make `class_of_method`
+    // ambiguous and no operator would resolve.
     let e = env_after_decls();
-    let m = methods(&e, "Buffer");
-    for expected in ["+", "-", "*", "/", "min", "max", "abs"] {
+    assert!(
+        methods(&e, "Buffer").is_empty(),
+        "Buffer must not re-declare operators; got {:?}",
+        methods(&e, "Buffer")
+    );
+    assert_eq!(
+        e.typeclasses["Buffer"].superclasses,
+        vec![("Num".to_string(), "b".to_string())],
+        "class Num b => Buffer b"
+    );
+    assert_eq!(
+        e.typeclasses["Num"].superclasses,
+        vec![
+            ("Eq".to_string(), "a".to_string()),
+            ("Ord".to_string(), "a".to_string())
+        ],
+        "Num is Eq- and Ord-bounded"
+    );
+    for op in ["+", "-", "*", "min", "max", "abs"] {
         assert!(
-            m.contains(&expected.to_string()),
-            "Buffer must reuse the shared arithmetic vocabulary (`{expected}`); got {m:?}"
+            e.entails("Buffer", "Num") || e.entails("Buffer", "Ord"),
+            "a Buffer satisfies the numeric/ordering tower that declares `{op}`"
         );
     }
     let insts = e.instances.get("Buffer").expect("Buffer has instances");
     assert!(insts.contains_key("FixedBuffer"), "FixedBuffer is a Buffer");
     assert!(insts.contains_key("Tape"), "Tape is a Buffer");
+}
+
+#[test]
+fn every_operator_resolves_to_exactly_one_class() {
+    // The reason `Buffer` must not re-declare the operators: `class_of_method`
+    // reports `None` on a name declared by two classes, which silently made
+    // every operator unresolvable.
+    let e = env_after_decls();
+    for (method, expected) in [
+        ("+", "Num"),
+        ("-", "Num"),
+        ("*", "Num"),
+        ("/", "Fractional"),
+        ("abs", "Num"),
+        ("min", "Ord"),
+        ("max", "Ord"),
+        ("==", "Eq"),
+        ("/=", "Eq"),
+        ("<", "Ord"),
+        ("compare", "Ord"),
+    ] {
+        assert_eq!(
+            e.class_of_method(method).as_deref(),
+            Some(expected),
+            "`{method}` must resolve to exactly one class"
+        );
+    }
 }
 
 #[test]

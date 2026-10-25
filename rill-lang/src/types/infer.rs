@@ -3891,6 +3891,34 @@ fn infer_ref_expected(
                         span,
                     });
                 };
+                // Primitive instance: kernel-backed, no source body.
+                if ctx
+                    .env
+                    .instances
+                    .get(class_name.as_str())
+                    .and_then(|m| m.get(ty_name.as_str()))
+                    .map(|i| i.primitive)
+                    .unwrap_or(false)
+                {
+                    // A bare reference: there are no call-site arguments to
+                    // unify against, so the method keeps its signature (the
+                    // class variable is already solved by `cv_subst`).
+                    let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
+                    let mut fresh_ids: Vec<ValueTy> = Vec::new();
+                    for _ in 0..8 {
+                        fresh_ids.push(ctx.fresh_vty());
+                    }
+                    let mut it = fresh_ids.into_iter();
+                    let (_, ret) = signature_param_and_result_tys_conv(
+                        &ctx.env,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || it.next().unwrap_or(ValueTy::Float),
+                    );
+                    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
                     None => {
@@ -3939,6 +3967,31 @@ fn infer_ref_expected(
             // `Monoid String`.
             if let (Some(sig), Some(exp)) = (sig.as_ref(), expected.as_ref()) {
                 if let Some((ty_name, cand_ty)) = method_value_dispatch_env(&ctx.env, exp) {
+                    // Primitive instance used as a value: kernel-backed.
+                    if ctx
+                        .env
+                        .instances
+                        .get(class_name.as_str())
+                        .and_then(|m| m.get(ty_name.as_str()))
+                        .map(|i| i.primitive)
+                        .unwrap_or(false)
+                    {
+                        let cv_subst0 = ClassVarSubst::Ty(cand_ty.clone());
+                        let mut fresh_ids: Vec<ValueTy> = Vec::new();
+                        for _ in 0..8 {
+                            fresh_ids.push(ctx.fresh_vty());
+                        }
+                        let mut it = fresh_ids.into_iter();
+                        let (param_tys, ret) = signature_param_and_result_tys_conv(
+                            &ctx.env,
+                            &class_var,
+                            &cv_subst0,
+                            sig,
+                            || it.next().unwrap_or(ValueTy::Float),
+                        );
+                        let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+                        return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                    }
                     let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                         Some(r) => r,
                         None => {
@@ -4114,6 +4167,38 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
     // method), so this only fires when no def/local of that name exists.
     if !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
         if let Some(class_name) = ctx.env.class_of_method(name) {
+            // A PRIMITIVE method is an ordinary curried value
+            // (`(+) :: Num a => a -> a -> a`): a bare `(+)` or a partial
+            // `(+) 1.0` is legal Haskell 2010 (§4.3.3). Only a method whose
+            // instance needs a body to select still requires an argument.
+            let sig = ctx.env.typeclasses.get(&class_name).and_then(|c| {
+                c.methods
+                    .iter()
+                    .find(|(m, _)| m == name)
+                    .map(|(_, s)| s.clone())
+            });
+            if let Some(sig) = sig {
+                let class_var = ctx
+                    .env
+                    .typeclasses
+                    .get(&class_name)
+                    .map(|c| c.var.clone())
+                    .unwrap_or_default();
+                let mut fresh_ids: Vec<ValueTy> = Vec::new();
+                for _ in 0..8 {
+                    fresh_ids.push(ctx.fresh_vty());
+                }
+                let mut it = fresh_ids.into_iter();
+                let (param_tys, ret) = signature_param_and_result_tys_conv(
+                    &ctx.env,
+                    &class_var,
+                    &ClassVarSubst::Var(u32::MAX),
+                    &sig,
+                    || it.next().unwrap_or(ValueTy::Float),
+                );
+                let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+                return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+            }
             return Err(CompileError::Type {
                 msg: format!("method `{name}` of `{class_name}` requires an argument"),
                 span,
@@ -4247,10 +4332,18 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
             // through the caller's locals FIRST — `ST s (List Buffer)` in a
             // builtin signature refers to the enclosing region's `s`, not a
             // global type. Falls back to the env for ordinary type names.
-            match ctx.locals.get(n) {
-                Some(t) if matches!(t.vty, ValueTy::TyConVar(_)) => Ok(t.vty.clone()),
-                _ => Ok(ctx.env.vty_of_name(n)),
+            if let Some(t) = ctx.locals.get(n) {
+                if matches!(t.vty, ValueTy::TyConVar(_)) {
+                    return Ok(t.vty.clone());
+                }
             }
+            // A NAME that is not a declared type is a TYPE VARIABLE, not a
+            // nominal `Data` type: `(+) : a -> a -> a` mentions `a` as the
+            // class variable, and turning it into `Data("a")` makes it
+            // un-unifiable with every concrete type. A fresh unification
+            // variable per name is the correct reading (`vty_of_name` is only
+            // for declared types).
+            Ok(ctx.env.vty_of_name(n))
         }
         crate::ast::TypeExpr::TApp(head, args) => {
             let mut targs = Vec::with_capacity(args.len());
@@ -5524,6 +5617,51 @@ fn infer_apply_impl(
                 // container's leading args (`Kleisli Maybe Float Float` + head
                 // `Kleisli m` → `m := Maybe`) and discharge the constraints.
                 bind_constraint_instance(ctx, &class_name, &ty_name, &exp, span)?;
+                // A PRIMITIVE instance (a compiler kernel: `Num Int`,
+                // `Num Float`, a buffer arithmetic instance, a structural
+                // Eq/Ord) has no source body. Its dictionary entry is the
+                // kernel, selected by (class, type, method) at lowering, so
+                // inference only needs the method's SIGNATURE, which the class
+                // already declares.
+                let is_primitive = ctx
+                    .env
+                    .instances
+                    .get(class_name.as_str())
+                    .and_then(|m| m.get(ty_name.as_str()))
+                    .map(|i| i.primitive)
+                    .unwrap_or(false);
+                if is_primitive {
+                    // A kernel-backed method: its type IS the class signature
+                    // with the class variable solved to the dispatch type. The
+                    // arguments are unified against the parameter types so a
+                    // call like `(+) 1.0 2.0` solves `a := Float`.
+                    let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
+                    for (i, a) in args.iter().enumerate() {
+                        if let Some(pt) = param_tys.get(i) {
+                            let at = infer_method_value_vty_expected(
+                                ctx,
+                                a,
+                                "argument",
+                                Some(pt.clone()),
+                            )?;
+                            unify_value(pt, &at, &mut ctx.subst, a.span())?;
+                        }
+                    }
+                    let mut fresh_ids: Vec<ValueTy> = Vec::new();
+                    for _ in 0..8 {
+                        fresh_ids.push(ctx.fresh_vty());
+                    }
+                    let mut it = fresh_ids.into_iter();
+                    let (_, ret) = signature_param_and_result_tys_conv(
+                        &ctx.env,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || it.next().unwrap_or(ValueTy::Float),
+                    );
+                    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
                     None => match ctx.env.class_default(&class_name, name) {
@@ -5582,6 +5720,55 @@ fn infer_apply_impl(
                 return Ok(ArrowTy::value_channel(body_vty));
             }
             if class_info.arity == 0 {
+                // A PRIMITIVE method is curried like any function: fewer
+                // arguments than the signature declares is PARTIAL APPLICATION
+                // and yields the remaining function (Haskell 2010 §4.3.3), not
+                // an error. The arity check applies only to methods whose
+                // instance body must be inlined.
+                let primitive = expected
+                    .as_ref()
+                    .and_then(|exp| method_value_dispatch_env(&ctx.env, exp))
+                    .map(|(ty, _)| {
+                        ctx.env
+                            .instances
+                            .get(class_name.as_str())
+                            .and_then(|m| m.get(ty.as_str()))
+                            .map(|i| i.primitive)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if args.len() < n_sig_args {
+                    // Partial application: type the supplied arguments against
+                    // the leading parameters and return the curried remainder.
+                    let class_var = class_info.var.clone();
+                    let mut fresh_ids: Vec<ValueTy> = Vec::new();
+                    for _ in 0..8 {
+                        fresh_ids.push(ctx.fresh_vty());
+                    }
+                    let mut it = fresh_ids.into_iter();
+                    let (param_tys, ret) = signature_param_and_result_tys_conv(
+                        &ctx.env,
+                        &class_var,
+                        &ClassVarSubst::Var(u32::MAX),
+                        sig,
+                        || it.next().unwrap_or(ValueTy::Float),
+                    );
+                    for (i, a) in args.iter().enumerate() {
+                        if let Some(pt) = param_tys.get(i) {
+                            let at = infer_method_value_vty_expected(
+                                ctx,
+                                a,
+                                "argument",
+                                Some(pt.clone()),
+                            )?;
+                            unify_value(pt, &at, &mut ctx.subst, a.span())?;
+                        }
+                    }
+                    let ret_ty = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    let rest: Vec<ValueTy> = param_tys[args.len().min(param_tys.len())..].to_vec();
+                    return Ok(ArrowTy::value(nest_thunk(&rest, vec![ret_ty])));
+                }
+                let _ = primitive;
                 if args.len() != n_sig_args {
                     return Err(CompileError::Type {
                         msg: format!(
@@ -5627,6 +5814,44 @@ fn infer_apply_impl(
                         span: args[selector_idx].span(),
                     });
                 };
+                // Primitive instances (compiler kernels) have no source body:
+                // the dictionary entry is the kernel, selected at lowering, so
+                // inference needs only the method signature.
+                let is_primitive = ctx
+                    .env
+                    .instances
+                    .get(class_name.as_str())
+                    .and_then(|m| m.get(ty_name.as_str()))
+                    .map(|i| i.primitive)
+                    .unwrap_or(false);
+                if is_primitive {
+                    let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
+                    for (i, a) in args.iter().enumerate() {
+                        if let Some(pt) = param_tys.get(i) {
+                            let at = infer_method_value_vty_expected(
+                                ctx,
+                                a,
+                                "argument",
+                                Some(pt.clone()),
+                            )?;
+                            unify_value(pt, &at, &mut ctx.subst, a.span())?;
+                        }
+                    }
+                    let mut fresh_ids: Vec<ValueTy> = Vec::new();
+                    for _ in 0..8 {
+                        fresh_ids.push(ctx.fresh_vty());
+                    }
+                    let mut it = fresh_ids.into_iter();
+                    let (_, ret) = signature_param_and_result_tys_conv(
+                        &ctx.env,
+                        &class_var,
+                        &cv_subst,
+                        sig,
+                        || it.next().unwrap_or(ValueTy::Float),
+                    );
+                    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+                    return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
                     None => match ctx.env.class_default(&class_name, name) {

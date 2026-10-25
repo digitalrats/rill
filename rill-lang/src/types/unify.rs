@@ -150,6 +150,14 @@ pub fn unify_value(
         (ValueTy::Bool, ValueTy::Bool) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
         (ValueTy::Buffer, ValueTy::Buffer) => Ok(()),
+        // A buffer value and its nominal constructor are the same type: the
+        // runtime represents every buffer as `ValueTy::Buffer`, while an
+        // instance head spells `FixedBuffer`.
+        (ValueTy::Buffer, ValueTy::App(n, args)) | (ValueTy::App(n, args), ValueTy::Buffer)
+            if n == "FixedBuffer" && args.is_empty() =>
+        {
+            Ok(())
+        }
         (ValueTy::Void, ValueTy::Void) => Ok(()),
         (ValueTy::Data(x, ax), ValueTy::Data(y, ay))
         | (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay))
