@@ -303,6 +303,39 @@ Rules of thumb:
 - Both are **models to reason from**, not features to implement: do not add
   coercions or an STG machine to rill unless a task explicitly calls for it.
 
+### System FC is mandatory for operator desugaring
+
+While the typeclass layer is being built, the System FC shape is **not optional**
+and admits no local exceptions:
+
+- **Every** infix operator is sugar over a class method. `a + b` **is**
+  `(+) a b`; `a == b` **is** `(==) a b`. There is no operator node in the core and
+  no operator-specific lowering arm.
+- The **only** place sugar is eliminated is the desugaring pass. Nothing else—
+  not the parser's Pratt loop, not inference, not lowering—may special-case an
+  operator.
+- The class variable is a **dictionary argument** solved at the call site. The
+  primitive kernels (`ValueAdd`, `ValueCompare`, …) are *instance method bodies*,
+  never operator semantics.
+- If a change seems to need an operator to behave differently from "a method call
+  on the receiver's type", the change is wrong: express it as an **instance** or a
+  **superclass default**, not as an exception.
+
+### `Buffer` uses the same classes as every other type
+
+A buffer is an ordinary value. It participates in `Eq`, `Ord`, `Num`,
+`Fractional`, `Show`, `Semigroup` — the **same** classes, through **instances**,
+exactly like `Int` or `Float`. Do not introduce a buffer-specific class, a
+buffer-specific operator, a buffer branch in operator lowering, or a marker that
+routes buffers around the class system.
+
+- Buffer arithmetic is the `Num`/`Fractional` **instance** for the buffer type;
+  its body emits the whole-buffer kernel.
+- A buffer has no separate "path", "track", or lowering mode (see "There is no
+  signal path").
+- If a buffer cannot satisfy a class today, the answer is to implement the missing
+  instance (or the missing class), never to add a special case.
+
 ## Terminology: «audio» vs «signal» vs «I/O»
 
 Rill is a **universal signal processing platform**, not exclusively audio. The term «audio» must only appear where hardware emitting or consuming sound is genuinely involved.
