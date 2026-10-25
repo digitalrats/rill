@@ -673,6 +673,11 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
                 .collect::<Result<Vec<_>, CompileError>>()?,
             span,
         ),
+        Expr::Annot { expr, ty, span } => Expr::Annot {
+            expr: Box::new(desugar_expr(*expr)?),
+            ty,
+            span,
+        },
         Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
             op,
             lhs: Box::new(desugar_expr(*lhs)?),

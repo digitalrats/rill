@@ -413,6 +413,36 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             render_expr(inner, buf, 15)?;
             Ok(())
         }
+        Expr::Annot { expr, ty, .. } => {
+            // `e :: t` (Haskell 2010 §3.12). Two parenthesization concerns:
+            //
+            // 1. The annotated side of `exp :: type` must be an `infixexp`, so
+            //    a full-`exp` form (a lambda, `let`, `if`, `case`, or another
+            //    annotation) needs parentheses or the annotation would bind
+            //    into that form's body instead (`\x -> x :: Int` is
+            //    `\x -> (x :: Int)`).
+            // 2. The annotation itself lives at `exp` level, looser than every
+            //    operator, so an operator context must parenthesize it — an
+            //    unparenthesized `x + y :: Int` re-parses as `(x + y) :: Int`.
+            let inner_parens = annot_operand_needs_parens(expr);
+            let outer_parens = outer_bp > 0;
+            if outer_parens {
+                write!(buf, "(").ok();
+            }
+            if inner_parens {
+                write!(buf, "(").ok();
+            }
+            render_expr(expr, buf, 0)?;
+            if inner_parens {
+                write!(buf, ")").ok();
+            }
+            write!(buf, " :: ").ok();
+            render_type_expr(ty, buf);
+            if outer_parens {
+                write!(buf, ")").ok();
+            }
+            Ok(())
+        }
         Expr::Arith { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, arith_info(op)),
         Expr::Let { defs, body, .. } => {
             write!(buf, "let ").ok();
@@ -596,6 +626,25 @@ fn logic_info(op: &LogicOp) -> (u8, u8, u8, &'static str) {
         LogicOp::And => (1, 1, 2, "&&"),
         LogicOp::Or => (1, 1, 2, "||"),
     }
+}
+
+/// Whether the expression on the LEFT of `::` needs parentheses to stay a
+/// single `infixexp` (Haskell 2010 §3.12: `exp → infixexp :: [context =>] type`).
+///
+/// A lambda, `let`, `if`, `case`, or nested annotation is a full `exp`, not an
+/// `infixexp`; rendered bare it would swallow the annotation into its own body
+/// or tail (`\x -> x :: Int` annotates the lambda's BODY, not the lambda).
+/// Every other form — literals, references, applications, operators — is an
+/// `infixexp` already.
+fn annot_operand_needs_parens(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Lambda { .. }
+            | Expr::Let { .. }
+            | Expr::If { .. }
+            | Expr::Match { .. }
+            | Expr::Annot { .. }
+    )
 }
 
 fn render_pattern(p: &Pattern, buf: &mut String) {

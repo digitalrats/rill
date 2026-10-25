@@ -564,6 +564,7 @@ fn collect_static_calls(
         }
         Expr::Bool(_, _) => {}
         Expr::Void(_) => {}
+        Expr::Annot { expr, .. } => collect_static_calls(expr, src, bound, nodes, out),
         Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
             collect_static_calls(lhs, src, bound, nodes, out);
             collect_static_calls(rhs, src, bound, nodes, out);
@@ -3160,6 +3161,29 @@ fn check_exhaustive_sum(
 }
 
 /// Infer the diagram type of an expression, synthesizing concrete arities.
+/// Convert an EXPRESSION annotation type (`e :: T`, Haskell 2010 §3.12) into a
+/// value type.
+///
+/// The conversion is exactly the one a definition signature gets
+/// ([`def_sig_tys_conv`]): a declared type name resolves through the env, a
+/// lowercase name is a fresh type VARIABLE shared by every occurrence of that
+/// name in the annotation. Sharing the conversion is what makes `(e :: T)`
+/// and `f :: T; f = e` equivalent, which is Haskell 2010's rule.
+///
+/// [`type_expr_to_vty`] is deliberately NOT used here: it maps an undeclared
+/// name to a nominal `Data`, which is right for a builtin signature's concrete
+/// types but wrong for an annotation — `e :: a` mentions a type variable, not
+/// a type `a`.
+fn annot_type_vty(ctx: &mut Ctx, te: &crate::ast::TypeExpr) -> ValueTy {
+    let env = ctx.env.clone();
+    let mut vars: HashMap<String, ValueTy> = HashMap::new();
+    // No class variable is special in an expression annotation: a context's
+    // variables are ordinary type variables until a call site solves them.
+    let subst = ClassVarSubst::Ctor(String::new());
+    let mut fresh = || ctx.fresh_vty();
+    conv(&env, "", &subst, &mut vars, &mut fresh, te)
+}
+
 fn infer_expr(ctx: &mut Ctx, e: &Expr) -> Result<ArrowTy, CompileError> {
     infer_expr_expected(ctx, e, None)
 }
@@ -3191,6 +3215,18 @@ fn infer_expr_expected(
             let t = infer_expr(ctx, inner)?;
             check_all_numeric(ctx, &t, *span)?;
             Ok(t)
+        }
+        Expr::Annot { expr, ty, span } => {
+            // `e :: T` (Haskell 2010 §3.12). The annotation pins the inner
+            // expression's type and the whole node takes the declared type:
+            // that is what makes `(1 :: Int) + 1.0` a `Fractional Int`-style
+            // mismatch instead of silently retyping the literal. The type is
+            // a compile-time construct — nothing about it survives to
+            // lowering.
+            let ann = annot_type_vty(ctx, ty);
+            let inner = infer_expr_expected(ctx, expr, Some(ann.clone()))?;
+            unify_value(&inner.vty, &ann, &mut ctx.subst, *span)?;
+            Ok(ArrowTy::value(ctx.subst.resolve_value(&ann)))
         }
         Expr::Apply { name, args, span } => infer_apply_expected(ctx, name, args, *span, expected),
         Expr::ApplyExpr { callee, args, span } => {

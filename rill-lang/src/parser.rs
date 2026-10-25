@@ -1832,6 +1832,44 @@ impl<'a> Parser<'a> {
             }
             lhs = desugar_infix_op(op, lhs, rhs);
         }
+        // `e :: T` — an expression type annotation (Haskell 2010 §3.12:
+        // `exp → infixexp :: [context =>] type`). The annotated side is an
+        // `infixexp`, so the annotation binds looser than every operator and
+        // looser than juxtaposed application: `f x :: T` is `(f x) :: T` and
+        // `a + b :: T` is `(a + b) :: T`. Only an `exp`-level call (min_bp 0)
+        // may absorb it; a right operand of an operator (`parse_expr(r_bp)`
+        // with r_bp > 0) must stop before it so the annotation applies to the
+        // whole infix expression.
+        //
+        // GHC evidence for the level (checked against ghc 9.10): `1.0 + 2 ::
+        // Int` reports `No instance for ‘Fractional Int’` on the literal
+        // `1.0` — i.e. it read `(1.0 + 2) :: Int`, not `1.0 + (2 :: Int)`.
+        //
+        // The layout guard below (`type_layout_col`) makes the type end at the
+        // next declaration, so an annotation that continues onto the following
+        // line (`f x = x` / `  :: Int`) does not swallow the next binding.
+        if min_bp == 0 && self.peek().tok == Tok::DoubleColon {
+            self.bump();
+            let start = lhs.span().start;
+            // A signature ends where the next declaration begins (Haskell
+            // layout): the annotation is parsed under the same offside guard
+            // the definition-signature parser uses, so a following `name = …`
+            // line is not absorbed as a juxtaposed type application.
+            let saved_col = self.type_layout_col;
+            self.type_layout_col = Some(self.cur_col());
+            let parsed = self.parse_sig_type();
+            self.type_layout_col = saved_col;
+            let ty = parsed?;
+            let span = Span::new(start, self.span_from(start).end);
+            // Nothing may follow the annotation in this expression: in Haskell
+            // 2010 the `exp :: type` production is complete once the type is
+            // read, so `1 :: Int + 2` is a parse error (not `(1 :: Int) + 2`).
+            return Ok(Expr::Annot {
+                expr: Box::new(lhs),
+                ty,
+                span,
+            });
+        }
         Ok(lhs)
     }
 
@@ -2488,6 +2526,7 @@ fn curry_expr(e: &mut Expr) {
             }
         }
         Expr::Neg(inner, _) => curry_expr(inner),
+        Expr::Annot { expr, .. } => curry_expr(expr),
         Expr::Arith { lhs, rhs, .. } => {
             curry_expr(lhs);
             curry_expr(rhs);

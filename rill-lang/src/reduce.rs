@@ -53,6 +53,15 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
             }
         }
         Expr::Neg(inner, span) => Expr::Neg(Box::new(substitute(inner, subst)), *span),
+        // Substitution descends through an annotation: the type is erased at
+        // lowering, so only the inner expression can contain a binder being
+        // replaced. The node itself stays, because inference has not run yet at
+        // the point a `let`/`where` binding is inlined.
+        Expr::Annot { expr, ty, span } => Expr::Annot {
+            expr: Box::new(substitute(expr, subst)),
+            ty: ty.clone(),
+            span: *span,
+        },
         Expr::Apply { name, args, span } => {
             let reduced_args: Vec<Expr> = args.iter().map(|a| substitute(a, subst)).collect();
             Expr::Apply {
@@ -621,6 +630,15 @@ fn reduce_expr(
             Box::new(reduce_expr(inner, ctx, cafs, reducing, mode)),
             *span,
         ),
+        // An annotation is transparent to β-reduction: the node stays (it is
+        // still needed by inference, which runs after this pass) but the inner
+        // expression must be reduced exactly as if the annotation were absent,
+        // so a call under `:: T` inlines like any other.
+        Expr::Annot { expr, ty, span } => Expr::Annot {
+            expr: Box::new(reduce_expr(expr, ctx, cafs, reducing, mode)),
+            ty: ty.clone(),
+            span: *span,
+        },
         Expr::Lambda { params, body, span } => {
             // A lambda rebinds its parameters inside the body: drop them from
             // the reduction context so an outer definition of the same spelling
@@ -822,6 +840,7 @@ mod tests {
                 contains_name(callee.as_ref(), name) || args.iter().any(|a| contains_name(a, name))
             }
             Expr::Neg(i, _) => contains_name(i.as_ref(), name),
+            Expr::Annot { expr, .. } => contains_name(expr.as_ref(), name),
             Expr::Let { defs, body, .. } => {
                 defs.iter().any(|d| contains_name(d.body(), name))
                     || contains_name(body.as_ref(), name)

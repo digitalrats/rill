@@ -287,6 +287,21 @@ pub enum Expr {
         /// Span.
         span: Span,
     },
+    /// Expression type annotation `expr :: TypeExpr` (Haskell 2010 §3.12).
+    ///
+    /// A type-level construct: inference pins the inner expression's type to
+    /// the annotation, and lowering erases the node (the inner expression
+    /// lowers unchanged). Desugaring keeps it, because inference runs after
+    /// desugar — erasing it there would discard the only record of the
+    /// annotation before anything reads it.
+    Annot {
+        /// The annotated expression.
+        expr: Box<Expr>,
+        /// The declared type.
+        ty: TypeExpr,
+        /// Full span, from the expression through the type.
+        span: Span,
+    },
     /// Boolean literal `true` / `false`.
     Bool(bool, Span),
     /// List literal `[e1, e2]`.
@@ -338,6 +353,7 @@ impl Expr {
             | Expr::Match { span, .. }
             | Expr::If { span, .. }
             | Expr::Lambda { span, .. }
+            | Expr::Annot { span, .. }
             | Expr::Bool(_, span)
             | Expr::ListLit(_, span)
             | Expr::MapLit(_, span)

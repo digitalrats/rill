@@ -1163,6 +1163,22 @@ impl<'a> Lowerer<'a> {
                 let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
             }
+            // An annotation around an already-lazy form is equally lazy: the
+            // type is erased, so `\x -> x :: T` and `x :: T` must take the same
+            // no-thunk path as their inner expression, not spawn a fragment
+            // that suspends a value.
+            Expr::Annot { expr, .. } => match expr.as_ref() {
+                Expr::Ref(..)
+                | Expr::Lambda { .. }
+                | Expr::Float(_, _)
+                | Expr::Int(_, _)
+                | Expr::Bool(_, _)
+                | Expr::Str(_, _) => {
+                    let (r, _) = self.lower_value_expected(e, expected)?;
+                    return Ok(r);
+                }
+                _ => {}
+            },
             _ => {}
         }
         let free = self.free_vars(e, &HashSet::new());
@@ -1275,6 +1291,15 @@ impl<'a> Lowerer<'a> {
                 Ok((dst, ValueTy::Float))
             }
             Expr::Ref(name, span) => self.lower_value_ref_expected(name, *span, expected),
+            // `e :: T` erases: lowering the inner expression with the same
+            // expected type AND returning its own type means the annotation
+            // contributes no instruction and no register — it is not a runtime
+            // no-op node either, just absent from the IR. Returning the INNER
+            // type (not the annotation's) keeps every downstream static check
+            // reading the value the way it actually lowers: an `Int` literal
+            // stays `ValueTy::Int` in an `Ix` offset position even when it is
+            // annotated `:: Int`.
+            Expr::Annot { expr, .. } => self.lower_value_expected(expr, expected),
             Expr::FieldProject {
                 record,
                 field,
@@ -6005,6 +6030,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
             Expr::Int(_, _) | Expr::Float(_, _) | Expr::Void(_) | Expr::Str(_, _) => {}
+            // An annotation is transparent to free-variable analysis: the type
+            // it names is compile-time only, so only the inner expression can
+            // contribute a capture.
+            Expr::Annot { expr, .. } => self.free_vars_impl(expr, bound, out, seen),
             Expr::Neg(inner, _) => self.free_vars_impl(inner, bound, out, seen),
             Expr::Apply { name, args, .. } => {
                 self.note_callee_name(name, bound, out, seen);
@@ -8090,6 +8119,13 @@ impl<'a> Lowerer<'a> {
                     })
                 }
             }
+            // `e :: T` erases at lowering (Haskell 2010 §3.12): the type is a
+            // compile-time construct with no runtime presence, so the inner
+            // expression is lowered in exactly the position the annotation
+            // occupied. Passing the position's `args` through is what keeps a
+            // top-level signal body (`main = sine 440.0 :: Buffer`) lowering
+            // identically to its un-annotated spelling.
+            Expr::Annot { expr, .. } => self.lower(expr, args),
             Expr::FieldUpdate { span, .. } => Err(CompileError::Type {
                 msg: "field update is a value expression; it cannot be used in a signal position"
                     .into(),
@@ -8571,6 +8607,11 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
             span: *span,
         },
         Expr::Neg(inner, span) => Expr::Neg(Box::new(rename_bound(inner, renames)), *span),
+        Expr::Annot { expr, ty, span } => Expr::Annot {
+            expr: Box::new(rename_bound(expr, renames)),
+            ty: ty.clone(),
+            span: *span,
+        },
         Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
             op: *op,
             lhs: Box::new(rename_bound(lhs, renames)),
@@ -8776,6 +8817,7 @@ pub(crate) fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
             }
         }
         Expr::Neg(inner, _) => collect_def_ref_names(inner, out),
+        Expr::Annot { expr, .. } => collect_def_ref_names(expr, out),
         Expr::Arith { lhs, rhs, .. } => {
             collect_def_ref_names(lhs, out);
             collect_def_ref_names(rhs, out);
