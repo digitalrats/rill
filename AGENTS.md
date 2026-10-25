@@ -221,6 +221,13 @@ correctness requirement, not an aspiration.
   tracked gap list with the exact reproduction and an owner, and treat the gap
   as **open work with a deadline** — never as settled behaviour. "Pre-existing"
   is not a status; it only says the defect is older than the current branch.
+- **A missing construct needed to implement the task is part of the task.** If a
+  feature cannot be built correctly because Haskell 2010 provides a construct
+  rill lacks (a Prelude function, a syntax form, a type, a class), implement the
+  missing construct — do not work around it, stub it, or narrow the feature. The
+  workaround is the defect. If implementing it is genuinely too large for one
+  change, split it into its own task and block the original on it; never ship the
+  narrowed version silently.
 - **A failing baseline test does not license a new failure.** `--all-targets`
   currently fails on `lang_bench` (it does not compile against the current API).
   That is an open defect in its own right, not permission to leave any other
