@@ -4,7 +4,7 @@
 
 **Goal:** Express every binary operator as sugar over a class method and fill the Haskell 2010 class layer (`Eq`, `Ord`, `Show`, `Num`, `Fractional`, `Integral`, `RealFrac`, `Floating`, `Enum`, `Bounded`, `Semigroup`) so comparison, arithmetic, rendering and enumeration dispatch through instances — including the `Buffer` class for element-wise buffer math.
 
-**Architecture:** Five phases, each independently shippable and green. P0 makes the operator desugaring path exist without changing behaviour (operators keep their current opcodes, reached through primitive instances). P1 lands `Eq`/`Ord` and retires the comparison fork. P2 adds `Show`. P3 moves arithmetic to `Num`/`Fractional` and adds the `Buffer` arithmetic methods, deleting the scalar-vs-buffer fork. P4 adds `Integral`/`RealFrac`/`Enum`/`Bounded`. P5 adds `Semigroup`/`Foldable` and the `Ord`-based Prelude functions.
+**Architecture:** Six phases, each independently shippable and green. **P-1 makes numeric literals polymorphic and adds class-constraint solving plus numeric defaulting** — without it, operators cannot be class methods at all, because `infer_arith` pins every type variable to `Float`. P0 deletes the operator constructs and routes them through class dispatch. P1 lands `Eq`/`Ord` (comparison, `min`/`max`, `sort`). P2 adds `Show`. P3 moves arithmetic to `Num`/`Fractional` and adds the `Buffer` arithmetic methods, deleting the scalar-vs-buffer fork. P4 adds `Integral`/`RealFrac`/`Enum`/`Bounded`. P5 adds `Semigroup`/`Foldable` and the `Ord`-based Prelude functions.
 
 **Tech Stack:** Rust, `rill-lang`; tests via `cargo test -p rill-lang --features dsp`.
 
@@ -44,6 +44,71 @@
 | `rill-lang/src/backend/interp.rs` | Primitive kernels (unchanged, reached through instances) |
 | `rill-lang/tests/typeclass_layer.rs` | New: per-phase behavioural tests |
 | `rill-lang/tests/conformance_gaps.rs` | Existing: extend where a gap closes |
+
+---
+
+### Task P-1 (P₋₁): Polymorphic numeric literals, class-constraint solving, and defaulting
+
+> **Why this comes first:** P0 routes operators through class methods. That is
+> impossible while a literal is a fixed `Int`/`Float` value and `infer_arith`
+> pins every type variable to `Float`. Measured GHC behaviour (design §3.1c) is
+> a four-step chain: solve the class variable from the non-literal operands →
+> literals adopt the solved type (literal polymorphism, *not* a cast) →
+> dispatch the instance → numeric defaulting only if nothing solved it.
+
+**Files:**
+- Modify: `rill-lang/src/ast.rs` (a numeric literal must be able to carry an unresolved numeric type, or record that it is a literal)
+- Modify: `rill-lang/src/types/infer.rs` (`infer_arith`'s forced `Float` pin; literal typing; defaulting at the end of inference)
+- Modify: `rill-lang/src/lower.rs` (a literal lowered after solving uses the solved representation)
+- Test: `rill-lang/tests/numeric_literals.rs` (new)
+
+**Interfaces:**
+- Consumes: `infer_constrained_apply` (already solves class variables and discharges constraints for `Ix`-constrained definitions).
+- Produces: literal typing `Num a => a`; an end-of-inference numeric defaulting pass; no forced `Float` in operator typing.
+
+- [ ] **Step 1: Write the failing tests** (GHC values verified with `runghc` 9.10.3)
+
+```rust
+#[test] fn mixed_literals_adopt_the_solved_type() { /* 1 + 1.0 == 2.0; 1.0 + 1 == 2.0 */ }
+#[test] fn mixed_literal_comparison_is_true()     { /* 1 == 1.0 is True (today: False) */ }
+#[test] fn numeric_function_is_polymorphic()      { /* add 1 2 == 3 (Int); add 1.0 2.0 == 3.0 */ }
+#[test] fn bound_int_cannot_take_a_float_literal(){ /* (1::Int) + 1.0 is a type error: Fractional Int */ }
+#[test] fn num_only_defaults_to_integer()         { /* 1 + 2 is Int (show_int works) */ }
+#[test] fn fractional_defaults_to_double()        { /* 1 / 2 == 0.5 */ }
+```
+
+- [ ] **Step 2: Make numeric literals polymorphic**
+
+An `Int`/`Float` literal must infer as a numeric literal with a fresh type
+variable, not as a concrete `Int`/`Float`. That is what lets `1 + 1.0` work and
+what makes `(1::Int) + 1.0` correctly fail. If `ValueTy` has no way to express
+"numeric literal", add the representation (a literal flag on the value type or a
+distinct variant) — that is part of this task.
+
+- [ ] **Step 3: Solve constraints, do not pin**
+
+Replace `infer_arith`'s forced `Float` binding with constrained-scheme
+resolution through `infer_constrained_apply`. When an operand is already a
+concrete type (`(1::Int)`), a conflicting literal must be a **type error**, never
+a cast.
+
+- [ ] **Step 4: Numeric defaulting at the end of inference**
+
+If a numeric variable is still unsolved when inference finishes, default it:
+`Integer` for `Num`-only, `Double` when `Fractional` is involved. Haskell 2010
+defaults are the reference.
+
+- [ ] **Step 5: Checkpoint (once, after Steps 2–4)**
+
+Run the gates and confirm the six tests above. Expected changes from today, all
+correct: `1 == 1.0` becomes `True`; `add 1 2` becomes `3`; `(1::Int) + 1.0`
+becomes a type error.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git commit -m 'feat(lang): polymorphic numeric literals with class solving and defaulting'
+```
 
 ---
 
