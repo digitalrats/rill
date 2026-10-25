@@ -237,6 +237,28 @@ correctness requirement, not an aspiration.
   functions. When the two disagree, follow the Report for syntax/semantics and
   the Prelude for library surface.
 
+### Reference models when reasoning is unclear
+
+When the right shape of a change is not obvious, reason from the matching level
+of the GHC pipeline rather than inventing a local design:
+
+| Level | Model | Use it for |
+|---|---|---|
+| **Front-end / types** | **System FC** | desugaring (guards, comprehensions, operator sections, pattern equations), typeclass dictionaries and superclass constraints, coercion/role questions, "where does this sugar go and what core node does it become" |
+| **Runtime / evaluation** | **STG** | thunks and forcing, laziness/`MODE complete`, black holes, capture and closures, evaluation order, "why does this value not exist yet" |
+
+Rules of thumb:
+- Sugar and typing questions → **System FC**: reduce to a small core (`case`,
+  `let`, lambda, application, dictionary application), then type it. If a design
+  needs a new core form, that is a signal the design is wrong.
+- Evaluation and state questions → **STG**: a thunk is a closure with an update
+  frame; forcing is an explicit entry; a black hole is a runtime state, not a
+  compile-time one.
+- Do not mix the levels: "the type system should resolve this" is a System FC
+  argument; "this must not be evaluated here" is an STG argument.
+- Both are **models to reason from**, not features to implement: do not add
+  coercions or an STG machine to rill unless a task explicitly calls for it.
+
 ## Terminology: «audio» vs «signal» vs «I/O»
 
 Rill is a **universal signal processing platform**, not exclusively audio. The term «audio» must only appear where hardware emitting or consuming sound is genuinely involved.
