@@ -36,7 +36,7 @@
 
 | File | Responsibility |
 |---|---|
-| `rill-lang/src/types/ty.rs` | Predule text (`CATEGORY_PRELUDE`/`STD_PRELUDE`), `TypeclassInfo`, `derive_eq_ord`, `resolve_method`, superclass derivation |
+| `rill-lang/src/types/ty.rs` | The single `PRELUDE` text, `TypeclassInfo`, `derive_eq_ord`, `resolve_method`, superclass derivation |
 | `rill-lang/src/parser.rs` | `typeclass` superclass syntax, operator method names, `[a..b]` desugaring (P4) |
 | `rill-lang/src/ast.rs` | `Def::Typeclass` superclass field if needed; no new expression nodes (desugaring reuses `Apply`) |
 | `rill-lang/src/types/infer.rs` | Operator→method resolution, constraint discharge, strict `&&`/`||` typing |
@@ -49,13 +49,22 @@
 
 ### Task 0 (P0): Operator constructs replaced by class-method dispatch
 
-> **Ruling (user, 2026-10-25): full replacement, no reuse.** The existing
-> operator-specific constructs are **deleted**, not kept alongside the class
-> path. After this task there is no `Expr::Arith`, no `Expr::Cmp`, no
-> `ArithOp`/`CmpOp` operator node, and no operator-keyed lowering arm. The
-> runtime kernels (`ValueAdd`-family, `ValueCompare`, `ValueBufferBin`,
-> `ValueBufferUn`, `BinArith`) survive **only as bodies of primitive
-> instances** — they are primitives, not operator constructs.
+> **Ruling (user, 2026-10-25): full replacement, no reuse.**
+> **Ruling (user, 2026-10-25, supersedes the per-step preservation rule):**
+> behavioural preservation is required **at the end of the task, not at every
+> intermediate step**. An intermediate step that deletes a construct before its
+> replacement is complete is *expected* to be briefly inconsistent; do not invent
+> compatibility shims, dual paths, or "temporary" bridges to keep every step
+> observably identical. That requirement is what produced workarounds before.
+> What must hold: **the final tree** behaves as before (except for the explicit
+> semantic corrections owned by P1/P3), with no dual paths left behind.
+
+The existing operator-specific constructs are **deleted**, not kept alongside the
+class path. At the end there is no `Expr::Arith`, no `Expr::Cmp`, no
+`ArithOp`/`CmpOp` operator node, and no operator-keyed lowering arm. The runtime
+kernels (`ValueAdd`-family, `ValueCompare`, `ValueBufferBin`, `ValueBufferUn`,
+`BinArith`) survive **only as bodies of primitive instances** — they are
+primitives, not operator constructs.
 
 **Files:**
 - Modify: `rill-lang/src/ast.rs` (delete `Expr::Arith`, `Expr::Cmp`, `ArithOp`, `CmpOp`; keep `Expr::Logic`/`LogicOp`)
@@ -64,7 +73,7 @@
 - Modify: `rill-lang/src/types/infer.rs` (type operator refs through the class methods; `Ord ⊑ Eq`)
 - Modify: `rill-lang/src/lower.rs` (delete `lower_arith`, the `Expr::Arith` arm, the `Expr::Cmp` arm and the buffer fork; the method path handles them)
 - Modify: `rill-lang/src/reduce.rs`, `render.rs`, `program_serde.rs` (drop the deleted nodes)
-- Modify: `rill-lang/src/types/ty.rs` (declare `Num`/`Fractional`; extend `Eq`/`Ord` with operator spellings)
+- Modify: `rill-lang/src/types/ty.rs` (declare `Num`/`Fractional` in `PRELUDE`; extend `Eq`/`Ord` with operator spellings)
 - Test: `rill-lang/tests/typeclass_layer.rs`
 
 **Interfaces:**
@@ -89,11 +98,14 @@ Remove `Expr::Arith`/`Expr::Cmp` and `ArithOp`/`CmpOp`; update every match arm (
 
 - [ ] **Step 4: Emit method application instead**
 
-The parser keeps infix syntax and the §4.4.2 fixity; `desugar` is the ONE place that turns an infix operator into `Expr::ApplyExpr { callee: Ref(op), args: [lhs, rhs] }`. Declare `Num`/`Fractional` in `CATEGORY_PRELUDE`; extend the built-in `Eq`/`Ord` `TypeclassInfo` with the operator spellings.
+The parser keeps infix syntax and the §4.4.2 fixity; `desugar` is the ONE place that turns an infix operator into `Expr::ApplyExpr { callee: Ref(op), args: [lhs, rhs] }`. Declare `Num`/`Fractional` in the single `PRELUDE` constant; extend the built-in `Eq`/`Ord` `TypeclassInfo` with the operator spellings.
 
-- [ ] **Step 5: Keep behaviour identical**
+- [ ] **Step 5: Restore behaviour at the end**
 
-Primitive instances (`Int`, `Float`, `Bool`, `String`, `Buffer`) emit exactly the kernels that ran before, so the probe matrix is unchanged: `1 + 2` → `Int(3)`, `1.0 + 2.0` → `Float(3.0)`, `1 + 1.0` → its current result, comparisons → the same booleans, buffer arithmetic unchanged. Semantic corrections (`1 + 1.0` becoming a type error, `Num` polymorphism) belong to P1/P3.
+Primitive instances (`Int`, `Float`, `Bool`, `String`, `Buffer`) emit exactly the kernels that ran before, so the **final** probe matrix matches the starting one: `1 + 2` → `Int(3)`, `1.0 + 2.0` → `Float(3.0)`, `1 + 1.0` → its current result, comparisons → the same booleans, buffer arithmetic unchanged. Semantic corrections (`1 + 1.0` becoming a type error, `Num` polymorphism) belong to P1/P3.
+
+Intermediate states may be red while the migration is in flight; the tree must
+be green **at each commit** and free of dual paths at the end.
 
 - [ ] **Step 6: Verify and commit**
 
