@@ -144,7 +144,7 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         Tok::PlusPlus => (InfixOp::AppendList, 7, 7),
         // `<>` — `infixr 6` in Haskell 2010 (Semigroup): looser than `:`/`++`,
         // tighter than comparison.
-        Tok::LessGreater => (InfixOp::AppendSemigroup, 9, 9),
+        Tok::Diamond => (InfixOp::AppendSemigroup, 9, 9),
         // Comparisons — `infix 4` and NON-associative: `a == b == c` is a parse
         // error. The binding powers only position the operators; the
         // non-associativity check lives in the Pratt loop (a same-level
@@ -320,7 +320,7 @@ fn implicit_section_param() -> String {
 fn bare_operator_name(tok: &Tok) -> Option<&'static str> {
     Some(match tok {
         Tok::PlusPlus => "++",
-        Tok::LessGreater => "<>",
+        Tok::Diamond => "<>",
         Tok::Plus => "+",
         Tok::Minus => "-",
         Tok::Star => "*",

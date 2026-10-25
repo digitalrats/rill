@@ -34,8 +34,10 @@ pub enum Tok {
     Plus,
     /// `++` — list append (Prelude, `infixr 5`).
     PlusPlus,
-    /// `<>` — Semigroup append (Haskell 2010 `Semigroup`, `infixr 6`).
-    LessGreater,
+    /// `<>` — the "diamond" operator: Semigroup append in Haskell 2010
+    /// (`infixr 6`). Named for its shape, which is how it reads in source; the
+    /// token also spells the `<>` class METHOD reference.
+    Diamond,
     /// `-`
     Minus,
     /// `*`
@@ -298,7 +300,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             // before the single-character comparison operators.
             i += 2;
             out.push(Token {
-                tok: Tok::LessGreater,
+                tok: Tok::Diamond,
                 span: Span::new(start, i),
             });
             continue;
