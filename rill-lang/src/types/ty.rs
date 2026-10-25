@@ -425,6 +425,43 @@ typeclass (Functor f) => Applicative f where { pure: a -> f a; ap: f (a -> b) ->
 typeclass (Applicative m) => Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
 typeclass Monoid m where { mempty: m; mappend: m -> m -> m; }
 
+--  Equality and ordering. Haskell 2010: `class Eq a` with `==`/`/=`, and
+--  `class Eq a => Ord a` with `compare`/`<`/`<=`/`>`/`>=`/`min`/`max`. The
+--  operator spellings ARE the method names, so an infix `a == b` and a bare
+--  `(==)` resolve to the same binding — that is what makes operators sugar
+--  over methods.
+typeclass Eq a where {
+    (==) : a -> a -> Bool;
+    (/=) : a -> a -> Bool = \ x -> \ y -> if x == y then False else True;
+}
+--  `compare` returns an ORDER ENCODING: -1 / 0 / 1 (see DOCS-GAPS). The
+--  defaults are written against it, so an instance need only provide
+--  `compare`.
+typeclass (Eq a) => Ord a where {
+    compare : a -> a -> Int;
+    (<)  : a -> a -> Bool = \ x -> \ y -> compare x y < 0;
+    (<=) : a -> a -> Bool = \ x -> \ y -> compare x y <= 0;
+    (>)  : a -> a -> Bool = \ x -> \ y -> compare x y > 0;
+    (>=) : a -> a -> Bool = \ x -> \ y -> compare x y >= 0;
+    min  : a -> a -> a = \ x -> \ y -> if x <= y then x else y;
+    max  : a -> a -> a = \ x -> \ y -> if x <= y then y else x;
+}
+
+--  Numeric tower. `Num` carries the operators; `Fractional` adds `/`.
+typeclass Num a where {
+    (+) : a -> a -> a;
+    (-) : a -> a -> a;
+    (*) : a -> a -> a;
+    negate : a -> a;
+    abs : a -> a;
+    signum : a -> a;
+    fromInteger : Int -> a;
+}
+typeclass (Num a) => Fractional a where {
+    (/) : a -> a -> a;
+    recip : a -> a;
+}
+
 --  Index types (`Data.Ix`): the offset/range vocabulary the array surface is
 --  written against. `range` enumerates the index set in ROW-MAJOR order (last
 --  coordinate fastest), `index` gives an element's flat offset, `inRange` tests
@@ -464,7 +501,18 @@ instance (Monad m) => Arrow (Kleisli m) where {
 --  separate "signal path" and no signal/value split. `Buffer` is an ordinary
 --  type class; arithmetic over buffers comes from its instances (P3 of the
 --  typeclass layer).
-typeclass Buffer b where { }
+--  A buffer is an ordinary value. Its arithmetic is the SAME vocabulary as
+--  `Num`/`Fractional`, provided by this class's methods; a buffer instance's
+--  body emits the whole-buffer kernel. There is no buffer-specific operator.
+typeclass Buffer b where {
+    (+) : b -> b -> b;
+    (-) : b -> b -> b;
+    (*) : b -> b -> b;
+    (/) : b -> b -> b;
+    min : b -> b -> b;
+    max : b -> b -> b;
+    abs : b -> b;
+}
 instance Buffer (FixedBuffer a) where { }
 data Tape a = { };
 instance Buffer (Tape f32) where { }
@@ -1000,41 +1048,10 @@ impl TypeEnv {
                 ]),
             ),
         ]);
-        let typeclasses = HashMap::from([
-            (
-                "Eq".to_string(),
-                TypeclassInfo {
-                    var: "a".to_string(),
-                    arity: 0,
-                    superclasses: vec![],
-                    methods: vec![(
-                        "eq".to_string(),
-                        crate::ast::TypeExpr::TFunc(
-                            vec![crate::ast::TypeExpr::TName("a".into())],
-                            Box::new(crate::ast::TypeExpr::TName("Bool".into())),
-                        ),
-                    )],
-                    defaults: HashMap::new(),
-                },
-            ),
-            (
-                "Ord".to_string(),
-                TypeclassInfo {
-                    var: "a".to_string(),
-                    arity: 0,
-                    // Haskell 2010: `class Eq a => Ord a`.
-                    superclasses: vec![("Eq".to_string(), "a".to_string())],
-                    methods: vec![(
-                        "lt".to_string(),
-                        crate::ast::TypeExpr::TFunc(
-                            vec![crate::ast::TypeExpr::TName("a".into())],
-                            Box::new(crate::ast::TypeExpr::TName("Bool".into())),
-                        ),
-                    )],
-                    defaults: HashMap::new(),
-                },
-            ),
-        ]);
+        // Classes are declared in the PRELUDE text ONLY: one source of truth.
+        // (`Eq`/`Ord` used to be built here as well, with wrong unary `eq`/`lt`
+        // methods, which made operators impossible to express as methods.)
+        let typeclasses: HashMap<String, TypeclassInfo> = HashMap::new();
         let mut env = TypeEnv {
             ctor_kinds,
             data_types,

@@ -361,6 +361,16 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
             });
             continue;
         }
+        // `/=` — Haskell 2010's not-equal. Must be matched before the
+        // single-character `/`, and `/=` (not `!=`) is the standard spelling.
+        if c == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
+            i += 2;
+            out.push(Token {
+                tok: Tok::NotEq,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
         if c == b'!' && i + 1 < bytes.len() && bytes[i + 1] == b'=' {
             i += 2;
             out.push(Token {

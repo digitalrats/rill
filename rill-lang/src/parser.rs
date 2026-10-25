@@ -327,7 +327,7 @@ fn bare_operator_name(tok: &Tok) -> Option<&'static str> {
         Tok::Slash => "/",
         Tok::Percent => "%",
         Tok::EqEq => "==",
-        Tok::NotEq => "!=",
+        Tok::NotEq => "/=",
         Tok::Lt => "<",
         Tok::Gt => ">",
         Tok::Le => "<=",
