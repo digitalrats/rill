@@ -192,8 +192,9 @@ method of every class.
   world (one slot per instance, like `buffers`/`streams`).
 - **Passed by ref** (`ArenaRef`) as the extra parameter of a polymorphic
   function; the callee never copies it.
-- **`visit_refs` walks `supers`** so RC/`drop_ref`/trace handle a dictionary like
-  any other aggregate. `methods` are code indices, not refs, so they are ignored.
+- **Every RC walker walks `supers`** — `arena::visit_refs`, `interp::recount_children`,
+  `interp::drop_value_children`, `interp::pool_clone_value` — so a dictionary is
+  handled like any other aggregate by RC and `drop_ref`. `methods` are code indices, not refs, so they are ignored.
 - **Static budget**: each dictionary costs one arena slot per method-fragment
   aggregate plus its `supers` vector; the accounting adds a constant per
   *used* instance, not per call site.
@@ -408,12 +409,12 @@ accordingly.
 | Risk | Mitigation |
 |---|---|
 | Dictionary allocation inflates the arena budget | One dictionary per *used* `(class, type)`, built once at seat; the accounting charges a constant, not per call |
-| `visit_refs` forgets `supers` → leaked / prematurely freed dictionaries | A test drops a dictionary and asserts its superclass dictionaries survive; `trace`/RC tests cover it |
+| An RC walker forgets `supers` → leaked / prematurely freed dictionaries | A test drops a dictionary and asserts its superclass dictionaries survive; all four walkers are listed in criterion 1 so none can be missed |
 | Inference still needs signature pattern-matching to solve `a` | That is inherent (GHC does it too); the *lowering* side stops using it |
 | Method-as-value closure needs an env field beyond the existing `Callable` | `Callable` already carries `env: ArenaRef`; the dictionary ref and slot live in that env record |
 | Deleting five paths at once is a large diff | The migration order (§3.7) is incremental and each step is green |
 | Performance regression from indirect calls | Measure with the GHC-parity harness; specialisation/inlining is a backend concern (`SPEC` equivalent), not a front-end obligation |
-| `KernelId` grows into a per-method enum | One enum over *existing primitive operations*, not per class method |
+| `KernelId` grows into a per-method enum | One enum over primitive **operations** (existing plus the ones this design adds in §3.9), not per class method |
 | Class defaults must be instantiated per dictionary | A default body becomes a fragment once, reused by every dictionary that omits the method — no per-instance code duplication |
 
 ---
