@@ -47,40 +47,62 @@
 
 ---
 
-### Task 0 (P0): Operator desugaring skeleton — no behaviour change
+### Task 0 (P0): Operator constructs replaced by class-method dispatch
+
+> **Ruling (user, 2026-10-25): full replacement, no reuse.** The existing
+> operator-specific constructs are **deleted**, not kept alongside the class
+> path. After this task there is no `Expr::Arith`, no `Expr::Cmp`, no
+> `ArithOp`/`CmpOp` operator node, and no operator-keyed lowering arm. The
+> runtime kernels (`ValueAdd`-family, `ValueCompare`, `ValueBufferBin`,
+> `ValueBufferUn`, `BinArith`) survive **only as bodies of primitive
+> instances** — they are primitives, not operator constructs.
 
 **Files:**
-- Modify: `rill-lang/src/types/ty.rs` (declare the classes `Num`/`Fractional`/`Eq`/`Ord` with method names; keep the existing `Eq`/`Ord` registrations, extend them)
-- Modify: `rill-lang/src/parser.rs` (accept `(op)` method names in `typeclass` bodies)
-- Modify: `rill-lang/src/types/infer.rs`, `rill-lang/src/lower.rs` (a `desugar_operator` path that maps an operator to its method name)
+- Modify: `rill-lang/src/ast.rs` (delete `Expr::Arith`, `Expr::Cmp`, `ArithOp`, `CmpOp`; keep `Expr::Logic`/`LogicOp`)
+- Modify: `rill-lang/src/parser.rs` (emit method application for `+ - * / % == /= < <= > >=` instead of operator nodes; keep infix parsing and the §4.4.2 fixity table)
+- Modify: `rill-lang/src/desugar.rs` (the single place operator syntax becomes an application)
+- Modify: `rill-lang/src/types/infer.rs` (type operator refs through the class methods; `Ord ⊑ Eq`)
+- Modify: `rill-lang/src/lower.rs` (delete `lower_arith`, the `Expr::Arith` arm, the `Expr::Cmp` arm and the buffer fork; the method path handles them)
+- Modify: `rill-lang/src/reduce.rs`, `render.rs`, `program_serde.rs` (drop the deleted nodes)
+- Modify: `rill-lang/src/types/ty.rs` (declare `Num`/`Fractional`; extend `Eq`/`Ord` with operator spellings)
 - Test: `rill-lang/tests/typeclass_layer.rs`
 
 **Interfaces:**
-- Consumes: the existing operator-value machinery (`Expr::Ref("+")` → callable, landed in the conformance work).
-- Produces: `fn operator_method(op: ArithOp|CmpOp) -> &'static str` mapping; primitive instances for `Int`/`Float`/`Bool`/`String` that emit today's `ValueAdd`/`ValueCompare`/… opcodes.
+- Consumes: existing `Expr::Ref("+")` → callable machinery.
+- Produces: `fn operator_method(op: &str) -> Option<&'static str>`; primitive instances for `Int`/`Float`/`Bool`/`String`/`Buffer` whose bodies emit the existing kernels.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
-#[test] fn arithmetic_still_works_through_dispatch() { /* 1 + 2 == 3 (Int); 1.0 + 2.0 == 3.0 */ }
-#[test] fn comparison_still_works_through_dispatch() { /* "a" < "b"; record == record */ }
-#[test] fn operator_reference_resolves_to_method()      { /* let plus = (+); plus 1.0 2.0 == 3.0 */ }
-#[test] fn int_track_preserved()                        { /* 1 + 2 is Int, not Float: show_int works */ }
+#[test] fn arithmetic_works_through_methods() { /* 1 + 2 == 3 (Int); 1.0 + 2.0 == 3.0 */ }
+#[test] fn comparison_works_through_methods() { /* "a" < "b"; record == record */ }
+#[test] fn operator_reference_is_a_method()   { /* let plus = (+); plus 1.0 2.0 == 3.0 */ }
+#[test] fn int_track_preserved()              { /* 1 + 2 is Int: show_int works, no Float widening */ }
+#[test] fn logic_stays_short_circuit()         { /* false && <fault> is False */ }
 ```
 
-- [ ] **Step 2: Run to verify they fail** — the method names do not resolve yet.
+- [ ] **Step 2: Run to verify they fail.**
 
-- [ ] **Step 3: Declare the classes and the operator→method map**
+- [ ] **Step 3: Delete the operator constructs**
 
-Add to `CATEGORY_PRELUDE` the `Num`/`Fractional` classes (method names only; bodies come in P3) and extend the builtin `Eq`/`Ord` `TypeclassInfo` entries with the operator names (`==`, `/=`, `<`, `<=`, `>`, `>=`, `compare`, `min`, `max`) alongside the existing `eq`/`lt` method names, so both spellings resolve during the transition.
+Remove `Expr::Arith`/`Expr::Cmp` and `ArithOp`/`CmpOp`; update every match arm (ast, parser, desugar, infer, reduce, lower, render, serde). `Expr::Logic`/`LogicOp` stay (Haskell 2010 §3.4 short-circuit is not expressible as a plain function).
 
-- [ ] **Step 4: Route operator expressions through the map**
+- [ ] **Step 4: Emit method application instead**
 
-`Expr::Arith`/`Expr::Cmp` lowering resolves the operator to its method name and resolves that method to an instance. For the primitive instances the body emits the *existing* instruction (`ValueAdd`, `ValueCompare`, …), so behaviour is bit-identical. **Keep the old direct path reachable behind the instance** — this task must not change results, only the route.
+The parser keeps infix syntax and the §4.4.2 fixity; `desugar` is the ONE place that turns an infix operator into `Expr::ApplyExpr { callee: Ref(op), args: [lhs, rhs] }`. Declare `Num`/`Fractional` in `CATEGORY_PRELUDE`; extend the built-in `Eq`/`Ord` `TypeclassInfo` with the operator spellings.
 
-- [ ] **Step 5: Verify and commit**
+- [ ] **Step 5: Keep behaviour identical**
 
-Gate + `git commit -m 'refactor(lang): route operators through class-method dispatch'`.
+Primitive instances (`Int`, `Float`, `Bool`, `String`, `Buffer`) emit exactly the kernels that ran before, so the probe matrix is unchanged: `1 + 2` → `Int(3)`, `1.0 + 2.0` → `Float(3.0)`, `1 + 1.0` → its current result, comparisons → the same booleans, buffer arithmetic unchanged. Semantic corrections (`1 + 1.0` becoming a type error, `Num` polymorphism) belong to P1/P3.
+
+- [ ] **Step 6: Verify and commit**
+
+```bash
+cargo test -p rill-lang --features dsp
+cargo clippy -p rill-lang --features dsp
+cargo fmt --check
+git commit -m 'refactor(lang): replace operator constructs with class-method dispatch'
+```
 
 ---
 
