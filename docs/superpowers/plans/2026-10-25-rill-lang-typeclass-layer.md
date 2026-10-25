@@ -4,7 +4,7 @@
 
 **Goal:** Express every binary operator as sugar over a class method and fill the Haskell 2010 class layer (`Eq`, `Ord`, `Show`, `Num`, `Fractional`, `Integral`, `RealFrac`, `Floating`, `Enum`, `Bounded`, `Semigroup`) so comparison, arithmetic, rendering and enumeration dispatch through instances — including the `Buffer` class for element-wise buffer math.
 
-**Architecture:** Seven phases, each independently shippable and green. **P-2 adds general typeclass towers** (superclass constraints + transitive entailment), because every operator scheme needs them (`Ord a` entails `Eq a`, `Fractional a` entails `Num a`) and today the language cannot express a superclass at all. **P-1 makes numeric literals polymorphic and adds class-constraint solving plus numeric defaulting** — without it, operators cannot be class methods at all, because `infer_arith` pins every type variable to `Float`. P0 deletes the operator constructs and routes them through class dispatch. P1 lands `Eq`/`Ord` (comparison, `min`/`max`, `sort`). P2 adds `Show`. P3 moves arithmetic to `Num`/`Fractional` and adds the `Buffer` arithmetic methods, deleting the scalar-vs-buffer fork. P4 adds `Integral`/`RealFrac`/`Enum`/`Bounded`. P5 adds `Semigroup`/`Foldable` and the `Ord`-based Prelude functions.
+**Architecture:** Five phases. **P-2 adds general typeclass towers** (superclass constraints + transitive entailment) — every operator scheme needs them and the language could not express a superclass at all. **P-A is the operator layer**: polymorphic numeric literals + numeric defaulting, operators as class-method sugar with the operator constructs deleted, and the `Eq`/`Ord` semantics (`compare`, `min`, `max`, `sort`) — one task because they are one concept and any split produces an invalid tree. P2 adds `Show`. P3 moves arithmetic to `Num`/`Fractional` and adds the `Buffer` arithmetic methods, deleting the scalar-vs-buffer fork. P4 adds `Integral`/`RealFrac`/`Enum`/`Bounded`. P5 adds `Semigroup`/`Foldable` and the `Ord`-based Prelude functions.
 
 **Tech Stack:** Rust, `rill-lang`; tests via `cargo test -p rill-lang --features dsp`.
 
@@ -49,7 +49,7 @@
 
 ### Task P-2 (P₋₂): General typeclass towers (superclass constraints and entailment)
 
-> **Why this comes before P-1:** every operator scheme is a class with
+> **Why this comes before P-A:** every operator scheme is a class with
 > superclasses — `Ord a =>` requires `Eq a`, `Fractional a =>` requires `Num a`,
 > `Integral a =>` requires `Real a` and `Enum a`, `RealFrac a =>` requires
 > `Real a` and `Fractional a`, `Floating a =>` requires `Fractional a`. Today the
@@ -63,7 +63,7 @@
 >   Functor`**, not a general mechanism.
 >
 > Without entailment, a context `Ord a` cannot satisfy `==` (an `Eq` method), and
-> P-1's constraint solving has nothing to solve against.
+> P-A's constraint solving has nothing to solve against.
 
 **Files:**
 - Modify: `rill-lang/src/ast.rs` (`Def::Typeclass` gains `supers: Vec<(String, TypeExpr)>` or equivalent)
@@ -127,211 +127,91 @@ git commit -m 'feat(lang): general typeclass towers with superclass entailment'
 
 ---
 
-### Task P-1 (P₋₁): Polymorphic numeric literals, class-constraint solving, and defaulting
+### Task P-A (P-A): The operator layer — polymorphic literals, class methods, and `Eq`/`Ord`
 
-> **Why this comes first:** P0 routes operators through class methods. That is
-> impossible while a literal is a fixed `Int`/`Float` value and `infer_arith`
-> pins every type variable to `Float`. Measured GHC behaviour (design §3.1c) is
-> a four-step chain: solve the class variable from the non-literal operands →
-> literals adopt the solved type (literal polymorphism, *not* a cast) →
-> dispatch the instance → numeric defaulting only if nothing solved it.
+> **Ruling (user, 2026-10-25): P-1, P0 and P1 are ONE task.** They touch the same
+> files, change one concept (how an operator gets its meaning), and every
+> intermediate split produces an invalid tree: literals cannot be polymorphic
+> without class-typed operators, operators cannot be class methods without
+> class-typed literals, and `Ord`/`min`/`max`/`sort` are simply the first
+> consumers of that machinery. Splitting them forced half-migrations and shims;
+> merging them lets the work be done once, coherently.
+>
+> **Behaviour expectation.** Results change, and the new values are the correct
+> ones (all measured against `runghc` 9.10.3):
+> - `1 == 1.0` → **`True`** (today `False`);
+> - `let add x y = x + y in add 1 2` → **`3`** (today a type error);
+> - `(1::Int) + 1.0` → **type error** `Fractional Int` (today silent `2.0`);
+> - `min`/`max`/`compare`/`sort` work on `Float`, `Int`, `String` and records.
+>
+> **No checkpoint between steps; one checkpoint when the task is done.** No shims,
+> dual paths, or temporary bridges. Backward compatibility is explicitly not a
+> requirement.
 
 **Files:**
-- Modify: `rill-lang/src/ast.rs` (a numeric literal must be able to carry an unresolved numeric type, or record that it is a literal)
-- Modify: `rill-lang/src/types/infer.rs` (`infer_arith`'s forced `Float` pin; literal typing; defaulting at the end of inference)
-- Modify: `rill-lang/src/lower.rs` (a literal lowered after solving uses the solved representation)
-- Test: `rill-lang/tests/numeric_literals.rs` (new)
+- Modify: `rill-lang/src/ast.rs` (delete `Expr::Arith`/`Expr::Cmp` and `ArithOp`/`CmpOp`; a numeric literal must be able to carry an unresolved numeric type)
+- Modify: `rill-lang/src/parser.rs` (keep infix syntax and the §4.4.2 fixity; stop constructing operator nodes)
+- Modify: `rill-lang/src/desugar.rs` (THE one place infix becomes `ApplyExpr { callee: Ref(op), args }`)
+- Modify: `rill-lang/src/types/ty.rs` (`Eq`/`Ord` method sets incl. operators; `Num`/`Fractional` declarations)
+- Modify: `rill-lang/src/types/infer.rs` (literal polymorphism; class-constraint solving; end-of-inference numeric defaulting; delete the forced-`Float` pin)
+- Modify: `rill-lang/src/lower.rs` (primitive-instance bodies emitting the existing kernels; delete `lower_arith`, the `Expr::Arith`/`Expr::Cmp` arms and the buffer fork)
+- Modify: `rill-lang/src/reduce.rs`, `render.rs`, `program_serde.rs` (drop the deleted nodes)
+- Modify: `rill-lang/src/backend/interp.rs` (expose `value_cmp_ref` for `Ord`; kernels unchanged)
+- Test: `rill-lang/tests/typeclass_layer.rs` (new), `rill-lang/tests/numeric_literals.rs` (new)
 
 **Interfaces:**
-- Consumes: `infer_constrained_apply` (already solves class variables and discharges constraints for `Ix`-constrained definitions).
-- Produces: literal typing `Num a => a`; an end-of-inference numeric defaulting pass; no forced `Float` in operator typing.
+- Consumes: P-2's `entails`/`entailed_classes` and superclass declarations; `infer_constrained_apply`.
+- Produces: literal typing `Num a => a`; numeric defaulting; `fn operator_method(op: &str) -> Option<&'static str>`; `compare :: a -> a -> Int`, `min`, `max`, `(/=)`, `sort`, `sortBy`, `maximum`, `minimum`.
 
-- [ ] **Step 1: Write the failing tests** (GHC values verified with `runghc` 9.10.3)
+#### Part 1 — Polymorphic literals and defaulting
+
+- [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test] fn mixed_literals_adopt_the_solved_type() { /* 1 + 1.0 == 2.0; 1.0 + 1 == 2.0 */ }
-#[test] fn mixed_literal_comparison_is_true()     { /* 1 == 1.0 is True (today: False) */ }
-#[test] fn numeric_function_is_polymorphic()      { /* add 1 2 == 3 (Int); add 1.0 2.0 == 3.0 */ }
-#[test] fn bound_int_cannot_take_a_float_literal(){ /* (1::Int) + 1.0 is a type error: Fractional Int */ }
-#[test] fn num_only_defaults_to_integer()         { /* 1 + 2 is Int (show_int works) */ }
+#[test] fn mixed_literal_comparison_is_true()     { /* 1 == 1.0 is True */ }
+#[test] fn numeric_function_is_polymorphic()      { /* add 1 2 == 3; add 1.0 2.0 == 3.0 */ }
+#[test] fn bound_int_cannot_take_a_float_literal(){ /* (1::Int) + 1.0 is an error */ }
+#[test] fn num_only_defaults_to_integer()         { /* 1 + 2 is Int */ }
 #[test] fn fractional_defaults_to_double()        { /* 1 / 2 == 0.5 */ }
 ```
 
-- [ ] **Step 2: Make numeric literals polymorphic**
+- [ ] **Step 2: Polymorphic literals** — an `Int`/`Float` literal infers as a numeric literal with a fresh variable, not a concrete type; it adopts whatever the solved class variable requires. Add the `ValueTy` representation if none exists.
+- [ ] **Step 3: Solve, do not pin** — remove `infer_arith`'s forced `Float` binding; resolve through constrained schemes. A conflicting literal against an already-bound type is a type error, never a cast.
+- [ ] **Step 4: Numeric defaulting** — at the end of inference, an unsolved numeric variable becomes `Integer` (`Num`-only) or `Double` (with `Fractional`).
 
-An `Int`/`Float` literal must infer as a numeric literal with a fresh type
-variable, not as a concrete `Int`/`Float`. That is what lets `1 + 1.0` work and
-what makes `(1::Int) + 1.0` correctly fail. If `ValueTy` has no way to express
-"numeric literal", add the representation (a literal flag on the value type or a
-distinct variant) — that is part of this task.
+#### Part 2 — Operators are class methods
 
-- [ ] **Step 3: Solve constraints, do not pin**
+- [ ] **Step 5: Delete the operator constructs** — remove `Expr::Arith`/`Expr::Cmp`, `ArithOp`/`CmpOp`, and every match arm using them. `Expr::Logic`/`LogicOp` **stay** (Haskell 2010 §3.4 short-circuit is not a plain function).
+- [ ] **Step 6: One desugaring point** — `desugar.rs` turns infix into `ApplyExpr { callee: Ref(op), args: [lhs, rhs] }`, preserving §4.4.2 fixity and non-associativity. Declare `Num`/`Fractional`; extend `Eq`/`Ord` with operator spellings.
+- [ ] **Step 7: Primitive instances** — `Int`, `Float`, `Bool`, `String`, `Buffer`, plus the structural/derived `Eq`/`Ord` instances, emit the kernels that ran before (`ValueAdd` family, `ValueCompare`, `ValueBufferBin`, `ValueBufferUn`, `BinArith`). Kernels are primitives, not operator constructs.
 
-Replace `infer_arith`'s forced `Float` binding with constrained-scheme
-resolution through `infer_constrained_apply`. When an operand is already a
-concrete type (`(1::Int)`), a conflicting literal must be a **type error**, never
-a cast.
+#### Part 3 — `Eq`/`Ord` semantics
 
-- [ ] **Step 4: Numeric defaulting at the end of inference**
+- [ ] **Step 8: `compare`, `min`, `max`, `(/=)`, `sort`, `sortBy`, `maximum`, `minimum`** — `compare :: a -> a -> Int` (-1/0/1, recorded as an encoding deviation in `DOCS-GAPS.md`); `min`/`max` derived from `compare`; `sort` a stable sort over `Ord`.
+- [ ] **Step 9: Total order preserved** — `value_cmp_ref` is a genuine total order (NaN sorts greatest and equals itself). Do not replace it with `partial_cmp` + `Equal` fallback: that is intransitive and breaks `Map`/`Set` search.
 
-If a numeric variable is still unsolved when inference finishes, default it:
-`Integer` for `Num`-only, `Double` when `Fractional` is involved. Haskell 2010
-defaults are the reference.
-
-- [ ] **Step 5: Checkpoint (once, after Steps 2–4)**
-
-Run the gates and confirm the six tests above. Expected changes from today, all
-correct: `1 == 1.0` becomes `True`; `add 1 2` becomes `3`; `(1::Int) + 1.0`
-becomes a type error.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git commit -m 'feat(lang): polymorphic numeric literals with class solving and defaulting'
-```
-
----
-
-### Task 0 (P0): Operator constructs replaced by class-method dispatch
-
-> **Ruling (user, 2026-10-25): full replacement, no reuse.**
->
-> **Ruling (user, 2026-10-25, supersedes the per-step preservation rule):**
-> **Do not test behaviour between steps.** The only behavioural checkpoint is the
-> **finished task** — the state you commit when every step below is done.
-> Intermediate states are not checkpoints and are not required to work; a step
-> that deletes a construct before its replacement exists is *supposed* to be
-> inconsistent while it is being written.
->
-> **Ruling (2026-10-25, after measuring GHC): the operator results are expected to
-> CHANGE, and the new values are the correct ones.** `infer_arith` currently
-> pins every type variable that reaches arithmetic to `Float` (design §3.1c),
-> which loses polymorphism and breaks mixed-literal comparison. GHC itself
-> accepts `1 + 1.0` (`2.0`) and `1 == 1.0` (`True`) because numeric literals are
-> polymorphic. Measured divergences to fix:
-> - `1 == 1.0` returns `False` today; it must be **`True`**;
-> - `let add x y = x + y in add 1 2` is a type error today; it must be **`3`**;
-> - `let f x = x * 2.0 in f (1::Int)` coerces silently today; it must be a
->   **type error** (`Fractional Int`), exactly as GHC reports.
->
-> Do **not** try to preserve today's results. Preserving them requires the
-> forced-`Float` pin the change exists to remove, and that is what produced every
-> blocked attempt so far. The checkpoint is: the suite is green, and the operator
-> results are **Haskell-2010-correct**.
->
-> Concretely:
-> - Do **not** run the probe matrix, the test suite, or any behavioural check
->   part-way through the migration.
-> - Do **not** add a compatibility shim, a dual path, a temporary bridge, or an
->   `#[allow(dead_code)]` placeholder.
-> - Implement all steps, then run the gates **once** on the finished task.
-> - If a gate fails then, fix the finished tree — not by resurrecting the old
->   construct.
-
-The existing operator-specific constructs are **deleted**, not kept alongside the
-class path. When the task is finished there is no `Expr::Arith`, no `Expr::Cmp`,
-no `ArithOp`/`CmpOp` operator node, and no operator-keyed lowering arm. The
-runtime kernels (`ValueAdd`-family, `ValueCompare`, `ValueBufferBin`,
-`ValueBufferUn`, `BinArith`) survive **only as bodies of primitive instances** —
-they are primitives, not operator constructs.
-
-**Files:**
-- Modify: `rill-lang/src/ast.rs` (delete `Expr::Arith`, `Expr::Cmp`, `ArithOp`, `CmpOp`; keep `Expr::Logic`/`LogicOp`)
-- Modify: `rill-lang/src/parser.rs` (emit method application for `+ - * / % == /= < <= > >=` instead of operator nodes; keep infix parsing and the §4.4.2 fixity table)
-- Modify: `rill-lang/src/desugar.rs` (the single place operator syntax becomes an application)
-- Modify: `rill-lang/src/types/infer.rs` (type operator refs through the class methods; `Ord ⊑ Eq`)
-- Modify: `rill-lang/src/lower.rs` (delete `lower_arith`, the `Expr::Arith` arm, the `Expr::Cmp` arm and the buffer fork; the method path handles them)
-- Modify: `rill-lang/src/reduce.rs`, `render.rs`, `program_serde.rs` (drop the deleted nodes)
-- Modify: `rill-lang/src/types/ty.rs` (declare `Num`/`Fractional` in `PRELUDE`; extend `Eq`/`Ord` with operator spellings)
-- Test: `rill-lang/tests/typeclass_layer.rs`
-
-**Interfaces:**
-- Consumes: existing `Expr::Ref("+")` → callable machinery.
-- Produces: `fn operator_method(op: &str) -> Option<&'static str>`; primitive instances for `Int`/`Float`/`Bool`/`String`/`Buffer` whose bodies emit the existing kernels.
-
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 10: Tests for the whole task**
 
 ```rust
-#[test] fn arithmetic_works_through_methods() { /* 1 + 2 == 3 (Int); 1.0 + 2.0 == 3.0 */ }
 #[test] fn comparison_works_through_methods() { /* "a" < "b"; record == record */ }
 #[test] fn operator_reference_is_a_method()   { /* let plus = (+); plus 1.0 2.0 == 3.0 */ }
-#[test] fn int_track_preserved()              { /* 1 + 2 is Int: show_int works, no Float widening */ }
-#[test] fn logic_stays_short_circuit()         { /* false && <fault> is False */ }
+#[test] fn int_track_preserved()              { /* 1 + 2 is Int: show_int works */ }
+#[test] fn logic_stays_short_circuit()        { /* false && <fault> is False */ }
+#[test] fn compare_scalars()                  { /* compare 1 2 == -1; compare "b" "a" == 1 */ }
+#[test] fn ord_min_max()                      { /* min/max on Float, Int, String, record; fold max */ }
+#[test] fn not_equal_operator()               { /* 1 /= 2 */ }
+#[test] fn sort_and_maximum()                 { /* sort [3,1,2]; maximum */ }
+#[test] fn ord_requires_eq()                  { /* a type with Eq but not Ord is rejected at (<) */ }
+#[test] fn nan_total_order_preserved()        { /* NaN compares greatest and equals itself */ }
 ```
 
-- [ ] **Step 2: Run to verify they fail.**
-
-- [ ] **Step 3: Delete the operator constructs**
-
-Remove `Expr::Arith`/`Expr::Cmp` and `ArithOp`/`CmpOp`; update every match arm (ast, parser, desugar, infer, reduce, lower, render, serde). `Expr::Logic`/`LogicOp` stay (Haskell 2010 §3.4 short-circuit is not expressible as a plain function).
-
-- [ ] **Step 4: Emit method application instead**
-
-The parser keeps infix syntax and the §4.4.2 fixity; `desugar` is the ONE place that turns an infix operator into `Expr::ApplyExpr { callee: Ref(op), args: [lhs, rhs] }`. Declare `Num`/`Fractional` in the single `PRELUDE` constant; extend the built-in `Eq`/`Ord` `TypeclassInfo` with the operator spellings.
-
-- [ ] **Step 5: Behavioural checkpoint — run this ONCE, after Steps 3–4 are complete**
-
-Do not run it earlier. Primitive instances (`Int`, `Float`, `Bool`, `String`,
-`Buffer`) emit exactly the kernels that ran before, so the probe matrix matches
-the starting one: `1 + 2` → `Int(3)`, `1.0 + 2.0` → `Float(3.0)`, `1 + 1.0` →
-its current result, comparisons → the same booleans, buffer arithmetic
-unchanged. Semantic corrections (`1 + 1.0` becoming a type error, `Num`
-polymorphism) belong to P1/P3.
-
-If a probe mismatches, fix the finished tree. Do not restore the deleted
-construct to make it match.
-
-- [ ] **Step 6: Verify and commit**
+- [ ] **Step 11: The single checkpoint** — run the gates and the ten tests above, plus the six literal tests. Confirm no `Expr::Arith`/`Expr::Cmp`/`ArithOp`/`CmpOp` remains and no operator-keyed lowering arm exists.
+- [ ] **Step 12: Commit**
 
 ```bash
-cargo test -p rill-lang --features dsp
-cargo clippy -p rill-lang --features dsp
-cargo fmt --check
-git commit -m 'refactor(lang): replace operator constructs with class-method dispatch'
+git commit -m 'feat(lang): one operator layer — polymorphic literals, class methods, Eq/Ord'
 ```
-
----
-
-### Task 1 (P1): `Eq` / `Ord` — comparison, `min`/`max`, `sort`, total order
-
-**Files:**
-- Modify: `rill-lang/src/types/ty.rs` (`Ord` superclass `Eq`; method defaults for `min`/`max`/`<`/`<=`/`>`/`>=`/`/=`; `compare`), `rill-lang/src/lower.rs` (delete the `Expr::Cmp` operator fork), `rill-lang/src/backend/interp.rs` (expose `value_cmp_ref` through the primitive instance)
-- Test: `rill-lang/tests/typeclass_layer.rs`, `rill-lang/tests/conformance_gaps.rs`
-
-**Interfaces:**
-- Consumes: Task 0's dispatch.
-- Produces: `compare :: a -> a -> Int` (-1/0/1), `min`, `max`, `(/=)`, `sort`, `sortBy`, `maximum`, `minimum`.
-
-- [ ] **Step 1: Write the failing tests**
-
-```rust
-#[test] fn compare_scalars()          { /* compare 1 2 == -1; compare "b" "a" == 1 */ }
-#[test] fn ord_min_max()              { /* min/max on Float, Int, String, record, first-class: fold max */ }
-#[test] fn not_equal_operator()       { /* 1 /= 2 */ }
-#[test] fn sort_and_maximum()         { /* sort [3,1,2]; maximum */ }
-#[test] fn ord_requires_eq()          { /* a type with Eq but not Ord is rejected at (<) */ }
-#[test] fn nan_total_order_preserved(){ /* NaN compares greatest and equals itself (Map/Set keys stay searchable) */ }
-```
-
-- [ ] **Step 2: Run to verify they fail.**
-
-- [ ] **Step 3: Implement `Ord` with `Eq` superclass**
-
-Declare `typeclass (Eq a) => Ord a` (P1 needs parser support for superclass constraints; `TypeclassInfo` gains a `superclasses: Vec<(String, String)>` field). Defaults: `min x y = if x <= y then x else y`, `max` the dual, `(/=)` the `Eq` dual, `<`/`<=`/`>`/`>=` from `compare`.
-
-- [ ] **Step 4: Make derived instances dispatchable (Review Focus 7)**
-
-`derive_eq_ord` writes instances with `methods: HashMap::new()` and `from_prelude: true`. Teach `resolve_method` that this marker means "primitive structural comparison" and have it emit `ValueCompare` against `value_cmp_ref`. **Do not** replace `value_cmp_ref` with `partial_cmp` (Review Focus 3).
-
-- [ ] **Step 5: Delete the comparison fork**
-
-Remove the `Expr::Cmp` → `ValueCompare` direct lowering; `==`/`<`/… now reach the same instruction through the primitive instance. `lower.rs` must contain no operator-keyed branch for comparisons.
-
-- [ ] **Step 6: Verify and commit**
-
-Gate + `git commit -m 'feat(lang): Ord/Eq class layer with compare, min, max and sort'`.
-
----
 
 ### Task 2 (P2): `Show` — one `show`
 
@@ -340,7 +220,7 @@ Gate + `git commit -m 'feat(lang): Ord/Eq class layer with compare, min, max and
 - Test: `rill-lang/tests/typeclass_layer.rs`
 
 **Interfaces:**
-- Consumes: Task 1.
+- Consumes: P-A's `Show`-independent dispatch and method resolution.
 - Produces: `show :: a -> String`; `show_float`/`show_int`/`show_bool` remain as aliases.
 
 - [ ] **Step 1: Write failing tests** — `show` for Float/Int/Bool/String/List/record/Sum; the three legacy names still work.
@@ -358,7 +238,7 @@ Gate + `git commit -m 'feat(lang): Ord/Eq class layer with compare, min, max and
 - Test: `rill-lang/tests/typeclass_layer.rs`, plus a `#[cfg(feature = "dsp")]` buffer test
 
 **Interfaces:**
-- Consumes: Task 0's desugaring, Task 1's dispatch.
+- Consumes: P-A's desugaring and instance dispatch.
 - Produces: `negate`, `signum`, `abs`, `fromInteger`, `pi`, `recip`, `**`, `log`, and element-wise `Buffer` arithmetic.
 
 - [ ] **Step 1: Write failing tests**

@@ -93,7 +93,7 @@ sections, `fmap` on `List`/`Maybe`, array surface via `Ix`, and the `Monoid`/
 
 | Phase | Content |
 |---|---|
-| P1 | `Eq`, `Ord` (with `Ord ⊑ Eq`), `compare`, `(/=)`, `min`, `max`, `sort`, `sortBy`, `maximum`, `minimum`; retire the ad-hoc comparison for class dispatch with a primitive fallback |
+| P-A | One operator layer: polymorphic numeric literals + defaulting (`infer_arith`'s forced `Float` pin removed), operators as class-method sugar with `Expr::Arith`/`Expr::Cmp` deleted, and the `Eq`/`Ord` semantics (`compare`, `(/=)`, `min`, `max`, `sort`, `sortBy`, `maximum`, `minimum`). One task because P0 alone cannot be implemented without P1: the class semantics ARE the primitive instances' bodies. |
 | P2 | `Show` — one `show`; keep `show_float`/`show_int`/`show_bool` as deprecated aliases delegating to it |
 | P3 | `Num`, `Fractional` — `+ - * /`, `negate`, `signum`, `abs`, `fromInteger`, `pi`; retire `BinArith`/`UnOp` for user-visible arithmetic (keep them as the primitive implementation of the `Float`/`Int` instances) |
 | P4 | `Integral`, `RealFrac`, `Enum`, `Bounded` — `div`/`mod`/`quot`/`rem`, `fromIntegral`, `toInteger`, `floor`/`ceiling`/`round`/`truncate`, `succ`/`pred`/`enumFromTo`/`enumFrom`/`[a..b]`, `minBound`/`maxBound` |
@@ -268,7 +268,7 @@ whole-buffer instruction (`ValueBufferBin`/`ValueBufferUn`) — the interpreter'
 buffer kernels are unchanged; only their *reachability* changes from a syntax
 branch to an instance body.
 
-### 3.1 Class declarations (P1/P2/P3)
+### 3.1 Class declarations (P-A/P2/P3)
 
 Added to `CATEGORY_PRELUDE` (pure category theory), with instances in
 `STD_PRELUDE`:
@@ -381,8 +381,8 @@ bespoke lowering branches and become instance-driven.
 | `Num` moving `+` to a method breaks the first-class operator work | The operator-value path already exists; methods are resolved through it |
 | `Ord ⊑ Eq` constraint form unsupported | `infer_constrained_apply` already handles `(Monad m) =>` heads; verify with `(Eq a) => Ord a` |
 | Numeric-tower instances multiply (Int/Float × Num/Fractional/Real/Integral/…) | Only `Int` gets `Integral`, only `Float` gets `Floating`; keep it minimal and let a missing instance be a clean error |
-| Scope explosion | Phases P1–P5 are independently shippable; each ends green |
-| `derive_eq_ord` markers not understood by the resolver | P1 Step 1 adds the marker handling before any dispatch change |
+| Scope explosion | Phases P-A, P2–P5 are independently shippable; each ends green |
+| `derive_eq_ord` markers not understood by the resolver | P-A adds the marker handling before any dispatch change |
 
 ---
 
