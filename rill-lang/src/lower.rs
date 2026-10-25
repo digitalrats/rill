@@ -109,13 +109,19 @@ fn param_placeholder_max(ty: &ValueTy) -> u32 {
 }
 
 /// Whether a value type is fully concrete — no unresolved type variable, no
-/// type-constructor variable, no function type. Exactly the types
-/// [`crate::types::ty::value_type_key`] can spell as an instance-registry key.
+/// type-constructor variable, no function type, no dictionary. Exactly the
+/// types [`crate::types::ty::value_type_key`] can spell as an
+/// instance-registry key.
 fn is_concrete_ty(v: &ValueTy) -> bool {
     match v {
         ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) | ValueTy::Thunk(..) => {
             false
         }
+        // A dictionary is concrete in the type-variable sense, but it is not a
+        // DATA type: it can never be a record's type argument, and it spells no
+        // registry key. Excluding it keeps this predicate exactly in step with
+        // `value_type_key`.
+        ValueTy::Dict(_) => false,
         ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
             args.iter().all(is_concrete_ty)
         }
@@ -7506,7 +7512,10 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Void
             | ValueTy::Thunk(_, _)
             | ValueTy::Var(_)
-            | ValueTy::TyConVar(_) => 1,
+            | ValueTy::TyConVar(_)
+            // A dictionary is one arena slot: it is not a type whose shape
+            // implies a nested value subtree.
+            | ValueTy::Dict(_) => 1,
             ValueTy::TyConApp(_, args) => {
                 1 + args
                     .iter()

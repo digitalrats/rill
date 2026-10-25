@@ -63,6 +63,17 @@ pub enum ValueTy {
     /// the data-type's type parameter (same id space as `Var`/`TyConVar`); when it
     /// resolves to a concrete constructor the application becomes `App(c, args)`.
     TyConApp(TypeVarId, Vec<ValueTy>),
+    /// The type of a DICTIONARY parameter: the runtime witness a constrained
+    /// function takes for one of its class constraints (`f :: Num a => a -> a`
+    /// carries one `Dict` for `Num a`).
+    ///
+    /// The payload is the CLASS NAME. That is the dictionary's identity for
+    /// unification, and it lives in the COMPILER only: the runtime dictionary
+    /// is a positional vtable with no names (design §3.1), so the class name is
+    /// never looked up or compared at run time — it is the static evidence a
+    /// `Dict` type exists to make explicit. Two `Dict`s unify exactly when
+    /// their class names are equal; a `Dict` never unifies with a data type.
+    Dict(String),
 }
 
 impl ValueTy {
@@ -139,7 +150,7 @@ pub type ArrowTy = Ty;
 /// Back-compat alias: every channel is a value type.
 pub type Block = ValueTy;
 
-/// A polymorphic type scheme `∀ vars. ty`.
+/// A polymorphic type scheme `∀ vars. C vars => ty`.
 ///
 /// `lam_count` is the number of λ-parameters for this definition (user-defined
 /// function arguments). With the unary core the parameters live inside the
@@ -152,6 +163,18 @@ pub struct Scheme {
     pub lam_count: usize,
     /// Quantified type variables.
     pub vars: Vec<TypeVarId>,
+    /// The class context the scheme REQUIRES: `(class, its type variable)`
+    /// pairs, e.g. `Ix i => …` is `[("Ix", i)]`.
+    ///
+    /// This is the System FC constraint the caller must discharge with a
+    /// dictionary. The variable is the id the constraint's variable has in
+    /// [`Self::ty`] (and therefore in [`Self::vars`]), so the context and the
+    /// type always name the same variable. Only a constraint whose variable the
+    /// signature actually mentions is recorded: a context over a declared type
+    /// (`Ix Int => …`) is already discharged, and an AMBIGUOUS context
+    /// (`C i => Float`, where `i` occurs in no argument or result) has no
+    /// variable to pair a dictionary with. Empty for an unconstrained scheme.
+    pub constraints: Vec<(String, TypeVarId)>,
     /// The generalized value type.
     pub ty: Ty,
 }
@@ -2012,6 +2035,10 @@ impl TypeEnv {
             ValueTy::Data(n, _) => Some(n.clone()),
             ValueTy::Newtype(n, _) => Some(n.clone()),
             ValueTy::App(n, _) => Some(n.clone()),
+            // A dictionary is not a nominal data type. Its payload is the
+            // CLASS name, which names a class — never a type an instance can be
+            // registered for, so it must not select an instance.
+            ValueTy::Dict(_) => None,
             _ => None,
         }
     }
@@ -2227,6 +2254,10 @@ fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
             args.iter().map(normalize_ctor_app).collect(),
             rets.iter().map(normalize_ctor_app).collect(),
         ),
+        // A dictionary has no constructor application to normalize: it is not
+        // an instance head, so it passes through unchanged (its class id is
+        // already canonical).
+        ValueTy::Dict(class) => ValueTy::Dict(class.clone()),
         other => other.clone(),
     }
 }
@@ -2237,9 +2268,13 @@ fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
 /// ([`crate::render::render_type_key`]).
 ///
 /// `None` when the type is not concrete (an unresolved variable, a
-/// type-constructor variable, a function type): such a selector cannot name an
-/// instance, and the caller falls back to the head-constructor lookup.
-pub(crate) fn value_type_key(v: &ValueTy) -> Option<String> {
+/// type-constructor variable, a function type, a dictionary): such a type
+/// cannot name an instance, and the caller falls back to the head-constructor
+/// lookup.
+///
+/// Public so tests can assert the exact spelling the instance registry is keyed
+/// by.
+pub fn value_type_key(v: &ValueTy) -> Option<String> {
     fn key(v: &ValueTy) -> Option<String> {
         Some(match v {
             ValueTy::Int => "Int".to_string(),
@@ -2248,6 +2283,9 @@ pub(crate) fn value_type_key(v: &ValueTy) -> Option<String> {
             ValueTy::String => "String".to_string(),
             ValueTy::Buffer => "Buffer".to_string(),
             ValueTy::Void => "()".to_string(),
+            // A dictionary is never a registry key: it is compiler-side
+            // evidence of a constraint, not a type an instance is declared for.
+            ValueTy::Dict(_) => return None,
             ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
                 if args.is_empty() {
                     n.clone()
@@ -2277,6 +2315,45 @@ pub(crate) fn value_type_key(v: &ValueTy) -> Option<String> {
         })
     }
     key(v)
+}
+
+/// A stable ordinal RANK for a value type: a total order over the type FORMS.
+///
+/// This is the ordering CONTRACT for any code that must put value types in a
+/// deterministic order (diagnostic listing, tie-breaking): rank ascending breaks
+/// every tie the same way. It is not a type judgement — two distinct types share
+/// a rank (`Data("A")` and `Data("B")` are both rank 6), so a rank comparison
+/// can give a stable order but can never prove equality.
+///
+/// Every variant has an EXPLICIT rank (no wildcard), so a new type form must be
+/// given one deliberately instead of silently inheriting another form's place
+/// in the order. The ranks below are a fixed table: a new form is appended with
+/// the next unused rank, so no established ordering is ever reshuffled.
+///
+/// A dictionary ranks ABOVE every data form: it is a constraint witness, not a
+/// value the program's data operations see, so it must never interleave with
+/// the data kinds in an ordering.
+///
+/// Not to be confused with the interpreter's `Value`-level `kind_rank`, which
+/// orders runtime VALUES by their representation kind; this one orders TYPES by
+/// their form. The two answer different questions and never share a table.
+pub fn kind_rank(v: &ValueTy) -> i8 {
+    match v {
+        ValueTy::Int => 0,
+        ValueTy::Float => 1,
+        ValueTy::Bool => 2,
+        ValueTy::String => 3,
+        ValueTy::Buffer => 4,
+        ValueTy::Void => 5,
+        ValueTy::Data(..) => 6,
+        ValueTy::Newtype(..) => 7,
+        ValueTy::App(..) => 8,
+        ValueTy::Thunk(..) => 9,
+        ValueTy::Var(_) => 10,
+        ValueTy::TyConVar(_) => 11,
+        ValueTy::TyConApp(..) => 12,
+        ValueTy::Dict(_) => 13,
+    }
 }
 
 impl Subst {

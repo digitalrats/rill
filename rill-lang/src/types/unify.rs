@@ -159,6 +159,11 @@ pub fn unify_value(
             Ok(())
         }
         (ValueTy::Void, ValueTy::Void) => Ok(()),
+        // Dictionaries unify by CLASS IDENTITY: a `Num` witness is exactly a
+        // `Num` witness and never another class's. A dictionary is not a data
+        // type, so every mixed pair (`Dict` vs `Int`/`Data`/`App`/…) falls
+        // through to the catch-all and is rejected.
+        (ValueTy::Dict(x), ValueTy::Dict(y)) if x == y => Ok(()),
         (ValueTy::Data(x, ax), ValueTy::Data(y, ay))
         | (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay))
             if x == y && ax.len() == ay.len() =>

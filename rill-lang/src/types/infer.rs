@@ -1383,6 +1383,53 @@ fn sig_constraints(sig: &crate::ast::TypeExpr) -> &[(String, String)] {
     }
 }
 
+/// Turn a signature's `(class, type-variable NAME)` context into a scheme's
+/// `(class, type-variable ID)` constraints.
+///
+/// `vars` is the name→type map the signature conversion ([`def_sig_tys`])
+/// produced for the scheme's value type, so a variable the type mentions keeps
+/// the SAME id in the constraint — that is what lets a later dictionary
+/// argument be paired with the parameter it witnesses. A recorded constraint's
+/// variable therefore ALWAYS occurs in the scheme type.
+///
+/// Two contexts are not recorded:
+///
+/// - a context over a DECLARED type (`Ix Int => …`), which is already
+///   discharged by that instance;
+/// - a context variable the substitution already pinned to a concrete type,
+///   which needs no dictionary parameter.
+fn scheme_constraints(
+    ctx: &mut Ctx,
+    sig: &crate::ast::TypeExpr,
+    vars: &HashMap<String, ValueTy>,
+) -> Vec<(String, TypeVarId)> {
+    let env = ctx.env.clone();
+    let mut out: Vec<(String, TypeVarId)> = Vec::new();
+    for (class, var) in sig_constraints(sig) {
+        if is_declared_type_name(&env, var) {
+            continue;
+        }
+        // A context variable the signature's arguments and result never
+        // mention (`C i => Float`) has no type variable IN the scheme to pair
+        // with, so there is nothing a dictionary parameter could witness. Such
+        // a signature is AMBIGUOUS, which Haskell 2010 rejects outright; rill
+        // has no ambiguity check today (an open defect tracked separately, and
+        // one this change does not introduce — such a signature compiles at the
+        // branch's base commit), so the constraint is dropped here rather than
+        // paired with an invented id that no call site could ever solve.
+        let Some(t) = vars.get(var) else {
+            continue;
+        };
+        let id = match ctx.subst.resolve_value(t) {
+            ValueTy::Var(v) | ValueTy::TyConVar(v) => v,
+            // Solved to a concrete type: no dictionary parameter needed.
+            _ => continue,
+        };
+        out.push((class.clone(), id));
+    }
+    out
+}
+
 /// The function-shaped body of a signature: `forall` binders and a class
 /// context wrappers are transparent, so `C v => a -> b` and `forall v. a -> b`
 /// both answer their `(argument types, result type)`. A signature that is not a
@@ -2300,7 +2347,7 @@ fn effective_def_params(def: &Def) -> (Vec<crate::ast::Param>, Expr) {
 /// A definition body's inferred type, plus the signature argument types its
 /// λ-parameters were bound to (empty when the definition is unannotated).
 ///
-/// [`def_scheme_vty`] reuses the EXACT types the body was checked against:
+/// [`def_scheme`] reuses the EXACT types the body was checked against:
 /// re-converting the signature would allocate fresh variables and lose the
 /// sharing between a parameter and the result (`f x :: a -> a = x`).
 struct DefBodyTy {
@@ -2310,7 +2357,7 @@ struct DefBodyTy {
     sig_params: Vec<ValueTy>,
     /// Recovered λ-parameter types from the value-track retry, if any: empty
     /// when the first attempt typed the body (with signature types or the
-    /// scalar default). [`def_scheme_vty`] prefers these over the `Float`
+    /// scalar default). [`def_scheme`] prefers these over the `Float`
     /// fallback so a signature-less def's scheme carries its structured
     /// parameters (`first p = p.x` → `p : Point`) instead of flattening them.
     lambda_param_tys: Vec<ValueTy>,
@@ -2329,7 +2376,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // instance is unknown until a call site solves the class variable. Typing
     // it here would dispatch `rangeSize p` against the scalar default for `p`
     // and fail. The definition's real scheme comes from its signature (see
-    // `def_scheme_vty`); the body is specialized per call site in lowering.
+    // `def_scheme`); the body is specialized per call site in lowering.
     if let Some(sig) = constrained_def_sig(def) {
         let (_, ret, _) = def_sig_tys(ctx, sig);
         return Ok(DefBodyTy {
@@ -2434,7 +2481,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             // The parameter types the body was checked against, resolved
             // through the substitution: an unconstrained parameter stays a
             // structural `Var` (polymorphic), a constrained one is concrete.
-            // `def_scheme_vty` lifts these into the definition's scheme.
+            // `def_scheme` lifts these into the definition's scheme.
             resolved_param_tys(ctx, &params),
         ),
         Err(_) => {
@@ -2481,7 +2528,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             // returned body type: the body's value demands (`tail xs` → xs :
             // List, `k - 1.0` → k : Float) resolve the fresh param vars here,
             // and the final scheme would otherwise discard them (λ-params are
-            // stored as signal scalars). `def_scheme_vty` lifts them into the
+            // stored as signal scalars). `def_scheme` lifts them into the
             // scheme, and lowering's `fn_param_tys` rebuild reads them from
             // there — no separate side-channel is needed.
             let lambda_param_tys = if retry.is_ok() {
@@ -2547,6 +2594,9 @@ fn rerate_value(ctx: &mut Ctx, name: &str, lam_count: usize, body_lams: usize) {
         Scheme {
             lam_count,
             vars: vec![],
+            // A recursion placeholder is a fresh unconstrained signature, so it
+            // carries no class context.
+            constraints: Vec::new(),
             ty: ArrowTy { vty },
         },
     );
@@ -2670,6 +2720,9 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
             Scheme {
                 lam_count,
                 vars: vec![],
+                // Placeholder scheme: the class context (if any) is recorded
+                // when the real scheme replaces this one in phase 2.
+                constraints: Vec::new(),
                 ty: ArrowTy { vty },
             },
         );
@@ -2696,7 +2749,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
             ctx.retry_inferred_defs.insert(def.name().to_string());
         }
         let lam_count = effective_def_params(def).0.len();
-        let vty = def_scheme_vty(ctx, def, &body_ty, lam_count);
+        let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count);
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
@@ -2705,6 +2758,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
             Scheme {
                 lam_count,
                 vars,
+                constraints,
                 ty: resolved,
             },
         );
@@ -2717,7 +2771,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         }
         let body_ty = infer_def_body(ctx, def)?;
         let lam_count = effective_def_params(def).0.len();
-        let vty = def_scheme_vty(ctx, def, &body_ty, lam_count);
+        let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count);
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
@@ -2726,6 +2780,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
             Scheme {
                 lam_count,
                 vars,
+                constraints,
                 ty: resolved,
             },
         );
@@ -2753,7 +2808,8 @@ fn resolved_param_tys(ctx: &Ctx, params: &[Param]) -> Vec<ValueTy> {
         .collect()
 }
 
-/// The definition's scheme value type.
+/// The definition's scheme: its generalized value type and the CLASS
+/// CONSTRAINTS its signature requires.
 ///
 /// A class-constrained definition takes its scheme from the SIGNATURE: its body
 /// was deferred (it has no inferred type of its own), and the signature's
@@ -2768,36 +2824,52 @@ fn resolved_param_tys(ctx: &Ctx, params: &[Param]) -> Vec<ValueTy> {
 /// where the body constrained them (`first p = p.x` → `p : Point`), a type
 /// variable where it did not (`f x = x` → `a -> a`) — instead of the scalar
 /// `Float` default.
-fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usize) -> ValueTy {
+///
+/// The constraint list comes from the signature's `(C1 a, C2 b) =>` context
+/// (empty for an unconstrained definition). Each constraint's type variable is
+/// resolved through the substitution, so it is the SAME id the scheme type
+/// carries — a caller that later discharges the constraint (passing a
+/// dictionary) can rely on the pairing. A constraint whose variable the
+/// substitution solved to a concrete type is dropped: it needs no dictionary
+/// because it is already determined.
+fn def_scheme(
+    ctx: &mut Ctx,
+    def: &Def,
+    body_ty: &DefBodyTy,
+    lam_count: usize,
+) -> (ValueTy, Vec<(String, TypeVarId)>) {
     if let Some(sig) = constrained_def_sig(def) {
-        let (sig_params, sig_ret, _) = def_sig_tys(ctx, sig);
-        return if sig_params.is_empty() {
+        let (sig_params, sig_ret, vars) = def_sig_tys(ctx, sig);
+        let vty = if sig_params.is_empty() {
             sig_ret
         } else {
             ValueTy::Thunk(sig_params, vec![sig_ret])
         };
+        let constraints = scheme_constraints(ctx, sig, &vars);
+        return (vty, constraints);
     }
-    if lam_count == 0 {
-        return body_ty.ty.vty.clone();
-    }
-    // Signature-driven scheme: the body was typed against these exact argument
-    // types, so call sites and lowering agree.
-    if body_ty.sig_params.len() == lam_count {
-        return ValueTy::Thunk(body_ty.sig_params.clone(), vec![body_ty.ty.vty.clone()]);
-    }
-    // Recovered parameter types: the types the body was actually checked
-    // against (`x + 1.0` → `x : Float`, `p.x` → `p : Point`, an unconstrained
-    // `x` → a type variable). Carrying them here — rather than the scalar
-    // `Float` fallback — keeps an unannotated definition's polymorphism and
-    // gives the call-site argument check the real parameter types.
-    if body_ty.lambda_param_tys.len() == lam_count {
-        return ValueTy::Thunk(
+    let vty = if lam_count == 0 {
+        body_ty.ty.vty.clone()
+    } else if body_ty.sig_params.len() == lam_count {
+        // Signature-driven scheme: the body was typed against these exact
+        // argument types, so call sites and lowering agree.
+        ValueTy::Thunk(body_ty.sig_params.clone(), vec![body_ty.ty.vty.clone()])
+    } else if body_ty.lambda_param_tys.len() == lam_count {
+        // Recovered parameter types: the types the body was actually checked
+        // against (`x + 1.0` → `x : Float`, `p.x` → `p : Point`, an
+        // unconstrained `x` → a type variable). Carrying them here — rather
+        // than the scalar `Float` fallback — keeps an unannotated definition's
+        // polymorphism and gives the call-site argument check the real
+        // parameter types.
+        ValueTy::Thunk(
             body_ty.lambda_param_tys.clone(),
             vec![body_ty.ty.vty.clone()],
-        );
-    }
-    let param_tys: Vec<ValueTy> = (0..lam_count).map(|_| ValueTy::Float).collect();
-    ValueTy::Thunk(param_tys, vec![body_ty.ty.vty.clone()])
+        )
+    } else {
+        let param_tys: Vec<ValueTy> = (0..lam_count).map(|_| ValueTy::Float).collect();
+        ValueTy::Thunk(param_tys, vec![body_ty.ty.vty.clone()])
+    };
+    (vty, Vec::new())
 }
 
 /// Resolve an arm/branch body's result value type: a value channel directly,
@@ -6890,6 +6962,9 @@ fn type_spelling_named(t: &ValueTy, names: &mut HashMap<TypeVarId, String>) -> S
         ValueTy::String => "String".to_string(),
         ValueTy::Buffer => "Buffer".to_string(),
         ValueTy::Void => "()".to_string(),
+        // A dictionary is not a data type, so it has no nominal name — spell it
+        // as the class witness it is.
+        ValueTy::Dict(class) => format!("Dict {class}"),
         ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
             if args.is_empty() {
                 n.clone()
@@ -7792,7 +7867,7 @@ mod tests {
             let def = &prog.defs[0];
             let body = infer_def_body(&mut ctx, def).unwrap();
             let lam_count = effective_def_params(def).0.len();
-            match def_scheme_vty(&mut ctx, def, &body, lam_count) {
+            match def_scheme(&mut ctx, def, &body, lam_count).0 {
                 ValueTy::Thunk(args, _) => args,
                 other => panic!("expected a function scheme, got {other:?}"),
             }
