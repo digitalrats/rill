@@ -643,6 +643,11 @@ struct Lowerer<'a> {
     /// Fresh type-variable counter (for `signature_param_tys_conv` in the
     /// typeclass method-call lowering, which threads expected types).
     next_tyvar: u32,
+    /// Fresh-name counter for capture-avoiding method instantiation. Every
+    /// instantiation renames the method's own parameters to `$`-prefixed names
+    /// carrying this value, so two instantiations never share a binding name
+    /// and no `$` name can collide with a source identifier.
+    next_method_param: usize,
     /// Value registers holding the program's value outputs (value-channel
     /// entry). `[0]` becomes [`Ir::result_reg`](crate::ir::Ir) at the end of
     /// lowering.
@@ -2540,22 +2545,20 @@ impl<'a> Lowerer<'a> {
                             // expected container's leading args and discharge
                             // the constraints before inlining the body.
                             self.bind_head_args_and_discharge(&class_name, &ty_name, exp, *span)?;
-                            let (_, params, body) = match self
-                                .env
-                                .resolve_method(name, ty_name.as_str())
-                            {
+                            let (params, body) = match self.instantiate_method(
+                                &class_name,
+                                name,
+                                ty_name.as_str(),
+                            ) {
                                 Some(r) => r,
-                                None => match self.env.class_default(&class_name, name) {
-                                    Some((params, body)) => (class_name.clone(), params, body),
-                                    None => {
-                                        return Err(CompileError::Type {
-                                                msg: format!(
-                                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
-                                                ),
-                                                span: *span,
-                                            });
-                                    }
-                                },
+                                None => {
+                                    return Err(CompileError::Type {
+                                            msg: format!(
+                                                "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                            ),
+                                            span: *span,
+                                        });
+                                }
                             };
                             let key = (class_name, ty_name.clone(), name.to_string());
                             if self.method_lifting.contains(&key) {
@@ -2672,22 +2675,20 @@ impl<'a> Lowerer<'a> {
                                     span: call_args[selector_idx].span(),
                                 });
                             };
-                            let (_, params, body) = match self
-                                .env
-                                .resolve_method(name, ty_name.as_str())
-                            {
+                            let (params, body) = match self.instantiate_method(
+                                &class_name,
+                                name,
+                                ty_name.as_str(),
+                            ) {
                                 Some(r) => r,
-                                None => match self.env.class_default(&class_name, name) {
-                                    Some((params, body)) => (class_name.clone(), params, body),
-                                    None => {
-                                        return Err(CompileError::Type {
-                                                msg: format!(
-                                                    "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
-                                                ),
-                                                span: *span,
-                                            });
-                                    }
-                                },
+                                None => {
+                                    return Err(CompileError::Type {
+                                            msg: format!(
+                                                "no instance of `{class_name}` for type `{ty_name}` and no default for `{name}`"
+                                            ),
+                                            span: *span,
+                                        });
+                                }
                             };
                             let key = (class_name.clone(), ty_name.clone(), name.to_string());
                             if self.method_lifting.contains(&key) {
@@ -2727,9 +2728,12 @@ impl<'a> Lowerer<'a> {
                                         Expr::Ref(n, _) => n.as_str(),
                                         _ => unreachable!("nullary arg must be a Ref"),
                                     };
-                                    let (_, _, nbody) = self
-                                        .env
-                                        .resolve_method(arg_name, ty_name.as_str())
+                                    // Instantiating a nullary method inlines ITS
+                                    // body here, so its parameters must be
+                                    // renamed too — the same chokepoint as every
+                                    // other method-body path.
+                                    let (_, nbody) = self
+                                        .instantiate_method(&class_name, arg_name, ty_name.as_str())
                                         .unwrap();
                                     let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
                                     self.lower_value_expected(&nbody, Some(&exp))?
@@ -2840,19 +2844,20 @@ impl<'a> Lowerer<'a> {
                                 });
                             }
                         };
-                        let (_, params, body) = match self.env.resolve_method(name, ctor.as_str()) {
+                        let (params, body) = match self.instantiate_method(
+                            &class_name,
+                            name,
+                            ctor.as_str(),
+                        ) {
                             Some(r) => r,
-                            None => match self.env.class_default(&class_name, name) {
-                                Some((params, body)) => (class_name.clone(), params, body),
-                                None => {
-                                    return Err(CompileError::Type {
-                                        msg: format!(
-                                            "no instance of `{class_name}` for constructor `{ctor}` and no default for `{name}`"
-                                        ),
-                                        span: *span,
-                                    });
-                                }
-                            },
+                            None => {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "no instance of `{class_name}` for constructor `{ctor}` and no default for `{name}`"
+                                    ),
+                                    span: *span,
+                                });
+                            }
                         };
                         if params.len() != call_args.len() {
                             return Err(CompileError::Type {
@@ -4980,15 +4985,18 @@ impl<'a> Lowerer<'a> {
                             span,
                         });
                     };
-                    let (_, params, body) = match self.env.resolve_method(name, ty_name.as_str()) {
-                        Some(r) => r,
-                        None => {
-                            return Err(CompileError::Type {
-                                msg: format!("no instance of `{class_name}` for type `{ty_name}`"),
-                                span,
-                            });
-                        }
-                    };
+                    let (params, body) =
+                        match self.instantiate_method(&class_name, name, ty_name.as_str()) {
+                            Some(r) => r,
+                            None => {
+                                return Err(CompileError::Type {
+                                    msg: format!(
+                                        "no instance of `{class_name}` for type `{ty_name}`"
+                                    ),
+                                    span,
+                                });
+                            }
+                        };
                     let key = (class_name, ty_name.clone(), name.to_string());
                     if self.method_lifting.contains(&key) {
                         return Err(CompileError::Type {
@@ -5058,6 +5066,76 @@ impl<'a> Lowerer<'a> {
         self.lower_value_ref_inner(name, span)
     }
 
+    /// Give an instance method's own parameters fresh reserved names and rename
+    /// their bound occurrences through `body`.
+    ///
+    /// An instance body is spliced into the CALLER's expression, so a method
+    /// parameter keeps whatever spelling the instance author chose. When that
+    /// spelling is also a caller-visible name — the Prelude's `bind m f`
+    /// against a user's top-level `f` — the spliced body's `f` refers to the
+    /// METHOD PARAMETER but the caller's free-variable analysis and definition
+    /// resolution see the user's definition, which is variable capture.
+    ///
+    /// Renaming to `$`-prefixed names fixes it at the source: `$` cannot occur
+    /// in a source identifier, so a fresh name can never collide with a caller
+    /// binding. The counter keeps every instantiation distinct, so a method
+    /// instantiated twice (or a method body that instantiates another method)
+    /// cannot alias either. Semantics are unchanged — only binding names move.
+    /// The same technique the operator-as-value path uses for `$op_a`/`$op_b`.
+    ///
+    /// Returns the renamed parameter names in their original order (so callers
+    /// can bind them to the argument registers they already lowered) and the
+    /// renamed body.
+    #[inline(never)]
+    fn fresh_method_params(&mut self, body_params: &[String], body: &Expr) -> (Vec<String>, Expr) {
+        let fresh = self.next_method_param;
+        self.next_method_param += 1;
+        let mut renames: HashMap<String, String> = HashMap::new();
+        for (i, p) in body_params.iter().enumerate() {
+            // `_` is the wildcard parameter (`Stmt`-style bodies): it binds
+            // nothing, so renaming it would invent a binding the body never
+            // refers to.
+            if p == "_" {
+                continue;
+            }
+            renames.insert(p.clone(), method_param_name(fresh, i));
+        }
+        let renamed = rename_bound(body, &renames);
+        let names = body_params
+            .iter()
+            .map(|p| renames.get(p).cloned().unwrap_or_else(|| p.clone()))
+            .collect();
+        (names, renamed)
+    }
+
+    /// Resolve a typeclass method — the instance body, or the class DEFAULT body
+    /// when the instance omits the method — and instantiate it
+    /// capture-avoidingly.
+    ///
+    /// THE single place a method body enters the caller's expression. Returning
+    /// the body with the method's own parameters already renamed means no
+    /// inlining site can reintroduce the capture that
+    /// [`Self::fresh_method_params`] exists to prevent: a future method-body
+    /// path that calls this helper inherits the protection instead of having to
+    /// remember it.
+    ///
+    /// Kept out of line (`#[inline(never)]`) because it sits underneath the
+    /// deeply recursive `lower_value` dispatch: the extra binding it needs must
+    /// not enlarge that frame.
+    #[inline(never)]
+    fn instantiate_method(
+        &mut self,
+        class_name: &str,
+        name: &str,
+        ty_name: &str,
+    ) -> Option<(Vec<String>, Expr)> {
+        let (params, body) = match self.env.resolve_method(name, ty_name) {
+            Some((_, params, body)) => (params, body),
+            None => self.env.class_default(class_name, name)?,
+        };
+        Some(self.fresh_method_params(&params, &body))
+    }
+
     /// Lower a typeclass method used as a first-class value into a closure over
     /// its instance body, mirroring how a named definition with parameters is
     /// lowered.
@@ -5070,7 +5148,7 @@ impl<'a> Lowerer<'a> {
         sig: &crate::ast::TypeExpr,
         span: Span,
     ) -> Result<(usize, ValueTy), CompileError> {
-        let (_, body_params, body) = match self.env.resolve_method(name, ty_name) {
+        let (body_params, body) = match self.instantiate_method(class_name, name, ty_name) {
             Some(r) => r,
             None => {
                 return Err(CompileError::Type {
@@ -5113,10 +5191,10 @@ impl<'a> Lowerer<'a> {
             },
         );
         let mut lam = body;
-        for p in body_params.iter().rev() {
+        for p in body_params.into_iter().rev() {
             lam = Expr::Lambda {
                 params: vec![Param {
-                    name: p.clone(),
+                    name: p,
                     span,
                     bang: false,
                 }],
@@ -8201,6 +8279,225 @@ impl<'a> Lowerer<'a> {
     }
 }
 
+/// The reserved spelling of a method-instantiation parameter: `$` cannot occur
+/// in a source identifier, so a renamed binding can never shadow — or be
+/// shadowed by — a user name.
+fn method_param_name(fresh: usize, index: usize) -> String {
+    format!("$m{fresh}_{index}")
+}
+
+/// Rename the bound occurrences of `renames` throughout `e`, capture-avoidingly.
+///
+/// `e` is an instance method body and `renames` maps the method's OWN parameter
+/// names to their fresh `$`-prefixed replacements. The traversal stops at every
+/// construct that rebinds a name, so a nested lambda, a `let`/`where` binding, a
+/// pattern variable or a `do`-bound name that happens to share a spelling keeps
+/// its own binding: only the method's own parameters are renamed, never a binder
+/// the body introduces. That is what makes the substitution transparent.
+///
+/// `where` clauses reach lowering as `Expr::Let` (see `desugar::attach_where`),
+/// so the `Expr::Let` arm covers them: the bound names are dropped from the
+/// substitution while descending into their bodies, and the `where` bindings'
+/// own right-hand sides are still renamed — exactly Haskell 2010 §4.4.3.3
+/// scoping, where a `where` binding sees the definition's parameters.
+///
+/// Deliberately NOT [`crate::reduce::substitute`]: that one substitutes
+/// arbitrary expressions for names and leaves an `Expr::Apply`'s callee name
+/// alone (β-reduction never renames a callee). Instantiation renames a
+/// BINDING, so a name applied by name (`f io_state.second` in the `Monad IO`
+/// body, which is curried into an `ApplyExpr` but can also arrive as a plain
+/// `Apply`) must be renamed in callee position too.
+fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
+    match e {
+        Expr::Ref(name, span) => match renames.get(name) {
+            Some(fresh) => Expr::Ref(fresh.clone(), *span),
+            None => e.clone(),
+        },
+        Expr::Apply { name, args, span } => Expr::Apply {
+            name: renames.get(name).cloned().unwrap_or_else(|| name.clone()),
+            args: args.iter().map(|a| rename_bound(a, renames)).collect(),
+            span: *span,
+        },
+        Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {
+            callee: Box::new(rename_bound(callee, renames)),
+            args: args.iter().map(|a| rename_bound(a, renames)).collect(),
+            span: *span,
+        },
+        Expr::Neg(inner, span) => Expr::Neg(Box::new(rename_bound(inner, renames)), *span),
+        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
+            op: *op,
+            lhs: Box::new(rename_bound(lhs, renames)),
+            rhs: Box::new(rename_bound(rhs, renames)),
+            span: *span,
+        },
+        Expr::Let { defs, body, span } => {
+            let mut inner = renames.clone();
+            for d in defs {
+                inner.remove(d.name());
+            }
+            Expr::Let {
+                defs: defs.iter().map(|d| rename_bound_def(d, renames)).collect(),
+                body: Box::new(rename_bound(body, &inner)),
+                span: *span,
+            }
+        }
+        Expr::Record(fields, span) => Expr::Record(
+            fields
+                .iter()
+                .map(|(n, fe)| (n.clone(), rename_bound(fe, renames)))
+                .collect(),
+            *span,
+        ),
+        Expr::ActorParam {
+            name,
+            default,
+            span,
+        } => Expr::ActorParam {
+            name: name.clone(),
+            default: default.as_ref().map(|d| Box::new(rename_bound(d, renames))),
+            span: *span,
+        },
+        Expr::FieldProject {
+            record,
+            field,
+            span,
+        } => Expr::FieldProject {
+            record: Box::new(rename_bound(record, renames)),
+            field: field.clone(),
+            span: *span,
+        },
+        Expr::FieldUpdate {
+            record,
+            field,
+            value,
+            span,
+        } => Expr::FieldUpdate {
+            record: Box::new(rename_bound(record, renames)),
+            field: field.clone(),
+            value: Box::new(rename_bound(value, renames)),
+            span: *span,
+        },
+        Expr::Match {
+            scrutinee,
+            arms,
+            span,
+        } => Expr::Match {
+            scrutinee: Box::new(rename_bound(scrutinee, renames)),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    // A match arm's pattern binds names of its own: they shadow
+                    // the substitution inside that arm's guards and body.
+                    let mut inner = renames.clone();
+                    for v in crate::reduce::pattern_vars(&arm.pattern) {
+                        inner.remove(&v);
+                    }
+                    MatchArm {
+                        pattern: arm.pattern.clone(),
+                        guards: arm
+                            .guards
+                            .iter()
+                            .map(|(g, b)| (rename_bound(g, &inner), rename_bound(b, &inner)))
+                            .collect(),
+                        span: arm.span,
+                    }
+                })
+                .collect(),
+            span: *span,
+        },
+        Expr::If {
+            cond,
+            then,
+            els,
+            span,
+        } => Expr::If {
+            cond: Box::new(rename_bound(cond, renames)),
+            then: Box::new(rename_bound(then, renames)),
+            els: Box::new(rename_bound(els, renames)),
+            span: *span,
+        },
+        Expr::Lambda { params, body, span } => {
+            // A nested lambda rebinds its own parameters: drop them so an inner
+            // binder of the same spelling as a method parameter keeps its own
+            // binding (`\m -> …` inside `bind m f`'s body).
+            let mut inner = renames.clone();
+            for p in params {
+                inner.remove(&p.name);
+            }
+            Expr::Lambda {
+                params: params.clone(),
+                body: Box::new(rename_bound(body, &inner)),
+                span: *span,
+            }
+        }
+        Expr::ListLit(elems, span) => Expr::ListLit(
+            elems.iter().map(|el| rename_bound(el, renames)).collect(),
+            *span,
+        ),
+        Expr::MapLit(entries, span) => Expr::MapLit(
+            entries
+                .iter()
+                .map(|(k, v)| (k.clone(), rename_bound(v, renames)))
+                .collect(),
+            *span,
+        ),
+        Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
+            op: *op,
+            lhs: Box::new(rename_bound(lhs, renames)),
+            rhs: Box::new(rename_bound(rhs, renames)),
+            span: *span,
+        },
+        Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
+            op: *op,
+            lhs: Box::new(rename_bound(lhs, renames)),
+            rhs: Box::new(rename_bound(rhs, renames)),
+            span: *span,
+        },
+        Expr::Int(_, _)
+        | Expr::Float(_, _)
+        | Expr::Void(_)
+        | Expr::Str(_, _)
+        | Expr::Bool(_, _) => e.clone(),
+    }
+}
+
+/// Rename inside a definition's body and `where` bindings, used when descending
+/// into a `let`/`where` block. The definition's own binders shadow the
+/// substitution: `rename_bound`'s `Expr::Lambda`/`Expr::Let` arms already drop
+/// them when it descends, so the body is renamed as a whole rather than
+/// pre-peeling the currying λ-nest.
+fn rename_bound_def(d: &Def, renames: &HashMap<String, String>) -> Def {
+    match d {
+        Def::Eval {
+            name,
+            params,
+            body,
+            where_defs,
+            sig,
+            bang,
+            span,
+        } => {
+            let mut inner = renames.clone();
+            for p in params {
+                inner.remove(&p.name);
+            }
+            Def::Eval {
+                name: name.clone(),
+                params: params.clone(),
+                body: rename_bound(body, &inner),
+                where_defs: where_defs
+                    .iter()
+                    .map(|w| rename_bound_def(w, &inner))
+                    .collect(),
+                sig: sig.clone(),
+                bang: *bang,
+                span: *span,
+            }
+        }
+        other => other.clone(),
+    }
+}
+
 /// Whether a bang binding's right-hand side mentions the bound name (a
 /// self-recursive strict binding — `!x = x`, `!x = f x`). Such a binding has no
 /// value to force at the binding point, so it is rejected rather than lowered.
@@ -8454,6 +8751,7 @@ pub fn lower_program_with_channels(
         value_entry: 0,
         next_value_reg: 0,
         next_tyvar: 0,
+        next_method_param: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
         container_tys: Vec::new(),
@@ -8799,6 +9097,7 @@ mod tests {
             value_entry: 0,
             next_value_reg: 0,
             next_tyvar: 0,
+            next_method_param: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),
             container_tys: Vec::new(),
@@ -8871,6 +9170,46 @@ mod tests {
             lw.free_vars(apply, &bound),
             vec!["f".to_string()],
             "the applied closure name `f` must be captured as a free variable"
+        );
+    }
+
+    /// `rename_bound` must rename ONLY the method's own parameters: every
+    /// construct the body introduces that rebinds a name keeps its own binding.
+    /// This is the property that makes method instantiation semantics-
+    /// preserving, so it is pinned directly rather than only through the
+    /// end-to-end values.
+    #[test]
+    fn rename_bound_stops_at_inner_binders() {
+        // An INSTANCE METHOD BODY (not a definition's λ-nest): the method's
+        // parameters are supplied separately, so the body itself carries no
+        // binder for them. `\m -> m` inside it rebinds `m` locally; `f` is the
+        // method's other parameter and is free in the body.
+        let src = r"t = (\m -> m) 1.0 + 2.0; main = 1.0";
+        let p = parse(&tokenize(src).unwrap(), src.as_bytes()).unwrap();
+        let def = p.defs.iter().find(|d| d.name() == "t").unwrap();
+        let mut renames = HashMap::new();
+        renames.insert("m".to_string(), "$m0_0".to_string());
+        renames.insert("f".to_string(), "$m0_1".to_string());
+        let renamed = rename_bound(def.body(), &renames);
+        let text = format!("{renamed:?}");
+        // The inner λ rebinds `m`, so neither its binder nor its body reference
+        // is renamed: the shadowing rule holds.
+        assert!(
+            text.contains("params: [Param { name: \"m\""),
+            "the inner λ must keep its own `m` binder: {text}"
+        );
+        assert!(
+            !text.contains("$m0_0"),
+            "a shadowed `m` must not be renamed: {text}"
+        );
+        // A genuinely free `f` IS renamed — that is the capture fix.
+        let src2 = r"t = f + 1.0; main = 1.0";
+        let p2 = parse(&tokenize(src2).unwrap(), src2.as_bytes()).unwrap();
+        let def2 = p2.defs.iter().find(|d| d.name() == "t").unwrap();
+        let renamed2 = rename_bound(def2.body(), &renames);
+        assert!(
+            format!("{renamed2:?}").contains("$m0_1"),
+            "a free method parameter must be renamed: {renamed2:?}"
         );
     }
 

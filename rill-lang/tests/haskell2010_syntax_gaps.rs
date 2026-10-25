@@ -752,9 +752,10 @@ mod equation_order {
 /// (`params` vs a λ-nest) can work on one and break the other, so each construct
 /// this task added is asserted here as a real program whose `stdout` is checked.
 ///
-/// Definitions use a distinctive name (`dbl`, not `f`) because `f` and `m` are
-/// PRE-EXISTING defects on this path — see
-/// [`io_program_path::name_collisions_are_a_pre_existing_defect`].
+/// Definitions here mostly use a distinctive name (`dbl`, not `f`): the
+/// `f`/`m`/`return` collisions that used to break this path are OD-9, closed by
+/// capture-avoiding method instantiation — see
+/// [`capture_avoiding_instantiation`].
 mod io_program_path {
     use super::*;
     use rill_lang::compile;
@@ -767,8 +768,14 @@ mod io_program_path {
     /// `bind` per `do` statement, which exceeds libtest's default 2 MiB thread
     /// stack in a debug build.
     fn run_stdout(body: &str) -> Vec<String> {
+        run_stdout_of("dbl", body)
+    }
+
+    /// Like [`run_stdout`], with the definition the `main` calls named
+    /// explicitly — the OD-9 cases need a definition literally named `f`/`m`.
+    fn run_stdout_of(name: &str, body: &str) -> Vec<String> {
         let src = format!(
-            "{body}\nmain = do {{ write (Just (show_float (dbl 1.5))) stdout; return () }};\n"
+            "{body}\nmain = do {{ write (Just (show_float ({name} 1.5))) stdout; return () }};\n"
         );
         run_on_stack(16 << 20, move || {
             let mut runner = compile::<f32, 256>(&src, ForeignRegistry::new())
@@ -867,40 +874,212 @@ mod io_program_path {
         );
     }
 
-    /// `f` and `m` are PRE-EXISTING defects on this path, unrelated to the
-    /// desugaring pass: the Prelude's `Monad IO` instance is spelled
-    /// `bind m f = …`, and a top-level user definition named `f` (or `m`) is
-    /// mistaken for that instance parameter when the inlined body captures its
-    /// free variables. It is a NAME collision, not an arithmetic or currying
-    /// defect: `dbl x = x + 1.0;`, `fa x = x;` and `w x = x;` all print the
-    /// expected value, and only `f`/`m` fail. Reproductions: `f x = x;` and
-    /// `m x = x;` fail with `` `main` is not an executable `IO ()` action ``
-    /// while `dbl x = x;` prints `1.5`. Both fail identically at commit
-    /// `7fe2293` (before this task), so they are recorded (`DOCS-GAPS.md` OD-9),
-    /// not fixed, here.
+    /// OD-9 regression pin. The Prelude's `Monad IO` instance is spelled
+    /// `bind m f = …`; before capture-avoiding instantiation, inlining that
+    /// body made a top-level user definition named `f` (or `m`) resolve to the
+    /// METHOD PARAMETER's slot instead of the user's own definition, so the
+    /// program faulted at run time (`arithmetic operand is absent`, `thunk body
+    /// produced no result`) or was rejected (`field projection requires a
+    /// record`, `` `main` is not an executable `IO ()` action ``).
+    ///
+    /// The fix renames each instance method's own parameters to fresh
+    /// `$`-prefixed names before the body enters the caller, so a method
+    /// parameter can never capture a caller's identifier. Every colliding name
+    /// below must therefore now compute the value its own body defines.
     #[test]
-    fn name_collisions_are_a_pre_existing_defect() {
-        // A non-colliding name works, which is what makes the collision a
-        // separate defect rather than a desugaring failure.
+    fn name_collisions_with_method_parameters_now_work() {
+        // The baseline: a non-colliding name was always fine.
         assert_eq!(run_stdout("dbl x = x;"), ["1.5"]);
-        // The colliding name does NOT work. Pinned so the defect stays visible
-        // and its resolution has something to flip.
-        for name in ["f", "m"] {
-            let src = format!(
-                "{name} x = x;\n\
-                 main = do {{ write (Just (show_float ({name} 1.5))) stdout; return () }};\n"
-            );
-            let outcome = run_on_stack(16 << 20, move || {
-                match compile::<f32, 256>(&src, ForeignRegistry::new()) {
-                    Ok(mut r) => r.run().map_err(|e| e.to_string()),
-                    Err(e) => Err(e.to_string()),
-                }
-            });
-            assert!(
-                outcome.is_err(),
-                "`{name}` unexpectedly works; the name-collision defect is fixed \
-                 and this pin (plus the DOCS-GAPS entry) must be removed"
-            );
-        }
+        // OD-9's two statement-shaped collisions: a user definition named `f`
+        // and one named `m`. Each prints the value its own body computes
+        // (1.5 + 1.0 = 2.5), which is unreachable if the method parameter
+        // captures it.
+        assert_eq!(run_stdout_of("f", "f x = x + 1.0;"), ["2.5"]);
+        assert_eq!(run_stdout_of("m", "m x = x + 1.0;"), ["2.5"]);
+        // `return` is the third colliding spelling: the `Monad` result-directed
+        // method is also named `return`, and its own parameter must not capture
+        // the user's definition. `main` here is the `write` effect, because the
+        // user's `return` shadows the class method for the `IO ()` tail.
+        let src = "return x = x + 1.0;\n\
+                   main = write (Just (show_float (return 1.5))) stdout;\n";
+        let out = run_on_stack(16 << 20, move || {
+            compile::<f32, 256>(src, ForeignRegistry::new())
+                .and_then(|mut r| r.run().map(|()| r.stdout().to_vec()))
+                .map_err(|e| e.to_string())
+        });
+        assert_eq!(out.expect("a user `return` definition must work"), ["2.5"]);
+    }
+}
+
+/// OD-9: capture-avoiding instantiation of typeclass method bodies.
+///
+/// An instance method body is spliced into the caller's expression, so the
+/// method's OWN parameter names become caller-visible identifiers. The Prelude
+/// spells `instance Monad IO` as `bind m f = …`, which made a user's top-level
+/// `f`/`m` resolve to the method parameter instead of their own definition.
+///
+/// Every test below asserts a COMPUTED value that is DIFFERENT under the
+/// defective reading, and each is pinned on both value surfaces: `compile_eval`
+/// (the expression surface) and `compile()` + `run()` (the `main : IO ()`
+/// surface, where the `do`/`bind` desugaring is what triggers the collision).
+mod capture_avoiding_instantiation {
+    use rill_lang::compile;
+    use rill_lang::ffi::ForeignRegistry;
+
+    /// The `stdout` of a `main : IO ()` program, run on a grown stack (the lazy
+    /// `IO` interpreter nests one `bind` frame per `do` statement).
+    fn stdout_of(src: &str) -> Vec<String> {
+        let src = src.to_string();
+        rill_lang::run_on_stack(16 << 20, move || {
+            let mut runner = compile::<f32, 256>(&src, ForeignRegistry::new())
+                .unwrap_or_else(|e| panic!("program must compile: {e}\nsource:\n{src}"));
+            runner
+                .run()
+                .unwrap_or_else(|e| panic!("run must succeed: {e}\nsource:\n{src}"));
+            runner.stdout().to_vec()
+        })
+    }
+
+    #[test]
+    fn user_def_named_f_is_usable() {
+        // `f` collides with `bind m f`'s second parameter. Under the defect the
+        // IO path faults (`arithmetic operand is absent`) before printing.
+        assert_eq!(
+            stdout_of(
+                "f x = x + 1.0;\n\
+                 main = do { write (Just (show_float (f 1.0))) stdout; return () };"
+            ),
+            ["2.0"]
+        );
+        // The same definition on the value surface, where `do` is absent: this
+        // proves the collision is about the METHOD PARAMETER, not about `do`.
+        assert_eq!(super::float_of("f x = x + 1.0;", "f 1.0"), 2.0);
+    }
+
+    #[test]
+    fn user_def_named_m_is_usable() {
+        // `m` is `bind`'s FIRST parameter. Under the defect the IO path exhausts
+        // the value track (`thunk body produced no result`).
+        assert_eq!(
+            stdout_of(
+                "m x = x + 1.0;\n\
+                 main = do { write (Just (show_float (m 1.0))) stdout; return () };"
+            ),
+            ["2.0"]
+        );
+        assert_eq!(super::float_of("m x = x + 1.0;", "m 1.0"), 2.0);
+    }
+
+    #[test]
+    fn user_def_named_return_is_usable() {
+        // `return` is the result-directed `Monad` method, and its own parameter
+        // is `x`. The user's `return` must compute its own value; the METHOD's
+        // `x` must not capture a caller's `x`.
+        //
+        // A source that names a top-level `x` AND keeps a `return ()` tail is
+        // well-typed Haskell (the method's `x` binds the element, the top-level
+        // `x` is just an unused function), so it must RUN. Pre-fix it failed at
+        // run time with `` `main` must have type `IO ()`: the final action's
+        // result is not `()` ``: the method parameter `x` resolved to the user's
+        // top-level `x`, so the `IO` record the instance builds was the wrong
+        // shape and `return ()` produced a non-unit action.
+        assert_eq!(
+            stdout_of(
+                "x q = q * 2.0;\n\
+                 main = do { write (Just \"a\") stdout; write (Just \"b\") stdout; return () };"
+            ),
+            ["a", "b"]
+        );
+        // The user's own `return` definition still computes its own value inside
+        // a `do` block (two statements, so `bind` is instantiated around it).
+        assert_eq!(
+            stdout_of(
+                "return x = x + 1.0;\n\
+                 main = do { write (Just \"a\") stdout;\n\
+                             write (Just (show_float (return 1.0))) stdout; };"
+            ),
+            ["a", "2.0"]
+        );
+        assert_eq!(super::float_of("return x = x + 1.0;", "return 1.0"), 2.0);
+    }
+
+    #[test]
+    fn user_params_named_like_method_params() {
+        // A user definition whose OWN name AND parameter are spelled like a
+        // `Monad` method parameter. `f m = m + 1.0` applied to 3.0 is 4.0 only if
+        // the user's `m` keeps its own binding; under the defect the body's `m`
+        // resolved to `bind`'s parameter slot and the run faulted.
+        assert_eq!(
+            stdout_of(
+                "f m = m + 1.0;\n\
+                 main = do { write (Just (show_float (f 3.0))) stdout; return () };"
+            ),
+            ["4.0"]
+        );
+        assert_eq!(super::float_of("f m = m + 1.0;", "f 3.0"), 4.0);
+        // The mirror image: the definition is `m` and the parameter `f`.
+        assert_eq!(
+            stdout_of(
+                "m f = f + 1.0;\n\
+                 main = do { write (Just (show_float (m 3.0))) stdout; return () };"
+            ),
+            ["4.0"]
+        );
+        assert_eq!(super::float_of("m f = f + 1.0;", "m 3.0"), 4.0);
+        // A definition with TWO parameters named after the two `bind`
+        // parameters: both must keep their own bindings, so the sum is 7.0 and
+        // not a re-application of one to the other.
+        assert_eq!(
+            stdout_of(
+                "add m f = m + f;\n\
+                 main = do { write (Just (show_float (add 3.0 4.0))) stdout; return () };"
+            ),
+            ["7.0"]
+        );
+        assert_eq!(super::float_of("add m f = m + f;", "add 3.0 4.0"), 7.0);
+    }
+
+    #[test]
+    fn method_called_with_colliding_local() {
+        // A user definition named `f` used as a first-class VALUE inside a `do`
+        // block: `let g = f in g 1.0` must apply the user's `f` (1.0 + 1.0 =
+        // 2.0). Under the defect the reference resolved to `bind`'s parameter
+        // slot and the run faulted with `arithmetic operand is absent`.
+        assert_eq!(
+            stdout_of(
+                "f x = x + 1.0;\n\
+                 main = do { let g = f; write (Just (show_float (g 1.0))) stdout; return () };"
+            ),
+            ["2.0"]
+        );
+        // The mirror image with `m`, whose defective diagnostic is `thunk body
+        // produced no result`.
+        assert_eq!(
+            stdout_of(
+                "m x = x + 1.0;\n\
+                 main = do { let u = m; write (Just (show_float (u 1.0))) stdout; return () };"
+            ),
+            ["2.0"]
+        );
+        // A genuine class-method call with a COLLIDING local argument: `fmap`'s
+        // instance body is `map g xs`, so the caller's lambda parameter named
+        // `g` sits where the method parameter `g` would be. The lambda triples
+        // its argument, so the result is 6.0 — a captured `g` (the method's own
+        // parameter) would project a different function.
+        assert_eq!(
+            stdout_of(
+                "main = do { write (Just (show_float (\
+                   case fmap (\\g -> g * 3.0) (Just 2.0) of { Nothing -> 0.0; Just v -> v }\
+                 ))) stdout; return () };"
+            ),
+            ["6.0"]
+        );
+        assert_eq!(
+            super::float_of(
+                "",
+                "case fmap (\\g -> g * 3.0) (Just 2.0) of { Nothing -> 0.0; Just v -> v }"
+            ),
+            6.0
+        );
     }
 }
