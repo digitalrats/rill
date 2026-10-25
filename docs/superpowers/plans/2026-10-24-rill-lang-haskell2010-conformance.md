@@ -366,6 +366,59 @@ git commit -m 'feat(lang): Haskell 2010 where, guards, sections, arg patterns an
 
 ---
 
+### Task 3.5: Capture-avoiding instantiation of typeclass method bodies (OD-9)
+
+> **Why this is a blocker:** `instantiate_method_call` (`lower.rs:5073`) wraps an
+> instance method body in lambdas over the method's OWN parameter names without
+> renaming them. A user definition whose name collides with a method parameter is
+> captured: `f x = x + 1.0;` + IO `main` fails, `m x = …` fails, `return x = …`
+> fails. The upcoming operator-as-class-method work routes **every** operator
+> through this same path (`(+) a b`, `compare a b`, `fmap g xs`, `mappend a b`),
+> which would multiply the capture surface from 2 names to dozens. Fix the
+> substitution before the typeclass layer lands.
+
+**Files:**
+- Modify: `rill-lang/src/lower.rs` (`instantiate_method_call` ~5073; the operator-value helper at ~5150 already demonstrates the safe `$`-prefixed renaming)
+- Test: `rill-lang/tests/typeclass_layer.rs` (new) or `haskell2010_syntax_gaps.rs`
+
+**Interfaces:**
+- Consumes: nothing new.
+- Produces: method instantiation that is safe for any caller-side identifier.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test] fn user_def_named_f_is_usable()      { /* f x = x + 1.0; IO main prints 2.0 */ }
+#[test] fn user_def_named_m_is_usable()      { /* m x = x + 1.0 */ }
+#[test] fn user_def_named_return_is_usable() { /* return x = x + 1.0 */ }
+#[test] fn user_params_named_like_method_params() { /* g a b = a + b; method params are a/b */ }
+#[test] fn method_called_with_colliding_local()   { /* local named `f`/`m` passed to a class method */ }
+```
+
+- [ ] **Step 2: Run to verify they fail** — OD-9's three shapes fail today.
+
+- [ ] **Step 3: Rename method parameters to fresh reserved names**
+
+When instantiating a method body, rename each of the method's own parameters to a
+fresh `$`-prefixed name (the prefix cannot occur in source identifiers, so it can
+never collide), and substitute consistently through the body. Then wrap in
+lambdas over the fresh names. This mirrors `lower_operator_value`, which already
+uses `$op_a`/`$op_b` for exactly this reason.
+
+- [ ] **Step 4: Verify no existing behaviour changed**
+
+The rename must be semantically transparent: every currently passing test stays
+green, and the three OD-9 shapes now produce the expected values.
+
+- [ ] **Step 5: Close OD-9 in the register and commit**
+
+```bash
+git add rill-lang/src/lower.rs rill-lang/tests/ docs/superpowers/DOCS-GAPS.md
+git commit -m 'fix(lang): capture-avoiding method instantiation'
+```
+
+---
+
 ### Task 4: `let` bindings of function/record values, list comprehensions
 
 **Files:**
