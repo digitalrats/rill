@@ -91,6 +91,61 @@ git commit -m 'feat(lang): expression type annotations'
 
 ---
 
+### Task 1.5 (conformance): check arguments at a user-definition call
+
+> **Why this is in this plan:** it was found while reviewing Task 1 and it is a
+> Haskell 2010 violation, not a scope boundary. Per `AGENTS.md` there is no
+> "pre-existing" exemption: a defect that predates the branch is still a defect.
+> Verified on `91db138`:
+>
+> ```
+> f x = x + 1.0;
+> main = do { write (Just (show_float (f "str"))) stdout; return () };
+> ```
+> **compiles today.** A `String` argument to a `Float` parameter is accepted.
+> Builtin calls do check (`sine "a" …` is rejected), so the gap is specific to
+> user definitions.
+>
+> It also blocks Task 3: typing a constrained body is meaningless if calls into
+> plain definitions never check their arguments.
+
+**Files:**
+- Modify: `rill-lang/src/types/infer.rs` (`infer_apply_impl` — unify each argument
+  against `fn_param_tys[name][i]`; `TypedProgram.fn_param_tys` already exists)
+- Test: `rill-lang/tests/arg_checking.rs` (new)
+
+**Interfaces:**
+- Consumes: `TypedProgram.fn_param_tys: HashMap<String, Vec<ValueTy>>` (already
+  built in `infer_program_with`, ~`infer.rs:2170`), `def_schemes`.
+- Produces: user-def call sites reject a mismatched argument type.
+
+- [ ] **Step 1: Write the failing tests**
+
+```rust
+#[test] fn a_string_argument_to_a_float_parameter_is_rejected() { /* f x = x + 1.0; f "str" */ }
+#[test] fn a_float_argument_to_an_int_parameter_is_rejected()   { /* f x :: Int -> Int; f 1.5 */ }
+#[test] fn a_matching_argument_is_accepted()                    { /* f x = x + 1.0; f 1.0 runs */ }
+#[test] fn an_unresolved_argument_defers()                      { /* a polymorphic arg in a constrained body still works */ }
+#[test] fn higher_order_argument_is_checked()                   { /* f g = g 1.0; f (\s -> s) is an error */ }
+```
+
+- [ ] **Step 2: Run to verify they fail** — the first two compile today.
+
+- [ ] **Step 3: Unify arguments against the definition's parameter types**
+
+At a named user-def call, look up `fn_param_tys[name]` and `unify_value` each
+actual argument type against the corresponding formal. A formal that is still a
+`Var` defers (do not over-constrain polymorphism); a concrete mismatch is a type
+error naming the function and position. Keep the existing arity handling.
+
+- [ ] **Step 4: Verify and commit**
+
+```bash
+git commit -m 'fix(lang): check argument types at user-definition calls'
+```
+
+---
+
 ### Task 2 (Stage 1b): `ValueTy::Dict` and `Scheme.constraints`
 
 **Files:**
