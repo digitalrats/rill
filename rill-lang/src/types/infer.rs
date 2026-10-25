@@ -62,6 +62,32 @@ pub struct TypedProgram {
     /// The evaluation mode this program was compiled under (the file pragma,
     /// or the API-supplied mode when the file carries none).
     pub mode: Mode,
+    /// The dictionary the type checker SELECTED at every class-method call
+    /// position, keyed by the call's source span: `(class, evidence)`.
+    ///
+    /// This is design §3.0's third consequence — inference proves the
+    /// constraint and RECORDS the instance choice, so lowering inserts the
+    /// dictionary the type checker chose instead of re-deriving it from
+    /// signatures.
+    ///
+    /// The evidence is one of:
+    ///
+    /// - a **concrete type** (`Int`, `Pair Int Int`) — the call site solved the
+    ///   class variable and that instance's dictionary is the argument;
+    /// - **`ValueTy::Dict(g)`** — the call sits inside a class-constrained
+    ///   body, so the class variable is ABSTRACT and the witness is the GIVEN
+    ///   constraint's incoming dictionary for class `g` (the enclosing
+    ///   `C g`). `g` differs from the method's own class only through a
+    ///   superclass projection (`Ord a`'s dictionary carries `Eq a`'s), which
+    ///   is exactly the slot lowering projects.
+    ///
+    /// A position with no entry has no dictionary argument (for example a
+    /// primitive-kernel call selected outside a given context still records
+    /// its concrete type; only positions inference never reached are absent).
+    /// Prelude bodies are typed in a SEPARATE context whose spans index the
+    /// prelude text, so their selections are deliberately NOT merged here — a
+    /// span from that text would not name a position in the user's source.
+    pub dict_selections: HashMap<Span, (String, ValueTy)>,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -121,6 +147,18 @@ struct Ctx {
     /// being inferred. A nested group's bodies see the enclosing λ-parameters,
     /// so `infer_def_body` keeps `ctx.locals` instead of clearing it.
     nested_group_depth: usize,
+    /// The class constraints GIVEN to the body currently being inferred, in
+    /// declaration order. Inside `mk :: Ix i => …` this holds one `Ix`/`i`
+    /// witness, and a method call of `Ix` resolves against that GIVEN witness
+    /// instead of demanding a concrete call-site type (design §3.0: the body is
+    /// typed ONCE, under the abstract dictionary).
+    ///
+    /// Empty outside a constrained body. Saved and restored around every body
+    /// inference, exactly like `locals`.
+    given: Vec<GivenVar>,
+    /// The dictionary the type checker selected at each method call position,
+    /// keyed by the call's span (see [`TypedProgram::dict_selections`]).
+    dict_selections: HashMap<Span, (String, ValueTy)>,
 }
 
 impl Ctx {
@@ -136,7 +174,22 @@ impl Ctx {
         ValueTy::Var(self.fresh_id())
     }
 
+    /// Instantiate a scheme at a use site: every quantified variable becomes a
+    /// fresh unbound variable, and the scheme's CLASS CONTEXT travels with it.
+    ///
+    /// The returned [`SchemeConstraint`]s are the constraints as they are in
+    /// THIS instantiation: each carries the freshened variable from the same
+    /// `vremap` the body type went through, so the constraint and the type
+    /// still name one variable. That is what makes a constraint genuinely
+    /// per-instantiation: without it, two uses of one polymorphic scheme would
+    /// share a variable id and the second call site's solution would silently
+    /// overwrite the first's dictionary.
     fn instantiate(&mut self, scheme: &Scheme) -> ArrowTy {
+        self.instantiate_with_constraints(scheme).0
+    }
+
+    /// [`Self::instantiate`] plus the instantiated class context.
+    fn instantiate_with_constraints(&mut self, scheme: &Scheme) -> (ArrowTy, SchemeContext) {
         let mut vremap: HashMap<TypeVarId, TypeVarId> = HashMap::new();
         for v in &scheme.vars {
             // A fresh id for the value side: a generalized value-type variable
@@ -146,9 +199,22 @@ impl Ctx {
             vremap.insert(*v, vf);
         }
         let block = |b: &Block| value_instantiate(b, &vremap);
-        ArrowTy {
-            vty: block(&scheme.ty.vty),
-        }
+        // A constraint's variable is quantified by the scheme (Task 2's
+        // invariant), so it is in `vremap`. A constraint whose variable the
+        // scheme does not quantify is already concrete and needs no dictionary;
+        // it keeps its id so the pairing stays visible rather than being
+        // silently dropped.
+        let constraints: SchemeContext = scheme
+            .constraints
+            .iter()
+            .map(|(class, var)| (class.clone(), vremap.get(var).copied().unwrap_or(*var)))
+            .collect();
+        (
+            ArrowTy {
+                vty: block(&scheme.ty.vty),
+            },
+            constraints,
+        )
     }
 
     fn free_vars(&self, t: &ArrowTy) -> Vec<TypeVarId> {
@@ -187,8 +253,311 @@ fn free_vars_quantified(ctx: &Ctx, t: &ArrowTy) -> Vec<TypeVarId> {
     all.into_iter().filter(|v| !env.contains(v)).collect()
 }
 
-/// Flatten a curried `Thunk` chain into its total argument list and final
-/// result: `Thunk([a], [Thunk([b], [r])])` → `(vec![a, b], vec![r])`.
+/// A class constraint GIVEN to the body currently being inferred (design §3.0:
+/// `mk :: Ix i => …` types its body once, with `Ix i` GIVEN rather than solved).
+///
+/// The witness is the abstract class variable. A method call whose class
+/// variable is witnessed by this constraint is typed against the incoming
+/// dictionary instead of demanding a concrete instance.
+#[derive(Debug, Clone)]
+struct GivenVar {
+    /// The class the constraint names (`Ix`, `Ord`, `Monad`).
+    class: String,
+    /// The class variable's name, as the definition's signature spells it.
+    name: String,
+    /// The variable's id in the signature-converted body parameter types.
+    /// `None` for a CONSTRUCTOR class (`Functor f`, `Monad m`), whose variable
+    /// the signature conversion spells as an application HEAD by name
+    /// (`App("m", [a])`) rather than as a bare variable id.
+    id: Option<TypeVarId>,
+}
+
+impl GivenVar {
+    /// Whether `t` is this given witness — the evidence that a method call's
+    /// class variable IS this constraint rather than an unrelated unsolved
+    /// variable.
+    ///
+    /// An arity-0 class (`Ix i`) is witnessed by the variable occurring
+    /// ANYWHERE in the type (`Pair i i` for `rangeSize`, bare `a` for `==`). A
+    /// constructor class (`Functor f`) is witnessed by a type whose head is the
+    /// class variable (`f a`), which the signature conversion spells with the
+    /// variable's name.
+    fn witness_of(&self, t: &ValueTy) -> bool {
+        match self.id {
+            // An arity-0 class variable (`Ix i`) is witnessed by the variable
+            // occurring anywhere in the type.
+            Some(id) => vty_mentions_tyvar(t, id),
+            // A constructor-class variable (`Functor f`) is witnessed by a type
+            // whose head is that class variable.
+            None => matches!(
+                t,
+                ValueTy::App(n, _) | ValueTy::Data(n, _) | ValueTy::Newtype(n, _)
+                    if *n == self.name
+            ),
+        }
+    }
+
+    /// The abstract type this given stands for, in the spelling the signature
+    /// conversion gives the class variable: a bare variable id for an arity-0
+    /// class, the named application head for a constructor class.
+    fn abstract_ty(&self) -> ValueTy {
+        match self.id {
+            Some(id) => ValueTy::Var(id),
+            None => ValueTy::App(self.name.clone(), Vec::new()),
+        }
+    }
+}
+
+/// The class context of a scheme INSTANTIATED at one use site: `(class, its
+/// freshened type variable)`.
+///
+/// [`Ctx::instantiate_with_constraints`] produces this alongside the
+/// instantiated type, so a caller learns which constraints the particular use
+/// must discharge.
+type SchemeContext = Vec<(String, TypeVarId)>;
+
+/// The GIVEN constraint that witnesses a method call of class `class` against
+/// `evidence`.
+///
+/// A class's constraint is witnessed by a given of that class OR of any class
+/// that ENTAILS it (System FC: the superclass dictionary is a field of the
+/// subclass one), so inside `Ord a =>` a call to `Eq`'s `(==)` resolves against
+/// the `Ord` witness. The recorded evidence is the GIVEN class, which is the
+/// dictionary that actually arrives — projecting the superclass slot is
+/// lowering's job, not a second lookup here.
+///
+/// `None` when no given witnesses `evidence`: the call is then an ordinary
+/// call-site dispatch (or an error, if no concrete type solved it either).
+fn given_witness<'a>(
+    given: &'a [GivenVar],
+    env: &TypeEnv,
+    class: &str,
+    evidence: &ValueTy,
+) -> Option<&'a GivenVar> {
+    given
+        .iter()
+        .find(|g| env.entails(&g.class, class) && g.witness_of(evidence))
+}
+
+/// The GIVEN constraint (if any) that types a method call, decided by the same
+/// selector the concrete dispatcher uses: the expected RESULT type for a
+/// result-directed method, otherwise the class-var argument's static type.
+///
+/// This is the "resolve against the GIVEN constraint" half of design §3.0. It
+/// returns a witness only when the call's selector IS one of the body's
+/// constraints, so a concrete call inside a constrained body (`List`'s `length`
+/// on a list, an `Ix Int` call on a literal bounds pair) still dispatches on its
+/// own concrete type.
+fn given_for_method_call(
+    ctx: &mut Ctx,
+    class_name: &str,
+    class_var: &str,
+    sig: &crate::ast::TypeExpr,
+    args: &[Expr],
+    expected: Option<&ValueTy>,
+) -> Result<Option<GivenVar>, CompileError> {
+    if ctx.given.is_empty() {
+        return Ok(None);
+    }
+    let result_directed = matches!(
+        sig,
+        crate::ast::TypeExpr::TFunc(targs, _)
+            if !targs.is_empty() && targs.iter().all(|a| !type_expr_mentions(a, class_var))
+    );
+    if result_directed {
+        let Some(exp) = expected else {
+            return Ok(None);
+        };
+        let exp = ctx.subst.resolve_value(exp);
+        return Ok(given_witness(&ctx.given, &ctx.env, class_name, &exp).cloned());
+    }
+    let arity = ctx
+        .env
+        .typeclasses
+        .get(class_name)
+        .map(|c| c.arity)
+        .unwrap_or(0);
+    let selector_idx = if arity == 0 {
+        class_var_selector_index(sig, class_var, args.len(), |i| {
+            is_bare_nullary_method_ref(ctx, &args[i], class_name)
+        })
+    } else {
+        ctx.env.class_var_arg_index(sig, class_var)
+    };
+    let Some(idx) = selector_idx.filter(|i| *i < args.len()) else {
+        return Ok(None);
+    };
+    let at = infer_method_value_vty(ctx, &args[idx], "argument")?;
+    let at = ctx.subst.resolve_value(&at);
+    Ok(given_witness(&ctx.given, &ctx.env, class_name, &at).cloned())
+}
+
+/// Whether a call of the DUAL name `name` (a class method that is also a
+/// class-constrained definition — `index` is both `Ix`'s offset method and the
+/// array accessor `!`) routes to the METHOD because the body's GIVEN constraint
+/// witnesses its class variable.
+///
+/// The test is the method's own class-var PATTERN (`Pair i i` for `Ix`), not
+/// mere mention: inside `index :: Ix i => Array i e -> i -> e` the array's index
+/// argument IS the given variable, but the accessor's first argument is an
+/// `Array`, which the pattern cannot match — so that call still reaches the
+/// definition, exactly as outside a constrained body.
+fn given_routes_to_method(ctx: &Ctx, name: &str, selector_ty: &ValueTy) -> bool {
+    if ctx.given.is_empty() {
+        return false;
+    }
+    let Some(class_name) = ctx.env.class_of_method(name) else {
+        return false;
+    };
+    let Some(info) = ctx.env.typeclasses.get(&class_name) else {
+        return false;
+    };
+    let class_var = info.var.clone();
+    let Some(sig) = info
+        .methods
+        .iter()
+        .find(|(m, _)| m == name)
+        .map(|(_, s)| s.clone())
+    else {
+        return false;
+    };
+    // The method's class-var parameter PATTERN with the given variable in the
+    // class-var position (`Pair i i` for `Ix.index`). A method with no such
+    // pattern (`mempty: m`) has nothing to match, so a dual name cannot occur.
+    let Some(arg_idx) = crate::types::ty::class_var_param_pattern(&sig, &class_var) else {
+        return false;
+    };
+    let inner = match &sig {
+        crate::ast::TypeExpr::TConstrained(_, inner) | crate::ast::TypeExpr::TForall(_, inner) => {
+            inner.as_ref()
+        }
+        other => other,
+    };
+    let arg_te = match inner {
+        crate::ast::TypeExpr::TFunc(targs, _) => targs.get(arg_idx),
+        _ => None,
+    };
+    let Some(arg_te) = arg_te else {
+        return false;
+    };
+    for g in &ctx.given {
+        if !ctx.env.entails(&g.class, &class_name) {
+            continue;
+        }
+        // A constructor-class given (`Functor f`) carries no variable id; the
+        // dual names in the prelude (`index`) are arity-0 only.
+        let Some(id) = g.id else {
+            continue;
+        };
+        let mut next = 0u32;
+        let pattern = crate::types::infer::class_var_pattern_vty(
+            &ctx.env,
+            &class_var,
+            id,
+            arg_te,
+            &mut || {
+                next += 1;
+                ValueTy::Var(next)
+            },
+        );
+        let mut probe = Subst::default();
+        if unify_value(&pattern, selector_ty, &mut probe, Span::new(0, 0)).is_err() {
+            continue;
+        }
+        // An ABSTRACT match leaves the given variable unbound; a match that
+        // SOLVED it to a concrete type is an ordinary concrete dispatch (the
+        // body happens to call the method at one instantiation) and must not be
+        // reported as a given route.
+        if matches!(probe.resolve_value(&ValueTy::Var(id)), ValueTy::Var(_)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Type a class-method call under a GIVEN constraint: the method's type is its
+/// class signature with the class variable kept ABSTRACT (the given's own
+/// variable), never a concrete instance.
+///
+/// This is the `Ix i =>` judgement applied to one call: `inRange b ix` inside
+/// `checkedOffset :: Ix i => …` has type `Pair i i -> i -> Bool` for the SAME
+/// abstract `i` the enclosing body was annotated with, so the call composes with
+/// the body's parameters. Nothing is selected: the dictionary is the caller's.
+///
+/// The class variable is spelled the way the definition's own signature
+/// conversion spells it, so the call's type meets the body's types:
+///
+/// - arity-0 (`Ix i`): the bare variable id (`Pair i i` → `Pair Var(i) Var(i)`);
+/// - constructor class (`Functor f`): the abstract application head, which the
+///   signature conversion spells as the class variable's NAME (`f a` →
+///   `App("f", [a])`), so keeping the name keeps the two in step.
+fn infer_method_under_given(
+    ctx: &mut Ctx,
+    class_var: &str,
+    given: &GivenVar,
+    sig: &crate::ast::TypeExpr,
+    args: &[Expr],
+    span: Span,
+) -> Result<ArrowTy, CompileError> {
+    let cv_subst = ClassVarSubst::Ty(given.abstract_ty());
+    let env = ctx.env.clone();
+    let (param_tys, ret) =
+        signature_param_and_result_tys_conv(&env, class_var, &cv_subst, sig, || ctx.fresh_vty());
+    if args.len() > param_tys.len() {
+        return Err(CompileError::Type {
+            msg: format!(
+                "method expects {} argument(s), got {}",
+                param_tys.len(),
+                args.len()
+            ),
+            span,
+        });
+    }
+    for (i, a) in args.iter().enumerate() {
+        if let Some(pt) = param_tys.get(i) {
+            let at = infer_method_value_vty_expected(ctx, a, "argument", Some(pt.clone()))?;
+            unify_value(pt, &at, &mut ctx.subst, a.span())?;
+        }
+    }
+    let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
+    let rest: Vec<ValueTy> = param_tys[args.len().min(param_tys.len())..].to_vec();
+    // A partial application keeps the remaining parameters as a function value
+    // (Haskell 2010 §4.3.3); a full application yields the result.
+    if rest.is_empty() {
+        Ok(ArrowTy::value_channel(ret))
+    } else {
+        Ok(ArrowTy::value(nest_thunk(&rest, vec![ret])))
+    }
+}
+
+/// The concrete type a dispatch selected, for [`record_selection`]. A
+/// constructor-class dispatch (`ClassVarSubst::Ctor`) names the constructor
+/// only — its head arguments come from the call site and are not part of the
+/// selection — so it is recorded as the bare application.
+fn selection_evidence(cv: &ClassVarSubst) -> ValueTy {
+    match cv {
+        ClassVarSubst::Ty(t) => t.clone(),
+        ClassVarSubst::Ctor(c) => ValueTy::App(c.clone(), Vec::new()),
+        ClassVarSubst::Var(id) => ValueTy::Var(*id),
+    }
+}
+
+/// Record the dictionary the type checker selected at a method call position.
+///
+/// The evidence is a concrete [`ValueTy`] when a call site solved the class
+/// variable, and `ValueTy::Dict(g)` when the call sits under a GIVEN constraint
+/// `C g` (the abstract-dictionary case). Under a given constraint the class
+/// variable IS the given variable, so the incoming dictionary is the only
+/// witness that exists — there is no concrete type to record yet.
+///
+/// Recording is keyed by the call's span. Nothing is written for a position
+/// with no witness: a call whose class variable neither the given context
+/// witnesses nor a concrete type solves is a typing error before this point.
+fn record_selection(ctx: &mut Ctx, span: Span, class: &str, evidence: &ValueTy) {
+    ctx.dict_selections
+        .insert(span, (class.to_string(), evidence.clone()));
+}
+
 ///
 /// The unary value model represents a multi-parameter function as a nest of
 /// single-argument thunks (`\a -> \b -> …`), so a call site that applies `n`
@@ -2046,6 +2415,8 @@ pub fn infer_program_with_entry(
             mode,
             runst_payload_tys: HashMap::new(),
             nested_group_depth: 0,
+            given: Vec::new(),
+            dict_selections: HashMap::new(),
         };
         infer_def_group(&mut pc, &env.prelude_defs)?;
         prelude_ctx = Some(pc);
@@ -2172,6 +2543,8 @@ pub fn infer_program_with_entry(
         mode,
         runst_payload_tys: HashMap::new(),
         nested_group_depth: 0,
+        given: Vec::new(),
+        dict_selections: HashMap::new(),
     };
 
     // The prelude combinators were already typed above (against the builtin
@@ -2319,6 +2692,7 @@ pub fn infer_program_with_entry(
         tape_decls: Vec::new(),
         runst_payload_tys: ctx.runst_payload_tys.clone(),
         mode,
+        dict_selections: ctx.dict_selections.clone(),
     })
 }
 
@@ -2371,19 +2745,15 @@ struct DefBodyTy {
 /// counter are rolled back so the retry starts from a clean context. A def
 /// with no λ-parameters that fails is genuinely broken and errors.
 fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
-    // A class-constrained definition (`mk p v :: Ix i => Pair i i -> …`) is
-    // DEFERRED: its body mentions methods of the constrained class, whose
-    // instance is unknown until a call site solves the class variable. Typing
-    // it here would dispatch `rangeSize p` against the scalar default for `p`
-    // and fail. The definition's real scheme comes from its signature (see
-    // `def_scheme`); the body is specialized per call site in lowering.
+    // A class-constrained definition (`mk p v :: Ix i => Pair i i -> …`) types
+    // its body ONCE, under its GIVEN constraints (design §3.0). The class
+    // variable stays ABSTRACT — it is not solved, it is assumed — so a method
+    // call inside the body resolves against the incoming dictionary rather than
+    // against a call-site type. That is the `Ix i =>` judgement: the body is
+    // well-typed for EVERY `i`, and whether an instance exists is decided at
+    // each call site (still a compile-time diagnostic).
     if let Some(sig) = constrained_def_sig(def) {
-        let (_, ret, _) = def_sig_tys(ctx, sig);
-        return Ok(DefBodyTy {
-            ty: ArrowTy::value_channel(ret),
-            sig_params: Vec::new(),
-            lambda_param_tys: Vec::new(),
-        });
+        return infer_constrained_def_body(ctx, def, sig);
     }
     // Effective parameters: the parser curries every multi-parameter definition
     // into a λ-nest and clears `Def::Eval::params`, so an annotated
@@ -2559,6 +2929,133 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     result.map(|ty| DefBodyTy {
         ty,
         sig_params: sig_param_tys.unwrap_or_default(),
+        lambda_param_tys,
+    })
+}
+
+/// Type a class-constrained definition's body ONCE, under its GIVEN constraints
+/// (design §3.0).
+///
+/// `mk p v :: Ix i => Pair i i -> Float -> Float` is the judgement
+/// `Ix i => Pair i i -> Float -> Float`: the class variable `i` is ASSUMED, not
+/// solved. The body is therefore typed with `Ix i` in scope, so `rangeSize p`
+/// resolves against the incoming `Ix` DICTIONARY (an abstract witness) instead
+/// of demanding a concrete index type — which is exactly the old bug this
+/// replaces (typing `p` as the scalar `Float` default and failing).
+///
+/// The body's result is then checked against the signature's declared result
+/// type, so an ill-typed constrained body (`mk p :: Ix i => Pair i i -> Float =
+/// "nope"`) is rejected at LOAD rather than per call site.
+///
+/// GIVEN constraints are visible to nested λ-bodies and `where` definitions too
+/// (`ctx.given` is saved and restored around the body, and λ bodies clear the
+/// method-inlining guard but not the given context).
+fn infer_constrained_def_body(
+    ctx: &mut Ctx,
+    def: &Def,
+    sig: &crate::ast::TypeExpr,
+) -> Result<DefBodyTy, CompileError> {
+    let (params, body) = effective_def_params(def);
+    // One signature conversion for BOTH the parameters and the result: the
+    // class variable `i` and the element variables `e`/`s` must be the SAME ids
+    // in the parameter types the body is typed against and in the result type
+    // it is checked against.
+    let (sig_params, sig_ret, vars) = def_sig_tys(ctx, sig);
+    if sig_params.len() != params.len() {
+        return Err(CompileError::Type {
+            msg: format!(
+                "signature of `{}` declares {} argument(s), but the definition binds {}",
+                def.name(),
+                sig_params.len(),
+                params.len()
+            ),
+            span: def.body().span(),
+        });
+    }
+    // The GIVEN context: every recorded class constraint, with the id the
+    // signature conversion gave its variable. A constraint whose variable the
+    // substitution already pinned CONCRETE (`Ix Int => …`) needs no dictionary
+    // — it is discharged by that instance — and one the signature does not
+    // mention at all is ambiguous; both are skipped, mirroring
+    // [`scheme_constraints`].
+    let mut given: Vec<GivenVar> = Vec::new();
+    for (class, var) in sig_constraints(sig) {
+        if is_declared_type_name(&ctx.env, var) {
+            continue;
+        }
+        let arity = ctx
+            .env
+            .typeclasses
+            .get(class.as_str())
+            .map(|c| c.arity)
+            .unwrap_or(0);
+        // An arity-0 class variable is a plain type variable, so its id is the
+        // one the body's types carry. A constructor-class variable (`f` in
+        // `Functor f`) is an application HEAD, which the signature conversion
+        // spells by NAME; the witness then matches on that head. An AMBIGUOUS
+        // context (`C i => Float`, `i` in no argument or result) has no
+        // variable to pair a dictionary with — the missing ambiguity check is an
+        // open defect, and such a constraint is not a witness here either.
+        let id = if arity == 0 {
+            match vars.get(var).map(|t| ctx.subst.resolve_value(t)) {
+                Some(ValueTy::Var(v)) | Some(ValueTy::TyConVar(v)) => Some(v),
+                // Solved to a concrete type: already discharged by that
+                // instance, so no dictionary parameter is needed.
+                Some(_) => continue,
+                // The signature never mentions the variable.
+                None => continue,
+            }
+        } else {
+            // A constructor-class variable is spelled as an application HEAD by
+            // name, so it never appears as an entry in `vars` — its witness is
+            // the head name itself.
+            None
+        };
+        given.push(GivenVar {
+            class: class.clone(),
+            name: var.clone(),
+            id,
+        });
+    }
+    let saved_locals = ctx.locals.clone();
+    let saved_given = ctx.given.clone();
+    let saved_subst = ctx.subst.clone();
+    let saved_next = ctx.next;
+    if ctx.nested_group_depth == 0 {
+        ctx.locals.clear();
+    }
+    ctx.given = given;
+    for (p, ty) in params.iter().zip(sig_params.iter()) {
+        ctx.locals
+            .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty.clone()));
+    }
+    let inferred = infer_expr_expected(ctx, &body, Some(sig_ret.clone()));
+    let result = match inferred {
+        Ok(t) => {
+            // The body must produce the signature's declared result. A concrete
+            // mismatch is rejected here; an abstract result (`e`, `ST s e`)
+            // unifies its signature variables, which is the check that the
+            // shape is the declared one.
+            unify_value(&t.vty, &sig_ret, &mut ctx.subst, body.span()).map(|()| t)
+        }
+        Err(e) => Err(e),
+    };
+    let lambda_param_tys = if result.is_ok() {
+        resolved_param_tys(ctx, &params)
+    } else {
+        Vec::new()
+    };
+    ctx.locals = saved_locals;
+    ctx.given = saved_given;
+    if result.is_err() {
+        // Roll the substitution back so a rejected body leaves no bindings
+        // behind (the same hygiene the unconstrained retry applies).
+        ctx.subst = saved_subst;
+        ctx.next = saved_next;
+    }
+    result.map(|ty| DefBodyTy {
+        ty,
+        sig_params,
         lambda_param_tys,
     })
 }
@@ -4056,6 +4553,7 @@ fn infer_ref_expected(
                     });
                 };
                 // Primitive instance: kernel-backed, no source body.
+                record_selection(ctx, span, &class_name, &selection_evidence(&cv_subst));
                 if ctx
                     .env
                     .instances
@@ -5000,6 +5498,12 @@ fn method_shadowed_by_def(ctx: &mut Ctx, name: &str, args: &[Expr]) -> bool {
 /// then DISCARD the speculative inference: the substitution and the fresh
 /// variable supply are rolled back, so the real argument inference starts from
 /// the same state and cannot inherit a bogus binding from the probe.
+///
+/// Inside a constrained body the given constraint decides FIRST: if the body's
+/// own `Ix i` witness satisfies the method's class-var pattern, the call is the
+/// METHOD. That is what keeps `checkedOffset :: Ix i => …`'s `index b ix`
+/// (offset of an abstract index) distinct from the array accessor `index a ix`
+/// in the same prelude body.
 fn probe_first_arg_solves_class_var(ctx: &mut Ctx, name: &str, first: &Expr) -> bool {
     let saved_subst = ctx.subst.clone();
     let saved_next = ctx.next;
@@ -5009,7 +5513,10 @@ fn probe_first_arg_solves_class_var(ctx: &mut Ctx, name: &str, first: &Expr) -> 
     ctx.subst = saved_subst;
     ctx.next = saved_next;
     match probed {
-        Some(ty) => first_arg_solves_class_var(&ctx.env, name, &ty),
+        Some(ty) => {
+            given_routes_to_method(ctx, name, &ty)
+                || first_arg_solves_class_var(&ctx.env, name, &ty)
+        }
         None => false,
     }
 }
@@ -5734,6 +6241,17 @@ fn infer_apply_impl(
                 .find(|(m, _)| m == name)
                 .map(|(_, s)| s.clone());
             let sig = sig.as_ref().unwrap();
+            // A GIVEN constraint is consulted FIRST (design §3.0): inside a
+            // constrained body the class variable is ABSTRACT, so there is no
+            // instance to select — the call is typed against the incoming
+            // dictionary and its evidence recorded as `Dict(g)`.
+            if let Some(given) =
+                given_for_method_call(ctx, &class_name, &class_var, sig, args, expected.as_ref())?
+            {
+                let at = infer_method_under_given(ctx, &class_var, &given, sig, args, span)?;
+                record_selection(ctx, span, &class_name, &ValueTy::Dict(given.class.clone()));
+                return Ok(at);
+            }
             // Argument count: a `TFunc` signature carries its argument list; a
             // bare class-var signature (`show: a`) takes exactly one selector
             // argument (the arity-0 instance binds it). A `TForall` binder
@@ -5781,6 +6299,9 @@ fn infer_apply_impl(
                 // container's leading args (`Kleisli Maybe Float Float` + head
                 // `Kleisli m` → `m := Maybe`) and discharge the constraints.
                 bind_constraint_instance(ctx, &class_name, &ty_name, &exp, span)?;
+                // The type checker SELECTED an instance here: record the
+                // dictionary lowering must pass (design §3.0 point 3).
+                record_selection(ctx, span, &class_name, &selection_evidence(&cv_subst));
                 // A PRIMITIVE instance (a compiler kernel: `Num Int`,
                 // `Num Float`, a buffer arithmetic instance, a structural
                 // Eq/Ord) has no source body. Its dictionary entry is the
@@ -5978,6 +6499,9 @@ fn infer_apply_impl(
                         span: args[selector_idx].span(),
                     });
                 };
+                // The type checker SELECTED an instance here: record the
+                // dictionary lowering must pass (design §3.0 point 3).
+                record_selection(ctx, span, &class_name, &selection_evidence(&cv_subst));
                 // Primitive instances (compiler kernels) have no source body:
                 // the dictionary entry is the kernel, selected at lowering, so
                 // inference needs only the method signature.
@@ -6598,14 +7122,22 @@ fn infer_apply_impl(
             return Ok(ArrowTy::value_channel(ret_ty));
         }
     }
-    // Class-constrained definition (`mk :: Ix i => Pair i i -> …`): the body is
-    // NOT inlined at typing time — it is deferred and specialized per call site
-    // in lowering. Typing the call means unifying the signature's parameter
-    // patterns against the arguments (solving the class variables) and
-    // discharging the class context against the solved types.
+    // Class-constrained definition (`mk :: Ix i => Pair i i -> …`): the scheme
+    // came from the definition's signature, so its class variable is solved from
+    // the call's arguments and its context discharged against them. A DUAL name
+    // (a method that is also a constrained definition — `index` is both `Ix`'s
+    // offset method and the array accessor) must first be routed: when the
+    // body's GIVEN constraint witnesses the METHOD's class-var pattern, the call
+    // is the method, not the definition.
     if !ctx.locals.contains_key(name) {
         if let Some(cd) = ctx.env.constrained_defs.get(name).cloned() {
-            return infer_constrained_apply(ctx, name, &cd, args, span, expected);
+            let routes_to_method = args.first().is_some_and(|first| {
+                ctx.env.class_of_method(name).is_some()
+                    && probe_first_arg_solves_class_var(ctx, name, first)
+            });
+            if !routes_to_method {
+                return infer_constrained_apply(ctx, name, &cd, args, span, expected);
+            }
         }
     }
     // User-defined function: λ-params are consumed, signal ports remain open
@@ -7656,6 +8188,63 @@ mod tests {
     }
 
     #[test]
+    fn instantiate_freshens_the_scheme_constraint_ids() {
+        // A scheme's class context must travel WITH its instantiation: the
+        // recorded variable has to be the FRESHENED one the instantiated type
+        // carries, otherwise two uses of one polymorphic scheme would share a
+        // variable id and the second call site's solution would silently
+        // overwrite the first's dictionary.
+        let scheme = Scheme {
+            lam_count: 1,
+            vars: vec![7],
+            constraints: vec![("Ix".to_string(), 7)],
+            ty: ArrowTy {
+                vty: ValueTy::Thunk(vec![ValueTy::Var(7)], vec![ValueTy::Bool]),
+            },
+        };
+        let mut ctx = Ctx {
+            next: 0,
+            subst: Subst::default(),
+            defs: HashMap::new(),
+            def_bodies: HashMap::new(),
+            locals: HashMap::new(),
+            env: TypeEnv::with_builtins(),
+            method_lifting: HashSet::new(),
+            type_var_bindings: HashMap::new(),
+            retry_inferred_defs: HashSet::new(),
+            sig_defs: HashSet::new(),
+            mode: Mode::Strict,
+            runst_payload_tys: HashMap::new(),
+            nested_group_depth: 0,
+            given: Vec::new(),
+            dict_selections: HashMap::new(),
+        };
+        let (ty, constraints) = ctx.instantiate_with_constraints(&scheme);
+        assert_eq!(constraints.len(), 1, "the context travels with the type");
+        assert_eq!(constraints[0].0, "Ix");
+        let fresh = constraints[0].1;
+        assert_ne!(fresh, 7, "the constraint id is freshened, not the scheme's");
+        assert!(
+            vty_mentions_tyvar(&ty.vty, fresh),
+            "the freshened constraint variable {:?} must occur in the instantiated \
+             type {:?}",
+            fresh,
+            ty.vty
+        );
+        assert!(
+            !vty_mentions_tyvar(&ty.vty, 7),
+            "the scheme's own id must not survive instantiation: {:?}",
+            ty.vty
+        );
+        // Two instantiations are independent.
+        let (_, again) = ctx.instantiate_with_constraints(&scheme);
+        assert_ne!(
+            again[0].1, fresh,
+            "each instantiation gets its own fresh constraint variable"
+        );
+    }
+
+    #[test]
     fn only_a_bare_class_var_result_is_selected_by_expected_type() {
         // A `mempty: m`-shaped result IS the class variable, so a call site's
         // expected type is its value — the "result-directed" solve. A result
@@ -7863,6 +8452,8 @@ mod tests {
                 mode: Mode::Strict,
                 runst_payload_tys: HashMap::new(),
                 nested_group_depth: 0,
+                given: Vec::new(),
+                dict_selections: HashMap::new(),
             };
             let def = &prog.defs[0];
             let body = infer_def_body(&mut ctx, def).unwrap();
@@ -7890,8 +8481,9 @@ mod tests {
     fn forall_wrapped_constraint_context_defers_like_a_bare_one() {
         // Haskell 2010 spells the quantified form `forall i. C i => T`, which
         // puts the class context UNDER the binder. Both definition sites must
-        // look through it: registration (so the body is deferred and
-        // specialized at call sites) and the eager inference deferral.
+        // look through it: registration (so the body is typed under the given
+        // constraint and specialized at call sites) and the eager inference
+        // path that recognizes it.
         let sig = TypeExpr::TForall(
             vec!["i".into()],
             Box::new(TypeExpr::TConstrained(

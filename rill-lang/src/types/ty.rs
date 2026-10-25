@@ -290,12 +290,21 @@ impl InstanceInfo {
 
 /// A class-constrained function definition (`mk p v :: Ix i => Pair i i -> …`).
 ///
-/// Such a definition is NOT a plain function: its body mentions methods of the
-/// constrained class (`rangeSize` in `rangeSize p`), which cannot be resolved
-/// until a call site fixes the class variable to a concrete type. The body is
-/// therefore never inferred in isolation — each call site specializes it with
+/// Such a definition is NOT a plain function at the CALL SITE: its body mentions
+/// methods of the constrained class (`rangeSize` in `rangeSize p`), which are
+/// resolved against the GIVEN constraint and have no one concrete instance until
+/// a call site fixes the class variable. Its body IS type-checked once, at load,
+/// under the abstract dictionary (design §3.0) — an ill-typed constrained body is
+/// rejected immediately, and every method call inside it records the given
+/// witness in [`TypedProgram::dict_selections`].
+///
+/// [`TypedProgram::dict_selections`]: crate::types::infer::TypedProgram::dict_selections
+///
+/// What remains per call site is DISPATCH: each call specializes the body with
 /// the concrete class-variable type and the bound instance (compile-time
-/// β-substitution, never a runtime dictionary). See
+/// β-substitution, never a runtime dictionary). That specialisation is the
+/// transitional model this registry exists for; the dictionary design replaces
+/// it with a passed dictionary argument (design §3.7 step 8). See
 /// [`TypeEnv::constrained_defs`] and `lower::lower_constrained_apply`.
 ///
 /// Limits of the per-call-site model (all deliberate, all diagnosed):
@@ -435,11 +444,15 @@ pub struct TypeEnv {
     pub prelude_defs: Vec<crate::ast::Def>,
     /// Class-constrained definitions (`mk :: Ix i => …`), keyed by name.
     ///
-    /// Their bodies are deferred: the constrained class variable is abstract
-    /// until a call site solves it, so typing the body at load would dispatch
-    /// the body's method calls against an unresolved type. Inference types the
-    /// parameters from the signature and lowering specializes the body per call
-    /// site (see [`ConstrainedDef`]).
+    /// Their bodies ARE type-checked once, at load, under the GIVEN constraints
+    /// (design §3.0): the class variable is assumed, so a method call inside the
+    /// body resolves against the abstract dictionary and its witness is recorded
+    /// in [`TypedProgram::dict_selections`]. The registry itself is lowering's
+    /// transitional dispatch table: each call site still specializes the body
+    /// with the concrete class-variable type (see [`ConstrainedDef`]).
+    ///
+    /// [`TypedProgram::dict_selections`]:
+    ///     crate::types::infer::TypedProgram::dict_selections
     pub constrained_defs: HashMap<String, ConstrainedDef>,
 }
 

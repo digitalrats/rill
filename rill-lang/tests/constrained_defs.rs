@@ -205,15 +205,16 @@ fn constrained_def_can_call_another_constrained_def() {
 
 #[test]
 fn specialized_body_result_must_match_the_signature() {
-    // The body is deferred, so the signature's declared result is the only
-    // contract it is held to. A specialization that produces another type is a
-    // compile error, not a silently mistyped call site.
+    // The body is typed ONCE against the signature's declared result (design
+    // §3.0), so a body of another type is rejected at LOAD — before any call
+    // site exists. This is stronger than the old per-specialization check in
+    // lowering: the mismatch is now a plain inference error naming both types.
     let src =
         format!("{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Float = \"nope\";\nmain = mk (0,9);");
     let msg = compile_err(&src);
     assert!(
-        msg.contains("body of `mk` has type `String`, but its signature declares `Float`"),
-        "expected a body/signature result mismatch, got: {msg}"
+        msg.contains("cannot unify value type String with Float"),
+        "expected the body/signature result mismatch, got: {msg}"
     );
 }
 

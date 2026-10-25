@@ -61,9 +61,12 @@ impl TypeExpr {
         }
     }
     /// Whether this signature carries a class context (`C v => T`), looking
-    /// through an explicit `forall` binder (`forall v. C v => T`). A
-    /// class-constrained definition has no standalone body: its class variable
-    /// is abstract until a call site solves it.
+    /// through an explicit `forall` binder (`forall v. C v => T`).
+    ///
+    /// This is a SHAPE test, not a typing rule: a constrained definition's body
+    /// is type-checked once, under its given constraints (design §3.0). It is
+    /// used to recognize the declarations whose class variable stays ABSTRACT
+    /// until a call site supplies the dictionary.
     pub fn is_constrained(&self) -> bool {
         match self {
             TypeExpr::TConstrained(..) => true,

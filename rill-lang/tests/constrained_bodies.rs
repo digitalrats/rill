@@ -8,6 +8,8 @@
 //! by class identity, and a dictionary has no data interpretation (it is not a
 //! nominal type, not a registry key, and has its own stable rank).
 
+pub mod common;
+
 use rill_lang::error::Span;
 use rill_lang::lexer::tokenize;
 use rill_lang::mode::Mode;
@@ -249,5 +251,171 @@ fn dict_has_no_data_interpretation() {
         kind_rank(&ValueTy::Dict("Eq".to_string())),
         dict_rank,
         "the rank is per type form, not per class"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 3: a constrained definition's body IS typed, once, under a GIVEN
+// constraint (design §3.0).
+//
+// `mk p :: Ix i => Pair i i -> Int = rangeSize p` is the judgement
+// `Ix i => Pair i i -> Int`: `i` is ASSUMED, not solved. The body is therefore
+// type-checked at LOAD for every `i`, and each method call inside it resolves
+// against the GIVEN (abstract) dictionary. A concrete type with no instance is
+// still a COMPILE error — but at the call site that supplies it.
+// ---------------------------------------------------------------------------
+
+use common::*;
+
+/// Infer `src`, expecting success.
+fn typed(src: &str) -> rill_lang::types::infer::TypedProgram {
+    let toks = tokenize(src).unwrap();
+    let prog = parse(&toks, src.as_bytes()).unwrap();
+    infer_program(&prog, Mode::Strict).unwrap_or_else(|e| panic!("`{src}` must typecheck: {e}"))
+}
+
+/// Infer `src`, expecting a rejection; return the rendered message.
+fn type_err(src: &str) -> String {
+    let toks = tokenize(src).unwrap();
+    let prog = parse(&toks, src.as_bytes()).unwrap();
+    match infer_program(&prog, Mode::Strict) {
+        Ok(_) => panic!("`{src}` must be rejected at load"),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// The evidence recorded for the selection whose class is `class`, if any.
+fn selection_for(t: &rill_lang::types::infer::TypedProgram, class: &str) -> Option<ValueTy> {
+    t.dict_selections
+        .values()
+        .find(|(c, _)| c == class)
+        .map(|(_, e)| e.clone())
+}
+
+#[test]
+fn a_constrained_body_is_type_checked() {
+    // An ill-typed body is rejected at LOAD, with no call site in the program.
+    // Before Task 3 the body was skipped entirely (`infer_def_body` returned the
+    // signature's result), so this program compiled.
+    let msg = type_err("mk p :: Ix i => Pair i i -> Int = \"not an Int\";\nmain = 0.0;");
+    assert!(
+        msg.contains("String") && msg.contains("Int"),
+        "an ill-typed constrained body must be rejected naming both types, got: {msg}"
+    );
+
+    // A body naming an unknown function is rejected too — the body is really
+    // walked, not merely result-checked.
+    let msg = type_err("mk p :: Ix i => Pair i i -> Int = missing_helper p;\nmain = 0.0;");
+    assert!(
+        msg.contains("missing_helper"),
+        "an unknown name in a constrained body must be rejected, got: {msg}"
+    );
+
+    // The NEGATIVE control: the same shape, well typed, is accepted — so the
+    // rejections above come from the body's content, not from constrained
+    // bodies being untypeable in general.
+    typed("mk p :: Ix i => Pair i i -> Int = rangeSize p;\nmain = 0.0;");
+}
+
+#[test]
+fn a_superclass_method_resolves_in_a_body() {
+    // `f :: Ord a => a -> a -> Bool` may call `==`, which `Eq` declares:
+    // `Ord`'s constraint ENTAILS `Eq`'s, so the `Ord` dictionary is the witness
+    // (System FC: the superclass dictionary is a field of the subclass one).
+    // Typing this needs `a` to stay ABSTRACT — the old model had no concrete
+    // receiver to dispatch `==` on.
+    //
+    // The METHOD-CALL spelling `(==) x y` is used deliberately: rill's infix
+    // operators are still `Expr::Cmp`/`Expr::Arith` nodes rather than the
+    // class-method sugar Haskell 2010 §3.4 requires, so `x == y` does not reach
+    // method dispatch at all. That operator-to-method desugaring is the paused
+    // P-A task of the typeclass-layer design and is an OPEN defect: this test
+    // pins the superclass resolution the dictionary model needs, on the spelling
+    // that exists today.
+    let t = typed("f x y :: Ord a => a -> a -> Bool = (==) x y;\nmain = 0.0;");
+    assert_eq!(
+        selection_for(&t, "Eq"),
+        Some(ValueTy::Dict("Ord".to_string())),
+        "`(==)` inside `Ord a =>` records the GIVEN `Ord` witness (the dictionary \
+         that arrives), not a concrete Eq instance; selections: {:?}",
+        t.dict_selections
+    );
+
+    // The body must NOT have fallen back to a scalar `Float` instance: an
+    // abstract witness is recorded, which no concrete dispatch can produce.
+    assert!(
+        !t.dict_selections
+            .values()
+            .any(|(_, e)| matches!(e, ValueTy::Float | ValueTy::Int)),
+        "a superclass call in a body must not dispatch to a scalar default; \
+         selections: {:?}",
+        t.dict_selections
+    );
+
+    // The `Eq`/`Ord` superclass relation is exercised on a second method too,
+    // and the recorded evidence names the class that actually arrives.
+    let t = typed("g x y :: Ord a => a -> a -> Bool = (<) x y;\nmain = 0.0;");
+    assert_eq!(
+        selection_for(&t, "Ord"),
+        Some(ValueTy::Dict("Ord".to_string())),
+        "a DIRECT method of the given class records that class; selections: {:?}",
+        t.dict_selections
+    );
+
+    // A constrained body that calls a method of a class the context neither
+    // names nor entails is still rejected, so the given context is a genuine
+    // restriction and not a blanket "anything goes".
+    let msg = type_err("f x :: Ord a => a -> a = (+) x x;\nmain = 0.0;");
+    assert!(
+        msg.contains("cannot resolve method `+`"),
+        "`(+)` (Num) under only `Ord a` must be rejected, got: {msg}"
+    );
+}
+
+#[test]
+fn no_instance_is_still_a_compile_error() {
+    // The body is typed once, so the constraint is discharged at each CALL SITE.
+    // A concrete index type with no instance cannot supply the dictionary and
+    // must fail at compile time — never fall back to a runtime lookup.
+    let src = "mk p :: Ix i => Pair i i -> Int = rangeSize p;\nmain = mk (Pair { first: true, second: false });";
+    let msg = type_err(src);
+    assert!(
+        msg.contains("no instance of `Ix` for type `Bool`"),
+        "expected a missing-instance error naming the class and type, got: {msg}"
+    );
+
+    // The same definition applied at a type that DOES have an instance
+    // typechecks, so the error above is the missing instance and nothing else.
+    typed(
+        "mk p :: Ix i => Pair i i -> Int = rangeSize p;\nmain = mk (Pair { first: 0, second: 9 });",
+    );
+}
+
+#[test]
+fn an_ix_body_still_compiles() {
+    // The prelude's array surface is written as constrained definitions; every
+    // one of them must still typecheck now that its body is actually inferred.
+    let body = "x = index (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1;";
+    let toks = tokenize(body).unwrap();
+    let prog = parse(&toks, body.as_bytes()).unwrap();
+    infer_program(&prog, Mode::Strict)
+        .expect("the prelude's Ix bodies must typecheck under their given constraints");
+
+    // ... and they still RUN. The value exercises `listArray` (whose body calls
+    // the GIVEN `rangeSize`) and `index` (whose body calls the GIVEN `inRange`
+    // and `index` as the dual-named offset method).
+    let (defs, expr) = (
+        "",
+        "index (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1",
+    );
+    let world = eval_ffi(defs, expr, rill_lang::ffi::ForeignRegistry::<f32>::new())
+        .expect("the array helpers must keep working end to end");
+    let v = world
+        .result()
+        .expect("the run must produce a single result");
+    assert_eq!(
+        world.arena().get(v),
+        Some(&rill_lang::arena::Value::Float(2.0)),
+        "`index arr 1` must read the second element through the Ix bodies"
     );
 }

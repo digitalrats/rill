@@ -6,7 +6,11 @@ use thiserror::Error;
 use serde::{Deserialize, Serialize};
 
 /// A half-open byte range `[start, end)` into the original source string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Hash` is derived so a span can key a source-positioned table — inference's
+/// [`dict_selections`](crate::types::infer::TypedProgram::dict_selections)
+/// records the dictionary each method call site selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Span {
     /// Start byte offset (inclusive).

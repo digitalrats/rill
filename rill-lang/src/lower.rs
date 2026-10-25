@@ -9345,6 +9345,7 @@ mod tests {
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
+            dict_selections: typed.dict_selections.clone(),
         };
         lower_with_cafs(&tp, &tp.cafs).unwrap()
     }
@@ -9629,6 +9630,7 @@ mod tests {
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
+            dict_selections: typed.dict_selections.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
@@ -9656,6 +9658,7 @@ mod tests {
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
+            dict_selections: typed.dict_selections.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
@@ -9684,6 +9687,7 @@ mod tests {
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
+            dict_selections: typed.dict_selections.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
@@ -9717,6 +9721,7 @@ mod tests {
             tape_decls: Vec::new(),
             runst_payload_tys: typed.runst_payload_tys.clone(),
             mode: typed.mode,
+            dict_selections: typed.dict_selections.clone(),
         };
         let res = lower_with_cafs(&tp, &cafs);
         assert!(res.is_err());
