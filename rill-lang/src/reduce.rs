@@ -64,10 +64,24 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
         },
         Expr::Apply { name, args, span } => {
             let reduced_args: Vec<Expr> = args.iter().map(|a| substitute(a, subst)).collect();
-            Expr::Apply {
-                name: name.clone(),
-                args: reduced_args,
-                span: *span,
+            // A parameter applied by name (`f g = g 1.0`) substitutes to a
+            // function EXPRESSION in callee position. Keeping the original name
+            // would leave the binder dangling — the reduced body called a `g`
+            // that no longer exists ("unknown `g` in value lowering"). Applying
+            // an expression instead is ordinary Haskell 2010 §4.1.3 application,
+            // and every later pass handles a callee expression (`infer` and
+            // `lower` both un-curry a `Ref` chain).
+            match subst.get(name) {
+                Some(replacement) => Expr::ApplyExpr {
+                    callee: Box::new(replacement.clone()),
+                    args: reduced_args,
+                    span: *span,
+                },
+                None => Expr::Apply {
+                    name: name.clone(),
+                    args: reduced_args,
+                    span: *span,
+                },
             }
         }
         Expr::ApplyExpr { callee, args, span } => Expr::ApplyExpr {

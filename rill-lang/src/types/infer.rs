@@ -10,7 +10,7 @@ use super::ty::{
     concat_map_result_elem, ArrowTy, Block, DataInfo, Scheme, Subst, TypeEnv, TypeVarId, ValueTy,
 };
 use super::unify::unify_value;
-use crate::ast::{Def, Expr, MatchArm, Pattern, Program};
+use crate::ast::{Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::error::{CompileError, Span};
 use crate::mode::Mode;
 use crate::reduce::pattern_vars;
@@ -95,6 +95,17 @@ struct Ctx {
     /// they were the user's own source. The M10 diagnostic consults this set
     /// to point at the missing annotation instead.
     retry_inferred_defs: HashSet<String>,
+    /// Names of definitions that carry an explicit `::` signature.
+    ///
+    /// A signature IS the call-site contract: `f x :: Float -> Float` rejects a
+    /// `String` argument outright. A signature-LESS definition's parameter
+    /// types are inferred from its body, where rill's numeric defaulting pins
+    /// an otherwise-unconstrained operand to `Float` (`sum2 p = p.first +
+    /// p.second` → `Pair Float Float -> Float`). That defaulted `Float` stands
+    /// for a `Num`-polymorphic parameter, so the call-site argument check must
+    /// not treat it as the concrete type the user wrote — see
+    /// [`numeric_default_widens`].
+    sig_defs: HashSet<String>,
     /// The evaluation mode (strict/complete). Complete mode's value-track
     /// retry re-registers a recursive def's scheme with value-rate channels
     /// (§: recursion is the lazy value track).
@@ -1984,6 +1995,7 @@ pub fn infer_program_with_entry(
             method_lifting: HashSet::new(),
             type_var_bindings: HashMap::new(),
             retry_inferred_defs: HashSet::new(),
+            sig_defs: HashSet::new(),
             mode,
             runst_payload_tys: HashMap::new(),
             nested_group_depth: 0,
@@ -2109,6 +2121,7 @@ pub fn infer_program_with_entry(
         method_lifting: HashSet::new(),
         type_var_bindings: HashMap::new(),
         retry_inferred_defs: HashSet::new(),
+        sig_defs: HashSet::new(),
         mode,
         runst_payload_tys: HashMap::new(),
         nested_group_depth: 0,
@@ -2399,17 +2412,31 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         .map(|sig| def_sig_tys(ctx, sig).0)
         .filter(|tys| tys.len() == params.len());
     for (i, p) in params.iter().enumerate() {
-        // λ-parameters take the signature's declared type when annotated, and
-        // keep their scalar `Float` default otherwise.
-        let ty = sig_param_tys
-            .as_ref()
-            .and_then(|tys| tys.get(i).cloned())
-            .unwrap_or(ValueTy::Float);
+        // λ-parameters take the signature's declared type when annotated. An
+        // unannotated parameter starts as a FRESH TYPE VARIABLE, not a `Float`
+        // default: Haskell 2010 §4.1.2 infers `f x = x` as `a -> a`, and
+        // generalizes `a` at the definition. A `Float` default would make the
+        // scheme monomorphic, so the definition could never be applied at any
+        // other type and a call-site argument check would reject valid
+        // programs. The body's own demands still bind the variable (`x + 1.0`
+        // binds it to `Float`, `length x` to `List a`), so a scalar definition
+        // ends up exactly as concrete as before.
+        let ty = match sig_param_tys.as_ref().and_then(|tys| tys.get(i).cloned()) {
+            Some(t) => t,
+            None => ctx.fresh_vty(),
+        };
         ctx.locals
             .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
     }
     let (result, lambda_param_tys) = match infer_expr(ctx, &body) {
-        Ok(t) => (Ok(t), Vec::new()),
+        Ok(t) => (
+            Ok(t),
+            // The parameter types the body was checked against, resolved
+            // through the substitution: an unconstrained parameter stays a
+            // structural `Var` (polymorphic), a constrained one is concrete.
+            // `def_scheme_vty` lifts these into the definition's scheme.
+            resolved_param_tys(ctx, &params),
+        ),
         Err(_) => {
             ctx.subst = saved_subst.clone();
             ctx.next = saved_next;
@@ -2579,11 +2606,17 @@ fn infer_def_group_scoped(ctx: &mut Ctx, defs: &[Def], nested: bool) -> Result<(
         return Ok(());
     }
     let saved_depth = ctx.nested_group_depth;
+    // A nested group's definitions shadow the enclosing ones, so their
+    // signature status is scoped to the group: a `let`/`where` definition
+    // without a `::` must not inherit the signature-ness of the top-level
+    // definition it shadows (see [`Ctx::sig_defs`]).
+    let saved_sig_defs = ctx.sig_defs.clone();
     if nested {
         ctx.nested_group_depth += 1;
     }
     let result = infer_def_group_inner(ctx, defs);
     ctx.nested_group_depth = saved_depth;
+    ctx.sig_defs = saved_sig_defs;
     result
 }
 
@@ -2603,6 +2636,12 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         // application can resolve the transitively referenced definition.
         ctx.def_bodies
             .insert(def.name().to_string(), def.body().clone());
+        // An explicit `::` signature is the call-site contract: remember the
+        // name so the argument check treats its parameter types as the concrete
+        // types the user wrote (see [`Ctx::sig_defs`]).
+        if def.sig().is_some() {
+            ctx.sig_defs.insert(def.name().to_string());
+        }
         let lam_count = def.params().len();
         let body_lams = leading_lambda_count(def.body());
         let mut ins = Vec::with_capacity(lam_count);
@@ -2695,6 +2734,25 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
     Ok(())
 }
 
+/// Resolve a definition's parameter types through the substitution.
+///
+/// Called after a body is inferred: a parameter the body constrained
+/// (`x + 1.0` → `Float`, `length x` → `List a`) resolves to its concrete type,
+/// while a parameter the body never constrains (`f x = x`) stays a structural
+/// type variable. Keeping it a variable is what makes the definition's scheme
+/// genuinely polymorphic (Haskell 2010 §4.1.2), so `fn_param_tys` and the
+/// call-site argument check can tell "accepts anything" apart from "accepts
+/// `Float`".
+fn resolved_param_tys(ctx: &Ctx, params: &[Param]) -> Vec<ValueTy> {
+    params
+        .iter()
+        .map(|p| match ctx.locals.get(p.name.as_str()) {
+            Some(t) => ctx.subst.resolve_value(&t.vty),
+            None => ValueTy::Float,
+        })
+        .collect()
+}
+
 /// The definition's scheme value type.
 ///
 /// A class-constrained definition takes its scheme from the SIGNATURE: its body
@@ -2705,12 +2763,11 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
 /// An annotated definition reuses the argument types its body was checked
 /// against (`body_ty.sig_params`), so the scheme and the lowered parameter
 /// registers agree — a `Float` scheme for an `Int`-typed parameter is exactly
-/// the divergence this avoids. A signature-less def whose value-track retry
-/// recovered structured parameter types carries those (`body_ty.lambda_param_tys`)
-/// instead of the scalar default, so `first p = p.x` schemes as
-/// `Thunk([Point], [Float])` rather than `Thunk([Float], [Float])`. Every
-/// other definition keeps the v1 shape — the inferred body type with the
-/// scalar λ-parameter default.
+/// the divergence this avoids. An unannotated definition carries the parameter
+/// types its body was checked against (`body_ty.lambda_param_tys`) — concrete
+/// where the body constrained them (`first p = p.x` → `p : Point`), a type
+/// variable where it did not (`f x = x` → `a -> a`) — instead of the scalar
+/// `Float` default.
 fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usize) -> ValueTy {
     if let Some(sig) = constrained_def_sig(def) {
         let (sig_params, sig_ret, _) = def_sig_tys(ctx, sig);
@@ -2728,12 +2785,11 @@ fn def_scheme_vty(ctx: &mut Ctx, def: &Def, body_ty: &DefBodyTy, lam_count: usiz
     if body_ty.sig_params.len() == lam_count {
         return ValueTy::Thunk(body_ty.sig_params.clone(), vec![body_ty.ty.vty.clone()]);
     }
-    // Retry-recovered scheme: a signature-less def whose value-track retry
-    // recovered structured λ-parameter types (`first p = p.x` → `p : Point`)
-    // carries them here instead of the scalar `Float` fallback, so the scheme
-    // — and `fn_param_tys`, rebuilt from it — treats the parameter as
-    // first-class. Genuinely-unbound parameters were already mapped to `Float`
-    // during recovery (a `Var` that never unifies).
+    // Recovered parameter types: the types the body was actually checked
+    // against (`x + 1.0` → `x : Float`, `p.x` → `p : Point`, an unconstrained
+    // `x` → a type variable). Carrying them here — rather than the scalar
+    // `Float` fallback — keeps an unannotated definition's polymorphism and
+    // gives the call-site argument check the real parameter types.
     if body_ty.lambda_param_tys.len() == lam_count {
         return ValueTy::Thunk(
             body_ty.lambda_param_tys.clone(),
@@ -6596,6 +6652,12 @@ fn infer_apply_impl(
                         });
                 }
                 let ty = ctx.instantiate(&ref_scheme);
+                // A named definition applied to its full argument list: the
+                // arguments still must match the formal parameter types
+                // (Haskell 2010 §4.1.3). `ty` is this call's instantiation, so a
+                // polymorphic definition (a generalized `a -> a`) defers instead
+                // of being pinned by this call.
+                check_def_call_args(ctx, name, args, &ty.vty)?;
                 return Ok(ArrowTy::value(applied_result(
                     &ty.vty,
                     ref_scheme.lam_count,
@@ -6629,6 +6691,12 @@ fn infer_apply_impl(
             });
         }
         let ty = ctx.instantiate(&scheme);
+        // Check every actual argument against the definition's formal parameter
+        // type (Haskell 2010 §4.1.3: application requires the argument type to
+        // match the parameter type). The formal types are the scheme's leading
+        // `Thunk` captures — exactly the source `TypedProgram::fn_param_tys` is
+        // rebuilt from after inference, so the two cannot disagree.
+        check_def_call_args(ctx, name, args, &ty.vty)?;
         return Ok(ArrowTy::value(applied_result(&ty.vty, scheme.lam_count)));
     }
     // Fallback: builtin reference (abs, sin, +, etc.) applied to arguments.
@@ -6653,6 +6721,244 @@ fn infer_apply_impl(
         infer_expr(ctx, arg)?
     };
     apply_one(ctx, &callee, &at, name, arg.span())
+}
+
+/// Check a named definition's actual arguments against its formal parameter
+/// types.
+///
+/// Haskell 2010 §4.1.3 requires an application's argument type to match the
+/// parameter type, so a `String` passed to a `Float` parameter is a type error —
+/// builtin calls already enforce this, and a user definition must not be the one
+/// hole. `fn_ty` is the call-site INSTANTIATION of the definition's scheme (fresh
+/// variables per call, so polymorphic definitions stay polymorphic), and its
+/// leading `Thunk` captures are exactly the formal parameters that
+/// [`TypedProgram::fn_param_tys`] records.
+///
+/// A formal that resolves to a type VARIABLE is a generalized parameter
+/// (`id x = x`): it accepts any argument, and unifying it here would pin the
+/// definition to the first call site's type. Such a formal DEFERS — argument
+/// inference is skipped entirely, leaving the previous behaviour intact.
+///
+/// Two rill value-track widenings stay accepted, because a buffer is an ordinary
+/// value and integer literals are `fromInteger`-polymorphic in Haskell 2010:
+/// a numeric formal takes a `Buffer` argument (and a `Buffer` formal takes any
+/// value), and a `Float` formal takes a bare `Int` literal. Everything else goes
+/// through [`unify_value`], whose failure is reported as an error naming the
+/// definition and the argument position.
+fn check_def_call_args(
+    ctx: &mut Ctx,
+    name: &str,
+    args: &[Expr],
+    fn_ty: &ValueTy,
+) -> Result<(), CompileError> {
+    let formals = match fn_ty {
+        ValueTy::Thunk(..) => flatten_thunk(fn_ty).0,
+        _ => return Ok(()),
+    };
+    // An explicit signature's parameter types are the types the user wrote, so
+    // they are checked exactly. A signature-less definition's parameter types
+    // are inferred from its body, where numeric defaulting pins an otherwise
+    // unconstrained operand to `Float`; that `Float` stands for a
+    // `Num`-polymorphic parameter and tolerates an `Int` argument.
+    let defaulted = !ctx.sig_defs.contains(name);
+    for (i, (a, formal)) in args.iter().zip(formals.iter()).enumerate() {
+        let formal = ctx.subst.resolve_value(formal);
+        if matches!(formal, ValueTy::Var(_) | ValueTy::TyConVar(_)) {
+            // Polymorphic parameter: defer (see above).
+            continue;
+        }
+        let actual = infer_argument_ty(ctx, a, &formal)?;
+        // A BARE named function reference (`twice d 3.0`) types as the empty
+        // `Thunk([], [])` until it is applied: its arity and signature resolve
+        // only at ITS call site. There is no type to compare, so the argument
+        // defers — rejecting it would refuse every higher-order call that passes
+        // a named function, which is valid Haskell 2010.
+        if is_unknown_thunk(&actual) {
+            continue;
+        }
+        if def_arg_widens_to(&formal, &actual, a, defaulted) {
+            continue;
+        }
+        if let Err(e) = unify_value(&actual, &formal, &mut ctx.subst, a.span()) {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "argument {} of `{name}` has type {}, but the parameter has type {}: {e}",
+                    i + 1,
+                    type_spelling(&actual),
+                    type_spelling(&formal)
+                ),
+                span: a.span(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Whether `t` is the empty `Thunk([], [])` that a BARE named definition
+/// reference carries: its arity and parameter types are resolved when it is
+/// applied, so it has no signature to check against a formal parameter.
+fn is_unknown_thunk(t: &ValueTy) -> bool {
+    matches!(t, ValueTy::Thunk(caps, res) if caps.is_empty() && res.is_empty())
+}
+
+/// Whether an actual argument is accepted by a formal parameter WITHOUT
+/// unification — the value-track widenings documented on
+/// [`check_def_call_args`].
+fn def_arg_widens_to(formal: &ValueTy, actual: &ValueTy, arg: &Expr, defaulted: bool) -> bool {
+    match (formal, actual) {
+        // A buffer is an ordinary value: it flows into a numeric parameter (the
+        // signal-constant / buffer-arithmetic path) and any value flows into a
+        // `Buffer` parameter.
+        (ValueTy::Buffer, _) => true,
+        (ValueTy::Float | ValueTy::Int, ValueTy::Buffer) => true,
+        // `f 2` against `Float -> …`: an integer literal is `fromInteger`-
+        // polymorphic (Haskell 2010 §6.4.1), so it inhabits `Float` too. A
+        // `Float` literal against an `Int` parameter is NOT (there is no
+        // `fromRational` narrowing), which is the mismatch this rejects.
+        (ValueTy::Float, ValueTy::Int) if matches!(arg, Expr::Int(_, _)) => true,
+        _ if defaulted => numeric_default_widens(formal, actual),
+        _ => false,
+    }
+}
+
+/// `Float` positions accept `Int` positions, structurally.
+///
+/// A body whose numeric operations default an unconstrained type variable
+/// through the primitive `Num Float` instance (`sum2 p = p.first + p.second`
+/// schemes as `Pair Float Float -> Float`) has no `Num`-polymorphic scheme yet
+/// — that is the dictionary work this task's stage leads to. `Pair Int Int` is
+/// nonetheless valid Haskell 2010 at that call site (`sum2 :: Num a => Pair a a
+/// -> a`), so rejecting it would be the check being wrong, not the program.
+///
+/// The relation is DIRECTIONAL: a `Float` parameter tolerates an `Int`
+/// argument, never the reverse. `f x :: Int -> Int = x` applied to `1.5`
+/// therefore still fails, which is the mismatch the brief requires.
+fn numeric_default_widens(formal: &ValueTy, actual: &ValueTy) -> bool {
+    match (formal, actual) {
+        (ValueTy::Float, ValueTy::Float | ValueTy::Int) => true,
+        (ValueTy::Int, ValueTy::Int) => true,
+        (ValueTy::Bool, ValueTy::Bool) | (ValueTy::String, ValueTy::String) => true,
+        (ValueTy::Void, ValueTy::Void) => true,
+        (ValueTy::Data(f, fa), ValueTy::Data(a, aa))
+        | (ValueTy::Newtype(f, fa), ValueTy::Newtype(a, aa))
+        | (ValueTy::App(f, fa), ValueTy::App(a, aa)) => {
+            f == a
+                && fa.len() == aa.len()
+                && fa
+                    .iter()
+                    .zip(aa.iter())
+                    .all(|(f, a)| numeric_default_widens(f, a))
+        }
+        (ValueTy::Thunk(fa, fr), ValueTy::Thunk(aa, ar)) => {
+            fa.len() == aa.len()
+                && fr.len() == ar.len()
+                && fa
+                    .iter()
+                    .zip(aa.iter())
+                    .chain(fr.iter().zip(ar.iter()))
+                    .all(|(f, a)| numeric_default_widens(f, a))
+        }
+        _ => false,
+    }
+}
+
+/// A user-facing spelling of a value type for diagnostics: nominals by name,
+/// scalars by their Haskell spelling, and type variables by letter (`a`, `b`,
+/// …) so a partially-resolved function type still reads like a type.
+fn type_spelling(t: &ValueTy) -> String {
+    let mut names: HashMap<TypeVarId, String> = HashMap::new();
+    type_spelling_named(t, &mut names)
+}
+
+/// [`type_spelling`] with a shared variable-naming map, so the same variable
+/// keeps its letter throughout one rendered type.
+fn type_spelling_named(t: &ValueTy, names: &mut HashMap<TypeVarId, String>) -> String {
+    let var_name = |id: TypeVarId, names: &mut HashMap<TypeVarId, String>| {
+        let next = names.len();
+        names
+            .entry(id)
+            .or_insert_with(|| {
+                let letter = (b'a' + (next % 26) as u8) as char;
+                letter.to_string()
+            })
+            .clone()
+    };
+    match t {
+        ValueTy::Int => "Int".to_string(),
+        ValueTy::Float => "Float".to_string(),
+        ValueTy::Bool => "Bool".to_string(),
+        ValueTy::String => "String".to_string(),
+        ValueTy::Buffer => "Buffer".to_string(),
+        ValueTy::Void => "()".to_string(),
+        ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+            if args.is_empty() {
+                n.clone()
+            } else {
+                let rendered: Vec<String> =
+                    args.iter().map(|a| type_spelling_named(a, names)).collect();
+                format!("{n} {}", rendered.join(" "))
+            }
+        }
+        ValueTy::Thunk(args, rets) => {
+            // A function type, rendered `A -> B` (curried chains flatten), so a
+            // higher-order mismatch names what the parameter really demands.
+            let (cap, res) = flatten_thunk(&ValueTy::Thunk(args.clone(), rets.clone()));
+            if cap.is_empty() && res.is_empty() {
+                // A bare named definition reference types as an EMPTY `Thunk`
+                // until it is applied, so it has no signature to spell out.
+                return "a function value".to_string();
+            }
+            let mut parts: Vec<String> = cap
+                .iter()
+                .map(|a| {
+                    let s = type_spelling_named(a, names);
+                    if s.contains(' ') && !s.starts_with('(') {
+                        format!("({s})")
+                    } else {
+                        s
+                    }
+                })
+                .collect();
+            for r in &res {
+                parts.push(type_spelling_named(r, names));
+            }
+            parts.join(" -> ")
+        }
+        ValueTy::Var(v) | ValueTy::TyConVar(v) => var_name(*v, names),
+        ValueTy::TyConApp(f, args) => {
+            let head = var_name(*f, names);
+            let rendered: Vec<String> =
+                args.iter().map(|a| type_spelling_named(a, names)).collect();
+            format!("{head} {}", rendered.join(" "))
+        }
+    }
+}
+
+/// Infer an argument's value type for the user-definition argument check.
+///
+/// The formal type is threaded as the argument's EXPECTED type when the
+/// argument cannot type itself — a result-directed method (`return x`, `pure
+/// x`, `mempty`) needs a container — and when the formal is a FUNCTION type,
+/// where the parameter and result types are what the check compares. Threading
+/// it unconditionally would retype an integer literal in a `Float` parameter
+/// position (`sum2 (Pair { first: 1, … })`) and reject a program that the
+/// `Num`-polymorphic reading accepts, so plain inference comes first.
+fn infer_argument_ty(ctx: &mut Ctx, e: &Expr, formal: &ValueTy) -> Result<ValueTy, CompileError> {
+    if matches!(formal, ValueTy::Thunk(..)) {
+        return infer_method_value_vty_expected(ctx, e, "argument", Some(formal.clone()));
+    }
+    let plain = infer_method_value_vty(ctx, e, "argument");
+    match plain {
+        Ok(t) => Ok(t),
+        Err(plain_err) => {
+            match infer_method_value_vty_expected(ctx, e, "argument", Some(formal.clone())) {
+                Ok(t) => Ok(t),
+                // Report the ORIGINAL failure: it is the one that names the real
+                // problem in the argument, not a follow-on expected-type mismatch.
+                Err(_) => Err(plain_err),
+            }
+        }
+    }
 }
 
 /// Apply a single argument to a callee value type (unary application): `f : Thunk([a], [b])`,
@@ -7478,6 +7784,7 @@ mod tests {
                 method_lifting: HashSet::new(),
                 type_var_bindings: HashMap::new(),
                 retry_inferred_defs: HashSet::new(),
+                sig_defs: HashSet::new(),
                 mode: Mode::Strict,
                 runst_payload_tys: HashMap::new(),
                 nested_group_depth: 0,
