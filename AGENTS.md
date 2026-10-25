@@ -221,6 +221,13 @@ correctness requirement, not an aspiration.
   tracked gap list with the exact reproduction and an owner, and treat the gap
   as **open work with a deadline** — never as settled behaviour. "Pre-existing"
   is not a status; it only says the defect is older than the current branch.
+- **A documented deviation is still an error.** Writing a divergence down in
+  `DOCS-GAPS.md` (or any design note, changelog, or code comment) does **not**
+  convert it into acceptable behaviour. Never reason "this deviation is
+  documented, therefore it is allowed", never cite a gap row as justification,
+  and never label your own deviation `by design` — that label requires a recorded
+  rationale approved by the user. In all reasoning, every non-`closed` gap row is
+  a bug to be fixed.
 - **A missing construct needed to implement the task is part of the task.** If a
   feature cannot be built correctly because Haskell 2010 provides a construct
   rill lacks (a Prelude function, a syntax form, a type, a class), implement the

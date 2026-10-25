@@ -4,7 +4,16 @@
 > never "acceptable behaviour". Per `AGENTS.md`: a defect that predates a change is
 > still a defect; "pre-existing" describes age, not status.
 >
+> **A documented deviation is still an error.** Recording a divergence here does
+> not make it acceptable, settled, or a design choice — it only makes it visible
+> and trackable. Do not cite a row in this file as justification for behaviour, as
+> a reason not to fix something, or as "by design" unless the row's status is
+> explicitly `by design` (which requires a recorded rationale approved by the
+> user, not a self-assigned label). When reasoning about what the system should
+> do, every non-`closed` row counts as a bug.
+>
 > Status values: `open` (no owner yet), `scheduled` (a plan task will close it),
+> `by design` (deliberate, user-approved rationale recorded in the row),
 > `closed` (delete the row).
 
 ## Open defects (wrong behaviour, no licence to remain)
