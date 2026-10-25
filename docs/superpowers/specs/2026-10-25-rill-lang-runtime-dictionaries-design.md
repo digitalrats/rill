@@ -262,11 +262,40 @@ application.
 - Defaulting: an unsolved numeric literal becomes `Int`/`Float` per rill's
   numeral set.
 
+#### Expression type annotations (`Expr::Annot`)
+
+Haskell 2010 §3.12 allows `e :: t` on **any** expression. rill has `::` only on
+definition heads, so the annotation case above cannot even be written today.
+This design adds it:
+
+```rust
+Expr::Annot {
+    expr: Box<Expr>,
+    ty: TypeExpr,
+    span: Span,
+}
+```
+
+- **Inference**: `infer_expr_expected(expr, Some(type_expr_to_vty(ty)))` — the
+  annotation pins the inner expression's type, which is what makes
+  `(1::Int) + 1.0` a `Fractional Int` error.
+- **Desugar/lower**: an annotation is erased (it is a type-level construct); the
+  inner expression lowers normally. `ValueTy::Dict` needs no runtime presence
+  here.
+- **Parser**: postfix `::` binds looser than application, tighter than
+  `infixl 6` arithmetic — Haskell 2010's grammar for `exp :: type`.
+- **Interaction with arrays**: the `Ix`/`arrayFromAssocs` layer requires `Int`
+  offsets. With polymorphic literals, an index position is solved to `Int` by the
+  `Ix` signature rather than by literal typing; where it cannot be solved, the
+  existing type error stands. **No silent `float`-offset regression** — a test
+  asserts `readArrayFlat arr 1` (unannotated index) still resolves to `Int`.
+
 ### 3.7 Migration order (each step independently green)
 
-0. **Type-system groundwork (§3.0):** `ValueTy::Dict(ClassId)`, `Scheme.constraints`,
-   a `TypedProgram` selection table, and inference typing a constrained body
-   under given constraints. No behaviour change yet.
+0. **Type-system groundwork (§3.0, §3.6):** `Expr::Annot` (parser, inference,
+   erasure), `ValueTy::Dict(ClassId)`, `Scheme.constraints`, a `TypedProgram`
+   selection table, and inference typing a constrained body under given
+   constraints. No behaviour change yet.
 1. **`Value::Dictionary` + `DictSlot` + every RC walker** (no behaviour change;
    the type exists and is walkable).
 2. **Dictionary construction at seat** for every `(class, type)` the program
@@ -425,6 +454,9 @@ accordingly.
     working.
 14. The missing kernels (§3.9) exist: `compare`, scalar `negate`/`abs`/`signum`,
     `fromInteger`, `recip`.
+15. `Expr::Annot` (§3.6) parses, pins the inner expression's type, and is erased
+    at lowering; `(1::Int) + 1.0` is a `Fractional Int` error and `readArrayFlat
+    arr 1` still resolves the index to `Int`.
 
 ---
 
