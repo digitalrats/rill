@@ -261,7 +261,140 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 > **Backward compatibility is explicitly NOT required** (user decision): old
 > spellings are removed, not aliased.
 
-This task is split into three independently green sub-tasks.
+This task is split into six independently green sub-tasks. Order:
+
+| Order | Sub-task | Why here |
+|---|---|---|
+| 1 | **5.5pre-0** — `Float` is f32; add `Double` | independent; makes `FixedBuffer Float` mean single precision |
+| 2 | **5.5pre-1** — `FixedBuffer`/`Tape` take a real element type | needs 5.5a's registry to resolve the element, so it may swap places with 5.5a if the registry lands first |
+| 3 | **5.5a** — one type-name registry; `Void` → `()` | the single source every other sub-task consults |
+| 4 | **5.5pre-2** — `Floating`/`Integral`; `Buffer` is not a `Num` subclass | needs the element type (5.5pre-1) to put the constraint on |
+| 5 | **5.5b** — `Char`; `String = [Char]` | needs the registry |
+| 6 | **5.5c** — `List a` → `[a]`, `Pair a b` → `(a, b)` | mechanical, largest radius, independent |
+
+> **Dependency note:** 5.5pre-1 and 5.5a both need a name resolver. If the
+> registry (5.5a) lands first, 5.5pre-1 becomes "route the element type through
+> `type_entry`"; if 5.5pre-1 lands first, it must not introduce a seventh name
+> list — it must wait for the registry or use it.
+
+---
+
+#### Task 5.5pre-0: `Float` is single precision; add `Double`
+
+> **Why:** Haskell 2010 §6.4.1 fixes `Float` as the single-precision type and
+> `Double` as the double-precision one. rill's `Value::Float` is `f64`, so a
+> rill `Float` silently means `Double`. That is a conformance error, and it is
+> also why `FixedBuffer f32` looked meaningful: the schema named the buffer's
+> element precision while the scalar type hid it.
+
+**Files:** `rill-lang/src/arena.rs` (`Value::Float`), `rill-lang/src/lexer.rs`,
+`rill-lang/src/ir.rs`, `rill-lang/src/backend/interp.rs`,
+`rill-lang/src/program.rs`, `rill-lang/src/builtins/*`, `rill-lang/src/lower.rs`,
+`rill-lang/src/types/ty.rs` (the registry from 5.5a), tests.
+
+**Measured facts:**
+- `Value::Float(f64)`, yet `ParamValue::Float(f32)` and `sample_rate: f32` in
+  `rill-core` — f64 exists only in the interpreter's scalar value.
+- Buffers are already generic over `T: Transcendental`, and **every** call site
+  in the workspace instantiates `T = f32` (106 sites; zero `f64`).
+- No test depends on f64-only precision: only 2 literals in tests have more than
+  4 decimals, and 0 assert an f64-specific result such as `0.1 + 0.2`.
+- `1/3` renders `0.33333334` at f32 and `0.3333333333333333` at f64; `0.1 + 0.2`
+  renders `0.3` at f32 and `0.30000000000000004` at f64.
+
+- [ ] **Step 1: `Value::Float` becomes `f32`.**
+- [ ] **Step 2: Float literals are `f32`** (`lexer.rs`); the lexer keeps parsing
+  the decimal text with full precision and converts once, so no double rounding.
+- [ ] **Step 3: Add `Double` as a real type** — a registry entry (5.5a), a
+  `Value` payload, its `ValueKind`, all four RC walkers, `PartialEq`,
+  `value_cmp_ref`, `kind_rank`, and the numeric instances. Without it, demoting
+  `Float` would remove double precision from the language entirely.
+- [ ] **Step 4: `show_float` renders an `f32`**, which is what makes the
+  `0.1 + 0.2` / `1/3` outputs match GHC rather than diverge.
+- [ ] **Step 5: Prove it.** The old f64-only results must now match GHC:
+  `0.1 + 0.2` → `0.3`, `1/3` → `0.33333334`. Record both before/after.
+- [ ] **Step 6: Commit** — `git commit -m 'fix(lang): Float is single precision; add Double'`
+
+**Note:** this task is independent of the registry and can land first.
+
+---
+
+#### Task 5.5pre-1: `FixedBuffer` and `Tape` take a real element type
+
+> **Why:** `FixedBuffer` is declared with arity 1 (`ctor_kinds`), but the
+> argument is **discarded**. Measured on `56160d6`:
+
+```
+f :: FixedBuffer Zork -> FixedBuffer Zork;  f x = x   → compiles AND runs
+g :: FixedBuffer Int  -> FixedBuffer Bool;  g x = x   → compiles AND runs
+```
+
+> `types/unify.rs:157` matches `ValueTy::Buffer` against `App("FixedBuffer",
+> args)` only when `args.is_empty()`, and `types/ffi.rs:258` checks only
+> `args.len() == 1`. So no element type is ever resolved, which is exactly why
+> `f32` survived as a rill type name: nothing ever looked at it.
+
+- [ ] **Step 1: Carry the element type.** `ValueTy::Buffer` becomes
+  `App("FixedBuffer", [elem])` (or `Buffer(Box<ValueTy>)`); `Tape a` becomes a
+  real parameterised type instead of the hard-wired `Tape f32`.
+- [ ] **Step 2: Resolve it.** The element type goes through the single registry
+  (5.5a), so `FixedBuffer Zork` is an unknown-type error and
+  `FixedBuffer Int` vs `FixedBuffer Bool` is a type error.
+- [ ] **Step 3: `f32` is not a type name.** It is a lowercase identifier, i.e. by
+  Haskell's lexical rules a **type variable**; `instance Num (Tape f32)` in GHC
+  is therefore an instance for *all* `a` (verified: GHC accepts it). Reserving
+  the host spellings (`f32`, `f64`, `i32`, `u64`, …) is neither enough nor
+  correct — the real rule is that no undeclared uppercase name resolves and no
+  lowercase name is silently treated as a nominal type.
+- [ ] **Step 4: A buffer's element type is not automatically `Float`.** After
+  this task a buffer needs no element argument in *syntax* only for the
+  rill-specific surface; every use site names it.
+
+---
+
+#### Task 5.5pre-2: `Floating` and `Integral`; `Buffer` stops being a `Num` subclass
+
+> **Why:** the buffer operation set already demands more than `Num`. Measured
+> on `56160d6` — these all compile and run on `FixedBuffer`:
+
+| Operation | Class required by Haskell 2010 | rill today |
+|---|---|---|
+| `a + b`, `negate`, `abs`, `signum` | `Num` | works |
+| `a / b`, `recip` | `Fractional` | works |
+| `sin`, `cos`, `tan`, `sqrt`, `exp`, `ln`, `tanh` | **`Floating`** | works |
+| `a % b` | `Integral` (GHC: `No instance for 'Integral Float'`) | **works on Float elements — WRONG** |
+| `min`, `max`, `compare` | `Ord` | works |
+
+So `Num a => Buffer a` cannot be right: `Num` does not license `sin`. And `%`
+on `Float` elements is a silent wrong answer of the same class as `1 == 1.0`.
+
+**Decided (user):** option 1 — `%` on a non-`Integral` element is a type
+error, matching GHC.
+
+- [ ] **Step 1: Add `Floating`** exactly as the Report's tower:
+  `class Fractional a => Floating a` with `pi`, `exp`, `log`, `sqrt`, `(**)`,
+  `logBase`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
+  `tanh`, `asinh`, `acosh`, `atanh`. rill currently spells `ln`; per the
+  Haskell-first rule the Report name is `log` (keep `ln` only if §3.4's
+  surface keeps it — decide and record).
+- [ ] **Step 2: Add `Integral`** — `class (Real a, Enum a) => Integral a` with
+  `quot`, `rem`, `div`, `mod`, `quotRem`, `divMod`, `toInteger`. This needs
+  `Real`/`Enum` from the tower; if they are not there yet, add only what
+  `Integral` needs and record what remains.
+- [ ] **Step 3: `Buffer` is a container class, not a numeric one.** Replace
+  `typeclass (Num b) => Buffer b` with a class that says what it means, and give
+  `FixedBuffer` its numeric instances **conditioned on the element**:
+  `instance (Floating a) => Num (FixedBuffer a)` etc., plus
+  `instance (Integral a) => Integral (FixedBuffer a)` for elementwise `quot`/`rem`.
+  A context on the *instance head* is what the Report allows (§4.3.1);
+  `data Floating a => FixedBuffer a` would be illegal (verified: GHC rejects
+  `Illegal datatype context`).
+- [ ] **Step 4: A constraint-parameterised instance head needs a dictionary
+  builder** — design §3.10's `DictSlot::Builder`. `instance (Floating a) =>
+  Num (FixedBuffer a)` is exactly `$fNumFixedBuffer :: Floating a => Num
+  (FixedBuffer a)`, a dictionary that is a *function of another dictionary*.
+- [ ] **Step 5: `%` on `Float` elements is now a type error**, and `+`/`/`/`sin`
+  still work. Prove all three.
 
 ---
 
