@@ -261,21 +261,19 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 > **Backward compatibility is explicitly NOT required** (user decision): old
 > spellings are removed, not aliased.
 
-This task is split into six independently green sub-tasks. Order:
+This task is split into six independently green sub-tasks.
 
 | Order | Sub-task | Why here |
 |---|---|---|
-| 1 | **5.5pre-0** — `Float` is f32; add `Double` | independent; makes `FixedBuffer Float` mean single precision |
-| 2 | **5.5pre-1** — `FixedBuffer`/`Tape` take a real element type | needs 5.5a's registry to resolve the element, so it may swap places with 5.5a if the registry lands first |
-| 3 | **5.5a** — one type-name registry; `Void` → `()` | the single source every other sub-task consults |
-| 4 | **5.5pre-2** — `Floating`/`Integral`; `Buffer` is not a `Num` subclass | needs the element type (5.5pre-1) to put the constraint on |
-| 5 | **5.5b** — `Char`; `String = [Char]` | needs the registry |
+| 1 | **5.5a** — one type-name registry; `Void` → `()` | the single source every later sub-task consults; landing it first also means `Double` is added as **one registry entry** instead of a seventh hard-coded list |
+| 2 | **5.5pre-0** — `Float` is f32; add `Double` | independent of the registry internally, but depends on it for adding `Double` cleanly |
+| 3 | **5.5pre-1** — `FixedBuffer`/`Tape` take a real element type | needs the registry to resolve the element type (`FixedBuffer Zork` must be an error) |
+| 4 | **5.5pre-2** — `Floating`/`Integral`; `Buffer` is not a `Num` subclass | needs the element type to put the constraint on |
+| 5 | **5.5b** — `Char`; `String = [Char]` | needs the registry (a `Char` scalar is one entry) |
 | 6 | **5.5c** — `List a` → `[a]`, `Pair a b` → `(a, b)` | mechanical, largest radius, independent |
 
-> **Dependency note:** 5.5pre-1 and 5.5a both need a name resolver. If the
-> registry (5.5a) lands first, 5.5pre-1 becomes "route the element type through
-> `type_entry`"; if 5.5pre-1 lands first, it must not introduce a seventh name
-> list — it must wait for the registry or use it.
+> **Ordering rule:** anything that adds a type name must land *after* 5.5a, or
+> it will add a seventh `matches!` list — the exact defect 5.5a removes.
 
 ---
 
