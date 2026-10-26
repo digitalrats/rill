@@ -334,11 +334,64 @@ sub-tasks, in this order:
 
 | Sub-task | Scope | Why this order |
 |---|---|---|
-| **5.5a** | phantom type names → compile error; `Void` → `()` | closes a static-typing hole; tiny blast radius |
+| **5.5a** | **one type-name registry**; undeclared names → compile error; `Void` → `()` | closes a static-typing hole *and* removes six drifting name lists; everything else builds on it |
 | **5.5b** | `Char` as a real type + character literals; `String = [Char]` | needs 5.5a first (otherwise `Char` is just another phantom) |
 | **5.5c** | `List a` → `[a]`, `Pair a b` → `(a, b)` | purely mechanical, largest radius, independent of a/b |
 
-- [ ] **Step 1: Inventory the exact sites**
+#### 5.5a architecture: one type-name registry (measured defect)
+
+Scalar type names are **not** in any registry. They are hard-coded as `matches!`
+lists in **six** places, and the lists disagree:
+
+| Site | List | Purpose |
+|---|---|---|
+| `types/ty.rs:1992` | `Float Int Bool String Buffer ()` | the only real resolution (`vty_of_name`) |
+| `types/ty.rs:1930` | `Int Float Bool String` | which types get derived `Eq`/`Ord` |
+| `types/infer.rs:1857` | `Float Int Bool String Buffer ()` | "is this name declared" |
+| `types/infer.rs:5045` | same, **different order** | the inverse check |
+| `types/ffi.rs:273` | `Float Int Bool String` | FFI scalar-vs-record |
+| `types/infer.rs:7491` | `Int→"Int"`, `Void→"()"` | type → name |
+
+`vty_of_name` falls through to `ValueTy::Data(n, [])` for anything unknown, which
+is why `Integer`/`Double`/`Char`/`Void` are accepted as phantom types. Adding a
+type today means editing all six lists, and missing one creates a new phantom or
+an inconsistent answer.
+
+**5.5a therefore does not patch the lists — it replaces them with one registry.**
+
+- [ ] **Step 1: Introduce the registry**
+
+Extend `TypeEnv` so a *name* resolves to a *type entry* in one lookup: the
+scalar names (`Int`, `Float`, `Bool`, `String`, `Char` reserved for 5.5b,
+`Buffer`, `()`), builtin constructors (with arity), `data`, `newtype`,
+`type` aliases, abstract types, and class type variables. Existing maps
+(`data_types`, `newtypes`, `type_aliases`, `ctor_kinds`, `data_arities`) become
+the registry's storage rather than parallel sources; scalar entries are added
+where they are missing.
+
+- [ ] **Step 2: One predicate and one resolver**
+
+Replace the six sites with:
+- `TypeEnv::type_entry(&self, name: &str) -> Option<TypeEntry>` — the single
+  source of truth;
+- `vty_of_name` returns `Option<ValueTy>`; `None` ⇒ the caller reports
+  `unknown type name \`X\``;
+- the "declared?" checks (`infer.rs:1857`, `5045`), the derived-`Eq`/`Ord` seed
+  (`ty.rs:1930`), the FFI scalar check (`ffi.rs:273`) and the name renderer
+  (`infer.rs:7491`) all consult it.
+
+- [ ] **Step 3: `Void` is removed; `()` is the unit type**
+
+`ValueTy::Void` is an internal variant and may stay, but the **source-level
+name** `Void` must resolve to nothing (unknown type), and `()` stays correct.
+
+- [ ] **Step 4: Prove the registry is the single source**
+
+A test adds a name to the registry *once* and asserts every consumer sees it
+(the declaration check, `vty_of_name`, the derived-instance seed, the FFI
+scalar check, the renderer). That is the property that was missing.
+
+- [ ] **Step 5: Inventory the exact sites**
 
 ```bash
 grep -rn 'Pair' --include='*.rs' rill-lang/src rill-lang/tests | wc -l   # ~271 uses in tests
