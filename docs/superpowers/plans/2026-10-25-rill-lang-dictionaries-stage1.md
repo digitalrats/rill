@@ -277,69 +277,58 @@ This task is split into six independently green sub-tasks.
 
 ---
 
-#### Task 5.5pre-0: `Float` is single precision; add `Double`
+#### Task 5.5pre-0 (revised): `Float` → `Double` — an incorrect NAME, not an incorrect precision
 
-> **Why:** Haskell 2010 §6.4.1 fixes `Float` as the single-precision type and
-> `Double` as the double-precision one. rill's `Value::Float` is `f64`, so a
-> rill `Float` silently means `Double`. That is a conformance error, and it is
-> also why `FixedBuffer f32` looked meaningful: the schema named the buffer's
-> element precision while the scalar type hid it.
+> **Why:** Report §6.4.1 says `Float` is single precision and `Double` is double.
+> rill's `Value::Float` is `f64`, and its measured arithmetic is exactly GHC's
+> **`Double`**: `0.1 + 0.2` → `0.30000000000000004` and `1/3` →
+> `0.3333333333333333` (GHC verified for `Double`; `:: Float` gives `0.3` and
+> `0.33333334`). So the defect is not that `Float` is too precise — it is that the
+> `Double` type is called `Float`. The fix is a **rename**, and it changes no
+> numerical behaviour at all.
+>
+> An earlier version of this task said "demote `Float` to `f32` and add
+> `Double`". That was wrong twice over: it would have changed observable results
+> (breaking tests for no conformance gain) and it would have forced numeric
+> defaulting to be redesigned inside a naming task. The rename is the correct
+> and much smaller operation. **`Float` single precision is a separate, later
+> task** (see below).
 
-**Files:** `rill-lang/src/arena.rs` (`Value::Float`), `rill-lang/src/lexer.rs`,
-`rill-lang/src/ir.rs`, `rill-lang/src/backend/interp.rs`,
-`rill-lang/src/program.rs`, `rill-lang/src/builtins/*`, `rill-lang/src/lower.rs`,
-`rill-lang/src/types/ty.rs` (the registry from 5.5a), tests.
+**Files:** mechanical, compiler-driven — `rill-lang/src/types/{ty.rs, infer.rs,
+unify.rs}`, `arena.rs`, `ast.rs`, `lexer.rs`, `parser.rs`, `lower.rs`,
+`ir.rs`, `backend/interp.rs`, `program.rs`, `builtins/*`, `types/ffi.rs`,
+`render.rs`, plus every test program.
 
-**Measured facts:**
-- `Value::Float(f64)`, yet `ParamValue::Float(f32)` and `sample_rate: f32` in
-  `rill-core` — f64 exists only in the interpreter's scalar value.
-- Buffers are already generic over `T: Transcendental`, and **every** call site
-  in the workspace instantiates `T = f32` (106 sites; zero `f64`).
-- No test depends on f64-only precision: only 2 literals in tests have more than
-  4 decimals, and 0 assert an f64-specific result such as `0.1 + 0.2`.
-- `1/3` renders `0.33333334` at f32 and `0.3333333333333333` at f64; `0.1 + 0.2`
-  renders `0.3` at f32 and `0.30000000000000004` at f64.
+**Measured size (on `59ffecd`):** `ValueTy::Float` 221, `Value::Float` 245,
+`Expr::Float`/`Tok::Float`/`LitFloat` 73, the registry string `"Float"` 57,
+`Float` in test programs 647 — ~1240 mechanical replacements. The compiler finds
+every site; no decision is involved at any of them.
 
-- [ ] **Step 1: `Value::Float` becomes `f32`.**
-- [ ] **Step 2: Float literals are `f32`** (`lexer.rs`); the lexer keeps parsing
-  the decimal text with full precision and converts once, so no double rounding.
-- [ ] **Step 3: Add `Double` as a real type** — a registry entry (5.5a), a
-  `Value` payload, its `ValueKind`, all four RC walkers, `PartialEq`,
-  `value_cmp_ref`, `kind_rank`, and the numeric instances. Without it, demoting
-  `Float` would remove double precision from the language entirely.
-- [ ] **Step 4: `show_float` renders an `f32`**, which is what makes the
-  `0.1 + 0.2` / `1/3` outputs match GHC rather than diverge.
-- [ ] **Step 5: Prove it.** The old f64-only results must now match GHC at the
-  same type. Compare against GHC's **`:: Float`-pinned** results, not its
-  defaulted ones: `(0.1 + 0.2 :: Float)` → `0.3`,
-  `(1/3 :: Float)` → `0.33333334` (GHC verified). Record both before/after.
-  This is the correct comparison because rill's `show_float` is monomorphic
-  (`Float -> String`), so it pins the literal's type exactly as `:: Float` does.
-- [ ] **Step 6: Commit** — `git commit -m 'fix(lang): Float is single precision; add Double'`
+- [ ] **Step 1: Rename the type.** `ValueTy::Float` → `ValueTy::Double`,
+  `Value::Float` → `Value::Double`, `ValueKind::Float` → `ValueKind::Double`,
+  `Expr::Float`/`LitFloat`/`Tok::Float` → the `Double` spellings.
+- [ ] **Step 2: Rename the source-level name.** The registry entry `"Float"`
+  becomes `"Double"`; `Float` then resolves to nothing and is an
+  `unknown type name` error (exactly like `Char` today). No alias.
+- [ ] **Step 3: `show_float` → `show_double`.** The name must not lie about its
+  type. (It is rill-specific — Haskell has `show` — so this is an internal
+  rename, not a conformance question.)
 
-**Do NOT change numeric defaulting in this task.** GHC's own defaulting goes to
-`Double` (`default (Integer, Double)`, Report §4.3.4), not `Float`: verified
-`0.1 + 0.2` unannotated → `0.30000000000000004` while
-`(0.1 + 0.2 :: Float)` → `0.3`. rill's defaulting maps an ambiguous literal
-to `Float`/`Int`, which is a **separate divergence** (see the note below) and
-must not be silently "fixed" here by making `Float` double precision again.
+- [ ] **Step 4: Update every test program** that writes `Float`.
+- [ ] **Step 5: Prove nothing moved.** The numeric results must be **identical**
+  to before: `show_double (0.1 + 0.2)` → `0.30000000000000004`,
+  `show_double (1.0 / 3.0)` → `0.3333333333333333`, both equal to GHC's
+  `Double`. A changed numeric value is a bug in this task, not a fix.
+- [ ] **Step 6: Commit** — `git commit -m 'refactor(lang): the double-precision type is Double, not Float'`
 
-#### Correction to the design's defaulting claim
+**Explicitly out of scope:** numeric defaulting (GHC defaults to `Double`; rill's
+`Fractional` defaulting target is a separately recorded divergence),
+`Floating`/`Integral`, and `Float` single precision.
 
-Design §3.5 says defaulting maps `Num`-only → `Int` and `Fractional` →
-`Float`, described as *"rill's numeral mapping of GHC's `Integer`/`Double`"*. That
-mapping is **not** conformance-equivalent once `Float` means single precision:
-GHC defaults an ambiguous floating literal to `Double`, so `0.1 + 0.2` yields
-`0.30000000000000004` there and would yield `0.3` in rill. Since Haskell 2010
-outranks convenience, the correct destination for `Fractional` defaulting is
-**`Double`**, and it becomes reachable exactly once 5.5pre-0 adds `Double`.
-
-- [ ] **Recorded as a follow-up, not part of 5.5pre-0:** defaulting for a
-  `Fractional`-constrained ambiguous literal must target `Double`, and
-  `Num`-only must target `Integer`-equivalent behaviour. Tracked in
-  `DOCS-GAPS.md` (OD-16 area) and in the audit's A4b table.
-
-**Note:** this task is independent of the registry and can land first.
+**Naming note for `FixedBuffer`:** after this rename the buffer spelling is
+`FixedBuffer Double`. That is correct — `FixedBuffer` is a container of
+double-precision samples — and it lets 5.5pre-1 delete the host-spelling `f32`
+without losing anything.
 
 ---
 

@@ -274,7 +274,19 @@ typeclass_layer.rs}` (new).
 
 - [ ] **Step 2: Run — expect failures** including the current `abs signal argument must be a Buffer`.
 
-- [ ] **Step 3: Implement `Num`/`Fractional`/`Floating`** with `Int` (Num, Integral later) and `Float` (Num, Fractional, Floating) instances. Scalar bodies emit the existing `ValueArith`/`UnOp`.
+- [ ] **Step 3: Implement `Num`/`Fractional`/`Floating`** with `Int` (Num, Integral later) and `Double` (Num, Fractional, Floating) instances. Scalar bodies emit the existing `ValueArith`/`UnOp`.
+
+  **`Float` (single precision) is added here, not earlier.** Report §6.4.1
+  gives `Float` and `Double` distinct precisions; rill's `Double` already
+  carries double precision, so `Float` needs a real `f32` value
+  representation rather than an alias. Adding it belongs in this task because
+  this is where the numeric tower turns into classes: `instance Num Float` /
+  `Fractional Float` / `Floating Float` are instance declarations like any
+  other, and `fromInteger`/`fromRational` give the rounding rule a principled
+  home. Land `Float` as an **ordinary registry entry plus instances**, never as
+  an alias of `Double` and never as a special case in the arithmetic path.
+  Until then `Float` is an `unknown type name`, which is an honest absence
+  (the conformance rule forbids a documented gap standing in for behaviour).
 
 - [ ] **Step 4: Implement `Buffer` arithmetic** — `(+)`/`(-)`/`(*)`/`(/)`/`min`/`max`/`abs` on `FixedBuffer a` and `Tape f32`, bodies emitting `ValueBufferBin`/`ValueBufferUn`. Register the `dsp` test so the path is actually reachable (Review Focus 5).
 
@@ -292,7 +304,9 @@ typeclass_layer.rs}` (new).
 
 - [ ] **Step 1: Write failing tests** — `div`/`mod`/`quot`/`rem`; `floor`/`ceiling`/`round`/`truncate`; `fromIntegral`/`toInteger`; `succ`/`pred`; `enumFromTo`; `[1..5]`; `minBound`/`maxBound`.
 - [ ] **Step 2: Run — expect `unknown identifier`.**
-- [ ] **Step 3: Implement the four classes** (`Integral Int`, `RealFrac Float`, `Enum Int`, `Bounded Int`), with `%` desugaring to `rem`.
+- [ ] **Step 3: Implement the four classes** (`Integral Int`, `RealFrac Double`
+  — and `RealFrac Float` once P3 landed `Float` — `Enum Int`, `Bounded Int`),
+  with `%` desugaring to `rem`.
 - [ ] **Step 4: Implement `[a..b]`** as `enumFromTo a b` in the parser (Haskell 2010 §3.10); `[a,b..c]` is out of scope → gap row.
 - [ ] **Step 5: Verify and commit** — `git commit -m 'feat(lang): Integral, RealFrac, Enum and Bounded'`.
 
