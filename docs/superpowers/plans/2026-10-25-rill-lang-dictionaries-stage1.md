@@ -268,7 +268,7 @@ Two sub-tasks are done; one is ready; two are blocked on work outside this plan
 |---|---|---|
 | **5.5a** — one type-name registry; `Void` → `()` | **DONE** `59ffecd` | — |
 | **5.5pre-0** — `Float` → `Double` (the name was wrong, not the precision) | **DONE** `0e78439` | — |
-| **5.5pre-1** — `FixedBuffer`/`Tape` carry a real element type | **READY** | nothing: keep the parameter, stop discarding it; the one legal element today is `Double`, and monomorphic instance heads avoid needing a dictionary builder |
+| **5.5pre-1** — `FixedBuffer`/`Tape` carry a real element type | **DONE** `5a5b404` | — |
 | **5.5b** — `Char`, `String = [Char]` | **DEFERRED** | type-level list syntax + dictionary builders: `String` is a primitive, and `String = [Char]` makes every string instance a conditional head (`instance Monoid [Char]`) |
 | **5.5c** — `[a]`, `(a, b)` | **DEFERRED** | type-level list syntax + dictionary builders: `f :: [Int] -> [Int]` is not parsable today, and `instance Monoid [a]` needs a builder |
 | ~~5.5pre-2~~ — `Floating`/`Integral` | **DELETED** | duplicated P3/P4 of `2026-10-25-rill-lang-typeclass-layer.md`; its unique requirement moved to P3 Step 4 |
