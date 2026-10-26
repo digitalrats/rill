@@ -266,7 +266,7 @@ This task is split into six independently green sub-tasks.
 | Order | Sub-task | Why here |
 |---|---|---|
 | 1 | **5.5a** — one type-name registry; `Void` → `()` | the single source every later sub-task consults; landing it first also means `Double` is added as **one registry entry** instead of a seventh hard-coded list |
-| 2 | **5.5pre-0** — `Float` is f32; add `Double` | independent of the registry internally, but depends on it for adding `Double` cleanly |
+| 2 | **5.5pre-0** — rename `Float` → `Double` (the name was wrong, the precision was not) | depends on the registry: the renamed entry must be one registry line, not a sixth list. Leaves `Float` single precision to P3 |
 | 3 | **5.5pre-1** — `FixedBuffer`/`Tape` take a real element type | needs the registry to resolve the element type (`FixedBuffer Zork` must be an error) |
 | 4 | **5.5pre-2** — `Floating`/`Integral`; `Buffer` is not a `Num` subclass | needs the element type to put the constraint on |
 | 5 | **5.5b** — `Char`; `String = [Char]` | needs the registry (a `Char` scalar is one entry) |
