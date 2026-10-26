@@ -1,6 +1,7 @@
 //! B3-1: the unary value model — a process type carries a single `ValueTy`,
 //! with no `Rate`/`Channel`/`Scalar`. Signals are the ordinary
-//! `ValueTy::Buffer`. These are the source-of-truth tests for the type system.
+//! `ValueTy::Buffer`, which carries its sample element. These are the
+//! source-of-truth tests for the type system.
 
 use rill_lang::lexer::tokenize;
 use rill_lang::parser::parse;

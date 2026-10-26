@@ -53,7 +53,7 @@ fn a_scalar_main_is_rejected_at_compile() {
 
 #[test]
 fn a_buffer_main_is_rejected_at_compile() {
-    // A `FixedBuffer f32` entry is well-typed but is not an `IO ()` action.
+    // A `FixedBuffer Double` entry is well-typed but is not an `IO ()` action.
     // The gate fires in `compile` before any `WorldState::new`, so this pins
     // the GATE rather than an unresolvable built-in: registration is never
     // observable here, and the entry type alone rejects the program.

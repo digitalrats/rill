@@ -3,7 +3,8 @@
 //!
 //! An expression's type is a single [`ValueTy`] wrapped in [`Ty`]; channel
 //! arity is gone (`ins`/`outs` vectors were removed with the block track). A
-//! signal is an ordinary value type ([`ValueTy::Buffer`]), executed as
+//! signal is an ordinary value type ([`ValueTy::Buffer`], carrying its sample
+//! element), executed as
 //! `Value::Buffer` on the value track. [`ArrowTy`] is a back-compat alias for
 //! [`Ty`]; [`Block`] a back-compat alias for [`ValueTy`].
 
@@ -26,7 +27,8 @@ pub type TypeVarId = u32;
 pub(crate) const MAX_VALUE_RESOLVE_DEPTH: usize = 64;
 
 /// Type of an arena value. All data is equal — there is no signal/value split
-/// (linear lambda model); a signal buffer is the ordinary `ValueTy::Buffer`.
+/// (linear lambda model); a signal buffer is the ordinary `ValueTy::Buffer`,
+/// which carries its element (`FixedBuffer elem`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValueTy {
     /// Integer value.
@@ -37,9 +39,16 @@ pub enum ValueTy {
     Bool,
     /// String value type.
     String,
-    /// A signal buffer (a block of samples). An ordinary value type, like
-    /// `List`/`Map`; executed as `Value::Buffer` on the value track.
-    Buffer,
+    /// A signal buffer over an element type (a block of `elem` samples):
+    /// `FixedBuffer elem`. An ordinary value type, like `List`/`Map`; executed
+    /// as `Value::Buffer` on the value track.
+    ///
+    /// The payload is the buffer's SAMPLE ELEMENT, and it is checked: two
+    /// buffers unify exactly when their elements unify, and the ONE legal
+    /// element today is the registry's buffer element (`Double` — see
+    /// [`TypeEnv::is_buffer_element`]). This is the only representation of a
+    /// buffer type; `App("FixedBuffer", [elem])` is not a second shape.
+    Buffer(Box<ValueTy>),
     /// The unit type `()`. The only inhabitant is `Value::Void` (allocated by
     /// the value track's `ValueConstVoid`); used for `IO ()` actions.
     Void,
@@ -205,6 +214,16 @@ pub struct ScalarType {
     pub vty: ValueTy,
     /// Whether a `foreign` signature may name this type as a SCALAR parameter.
     pub ffi_scalar: bool,
+    /// Whether this scalar may be the SAMPLE ELEMENT of a buffer
+    /// (`FixedBuffer elem` / `Tape elem`).
+    ///
+    /// One property of the registry entry, not a list in the checker: a buffer
+    /// element is exactly a registered scalar marked here, and marking a
+    /// second scalar is a one-line change that needs no other edit. `Double` is
+    /// the only marked element today because it is the only element a program
+    /// can name or observe (a buffer's samples enter the language as
+    /// `Value::Double`).
+    pub buffer_element: bool,
 }
 
 /// The registry's answer for one type-level NAME: what, if anything, that name
@@ -242,6 +261,22 @@ impl TypeEntry {
     pub fn is_type(&self) -> bool {
         !matches!(self, TypeEntry::Variable)
     }
+}
+
+/// The role a buffer type CONSTRUCTOR (`FixedBuffer elem`, `Tape elem`) plays
+/// in the language.
+///
+/// A buffer is an ordinary value of either role; the role only says how the FFI
+/// layer classifies a parameter that names it. Recorded next to the name in
+/// [`TypeEnv::buffer_ctors`] so the FFI classifier asks the registry instead of
+/// keeping its own list of buffer spellings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferRole {
+    /// A signal channel: `FixedBuffer elem`. Contributes one input arity.
+    Channel,
+    /// A shared-buffer resource handle: `Tape elem`. A symbolic reference, not
+    /// a channel.
+    Resource,
 }
 
 /// Shape of a declared data type.
@@ -476,6 +511,12 @@ pub struct TypeEnv {
     /// Builtin type constructors: name → value arity. `List a` has arity 1,
     /// `Map k v` arity 2. Open collections carry no capacity.
     pub ctor_kinds: HashMap<String, usize>,
+    /// The buffer type CONSTRUCTORS and the role each plays (`FixedBuffer` a
+    /// signal channel, `Tape` a shared-buffer resource). A buffer VALUE type is
+    /// [`ValueTy::Buffer`] carrying its element; this table says which NAMES may
+    /// appear as a buffer constructor in a signature, and how the FFI classifies
+    /// them. Seeded by [`TypeEnv::with_builtins`].
+    pub buffer_ctors: HashMap<String, BufferRole>,
     /// User-declared parameterized data types: name → number of type
     /// parameters (`data Box a` → 1). Used to kind-check constructor instances
     /// against a class's arity (`Functor f` needs `Box a`, not `Pair a b`).
@@ -629,10 +670,15 @@ data Tape a = { };
 --  `Num` instance. Today the prelude declares the marker instances only — the
 --  whole-buffer `Num` bodies are emitted by the compiler for these types (the
 --  instance body is the kernel call), which is why no equations appear here.
-instance Num (FixedBuffer a) where { }
-instance Num (Tape f32) where { }
-instance Buffer (FixedBuffer a) where { }
-instance Buffer (Tape f32) where { }
+--  The heads are MONOMORPHIC in the element (`FixedBuffer Double`, `Tape
+--  Double`) because `Double` is the one legal buffer element today: `a` here
+--  would advertise an instance for every element while the element is checked,
+--  which is a lie. When a second element exists, the variable-headed
+--  `instance (Floating a) => Num (FixedBuffer a)` is an ADDITIVE change.
+instance Num (FixedBuffer Double) where { }
+instance Num (Tape Double) where { }
+instance Buffer (FixedBuffer Double) where { }
+instance Buffer (Tape Double) where { }
 
 --  Legacy Buffer-arrow combinators (`Buffer -> Buffer` as first-class
 --  values), retained as plain value functions after the signal surface
@@ -900,43 +946,43 @@ __prelude_end = ();
 /// them to a signal value directly — `onepole 200.0 0.7 buf` applies the
 /// partial application to the buffer. The record-param builtins
 /// (`mixer`/`eq_parametric`/`dry_wet`) declare their record configs here too
-/// (`mixer`'s leading `List (FixedBuffer f32)` is a VariadicSignal followed
+/// (`mixer`'s leading `List (FixedBuffer Double)` is a VariadicSignal followed
 /// only by a record — [`crate::types::ffi::ffi_sig_from_typeexpr`] accepts the
-/// shape). `tape_loop` (`Int -> Tape f32`) is a resource CONSTRUCTOR: its
-/// `Tape f32` result is not a `FixedBuffer`/`Pair`, so
+/// shape). `tape_loop` (`Int -> Tape Double`) is a resource CONSTRUCTOR: its
+/// `Tape Double` result is not a `FixedBuffer`/`Pair`, so
 /// [`crate::types::ffi::ffi_sig_from_typeexpr`] rejects it by design — lowering
 /// recognizes `tape_loop <capacity>` directly (like the legacy `TapeLoop`
 /// declaration) and produces the tape index, which flows to `write_head` /
-/// `read_head` via their `Tape f32` resource params (Task 11).
+/// `read_head` via their `Tape Double` resource params (Task 11).
 pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
-foreign sine : Double -> Double -> Double -> FixedBuffer f32;
-foreign saw : Double -> Double -> Double -> FixedBuffer f32;
-foreign square : Double -> Double -> Double -> FixedBuffer f32;
-foreign triangle : Double -> Double -> Double -> FixedBuffer f32;
-foreign noise : Double -> Double -> FixedBuffer f32;
-foreign ay38910 : Double -> Double -> FixedBuffer f32;
-foreign sampler : Double -> Double -> Double -> Double -> Double -> FixedBuffer f32;
+foreign sine : Double -> Double -> Double -> FixedBuffer Double;
+foreign saw : Double -> Double -> Double -> FixedBuffer Double;
+foreign square : Double -> Double -> Double -> FixedBuffer Double;
+foreign triangle : Double -> Double -> Double -> FixedBuffer Double;
+foreign noise : Double -> Double -> FixedBuffer Double;
+foreign ay38910 : Double -> Double -> FixedBuffer Double;
+foreign sampler : Double -> Double -> Double -> Double -> Double -> FixedBuffer Double;
 
-foreign integrator : FixedBuffer f32 -> FixedBuffer f32;
-foreign leaky_integrator : Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign onepole : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign moog : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign lowpass : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign highpass : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign biquad : Double -> Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign delay : Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign distortion : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign limiter : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign graphic_eq : Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign spectralgate : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign spectraldelay : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign convolver : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign analog_moog : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign lofi : Double -> Double -> Double -> Double -> Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
-foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
+foreign integrator : FixedBuffer Double -> FixedBuffer Double;
+foreign leaky_integrator : Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign onepole : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign moog : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign lowpass : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign highpass : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign biquad : Double -> Double -> Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign delay : Double -> Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign distortion : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign limiter : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign graphic_eq : Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign spectralgate : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign spectraldelay : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign convolver : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign analog_moog : Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign lofi : Double -> Double -> Double -> Double -> Double -> Double -> Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign eq_parametric : EqConfig -> FixedBuffer Double -> FixedBuffer Double;
 
-foreign tape_loop : Int -> Tape f32;
-foreign read_head : Tape f32 -> Double -> FixedBuffer f32;
+foreign tape_loop : Int -> Tape Double;
+foreign read_head : Tape Double -> Double -> FixedBuffer Double;
 
 data EqBand = { freq: Double, q: Double, gain_db: Double, band_type: Int };
 data EqConfig = { bands: List EqBand };
@@ -1066,10 +1112,12 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
             ..
         } = def
         {
+            let mut free: Vec<String> = Vec::new();
             let fields_ty = fields
                 .iter()
                 .map(|(f, t, strict)| {
-                    let ft = crate::types::infer::data_field_vty(env, tyvars, t);
+                    let ft =
+                        crate::types::infer::data_field_vty_with_free(env, tyvars, t, &mut free);
                     (f.clone(), ft, *strict)
                 })
                 .collect();
@@ -1142,6 +1190,13 @@ impl TypeEnv {
         ]
         .into_iter()
         .collect();
+        // The buffer type constructors and their FFI role. `FixedBuffer elem`
+        // is a signal channel, `Tape elem` a shared-buffer resource; both are
+        // registered here so the FFI classifier asks the registry.
+        let buffer_ctors = HashMap::from([
+            ("FixedBuffer".to_string(), BufferRole::Channel),
+            ("Tape".to_string(), BufferRole::Resource),
+        ]);
         // NOTE: the `Var(1)`/`Var(2)` ids below are NOT unification variables —
         // they are placeholder parameter positions inside the builtin type
         // shapes (`Maybe a`, `Pair a b`, `Either a b`). They collide with the
@@ -1177,6 +1232,7 @@ impl TypeEnv {
         let typeclasses: HashMap<String, TypeclassInfo> = HashMap::new();
         let mut env = TypeEnv {
             ctor_kinds,
+            buffer_ctors,
             data_types,
             typeclasses,
             ..TypeEnv::default()
@@ -1187,16 +1243,33 @@ impl TypeEnv {
         // 2010 spells the unit type as the empty tuple; there is no `Void`
         // type name). This is the ONE place that says which names are types —
         // every consumer asks [`TypeEnv::type_entry`].
-        for (name, vty, ffi_scalar) in [
-            ("Int", ValueTy::Int, true),
-            ("Double", ValueTy::Double, true),
-            ("Bool", ValueTy::Bool, true),
-            ("String", ValueTy::String, true),
-            ("Buffer", ValueTy::Buffer, false),
-            ("()", ValueTy::Void, false),
+        for (name, vty, ffi_scalar, buffer_element) in [
+            ("Int", ValueTy::Int, true, false),
+            ("Double", ValueTy::Double, true, true),
+            ("Bool", ValueTy::Bool, true, false),
+            ("String", ValueTy::String, true, false),
+            ("()", ValueTy::Void, false, false),
         ] {
-            env.register_scalar(name, ScalarType { vty, ffi_scalar });
+            env.register_scalar(
+                name,
+                ScalarType {
+                    vty,
+                    ffi_scalar,
+                    buffer_element,
+                },
+            );
         }
+        // `Buffer` is rill's buffer VALUE type (`FixedBuffer elem`), not a
+        // scalar: it is registered separately so its name denotes the
+        // element-carrying constructor rather than a leaf.
+        env.register_scalar(
+            "Buffer",
+            ScalarType {
+                vty: ValueTy::Buffer(Box::new(ValueTy::Double)),
+                ffi_scalar: false,
+                buffer_element: false,
+            },
+        );
         // The single language prelude: classes, instances, the primitive
         // tokens, and the buffer type — declared in rill-lang itself so they are
         // first-class entities. A parse failure here is a compiler bug (the
@@ -1646,10 +1719,10 @@ impl TypeEnv {
             )),
         );
         // Buffer bridge: concrete over the `Int`-indexed `Double` array the
-        // `FixedBuffer f32` maps to. The value-level type of a signal buffer is
+        // `FixedBuffer Double` maps to. The value-level type of a signal buffer is
         // `Buffer` (that is what the FFI apply path produces for a fully applied
         // generator and what a buffer-returning `main` yields), so these are
-        // written against `Buffer` rather than the `FixedBuffer f32` spelling
+        // written against `Buffer` rather than the `FixedBuffer Double` spelling
         // used inside `foreign` declarations.
         env.builtin_sigs.insert(
             "arrayFromBuffer".to_string(),
@@ -2175,6 +2248,126 @@ impl TypeEnv {
         )
     }
 
+    /// Whether a buffer may carry the type named `name` as its SAMPLE ELEMENT
+    /// (`FixedBuffer name` / `Tape name`).
+    ///
+    /// Data-driven: the answer is a property of the registry entry
+    /// ([`ScalarType::buffer_element`]), so supporting a second element is a
+    /// one-line change at the seed, not a new list in the checker. `Double` is
+    /// the only marked element today — it is the only element a program can
+    /// name or observe.
+    pub fn is_buffer_element(&self, name: &str) -> bool {
+        matches!(
+            self.type_entry(name),
+            Some(TypeEntry::Scalar(ScalarType {
+                buffer_element: true,
+                ..
+            }))
+        )
+    }
+
+    /// The element type a buffer's samples are checked against, from the
+    /// registry's marked buffer element(s). The FIRST marked scalar in
+    /// registration order is the element a buffer value's samples have: the
+    /// runtime materialises every sample as `Value::Double`, so a buffer value
+    /// types as `FixedBuffer <that element>`.
+    pub fn buffer_element_ty(&self) -> Option<ValueTy> {
+        self.scalars
+            .iter()
+            .find(|(_, s)| s.buffer_element)
+            .map(|(_, s)| s.vty.clone())
+    }
+
+    /// The buffer VALUE type a bare buffer expression has
+    /// (`FixedBuffer <element>`), or the element-free fallback when no scalar is
+    /// marked as a buffer element (a program could not observe a buffer at all
+    /// in that state).
+    pub fn buffer_vty(&self) -> ValueTy {
+        ValueTy::Buffer(Box::new(
+            self.buffer_element_ty().unwrap_or(ValueTy::Double),
+        ))
+    }
+
+    /// Build the value type a type CONSTRUCTOR application denotes.    ///
+    /// This is the ONE place a `<head> <args…>` application becomes a value
+    /// type, so every converter (signatures, data fields, instance heads,
+    /// builtin signatures) agrees:
+    ///
+    /// * a buffer CHANNEL constructor (`FixedBuffer elem`) becomes the buffer
+    ///   value type [`ValueTy::Buffer`] — never a second `App("FixedBuffer", …)`
+    ///   shape;
+    /// * a declared parameterized data type (`IO a`, `ST s a`, a user
+    ///   `data Box a`) keeps the `Data` flavour it is constructed and matched
+    ///   with;
+    /// * every other application (a builtin container: `List`, `Pair`, `Array`)
+    ///   is `App`.
+    pub fn ctor_application(&self, head: &str, args: Vec<ValueTy>) -> ValueTy {
+        if let Some(buf) = self.channel_ctor_vty(head, &args) {
+            return buf;
+        }
+        if self.data_arities.contains_key(head) {
+            ValueTy::Data(head.to_string(), args)
+        } else {
+            ValueTy::App(head.to_string(), args)
+        }
+    }
+
+    /// The [`BufferRole`] of a buffer type constructor name (`FixedBuffer`,
+    /// `Tape`), or `None` when the name is not a buffer constructor.
+    pub fn buffer_role(&self, name: &str) -> Option<BufferRole> {
+        self.buffer_ctors.get(name).copied()
+    }
+
+    /// Whether a CONCRETE value type may be a buffer's sample element.
+    ///
+    /// The registry decides via [`ScalarType::buffer_element`], so this is not a
+    /// private list: `Double` is the only element today, and marking a second
+    /// scalar is one edit at the seed.
+    pub fn is_buffer_element_ty(&self, v: &ValueTy) -> bool {
+        self.scalars
+            .iter()
+            .any(|(_, s)| s.buffer_element && &s.vty == v)
+    }
+
+    /// The registered buffer element spellings, in registration order, for a
+    /// diagnostic ("the only buffer element is `Double`").
+    pub fn buffer_element_names(&self) -> Vec<String> {
+        self.scalars
+            .iter()
+            .filter(|(_, s)| s.buffer_element)
+            .map(|(n, _)| n.clone())
+            .collect()
+    }
+
+    /// The value type a buffer CHANNEL constructor application denotes:
+    /// `FixedBuffer elem` → `ValueTy::Buffer(elem)`.
+    ///
+    /// `None` when `head` is not a channel constructor at all, so a caller can
+    /// fall through to its ordinary constructor-application path. Composite
+    /// elements (a buffer of buffers) are not expressible; validation rejects
+    /// them, and a concrete non-registered element is reported there. This is
+    /// the ONE translation into the buffer value type — no caller builds
+    /// `App("FixedBuffer", [elem])` as a second shape.
+    pub fn channel_ctor_vty(&self, head: &str, args: &[ValueTy]) -> Option<ValueTy> {
+        match self.buffer_role(head)? {
+            BufferRole::Channel if args.len() == 1 => {
+                Some(ValueTy::Buffer(Box::new(args[0].clone())))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether an instance-registry KEY names a buffer type — either the bare
+    /// constructor (`FixedBuffer`) or the full applied key the monomorphic
+    /// prelude head registers (`FixedBuffer Double`, `Tape Double`).
+    ///
+    /// Data-driven off [`Self::buffer_ctors`], so the lowering kernel selector
+    /// does not carry its own list of buffer spellings.
+    pub fn instance_key_is_buffer(&self, key: &str) -> bool {
+        self.buffer_role(key.split(' ').next().unwrap_or(key))
+            .is_some()
+    }
+
     /// Whether `name` is a WELL-FORMED type-level name: a registered type or a
     /// type variable (a lowercase name). `false` only for an uppercase name no
     /// declaration introduced.
@@ -2346,6 +2539,14 @@ impl TypeEnv {
                 if !tyvars.iter().any(|v| v == head) && !self.is_known_type_name(head) {
                     return Err(unknown_type_error(head, span));
                 }
+                // A buffer constructor's element is CHECKED here: the one legal
+                // element today is the registry's marked scalar (`Double`), so
+                // `FixedBuffer Int` / `FixedBuffer Bool` name an element the
+                // language does not have. The requirement is named in the error,
+                // and the rule is a registry property — not a name list.
+                if self.buffer_role(head).is_some() && args.len() == 1 {
+                    self.validate_buffer_element(&args[0], tyvars, span)?;
+                }
                 for a in args {
                     self.validate_type_expr(a, tyvars, span)?;
                 }
@@ -2368,6 +2569,49 @@ impl TypeEnv {
                 inner_vars.extend(constraints.iter().map(|(_, v)| v.clone()));
                 self.validate_type_expr(inner, &inner_vars, span)
             }
+        }
+    }
+
+    /// Reject a buffer ELEMENT type the language does not have.
+    ///
+    /// `FixedBuffer elem` / `Tape elem` require `elem` to be a registered buffer
+    /// element ([`Self::is_buffer_element`]). A concrete wrong element
+    /// (`Int`, `Bool`, `String`) is an error naming the requirement; a TYPE
+    /// VARIABLE element (`FixedBuffer a` inside a polymorphic signature) is a
+    /// constraint the signature makes, not a claim about a concrete element, so
+    /// it passes — the call site's element is checked against the buffer's
+    /// actual type when the two meet.
+    fn validate_buffer_element(
+        &self,
+        elem: &crate::ast::TypeExpr,
+        tyvars: &[String],
+        span: Span,
+    ) -> Result<(), CompileError> {
+        use crate::ast::TypeExpr;
+        match elem {
+            // A type variable element: a constraint on the signature, deferred
+            // to the call site.
+            TypeExpr::TName(n) if tyvars.iter().any(|v| v == n) || self.is_type_variable(n) => {
+                Ok(())
+            }
+            TypeExpr::TName(n) if self.is_buffer_element(n) => Ok(()),
+            // An UPPERCASE name nothing declares is not an element problem: it
+            // is a name that does not exist (Haskell 2010 §3.1), and the
+            // diagnostic must say so rather than blame the element rule.
+            TypeExpr::TName(n) if !self.is_known_type_name(n) => Err(unknown_type_error(n, span)),
+            // Any other concrete element (a declared type, a newtype, a scalar
+            // the registry does not mark as a buffer element) is wrong.
+            TypeExpr::TName(n) => Err(wrong_buffer_element_error(self, n, span)),
+            other => Err(CompileError::Type {
+                msg: format!(
+                    "a buffer's element must be a scalar type; the only buffer element is `{}`",
+                    self.buffer_element_names().join("`, `")
+                ),
+                span: {
+                    let _ = other;
+                    span
+                },
+            }),
         }
     }
 
@@ -2504,12 +2748,16 @@ impl TypeEnv {
                 .clone()
         };
         match t {
-            ValueTy::Int
-            | ValueTy::Double
-            | ValueTy::Bool
-            | ValueTy::String
-            | ValueTy::Buffer
-            | ValueTy::Void => self.scalar_name_of(t).unwrap_or_else(|| format!("{t:?}")),
+            // A buffer is spelled by its CONSTRUCTOR and its element:
+            // `FixedBuffer Double`. The bare registry name `Buffer` is an
+            // alias-level spelling for a buffer value, never a diagnostic that
+            // hides which element was expected.
+            ValueTy::Buffer(elem) => {
+                format!("FixedBuffer {}", self.type_spelling_named(elem, names))
+            }
+            ValueTy::Int | ValueTy::Double | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
+                self.scalar_name_of(t).unwrap_or_else(|| format!("{t:?}"))
+            }
             // A dictionary is not a data type, so it has no nominal name — spell
             // it as the class witness it is.
             ValueTy::Dict(class) => format!("Dict {class}"),
@@ -2602,8 +2850,12 @@ impl TypeEnv {
     pub fn type_name_of_vty(&self, v: &ValueTy) -> Option<String> {
         match v {
             // A buffer value's nominal type is `FixedBuffer`: that is the
-            // instance head that provides its `Num` dictionary.
-            ValueTy::Buffer => Some("FixedBuffer".to_string()),
+            // instance head that provides its `Num` dictionary. The element is
+            // checked, but instance lookup is keyed by the CONSTRUCTOR (the
+            // prelude declares `instance Num (FixedBuffer Double)`, a
+            // monomorphic head whose key is the full applied type — see
+            // [`value_type_key`]).
+            ValueTy::Buffer(_) => Some("FixedBuffer".to_string()),
             ValueTy::Int | ValueTy::Double | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
                 self.scalar_name_of(v)
             }
@@ -2815,12 +3067,13 @@ pub(crate) fn class_var_param_pattern(
 /// application (`App`) from a declared shape (`Data`/`Newtype`), but the
 /// registry treats `Pair Int Int` as one type; [`unify_value`] compares variants
 /// strictly, so both sides of an instance-head match are normalized first.
+///
+/// A buffer needs no arm here: a buffer VALUE is already
+/// `ValueTy::Buffer(elem)` and an instance head is converted to the same shape
+/// by [`TypeEnv::ctor_application`], so the two sides are comparable as they
+/// stand — there is exactly one buffer representation.
 fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
     match v {
-        // A buffer value and the `FixedBuffer a` instance head are the SAME
-        // type to the registry: the runtime represents every buffer as
-        // `ValueTy::Buffer`, while an instance head spells the constructor.
-        ValueTy::Buffer => ValueTy::App("FixedBuffer".to_string(), vec![]),
         ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
             ValueTy::App(n.clone(), args.iter().map(normalize_ctor_app).collect())
         }
@@ -2851,6 +3104,17 @@ fn unknown_type_error(name: &str, span: Span) -> CompileError {
 /// (a name inside a compiler-built signature).
 pub(crate) fn unknown_type_name(name: &str) -> CompileError {
     unknown_type_error(name, Span::new(0, 0))
+}
+
+/// The compile error for a buffer element the language does not have: it names
+/// the requirement, which is the registry's marked element(s) — not a name list
+/// duplicated here.
+fn wrong_buffer_element_error(env: &TypeEnv, declared: &str, span: Span) -> CompileError {
+    let allowed = env.buffer_element_names().join("`, `");
+    CompileError::Type {
+        msg: format!("wrong buffer element `{declared}`: the only buffer element is `{allowed}`"),
+        span,
+    }
 }
 
 /// Flatten a curried unary-thunk nest into its full argument and result lists.
@@ -2937,12 +3201,14 @@ fn collect_type_app_vars(te: &crate::ast::TypeExpr, out: &mut Vec<String>) {
 pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
     fn key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
         Some(match v {
-            ValueTy::Int
-            | ValueTy::Double
-            | ValueTy::Bool
-            | ValueTy::String
-            | ValueTy::Buffer
-            | ValueTy::Void => env.scalar_name_of(v)?,
+            // A buffer's registry key is the CONSTRUCTOR applied to its element
+            // — `FixedBuffer Double` — exactly what an `instance Num
+            // (FixedBuffer Double)` head renders as. The key therefore
+            // distinguishes elements: there is no `Buffer`-spelled key.
+            ValueTy::Buffer(elem) => format!("FixedBuffer {}", key(env, elem)?),
+            ValueTy::Int | ValueTy::Double | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
+                env.scalar_name_of(v)?
+            }
             // A dictionary is never a registry key: it is compiler-side
             // evidence of a constraint, not a type an instance is declared for.
             ValueTy::Dict(_) => return None,
@@ -3003,7 +3269,9 @@ pub fn kind_rank(v: &ValueTy) -> i8 {
         ValueTy::Double => 1,
         ValueTy::Bool => 2,
         ValueTy::String => 3,
-        ValueTy::Buffer => 4,
+        // A buffer ranks by its FORM (the element it carries does not give it a
+        // different rank: rank orders forms, not types).
+        ValueTy::Buffer(_) => 4,
         ValueTy::Void => 5,
         ValueTy::Data(..) => 6,
         ValueTy::Newtype(..) => 7,
@@ -3268,7 +3536,7 @@ mod hkt_value_ty_tests {
                 "prelude/catalog type `{name}` must be a registry entry"
             );
         }
-        // The prelude's Buffer instances name `FixedBuffer a` / `Tape f32`
+        // The prelude's Buffer instances name `FixedBuffer a` / `Tape Double`
         // where `f32` is a type VARIABLE, so the prelude's own name use is
         // exactly what the program-level rule permits.
         assert_eq!(env.type_entry("f32"), Some(TypeEntry::Variable));
@@ -3341,11 +3609,15 @@ mod channel_tests {
 
     #[test]
     fn buffer_is_an_ordinary_value_type() {
-        // Linear lambda model: no Channel/Rate — a signal is just ValueTy::Buffer.
-        let sig = ValueTy::Buffer;
+        // Linear lambda model: no Channel/Rate — a signal is just a buffer value
+        // type, which CARRIES its element.
+        let sig = ValueTy::Buffer(Box::new(ValueTy::Double));
         let val = ValueTy::Data("Point".into(), vec![]);
-        assert_eq!(sig, ValueTy::Buffer);
+        assert_eq!(sig, ValueTy::Buffer(Box::new(ValueTy::Double)));
         assert_ne!(sig, val);
+        // The element is part of the type: a different element is a different
+        // type.
+        assert_ne!(sig, ValueTy::Buffer(Box::new(ValueTy::Int)));
     }
 
     #[test]

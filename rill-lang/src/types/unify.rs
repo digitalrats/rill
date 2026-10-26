@@ -59,6 +59,9 @@ fn value_contains_var_impl(
                 .any(|a| value_contains_var_impl(subst, a, v, seen))
         }
         ValueTy::Bool | ValueTy::String => false,
+        // The element is part of the buffer type: an occurs-check must look
+        // inside it, or `a ~ FixedBuffer a` would be accepted.
+        ValueTy::Buffer(elem) => value_contains_var_impl(subst, elem, v, seen),
         _ => false,
     }
 }
@@ -149,15 +152,12 @@ pub fn unify_value(
         (ValueTy::Int, ValueTy::Int) | (ValueTy::Double, ValueTy::Double) => Ok(()),
         (ValueTy::Bool, ValueTy::Bool) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
-        (ValueTy::Buffer, ValueTy::Buffer) => Ok(()),
-        // A buffer value and its nominal constructor are the same type: the
-        // runtime represents every buffer as `ValueTy::Buffer`, while an
-        // instance head spells `FixedBuffer`.
-        (ValueTy::Buffer, ValueTy::App(n, args)) | (ValueTy::App(n, args), ValueTy::Buffer)
-            if n == "FixedBuffer" && args.is_empty() =>
-        {
-            Ok(())
-        }
+        // `FixedBuffer a` unifies with `FixedBuffer b` exactly when `a` unifies
+        // with `b`: the element is part of the type, so `FixedBuffer Int` and
+        // `FixedBuffer Bool` are different types. A buffer NEVER unifies with a
+        // non-buffer — this arm is the whole rule, and there is no
+        // `App("FixedBuffer", [elem])` second shape.
+        (ValueTy::Buffer(a), ValueTy::Buffer(b)) => unify_value(a, b, subst, span),
         (ValueTy::Void, ValueTy::Void) => Ok(()),
         // Dictionaries unify by CLASS IDENTITY: a `Num` witness is exactly a
         // `Num` witness and never another class's. A dictionary is not a data

@@ -343,27 +343,29 @@ time. **The language owns the signature; Rust owns the implementation.**
 
 A foreign built-in is declared with the `foreign fn name : TypeExpr;` syntax.
 The signature is a curried arrow (`a -> b -> r`). Signal channels are typed
-`FixedBuffer f32`; scalar parameters use the scalar value types `Double` /
-`Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer f32)`:
+`FixedBuffer elem`; scalar parameters use the scalar value types `Double` /
+`Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer elem)`.
+The element is checked: `Double` is the one legal buffer element today, and any
+other element (`Int`, `Bool`, …) is a compile error naming the requirement.
 
 ```haskell
-foreign fn biquad : FixedBuffer f32 -> Double -> Double -> Double -> FixedBuffer f32;
-foreign fn add    : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
-foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32;
+foreign fn biquad : FixedBuffer Double -> Double -> Double -> Double -> FixedBuffer Double;
+foreign fn add    : FixedBuffer Double -> FixedBuffer Double -> FixedBuffer Double;
+foreign fn sum    : FixedBuffer Double -> List (FixedBuffer Double) -> FixedBuffer Double;
 ```
 
 Parameters occupy positional argument slots in declaration order — the signal
 channel at slot 0, the scalar at slot 1:
 
 ```haskell
-foreign fn gain : FixedBuffer f32 -> Double -> FixedBuffer f32;
+foreign fn gain : FixedBuffer Double -> Double -> FixedBuffer Double;
 main = gain _ 0.5;
 ```
 
-The result type is one or more `FixedBuffer` channels (`FixedBuffer f32` → 1
-out; `(FixedBuffer f32, FixedBuffer f32)` → 2 outs). A `List (FixedBuffer f32)`
-variadic parameter must be **last** — a mid-signature variadic does not resolve
-as a foreign built-in.
+The result type is one or more `FixedBuffer` channels (`FixedBuffer Double` → 1
+out; `(FixedBuffer Double, FixedBuffer Double)` → 2 outs). A
+`List (FixedBuffer Double)` variadic parameter must be **last** — a
+mid-signature variadic does not resolve as a foreign built-in.
 
 ### The signal-track types
 
@@ -371,14 +373,24 @@ as a foreign built-in.
 
 ```haskell
 typeclass Buffer b where { }
-instance Buffer (FixedBuffer a) where { }
-instance Buffer (Tape f32) where { }
+instance Num (FixedBuffer Double) where { }
+instance Buffer (FixedBuffer Double) where { }
+instance Num (Tape Double) where { }
+instance Buffer (Tape Double) where { }
 ```
 
-- **`FixedBuffer a`** — the signal-channel type. A `foreign fn` signal parameter
-  is strictly a `FixedBuffer[BUF]` at the runtime boundary (i.e. the const-generic
-  `FixedBuffer<f32, BUF>`, block-sized, no heap on the RT path).
-- **`Tape a`** — a shared-buffer handle (a tape loop). A `Buffer` family member
+The instance heads are monomorphic in the ELEMENT — legal Haskell 2010 §4.3.1
+heads that need no dictionary builder. `Double` is the one legal element today,
+so the heads name it; the variable-headed
+`instance (Floating a) => Num (FixedBuffer a)` is an additive change when a
+second element exists.
+
+- **`FixedBuffer elem`** — the signal-channel type, carrying its sample element.
+  A `foreign fn` signal parameter is strictly a `FixedBuffer[BUF]` at the runtime
+  boundary (i.e. the const-generic `FixedBuffer<f32, BUF>`, block-sized, no heap
+  on the RT path). Two buffers unify only when their elements unify:
+  `FixedBuffer Int` is a different type from `FixedBuffer Bool`.
+- **`Tape elem`** — a shared-buffer handle (a tape loop). A `Buffer` family member
   like `FixedBuffer`; its runtime representation is an index into the program's
   shared tape cells (see *Tape loops* below).
 - **`Buffer`** — a typeclass over buffer types; the home of buffer math in later
@@ -446,7 +458,7 @@ declared with `foreign fn` in the auto-registered catalog
 ### Tape loops
 
 A tape loop is created with the `tape_loop` foreign constructor
-(`Int -> Tape f32`) and shared by the tape head builtins `write_head` /
+(`Int -> Tape Double`) and shared by the tape head builtins `write_head` /
 `read_head` (registered by `rill-sampler`). NAMED bindings share one buffer:
 
 ```haskell

@@ -998,7 +998,7 @@ mod tests {
         // A `foreign` declaration renders a trailing `;` (render.rs
         // Def::Foreign arm) that the top-level parse loop — not the def parser
         // — consumes. Full-program round-trip must stay idempotent.
-        let src = r"foreign biquad : FixedBuffer f32 -> Double -> Double -> Double -> FixedBuffer f32;
+        let src = r"foreign biquad : FixedBuffer Double -> Double -> Double -> Double -> FixedBuffer Double;
 main = 1.0;";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();

@@ -3719,7 +3719,7 @@ mod tests {
         // (regression: it used to eat its own semi, double-eating and failing
         // on the next def with "expected Semi").
         let p = prog(
-            r"main = x where { foreign biquad : FixedBuffer f32 -> FixedBuffer f32; x = 1.0; }",
+            r"main = x where { foreign biquad : FixedBuffer Double -> FixedBuffer Double; x = 1.0; }",
         );
         let main = p.main_def().unwrap();
         assert_eq!(main.where_defs().len(), 2);

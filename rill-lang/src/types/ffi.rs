@@ -6,23 +6,26 @@
 //! compile-time params; `Tape a` is a shared-buffer resource handle.
 
 use crate::ast::TypeExpr;
-use crate::types::ty::{DataInfo, TypeEnv, ValueTy};
+use crate::types::ty::{BufferRole, DataInfo, TypeEnv, ValueTy};
 
 /// One parameter of a foreign function signature.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FfiParam {
-    /// A signal channel: `FixedBuffer a`. Contributes one input arity.
-    Signal,
+    /// A signal channel: `FixedBuffer elem`. Carries the ELEMENT the signature
+    /// declares, so the layer distinguishes `FixedBuffer Double` from
+    /// `FixedBuffer Int` instead of erasing both to "a signal". Contributes one
+    /// input arity.
+    Signal(ValueTy),
     /// A compile-time scalar parameter: `Double`/`Int`/`Bool`/`String`.
     Scalar,
-    /// Variadic signal channels: `List (FixedBuffer a)`. Consumes all remaining
-    /// signal arguments.
-    VariadicSignal,
+    /// Variadic signal channels: `List (FixedBuffer elem)`. Consumes all
+    /// remaining signal arguments, all with the declared element.
+    VariadicSignal(ValueTy),
     /// A `Data`-typed record parameter (e.g. a mixer config).
     Record(String),
-    /// A named shared buffer (`Tape a`) — a symbolic resource reference, NOT a
-    /// signal. Lowering records the referenced name; the build path resolves it.
-    Resource,
+    /// A named shared buffer (`Tape elem`) — a symbolic resource reference, NOT
+    /// a signal. Carries the element for the same reason [`Self::Signal`] does.
+    Resource(ValueTy),
 }
 
 /// A parsed foreign function signature.
@@ -180,16 +183,24 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
 /// Convert a carried `TypeExpr` (`a -> b -> c -> r`) into an [`FfiSig`].
 ///
 /// Supported parameter types:
-/// - `FixedBuffer a` → [`FfiParam::Signal`]
+/// - `FixedBuffer elem` → [`FfiParam::Signal(elem)`]
 /// - a name the registry marks as an FFI scalar (`Double`/`Int`/`Bool`/`String`)
 ///   → [`FfiParam::Scalar`] — the REGISTRY decides, not a list here
-/// - `List (FixedBuffer a)` → [`FfiParam::VariadicSignal`]
-/// - `Tape a` → [`FfiParam::Resource`]
+/// - `List (FixedBuffer elem)` → [`FfiParam::VariadicSignal(elem)`]
+/// - `Tape elem` → [`FfiParam::Resource(elem)`]
 /// - any other `TName` (a `Data` record type) → [`FfiParam::Record(name)`]
 ///
-/// The result type is one or more `FixedBuffer` channels (`FixedBuffer a` →
-/// 1 out; `(FixedBuffer a, FixedBuffer b)` → 2 outs). Returns `None` for a
-/// malformed signature (non-carried, unsupported result).
+/// A buffer parameter's ELEMENT is resolved through the registry and CHECKED:
+/// an element the registry does not mark as a buffer element
+/// ([`TypeEnv::is_buffer_element`]) makes the parameter a wrong element, so the
+/// signature converts to `None` and the declaration is rejected by the same
+/// walk that rejects unknown names, with a `wrong buffer element` diagnostic
+/// naming the requirement. `FixedBuffer Double` and `FixedBuffer Int`
+/// therefore classify differently instead of both becoming "a signal".
+///
+/// The result type is one or more `FixedBuffer` channels (`FixedBuffer elem` →
+/// 1 out; `(FixedBuffer elem, FixedBuffer elem)` → 2 outs). Returns `None` for a
+/// malformed signature (non-carried, unsupported result, or a wrong element).
 pub fn ffi_sig_from_typeexpr(env: &TypeEnv, name: &str, te: &TypeExpr) -> Option<FfiSig> {
     // Unroll the carried arrows into a flat param list.
     let mut params = Vec::new();
@@ -210,11 +221,11 @@ pub fn ffi_sig_from_typeexpr(env: &TypeEnv, name: &str, te: &TypeExpr) -> Option
                 // as signals while inference counts a different arity. EXCEPT a
                 // trailing RECORD param: the record is the config scalar and the
                 // variadic's signal span stops before it (mixer's `List
-                // (FixedBuffer f32) -> MixerConfig`). `[Signal, VariadicSignal,
+                // (FixedBuffer Double) -> MixerConfig`). `[Signal, VariadicSignal,
                 // Scalar]` stays invalid.
                 if let Some(i) = params
                     .iter()
-                    .rposition(|p| matches!(p, FfiParam::VariadicSignal))
+                    .rposition(|p| matches!(p, FfiParam::VariadicSignal(_)))
                 {
                     let trailing = &params[i + 1..];
                     let only_records = trailing.iter().all(|p| matches!(p, FfiParam::Record(_)));
@@ -225,7 +236,7 @@ pub fn ffi_sig_from_typeexpr(env: &TypeEnv, name: &str, te: &TypeExpr) -> Option
                 return Some(FfiSig {
                     param_names: param_names_for(name, &params),
                     params,
-                    signal_outs: outs_from_typeexpr(other)?,
+                    signal_outs: outs_from_typeexpr(env, other)?,
                 });
             }
         }
@@ -254,26 +265,52 @@ fn param_names_for(name: &str, params: &[FfiParam]) -> Vec<String> {
     out
 }
 
-fn param_from_typeexpr(te: &TypeExpr) -> Option<FfiParam> {
+fn param_from_typeexpr(env: &TypeEnv, te: &TypeExpr) -> Option<FfiParam> {
     match te {
-        TypeExpr::TApp(head, args) if head == "FixedBuffer" && args.len() == 1 => {
-            Some(FfiParam::Signal)
+        // `FixedBuffer elem` — a signal channel, carrying its element.
+        TypeExpr::TApp(head, args)
+            if env.buffer_role(head) == Some(BufferRole::Channel) && args.len() == 1 =>
+        {
+            Some(FfiParam::Signal(buffer_element(env, &args[0])?))
         }
         TypeExpr::TApp(head, args) if head == "List" && args.len() == 1 => {
-            // `List (FixedBuffer a)` — variadic signal channels.
-            if matches!(&args[0], TypeExpr::TApp(h, a) if h == "FixedBuffer" && a.len() == 1) {
-                Some(FfiParam::VariadicSignal)
-            } else {
-                None
+            // `List (FixedBuffer elem)` — variadic signal channels, all with
+            // the declared element.
+            if let TypeExpr::TApp(h, a) = &args[0] {
+                if env.buffer_role(h) == Some(BufferRole::Channel) && a.len() == 1 {
+                    return Some(FfiParam::VariadicSignal(buffer_element(env, &a[0])?));
+                }
             }
+            None
         }
-        TypeExpr::TApp(head, args) if head == "Tape" && args.len() == 1 => {
-            // `Tape a` — a named shared buffer (resource), not a signal.
-            Some(FfiParam::Resource)
+        // `Tape elem` — a named shared buffer (resource), not a signal.
+        TypeExpr::TApp(head, args)
+            if env.buffer_role(head) == Some(BufferRole::Resource) && args.len() == 1 =>
+        {
+            Some(FfiParam::Resource(buffer_element(env, &args[0])?))
         }
         TypeExpr::TName(n) => Some(FfiParam::Record(n.clone())),
         _ => None,
     }
+}
+
+/// The buffer ELEMENT a written element type-expression declares, checked
+/// against what the host can actually produce.
+///
+/// `Some(elem)` when `te` names an element the host materialises
+/// ([`TypeEnv::is_buffer_element_ty`] — `Double` today); `None` for anything
+/// else, which makes the enclosing signature conversion fail. The check is
+/// data-driven: it asks the registry, so a second supported element is one seed
+/// edit, not a new list here.
+fn buffer_element(env: &TypeEnv, te: &TypeExpr) -> Option<ValueTy> {
+    let TypeExpr::TName(n) = te else {
+        return None;
+    };
+    let elem = env.vty_of_name(n)?;
+    if !env.is_buffer_element_ty(&elem) {
+        return None;
+    }
+    Some(elem)
 }
 
 /// [`param_from_typeexpr`] with the type registry in hand: a `TName` that the
@@ -283,19 +320,29 @@ fn param_from_typeexpr(te: &TypeExpr) -> Option<FfiParam> {
 fn param_from_typeexpr_env(env: &TypeEnv, te: &TypeExpr) -> Option<FfiParam> {
     match te {
         TypeExpr::TName(n) if env.is_ffi_scalar(n) => Some(FfiParam::Scalar),
-        _ => param_from_typeexpr(te),
+        _ => param_from_typeexpr(env, te),
     }
 }
 
-fn outs_from_typeexpr(te: &TypeExpr) -> Option<usize> {
+fn outs_from_typeexpr(env: &TypeEnv, te: &TypeExpr) -> Option<usize> {
     match te {
-        TypeExpr::TApp(head, args) if head == "FixedBuffer" && args.len() == 1 => Some(1),
+        TypeExpr::TApp(head, args)
+            if env.buffer_role(head) == Some(BufferRole::Channel) && args.len() == 1 =>
+        {
+            buffer_element(env, &args[0])?;
+            Some(1)
+        }
         // `(FixedBuffer a, FixedBuffer b)` desugars to `Pair (FixedBuffer a) (FixedBuffer b)`.
         TypeExpr::TApp(head, args) if head == "Pair" && args.len() == 2 => {
-            if args
-                .iter()
-                .all(|a| matches!(a, TypeExpr::TApp(h, x) if h == "FixedBuffer" && x.len() == 1))
-            {
+            let all_channels = args.iter().all(|a| match a {
+                TypeExpr::TApp(h, x) => {
+                    env.buffer_role(h) == Some(BufferRole::Channel)
+                        && x.len() == 1
+                        && buffer_element(env, &x[0]).is_some()
+                }
+                _ => false,
+            });
+            if all_channels {
                 Some(2)
             } else {
                 None

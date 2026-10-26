@@ -33,7 +33,7 @@ fn roundtrips_scalar_main() {
 #[test]
 fn roundtrips_foreign_declaration() {
     roundtrip(
-        "foreign onepole : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32; main = ()",
+        "foreign onepole : Double -> Double -> FixedBuffer Double -> FixedBuffer Double; main = ()",
     );
 }
 

@@ -31,7 +31,7 @@ fn an_unknown_builtin_compiles_but_fails_at_seat() {
     // `mystery` is declared `foreign` but never registered. `square` IS
     // registered by `register_foreign_generators`, so the failure can only be
     // the unknown name — not a missing generator.
-    let defs = "foreign mystery : Double -> FixedBuffer f32 -> FixedBuffer f32;";
+    let defs = "foreign mystery : Double -> FixedBuffer Double -> FixedBuffer Double;";
     let ir = compile_eval::<f32, 256>(defs, "mystery 0.5 (square 0.0 1.0 0.0)", Mode::Complete)
         .expect("lowering does not resolve built-in names, so this must compile");
     assert!(

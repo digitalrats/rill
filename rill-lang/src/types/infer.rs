@@ -674,11 +674,11 @@ fn sum_ctor_payload(ctx: &Ctx, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy
 /// field `value: a` becomes `Var(1)`, mirroring the builtin `Maybe`/`Pair`
 /// shapes). Concrete type names resolve through [`TypeEnv::vty_of_name`].
 ///
-/// A free lowercase name that no declaration shadows (`f32` in
-/// `FixedBuffer f32`) stays the nominal placeholder it has always been: it is a
-/// type VARIABLE by Haskell's lexical rules, and giving buffer element types a
-/// real meaning is a separate task. An undeclared UPPERCASE name never reaches
-/// here — registration validation rejects it first.
+/// A free lowercase name that no declaration shadows is a TYPE VARIABLE by
+/// Haskell's lexical rules (§3.1), and becomes a placeholder variable — never a
+/// nominal type. A buffer CHANNEL constructor is the buffer value type itself
+/// (`FixedBuffer Double` → `ValueTy::Buffer(Double)`). An undeclared UPPERCASE
+/// name never reaches here — registration validation rejects it first.
 ///
 /// Exposed for the category-prelude data registration (`Kleisli m a b` is
 /// declared in the prelude and registered by [`TypeEnv::with_builtins`]).
@@ -687,41 +687,75 @@ pub(crate) fn data_field_vty(
     tyvars: &[String],
     te: &crate::ast::TypeExpr,
 ) -> ValueTy {
+    let mut free: Vec<String> = Vec::new();
+    data_field_vty_with_free(env, tyvars, te, &mut free)
+}
+
+/// [`data_field_vty`] with an explicit free-variable list.
+///
+/// A name that is neither a declared type nor one of the declaration's own type
+/// parameters is a TYPE VARIABLE (Haskell 2010 §3.1), never a nominal type: the
+/// nominal fallback that used to invent `Data(name, [])` here is what let an
+/// unbound lowercase name pass as a phantom type. Free names are recorded in
+/// `free` in first-appearance order so each keeps a stable placeholder id across
+/// the fields of ONE declaration.
+pub(crate) fn data_field_vty_with_free(
+    env: &TypeEnv,
+    tyvars: &[String],
+    te: &crate::ast::TypeExpr,
+    free: &mut Vec<String>,
+) -> ValueTy {
     match te {
         crate::ast::TypeExpr::TName(n) => match tyvars.iter().position(|t| t == n) {
             Some(k) => ValueTy::Var((k + 1) as u32),
-            None => env
-                .vty_of_name(n)
-                .unwrap_or_else(|| ValueTy::Data(n.clone(), vec![])),
+            None => match env.vty_of_name(n) {
+                Some(t) => t,
+                // An unbound name is a free type variable: give it the next
+                // placeholder position after the declaration's own parameters.
+                None => {
+                    let idx = match free.iter().position(|f| f == n) {
+                        Some(i) => i,
+                        None => {
+                            free.push(n.clone());
+                            free.len() - 1
+                        }
+                    };
+                    ValueTy::Var((tyvars.len() + 1 + idx) as u32)
+                }
+            },
         },
         crate::ast::TypeExpr::TApp(head, args) => {
+            let vargs: Vec<ValueTy> = args
+                .iter()
+                .map(|a| data_field_vty_with_free(env, tyvars, a, free))
+                .collect();
+            // A buffer CHANNEL constructor is the buffer value type itself
+            // (`FixedBuffer elem` → `ValueTy::Buffer(elem)`), not a second
+            // `App("FixedBuffer", …)` shape.
+            if let Some(buf) = env.channel_ctor_vty(head, &vargs) {
+                return buf;
+            }
             // A type PARAMETER applied as a constructor (`m b` in
             // `data K m a b`) becomes a type-constructor application whose head
             // is the parameter's var id. A concrete constructor stays `App`.
             if let Some(k) = tyvars.iter().position(|t| t == head) {
-                ValueTy::TyConApp(
-                    (k + 1) as u32,
-                    args.iter()
-                        .map(|a| data_field_vty(env, tyvars, a))
-                        .collect(),
-                )
+                ValueTy::TyConApp((k + 1) as u32, vargs)
             } else {
-                ValueTy::App(
-                    head.clone(),
-                    args.iter()
-                        .map(|a| data_field_vty(env, tyvars, a))
-                        .collect(),
-                )
+                ValueTy::App(head.clone(), vargs)
             }
         }
         crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
             args.iter()
-                .map(|a| data_field_vty(env, tyvars, a))
+                .map(|a| data_field_vty_with_free(env, tyvars, a, free))
                 .collect(),
-            vec![data_field_vty(env, tyvars, ret)],
+            vec![data_field_vty_with_free(env, tyvars, ret, free)],
         ),
-        crate::ast::TypeExpr::TForall(_, inner) => data_field_vty(env, tyvars, inner),
-        crate::ast::TypeExpr::TConstrained(_, inner) => data_field_vty(env, tyvars, inner),
+        crate::ast::TypeExpr::TForall(_, inner) => {
+            data_field_vty_with_free(env, tyvars, inner, free)
+        }
+        crate::ast::TypeExpr::TConstrained(_, inner) => {
+            data_field_vty_with_free(env, tyvars, inner, free)
+        }
     }
 }
 
@@ -782,6 +816,9 @@ pub(crate) fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueT
                 ValueTy::Newtype(n.clone(), a.iter().map(|x| sub(x, args)).collect())
             }
             ValueTy::App(n, a) => ValueTy::App(n.clone(), a.iter().map(|x| sub(x, args)).collect()),
+            // A parameterized buffer record field: the element is substituted
+            // like any other type argument.
+            ValueTy::Buffer(elem) => ValueTy::Buffer(Box::new(sub(elem, args))),
             t => t.clone(),
         }
     }
@@ -1129,10 +1166,10 @@ fn infer_method_value_vty_expected(
         // Buffer expression is a valid value-track operand. Numeric literals
         // stay Int/Double (their `Buffer` typing is the signal-constant
         // compatibility), everything else resolves to `Buffer`.
-        ValueTy::Buffer => match e {
+        ValueTy::Buffer(_) => match e {
             Expr::Int(_, _) => Ok(ValueTy::Int),
             Expr::Double(_, _) => Ok(ValueTy::Double),
-            _ => Ok(ValueTy::Buffer),
+            _ => Ok(ctx.env.buffer_vty()),
         },
         vty => Ok(vty.clone()),
     }
@@ -1453,6 +1490,8 @@ pub(crate) fn first_arg_solves_class_var(env: &TypeEnv, name: &str, selector_ty:
                     || rets.iter().any(|t| value_has_var(t, var))
             }
             ValueTy::TyConApp(id, args) => *id == var || args.iter().any(|t| value_has_var(t, var)),
+            // The element is part of the buffer type.
+            ValueTy::Buffer(elem) => value_has_var(elem, var),
             _ => false,
         }
     }
@@ -1575,7 +1614,7 @@ pub(crate) fn signature_param_and_result_tys_conv(
 /// other name is a TYPE. An undeclared uppercase name cannot reach this
 /// function — [`validate_type_names`] rejects it when the environment is built
 /// — so the fallback below is only the type-variable placeholder shape a data
-/// field keeps for a free lowercase name (`FixedBuffer f32`).
+/// field keeps for a free lowercase name.
 fn conv(
     env: &TypeEnv,
     class_var: &str,
@@ -1641,11 +1680,9 @@ fn conv(
                 .iter()
                 .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
                 .collect();
-            if env.data_arities.contains_key(head.as_str()) {
-                ValueTy::Data(head.clone(), vargs)
-            } else {
-                ValueTy::App(head.clone(), vargs)
-            }
+            // A buffer CHANNEL constructor is the buffer value type — the one
+            // representation, carrying the checked element.
+            env.ctor_application(head, vargs)
         }
         crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
             args.iter()
@@ -1734,6 +1771,9 @@ fn prepend_head_args_into_class_var(t: &mut ValueTy, ctor: &str, head_values: &[
                 prepend_head_args_into_class_var(r, ctor, head_values);
             }
         }
+        // A buffer's element is walked like an argument: the container can sit
+        // under it in a higher-kinded signature.
+        ValueTy::Buffer(elem) => prepend_head_args_into_class_var(elem, ctor, head_values),
         _ => {}
     }
 }
@@ -2049,9 +2089,14 @@ pub(crate) fn sig_ty_to_vty(
                         ValueTy::Data(n, pre) => {
                             ValueTy::Data(n, pre.into_iter().chain(vargs).collect())
                         }
+                        // A declared constructor applied to MORE arguments than
+                        // its head alone (`FixedBuffer Double` resolves to the
+                        // buffer value type): build the application through the
+                        // one converter so a channel constructor keeps its
+                        // single buffer representation.
                         other => match vargs.len() {
                             0 => other,
-                            _ => ValueTy::App(head.clone(), vargs),
+                            _ => env.ctor_application(head, vargs),
                         },
                     }
                 }
@@ -2467,10 +2512,11 @@ pub fn infer_program_with_entry(
                 fields,
                 ..
             } => {
+                let mut free: Vec<String> = Vec::new();
                 let fields_ty = fields
                     .iter()
                     .map(|(f, t, strict)| {
-                        let ft = data_field_vty(&env, tyvars, t);
+                        let ft = data_field_vty_with_free(&env, tyvars, t, &mut free);
                         (f.clone(), ft, *strict)
                     })
                     .collect();
@@ -2496,13 +2542,19 @@ pub fn infer_program_with_entry(
                 ctors,
                 ..
             } => {
+                let mut free: Vec<String> = Vec::new();
                 let ctors_ty = ctors
                     .iter()
                     .map(|(c, ts)| {
                         (
                             c.clone(),
                             ts.iter()
-                                .map(|(t, strict)| (data_field_vty(&env, tyvars, t), *strict))
+                                .map(|(t, strict)| {
+                                    (
+                                        data_field_vty_with_free(&env, tyvars, t, &mut free),
+                                        *strict,
+                                    )
+                                })
                                 .collect(),
                         )
                     })
@@ -3410,7 +3462,7 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
         });
     }
     match &bt.vty {
-        ValueTy::Buffer => match body {
+        ValueTy::Buffer(_) => match body {
             Expr::Int(_, _) => Ok(ValueTy::Int),
             Expr::Double(_, _) => Ok(ValueTy::Double),
             _ => Err(CompileError::Type {
@@ -3438,6 +3490,10 @@ fn vty_mentions_tyvar(t: &ValueTy, id: TypeVarId) -> bool {
         ValueTy::Data(_, a) | ValueTy::Newtype(_, a) | ValueTy::App(_, a) => {
             a.iter().any(|x| vty_mentions_tyvar(x, id))
         }
+        // The element is part of the buffer type: a variable element is
+        // mentioned by the buffer, so a region phantom / quantified element
+        // cannot hide inside it.
+        ValueTy::Buffer(elem) => vty_mentions_tyvar(elem, id),
         _ => false,
     }
 }
@@ -3491,6 +3547,8 @@ fn value_free_vars_into(t: &ValueTy, subst: &Subst, acc: &mut Vec<TypeVarId>) {
                 value_free_vars_into(x, subst, acc);
             }
         }
+        // A buffer's element carries free variables too.
+        ValueTy::Buffer(elem) => value_free_vars_into(elem, subst, acc),
         _ => {}
     }
 }
@@ -3526,6 +3584,9 @@ fn value_instantiate(t: &ValueTy, fresh: &HashMap<TypeVarId, TypeVarId>) -> Valu
                 _ => ValueTy::App(name.clone(), a),
             }
         }
+        // A quantified element variable must be FRESHENED with the buffer, or
+        // two instantiations would share the element's id.
+        ValueTy::Buffer(elem) => ValueTy::Buffer(Box::new(value_instantiate(elem, fresh))),
         _ => t.clone(),
     }
 }
@@ -3857,11 +3918,11 @@ fn infer_expr_expected(
         Expr::Int(_, _) => Ok(ArrowTy::value(match expected {
             // A numeric literal in a Buffer-expected position is a signal
             // constant (`_ * 0.5` → `0.5 : Buffer`).
-            Some(ValueTy::Buffer) => ValueTy::Buffer,
+            Some(ValueTy::Buffer(_)) => ctx.env.buffer_vty(),
             _ => ValueTy::Int,
         })),
         Expr::Double(_, _) => Ok(ArrowTy::value(match expected {
-            Some(ValueTy::Buffer) => ValueTy::Buffer,
+            Some(ValueTy::Buffer(_)) => ctx.env.buffer_vty(),
             _ => ValueTy::Double,
         })),
         Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
@@ -4255,7 +4316,7 @@ fn infer_expr_expected(
                     span: *span,
                 });
             }
-            if matches!(st.vty, ValueTy::Buffer) {
+            if matches!(st.vty, ValueTy::Buffer(_)) {
                 return Err(CompileError::Type {
                     msg:
                         "match scrutinee cannot be a signal buffer; match requires a value channel"
@@ -4740,10 +4801,10 @@ fn infer_ref_expected(
     // A reference to a compile-time NUMERIC constant (`c = 440.0`) in a
     // Buffer-expected position is a SIGNAL constant: a foreign signal slot
     // `c : Buffer`. Otherwise the constant stays a Double value.
-    if matches!(expected, Some(ValueTy::Buffer))
+    if matches!(expected, Some(ValueTy::Buffer(_)))
         && is_const_value_ref(ctx, &Expr::Ref(name.into(), span))
     {
-        return Ok(ArrowTy::uniform(0, 1, ValueTy::Buffer));
+        return Ok(ArrowTy::uniform(0, 1, ctx.env.buffer_vty()));
     }
     let t = infer_ref_inner(ctx, name, span)?;
     // Thread the expected type into a bare reference whose value type is
@@ -4930,7 +4991,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
             if sig
                 .params
                 .iter()
-                .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal(_)))
                 && sig.signal_outs > 0
             {
                 // A bare FFI ref is a Buffer ARROW (`Buffer -> … -> Buffer`),
@@ -4940,8 +5001,8 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 // application typing in the FFI apply arm.
                 let n_sig = sig.params.len();
                 return Ok(ArrowTy::value_channel(ValueTy::Thunk(
-                    vec![ValueTy::Buffer; n_sig],
-                    vec![ValueTy::Buffer; sig.signal_outs],
+                    vec![ctx.env.buffer_vty(); n_sig],
+                    vec![ctx.env.buffer_vty(); sig.signal_outs],
                 )));
             }
         }
@@ -5046,12 +5107,10 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
             }
             // A user data type (`IO a`, `Kleisli m a b`) is a `Data` application
             // (mirroring how record construction types it), so `IO` unifies
-            // consistently between builtin signatures and do-blocks.
-            if ctx.env.data_arities.contains_key(head.as_str()) {
-                Ok(ValueTy::Data(head.clone(), targs))
-            } else {
-                Ok(ValueTy::App(head.clone(), targs))
-            }
+            // consistently between builtin signatures and do-blocks. A buffer
+            // CHANNEL constructor becomes the buffer value type, its element
+            // checked like anywhere else.
+            Ok(ctx.env.ctor_application(head, targs))
         }
         crate::ast::TypeExpr::TFunc(args, ret) => {
             let mut targs = Vec::with_capacity(args.len());
@@ -5351,9 +5410,9 @@ fn infer_apply_expr(
         // (`fp i1` where `fp : Buffer -> Buffer` and `i1` is the program's
         // Buffer input) as well as a Buffer value — mirroring the builtin-sig
         // Buffer-param acceptance in `infer_apply_impl`.
-        if matches!(ctx.subst.resolve_value(pt), ValueTy::Buffer) {
+        if matches!(ctx.subst.resolve_value(pt), ValueTy::Buffer(_)) {
             let at = infer_expr(ctx, a)?;
-            if at.arity_out() == 1 && matches!(at.vty, ValueTy::Buffer) {
+            if at.arity_out() == 1 && matches!(at.vty, ValueTy::Buffer(_)) {
                 unify_value(&at.vty, pt, &mut ctx.subst, a.span())?;
                 continue;
             }
@@ -5809,8 +5868,8 @@ fn infer_apply_impl(
                 && matches!(at0.vty, ValueTy::Double | ValueTy::Int)
                 && (matches!(a, Expr::Int(_, _) | Expr::Double(_, _))
                     || is_const_value_ref(ctx, a));
-            let at = if pt == ValueTy::Buffer && numeric_const {
-                infer_expr_expected(ctx, a, Some(ValueTy::Buffer))?
+            let at = if matches!(pt, ValueTy::Buffer(_)) && numeric_const {
+                infer_expr_expected(ctx, a, Some(pt.clone()))?
             } else {
                 at0
             };
@@ -5818,7 +5877,7 @@ fn infer_apply_impl(
             // computation (a `Buffer -> … -> Buffer` arrow) OR a plain Buffer
             // value — either way its first
             // output is a Buffer. Non-Buffer params must be 0→1 values.
-            let buffer_param = pt == ValueTy::Buffer;
+            let buffer_param = matches!(pt, ValueTy::Buffer(_));
             if !buffer_param && (at.arity_in() != 0 || at.arity_out() != 1) {
                 return Err(CompileError::Type {
                     msg: format!(
@@ -5897,7 +5956,7 @@ fn infer_apply_impl(
         return Ok(ArrowTy::uniform(
             sig_ty.arity_in(),
             sig_ty.arity_out(),
-            ValueTy::Buffer,
+            ctx.env.buffer_vty(),
         ));
     }
     if name == "param" {
@@ -6873,7 +6932,7 @@ fn infer_apply_impl(
             let variadic_idx = sig
                 .params
                 .iter()
-                .position(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal));
+                .position(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal(_)));
             // Required params = non-variadic params that must appear as call
             // args: Signal slots (positional wires) + scalars/resources +
             // non-all-default records. An all-default record is optional
@@ -6886,7 +6945,7 @@ fn infer_apply_impl(
                 .params
                 .iter()
                 .filter(|p| match p {
-                    crate::types::ffi::FfiParam::VariadicSignal => false,
+                    crate::types::ffi::FfiParam::VariadicSignal(_) => false,
                     crate::types::ffi::FfiParam::Record(rec_ty) => {
                         let schema = crate::types::ffi::ffi_record_schema(&ctx.env, rec_ty);
                         !schema.is_some_and(|s| s.fields.iter().all(|(_, _, d)| d.is_some()))
@@ -6902,7 +6961,7 @@ fn infer_apply_impl(
                     .iter()
                     .rev()
                     .take(deficit)
-                    .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal));
+                    .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal(_)));
                 if !missing_are_signals {
                     return Err(CompileError::Type {
                         msg: format!(
@@ -6916,7 +6975,7 @@ fn infer_apply_impl(
             let max_args = if sig
                 .params
                 .iter()
-                .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal))
+                .any(|p| matches!(p, crate::types::ffi::FfiParam::VariadicSignal(_)))
             {
                 None
             } else {
@@ -6945,7 +7004,7 @@ fn infer_apply_impl(
             let mut fed_signals = 0usize;
             for p in &sig.params {
                 match p {
-                    crate::types::ffi::FfiParam::Signal => {
+                    crate::types::ffi::FfiParam::Signal(_) => {
                         if pos >= args.len() {
                             // Combinator-fed signal / partial-application slot:
                             // no explicit wire call arg. The channel contributes
@@ -6965,7 +7024,7 @@ fn infer_apply_impl(
                         // arithmetic path does (`lowering` broadcasts a scalar
                         // to a buffer constant).
                         let at = if matches!(&args[pos], Expr::Int(_, _) | Expr::Double(_, _)) {
-                            infer_expr_expected(ctx, &args[pos], Some(ValueTy::Buffer))?
+                            infer_expr_expected(ctx, &args[pos], Some(ctx.env.buffer_vty()))?
                         } else {
                             infer_expr(ctx, &args[pos])?
                         };
@@ -6976,11 +7035,11 @@ fn infer_apply_impl(
                             // signal parameter arrives here as a fresh `Var`.)
                             unify_value(
                                 &at.vty,
-                                &ValueTy::Buffer,
+                                &ctx.env.buffer_vty(),
                                 &mut ctx.subst,
                                 args[pos].span(),
                             )?;
-                        } else if !matches!(at.vty, ValueTy::Buffer) {
+                        } else if !matches!(at.vty, ValueTy::Buffer(_)) {
                             return Err(CompileError::Type {
                                 msg: format!(
                                     "signal argument {pos} of `{name}` must be a signal \
@@ -6992,7 +7051,7 @@ fn infer_apply_impl(
                         signal_ins += at.arity_in();
                         pos += 1;
                     }
-                    crate::types::ffi::FfiParam::VariadicSignal => {
+                    crate::types::ffi::FfiParam::VariadicSignal(_) => {
                         // The variadic's explicit signal span stops before the
                         // trailing non-variadic params (each consumes one
                         // trailing call arg — mixer's trailing `Record` config).
@@ -7056,7 +7115,7 @@ fn infer_apply_impl(
                         }
                         pos += 1;
                     }
-                    crate::types::ffi::FfiParam::Resource => {
+                    crate::types::ffi::FfiParam::Resource(_) => {
                         if pos >= args.len() {
                             break;
                         }
@@ -7091,14 +7150,14 @@ fn infer_apply_impl(
             // result is a `Func` value: `Buffer -> … -> Buffer`.
             if fed_signals > 0 {
                 return Ok(ArrowTy::value_channel(ValueTy::Thunk(
-                    vec![ValueTy::Buffer; fed_signals],
-                    vec![ValueTy::Buffer; sig.signal_outs],
+                    vec![ctx.env.buffer_vty(); fed_signals],
+                    vec![ctx.env.buffer_vty(); sig.signal_outs],
                 )));
             }
             return Ok(ArrowTy::uniform(
                 signal_ins,
                 sig.signal_outs,
-                ValueTy::Buffer,
+                ctx.env.buffer_vty(),
             ));
         }
     }
@@ -7347,11 +7406,13 @@ fn infer_apply_impl(
     // is a SIGNAL constant: infer it with `Buffer` expected so the literal
     // unifies as a buffer value, not a value Double.
     let want_buffer = match ctx.subst.resolve_value(&callee.vty) {
-        ValueTy::Thunk(caps, _) => caps.first().is_some_and(|c| matches!(c, ValueTy::Buffer)),
+        ValueTy::Thunk(caps, _) => caps
+            .first()
+            .is_some_and(|c| matches!(c, ValueTy::Buffer(_))),
         _ => false,
     };
     let at = if matches!(arg, Expr::Int(_, _) | Expr::Double(_, _)) && want_buffer {
-        infer_expr_expected(ctx, arg, Some(ValueTy::Buffer))?
+        infer_expr_expected(ctx, arg, Some(ctx.env.buffer_vty()))?
     } else {
         infer_expr(ctx, arg)?
     };
@@ -7444,8 +7505,8 @@ fn def_arg_widens_to(formal: &ValueTy, actual: &ValueTy, arg: &Expr, defaulted: 
         // A buffer is an ordinary value: it flows into a numeric parameter (the
         // signal-constant / buffer-arithmetic path) and any value flows into a
         // `Buffer` parameter.
-        (ValueTy::Buffer, _) => true,
-        (ValueTy::Double | ValueTy::Int, ValueTy::Buffer) => true,
+        (ValueTy::Buffer(_), _) => true,
+        (ValueTy::Double | ValueTy::Int, ValueTy::Buffer(_)) => true,
         // `f 2` against `Double -> …`: an integer literal is `fromInteger`-
         // polymorphic (Haskell 2010 §6.4.1), so it inhabits `Double` too. A
         // `Double` literal against an `Int` parameter is NOT (there is no
@@ -8009,19 +8070,19 @@ fn infer_arith(
     // combinator output, a foreign call). A numeric literal / constant on the
     // OTHER side is then a SIGNAL constant — unify it with `Buffer` so
     // `_ * 0.5` types `0.5 : Buffer`, not a value `Double`.
-    let a_buffer = matches!(a.vty, ValueTy::Buffer);
-    let b_buffer = matches!(b.vty, ValueTy::Buffer);
+    let a_buffer = matches!(a.vty, ValueTy::Buffer(_));
+    let b_buffer = matches!(b.vty, ValueTy::Buffer(_));
     if a_buffer || b_buffer {
         // A numeric literal / constant on the non-buffer side is a SIGNAL
         // constant: `_ * 0.5` types `0.5 : Buffer`. Re-infer it with `Buffer`
         // as the expected channel type so the literal unifies as a buffer.
         let a = if !a_buffer && is_signal_const(ctx, &a, lhs) {
-            infer_expr_expected(ctx, lhs, Some(ValueTy::Buffer))?
+            infer_expr_expected(ctx, lhs, Some(ctx.env.buffer_vty()))?
         } else {
             a
         };
         let b = if !b_buffer && is_signal_const(ctx, &b, rhs) {
-            infer_expr_expected(ctx, rhs, Some(ValueTy::Buffer))?
+            infer_expr_expected(ctx, rhs, Some(ctx.env.buffer_vty()))?
         } else {
             b
         };
@@ -8033,8 +8094,8 @@ fn infer_arith(
     // value channel — this is what makes lambda bodies like `fn x -> x * 2.0`
     // meaningful. A value channel mixed with a genuine signal computation
     // (`sin _`, a wire, a combinator) is still rejected.
-    let a_value = !matches!(a.vty, ValueTy::Buffer);
-    let b_value = !matches!(b.vty, ValueTy::Buffer);
+    let a_value = !matches!(a.vty, ValueTy::Buffer(_));
+    let b_value = !matches!(b.vty, ValueTy::Buffer(_));
     if a_value || b_value {
         // A value operand must be a numeric scalar (Double/Int, or an as-yet
         // unresolved Var such as a lambda parameter). Func values, records and
@@ -8121,7 +8182,7 @@ fn check_all_numeric(_ctx: &mut Ctx, _t: &ArrowTy, _span: Span) -> Result<(), Co
 /// Unresolved `Var`s pass (they unify with `Buffer` when the combinator
 /// connects to a buffer channel).
 fn reject_value_channels(t: &ArrowTy, span: Span) -> Result<(), CompileError> {
-    if !matches!(t.vty, ValueTy::Buffer | ValueTy::Var(_)) {
+    if !matches!(t.vty, ValueTy::Buffer(_) | ValueTy::Var(_)) {
         return Err(CompileError::Type {
             msg: "a value channel cannot be used in a signal combinator".into(),
             span,
@@ -8294,14 +8355,20 @@ mod tests {
     fn gain_is_1_to_1() {
         // A buffer-valued signal expression over a literal generator.
         let t = ty_of(r"main = sine 440.0 0.5 0.0 * 0.5;").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Buffer(Box::new(ValueTy::Double))
+        );
     }
 
     #[test]
     fn integrator_is_1_to_1() {
         // A foreign 1→1 builtin applied to a buffer value.
         let t = ty_of("main = integrator (sine 440.0 0.5 0.0)").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Buffer(Box::new(ValueTy::Double))
+        );
     }
 
     #[test]
@@ -8355,7 +8422,10 @@ mod tests {
     #[test]
     fn builtin_call_is_1_to_1() {
         let t = ty_with("main = lowpass 1000.0 0.7 (sine 440.0 0.5 0.0)").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Buffer(Box::new(ValueTy::Double))
+        );
     }
 
     #[test]
@@ -8385,7 +8455,10 @@ mod tests {
     fn scalar_param_broadcasts_to_buffer() {
         let t = ty_of("main = sine 440.0 0.5 0.0 * 0.5").unwrap();
         // A buffer-valued main is the program's single signal output.
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Buffer(Box::new(ValueTy::Double))
+        );
     }
 
     #[test]
@@ -8501,7 +8574,10 @@ mod tests {
         // A `?name=default` actor param in a Buffer position keeps the
         // program's single signal output.
         let t = ty_of(r"main = sine 440.0 ?gain=0.5 0.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Buffer);
+        assert_eq!(
+            t.def_schemes["main"].ty.vty,
+            ValueTy::Buffer(Box::new(ValueTy::Double))
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! 1-out, writes the shared tape) and `read_head` (0-in, 1-out, reads a delayed
 //! tap). They reference a shared tape cell by index.
 //!
-//! [`register_tape_ffi`] is the only registration path: heads take a `Tape f32`
+//! [`register_tape_ffi`] is the only registration path: heads take a `Tape Double`
 //! resource param whose value is a tape INDEX into the program's
 //! `Vec<SharedCell>`; the factories receive the cell's writer/reader handles.
 
@@ -13,7 +13,7 @@ use crate::tape::read_head::ReadHead;
 use crate::tape::write_head::WriteHead;
 
 /// Register the tape write/read head builtins as FFI resource factories (the
-/// `tape_loop` path). The `Tape f32` resource param resolves to a tape index;
+/// `tape_loop` path). The `Tape Double` resource param resolves to a tape index;
 /// the build hands the factories the shared cell's writer/reader handles.
 pub fn register_tape_ffi<T: Transcendental + 'static>(
     ffi: &mut rill_lang::ffi::ForeignRegistry<T>,

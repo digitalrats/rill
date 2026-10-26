@@ -573,7 +573,7 @@ pub enum Def {
     Foreign {
         /// Foreign function name (the builtin's registry name).
         name: String,
-        /// Carried type signature: `FixedBuffer f32 -> Double -> ... -> FixedBuffer f32`.
+        /// Carried type signature: `FixedBuffer Double -> Double -> ... -> FixedBuffer Double`.
         sig: TypeExpr,
         /// Span.
         span: Span,

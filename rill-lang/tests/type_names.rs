@@ -140,13 +140,15 @@ fn a_type_variable_is_still_accepted() {
 
 #[test]
 fn a_lowercase_name_is_a_type_variable() {
-    // `f32` in `FixedBuffer f32` is an ordinary lowercase identifier, which
+    // A lowercase name in a type position is an ordinary identifier, which
     // Haskell's lexical rules make a TYPE VARIABLE (GHC accepts
-    // `instance Num (Tape f32)` as an instance for all `a`). It must therefore
-    // not be rejected as an unknown type, and must not be turned into a
-    // nominal type either.
-    let out = compile("f :: FixedBuffer f32 -> FixedBuffer f32; f x = x; main = 1.0;")
-        .expect("`f32` must be accepted as a type variable");
+    // `instance Num (Tape a)` as an instance for all `a`). It must therefore not
+    // be rejected as an unknown type, and must not be turned into a nominal type
+    // either. A type-variable buffer ELEMENT is a genuine polymorphic signature
+    // (identity is legal at every element); a CONCRETE wrong element is a type
+    // error — see `buffer_element_is_checked`.
+    let out = compile("f :: FixedBuffer a -> FixedBuffer a; f x = x; main = 1.0;")
+        .expect("a lowercase name must be accepted as a type variable");
     assert!(out.contains("Double(1.0)"), "got {out}");
 
     let env = env_of("");
@@ -252,6 +254,7 @@ fn the_registry_is_the_single_source() {
         ScalarType {
             vty: ValueTy::Double,
             ffi_scalar: true,
+            buffer_element: true,
         },
     );
 
@@ -331,11 +334,14 @@ fn the_registry_is_the_single_source() {
     assert!(!env.is_type_variable("Double"));
     assert!(env.is_type_variable("a"));
     assert!(!env.is_type_variable("Int"));
+    // The buffer element is a registry property too, so the renamed scalar is
+    // the only legal element here: `FixedBuffer MyDouble` converts, while the
+    // old spelling `FixedBuffer Double` no longer names a legal element.
     let te = TypeExpr::TFunc(
         vec![TypeExpr::TName("MyDouble".into())],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
-            vec![TypeExpr::TName("z".into())],
+            vec![TypeExpr::TName("MyDouble".into())],
         )),
     );
     let sig = ffi_sig_from_typeexpr(&env, "probe", &te).expect("FFI sig");
@@ -348,7 +354,7 @@ fn the_registry_is_the_single_source() {
         vec![TypeExpr::TName("Double".into())],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
-            vec![TypeExpr::TName("z".into())],
+            vec![TypeExpr::TName("MyDouble".into())],
         )),
     );
     let old_sig = ffi_sig_from_typeexpr(&env, "probe", &old_te).expect("FFI sig");
@@ -356,6 +362,20 @@ fn the_registry_is_the_single_source() {
         old_sig.params,
         vec![rill_lang::types::ffi::FfiParam::Record("Double".into())],
         "the old spelling must no longer classify as a Scalar"
+    );
+    // ... and the old spelling is no longer a legal buffer element.
+    assert!(!env.is_buffer_element("Double"));
+    assert!(env.is_buffer_element("MyDouble"));
+    let bad_elem = TypeExpr::TFunc(
+        vec![],
+        Box::new(TypeExpr::TApp(
+            "FixedBuffer".into(),
+            vec![TypeExpr::TName("Double".into())],
+        )),
+    );
+    assert!(
+        ffi_sig_from_typeexpr(&env, "probe", &bad_elem).is_none(),
+        "a buffer element the registry no longer marks must not convert"
     );
 
     // 6. The diagnostic renderer.

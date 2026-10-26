@@ -35,9 +35,11 @@ fn mentions_var(t: &ValueTy, id: TypeVarId) -> bool {
         | ValueTy::Double
         | ValueTy::Bool
         | ValueTy::String
-        | ValueTy::Buffer
         | ValueTy::Void
         | ValueTy::Dict(_) => false,
+        // The element is part of the buffer type, so a variable inside it is
+        // mentioned by the type.
+        ValueTy::Buffer(elem) => mentions_var(elem, id),
     }
 }
 
@@ -224,7 +226,7 @@ fn dict_has_no_data_interpretation() {
         ValueTy::Double,
         ValueTy::Bool,
         ValueTy::String,
-        ValueTy::Buffer,
+        ValueTy::Buffer(Box::new(ValueTy::Double)),
         ValueTy::Void,
         ValueTy::Data("Pair".to_string(), vec![]),
         ValueTy::Newtype("Wrap".to_string(), vec![]),

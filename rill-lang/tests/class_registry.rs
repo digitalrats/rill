@@ -107,8 +107,24 @@ fn buffer_is_a_numeric_subclass_and_reuses_the_operators() {
         );
     }
     let insts = e.instances.get("Buffer").expect("Buffer has instances");
-    assert!(insts.contains_key("FixedBuffer"), "FixedBuffer is a Buffer");
-    assert!(insts.contains_key("Tape"), "Tape is a Buffer");
+    // The instance head is MONOMORPHIC in the element and fully concrete, so the
+    // registry key is the whole applied type — `FixedBuffer Double`, not the
+    // bare constructor. That is what makes the element part of the instance:
+    // there is no `Buffer (FixedBuffer Int)` dictionary to select.
+    assert!(
+        insts.contains_key("FixedBuffer Double"),
+        "`FixedBuffer Double` is a Buffer; got {:?}",
+        insts.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        insts.contains_key("Tape Double"),
+        "`Tape Double` is a Buffer; got {:?}",
+        insts.keys().collect::<Vec<_>>()
+    );
+    // Control: no element-free / other-element key exists, because the element
+    // is checked and the instance head names the one legal element.
+    assert!(!insts.contains_key("FixedBuffer"), "no element-free key");
+    assert!(!insts.contains_key("FixedBuffer Int"), "no Int-element key");
 }
 
 #[test]

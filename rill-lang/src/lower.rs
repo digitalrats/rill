@@ -104,6 +104,8 @@ fn param_placeholder_max(ty: &ValueTy) -> u32 {
             .iter()
             .chain(rets.iter())
             .fold(0, |m, a| m.max(param_placeholder_max(a))),
+        // A buffer's element is a type argument position like any other.
+        ValueTy::Buffer(elem) => param_placeholder_max(elem),
         _ => 0,
     }
 }
@@ -125,6 +127,9 @@ fn is_concrete_ty(v: &ValueTy) -> bool {
         ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
             args.iter().all(is_concrete_ty)
         }
+        // A buffer is concrete only when its element is: `FixedBuffer a` has no
+        // registry key, exactly like `App("FixedBuffer", [Var])` does not.
+        ValueTy::Buffer(elem) => is_concrete_ty(elem),
         _ => true,
     }
 }
@@ -405,6 +410,7 @@ fn subst_value_vars(t: &ValueTy, vars: &HashMap<crate::types::TypeVarId, ValueTy
             args.iter().map(|a| subst_value_vars(a, vars)).collect(),
             rets.iter().map(|a| subst_value_vars(a, vars)).collect(),
         ),
+        ValueTy::Buffer(elem) => ValueTy::Buffer(Box::new(subst_value_vars(elem, vars))),
         other => other.clone(),
     }
 }
@@ -614,6 +620,7 @@ fn subst_tycon_head(t: &ValueTy, hv: u32, repl: &ValueTy) -> ValueTy {
             n.clone(),
             a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
         ),
+        ValueTy::Buffer(elem) => ValueTy::Buffer(Box::new(subst_tycon_head(elem, hv, repl))),
         other => other.clone(),
     }
 }
@@ -2154,8 +2161,8 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     let (x, ty) =
-                        self.lower_value_expected(&call_args[0], Some(&ValueTy::Buffer))?;
-                    if !matches!(ty, ValueTy::Buffer) {
+                        self.lower_value_expected(&call_args[0], Some(&self.env.buffer_vty()))?;
+                    if !matches!(ty, ValueTy::Buffer(_)) {
                         return Err(CompileError::Type {
                             msg: "smooth signal argument must be a Buffer".into(),
                             span: call_args[0].span(),
@@ -2163,7 +2170,7 @@ impl<'a> Lowerer<'a> {
                     }
                     let ms = self.caf_const(&call_args[1]).unwrap_or(0.0);
                     let y = self.emit_smooth(x, ms);
-                    return Ok((y, ValueTy::Buffer));
+                    return Ok((y, self.env.buffer_vty()));
                 }
                 // Unary math over a Buffer (`abs _`, `sin i1`): a Buffer-typed operand
                 // lowers to `ValueBufferUn`.
@@ -2185,8 +2192,8 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     let (src, ty) =
-                        self.lower_value_expected(&call_args[0], Some(&ValueTy::Buffer))?;
-                    if !matches!(ty, ValueTy::Buffer) {
+                        self.lower_value_expected(&call_args[0], Some(&self.env.buffer_vty()))?;
+                    if !matches!(ty, ValueTy::Buffer(_)) {
                         return Err(CompileError::Type {
                             msg: format!("`{name}` signal argument must be a Buffer"),
                             span: call_args[0].span(),
@@ -2194,7 +2201,7 @@ impl<'a> Lowerer<'a> {
                     }
                     let dst = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueBufferUn { dst, op, src });
-                    return Ok((dst, ValueTy::Buffer));
+                    return Ok((dst, self.env.buffer_vty()));
                 }
                 // Binary math over buffers (`min i1 0.5`, `atan2 b a`): a
                 // Buffer-typed operand makes the op element-wise over buffers.
@@ -2213,13 +2220,13 @@ impl<'a> Lowerer<'a> {
                     let (a_reg, a_ty) = self.lower_value(&call_args[0])?;
                     let (b_reg, b_ty) = self.lower_value(&call_args[1])?;
                     let buffer_op =
-                        matches!(a_ty, ValueTy::Buffer) || matches!(b_ty, ValueTy::Buffer);
+                        matches!(a_ty, ValueTy::Buffer(_)) || matches!(b_ty, ValueTy::Buffer(_));
                     if buffer_op {
                         let a = self.buffer_operand(a_reg, &a_ty)?;
                         let b = self.buffer_operand(b_reg, &b_ty)?;
                         let dst = self.fresh_value_reg();
                         self.emit_value(ValueInstr::ValueBufferBin { dst, op, a, b });
-                        return Ok((dst, ValueTy::Buffer));
+                        return Ok((dst, self.env.buffer_vty()));
                     }
                     // Scalar `atan2`/`min`/`max` over value-track scalars: not
                     // wired in v1 (the interpreter has no scalar atan2).
@@ -3086,7 +3093,7 @@ impl<'a> Lowerer<'a> {
                         let mut missing_signals = 0usize;
                         for p in &sig.params {
                             match p {
-                                crate::types::ffi::FfiParam::Signal => {
+                                crate::types::ffi::FfiParam::Signal(_) => {
                                     if pos >= call_args.len() {
                                         // Partial application: the scalar params
                                         // before this slot were consumed; the
@@ -3097,9 +3104,9 @@ impl<'a> Lowerer<'a> {
                                     }
                                     let (r, ty) = self.lower_value_expected(
                                         &call_args[pos],
-                                        Some(&ValueTy::Buffer),
+                                        Some(&self.env.buffer_vty()),
                                     )?;
-                                    if !matches!(ty, ValueTy::Buffer) {
+                                    if !matches!(ty, ValueTy::Buffer(_)) {
                                         return Err(CompileError::Type {
                                             msg: format!(
                                                 "signal argument {pos} of `{name}` must be a Buffer"
@@ -3214,8 +3221,8 @@ impl<'a> Lowerer<'a> {
                             return Ok((
                                 callee_reg,
                                 ValueTy::Thunk(
-                                    vec![ValueTy::Buffer; missing_signals],
-                                    vec![ValueTy::Buffer; sig.signal_outs],
+                                    vec![self.env.buffer_vty(); missing_signals],
+                                    vec![self.env.buffer_vty(); sig.signal_outs],
                                 ),
                             ));
                         }
@@ -3229,7 +3236,7 @@ impl<'a> Lowerer<'a> {
                         // Apply the arrow to the Buffer args.
                         if sig.signal_outs == 1 {
                             self.emit_call(call_reg, callee_reg, signal_srcs);
-                            return Ok((call_reg, ValueTy::Buffer));
+                            return Ok((call_reg, self.env.buffer_vty()));
                         }
                         // Multi-out: build a tuple value (Buffer, …) from the
                         // consecutive output registers after the call result.
@@ -3238,7 +3245,7 @@ impl<'a> Lowerer<'a> {
                         let fields: Vec<usize> =
                             (0..sig.signal_outs).map(|i| call_reg + i).collect();
                         self.emit_value(ValueInstr::ValueConstructRecord { dst, fields });
-                        return Ok((dst, ValueTy::Buffer));
+                        return Ok((dst, self.env.buffer_vty()));
                     }
                 }
                 // Value-function application: `add2 = adder 2.0` — the callee
@@ -3459,7 +3466,8 @@ impl<'a> Lowerer<'a> {
                 // arithmetic (`ValueAdd`/…).
                 let (a_reg, a_ty) = self.lower_value(lhs)?;
                 let (b_reg, b_ty) = self.lower_value(rhs)?;
-                let buffer_op = matches!(a_ty, ValueTy::Buffer) || matches!(b_ty, ValueTy::Buffer);
+                let buffer_op =
+                    matches!(a_ty, ValueTy::Buffer(_)) || matches!(b_ty, ValueTy::Buffer(_));
                 if buffer_op {
                     let arith = match op {
                         ArithOp::Add => BinArith::Add,
@@ -3484,7 +3492,7 @@ impl<'a> Lowerer<'a> {
                         a,
                         b,
                     });
-                    return Ok((dst, ValueTy::Buffer));
+                    return Ok((dst, self.env.buffer_vty()));
                 }
                 let dst = self.fresh_value_reg();
                 self.emit_value(match op {
@@ -4260,7 +4268,7 @@ impl<'a> Lowerer<'a> {
                 "Array".into(),
                 vec![ValueTy::Int, ValueTy::Double],
             )),
-            "bufferFromArray" => Ok(ValueTy::Buffer),
+            "bufferFromArray" => Ok(self.env.buffer_vty()),
             // `listRange (l, u)`: the inclusive Int range as a flat list.
             "listRange" => Ok(ValueTy::App("List".into(), vec![ValueTy::Int])),
             // `arrayFromListChecked bounds rangeSize elems`: the element list is
@@ -5472,7 +5480,10 @@ impl<'a> Lowerer<'a> {
         // Buffer arithmetic: the `Num`/`Fractional` instance for a buffer emits
         // the whole-buffer kernel. A buffer is an ordinary value; the kernel is
         // its dictionary entry. Scalar operands materialize as buffer constants.
-        if matches!(ty_name, "FixedBuffer" | "Tape") {
+        // The instance key is the full applied head (`FixedBuffer Double`), so
+        // the selector asks the registry whether the key names a buffer rather
+        // than matching a spelling list.
+        if self.env.instance_key_is_buffer(ty_name) {
             if let Some(op) = match (class_name, name) {
                 ("Num", "+") => Some(crate::ir::BinArith::Add),
                 ("Num", "-") => Some(crate::ir::BinArith::Sub),
@@ -5490,7 +5501,7 @@ impl<'a> Lowerer<'a> {
                 let b = self.buffer_operand(arg_regs[1], &arg_tys[1])?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueBufferBin { dst, op, a, b });
-                return Ok((dst, ValueTy::Buffer));
+                return Ok((dst, self.env.buffer_vty()));
             }
             if let Some(op) = match (class_name, name) {
                 ("Num", "abs") => Some(crate::ir::UnOp::Abs),
@@ -5505,7 +5516,7 @@ impl<'a> Lowerer<'a> {
                 let a = self.buffer_operand(arg_regs[0], &arg_tys[0])?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueBufferUn { dst, op, src: a });
-                return Ok((dst, ValueTy::Buffer));
+                return Ok((dst, self.env.buffer_vty()));
             }
         }
         // `min`/`max` from `Ord`'s defaults are NOT primitive: they have real
@@ -5651,7 +5662,7 @@ impl<'a> Lowerer<'a> {
                 if sig
                     .params
                     .iter()
-                    .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                    .all(|p| matches!(p, crate::types::ffi::FfiParam::Signal(_)))
                     && sig.signal_outs > 0
                 {
                     // A bare FFI ref (`integrator`) is a first-class Buffer
@@ -5673,8 +5684,8 @@ impl<'a> Lowerer<'a> {
                     return Ok((
                         callee_reg,
                         ValueTy::Thunk(
-                            vec![ValueTy::Buffer; sig.params.len()],
-                            vec![ValueTy::Buffer; sig.signal_outs],
+                            vec![self.env.buffer_vty(); sig.params.len()],
+                            vec![self.env.buffer_vty(); sig.signal_outs],
                         ),
                     ));
                 }
@@ -7511,7 +7522,7 @@ impl<'a> Lowerer<'a> {
             | ValueTy::Double
             | ValueTy::Bool
             | ValueTy::String
-            | ValueTy::Buffer
+            | ValueTy::Buffer(_)
             | ValueTy::Void
             | ValueTy::Thunk(_, _)
             | ValueTy::Var(_)
@@ -7682,7 +7693,7 @@ impl<'a> Lowerer<'a> {
                 // other value builtin yields a value and is a type error here.
                 if self.value_builtin(name, call_args.len()).is_some() {
                     let (reg, ty) = self.lower_value(e)?;
-                    if matches!(ty, ValueTy::Buffer) {
+                    if matches!(ty, ValueTy::Buffer(_)) {
                         return Ok(vec![reg]);
                     }
                     return Err(CompileError::Type {
@@ -7719,7 +7730,7 @@ impl<'a> Lowerer<'a> {
                             .params
                             .iter()
                             .position(|p| {
-                                matches!(p, crate::types::ffi::FfiParam::VariadicSignal)
+                                matches!(p, crate::types::ffi::FfiParam::VariadicSignal(_))
                             });
                         let mut param_values = Vec::new();
                         let mut param_bindings = Vec::new();
@@ -7730,7 +7741,7 @@ impl<'a> Lowerer<'a> {
                         let mut signal_index = 0usize;
                         for p in &sig.params {
                             match p {
-                                crate::types::ffi::FfiParam::Signal => {
+                                crate::types::ffi::FfiParam::Signal(_) => {
                                     let src = if pos >= call_args.len() {
                                         // Combinator-fed signal: no explicit
                                         // call arg — bind the next wiring
@@ -7760,7 +7771,7 @@ impl<'a> Lowerer<'a> {
                                     signal_index += 1;
                                     pos += 1;
                                 }
-                                crate::types::ffi::FfiParam::VariadicSignal => {
+                                crate::types::ffi::FfiParam::VariadicSignal(_) => {
                                     // The variadic's explicit signal span stops
                                     // before the trailing non-variadic params
                                     // (each consumes one trailing call arg —
@@ -7963,7 +7974,7 @@ impl<'a> Lowerer<'a> {
                                     }
                                     pos += 1;
                                 }
-                                crate::types::ffi::FfiParam::Resource => {
+                                crate::types::ffi::FfiParam::Resource(_) => {
                                     if pos >= call_args.len() {
                                         break;
                                     }
@@ -7991,7 +8002,7 @@ impl<'a> Lowerer<'a> {
                                         Expr::Apply { name: ctor, args: ctor_args, .. }
                                             if ctor == "tape_loop" =>
                                         {
-                                            // `tape_loop : Int -> Tape f32` —
+                                            // `tape_loop : Int -> Tape Double` —
                                             // exactly one integer-constant arg.
                                             let cap = match ctor_args.as_slice() {
                                                 [Expr::Int(v, _)] => *v as usize,
@@ -8120,7 +8131,7 @@ impl<'a> Lowerer<'a> {
                 // The single resulting wire feeds the block outputs like any
                 // other signal expression.
                 let (reg, ty) = self.lower_value(e)?;
-                if matches!(ty, ValueTy::Buffer) {
+                if matches!(ty, ValueTy::Buffer(_)) {
                     Ok(vec![reg])
                 } else {
                     Err(CompileError::Type {
@@ -8336,7 +8347,7 @@ impl<'a> Lowerer<'a> {
                 let signal_ins = sig
                     .params
                     .iter()
-                    .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal))
+                    .filter(|p| matches!(p, crate::types::ffi::FfiParam::Signal(_)))
                     .count();
                 if sig.params.len() == signal_ins {
                     let instance = self.builtins.len();
@@ -8565,7 +8576,7 @@ impl<'a> Lowerer<'a> {
     /// op: a `Buffer` value passes through; a scalar register is broadcast into
     /// a buffer constant (`i1 * 0.5` → the constant fills a buffer).
     fn buffer_operand(&mut self, reg: usize, ty: &ValueTy) -> Result<usize, CompileError> {
-        if matches!(ty, ValueTy::Buffer) {
+        if matches!(ty, ValueTy::Buffer(_)) {
             return Ok(reg);
         }
         let dst = self.fresh_value_reg();
@@ -9108,7 +9119,7 @@ pub fn lower_program_with_channels(
         .def_schemes
         .get(entry)
         .ok_or_else(|| CompileError::Unsupported(format!("no inferred scheme for `{entry}`")))?;
-    let has_value_out = !matches!(entry_scheme.ty.vty, ValueTy::Buffer);
+    let has_value_out = !matches!(entry_scheme.ty.vty, ValueTy::Buffer(_));
     let outs = if has_value_out {
         let (vr, vty) = lw.lower_value(main.body())?;
         lw.value_regs_out.push(vr);
@@ -9120,7 +9131,7 @@ pub fn lower_program_with_channels(
         // registers are `Value::Buffer` values (one per output channel), so
         // they feed the same `value_regs_out` path as value outputs.
         lw.value_regs_out = outs.clone();
-        lw.value_out_tys = vec![ValueTy::Buffer; outs.len()];
+        lw.value_out_tys = vec![lw.env.buffer_vty(); outs.len()];
         outs
     };
     if outs.is_empty() && lw.value_regs_out.is_empty() {

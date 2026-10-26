@@ -1,8 +1,9 @@
 //! Parametric EQ DSL builtin: state + `BlockBuiltin` wrapper.
 //!
 //! Moved from `rill-lang/src/builtins/eq.rs` (SP-3b Task 7) — the DSL-facing
-//! cascaded biquad EQ the rill-lang foreign decl `eq_parametric : FixedBuffer
-//! f32 -> EqConfig -> FixedBuffer f32` lowers into.
+//! cascaded biquad EQ the rill-lang foreign decl
+//! `eq_parametric : FixedBuffer Double -> EqConfig -> FixedBuffer Double`
+//! lowers into.
 
 use crate::builtin::BlockBuiltin;
 use rill_core::math::Transcendental;
