@@ -44,12 +44,17 @@ Three kinds in v1, **declared/checked, not inferred**:
 
 | Kind | Types |
 |---|---|
-| `*` | `Int`, `Float`, `Bool`, `String`, data-type names, `Func`, `Cap` |
-| `* → *` | unary constructors: `List a n`, `Maybe a`, `Set a n` |
-| `* → * → *` | binary constructors: `Map k v n`, `Pair a b`, `Either a b` |
+| `*` | `Int`, `Double`, `Bool`, `String`, data-type names, `Func` |
+| `* → *` | unary constructors: `[a]` (spelled `List` at the time of this design), `Maybe a`, `Set a` |
+| `* → * → *` | binary constructors: `Map k v`, `(a, b)` (`Pair a b` at the time of this design), `Either a b` |
 
-`Cap` (capacity) is a natural-number pseudo-type (kind `Nat`) used as a
-constructor argument: `List Float 16` = `App("List", [Float, Cap(16)])`.
+> **Capacity was removed from the design (user, 2026-10-26).** Lists with a
+> capacity were an early iteration of lists and are obsolete: the language's
+> `list` constructor takes **no** arguments, and there is no capacity
+> accounting. `Cap` (a `Nat`-kind pseudo-type, `List Float 16` =
+> `App("List", [Float, Cap(16)])`) therefore does not exist and must not be
+> reintroduced. Sections §2.3 and §7 below are retained as historical record
+> only — they describe a model the implementation does not have.
 
 ### 2.2 `ValueTy` representation
 
@@ -62,8 +67,7 @@ enum ValueTy {
     String,                      // NEW
     Data(String, Vec<ValueTy>),  // user data type + arguments
     Newtype(String, Vec<ValueTy>),
-    App(String, Vec<ValueTy>),   // builtin constructor application: List Float 16
-    Cap(usize),                  // capacity literal (Nat argument)
+    App(String, Vec<ValueTy>),   // builtin constructor application: List Double
     Func(Vec<ValueTy>, Vec<ValueTy>),
     Var(TypeVarId),              // kind *
     TyConVar(TypeVarId),         // NEW — kind * → * (or * → * → *)
@@ -77,7 +81,11 @@ enum ValueTy {
   stored as `ValueTy` over those ids and **instantiated (fresh-substituted) at
   every use** — unification stays entirely in `ValueTy`-land.
 
-### 2.3 Capacity is a strict bound
+### 2.3 Capacity is a strict bound — HISTORICAL, removed
+
+> **Not implemented and not wanted** (user decision, 2026-10-26: capacity was an
+> early iteration of lists; it is obsolete). Kept only so the record is not
+> rewritten after the fact. Do not implement anything in this section.
 
 `List a n`, `Map k v n`, `Set a n` carry a **strict capacity** `n`. The
 operations that grow a container preserve the type's capacity:
@@ -163,9 +171,8 @@ Method signatures become full type expressions:
 // ast.rs
 enum TypeExpr {
     TName(String),                 // concrete type or type variable
-    TApp(String, Vec<TypeExpr>),   // constructor application: f a, List Float 16
+    TApp(String, Vec<TypeExpr>),   // constructor application: f a, List Double
     TFunc(Vec<TypeExpr>, TypeExpr),// a -> b (curried)
-    TCap(usize),                   // capacity literal
 }
 ```
 
@@ -181,11 +188,9 @@ struct TypeclassInfo {
 - **Class-var arity** is inferred from its use in method signatures: `f a` →
   1, `f a b` → 2, bare `a` → 0 (as today). `instance Functor Pair` (arity 2)
   against an arity-1 class is a **kind error**.
-- **Cap-aware kind-var matching**: a kind variable matches the **head
-  constructor**, ignoring `Cap` arguments. Unifying `f a` with
-  `App("List", [Int, Cap 4])` binds `f := List`, `a := Int`, and the `Cap` slot
-  of the pattern unifies with `Cap 4`. In the instance body, `f b` expands to
-  `App("List", [b, Cap 4])` — **capacity flows from argument to result**.
+- **Kind-var matching**: a kind variable matches the **head constructor**.
+  Unifying `f a` with `App("List", [Double])` binds `f := List`, `a := Double`.
+  In the instance body, `f b` expands to `App("List", [b])`.
 - **Instances bind constructor names**: `instance Functor List`. The body is
   type-checked in the context `f := List` with `a`/`b` free.
 - **Resolution is compile-time inline**: `fmap g xs` unifies the signature
@@ -297,7 +302,10 @@ enum). Leaves compare by value; sums by ctor index then payload; records by
 field order; newtypes by inner; lists lexicographic; maps/sets over their
 entries. `Func` is not ordered — `eq`/`lt` over a `Closure` is a compile error.
 
-## 7. Capacity-bound accounting
+## 7. Capacity-bound accounting — HISTORICAL, removed
+
+> **Not implemented and not wanted** (same decision). `subtree_size` below must
+> not take a capacity argument. The arena heuristic is unchanged.
 
 The arena capacity heuristic (lower.rs §"capacity heuristic") extends with:
 
@@ -328,7 +336,7 @@ Either a b  → 1 + max(size(a), size(b))
 3. `String` values are constructed from the existing `Str` literal in value
    position; compile-time param-name strings (`param("gain", …)`,
    `?name=default`) are unaffected.
-4. Capacity overflow error messages: `"list capacity exceeded"`,
+4. ~~Capacity overflow error messages~~ (**removed** with capacity): `"list capacity exceeded"`,
    `"map capacity exceeded"`, `"set capacity exceeded"`.
 5. `insert` is overloaded by arity (Map 3-arg, Set 2-arg).
 
@@ -351,21 +359,21 @@ Each phase ends with `cargo test -p rill-lang` green and a review checkpoint.
 | # | Phase | Scope |
 |---|---|---|
 | 1 | TypeExpr AST + parser | `TypeExpr` in `data`/`sum`/`typeclass`/`instance` declarations; tyvar lists; no behavior change |
-| 2 | ValueTy extension | `Bool`, `String`, `App`, `Cap`, `TyConVar`; unification + occurs-check; `subtree_size` |
+| 2 | ValueTy extension | `Bool`, `String`, `App`, `TyConVar`; unification + occurs-check; `subtree_size` |
 | 3 | Constructors, kinds, Eq/Ord | builtin constructor table with kinds; kind checking; `Eq`/`Ord` with derived instances; kind-var unification |
 | 4 | Arena values | `Value::Bool/String/List/Map/Set`; RC/COW/drop_ref/mutate; arena tests |
 | 5 | Parser expressions | list/map/bool literals, comparisons, logic; lexer tokens; `Expr` variants |
 | 6 | Value-track ops | `ValueCallBuiltin` + interpreter dispatch + `value_cmp` + overflow latch + error propagation |
 | 7 | Builtin data types | `Maybe`/`Pair`/`Either` injection; nullary constructors; `match` extension |
 | 8 | Kind polymorphism | method-call lowering over constructors; `Functor`/`Foldable` tests |
-| 9 | Capacity bound + error path | collection accounting in the arena heuristic; runtime error polish |
+| 9 | ~~Capacity bound + error path~~ | **removed** — capacity is not part of the language (user 2026-10-26) |
 | 10 | Docs | `docs/src/guides/rill-lang.md`, README, CHANGELOG; clippy clean; workspace test |
 
 ## 11. Testing
 
 1. Parser: TypeExpr in declarations; list/map/bool literals; comparison/logic
    precedence.
-2. Unify: `App`/`Cap`/`TyConVar`; occurs-check over `App`; kind-var with
+2. Unify: `App`/`TyConVar`; occurs-check over `App`; kind-var with
    capacity flow; kind errors.
 3. Arena: subtree RC/COW for `List`/`Map`/`Set`; capacity bound with containers;
    pinning across ticks.
@@ -387,7 +395,7 @@ Each phase ends with `cargo test -p rill-lang` green and a review checkpoint.
 | `rill-lang/src/lexer.rs` | `[ ] true false == != < > <= >= && ||` tokens |
 | `rill-lang/src/parser.rs` | TypeExpr parser; new expressions; tyvar lists |
 | `rill-lang/src/types/ty.rs` | `ValueTy` extension, `TypeclassInfo.arity/sigs`, `DataInfo` params, builtin type shapes (Maybe/Pair/Either), Eq/Ord registry + derivation |
-| `rill-lang/src/types/unify.rs` | `App`/`Cap`/`TyConVar` unification, kind checks, capacity flow |
+| `rill-lang/src/types/unify.rs` | `App`/`TyConVar` unification, kind checks |
 | `rill-lang/src/types/infer.rs` | constructor signatures, Eq/Ord resolution, nullary ctors, kind-var inference |
 | `rill-lang/src/ir.rs` | new `ValueInstr` variants, `ValueBuiltinOp` |
 | `rill-lang/src/lower.rs` | collection-op lowering, capacity accounting, method inline over constructors |
