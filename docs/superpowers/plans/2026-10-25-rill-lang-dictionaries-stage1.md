@@ -340,140 +340,80 @@ without losing anything.
 
 ---
 
-#### Task 5.5pre-1 (DEFERRED): a buffer element type needs per-buffer pools
+#### Task 5.5pre-1 (ready): `FixedBuffer` keeps its parameter; the parameter becomes real
 
-> **Deferred, not dropped.** It cannot be done honestly until the buffer pools
-> carry a precision per buffer. Recorded here with the reason and the exact
-> precondition, so it is not lost and not attempted prematurely.
+> **Ruling (user, 2026-10-26):** `FixedBuffer` must stay polymorphic — removing
+> the parameter now would be duplicate work when it returns. And there is exactly
+> **one** possible instance today: **`FixedBuffer Double`**. So the defect is not
+> "there is a parameter"; it is that the parameter is **discarded**. Keep the
+> polymorphism, stop discarding.
 
-**The measured defect (still open):** `FixedBuffer`'s type argument is
-**discarded**. `unify.rs:157` matches `ValueTy::Buffer` against
-`App("FixedBuffer", args)` only when `args.is_empty()`, so measured on `023994e`:
+**Why `Double` is the one element (measured on `2b00a05`):**
 
-```
-g :: FixedBuffer Int  -> FixedBuffer Bool;  g x = x   -> compiles AND runs   <- the defect
-f :: FixedBuffer Zork -> FixedBuffer Zork;  f x = x   -> rejected (5.5a registry)
-```
+- A buffer's samples enter the language as `Value::Double` — the read path
+  allocates `Value::Double(sample.to_f64())` (`interp.rs:3939`).
+- `Float` does not exist in the language at all (5.5pre-0 removed the name; the
+  only host sample type in use is f32: **zero** `compile::<f64>` call sites).
+- Therefore `Double` is the only element a program can name or observe.
 
-**Why it cannot be fixed now.** The element type is not a language-level fact
-today; it is a Rust monomorphisation parameter of the whole program:
+**Known and accepted:** the store is f32, so a `Double` element is a **widened**
+f32. The existing test states it explicitly —
+`array_buffer.rs:157`: `assert_eq!(first, Value::Double(f64::from(direct[0])))`.
+This is not a conformance divergence: `FixedBuffer` has no Haskell counterpart,
+so no Report rule governs its internal precision. It is also exactly why the
+parameter must stay — when f64 pools (or a real `Float`) arrive, the same
+`FixedBuffer Double` becomes literally exact with **no type change**.
 
-| Layer | Today |
+**Measured defects to close:**
+
+| Check | Today |
 |---|---|
-| `rill_core::buffer::FixedBuffer<T, SIZE>` | the physical storage, `data: [T; SIZE]` |
-| `RegionHandle<T>` | a pointer into it (`Rc`, offset, len) — not storage |
-| `WorldState<T, BUF>` | **one `T` for the whole world**: `buffers: Vec<RegionHandle<T>>`, `block_state: Vec<FixedBuffer<T, BUF>>` |
-| `compile::<f32, BUF>(src, ffi)` | the host picks `T`; **zero** call sites use `f64` |
+| `g :: FixedBuffer Int -> FixedBuffer Bool; g x = x` | **compiles and runs** — element discarded |
+| `ValueTy::Buffer` | carries **no** element (89 sites in `src`) |
+| `unify.rs:157` | matches `App("FixedBuffer", args)` only when `args.is_empty()` |
+| `instance Num (FixedBuffer a)` | a variable-headed head; `a` means nothing while the element is discarded |
+| FFI `Signal`/`Resource` | element discarded — `f32`/`Double`/`Int`/`Zork` classify identically |
+| rill source | still spells the element `f32` (64 in `src`, 62 in tests) |
 
-So every buffer in a world has the same element, chosen outside the language.
-`FixedBuffer a` therefore cannot promise anything that depends on `a`: the only
-conversion that consumes `a` is `T::from_f64` at the language→storage
-boundary (`interp.rs:1950`, `2033`). Declaring the element `Double` today would
-promise f64 precision in an f32 store — a new silent divergence, not a fix.
-Declaring it `f32` would expose a host spelling as a rill type name. Neither is
-conformance.
+- [ ] **Step 1: Carry the element.** `ValueTy::Buffer` →
+      `ValueTy::Buffer(Box<ValueTy>)`. **One** representation — do not also keep
+      `App("FixedBuffer", [elem])` as a second shape.
+- [ ] **Step 2: Check it.** `FixedBuffer a` unifies with `FixedBuffer b` iff `a`
+      unifies with `b`; a buffer never unifies with a non-buffer. **Replace** the
+      `args.is_empty()` arm; do not add beside it.
+- [ ] **Step 3: The one legal element is `Double`.** Any other element is a type
+      error naming the requirement. Keep the check data-driven (a property of the
+      registry entry), so a second element is a one-line change, not a redesign —
+      do not special-case `Double` in a `matches!` list.
+- [ ] **Step 4: Monomorphic instance heads.** Declare
+      `instance Num (FixedBuffer Double)` and
+      `instance Buffer (FixedBuffer Double)` (likewise `Tape Double`) — legal
+      Report §4.3.1 heads, no dictionary builder needed. The variable-headed
+      `instance (Floating a) => Num (FixedBuffer a)` arrives later, when a second
+      element exists, and is **additive**.
+- [ ] **Step 5: The FFI layer carries the element.** `FfiParam::Signal` /
+      `Resource` record it; reject a signature whose element disagrees.
+- [ ] **Step 6: Migrate the source.** Every `FixedBuffer f32` / `Tape f32`
+      becomes `FixedBuffer Double` / `Tape Double` (src 64, tests 62), including
+      the prelude's instances and the `foreign` declarations at `ty.rs:938-939`.
+- [ ] **Step 7: Delete the `data_field_vty` nominal fallback** 5.5a left so
+      `FixedBuffer f32` could keep a placeholder shape; with a real element it is
+      dead.
+- [ ] **Step 8: Prove it.** `FixedBuffer Int` vs `FixedBuffer Bool` rejected;
+      `FixedBuffer Double` works end to end (build, read the block back,
+      elementwise arithmetic); FFI distinguishes elements; a wrong element is
+      rejected.
+- [ ] **Step 9: Commit** —
+      `git commit -m 'feat(lang): the buffer element type is real and checked'`
 
-**The precondition that unlocks it (decided with the user):** future work adds
-**f64 buffer pools** alongside the f32 ones. At that point the precision becomes
-a property of a *buffer* rather than of the *program*:
+**Why the parameter is not removed:** per-buffer f32/f64 pools make the element a
+property of a buffer rather than of the program, and a JIT can later instantiate a
+shape per program (a *golden gate*). Both are additive **only** if the type
+already carries a checked parameter. Removing it now would be undone immediately
+(user ruling).
 
-- `WorldState` holds per-precision pools (`Vec<RegionHandle<f32>>` **and**
-  `Vec<RegionHandle<f64>>`), and `Value::Buffer(usize)` becomes pool-tagged;
-- the element type becomes a real language parameter (`FixedBuffer Float` /
-  `FixedBuffer Double`), honest in both directions;
-- the conditional instance `instance (Floating a) => Num (FixedBuffer a)`
-  becomes expressible — it needs a dictionary **builder** (design §3.10,
-  `DictSlot::Builder`), the same machinery `instance (Monad m) => Arrow
-  (Kleisli m)` needs.
-
-- [ ] **Do not start this task before the per-buffer pools exist.** The
-      conformance rule forbids documenting a gap *instead of* behaviour, but it
-      equally forbids shipping a type annotation that lies about the value.
-- [ ] When it does start: carry the element in `ValueTy::Buffer`, enforce it in
-      `unify`, carry it in `FfiParam::Signal`/`Resource`, and remove `f32` from
-      rill source entirely.
-
----
-
-#### Task 5.5a: One type-name registry; undeclared names are errors; `Void` → `()`
-
-**Files:** `rill-lang/src/types/{ty.rs, infer.rs, ffi.rs}` + `rill-lang/tests/type_names.rs` (new)
-
-**Priority: Haskell 2010 / GHC behaviour. Backward compatibility is NOT required.**
-Where the current behaviour and Haskell 2010 disagree, Haskell wins and the
-current behaviour changes. No aliases, no deprecation shims, no "keep the old
-spelling working" — a name that Haskell 2010 does not have is *removed*, and a
-name that means something different in Haskell is *corrected*, even when that
-breaks existing rill programs and tests. When a test fails because it asserted
-the old behaviour, the test is wrong: change the test and say so in the report.
-The only thing that must not change is behaviour that already agrees with
-Haskell 2010 (all such tests stay green).
-
-**The measured defect.** Scalar type names are hard-coded as `matches!` lists in
-**six** places that disagree:
-
-| Site | List | Purpose |
-|---|---|---|
-| `types/ty.rs:1992` | `Float Int Bool String Buffer ()` | the only real resolver (`vty_of_name`) |
-| `types/ty.rs:1930` | `Int Float Bool String` | which types get derived `Eq`/`Ord` |
-| `types/infer.rs:1857` | `Float Int Bool String Buffer ()` | "is this name declared" |
-| `types/infer.rs:5045` | same set, different order | the inverse check |
-| `types/ffi.rs:273` | `Float Int Bool String` | FFI scalar-vs-record |
-| `types/infer.rs:7491` | type → name | renderer |
-
-`vty_of_name` falls through to `ValueTy::Data(n, [])` for anything unknown, so
-these **compile and run today** although no value of those types exists:
-
-```
-f :: Integer -> Integer;  f x = x;        f 1   → 1
-f :: Char -> Char;        f x = x;        f 1   → 1
-f :: Void -> Int;         f x = 1;        f 1   → 1
-f :: Double -> Double;    f x = x + 1.0;  f 1.0 → 2.0
-```
-
-The fix is not a seventh list: it is **one registry**.
-
-**Where the registry lives is decided: compile time only.** One `TypeEnv`
-object, seeded at load with the fixed set of predefined built-in types
-(`TypeEnv::with_builtins`, interpreter code) and then extended by the program's
-own declarations. It is *not* mirrored into `WorldState`. After full runtime
-polymorphism every observable operation is either resolved statically or carried
-by a dictionary slot — dispatch is a slot index, `show`/`==`/`compare` are
-dictionary methods, `deriving` output is a fragment — so a runtime name table
-would have no consumer, and a second copy would recreate this very defect
-(two or more structures that must agree). The runtime's type knowledge is the
-dictionary table itself (one vtable per used `(class, type)` pair, by index, no
-names) — see the design's §3.2.1, which records this decision and the evidence.
-
-- [ ] **Step 1: Introduce the registry.** Extend `TypeEnv` with
-  `type_entry(&self, name: &str) -> Option<TypeEntry>` covering scalars (`Int`,
-  `Float`, `Bool`, `String`, `Buffer`, `()`), builtin constructors with arity,
-  `data`, `newtype`, `type` aliases, abstract types, and class type variables.
-  The existing maps stay as storage; scalar entries are added so they are no
-  longer special-cased in code. Builtins are seeded once per environment; a
-  program's declarations extend the same object.
-- [ ] **Step 2: One predicate and one resolver.** `vty_of_name` returns
-  `Option<ValueTy>` (unknown ⇒ `unknown type name`). Replace all six sites with
-  registry calls.
-- [ ] **Step 3: `Void` is removed as a source-level name.** `()` is the unit type.
-  The internal `ValueTy::Void` variant may stay.
-- [ ] **Step 4: Prove the registry is the single source.** A test adds a name to
-  the registry *once* and asserts every consumer sees it (declaration check,
-  `vty_of_name`, derived-instance seed, FFI scalar check, renderer). It must
-  fail if any consumer keeps its own list.
-- [ ] **Step 5: Verify and commit.** No `WorldState` field is added; a
-  runtime-name lookup would be an anti-goal (*no strings in the dispatch
-  path*).
-
-```bash
-cargo test -p rill-lang --features dsp && cargo clippy -p rill-lang --features dsp && cargo fmt --check
-git commit -m 'refactor(lang): one type-name registry'
-```
-
-Tests (in `type_names.rs`): `an_undeclared_type_name_is_rejected`,
-`char_is_still_undeclared_for_now`, `a_type_variable_is_still_accepted`,
-`a_declared_data_type_is_accepted`, `the_unit_type_is_the_parentheses`,
-`the_registry_is_the_single_source`.
+**Unblocks:** OD-18's `FixedBuffer` half closes honestly. `Array`/`STArray`
+remain open under OD-18.
 
 ---
 
