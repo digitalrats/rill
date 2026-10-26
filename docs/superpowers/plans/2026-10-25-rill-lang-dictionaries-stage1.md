@@ -348,6 +348,45 @@ g :: FixedBuffer Int  -> FixedBuffer Bool;  g x = x   → compiles AND runs
   this task a buffer needs no element argument in *syntax* only for the
   rill-specific surface; every use site names it.
 
+#### What `FixedBuffer f32` means, and why the FFI layer is part of the defect
+
+Two facts, both measured on `59ffecd`:
+
+1. **`FixedBuffer a` in an FFI signature contributes arity only.** `FfiParam`
+   has exactly four shapes `Signal`, `VariadicSignal`, `Resource`, `Record(name)`
+   — none carries an element type. Verified: `ffi_sig_from_typeexpr` classifies
+   `FixedBuffer f32`, `FixedBuffer Float`, `FixedBuffer Zork` and
+   `FixedBuffer Int` **identically** (`params: [Signal], signal_outs: 1`), and
+   `Tape f32` / `Tape Float` identically (`params: [Resource]`). So in FFI
+   position the argument is pure decoration: it cannot affect arity, marshalling
+   or the schema.
+
+2. **`f32` therefore means nothing in FFI, and it is not a type name either.**
+   Report §2.4: `tycon → conid → large{small|large|digit|'}` — a type
+   constructor must begin with an uppercase letter, and §2.4 states outright
+   that "variables and type variables are represented by identifiers beginning
+   with small letters". So `f32` is lexically **impossible** as a type name.
+   `instance Num (Tape f32)` in GHC is an instance for *all* `a` (verified:
+   `Tape Int` and `Tape Bool` both get `Num` from it) — the `f32` is a
+   **silently bound, unused type variable**.
+
+So the fix is not "reserve the host spellings" and not "accept `f32` as a
+type". It is:
+
+- **5.5pre-1 must make the element type real**, so `FixedBuffer Int` and
+  `FixedBuffer Float` are different types (today `g :: FixedBuffer Int ->
+  FixedBuffer Bool; g x = x` compiles);
+- **the FFI layer must carry the element type** in `FfiParam::Signal` /
+  `Resource` (or reject an element type that disagrees with the host's `T`),
+  otherwise the real type is still discarded at the boundary;
+- **`f32`/`f64` stay what they are: no longer used, because the source spells
+  the element `Float`** (after 5.5pre-0 makes `Float` single precision, `Float`
+  and the host `f32` coincide exactly, so nothing is lost);
+- **a lowercase unbound name in a type position is a type variable, not a
+  nominal type.** That is already what 5.5a does; the remaining nominal
+  fallback the implementer kept for `data_field_vty` must be deleted in
+  5.5pre-1, because it invents a nominal type out of a type variable.
+
 ---
 
 #### Task 5.5pre-2: `Floating` and `Integral`; `Buffer` stops being a `Num` subclass
