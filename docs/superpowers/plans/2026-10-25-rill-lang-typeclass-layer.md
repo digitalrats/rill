@@ -288,7 +288,27 @@ typeclass_layer.rs}` (new).
   Until then `Float` is an `unknown type name`, which is an honest absence
   (the conformance rule forbids a documented gap standing in for behaviour).
 
-- [ ] **Step 4: Implement `Buffer` arithmetic** — `(+)`/`(-)`/`(*)`/`(/)`/`min`/`max`/`abs` on `FixedBuffer a` and `Tape f32`, bodies emitting `ValueBufferBin`/`ValueBufferUn`. Register the `dsp` test so the path is actually reachable (Review Focus 5).
+- [ ] **Step 4: Implement `Buffer` arithmetic** — `(+)`/`(-)`/`(*)`/`(/)`/`min`/`max`/`abs` on `FixedBuffer a` and `Tape a`, bodies emitting `ValueBufferBin`/`ValueBufferUn`. Register the `dsp` test so the path is actually reachable (Review Focus 5).
+
+  **`Buffer` must stop being a `Num` subclass.** `typeclass (Num b) => Buffer b`
+  currently makes the marker class *license* arithmetic it does not own — it
+  grants `sin` via `Num`, which `Num` does not have. Haskell 2010 has no such
+  class: `FixedBuffer` should get `Num`/`Fractional`/`Floating` through
+  **instances conditioned on the element**, e.g.
+  `instance (Floating a) => Num (FixedBuffer a)`. That form needs a dictionary
+  **builder** (design §3.10, `DictSlot::Builder`) — the same machinery
+  `instance (Monad m) => Arrow (Kleisli m)` needs — so it lands with the
+  dictionary work, not before.
+
+  A context on an *instance head* is what the Report allows (§4.3.1);
+  `data Floating a => FixedBuffer a` would be illegal — verified in GHC:
+  `error: Illegal datatype context`.
+
+  **The element parameter itself is deferred** to the per-buffer pools task: the
+  buffer's element is a host monomorphisation parameter of the whole program
+  today (`WorldState<T, BUF>`, `compile::<f32, BUF>`), so `FixedBuffer a` cannot
+  honestly constrain `a` until a world can hold f32 **and** f64 pools. See
+  `2026-10-25-rill-lang-dictionaries-stage1.md`, Task 5.5pre-1 (DEFERRED).
 
 - [ ] **Step 5: Delete both forks** — after this task `lower.rs` has **no** `matches!(a_ty, ValueTy::Buffer)` branch in operator lowering; the instance body decides.
 
