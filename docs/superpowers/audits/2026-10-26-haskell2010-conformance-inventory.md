@@ -94,7 +94,9 @@ methods (design §3.7 stages 4–9). This is **OD-16 / OD-17**.
 | `Double` | does not exist | real type | MISSING |
 | `f :: FixedBuffer Zork -> FixedBuffer Zork` | compiles and runs | unknown type | **WRONG — silent** (element type is discarded) |
 | `g :: FixedBuffer Int -> FixedBuffer Bool; g x = x` | compiles and runs | type error | **WRONG — silent** |
-| `instance Num (Tape f32)` | accepted as *nominal* `f32` | accepted, but `f32` is a **type variable** — an instance for all `a` | WRONG (different meaning) |
+| `instance Num (Tape f32)` | accepted as *nominal* `f32` | accepted, but `f32` is a **type variable** (Report §2.4: `tycon → conid → large…`) — an instance for all `a`; verified with `Tape Int`/`Tape Bool` | WRONG (different meaning) |
+| `FixedBuffer a` in an FFI signature | `FfiParam::Signal` — element type discarded | — | **WRONG** — `FixedBuffer f32`, `Float`, `Int`, `Zork` classify identically |
+| `f32` as a type name in any position | accepted as `Data("f32", [])` | lexically impossible: a type constructor must start uppercase | **WRONG** — silently a type variable |
 | elementwise `a / b` on a buffer | works | needs `Fractional a` | missing constraint |
 | elementwise `sin`, `sqrt`, `exp`, `ln`, `tanh` on a buffer | works | needs `Floating a` | missing constraint |
 | elementwise `a % b` on a `Float` buffer | works | `No instance for 'Integral Float'` | **EXTRA — silent** |
