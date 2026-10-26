@@ -261,24 +261,22 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 > **Backward compatibility is explicitly NOT required** (user decision): old
 > spellings are removed, not aliased.
 
-**No sub-task of 5.5 is currently startable.** Two are done, three are blocked
-on work outside this plan — measured, not assumed:
+Two sub-tasks are done; one is ready; two are blocked on work outside this plan
+(measured, not assumed):
 
 | Sub-task | Status | Blocked on |
 |---|---|---|
 | **5.5a** — one type-name registry; `Void` → `()` | **DONE** `59ffecd` | — |
 | **5.5pre-0** — `Float` → `Double` (the name was wrong, not the precision) | **DONE** `0e78439` | — |
-| **5.5pre-1** — `FixedBuffer`/`Tape` element type | **READY** — the one legal element is `Double` | nothing: keep the parameter, stop discarding it. Monomorphic instance heads avoid needing a dictionary builder |
+| **5.5pre-1** — `FixedBuffer`/`Tape` carry a real element type | **READY** | nothing: keep the parameter, stop discarding it; the one legal element today is `Double`, and monomorphic instance heads avoid needing a dictionary builder |
 | **5.5b** — `Char`, `String = [Char]` | **DEFERRED** | type-level list syntax + dictionary builders: `String` is a primitive, and `String = [Char]` makes every string instance a conditional head (`instance Monoid [Char]`) |
 | **5.5c** — `[a]`, `(a, b)` | **DEFERRED** | type-level list syntax + dictionary builders: `f :: [Int] -> [Int]` is not parsable today, and `instance Monoid [a]` needs a builder |
 | ~~5.5pre-2~~ — `Floating`/`Integral` | **DELETED** | duplicated P3/P4 of `2026-10-25-rill-lang-typeclass-layer.md`; its unique requirement moved to P3 Step 4 |
 
-**Consequence: the next unit of work is the dictionary stages, not 5.5.**
-Everything left in 5.5 needs either per-buffer pools or dictionary builders —
-that is, design `§3.7` steps 2–4 (build dictionaries at seat; pass a dictionary
-as a parameter; project a slot). Doing 5.5 first would mean renaming a nominal
-`List` to look like `[]` while behaving like `List`, which is worse than the
-current honest `List`.
+**Next: 5.5pre-1.** 5.5b/5.5c need either type-level list syntax or dictionary
+builders — whose absence is measured above — so doing them first would mean
+renaming a nominal `List` to look like `[]` while still behaving like `List`,
+which is worse than the current honest `List`.
 
 > **Ordering rule:** anything that adds a type name must land *after* 5.5a, or
 > it will add a seventh `matches!` list — the exact defect 5.5a removes.
