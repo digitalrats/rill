@@ -263,6 +263,74 @@ impl TypeEntry {
     }
 }
 
+/// The kind of a type-level name or expression: how many type arguments it
+/// still expects before it is a type (`*`).
+///
+/// Haskell 2010's Report types need only `*`, `* -> *`, `* -> * -> *`, so a
+/// kind is fully described by that count. There is no kind signature, no kind
+/// polymorphism and no promotion in the language, which is exactly why the
+/// count can be DERIVED: it is the type-argument arity the registry already
+/// records ([`TypeEnv::ctor_kinds`], [`TypeEnv::data_arities`], and the scalar
+/// registry), never a second table of names.
+///
+/// The one thing this representation cannot express is a constructor whose
+/// PARAMETER is itself higher-kinded (`Kleisli m a b` with `m :: * -> *`,
+/// whose true kind is `(* -> *) -> * -> * -> *`). A parameter's kind is written
+/// by a kind signature, which the language does not have; such a parameter is
+/// spelled as a type VARIABLE and keeps the kind its context gives it (see
+/// [`TypeEnv::require_type_kind`]).
+///
+/// [`TypeEnv::ctor_kinds`]: TypeEnv::ctor_kinds
+/// [`TypeEnv::data_arities`]: TypeEnv::data_arities
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Kind {
+    /// Number of type arguments the entity still expects: `0` is `*`, `1` is
+    /// `* -> *`, `2` is `* -> * -> *`.
+    arity: usize,
+}
+
+impl Kind {
+    /// The kind of a type: `*`.
+    pub const TYPE: Kind = Kind { arity: 0 };
+
+    /// The kind of a constructor expecting `arity` more type arguments
+    /// (`arity` 0 is [`Kind::TYPE`]).
+    pub fn of_arity(arity: usize) -> Kind {
+        Kind { arity }
+    }
+
+    /// How many type arguments this kind still expects (`0` for `*`).
+    pub fn arity(self) -> usize {
+        self.arity
+    }
+
+    /// Whether this kind is `*` — i.e. the entity is a type.
+    pub fn is_type(self) -> bool {
+        self.arity == 0
+    }
+
+    /// Apply this kind to `n` type arguments, if it accepts that many.
+    ///
+    /// `None` when the application supplies MORE arguments than the kind
+    /// expects (`Pair Int Int Int`), which is a kind error: the head is not a
+    /// constructor of that arity.
+    pub fn applied_to(self, n: usize) -> Option<Kind> {
+        Some(Kind {
+            arity: self.arity.checked_sub(n)?,
+        })
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("*")?;
+        for _ in 0..self.arity {
+            f.write_str(" -> *")?;
+        }
+        Ok(())
+    }
+}
+
 /// The role a buffer type CONSTRUCTOR (`FixedBuffer elem`, `Tape elem`) plays
 /// in the language.
 ///
@@ -1134,6 +1202,25 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
             }
         }
     }
+    // Every type position in the fragment must have kind `*` (and every
+    // instance head the class's kind). The prelude and the builtin catalog are
+    // COMPILER-OWNED and never pass the program-level walk, so this is where
+    // their kind contract is enforced: a `* -> *` constructor in a `*` position
+    // in the prelude is a compiler bug, reported at load rather than silently
+    // accepted by the converters that later consume these signatures.
+    if let Err(e) = env.validate_type_names(&defs).and_then(|()| {
+        for def in &defs {
+            if let Def::Instance {
+                class, head, span, ..
+            } = def
+            {
+                env.check_instance_head(class, head, *span)?;
+            }
+        }
+        Ok(())
+    }) {
+        panic!("compiler-owned prelude/catalog is ill-kinded: {e}");
+    }
     env.register_decls(&defs);
     // Mark the instances this fragment declares as trusted compiler machinery;
     // their bodies are not re-validated against the user's (possibly
@@ -1763,6 +1850,18 @@ impl TypeEnv {
             )),
         );
 
+        // The `builtin_sigs` catalog is assembled in Rust, so it never passes
+        // the program-level kind walk — hold it to the SAME contract here. A
+        // `* -> *` constructor in a `*` position in a builtin signature is a
+        // compiler bug, not something a converter downstream may accept.
+        if let Err(e) = env
+            .builtin_sigs
+            .values()
+            .try_for_each(|sig| env.check_type_kind(sig, Span::new(0, 0)))
+        {
+            panic!("a builtin signature is ill-kinded: {e}");
+        }
+
         env
     }
 
@@ -2110,28 +2209,6 @@ impl TypeEnv {
     pub fn ctor_arity(&self, name: &str) -> Option<usize> {
         self.ctor_kinds.get(name).copied()
     }
-    /// The number of VALUE arguments a constructor takes. Builtin constructors
-    /// come from [`Self::ctor_kinds`]; user parameterized data types
-    /// (`data Box a`) from [`Self::data_arities`].
-    pub fn ctor_value_arity(&self, name: &str) -> Option<usize> {
-        if let Some(a) = self.ctor_kinds.get(name) {
-            return Some(*a);
-        }
-        self.data_arities.get(name).copied()
-    }
-
-    /// Arity remaining after the instance head's bound args: `Kleisli m` (total 3,
-    /// bound 1) → 2. For a non-partial head, `total`.
-    ///
-    /// Wired up by SP-2 Task 6 (constraint-instance resolution); no callers
-    /// yet, so the transient `dead_code` is allowed here rather than suppressed
-    /// globally.
-    #[allow(dead_code)]
-    pub(crate) fn instance_head_arity(&self, ty: &str, head_args: &[String]) -> Option<usize> {
-        let total = self.ctor_value_arity(ty)?;
-        Some(total.saturating_sub(head_args.len()))
-    }
-
     /// Register a predefined scalar type under `name`. Registering a second
     /// name for the SAME value type RENAMES it: the earlier spelling is
     /// dropped, so one value type never has two registered names and
@@ -2224,6 +2301,220 @@ impl TypeEnv {
         }
         // A monomorphic declaration (`data Point`, `data World`) has arity 0.
         self.data_types.get(name).map(|_| 0)
+    }
+
+    /// The KIND of a type-level name — the ONE place that answers "what is
+    /// this name's kind".
+    ///
+    /// The answer is a pure PROJECTION of the arity the registry already
+    /// records, never a second table of names:
+    ///
+    /// | registry entry | kind |
+    /// |---|---|
+    /// | scalar (`Int`, `Double`, `Bool`, `String`, `Buffer`, `()`) | `*` |
+    /// | `newtype` wrapper | `*` |
+    /// | `type` synonym | the target's kind |
+    /// | [`Self::ctor_kinds`] / [`Self::data_arities`] entry, arity `n` | `* -> … -> *` (`n` arrows) |
+    /// | lowercase name (a type variable) | unknown — its binder gives it |
+    ///
+    /// `None` means "not a kind this table knows": a type VARIABLE (a lowercase
+    /// name, whose kind its binder supplies — see the class-`arity` rule) or a
+    /// declared type whose parameters the registry does not record (a
+    /// parameterized SUM, and any declaration reached only through
+    /// [`Self::data_types`]). An unknown kind is never an error: it is the
+    /// caller's context that would have to judge it, and this table cannot.
+    pub fn kind_of(&self, name: &str) -> Option<Kind> {
+        match self.type_entry(name)? {
+            TypeEntry::Scalar(_) | TypeEntry::Newtype => Some(Kind::TYPE),
+            TypeEntry::Alias(target) => self.kind_of(&target),
+            TypeEntry::TypeCtor { arity } => {
+                // `type_ctor_arity` reports `0` for two very different things:
+                // an EXACT zero (a builtin `data_arities` entry with no
+                // parameters) and a declared `data` type whose parameters the
+                // registry does not record. Only an exact arity is a kind.
+                if self.ctor_kinds.contains_key(name) || self.data_arities.contains_key(name) {
+                    Some(Kind::of_arity(arity))
+                } else {
+                    None
+                }
+            }
+            TypeEntry::Variable => None,
+        }
+    }
+
+    /// The kind of a type EXPRESSION, or `None` when the expression involves a
+    /// type variable (whose kind only its binder knows).
+    ///
+    /// An over-application (a constructor given more arguments than its kind
+    /// accepts) is the one hard error here: `Pair Int Int Int` has no kind at
+    /// all. Every argument position is itself required to have kind `*`.
+    fn type_expr_kind(
+        &self,
+        te: &crate::ast::TypeExpr,
+        span: Span,
+    ) -> Result<Option<Kind>, CompileError> {
+        use crate::ast::TypeExpr;
+        match te {
+            TypeExpr::TName(n) => Ok(self.kind_of(n)),
+            TypeExpr::TApp(head, args) => {
+                for a in args {
+                    self.check_type_kind(a, span)?;
+                }
+                let Some(head_kind) = self.kind_of(head) else {
+                    // A variable head (`m b`): the binder's kind decides.
+                    return Ok(None);
+                };
+                match head_kind.applied_to(args.len()) {
+                    Some(k) => Ok(Some(k)),
+                    None => Err(CompileError::Type {
+                        msg: format!(
+                            "too many arguments in `{}`; `{head}` has kind `{head_kind}`",
+                            self.type_expr_spelling(te)
+                        ),
+                        span,
+                    }),
+                }
+            }
+            TypeExpr::TFunc(args, ret) => {
+                for a in args {
+                    self.check_type_kind(a, span)?;
+                }
+                self.check_type_kind(ret, span)?;
+                Ok(Some(Kind::TYPE))
+            }
+            TypeExpr::TForall(_, inner) | TypeExpr::TConstrained(_, inner) => {
+                self.type_expr_kind(inner, span)
+            }
+        }
+    }
+
+    /// Require `te` to have kind `*` — the only kind a TYPE POSITION accepts
+    /// (a signature, a data field, a constructor payload, a class method's
+    /// argument, an instance body's annotation).
+    ///
+    /// This is the single implementation of Haskell 2010 §4.1's kind rule for
+    /// type positions; every enforcement point calls it, so there is exactly
+    /// one wording and exactly one rule.
+    pub fn check_type_kind(
+        &self,
+        te: &crate::ast::TypeExpr,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        match self.type_expr_kind(te, span)? {
+            Some(kind) if !kind.is_type() => Err(kind_position_error(self, te, kind, span)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Check an `instance` HEAD against the class it implements, in kind
+    /// vocabulary.
+    ///
+    /// The class variable's kind is [`Kind::of_arity`] of the class's `arity`
+    /// (the number of type arguments the method signatures apply it to), and
+    /// the head must have exactly that kind:
+    ///
+    /// * `instance Functor List` → `List` has kind `* -> *` ✔;
+    /// * `instance Functor Pair` → `Pair` has kind `* -> * -> *` ✘;
+    /// * `instance Monad IO` → `IO` has kind `* -> *` ✔;
+    /// * `instance (Monad m) => Arrow (Kleisli m)` → `Kleisli m` leaves two
+    ///   arguments, so `* -> * -> *` ✔;
+    /// * `instance Functor (Pair Int)` → `* -> *` ✔ (`instance Functor ((,)
+    ///   Int)` in GHC).
+    ///
+    /// A class whose variable is a TYPE (`Monoid m`, `Ix i`, arity `0`) binds
+    /// the head's whole type, so the head must have kind `*`. rill spells a
+    /// constructor head for such a class SATURATED — `instance Monoid List` is
+    /// Haskell 2010's `instance Monoid [a]` (head `[a]`, kind `*`), and
+    /// `instance Monoid (List a)` is accepted the same way. A bare constructor
+    /// head is therefore read as its saturation and passes.
+    ///
+    /// A lowercase head (`instance C a`) is a type VARIABLE with the class
+    /// variable's kind, so its binder decides and this check defers; an
+    /// UPPERCASE name with no recorded kind is not a type constructor at all.
+    pub fn check_instance_head(
+        &self,
+        class: &str,
+        head: &crate::ast::TypeExpr,
+        span: Span,
+    ) -> Result<(), CompileError> {
+        let Some(class_arity) = self.typeclasses.get(class).map(|c| c.arity) else {
+            // An undeclared class is reported by class registration, not here.
+            return Ok(());
+        };
+        let expected = Kind::of_arity(class_arity);
+        // A malformed head (an over-applied constructor) has no kind at all.
+        let got = self.type_expr_kind(head, span)?;
+        // A class whose variable is a TYPE (`Monoid m`, `Eq a`, `Ix i`) binds
+        // the head's whole type, so the head must have kind `*`. rill spells a
+        // constructor head for such a class by SATURATING it — `instance Monoid
+        // List` is Haskell 2010's `instance Monoid [a]` (head `[a]`, kind `*`)
+        // — so a bare constructor/declaration name is accepted here.
+        if class_arity == 0 {
+            // A BARE constructor name under a type-variable class is that
+            // constructor SATURATED (`Monoid List` ≡ `Monoid [a]`, and the
+            // derived `Eq List`/`Ord Array` markers name their full type the
+            // same way). GHC writes the applied form; rill's registry keys a
+            // fully-applied head and a bare constructor head alike.
+            if matches!(head, crate::ast::TypeExpr::TName(n) if self.is_known_type_name(n)) {
+                return Ok(());
+            }
+            match got {
+                Some(k) if k.is_type() => return Ok(()),
+                Some(k) => {
+                    return Err(CompileError::Type {
+                        msg: format!(
+                            "expecting a type in the head of `{class}`; `{}` has kind `{k}`",
+                            self.type_expr_spelling(head)
+                        ),
+                        span,
+                    })
+                }
+                // Unknown kind: a type variable (bound at the class's own kind)
+                // or a declared nominal type whose parameters the registry does
+                // not record. Both are types; only an over-application above
+                // is an error.
+                None => return Ok(()),
+            }
+        }
+        let satisfied = match got {
+            Some(k) => k == expected,
+            None => match head {
+                // A type-variable head binds at the class variable's kind.
+                crate::ast::TypeExpr::TName(n) if self.is_type_variable(n) => true,
+                // A variable APPLICATION (`instance C (m a)`) is a constructor
+                // applied to a variable; the context (or the instance thereby
+                // declaring `m` abstract) supplies its kind.
+                crate::ast::TypeExpr::TApp(n, _) if self.is_type_variable(n) => true,
+                _ => false,
+            },
+        };
+        if !satisfied {
+            let spelling = self.type_expr_spelling(head);
+            return Err(match got {
+                Some(k) => CompileError::Type {
+                    msg: format!(
+                        "`{class}` expects a type constructor of kind `{expected}`, but \
+                         `{spelling}` has kind `{k}`"
+                    ),
+                    span,
+                },
+                None => CompileError::Type {
+                    msg: format!(
+                        "`{spelling}` is not a type constructor (`{class}` expects kind \
+                         `{expected}`)"
+                    ),
+                    span,
+                },
+            });
+        }
+        Ok(())
+    }
+
+    /// The source spelling of a type expression for diagnostics
+    /// (`Pair Int`, `List a`) — the canonical instance-key spelling, which is
+    /// also what a writer would have written.
+    pub fn type_expr_spelling(&self, te: &crate::ast::TypeExpr) -> String {
+        crate::render::render_type_key(te)
     }
 
     /// The source spelling of a scalar value type (`Int`, `Double`, `Bool`,
@@ -2431,6 +2722,10 @@ impl TypeEnv {
                 if !self.is_known_type_name(target) || !self.is_type_name(target) {
                     return Err(unknown_type_error(target, *span));
                 }
+                // The alias's inner type is used as a TYPE, so it must have
+                // kind `*`: `type A = List` is `type A = []`, rejected by GHC.
+                let inner = crate::ast::TypeExpr::TName(target.clone());
+                self.check_type_kind(&inner, *span)?;
             }
             Def::Abstract { .. } => {}
             Def::Typeclass {
@@ -2449,6 +2744,7 @@ impl TypeEnv {
                 }
             }
             Def::Instance {
+                class,
                 head,
                 constraints,
                 method_bodies,
@@ -2460,7 +2756,10 @@ impl TypeEnv {
                 let mut tyvars: Vec<String> = Vec::new();
                 collect_type_app_vars(head, &mut tyvars);
                 tyvars.extend(constraints.iter().map(|(_, v)| v.clone()));
-                self.validate_type_expr(head, &tyvars, *span)?;
+                // The head is kind-checked against the CLASS's expected kind,
+                // not against `*`: `Functor List` binds a `* -> *` constructor,
+                // `Monoid (List a)` binds a type.
+                self.validate_instance_head(class, head, &tyvars, *span)?;
                 for (_, _, body) in method_bodies {
                     self.validate_body_type_names(body, &tyvars)?;
                 }
@@ -2513,14 +2812,47 @@ impl TypeEnv {
         Ok(())
     }
 
-    /// Reject an unknown type name anywhere in one type expression.
+    /// Reject an unknown type name anywhere in one type expression, and require
+    /// the expression to have kind `*` (it is in a TYPE position).
     ///
     /// `tyvars` are the locally bound type-variable names (`data Box a` binds
     /// `a`, a typeclass binds its class variable, `forall`/`instance` bind
     /// their own); a name there is a variable whatever its case, exactly as
     /// Haskell's scoping works. With no binder in scope a LOWERCASE name is
     /// still a type variable by the lexical rule.
+    ///
+    /// The kind rule is [`TypeEnv::check_type_kind`] — the ONE implementation of
+    /// Haskell 2010 §4.1's kind requirement for a type position, shared with the
+    /// converters so no path can disagree.
     fn validate_type_expr(
+        &self,
+        te: &crate::ast::TypeExpr,
+        tyvars: &[String],
+        span: Span,
+    ) -> Result<(), CompileError> {
+        self.validate_type_names_in(te, tyvars, span)?;
+        self.check_type_kind(te, span)
+    }
+
+    /// Validate an `instance` HEAD: every name it mentions must exist, and the
+    /// head must have the kind its class expects
+    /// ([`TypeEnv::check_instance_head`]). A head is NOT a type position (it
+    /// binds a constructor for a constructor class), so the kind rule here is
+    /// the class's expected kind, never `*`.
+    fn validate_instance_head(
+        &self,
+        class: &str,
+        head: &crate::ast::TypeExpr,
+        tyvars: &[String],
+        span: Span,
+    ) -> Result<(), CompileError> {
+        self.validate_type_names_in(head, tyvars, span)?;
+        self.check_instance_head(class, head, span)
+    }
+
+    /// [`Self::validate_type_expr`]'s NAME rule only: reject an unknown type
+    /// name anywhere in one type expression.
+    fn validate_type_names_in(
         &self,
         te: &crate::ast::TypeExpr,
         tyvars: &[String],
@@ -2548,26 +2880,26 @@ impl TypeEnv {
                     self.validate_buffer_element(&args[0], tyvars, span)?;
                 }
                 for a in args {
-                    self.validate_type_expr(a, tyvars, span)?;
+                    self.validate_type_names_in(a, tyvars, span)?;
                 }
                 Ok(())
             }
             TypeExpr::TFunc(args, ret) => {
                 for a in args {
-                    self.validate_type_expr(a, tyvars, span)?;
+                    self.validate_type_names_in(a, tyvars, span)?;
                 }
-                self.validate_type_expr(ret, tyvars, span)
+                self.validate_type_names_in(ret, tyvars, span)
             }
             TypeExpr::TForall(bound, inner) => {
                 let mut inner_vars: Vec<String> = tyvars.to_vec();
                 inner_vars.extend(bound.iter().cloned());
-                self.validate_type_expr(inner, &inner_vars, span)
+                self.validate_type_names_in(inner, &inner_vars, span)
             }
             TypeExpr::TConstrained(constraints, inner) => {
                 // A context's variables are bound by the context itself.
                 let mut inner_vars: Vec<String> = tyvars.to_vec();
                 inner_vars.extend(constraints.iter().map(|(_, v)| v.clone()));
-                self.validate_type_expr(inner, &inner_vars, span)
+                self.validate_type_names_in(inner, &inner_vars, span)
             }
         }
     }
@@ -3093,6 +3425,35 @@ fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
 }
 
 /// The compile error for a type name nothing declares.
+/// The compile error for a type expression whose kind is not `*` where a TYPE
+/// is required: the GHC wording, naming the kind and how many arguments are
+/// missing.
+///
+/// `Expecting one more argument to 'Pair Int'; Expected a type, but 'Pair Int'
+/// has kind '* -> *'` — the count comes from the kind, so a bare `Pair` reports
+/// two missing and `Pair Int` one.
+fn kind_position_error(
+    env: &TypeEnv,
+    te: &crate::ast::TypeExpr,
+    kind: Kind,
+    span: Span,
+) -> CompileError {
+    let spelling = env.type_expr_spelling(te);
+    let missing = kind.arity();
+    let noun = if missing == 1 {
+        "argument"
+    } else {
+        "arguments"
+    };
+    CompileError::Type {
+        msg: format!(
+            "expecting {missing} more {noun} to `{spelling}`; expected a type, but `{spelling}` \
+             has kind `{kind}`"
+        ),
+        span,
+    }
+}
+
 fn unknown_type_error(name: &str, span: Span) -> CompileError {
     CompileError::Type {
         msg: format!("unknown type name `{name}`"),
@@ -3660,16 +4021,24 @@ mod ctor_table_tests {
     }
 
     #[test]
-    fn instance_head_arity_after_bound_args() {
+    fn instance_head_arity_is_expressed_as_a_kind() {
+        // The instance-head check answers in KINDS now: a head's remaining
+        // argument count is its kind, applied to the arguments it binds. The
+        // former `instance_head_arity` helper is gone — one answer, not two.
         let env = TypeEnv::with_builtins();
-        // `(Pair a)` — total 2, bound 1 ⇒ 1 remaining.
-        assert_eq!(env.instance_head_arity("Pair", &["a".to_string()]), Some(1));
-        // `(List a)` — total 1, bound 1 ⇒ fully applied.
-        assert_eq!(env.instance_head_arity("List", &["a".to_string()]), Some(0));
-        // A non-partial head: total arity unchanged.
-        assert_eq!(env.instance_head_arity("Pair", &[]), Some(2));
-        // Unknown constructor: None.
-        assert_eq!(env.instance_head_arity("Nope", &[]), None);
+        // `Pair a` — total 2, one bound ⇒ `* -> *` remaining.
+        assert_eq!(env.kind_of("Pair"), Some(Kind::of_arity(2)));
+        assert_eq!(
+            env.kind_of("Pair").and_then(|k| k.applied_to(1)),
+            Some(Kind::of_arity(1))
+        );
+        // `List a` — total 1, one bound ⇒ fully applied (`*`).
+        assert_eq!(
+            env.kind_of("List").and_then(|k| k.applied_to(1)),
+            Some(Kind::TYPE)
+        );
+        // Unknown constructor: no kind at all.
+        assert_eq!(env.kind_of("Nope"), None);
     }
 }
 

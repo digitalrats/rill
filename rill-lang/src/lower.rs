@@ -4612,14 +4612,20 @@ impl<'a> Lowerer<'a> {
         let mut bindings: HashMap<String, ValueTy> = HashMap::new();
         let mut lowered: Vec<(usize, ValueTy)> = Vec::with_capacity(call_args.len());
         for (i, a) in call_args.iter().enumerate() {
-            let expected_arg = arg_tes.get(i).and_then(|te| {
-                let mut vars: HashMap<String, ValueTy> = HashMap::new();
-                let vty =
-                    crate::types::infer::sig_ty_to_vty(env, te, &bindings, &mut vars, &mut || {
-                        self.fresh_sig_var()
-                    });
-                matches!(vty, ValueTy::Thunk(_, _)).then_some(vty)
-            });
+            let expected_arg = match arg_tes.get(i) {
+                Some(te) => {
+                    let mut vars: HashMap<String, ValueTy> = HashMap::new();
+                    let vty = crate::types::infer::sig_ty_to_vty(
+                        env,
+                        te,
+                        &bindings,
+                        &mut vars,
+                        &mut || self.fresh_sig_var(),
+                    )?;
+                    matches!(vty, ValueTy::Thunk(_, _)).then_some(vty)
+                }
+                None => None,
+            };
             let (r, t) = match &expected_arg {
                 Some(exp) => self.lower_value_expected(a, Some(exp))?,
                 None => self.lower_value(a)?,
@@ -4637,7 +4643,7 @@ impl<'a> Lowerer<'a> {
         let ret =
             crate::types::infer::sig_ty_to_vty(env, ret_te, &bindings, &mut vars, &mut || {
                 self.fresh_sig_var()
-            });
+            })?;
         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
         let mut ctor_scope: HashMap<String, Option<String>> = HashMap::new();
         for (i, (r, t)) in lowered.iter().enumerate() {
@@ -4660,7 +4666,7 @@ impl<'a> Lowerer<'a> {
                         self.fresh_sig_var()
                     })
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()?;
             self.value_locals.push(scope);
             self.value_local_ctors.push(ctor_scope);
             let remaining = Expr::Lambda {

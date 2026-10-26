@@ -85,27 +85,27 @@ the types and leaves resolution to the dictionary work.
 
 ## Steps
 
-- [ ] **Step 1: Introduce `Kind`** as a projection of the existing arity data.
+- [x] **Step 1: Introduce `Kind`** as a projection of the existing arity data.
       No behaviour change. A debug accessor proves every registry name has a kind
       and that the kind agrees with `ctor_kinds`/`data_arities`.
-- [ ] **Step 2: Check kind `*` in type position.** Implement it in the one
+- [x] **Step 2: Check kind `*` in type position.** Implement it in the one
       converter the signature path uses (`sig_ty_to_vty`) **and** the other
       (`type_expr_to_vty`), so no path is left unguarded — a second, unguarded
       converter is exactly the "several sources of truth" defect this plan exists
       to remove. A `* -> *` (or higher) type where `*` is required is an error.
-- [ ] **Step 3: Prove the K1 rows.** `f :: Pair Int -> Int`, `f :: List -> Int`,
+- [x] **Step 3: Prove the K1 rows.** `f :: Pair Int -> Int`, `f :: List -> Int`,
       `f :: Maybe -> Int`, `f :: FixedBuffer -> Int` are rejected with a
       kind-worded message; `Pair Int Double`, `List Double`, `Maybe Double`,
       `FixedBuffer Double` are accepted. Also prove a **field** type and a
       **constructor payload** are checked, not just signatures.
-- [ ] **Step 4: Convert the instance-head arity check into the kind check** and
+- [x] **Step 4: Convert the instance-head arity check into the kind check** and
       narrow the `from_prelude` skip to the body only. Report every prelude head
       you had to look at; fix any that fails.
-- [ ] **Step 5: Accept a variable-headed instance.** `instance Monoid [a]` must
+- [x] **Step 5: Accept a variable-headed instance.** `instance Monoid [a]` must
       kind-check once 5.5c gives the parser the syntax; until then, prove the same
       property with a form the parser already produces (e.g. a variable-headed
       head that is expressible today, or a unit test on the checker directly).
-- [ ] **Step 6: Prove no behaviour changed for well-kinded programs.** The full
+- [x] **Step 6: Prove no behaviour changed for well-kinded programs.** The full
       suite stays green; the prelude still loads.
 
 ## Acceptance

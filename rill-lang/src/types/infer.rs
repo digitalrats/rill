@@ -1876,6 +1876,11 @@ pub(crate) fn sig_func_parts(
     }
 }
 
+/// A definition signature converted to value types: the parameter types, the
+/// result type, and the name→variable map the call site fills while solving the
+/// signature's type variables.
+type DefSigTys = (Vec<ValueTy>, ValueTy, HashMap<String, ValueTy>);
+
 /// Convert a definition signature (`mk :: Ix i => Pair i i -> Double -> Double`)
 /// into its parameter and RESULT value types. Every signature type variable —
 /// the class variables of the context included — becomes a fresh unification
@@ -1884,10 +1889,7 @@ pub(crate) fn sig_func_parts(
 ///
 /// Returns the variable map too: it is where the constraint discharge reads the
 /// solved class variable (`i → Int`).
-fn def_sig_tys(
-    ctx: &mut Ctx,
-    sig: &crate::ast::TypeExpr,
-) -> (Vec<ValueTy>, ValueTy, HashMap<String, ValueTy>) {
+fn def_sig_tys(ctx: &mut Ctx, sig: &crate::ast::TypeExpr) -> Result<DefSigTys, CompileError> {
     let env = ctx.env.clone();
     def_sig_tys_conv(&env, sig, || ctx.fresh_vty())
 }
@@ -1897,8 +1899,11 @@ fn def_sig_tys_conv(
     env: &TypeEnv,
     sig: &crate::ast::TypeExpr,
     mut fresh: impl FnMut() -> ValueTy,
-) -> (Vec<ValueTy>, ValueTy, HashMap<String, ValueTy>) {
+) -> Result<DefSigTys, CompileError> {
     let (arg_tes, ret_te) = sig_func_parts(sig);
+    for part in arg_tes.iter().chain(std::iter::once(ret_te)) {
+        env.check_type_kind(part, Span::new(0, 0))?;
+    }
     let mut vars: HashMap<String, ValueTy> = HashMap::new();
     // No class variable is special here: a context's class variables are
     // ordinary type variables until a call site solves them, so the empty
@@ -1909,7 +1914,7 @@ fn def_sig_tys_conv(
         .map(|a| conv(env, "", &subst, &mut vars, &mut fresh, a))
         .collect();
     let ret = conv(env, "", &subst, &mut vars, &mut fresh, ret_te);
-    (params, ret, vars)
+    Ok((params, ret, vars))
 }
 
 /// Whether `name` is a DECLARED type rather than a signature type variable
@@ -2044,6 +2049,17 @@ pub(crate) fn sig_ty_to_vty(
     bindings: &HashMap<String, ValueTy>,
     vars: &mut HashMap<String, ValueTy>,
     fresh: &mut dyn FnMut() -> ValueTy,
+) -> Result<ValueTy, CompileError> {
+    env.check_type_kind(te, Span::new(0, 0))?;
+    Ok(sig_ty_to_vty_inner(env, te, bindings, vars, fresh))
+}
+
+fn sig_ty_to_vty_inner(
+    env: &TypeEnv,
+    te: &crate::ast::TypeExpr,
+    bindings: &HashMap<String, ValueTy>,
+    vars: &mut HashMap<String, ValueTy>,
+    fresh: &mut dyn FnMut() -> ValueTy,
 ) -> ValueTy {
     match te {
         crate::ast::TypeExpr::TName(n) => match bindings.get(n) {
@@ -2054,7 +2070,7 @@ pub(crate) fn sig_ty_to_vty(
         crate::ast::TypeExpr::TApp(head, args) => {
             let vargs: Vec<ValueTy> = args
                 .iter()
-                .map(|a| sig_ty_to_vty(env, a, bindings, vars, &mut *fresh))
+                .map(|a| sig_ty_to_vty_inner(env, a, bindings, vars, &mut *fresh))
                 .collect();
             match bindings.get(head) {
                 // A bound type-constructor variable is applied: splice its own
@@ -2104,12 +2120,12 @@ pub(crate) fn sig_ty_to_vty(
         }
         crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
             args.iter()
-                .map(|a| sig_ty_to_vty(env, a, bindings, vars, &mut *fresh))
+                .map(|a| sig_ty_to_vty_inner(env, a, bindings, vars, &mut *fresh))
                 .collect(),
-            vec![sig_ty_to_vty(env, ret, bindings, vars, &mut *fresh)],
+            vec![sig_ty_to_vty_inner(env, ret, bindings, vars, &mut *fresh)],
         ),
         crate::ast::TypeExpr::TForall(_, inner) | crate::ast::TypeExpr::TConstrained(_, inner) => {
-            sig_ty_to_vty(env, inner, bindings, vars, &mut *fresh)
+            sig_ty_to_vty_inner(env, inner, bindings, vars, &mut *fresh)
         }
     }
 }
@@ -2118,10 +2134,13 @@ pub(crate) fn sig_ty_to_vty(
 /// instance is never called. Each body must infer to a single value channel
 /// (or a bare literal) with its parameters bound to values of the class
 /// signature's types (the class var substituted by the concrete constructor).
-/// Constructor instances are kind-checked: a builtin constructor's value arity
-/// must match the class variable's arity (`Pair` is arity 2, so it cannot be a
-/// `Functor`, which needs arity 1). The recursion guard applies here too, so
-/// self-inlining bodies are rejected even when the instance is dead code.
+///
+/// Every instance HEAD is KIND-checked here, prelude instances included
+/// ([`TypeEnv::check_instance_head`]): the class variable's kind comes from the
+/// class's arity, so `instance Functor Pair` (`* -> * -> *` bound to a `* -> *`
+/// variable) and `instance Functor Int` (a type, not a constructor) are kind
+/// errors. The recursion guard applies here too, so self-inlining bodies are
+/// rejected even when the instance is dead code.
 fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
     // Clone the (class, type) keys so inference (which mutates ctx) does not
     // invalidate the iteration borrow.
@@ -2139,8 +2158,15 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
             .and_then(|by_ty| by_ty.get(ty_name.as_str()))
             .cloned()
             .unwrap();
-        // A prelude-DECLARED instance is trusted compiler machinery; validating
-        // it here would type its body against the USER's data environment,
+        // Kind check the HEAD — for EVERY instance, prelude ones included. The
+        // trust flag below is about BODIES (a prelude body's field names can be
+        // shadowed by a user `data` declaration), which does not apply to a
+        // head: a head the compiler itself declares must be well kinded, and a
+        // failure here is a real prelude defect, not a reason to skip.
+        ctx.env
+            .check_instance_head(&class, &info.head, Span::new(0, 0))?;
+        // A prelude-DECLARED instance's BODY is trusted compiler machinery;
+        // validating it here would type it against the USER's data environment,
         // where a legal shadowing declaration (`data Pair = { x, y }`) can make
         // a prelude body's field names unresolvable. Its body is still typed at
         // every call site (do-notation binds through `Monad IO`).
@@ -2151,37 +2177,6 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
         // validated here like any other user instance.
         if info.from_prelude {
             continue;
-        }
-        // Kind check: a constructor-class instance (`Functor f`) must bind a
-        // constructor whose REMAINING arity (after the instance head's bound
-        // args) equals the class variable's arity. A partial head
-        // (`instance (Monad m) => Arrow (Kleisli m)`, head `Kleisli m` → 1 bound
-        // of total 3) leaves `instance_head_arity` = 2, which must equal
-        // `Arrow`'s arity 2.
-        if let Some(class_info) = ctx.env.typeclasses.get(&class).cloned() {
-            if class_info.arity >= 1 {
-                match ctx.env.instance_head_arity(&ty_name, &info.head_args) {
-                    Some(got) if got != class_info.arity => {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "`{ty_name}` has arity {got}, but `{class}` expects arity {}",
-                                class_info.arity
-                            ),
-                            span: Span::new(0, 0),
-                        });
-                    }
-                    Some(_) => {}
-                    None => {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "`{ty_name}` is not a type constructor (arity {} expected)",
-                                class_info.arity
-                            ),
-                            span: Span::new(0, 0),
-                        });
-                    }
-                }
-            }
         }
         // A constraint / partial-head instance (`instance (Monad m) => Arrow
         // (Kleisli m)`) cannot have its bodies inferred in isolation: the head
@@ -2906,10 +2901,13 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // (shared type variables become fresh unification vars), instead of the
     // scalar `Double` default. The effective parameter list is the signature's
     // arity — `def.params()` is empty for a curried multi-parameter definition.
-    let sig_param_tys: Option<Vec<ValueTy>> = def
-        .sig()
-        .map(|sig| def_sig_tys(ctx, sig).0)
-        .filter(|tys| tys.len() == params.len());
+    let sig_param_tys: Option<Vec<ValueTy>> = match def.sig() {
+        Some(sig) => {
+            let tys = def_sig_tys(ctx, sig)?.0;
+            (tys.len() == params.len()).then_some(tys)
+        }
+        None => None,
+    };
     for (i, p) in params.iter().enumerate() {
         // λ-parameters take the signature's declared type when annotated. An
         // unannotated parameter starts as a FRESH TYPE VARIABLE, not a `Double`
@@ -3042,7 +3040,7 @@ fn infer_constrained_def_body(
     // class variable `i` and the element variables `e`/`s` must be the SAME ids
     // in the parameter types the body is typed against and in the result type
     // it is checked against.
-    let (sig_params, sig_ret, vars) = def_sig_tys(ctx, sig);
+    let (sig_params, sig_ret, vars) = def_sig_tys(ctx, sig)?;
     if sig_params.len() != params.len() {
         return Err(CompileError::Type {
             msg: format!(
@@ -3328,7 +3326,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
             ctx.retry_inferred_defs.insert(def.name().to_string());
         }
         let lam_count = effective_def_params(def).0.len();
-        let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count);
+        let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count)?;
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
@@ -3350,7 +3348,7 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
         }
         let body_ty = infer_def_body(ctx, def)?;
         let lam_count = effective_def_params(def).0.len();
-        let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count);
+        let (vty, constraints) = def_scheme(ctx, def, &body_ty, lam_count)?;
         let resolved = ctx.subst.apply(&ArrowTy { vty });
         let vars = free_vars_quantified(ctx, &resolved);
         ctx.defs.remove(def.name());
@@ -3416,16 +3414,16 @@ fn def_scheme(
     def: &Def,
     body_ty: &DefBodyTy,
     lam_count: usize,
-) -> (ValueTy, Vec<(String, TypeVarId)>) {
+) -> Result<(ValueTy, Vec<(String, TypeVarId)>), CompileError> {
     if let Some(sig) = constrained_def_sig(def) {
-        let (sig_params, sig_ret, vars) = def_sig_tys(ctx, sig);
+        let (sig_params, sig_ret, vars) = def_sig_tys(ctx, sig)?;
         let vty = if sig_params.is_empty() {
             sig_ret
         } else {
             ValueTy::Thunk(sig_params, vec![sig_ret])
         };
         let constraints = scheme_constraints(ctx, sig, &vars);
-        return (vty, constraints);
+        return Ok((vty, constraints));
     }
     let vty = if lam_count == 0 {
         body_ty.ty.vty.clone()
@@ -3448,7 +3446,7 @@ fn def_scheme(
         let param_tys: Vec<ValueTy> = (0..lam_count).map(|_| ValueTy::Double).collect();
         ValueTy::Thunk(param_tys, vec![body_ty.ty.vty.clone()])
     };
-    (vty, Vec::new())
+    Ok((vty, Vec::new()))
 }
 
 /// Resolve an arm/branch body's result value type: a value channel directly,
@@ -5079,6 +5077,15 @@ fn func_target(ctx: &Ctx, name: &str) -> String {
 /// becomes `ValueTy::Thunk`. Used by the builtin-sig
 /// application (their types are ordinary, unlike `runST`'s forall).
 fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, CompileError> {
+    // The SECOND conversion path (with [`sig_ty_to_vty`]) — and one the task's
+    // "two converters, one rule" warning names explicitly. Guarded with the same
+    // single rule, so neither can accept a `* -> *` in a `*` position.
+    ctx.env.check_type_kind(te, Span::new(0, 0))?;
+    type_expr_to_vty_inner(ctx, te)
+}
+
+/// [`type_expr_to_vty`] without the kind guard — the recursion body.
+fn type_expr_to_vty_inner(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, CompileError> {
     match te {
         crate::ast::TypeExpr::TName(n) => {
             // A phantom region token (`s` inside `runST (fn s -> …)`) resolves
@@ -5103,7 +5110,7 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
         crate::ast::TypeExpr::TApp(head, args) => {
             let mut targs = Vec::with_capacity(args.len());
             for a in args {
-                targs.push(type_expr_to_vty(ctx, a)?);
+                targs.push(type_expr_to_vty_inner(ctx, a)?);
             }
             // A user data type (`IO a`, `Kleisli m a b`) is a `Data` application
             // (mirroring how record construction types it), so `IO` unifies
@@ -5115,9 +5122,12 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
         crate::ast::TypeExpr::TFunc(args, ret) => {
             let mut targs = Vec::with_capacity(args.len());
             for a in args {
-                targs.push(type_expr_to_vty(ctx, a)?);
+                targs.push(type_expr_to_vty_inner(ctx, a)?);
             }
-            Ok(ValueTy::Thunk(targs, vec![type_expr_to_vty(ctx, ret)?]))
+            Ok(ValueTy::Thunk(
+                targs,
+                vec![type_expr_to_vty_inner(ctx, ret)?],
+            ))
         }
         crate::ast::TypeExpr::TForall(_, _) => Err(CompileError::Type {
             msg: "a forall-typed signature cannot be applied as a plain builtin".into(),
@@ -5125,7 +5135,7 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
         }),
         // The class context is not enforced yet (constrained-def dispatch is a
         // later task); the type itself is the body's type.
-        crate::ast::TypeExpr::TConstrained(_, inner) => type_expr_to_vty(ctx, inner),
+        crate::ast::TypeExpr::TConstrained(_, inner) => type_expr_to_vty_inner(ctx, inner),
     }
 }
 
@@ -5209,6 +5219,18 @@ fn instantiate_builtin_sig_vty(
     te: &crate::ast::TypeExpr,
     vars: &mut HashMap<String, ValueTy>,
 ) -> Result<ValueTy, CompileError> {
+    // The THIRD path: `builtin_sigs` are assembled in Rust, so they never pass
+    // the program-level walk. Guarded with the same single rule.
+    ctx.env.check_type_kind(te, Span::new(0, 0))?;
+    instantiate_builtin_sig_vty_inner(ctx, te, vars)
+}
+
+/// [`instantiate_builtin_sig_vty`] without the kind guard — the recursion body.
+fn instantiate_builtin_sig_vty_inner(
+    ctx: &mut Ctx,
+    te: &crate::ast::TypeExpr,
+    vars: &mut HashMap<String, ValueTy>,
+) -> Result<ValueTy, CompileError> {
     use crate::ast::TypeExpr;
     match te {
         TypeExpr::TName(n) => {
@@ -5232,7 +5254,7 @@ fn instantiate_builtin_sig_vty(
         TypeExpr::TApp(head, args) => {
             let mut targs = Vec::with_capacity(args.len());
             for a in args {
-                targs.push(instantiate_builtin_sig_vty(ctx, a, vars)?);
+                targs.push(instantiate_builtin_sig_vty_inner(ctx, a, vars)?);
             }
             if ctx.env.data_arities.contains_key(head.as_str()) {
                 Ok(ValueTy::Data(head.clone(), targs))
@@ -5243,11 +5265,11 @@ fn instantiate_builtin_sig_vty(
         TypeExpr::TFunc(args, ret) => {
             let mut targs = Vec::with_capacity(args.len());
             for a in args {
-                targs.push(instantiate_builtin_sig_vty(ctx, a, vars)?);
+                targs.push(instantiate_builtin_sig_vty_inner(ctx, a, vars)?);
             }
             Ok(ValueTy::Thunk(
                 targs,
-                vec![instantiate_builtin_sig_vty(ctx, ret, vars)?],
+                vec![instantiate_builtin_sig_vty_inner(ctx, ret, vars)?],
             ))
         }
         TypeExpr::TForall(bound, inner) => {
@@ -5259,10 +5281,10 @@ fn instantiate_builtin_sig_vty(
             for n in bound {
                 vars.entry(n.clone()).or_insert_with(|| ctx.fresh_vty());
             }
-            instantiate_builtin_sig_vty(ctx, inner, vars)
+            instantiate_builtin_sig_vty_inner(ctx, inner, vars)
         }
         // The class context is not enforced yet; the value type is the body's.
-        TypeExpr::TConstrained(_, inner) => instantiate_builtin_sig_vty(ctx, inner, vars),
+        TypeExpr::TConstrained(_, inner) => instantiate_builtin_sig_vty_inner(ctx, inner, vars),
     }
 }
 
@@ -5481,7 +5503,7 @@ fn infer_constrained_apply(
     span: Span,
     expected: Option<ValueTy>,
 ) -> Result<ArrowTy, CompileError> {
-    let (param_tys, ret_ty, vars) = def_sig_tys(ctx, &cd.sig);
+    let (param_tys, ret_ty, vars) = def_sig_tys(ctx, &cd.sig)?;
     if param_tys.len() != cd.params.len() {
         return Err(CompileError::Type {
             msg: format!(
@@ -8488,7 +8510,7 @@ mod tests {
             let def = &prog.defs[0];
             let body = infer_def_body(&mut ctx, def).unwrap();
             let lam_count = effective_def_params(def).0.len();
-            match def_scheme(&mut ctx, def, &body, lam_count).0 {
+            match def_scheme(&mut ctx, def, &body, lam_count).unwrap().0 {
                 ValueTy::Thunk(args, _) => args,
                 other => panic!("expected a function scheme, got {other:?}"),
             }

@@ -50,23 +50,22 @@ fn fmap_over_list_is_compile_time_inlined() {
 #[test]
 fn kind_mismatch_is_compile_error() {
     // The dead `instance Functor Pair` must be rejected by the KIND CHECK in
-    // validate_instances: Pair is arity 2, Functor needs arity 1. The old form
-    // called `fmap` from `main`, which errored at the CALL SITE ("argument type
-    // does not apply f") — the test passed for the wrong reason and would pass
-    // even if the kind check were deleted.
+    // validate_instances: `Functor` binds a `* -> *` constructor, `Pair` is
+    // `* -> * -> *`. GHC's message is a kind mismatch, so the assertion pins
+    // the KIND vocabulary rather than a bare arity count (an arity-worded
+    // check would satisfy the older assertion without ever naming a kind).
     let src = r#"
         typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
         instance Functor Pair where { fmap g p = p; }
         main = 1.0;
     "#;
     let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
-    assert!(res.is_err(), "Pair has arity 2; Functor needs arity 1");
-    if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
-        assert!(
-            msg.contains("arity") || msg.contains("Functor"),
-            "expected a kind-arity message, got: {msg}"
-        );
-    }
+    let msg = format!("{}", res.err().expect("`Functor Pair` must be rejected"));
+    assert!(
+        msg.contains("`Functor` expects a type constructor of kind `* -> *`")
+            && msg.contains("`Pair` has kind `* -> * -> *`"),
+        "expected GHC's kind mismatch, got: {msg}"
+    );
 }
 
 #[test]
@@ -85,16 +84,15 @@ fn parameterized_user_sum_instance_is_kind_error() {
         main = 1.0;
     "#;
     let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
-    assert!(
-        res.is_err(),
-        "parameterized user sum Opt must be rejected as an instance"
+    let msg = format!(
+        "{}",
+        res.err()
+            .expect("a parameterized user sum instance must be rejected")
     );
-    if let Some(msg) = res.err().map(|e| format!("{e:?}")) {
-        assert!(
-            msg.contains("arity") || msg.contains("type constructor"),
-            "expected a kind-arity message, got: {msg}"
-        );
-    }
+    assert!(
+        msg.contains("is not a type constructor") && msg.contains("`Functor` expects kind"),
+        "expected the kind diagnostic for an unrecorded constructor, got: {msg}"
+    );
 }
 
 #[test]
