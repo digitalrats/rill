@@ -251,6 +251,78 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 
 ---
 
+### Task 5.5 (conformance): Rename types shared with Haskell to their Haskell names
+
+> **Why:** a type that exists in both Haskell 2010 and rill must be spelled the
+> Haskell way, otherwise the same program text means something different from
+> what a Haskell programmer expects. This is a naming conformance requirement,
+> not cosmetics — the inventory (`docs/superpowers/audits/2026-10-26-haskell2010-conformance-inventory.md`)
+> lists `Pair`/`List` as shared concepts spelled rill's way.
+>
+> **Backward compatibility is explicitly NOT required** (user decision), so the
+> old spellings are removed, not aliased.
+
+**Files:** wherever the names occur — `rill-lang/src/types/ty.rs` (arithmetic of
+type constructors), `ast.rs`, `parser.rs`, `lower.rs`, `types/infer.rs`,
+`render.rs`, `program_serde.rs`, the prelude text, and every test/program that
+uses them. This is a mechanical rename with a large blast radius; the compiler
+finds every site.
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: Haskell spelling for shared types; rill-only types keep their names.
+
+#### The mapping (decided here, applied by the task)
+
+| rill today | Haskell 2010 | Action |
+|---|---|---|
+| `Pair a b` | `(a, b)` | **rename to the tuple type**; `Pair { first, second }` literals/projections become `( , )` and `fst`/`snd` |
+| `List a` | `[a]` | **rename**; list literal `[1,2,3]` and `:` already exist |
+| `String` | `[Char]` (`String` is a synonym) | keep `String` as the synonym, add `Char` |
+| `Maybe`, `Either` | same | keep |
+| `Set`, `Map`, `Array`, `STArray`, `ST`, `IO`, `Kleisli` | same (from `Data.*`/`Control.*`) | keep |
+| `FixedBuffer a`, `Tape a`, `Buffer b`, `InputStream a`, `OutputStream a` | **no Haskell equivalent** | keep (rill-specific) |
+| `Int`, `Float`, `Bool`, `Void` | same (`Void` is `()`) | keep; `()` as the unit type |
+
+- The **constructors** follow: `Pair { first, second }` → tuple syntax; a
+  two-field record that is genuinely a named record (`EqBand`) is NOT a tuple
+  and keeps its record syntax.
+- `show_float`/`show_int`/`show_bool` are rill-specific and stay; `show` is a
+  separate gap (inventory A1).
+
+- [ ] **Step 1: Inventory the exact sites**
+
+```bash
+grep -rn 'Pair' --include='*.rs' rill-lang/src rill-lang/tests | wc -l   # ~271 uses in tests
+grep -rn '"Pair"' --include='*.rs' rill-lang/src | wc -l
+grep -rn 'List' --include='*.rs' rill-lang/src | wc -l
+```
+Record the counts in the report before touching anything.
+
+- [ ] **Step 2: Rename `Pair` → tuple, `List` → `[]`**
+
+Compile-driven: change the type-constructor registry and the AST/type
+representation, then fix each compile error. The prelude and every test program
+are updated. No aliases left behind.
+
+- [ ] **Step 3: Add `Char` and keep `String` as its synonym**
+
+`String = [Char]` per the Report; a character literal `'a'` is part of this (the
+inventory notes rill has no `Char` at all).
+
+- [ ] **Step 4: Prove nothing else moved**
+
+Run the full suite; every remaining failure must be a *deliberate* part of the
+rename, listed in the report. Anything else is a regression.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -m 'refactor(lang): spell shared types the Haskell 2010 way'
+```
+
+---
+
 ### Task 6 (close-out): Detailed Haskell 2010 conformance audit
 
 > **User requirement (2026-10-25): after the stages are done, perform a detailed
