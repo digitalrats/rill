@@ -251,176 +251,111 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 
 ---
 
-### Task 5.5 (conformance): Rename types shared with Haskell to their Haskell names
+### Task 5.5 (conformance): Haskell type names — registry, `Char`, and the shared-type rename
 
 > **Why:** a type that exists in both Haskell 2010 and rill must be spelled the
-> Haskell way, otherwise the same program text means something different from
-> what a Haskell programmer expects. This is a naming conformance requirement,
-> not cosmetics — the inventory (`docs/superpowers/audits/2026-10-26-haskell2010-conformance-inventory.md`)
-> lists `Pair`/`List` as shared concepts spelled rill's way.
+> Haskell way, and a name must denote a type only if that type exists. Measured
+> defects: undeclared names are accepted as phantom types, and `Pair`/`List` are
+> rill spellings of Haskell concepts.
 >
-> **Backward compatibility is explicitly NOT required** (user decision), so the
-> old spellings are removed, not aliased.
+> **Backward compatibility is explicitly NOT required** (user decision): old
+> spellings are removed, not aliased.
 
-**Files:** wherever the names occur — `rill-lang/src/types/ty.rs` (arithmetic of
-type constructors), `ast.rs`, `parser.rs`, `lower.rs`, `types/infer.rs`,
-`render.rs`, `program_serde.rs`, the prelude text, and every test/program that
-uses them. This is a mechanical rename with a large blast radius; the compiler
-finds every site.
+This task is split into three independently green sub-tasks.
 
-**Interfaces:**
-- Consumes: nothing.
-- Produces: Haskell spelling for shared types; rill-only types keep their names.
+---
 
-#### The mapping (decided here, applied by the task)
+#### Task 5.5a: One type-name registry; undeclared names are errors; `Void` → `()`
 
-| rill today | Haskell 2010 | Action |
-|---|---|---|
-| `Pair a b` | `(a, b)` | **rename to the tuple type**; `Pair { first, second }` literals/projections become `( , )` and `fst`/`snd` |
-| `List a` | `[a]` | **rename**; list literal `[1,2,3]` and `:` already exist |
-| `String` | `[Char]` (`String` is a synonym) | keep `String` as the synonym, add `Char` |
-| `Maybe`, `Either` | same | keep |
-| `Set`, `Map`, `Array`, `STArray`, `ST`, `IO`, `Kleisli` | same (from `Data.*`/`Control.*`) | keep |
-| `FixedBuffer a`, `Tape a`, `Buffer b`, `InputStream a`, `OutputStream a` | **no Haskell equivalent** | keep (rill-specific) |
-| `Int`, `Float`, `Bool`, `Void` | same (`Void` is `()`) | keep; `()` as the unit type |
+**Files:** `rill-lang/src/types/{ty.rs, infer.rs, ffi.rs}` + `rill-lang/tests/type_names.rs` (new)
 
-- The **constructors** follow: `Pair { first, second }` → tuple syntax; a
-  two-field record that is genuinely a named record (`EqBand`) is NOT a tuple
-  and keeps its record syntax.
-- `show_float`/`show_int`/`show_bool` are rill-specific and stay; `show` is a
-  separate gap (inventory A1).
-
-#### Scalar type names — measured, and two defects to fix
-
-rill has exactly four scalar type names in `ValueTy` (`Int`, `Float`, `Bool`,
-`String`) plus `Void`. Probed on `b2ba351`:
-
-| Name | `vty_of_name` | Haskell 2010 | Verdict |
-|---|---|---|---|
-| `Int` | `Int` | `Int` | OK |
-| `Float` | `Float` | `Float` (single precision) | OK |
-| `Bool` | `Bool` | `Bool` | OK |
-| `String` | `String` | `[Char]` synonym | OK (kept as a synonym) |
-| `Void` | `Data("Void", [])` | `()` | **WRONG** — rill spells unit `Void`; Haskell uses `()`, and rill ALSO parses `()`, so two names mean the same thing while `Void` is a phantom |
-| `Char` | `Data("Char", [])` | `Char` | **MISSING** — no `Char` value exists, yet the name type-checks |
-| `Double` | `Data("Double", [])` | `Double` | **EXTRA** — accepted, types a program, but no value can ever have it |
-| `Integer`, `Word`, `Ordering` | `Data(…)` | real types | **EXTRA** — same phantom acceptance |
-
-The two defects:
-
-1. **Phantom type names.** Any identifier parses as a type at a signature, and an
-   undeclared name becomes `Data(name, [])`. So `f :: Integer -> Integer; f x = x`
-   **compiles and runs** although no `Integer` value exists. This is a hole in
-   static typing: it must be a compile error, or the type must exist for real.
-2. **`Void` vs `()` for unit.** Haskell 2010 spells the unit type `()`. rill
-   accepts both, and `Void` is a phantom while `()` resolves correctly.
-
-Decisions for the task:
-
-- `()` is the unit type; `Void` is removed (no alias — backward compatibility is
-  not required).
-- `Char` becomes a **real** type with character literals `'a'`, and `String`
-  stays `[Char]`.
-- **Every other name that is not declared must be a compile error**, not a
-  phantom `Data`. That is the general fix, and it also closes the `Double` /
-  `Integer` / `Word` / `Ordering` acceptance. `Double` may later be added as a
-  real type; it is *not* silently accepted in the meantime.
-
-#### Staging (measured on `5421744`)
-
-The rename is far larger than one dispatch: `Pair` 284 in `src` + 271 in tests,
-`List` 262 in `src`, `Void` 73. It is split into three independently green
-sub-tasks, in this order:
-
-| Sub-task | Scope | Why this order |
-|---|---|---|
-| **5.5a** | **one type-name registry**; undeclared names → compile error; `Void` → `()` | closes a static-typing hole *and* removes six drifting name lists; everything else builds on it |
-| **5.5b** | `Char` as a real type + character literals; `String = [Char]` | needs 5.5a first (otherwise `Char` is just another phantom) |
-| **5.5c** | `List a` → `[a]`, `Pair a b` → `(a, b)` | purely mechanical, largest radius, independent of a/b |
-
-#### 5.5a architecture: one type-name registry (measured defect)
-
-Scalar type names are **not** in any registry. They are hard-coded as `matches!`
-lists in **six** places, and the lists disagree:
+**The measured defect.** Scalar type names are hard-coded as `matches!` lists in
+**six** places that disagree:
 
 | Site | List | Purpose |
 |---|---|---|
-| `types/ty.rs:1992` | `Float Int Bool String Buffer ()` | the only real resolution (`vty_of_name`) |
+| `types/ty.rs:1992` | `Float Int Bool String Buffer ()` | the only real resolver (`vty_of_name`) |
 | `types/ty.rs:1930` | `Int Float Bool String` | which types get derived `Eq`/`Ord` |
 | `types/infer.rs:1857` | `Float Int Bool String Buffer ()` | "is this name declared" |
-| `types/infer.rs:5045` | same, **different order** | the inverse check |
+| `types/infer.rs:5045` | same set, different order | the inverse check |
 | `types/ffi.rs:273` | `Float Int Bool String` | FFI scalar-vs-record |
-| `types/infer.rs:7491` | `Int→"Int"`, `Void→"()"` | type → name |
+| `types/infer.rs:7491` | type → name | renderer |
 
-`vty_of_name` falls through to `ValueTy::Data(n, [])` for anything unknown, which
-is why `Integer`/`Double`/`Char`/`Void` are accepted as phantom types. Adding a
-type today means editing all six lists, and missing one creates a new phantom or
-an inconsistent answer.
+`vty_of_name` falls through to `ValueTy::Data(n, [])` for anything unknown, so
+these **compile and run today** although no value of those types exists:
 
-**5.5a therefore does not patch the lists — it replaces them with one registry.**
+```
+f :: Integer -> Integer;  f x = x;        f 1   → 1
+f :: Char -> Char;        f x = x;        f 1   → 1
+f :: Void -> Int;         f x = 1;        f 1   → 1
+f :: Double -> Double;    f x = x + 1.0;  f 1.0 → 2.0
+```
 
-- [ ] **Step 1: Introduce the registry**
+The fix is not a seventh list: it is **one registry**.
 
-Extend `TypeEnv` so a *name* resolves to a *type entry* in one lookup: the
-scalar names (`Int`, `Float`, `Bool`, `String`, `Char` reserved for 5.5b,
-`Buffer`, `()`), builtin constructors (with arity), `data`, `newtype`,
-`type` aliases, abstract types, and class type variables. Existing maps
-(`data_types`, `newtypes`, `type_aliases`, `ctor_kinds`, `data_arities`) become
-the registry's storage rather than parallel sources; scalar entries are added
-where they are missing.
-
-- [ ] **Step 2: One predicate and one resolver**
-
-Replace the six sites with:
-- `TypeEnv::type_entry(&self, name: &str) -> Option<TypeEntry>` — the single
-  source of truth;
-- `vty_of_name` returns `Option<ValueTy>`; `None` ⇒ the caller reports
-  `unknown type name \`X\``;
-- the "declared?" checks (`infer.rs:1857`, `5045`), the derived-`Eq`/`Ord` seed
-  (`ty.rs:1930`), the FFI scalar check (`ffi.rs:273`) and the name renderer
-  (`infer.rs:7491`) all consult it.
-
-- [ ] **Step 3: `Void` is removed; `()` is the unit type**
-
-`ValueTy::Void` is an internal variant and may stay, but the **source-level
-name** `Void` must resolve to nothing (unknown type), and `()` stays correct.
-
-- [ ] **Step 4: Prove the registry is the single source**
-
-A test adds a name to the registry *once* and asserts every consumer sees it
-(the declaration check, `vty_of_name`, the derived-instance seed, the FFI
-scalar check, the renderer). That is the property that was missing.
-
-- [ ] **Step 5: Inventory the exact sites**
+- [ ] **Step 1: Introduce the registry.** Extend `TypeEnv` with
+  `type_entry(&self, name: &str) -> Option<TypeEntry>` covering scalars (`Int`,
+  `Float`, `Bool`, `String`, `Buffer`, `()`), builtin constructors with arity,
+  `data`, `newtype`, `type` aliases, abstract types, and class type variables.
+  The existing maps stay as storage; scalar entries are added so they are no
+  longer special-cased in code.
+- [ ] **Step 2: One predicate and one resolver.** `vty_of_name` returns
+  `Option<ValueTy>` (unknown ⇒ `unknown type name`). Replace all six sites with
+  registry calls.
+- [ ] **Step 3: `Void` is removed as a source-level name.** `()` is the unit type.
+  The internal `ValueTy::Void` variant may stay.
+- [ ] **Step 4: Prove the registry is the single source.** A test adds a name to
+  the registry *once* and asserts every consumer sees it (declaration check,
+  `vty_of_name`, derived-instance seed, FFI scalar check, renderer). It must
+  fail if any consumer keeps its own list.
+- [ ] **Step 5: Verify and commit.**
 
 ```bash
-grep -rn 'Pair' --include='*.rs' rill-lang/src rill-lang/tests | wc -l   # ~271 uses in tests
-grep -rn '"Pair"' --include='*.rs' rill-lang/src | wc -l
-grep -rn 'List' --include='*.rs' rill-lang/src | wc -l
+cargo test -p rill-lang --features dsp && cargo clippy -p rill-lang --features dsp && cargo fmt --check
+git commit -m 'refactor(lang): one type-name registry'
 ```
-Record the counts in the report before touching anything.
 
-- [ ] **Step 2: Rename `Pair` → tuple, `List` → `[]`**
+Tests (in `type_names.rs`): `an_undeclared_type_name_is_rejected`,
+`char_is_still_undeclared_for_now`, `a_type_variable_is_still_accepted`,
+`a_declared_data_type_is_accepted`, `the_unit_type_is_the_parentheses`,
+`the_registry_is_the_single_source`.
 
-Compile-driven: change the type-constructor registry and the AST/type
-representation, then fix each compile error. The prelude and every test program
-are updated. No aliases left behind.
+---
 
-- [ ] **Step 3: Add `Char` and keep `String` as its synonym**
+#### Task 5.5b: `Char` as a real type; `String = [Char]`
 
-`String = [Char]` per the Report; a character literal `'a'` is part of this (the
-inventory notes rill has no `Char` at all).
+**Files:** the registry (5.5a), the lexer/parser for character literals,
+`rill-lang/src/types/ty.rs` (a `Char` scalar), tests.
 
-- [ ] **Step 4: Prove nothing else moved**
+- [ ] **Step 1: Add `Char` to the registry** with a real runtime representation
+  (a `char` payload in `Value`, its `ValueKind`, and its walker arms — `Char` is
+  a leaf, so no RC children).
+- [ ] **Step 2: Character literals `'a'`** in the lexer and parser, including the
+  escapes the Report defines (`\n`, `\t`, `\\`, `\'`, `\"`, `\0`–`\255`,
+  `\x…`, `\o…`).
+- [ ] **Step 3: `String` is `[Char]`** — `String` stays a synonym; `show`/rendering
+  of a `Char` must produce `'a'`.
+- [ ] **Step 4: Tests** — `'a'` literal, escapes, `String` as `[Char]`, ordering
+  on `Char`.
+- [ ] **Step 5: Commit** — `git commit -m 'feat(lang): Char type and character literals'`
 
-Run the full suite; every remaining failure must be a *deliberate* part of the
-rename, listed in the report. Anything else is a regression.
+---
 
-- [ ] **Step 5: Commit**
+#### Task 5.5c: `List a` → `[a]`, `Pair a b` → `(a, b)`
 
-```bash
-git commit -m 'refactor(lang): spell shared types the Haskell 2010 way'
-```
+**Files:** the registry and every use site (compiler-driven).
+
+- [ ] **Step 1: Inventory** — record `Pair`/`List` counts before touching
+  anything (`grep -rn '\bPair\b' --include='*.rs' rill-lang` → 284 in `src`,
+  271 in tests; `\bList\b` → 262 in `src`).
+- [ ] **Step 2: `List a` → `[a]`** — the list type constructor is spelled `[]`;
+  list literals and `:` already exist.
+- [ ] **Step 3: `Pair a b` → `(a, b)`** — tuple type and tuple syntax; a genuine
+  named record (`data EqBand = { … }`) is NOT a tuple and keeps its record
+  syntax. Add `fst`/`snd`.
+- [ ] **Step 4: Prove nothing else moved** — every remaining failure must be a
+  deliberate part of the rename, listed in the report.
+- [ ] **Step 5: Commit** — `git commit -m 'refactor(lang): spell List and Pair the Haskell way'`
 
 ---
 
