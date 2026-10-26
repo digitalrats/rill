@@ -309,9 +309,35 @@ This task is split into six independently green sub-tasks.
   `Float` would remove double precision from the language entirely.
 - [ ] **Step 4: `show_float` renders an `f32`**, which is what makes the
   `0.1 + 0.2` / `1/3` outputs match GHC rather than diverge.
-- [ ] **Step 5: Prove it.** The old f64-only results must now match GHC:
-  `0.1 + 0.2` → `0.3`, `1/3` → `0.33333334`. Record both before/after.
+- [ ] **Step 5: Prove it.** The old f64-only results must now match GHC at the
+  same type. Compare against GHC's **`:: Float`-pinned** results, not its
+  defaulted ones: `(0.1 + 0.2 :: Float)` → `0.3`,
+  `(1/3 :: Float)` → `0.33333334` (GHC verified). Record both before/after.
+  This is the correct comparison because rill's `show_float` is monomorphic
+  (`Float -> String`), so it pins the literal's type exactly as `:: Float` does.
 - [ ] **Step 6: Commit** — `git commit -m 'fix(lang): Float is single precision; add Double'`
+
+**Do NOT change numeric defaulting in this task.** GHC's own defaulting goes to
+`Double` (`default (Integer, Double)`, Report §4.3.4), not `Float`: verified
+`0.1 + 0.2` unannotated → `0.30000000000000004` while
+`(0.1 + 0.2 :: Float)` → `0.3`. rill's defaulting maps an ambiguous literal
+to `Float`/`Int`, which is a **separate divergence** (see the note below) and
+must not be silently "fixed" here by making `Float` double precision again.
+
+#### Correction to the design's defaulting claim
+
+Design §3.5 says defaulting maps `Num`-only → `Int` and `Fractional` →
+`Float`, described as *"rill's numeral mapping of GHC's `Integer`/`Double`"*. That
+mapping is **not** conformance-equivalent once `Float` means single precision:
+GHC defaults an ambiguous floating literal to `Double`, so `0.1 + 0.2` yields
+`0.30000000000000004` there and would yield `0.3` in rill. Since Haskell 2010
+outranks convenience, the correct destination for `Fractional` defaulting is
+**`Double`**, and it becomes reachable exactly once 5.5pre-0 adds `Double`.
+
+- [ ] **Recorded as a follow-up, not part of 5.5pre-0:** defaulting for a
+  `Fractional`-constrained ambiguous literal must target `Double`, and
+  `Num`-only must target `Integer`-equivalent behaviour. Tracked in
+  `DOCS-GAPS.md` (OD-16 area) and in the audit's A4b table.
 
 **Note:** this task is independent of the registry and can land first.
 
