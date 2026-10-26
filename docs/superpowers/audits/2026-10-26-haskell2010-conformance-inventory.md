@@ -87,11 +87,20 @@ methods (design §3.7 stages 4–9). This is **OD-16 / OD-17**.
 
 ### A4b. Precision, buffer element types, and the numeric tower (measured 2026-10-26)
 
-| Construct | rill | GHC | Verdict |
-|---|---|---|---|
-| `Value::Float` payload | `f64` | `Float` is single precision (§6.4.1) | **WRONG — `Float` silently means `Double`** |
-| `Float` arithmetic precision | `1/3` → `0.3333333333333333`; `0.1+0.2` → `0.30000000000000004` | `0.33333334`; `0.3` | **WRONG — silent** |
-| `Double` | does not exist | real type | MISSING |
+> **Status update 2026-10-26 (task 5.5pre-0, commit `0e78439`): the first three
+> rows below are FIXED — as a rename, not a precision change.** Measurement showed
+> the type was numerically *correct* GHC `Double` all along; only its name was
+> wrong. `Float` is now `Double`, `Float` is an unknown-type error, and
+> `show_float` became `show_double`. The remaining gap is that rill has **no
+> single-precision `Float`**; that lands with the numeric tower (P3 in
+> `2026-10-25-rill-lang-typeclass-layer.md`), not as an alias.
+
+| Construct | rill (before 5.5pre-0) | GHC | Verdict then | Now |
+|---|---|---|---|---|
+| `Value::Float` payload | `f64` | `Float` is single precision (§6.4.1) | **WRONG — `Float` silently means `Double`** | **FIXED** — renamed `Double` |
+| `Float` arithmetic precision | `1/3` → `0.3333333333333333`; `0.1+0.2` → `0.30000000000000004` | `:: Float`: `0.33333334`; `0.3` — but defaulted: **identical to rill's** | **WRONG name, right value** | **FIXED** by the rename |
+| `Double` | did not exist | real type | MISSING | **FIXED** |
+| single-precision `Float` | did not exist | `Float` | MISSING | **MISSING** — lands with P3 |
 | `f :: FixedBuffer Zork -> FixedBuffer Zork` | compiles and runs | unknown type | **WRONG — silent** (element type is discarded) |
 | `g :: FixedBuffer Int -> FixedBuffer Bool; g x = x` | compiles and runs | type error | **WRONG — silent** |
 | `instance Num (Tape f32)` | accepted as *nominal* `f32` | accepted, but `f32` is a **type variable** (Report §2.4: `tycon → conid → large…`) — an instance for all `a`; verified with `Tape Int`/`Tape Bool` | WRONG (different meaning) |
