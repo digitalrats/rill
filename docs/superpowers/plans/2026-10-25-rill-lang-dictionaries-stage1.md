@@ -332,75 +332,84 @@ without losing anything.
 
 ---
 
-#### Task 5.5pre-1: `FixedBuffer` and `Tape` take a real element type
+#### Task 5.5pre-1: `FixedBuffer` and `Tape` take a real element type; the FFI carries it
 
-> **Why:** `FixedBuffer` is declared with arity 1 (`ctor_kinds`), but the
-> argument is **discarded**. Measured on `56160d6`:
+> **Why:** `FixedBuffer` is declared with arity 1 but its argument is
+> **discarded**. Measured on `023994e`:
 
 ```
-f :: FixedBuffer Zork -> FixedBuffer Zork;  f x = x   → compiles AND runs
-g :: FixedBuffer Int  -> FixedBuffer Bool;  g x = x   → compiles AND runs
+f :: FixedBuffer Zork -> FixedBuffer Zork;  f x = x   → rejected (5.5a's registry)
+g :: FixedBuffer Int  -> FixedBuffer Bool;  g x = x   → compiles AND runs   ← the defect
 ```
 
-> `types/unify.rs:157` matches `ValueTy::Buffer` against `App("FixedBuffer",
-> args)` only when `args.is_empty()`, and `types/ffi.rs:258` checks only
-> `args.len() == 1`. So no element type is ever resolved, which is exactly why
-> `f32` survived as a rill type name: nothing ever looked at it.
+> `unify.rs:157` matches `ValueTy::Buffer` against `App("FixedBuffer", args)`
+> only when `args.is_empty()`, and `ffi.rs:259` checks only `args.len() == 1`.
+> The element type is never compared, which is why `f32` survived as a name and
+> why two different element types unify. `Array` has the same hole (`Array Int
+> Int` unifies with `Array Int Bool`) — see the follow-up note.
 
-- [ ] **Step 1: Carry the element type.** `ValueTy::Buffer` becomes
-  `App("FixedBuffer", [elem])` (or `Buffer(Box<ValueTy>)`); `Tape a` becomes a
-  real parameterised type instead of the hard-wired `Tape f32`.
-- [ ] **Step 2: Resolve it.** The element type goes through the single registry
-  (5.5a), so `FixedBuffer Zork` is an unknown-type error and
-  `FixedBuffer Int` vs `FixedBuffer Bool` is a type error.
-- [ ] **Step 3: `f32` is not a type name.** It is a lowercase identifier, i.e. by
-  Haskell's lexical rules a **type variable**; `instance Num (Tape f32)` in GHC
-  is therefore an instance for *all* `a` (verified: GHC accepts it). Reserving
-  the host spellings (`f32`, `f64`, `i32`, `u64`, …) is neither enough nor
-  correct — the real rule is that no undeclared uppercase name resolves and no
-  lowercase name is silently treated as a nominal type.
-- [ ] **Step 4: A buffer's element type is not automatically `Float`.** After
-  this task a buffer needs no element argument in *syntax* only for the
-  rill-specific surface; every use site names it.
+#### The decision: a buffer's element type is `Double`
 
-#### What `FixedBuffer f32` means, and why the FFI layer is part of the defect
+The buffer *stores* `T` (f32 at every call site today), but **any sample that
+enters the language becomes `Value::Double`**: `interp.rs:3939` allocates
+`Value::Double(sample.to_f64())` when a buffer is read as a list. So the
+language's only observable element type is `Double`, and `Double` is the correct
+declared element. Declaring `f32` would mean the type system promises f32
+precision in a value that is f64 — a new silent divergence, not a fix.
 
-Two facts, both measured on `59ffecd`:
+Therefore, uniformly:
 
-1. **`FixedBuffer a` in an FFI signature contributes arity only.** `FfiParam`
-   has exactly four shapes `Signal`, `VariadicSignal`, `Resource`, `Record(name)`
-   — none carries an element type. Verified: `ffi_sig_from_typeexpr` classifies
-   `FixedBuffer f32`, `FixedBuffer Float`, `FixedBuffer Zork` and
-   `FixedBuffer Int` **identically** (`params: [Signal], signal_outs: 1`), and
-   `Tape f32` / `Tape Float` identically (`params: [Resource]`). So in FFI
-   position the argument is pure decoration: it cannot affect arity, marshalling
-   or the schema.
+| Spelling | Meaning |
+|---|---|
+| `FixedBuffer Double` | the buffer type; element is `Double` |
+| `Tape Double` | a shared buffer resource; element is `Double` |
+| `FixedBuffer f32`, `Tape f32` | **removed** (no alias; backward compat not required) |
+| `FixedBuffer Int`, `FixedBuffer Bool`, `Tape Char` | **type error**: the element must be `Double` |
 
-2. **`f32` therefore means nothing in FFI, and it is not a type name either.**
-   Report §2.4: `tycon → conid → large{small|large|digit|'}` — a type
-   constructor must begin with an uppercase letter, and §2.4 states outright
-   that "variables and type variables are represented by identifiers beginning
-   with small letters". So `f32` is lexically **impossible** as a type name.
-   `instance Num (Tape f32)` in GHC is an instance for *all* `a` (verified:
-   `Tape Int` and `Tape Bool` both get `Num` from it) — the `f32` is a
-   **silently bound, unused type variable**.
+This also removes the last host-spelling type name from rill source, and it is
+consistent with 5.5pre-0: the double-precision type is `Double`.
 
-So the fix is not "reserve the host spellings" and not "accept `f32` as a
-type". It is:
+- [ ] **Step 1: Carry the element.** `ValueTy::Buffer` →
+  `ValueTy::Buffer(Box<ValueTy>)` (or `App("FixedBuffer", [elem])` — the
+  implementer picks, but there must be **one** representation, not two). Rubble:
+  89 `ValueTy::Buffer` sites in `src` (86 constructed/patterned, 83 as bare
+  patterns needing a new binding).
+- [ ] **Step 2: Enforce it in unification.** `FixedBuffer a` unifies with
+  `FixedBuffer b` only when `a` and `b` unify; `Buffer(elem)` never unifies with
+  a non-buffer type. Replace the `args.is_empty()` arm at `unify.rs:157` — do
+  not add a second arm.
+- [ ] **Step 3: Element must be `Double`.** After this task the only valid
+  element is `Double` (`FixedBuffer Double`, `Tape Double`). Any other element
+  — `Int`, `Bool`, `Char`, or a type variable in a position where a concrete
+  element is required — is a type error naming the requirement. (When a
+  single-precision `Float` lands in P3 it becomes a second valid element; that is
+  a one-line registry/instance change, not a redesign.)
+- [ ] **Step 4: The FFI layer carries the element.** `FfiParam::Signal` and
+  `FfiParam::Resource` gain the element type, and `ffi_sig_from_typeexpr` records
+  it instead of discarding it. Reject a signature whose element disagrees with
+  the host's sample type at the point where the host type is known. Today
+  `FixedBuffer f32`, `FixedBuffer Double`, `FixedBuffer Int` and
+  `FixedBuffer Zork` classify identically — that must stop.
+- [ ] **Step 5: Migrate the source.** Every `FixedBuffer f32` / `Tape f32` in
+  `rill-lang/src` (64) and the tests (62) becomes `... Double`, including the
+  prelude's `instance Num (Tape f32)` / `instance Buffer (Tape f32)` and the
+  `foreign` declarations at `ty.rs:938-939`.
+- [ ] **Step 6: Delete the leftover nominal fallback.** 5.5a's report flagged
+  that `data_field_vty` still invents a nominal `Data(name, [])` for a free
+  lowercase name so that `FixedBuffer f32` keeps a placeholder shape. With the
+  element real and spelled `Double`, that fallback must go: a lowercase unbound
+  name is a **type variable**, never a nominal type.
+- [ ] **Step 7: Prove it.** `g :: FixedBuffer Int -> FixedBuffer Bool; g x = x`
+  must be a type error; `FixedBuffer Double` must work end to end (construct a
+  buffer, read it back, elementwise arithmetic); the FFI classification must
+  distinguish elements.
+- [ ] **Step 8: Commit** —
+  `git commit -m 'feat(lang): FixedBuffer and Tape carry a real element type'`
 
-- **5.5pre-1 must make the element type real**, so `FixedBuffer Int` and
-  `FixedBuffer Float` are different types (today `g :: FixedBuffer Int ->
-  FixedBuffer Bool; g x = x` compiles);
-- **the FFI layer must carry the element type** in `FfiParam::Signal` /
-  `Resource` (or reject an element type that disagrees with the host's `T`),
-  otherwise the real type is still discarded at the boundary;
-- **`f32`/`f64` stay what they are: no longer used, because the source spells
-  the element `Float`** (after 5.5pre-0 makes `Float` single precision, `Float`
-  and the host `f32` coincide exactly, so nothing is lost);
-- **a lowercase unbound name in a type position is a type variable, not a
-  nominal type.** That is already what 5.5a does; the remaining nominal
-  fallback the implementer kept for `data_field_vty` must be deleted in
-  5.5pre-1, because it invents a nominal type out of a type variable.
+**Follow-up, recorded not fixed here:** `Array`/`STArray` do not check their
+element parameter either (`Array Int Int` unifies with `Array Int Bool`). Same
+class of defect, separate task — it belongs with the collection work, not with
+the buffer element type. Recorded in `DOCS-GAPS.md`.
 
 ---
 
