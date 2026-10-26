@@ -1,4 +1,4 @@
-//! The `FixedBuffer` <-> `Array Int Float` bridge through the LANGUAGE surface.
+//! The `FixedBuffer` <-> `Array Int Double` bridge through the LANGUAGE surface.
 //!
 //! `arrayFromBuffer` snapshots a signal block into an `Int`-indexed immutable
 //! array (bounds `(0, len - 1)`); `bufferFromArray` copies an array back into a
@@ -83,15 +83,15 @@ fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     )
 }
 
-/// The `Float` payloads of the single `List` value output of `src`.
+/// The `Double` payloads of the single `List` value output of `src`.
 fn run_elems(src: &str) -> Vec<f64> {
     let prog = run(src);
     match output(&prog) {
         Value::List { elems } => elems
             .iter()
             .map(|r| match prog.arena().get(*r) {
-                Some(Value::Float(f)) => *f,
-                other => panic!("expected a Float element, got {other:?}"),
+                Some(Value::Double(f)) => *f,
+                other => panic!("expected a Double element, got {other:?}"),
             })
             .collect(),
         other => panic!("expected a List, got {other:?}"),
@@ -154,8 +154,8 @@ fn array_from_buffer_indexes_both_bounds_through_the_accessor() {
     let prog = run("main = (\\ b -> Pair { first: (arrayFromBuffer b) ! 0, \
           second: (arrayFromBuffer b) ! 255 }) (sine 440.0 0.5 0.0);");
     let (first, last) = pair_values(&prog, &output(&prog));
-    assert_eq!(first, Value::Float(f64::from(direct[0])));
-    assert_eq!(last, Value::Float(f64::from(direct[BLOCK - 1])));
+    assert_eq!(first, Value::Double(f64::from(direct[0])));
+    assert_eq!(last, Value::Double(f64::from(direct[BLOCK - 1])));
 }
 
 // ---------------------------------------------------------------------------

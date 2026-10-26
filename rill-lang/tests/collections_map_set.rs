@@ -25,7 +25,7 @@ fn map_insert_lookup_member() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }
 
@@ -130,8 +130,9 @@ fn compound_data_key_is_accepted() {
 fn newtype_key_has_derived_ord() {
     // spec §2.5 derives Eq/Ord for newtypes by their inner: a Map keyed by Hz
     // must compile (the runtime value_cmp unwraps newtypes).
-    let prog =
-        run("newtype Hz = Float; k = Hz 440.0; m = insert k 1.0 (empty_map); main = length [1.0];");
+    let prog = run(
+        "newtype Hz = Double; k = Hz 440.0; m = insert k 1.0 (empty_map); main = length [1.0];",
+    );
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
@@ -160,7 +161,7 @@ fn length_of_map_and_set() {
 
 #[test]
 fn map_literal_value_type_matches_lookup() {
-    // A Float-valued map literal: lookup must yield the entry's value in the
+    // A Double-valued map literal: lookup must yield the entry's value in the
     // Just arm.
     let prog = run(
         r#"main = case (lookup "a" { "a": 1.0, "b": 2.0 }) of { Nothing -> 0.0; Just x -> x; };"#,
@@ -168,28 +169,28 @@ fn map_literal_value_type_matches_lookup() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }
 
 #[test]
 fn map_literal_value_type_is_actual_entry_type() {
     // The map literal's value type must be the ACTUAL entry type (a record),
-    // not a pinned Float: projecting the looked-up record's field works.
+    // not a pinned Double: projecting the looked-up record's field works.
     let prog = run(
-        r#"data P = { x: Float, y: Float }; main = case (lookup "a" { "a": P { x: 1.0, y: 2.0 } }) of { Nothing -> 0.0; Just p -> p.x; };"#,
+        r#"data P = { x: Double, y: Double }; main = case (lookup "a" { "a": P { x: 1.0, y: 2.0 } }) of { Nothing -> 0.0; Just p -> p.x; };"#,
     );
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }
 
 #[test]
 fn map_literal_mixed_value_types_are_compile_error() {
     // A map literal's entries must share one value type: `{ "a": 1.0, "b": [1.0] }`
-    // mixes Float and List and must not compile.
+    // mixes Double and List and must not compile.
     let res =
         compile_eval::<f32, 256>("main = { \"a\": 1.0, \"b\": [1.0] };", "main", Mode::Strict);
     assert!(

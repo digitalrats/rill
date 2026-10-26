@@ -20,8 +20,8 @@ use crate::types::ty::{concat_map_result_elem, DataInfo, TypeEnv, ValueTy};
 /// success).
 ///
 /// Used by the field-projection expected threading: `(compose …).unKleisli`
-/// expected `Float -> Maybe Float` pins the record's type args (`m := Maybe`,
-/// `a := Float`) before the record — a method chain — is lowered, so
+/// expected `Double -> Maybe Double` pins the record's type args (`m := Maybe`,
+/// `a := Double`) before the record — a method chain — is lowered, so
 /// `return`/`bind` inside the inlined instance bodies see the concrete monad.
 fn match_field_expected(
     pattern: &ValueTy,
@@ -184,7 +184,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
     matches!(
         i,
         ValueInstr::ValueConstInt { .. }
-            | ValueInstr::ValueConstFloat { .. }
+            | ValueInstr::ValueConstDouble { .. }
             | ValueInstr::ValueAdd { .. }
             | ValueInstr::ValueSub { .. }
             | ValueInstr::ValueMul { .. }
@@ -233,10 +233,10 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
 ///
 /// Lowering has no unification substitution: an effect payload whose static type
 /// was still an inference variable (`Var`/`TyConVar`/`TyConApp`) types as
-/// `Float`, the runtime representation of every scalar the effects manipulate.
-fn concrete_or_float(t: ValueTy) -> ValueTy {
+/// `Double`, the runtime representation of every scalar the effects manipulate.
+fn concrete_or_double(t: ValueTy) -> ValueTy {
     match t {
-        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) => ValueTy::Float,
+        ValueTy::Var(_) | ValueTy::TyConVar(_) | ValueTy::TyConApp(..) => ValueTy::Double,
         other => other,
     }
 }
@@ -244,9 +244,9 @@ fn concrete_or_float(t: ValueTy) -> ValueTy {
 /// Whether `main`'s lowered type is `IO ()` — the
 /// [`ProgramRunner`](crate::program_runner::ProgramRunner) contract.
 ///
-/// The runtime payload of `()` is erased to `Float(0.0)` when it travels
+/// The runtime payload of `()` is erased to `Double(0.0)` when it travels
 /// through a closure cell, so the static type recorded here is the only way
-/// the runner can accept the erased unit without also accepting an `IO Float`
+/// the runner can accept the erased unit without also accepting an `IO Double`
 /// that returns `0.0`.
 fn main_result_is_io_unit(t: &ValueTy) -> bool {
     match t {
@@ -277,9 +277,9 @@ fn array_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
 /// The index type `i` of an `Array i e` value type, or the builtin constant
 /// `Int` when the argument is not an array.
 ///
-/// Deliberately NOT routed through `concrete_or_float`: an unresolved index
-/// type is not a `Float`. Arrays store their bounds verbatim as a `Pair i i`
-/// whose fields the buffer bridge always builds as `Int`, so a `Float`
+/// Deliberately NOT routed through `concrete_or_double`: an unresolved index
+/// type is not a `Double`. Arrays store their bounds verbatim as a `Pair i i`
+/// whose fields the buffer bridge always builds as `Int`, so a `Double`
 /// fallback would mistype the stored value the caller is about to read.
 fn array_index_ty(t: Option<&ValueTy>) -> ValueTy {
     t.and_then(array_type_args)
@@ -287,12 +287,12 @@ fn array_index_ty(t: Option<&ValueTy>) -> ValueTy {
         .unwrap_or(ValueTy::Int)
 }
 
-/// The element type `e` of an `Array i e` value type; `Float` when unknown.
+/// The element type `e` of an `Array i e` value type; `Double` when unknown.
 fn array_elem_ty(t: Option<&ValueTy>) -> ValueTy {
-    concrete_or_float(
+    concrete_or_double(
         t.and_then(array_type_args)
             .and_then(|inner| inner.get(1).cloned())
-            .unwrap_or(ValueTy::Float),
+            .unwrap_or(ValueTy::Double),
     )
 }
 
@@ -300,9 +300,9 @@ fn array_elem_ty(t: Option<&ValueTy>) -> ValueTy {
 /// the builtin constant `Int` when the argument is not a pair.
 ///
 /// As with [`array_index_ty`], the fallback is the builtin `Int`, not a
-/// `concrete_or_float` numeric fallback: the stored bounds are `Int` pairs on
+/// `concrete_or_double` numeric fallback: the stored bounds are `Int` pairs on
 /// every path that the interpreter builds (`arrayFromBuffer`), so typing an
-/// unresolved parameter as `Float` would drift from the runtime value.
+/// unresolved parameter as `Double` would drift from the runtime value.
 fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
     // `Pair` reaches this helper in BOTH flavours: a record literal lowers to
     // `Data("Pair", …)` while an inferred/parameter type is `App("Pair", …)`.
@@ -427,9 +427,9 @@ fn starray_handle_types(t: Option<&ValueTy>) -> (ValueTy, ValueTy) {
     let index = args
         .and_then(|inner| inner.get(1).cloned())
         .unwrap_or(ValueTy::Int);
-    let elem = concrete_or_float(
+    let elem = concrete_or_double(
         args.and_then(|inner| inner.get(2).cloned())
-            .unwrap_or(ValueTy::Float),
+            .unwrap_or(ValueTy::Double),
     );
     (index, elem)
 }
@@ -515,7 +515,7 @@ fn nest_value_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
             }
             ty
         }
-        None => ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+        None => ret_tys.first().cloned().unwrap_or(ValueTy::Double),
     }
 }
 
@@ -734,11 +734,11 @@ struct Lowerer<'a> {
     /// Static RESULT value type of every shared-cell def (named λ-parameter
     /// function or self-recursive local), from inference. Types the def's
     /// shared cell so a recursive reference inside the body (`tail fibs`)
-    /// resolves its static type (List) instead of the Float fallback.
+    /// resolves its static type (List) instead of the Double fallback.
     shared_cell_result_tys: HashMap<String, ValueTy>,
     /// Parameter types for the lambda literal currently being lowered, when it
     /// is a NAMED lambda-literal definition. Consumed by the `Expr::Lambda`
-    /// arm; anonymous lambdas leave it unset and default to `Float`.
+    /// arm; anonymous lambdas leave it unset and default to `Double`.
     pending_param_tys: Option<Vec<ValueTy>>,
     /// Complete-mode shared cells for top-level Anchor defs (name → cell reg).
     /// A named λ-param def referenced as a value compiles its closure ONCE and
@@ -1050,7 +1050,7 @@ impl<'a> Lowerer<'a> {
             op: ValueEffectOp::RunSTArray,
             args: vec![body_reg],
         });
-        Ok((dst, concrete_or_float(payload)))
+        Ok((dst, concrete_or_double(payload)))
     }
 
     /// Lower one STArray primitive (`newArrayFlat` … `getElems`): the operand
@@ -1097,7 +1097,7 @@ impl<'a> Lowerer<'a> {
         let (index, elem) = if allocates {
             (
                 pair_index_ty(arg_tys.first()),
-                concrete_or_float(arg_tys.get(2).cloned().unwrap_or(ValueTy::Float)),
+                concrete_or_double(arg_tys.get(2).cloned().unwrap_or(ValueTy::Double)),
             )
         } else {
             starray_handle_types(arg_tys.first())
@@ -1163,7 +1163,7 @@ impl<'a> Lowerer<'a> {
                 return Ok(r);
             }
             Expr::Lambda { .. }
-            | Expr::Float(_, _)
+            | Expr::Double(_, _)
             | Expr::Int(_, _)
             | Expr::Bool(_, _)
             | Expr::Str(_, _) => {
@@ -1177,7 +1177,7 @@ impl<'a> Lowerer<'a> {
             Expr::Annot { expr, .. } => match expr.as_ref() {
                 Expr::Ref(..)
                 | Expr::Lambda { .. }
-                | Expr::Float(_, _)
+                | Expr::Double(_, _)
                 | Expr::Int(_, _)
                 | Expr::Bool(_, _)
                 | Expr::Str(_, _) => {
@@ -1292,10 +1292,10 @@ impl<'a> Lowerer<'a> {
                 self.emit_value(ValueInstr::ValueConstInt { dst, value: *v });
                 Ok((dst, ValueTy::Int))
             }
-            Expr::Float(v, _) => {
+            Expr::Double(v, _) => {
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueConstFloat { dst, value: *v });
-                Ok((dst, ValueTy::Float))
+                self.emit_value(ValueInstr::ValueConstDouble { dst, value: *v });
+                Ok((dst, ValueTy::Double))
             }
             Expr::Ref(name, span) => self.lower_value_ref_expected(name, *span, expected),
             // `e :: T` erases: lowering the inner expression with the same
@@ -1351,9 +1351,9 @@ impl<'a> Lowerer<'a> {
                 // Bind the record's type args from the projection's OWN expected
                 // result type when possible: `(compose (arr f) (arr g)).unKleisli`
                 // applied in a `Just`-matched scrutinee is expected
-                // `Float -> Maybe Float`, so substituting that expected against
+                // `Double -> Maybe Double`, so substituting that expected against
                 // the record's field type `a -> m b` pins `m := Maybe`,
-                // `a := Float` BEFORE the record (a method chain) is lowered —
+                // `a := Double` BEFORE the record (a method chain) is lowered —
                 // the concrete monad then resolves `return`/`bind` inside the
                 // inlined instance bodies. Mismatch/unknown → keep the fresh
                 // args (the record's own lowering stays as before).
@@ -1699,7 +1699,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 self.cur_value_block = join;
-                Ok((out, out_ty.unwrap_or(ValueTy::Float)))
+                Ok((out, out_ty.unwrap_or(ValueTy::Double)))
             }
             Expr::If {
                 cond,
@@ -1849,7 +1849,7 @@ impl<'a> Lowerer<'a> {
                         op: ValueEffectOp::RunST,
                         args: vec![body_reg],
                     });
-                    return Ok((dst, concrete_or_float(payload)));
+                    return Ok((dst, concrete_or_double(payload)));
                 }
                 // `runSTArray (fn s -> body)`: the freezing sibling of `runST`.
                 // Its signature `(forall s. ST s (STArray s i e)) -> Array i e`
@@ -1904,7 +1904,7 @@ impl<'a> Lowerer<'a> {
                                 init,
                                 ValueTy::Data(
                                     "STRef".into(),
-                                    vec![ValueTy::Void, concrete_or_float(ty)],
+                                    vec![ValueTy::Void, concrete_or_double(ty)],
                                 ),
                             ));
                         }
@@ -1912,9 +1912,9 @@ impl<'a> Lowerer<'a> {
                             let (r, ty) = self.lower_value(&call_args[0])?;
                             let elem = match &ty {
                                 ValueTy::Data(n, args) if n == "STRef" && args.len() == 2 => {
-                                    concrete_or_float(args[1].clone())
+                                    concrete_or_double(args[1].clone())
                                 }
-                                _ => ValueTy::Float,
+                                _ => ValueTy::Double,
                             };
                             let read = self.fresh_value_reg();
                             self.emit_value(ValueInstr::ValueEffectOp {
@@ -2008,7 +2008,7 @@ impl<'a> Lowerer<'a> {
                                 .first()
                                 .and_then(list_type_args)
                                 .and_then(|inner| inner.first().cloned())
-                                .unwrap_or(ValueTy::Float);
+                                .unwrap_or(ValueTy::Double);
                             ValueTy::Data("InputStream".into(), vec![elem])
                         }
                         ValueEffectOp::StreamToList => {
@@ -2018,7 +2018,7 @@ impl<'a> Lowerer<'a> {
                                 {
                                     a[0].clone()
                                 }
-                                _ => ValueTy::Float,
+                                _ => ValueTy::Double,
                             };
                             ValueTy::App("List".into(), vec![elem])
                         }
@@ -2127,7 +2127,7 @@ impl<'a> Lowerer<'a> {
                     });
                     let payload = match op {
                         ValueEffectOp::StreamRead => {
-                            ValueTy::App("Maybe".into(), vec![elem.unwrap_or(ValueTy::Float)])
+                            ValueTy::App("Maybe".into(), vec![elem.unwrap_or(ValueTy::Double)])
                         }
                         ValueEffectOp::StreamAtEnd => ValueTy::Bool,
                         _ => ValueTy::Void,
@@ -2266,14 +2266,14 @@ impl<'a> Lowerer<'a> {
                     // `x * 0.5` lowers to a Buffer op, not scalar.
                     // `concat_map` needs the same threading: its closure
                     // returns a LIST, and an untyped parameter would make the
-                    // elements of that inner list default to `Float` (the 2-D
+                    // elements of that inner list default to `Double` (the 2-D
                     // `Ix` instance builds `Pair Int Int` cells through a
                     // lambda-in-lambda).
                     if (name == "map" || name == "concat_map") && call_args.len() == 2 {
                         let (lr, lt) = self.lower_value(&call_args[1])?;
                         let elem = list_type_args(&lt)
                             .and_then(|inner| inner.first().cloned())
-                            .unwrap_or(ValueTy::Float);
+                            .unwrap_or(ValueTy::Double);
                         let fexp = ValueTy::Thunk(vec![elem], vec![]);
                         let (fr, ft) = self.lower_value_expected(&call_args[0], Some(&fexp))?;
                         arg_regs.push(fr);
@@ -2384,7 +2384,7 @@ impl<'a> Lowerer<'a> {
                                     Some(fe) => self.lower_value_expected(fexpr, Some(&fe))?,
                                     None => self.lower_value(fexpr)?,
                                 };
-                                // A strict field (`{ x: !Float }`, Haskell 2010)
+                                // A strict field (`{ x: !Double }`, Haskell 2010)
                                 // forces its argument to WHNF at construction.
                                 let fr = if *strict {
                                     let forced = self.fresh_value_reg();
@@ -2407,8 +2407,8 @@ impl<'a> Lowerer<'a> {
                             // Propagate the record's concrete type args when the
                             // outer expected carries them, so a projection /
                             // subsequent method call sees the parameterized type
-                            // (`k1.unKleisli` of a `Kleisli Maybe Float Float`
-                            // parameter is `Float -> Maybe Float`). Without an
+                            // (`k1.unKleisli` of a `Kleisli Maybe Double Double`
+                            // parameter is `Double -> Maybe Double`). Without an
                             // expected type, derive them from the fields so a
                             // head-arg-aware dispatch sees `Pair Int Int` rather
                             // than a bare `Pair`.
@@ -2622,7 +2622,7 @@ impl<'a> Lowerer<'a> {
                             // each arg with its signature param type as expected
                             // so a lambda argument (`arr (fn p -> …)`) types its
                             // parameters structurally (`p` of the swap lambda
-                            // stays a record, not Float).
+                            // stays a record, not Double).
                             let arg_param_tys = crate::types::infer::signature_param_tys_conv(
                                 self.env,
                                 &class_var,
@@ -2711,7 +2711,7 @@ impl<'a> Lowerer<'a> {
                             // the class variable AND which is not a bare nullary
                             // method ref — both criteria must agree, because the
                             // same argument's concrete type solves the class
-                            // variable (`pick: Bool -> Pair a a -> Float` selects
+                            // variable (`pick: Bool -> Pair a a -> Double` selects
                             // on the `Pair`, `mappend mempty xs` on `xs`).
                             let Some(selector_idx) = crate::types::infer::class_var_selector_index(
                                 sig,
@@ -2821,7 +2821,7 @@ impl<'a> Lowerer<'a> {
                                     let (_, nbody) = self
                                         .instantiate_method(&class_name, arg_name, ty_name.as_str())
                                         .unwrap();
-                                    let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                                    let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Double);
                                     self.lower_value_expected(&nbody, Some(&exp))?
                                 };
                                 scope.insert(p.clone(), (r, t));
@@ -3010,7 +3010,7 @@ impl<'a> Lowerer<'a> {
                                 let exp = param_tys
                                     .get(i)
                                     .map(|t| subst_value_vars(t, &arg_var_bindings))
-                                    .unwrap_or(ValueTy::Float);
+                                    .unwrap_or(ValueTy::Double);
                                 let (r, t) = self.lower_value_expected(a, Some(&exp))?;
                                 if let Some(pat) = param_tys.get(i) {
                                     bind_pattern_vars(pat, &t, &mut arg_var_bindings);
@@ -3286,7 +3286,7 @@ impl<'a> Lowerer<'a> {
                             };
                             arg_regs.push(ar);
                         }
-                        let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                        let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
                         // A curried definition (`twice = \f -> \x -> …`, after the
                         // parser's currying pass emptied its parameter list)
                         // lowers to a NEST of single-argument closures, so its
@@ -3360,7 +3360,7 @@ impl<'a> Lowerer<'a> {
                         // unresolved parameter) applied at runtime: inference
                         // already validated the arity against the real `Func`
                         // type, so this is a full-application dispatch. v1
-                        // function results are Float scalars.
+                        // function results are Double scalars.
                         let mut arg_regs = Vec::with_capacity(call_args.len());
                         for a in call_args {
                             let (ar, _) = self.lower_value(a)?;
@@ -3368,7 +3368,7 @@ impl<'a> Lowerer<'a> {
                         }
                         let dst = self.fresh_value_reg();
                         self.emit_call(dst, callee_reg, arg_regs);
-                        Ok((dst, ValueTy::Float))
+                        Ok((dst, ValueTy::Double))
                     }
                 }
             }
@@ -3421,7 +3421,7 @@ impl<'a> Lowerer<'a> {
                     let (ar, _) = self.lower_value(a)?;
                     arg_regs.push(ar);
                 }
-                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
                 // A closure value is a curried NEST of single-argument thunks
                 // (`\a -> \b -> …`), so the arguments are applied one at a time:
                 // `f a b` becomes `(f a) b`. A partial application leaves the
@@ -3518,10 +3518,10 @@ impl<'a> Lowerer<'a> {
                 // Int-preserving value arithmetic: `+`/`-`/`*` over two `Int`
                 // operands stays on the Int track (`Value::Int` at runtime,
                 // `ValueTy::Int` statically). `/` is float division, so it
-                // always yields a `Float`; `%` is unsupported. This mirrors
+                // always yields a `Double`; `%` is unsupported. This mirrors
                 // `infer_arith` and the interpreter's `exec_value_arith` — the
                 // three must agree, or an `Int`-typed slot would hold a
-                // `Value::Float` (which the flat array primitives reject).
+                // `Value::Double` (which the flat array primitives reject).
                 let int_track = matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
                     && matches!(a_ty, ValueTy::Int)
                     && matches!(b_ty, ValueTy::Int);
@@ -3530,7 +3530,7 @@ impl<'a> Lowerer<'a> {
                     if int_track {
                         ValueTy::Int
                     } else {
-                        ValueTy::Float
+                        ValueTy::Double
                     },
                 ))
             }
@@ -3542,9 +3542,9 @@ impl<'a> Lowerer<'a> {
                 // The result keeps the OPERAND's track: an integer literal
                 // negates to a `Value::Int` (an `Expr::Int` is Int-track
                 // unconditionally, so `-3` must be too), a float literal to a
-                // `Value::Float`, and a non-literal follows its lowered type.
+                // `Value::Double`, and a non-literal follows its lowered type.
                 // Without this, `-1` was the one place a statically-`Int` slot
-                // held a `Value::Float` — and an `Ix` offset computed from a
+                // held a `Value::Double` — and an `Ix` offset computed from a
                 // negative lower bound then failed the interpreter's
                 // "index is not an Int" check.
                 if let Some(v) = const_i64(inner) {
@@ -3555,8 +3555,8 @@ impl<'a> Lowerer<'a> {
                 match const_f64(inner) {
                     Some(v) => {
                         let dst = self.fresh_value_reg();
-                        self.emit_value(ValueInstr::ValueConstFloat { dst, value: -v });
-                        Ok((dst, ValueTy::Float))
+                        self.emit_value(ValueInstr::ValueConstDouble { dst, value: -v });
+                        Ok((dst, ValueTy::Double))
                     }
                     None => {
                         let (ir, inner_ty) = self.lower_value(inner)?;
@@ -3568,7 +3568,7 @@ impl<'a> Lowerer<'a> {
                                 value: 0,
                             });
                         } else {
-                            self.emit_value(ValueInstr::ValueConstFloat {
+                            self.emit_value(ValueInstr::ValueConstDouble {
                                 dst: zero,
                                 value: 0.0,
                             });
@@ -3584,7 +3584,7 @@ impl<'a> Lowerer<'a> {
                             if int_track {
                                 ValueTy::Int
                             } else {
-                                ValueTy::Float
+                                ValueTy::Double
                             },
                         ))
                     }
@@ -3600,12 +3600,12 @@ impl<'a> Lowerer<'a> {
                 let free = self.free_vars(body, &param_names);
                 // A named lambda-literal definition carries its resolved
                 // parameter types from inference (set by `lower_value_ref`); an
-                // anonymous lambda defaults to Float parameters — unless its
+                // anonymous lambda defaults to Double parameters — unless its
                 // expected type is a `Func` signature, which types the params
                 // structurally (the swap lambda `fn p -> Pair { first: p.second,
-                // … }` of `arr (fn p -> …)` keeps `p` a `Pair`, not Float).
+                // … }` of `arr (fn p -> …)` keeps `p` a `Pair`, not Double).
                 // A curried definition's λ-parameter types arrive as one FLAT
-                // list (`take = \n -> \xs -> …` → `[Float, List]`), so this
+                // list (`take = \n -> \xs -> …` → `[Double, List]`), so this
                 // lambda consumes its own leading slice and leaves the rest for
                 // its body's inner lambda.
                 let saved_pending = self.pending_param_tys.take();
@@ -3622,7 +3622,7 @@ impl<'a> Lowerer<'a> {
                         Some(ValueTy::Thunk(arg_tys, _)) if arg_tys.len() == params.len() => {
                             arg_tys.clone()
                         }
-                        _ => vec![ValueTy::Float; params.len()],
+                        _ => vec![ValueTy::Double; params.len()],
                     },
                 };
                 // The lambda's BODY is expected to produce the lambda's RESULT
@@ -3680,10 +3680,10 @@ impl<'a> Lowerer<'a> {
                         op: ValueBuiltinOp::Nil,
                         args: Vec::new(),
                     });
-                    return Ok((dst, ValueTy::App("List".into(), vec![ValueTy::Float])));
+                    return Ok((dst, ValueTy::App("List".into(), vec![ValueTy::Double])));
                 }
                 let mut regs = Vec::with_capacity(elems.len());
-                let mut elem_ty = ValueTy::Float;
+                let mut elem_ty = ValueTy::Double;
                 for e in elems {
                     let (r, t) = self.lower_value(e)?;
                     regs.push(r);
@@ -3701,8 +3701,8 @@ impl<'a> Lowerer<'a> {
                 let mut vals = Vec::with_capacity(entries.len());
                 // Inference already unified every entry's value type, so the
                 // entries share one static value type; it is carried on the
-                // result Map (a List/record value is NOT pinned to Float).
-                let mut val_ty = ValueTy::Float;
+                // result Map (a List/record value is NOT pinned to Double).
+                let mut val_ty = ValueTy::Double;
                 for (k, v) in entries {
                     let (kr, _) = self.lower_value(&Expr::Str(k.clone(), Span::new(0, 0)))?;
                     let (vr, vt) = self.lower_value(v)?;
@@ -3871,7 +3871,7 @@ impl<'a> Lowerer<'a> {
                 span,
             } => {
                 // An actor param in value position reads its named parameter
-                // slot as a Float value.
+                // slot as a Double value.
                 let default_val = if let Some(d) = default {
                     const_f64(d).unwrap_or(0.0)
                 } else {
@@ -3886,7 +3886,7 @@ impl<'a> Lowerer<'a> {
                 )?;
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueReadParam { dst, idx });
-                Ok((dst, ValueTy::Float))
+                Ok((dst, ValueTy::Double))
             }
             _ => Err(CompileError::Type {
                 msg: "unsupported expression in value position".into(),
@@ -3920,7 +3920,7 @@ impl<'a> Lowerer<'a> {
             "concat_map",
             "append_list",
             "concat_string",
-            "show_float",
+            "show_double",
             "show_int",
             "show_bool",
             "not",
@@ -4007,7 +4007,7 @@ impl<'a> Lowerer<'a> {
             ("concat_map", 2) => ConcatMap,
             ("append_list", 2) => AppendList,
             ("concat_string", 2) => ConcatString,
-            ("show_float", 1) => ShowFloat,
+            ("show_double", 1) => ShowDouble,
             ("show_int", 1) => ShowInt,
             ("show_bool", 1) => ShowBool,
             // Immutable array storage (flat, type-agnostic). The arity is part
@@ -4087,7 +4087,7 @@ impl<'a> Lowerer<'a> {
             "cons" if self.mode == Mode::Complete => {
                 // LazyCons: the tail may be any value (a thunk), so the strict
                 // List shape-check does not apply; the result is a List.
-                Ok(ValueTy::App("List".into(), vec![ValueTy::Float]))
+                Ok(ValueTy::App("List".into(), vec![ValueTy::Double]))
             }
             "cons" | "filter" => match args.get(1).and_then(list_type_args) {
                 Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
@@ -4105,8 +4105,8 @@ impl<'a> Lowerer<'a> {
             },
             "head" => {
                 let elem = match args.first().and_then(list_type_args) {
-                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
-                    _ => ValueTy::Float,
+                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Double),
+                    _ => ValueTy::Double,
                 };
                 Ok(ValueTy::App("Maybe".into(), vec![elem]))
             }
@@ -4118,24 +4118,24 @@ impl<'a> Lowerer<'a> {
                 // falls back to the source element type.
                 let elem = match args.first() {
                     Some(ValueTy::Thunk(_, rets)) => {
-                        rets.first().cloned().unwrap_or(ValueTy::Float)
+                        rets.first().cloned().unwrap_or(ValueTy::Double)
                     }
                     _ => match args.get(1).and_then(list_type_args) {
-                        Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
-                        _ => ValueTy::Float,
+                        Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Double),
+                        _ => ValueTy::Double,
                     },
                 };
                 Ok(ValueTy::App("List".into(), vec![elem]))
             }
             // fold's result is the accumulator/seed type (mirrors inference).
-            "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Float)),
+            "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Double)),
             "concat_map" => {
                 // See `concat_map_result_elem`: `(a -> List b) -> List a -> List b`.
                 let source_elem = match args.get(1).and_then(list_type_args) {
-                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Float),
-                    _ => ValueTy::Float,
+                    Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Double),
+                    _ => ValueTy::Double,
                 };
-                let closure_ty = args.first().unwrap_or(&ValueTy::Float);
+                let closure_ty = args.first().unwrap_or(&ValueTy::Double);
                 let elem = concat_map_result_elem(closure_ty, source_elem);
                 Ok(ValueTy::App("List".into(), vec![elem]))
             }
@@ -4147,51 +4147,51 @@ impl<'a> Lowerer<'a> {
                 }),
             },
             "concat_string" => Ok(ValueTy::String),
-            "show_float" => Ok(ValueTy::String),
+            "show_double" => Ok(ValueTy::String),
             "show_int" => Ok(ValueTy::String),
             "show_bool" => Ok(ValueTy::String),
-            "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Float])),
+            "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Double])),
             "insert" => match args.len() {
                 3 => {
-                    check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                    check_ord(args.first().unwrap_or(&ValueTy::Double), "key")?;
                     Ok(ValueTy::App(
                         "Map".into(),
                         vec![
-                            args.first().cloned().unwrap_or(ValueTy::Float),
-                            args.get(1).cloned().unwrap_or(ValueTy::Float),
+                            args.first().cloned().unwrap_or(ValueTy::Double),
+                            args.get(1).cloned().unwrap_or(ValueTy::Double),
                         ],
                     ))
                 }
                 _ => {
-                    check_ord(args.first().unwrap_or(&ValueTy::Float), "element")?;
+                    check_ord(args.first().unwrap_or(&ValueTy::Double), "element")?;
                     Ok(ValueTy::App(
                         "Set".into(),
-                        vec![args.first().cloned().unwrap_or(ValueTy::Float)],
+                        vec![args.first().cloned().unwrap_or(ValueTy::Double)],
                     ))
                 }
             },
             "lookup" => {
-                check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                check_ord(args.first().unwrap_or(&ValueTy::Double), "key")?;
                 let v = match args.get(1) {
                     Some(ValueTy::App(name, inner)) if name == "Map" => {
-                        inner.get(1).cloned().unwrap_or(ValueTy::Float)
+                        inner.get(1).cloned().unwrap_or(ValueTy::Double)
                     }
-                    _ => ValueTy::Float,
+                    _ => ValueTy::Double,
                 };
                 Ok(ValueTy::App("Maybe".into(), vec![v]))
             }
             "member" => {
-                check_ord(args.first().unwrap_or(&ValueTy::Float), "key")?;
+                check_ord(args.first().unwrap_or(&ValueTy::Double), "key")?;
                 Ok(ValueTy::Bool)
             }
             "empty_map" => Ok(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float],
+                vec![ValueTy::String, ValueTy::Double],
             )),
-            "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Float])),
+            "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Double])),
             // Immutable array storage (flat, type-agnostic): the static types
             // mirror the builtin signatures. Index types fall back to the
-            // builtin `Int` (never a numeric `Float`), element types to the
+            // builtin `Int` (never a numeric `Double`), element types to the
             // runtime's numeric value type.
             "arrayFromList" => {
                 let index = pair_index_ty(args.first());
@@ -4201,7 +4201,7 @@ impl<'a> Lowerer<'a> {
                     .and_then(|i| i.first().cloned());
                 Ok(ValueTy::App(
                     "Array".into(),
-                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                    vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
             }
             // Index-typed construction ops: the bounds pair gives the index
@@ -4217,7 +4217,7 @@ impl<'a> Lowerer<'a> {
                     .map(|first| pair_second_ty(Some(first)));
                 Ok(ValueTy::App(
                     "Array".into(),
-                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                    vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
             }
             "arraySeed" => {
@@ -4225,7 +4225,7 @@ impl<'a> Lowerer<'a> {
                 let elem = args.get(1).cloned();
                 Ok(ValueTy::App(
                     "Array".into(),
-                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                    vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
             }
             "arrayBounds" => {
@@ -4258,7 +4258,7 @@ impl<'a> Lowerer<'a> {
             }
             "arrayFromBuffer" => Ok(ValueTy::App(
                 "Array".into(),
-                vec![ValueTy::Int, ValueTy::Float],
+                vec![ValueTy::Int, ValueTy::Double],
             )),
             "bufferFromArray" => Ok(ValueTy::Buffer),
             // `listRange (l, u)`: the inclusive Int range as a flat list.
@@ -4275,7 +4275,7 @@ impl<'a> Lowerer<'a> {
                     .and_then(|i| i.first().cloned());
                 Ok(ValueTy::App(
                     "Array".into(),
-                    vec![index, concrete_or_float(elem.unwrap_or(ValueTy::Float))],
+                    vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
             }
             _ => Err(CompileError::Unsupported(format!(
@@ -4296,7 +4296,7 @@ impl<'a> Lowerer<'a> {
 
     /// Bind a constraint instance's head args from the LEADING args of the
     /// call-site concrete container (`instance (Monad m) => Arrow (Kleisli m)`:
-    /// `Kleisli Maybe Float Float` + head `Kleisli m` → `m := Maybe`), recording
+    /// `Kleisli Maybe Double Double` + head `Kleisli m` → `m := Maybe`), recording
     /// each binding in [`Self::head_arg_bindings`], then discharge every
     /// constraint by instance lookup of the bound type. A head arg that is not
     /// concrete at the call site is DEFERRED (recorded, not checked) — the
@@ -4377,7 +4377,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Lower a call to a class-constrained definition (`mk :: Ix i => Pair i i
-    /// -> Float`), if `name` names one.
+    /// -> Double`), if `name` names one.
     ///
     /// Returns `None` for every other callee — the common case — so the caller's
     /// arm can fall through to the ordinary application paths. A value local of
@@ -4707,7 +4707,7 @@ impl<'a> Lowerer<'a> {
     ///   belong to [`Self::lower_constrained_apply_site`]) and carries no `::`
     ///   annotation;
     /// - an empty-parameter λ-nest whose recovered λ-parameter list holds at
-    ///   least one non-`Float` type (a fully-`Float` def like `add a b = a + b`
+    ///   least one non-`Double` type (a fully-`Double` def like `add a b = a + b`
     ///   keeps the ordinary eager path — nothing needs a concrete type) and
     ///   lines up with the λ-nest's depth;
     /// - and not a recursive definition: `take n xs = …`/`zipWith` must keep
@@ -4759,11 +4759,11 @@ impl<'a> Lowerer<'a> {
         if param_tys.len() != crate::types::infer::leading_lambda_count(body) {
             return None;
         }
-        // At least one non-`Float` recovered λ-parameter: a type the eager
+        // At least one non-`Double` recovered λ-parameter: a type the eager
         // path cannot dispatch on with lowering's missing substitution. A
-        // fully-`Float` def (`add a b = a + b`) has nothing to substitute and
+        // fully-`Double` def (`add a b = a + b`) has nothing to substitute and
         // stays on the eager path.
-        if param_tys.is_empty() || param_tys.iter().all(|t| matches!(t, ValueTy::Float)) {
+        if param_tys.is_empty() || param_tys.iter().all(|t| matches!(t, ValueTy::Double)) {
             return None;
         }
         // Recursion safety: a recursive signature-less curried def's body calls
@@ -4905,7 +4905,7 @@ impl<'a> Lowerer<'a> {
     ///
     /// The criterion is deliberately NARROWER than the specialization-site
     /// trigger: besides not being class-constrained, an empty-parameter λ-nest
-    /// with no `::` annotation, and at least one recovered non-`Float`
+    /// with no `::` annotation, and at least one recovered non-`Double`
     /// λ-parameter, the body must reference a CLASS-METHOD name (`a ! i` lowers
     /// to the dual-named `index`, an `Ix` method). `nth xs k = head (tail xs)`
     /// references no class method and stays a well-formed first-class value.
@@ -4925,7 +4925,7 @@ impl<'a> Lowerer<'a> {
         let Some(param_tys) = self.fn_param_tys.get(name) else {
             return false;
         };
-        if param_tys.is_empty() || param_tys.iter().all(|t| matches!(t, ValueTy::Float)) {
+        if param_tys.is_empty() || param_tys.iter().all(|t| matches!(t, ValueTy::Double)) {
             return false;
         }
         body_carries_class_demand(self.env, body)
@@ -4983,7 +4983,7 @@ impl<'a> Lowerer<'a> {
         // variable. A bare reference (`f = mk`) has no such site, so report it
         // here instead of lowering the deferred body against an unsolved
         // variable — which would surface a misleading `no instance of … for
-        // Float`. A `where`-local of the same name shadows the definition.
+        // Double`. A `where`-local of the same name shadows the definition.
         if self.env.constrained_defs.contains_key(name)
             && !self.value_locals.iter().any(|s| s.contains_key(name))
         {
@@ -4999,7 +4999,7 @@ impl<'a> Lowerer<'a> {
         // its body dispatches on a parameter's shape at a call site (`a ! i`
         // lowers to the dual-named `index`, an `Ix` method), so a bare
         // reference (`f = at`) would lower the absent body against an unsolved
-        // class variable — the same misleading `no instance of … for Float`
+        // class variable — the same misleading `no instance of … for Double`
         // the constrained guard reports instead. A value local or fragment
         // capture of the same name shadows the definition.
         if self.is_deferred_sigless_def(name)
@@ -5102,7 +5102,7 @@ impl<'a> Lowerer<'a> {
                     // params to fresh registers typed from the signature (class
                     // var substituted by the dispatch key), so a body that uses
                     // a param sees the contract's type rather than a blanket
-                    // `Float` slot.
+                    // `Double` slot.
                     let arg_reg = self.fresh_value_reg();
                     let param_tys = crate::types::infer::signature_param_tys_conv(
                         self.env,
@@ -5116,7 +5116,7 @@ impl<'a> Lowerer<'a> {
                         },
                     );
                     for (i, p) in params.iter().enumerate() {
-                        let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                        let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Double);
                         scope.insert(p.clone(), (arg_reg, ty));
                         ctor_scope.insert(p.clone(), None);
                     }
@@ -5354,7 +5354,7 @@ impl<'a> Lowerer<'a> {
         let (lr, lt) = self.lower_value(&call_args[2])?;
         let elem = list_type_args(&lt)
             .and_then(|inner| inner.first().cloned())
-            .unwrap_or(ValueTy::Float);
+            .unwrap_or(ValueTy::Double);
         let fexp = ValueTy::Thunk(vec![zt.clone(), elem], vec![zt.clone()]);
         let (fr, ft) = self.lower_value_expected(&call_args[0], Some(&fexp))?;
         Ok((vec![fr, zr, lr], vec![ft, zt, lt]))
@@ -5441,7 +5441,7 @@ impl<'a> Lowerer<'a> {
             {
                 ValueTy::Int
             } else {
-                ValueTy::Float
+                ValueTy::Double
             };
             let dst = self.fresh_value_reg();
             self.emit_value(match op {
@@ -5600,11 +5600,11 @@ impl<'a> Lowerer<'a> {
                 args: vec![],
             });
             let ret = match op {
-                ValueBuiltinOp::ListEmpty => ValueTy::App("List".into(), vec![ValueTy::Float]),
+                ValueBuiltinOp::ListEmpty => ValueTy::App("List".into(), vec![ValueTy::Double]),
                 ValueBuiltinOp::MapEmpty => {
-                    ValueTy::App("Map".into(), vec![ValueTy::String, ValueTy::Float])
+                    ValueTy::App("Map".into(), vec![ValueTy::String, ValueTy::Double])
                 }
-                _ => ValueTy::App("Set".into(), vec![ValueTy::Float]),
+                _ => ValueTy::App("Set".into(), vec![ValueTy::Double]),
             };
             self.note_container(&ret);
             return Ok((dst, ret));
@@ -5683,7 +5683,7 @@ impl<'a> Lowerer<'a> {
         if let Some(&idx) = self.param_names.get(name) {
             let dst = self.fresh_value_reg();
             self.emit_value(ValueInstr::ValueReadParam { dst, idx });
-            return Ok((dst, ValueTy::Float));
+            return Ok((dst, ValueTy::Double));
         }
         if self.env.data_types.contains_key(name) {
             return Err(CompileError::Type {
@@ -5732,7 +5732,7 @@ impl<'a> Lowerer<'a> {
                         .anchor_types
                         .get(name)
                         .cloned()
-                        .unwrap_or(ValueTy::Float);
+                        .unwrap_or(ValueTy::Double);
                     // A bang binding (`where !x = e`) forces its shared thunk
                     // here, per reference (the same binding-point force the
                     // inline path below emits). Dropping it would leave a
@@ -5769,9 +5769,9 @@ impl<'a> Lowerer<'a> {
                     // Hardcode: the recursive value's inferred static type is
                     // unavailable here, so downstream static decisions (field
                     // indices / ctor selection / method dispatch) run against
-                    // `Float`; exposure is currently low because recursive data
+                    // `Double`; exposure is currently low because recursive data
                     // types are still blocked by `check_acyclic`.
-                    return Ok((dst, ValueTy::Float));
+                    return Ok((dst, ValueTy::Double));
                 }
                 self.value_inline.insert(name.to_string());
                 // A named lambda-literal definition lowers with its resolved
@@ -5823,7 +5823,7 @@ impl<'a> Lowerer<'a> {
                         .anchor_types
                         .get(name)
                         .cloned()
-                        .unwrap_or(ValueTy::Float);
+                        .unwrap_or(ValueTy::Double);
                     return Ok((reg, ty));
                 }
                 // The parameters are the explicit ones plus the leading λs of
@@ -5859,7 +5859,7 @@ impl<'a> Lowerer<'a> {
                     .get(name)
                     .filter(|tys| tys.len() == def_params.len())
                     .cloned()
-                    .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()]);
+                    .unwrap_or_else(|| vec![ValueTy::Double; def_params.len()]);
                 let (fragment_id, ret_ty) = self.lower_fragment(
                     &def_params,
                     &body,
@@ -5885,7 +5885,7 @@ impl<'a> Lowerer<'a> {
                         self.emit_value(ValueInstr::ValueWriteCell { cell: sc, src: dst });
                     }
                 }
-                let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
+                let arg_tys = def_params.iter().map(|_| ValueTy::Double).collect();
                 Ok((dst, ValueTy::Thunk(arg_tys, vec![ret_ty])))
             }
             _ => Err(CompileError::Type {
@@ -5910,7 +5910,7 @@ impl<'a> Lowerer<'a> {
     /// [`Self::free_vars`]: resolved from the enclosing value scopes (a captured
     /// record parameter keeps its `Data` type, so a field projection / method
     /// call inside the fragment resolves), defaulting
-    /// to Float for an unknown capture (matching the v1 scalar-capture default).
+    /// to Double for an unknown capture (matching the v1 scalar-capture default).
     fn capture_tys(&self, free: &[String]) -> Vec<ValueTy> {
         free.iter()
             .map(|n| {
@@ -5931,7 +5931,7 @@ impl<'a> Lowerer<'a> {
                 if let Some(ty) = self.shared_cell_result_tys.get(n) {
                     return ty.clone();
                 }
-                ValueTy::Float
+                ValueTy::Double
             })
             .collect()
     }
@@ -6038,7 +6038,7 @@ impl<'a> Lowerer<'a> {
                     out.push(name.clone());
                 }
             }
-            Expr::Int(_, _) | Expr::Float(_, _) | Expr::Void(_) | Expr::Str(_, _) => {}
+            Expr::Int(_, _) | Expr::Double(_, _) | Expr::Void(_) | Expr::Str(_, _) => {}
             // An annotation is transparent to free-variable analysis: the type
             // it names is compile-time only, so only the inner expression can
             // contribute a capture.
@@ -6207,7 +6207,7 @@ impl<'a> Lowerer<'a> {
 
         let mut scope: HashMap<String, (usize, ValueTy)> = HashMap::new();
         for (i, p) in params.iter().enumerate() {
-            let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+            let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Double);
             scope.insert(p.name.clone(), (i, ty));
         }
         self.value_locals.push(scope);
@@ -6230,7 +6230,7 @@ impl<'a> Lowerer<'a> {
                 dst: forced,
                 src: i,
             });
-            let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+            let ty = param_tys.get(i).cloned().unwrap_or(ValueTy::Double);
             self.value_locals
                 .last_mut()
                 .unwrap()
@@ -6468,7 +6468,7 @@ impl<'a> Lowerer<'a> {
         let cell = self.anchor_cell(name);
         // Seed the static result type BEFORE the fragment compiles, so a
         // recursive reference inside the body (`tail fibs`) resolves the def's
-        // type (List) instead of the Float fallback. Computed later from the
+        // type (List) instead of the Double fallback. Computed later from the
         // lowered body if inference did not pin it (the seeded value is the
         // forward-declared type; the fragment ret type refines it).
         let seeded_ty = self.shared_cell_result_tys.get(name).cloned();
@@ -6490,13 +6490,13 @@ impl<'a> Lowerer<'a> {
         let free = self.free_vars(&body, &param_names);
         // The def's λ-parameter value types come from its scheme, rebuilt into
         // `fn_param_tys` by inference (`tail xs` → xs : List; a signature
-        // `:: Pair … -> …` types `p` as the record). Falling back to Float
+        // `:: Pair … -> …` types `p` as the record). Falling back to Double
         // keeps unconstrained scalar params working.
         let param_tys: Vec<ValueTy> = if is_anchor {
             self.fn_param_tys
                 .get(name)
                 .cloned()
-                .unwrap_or_else(|| vec![ValueTy::Float; def_params.len()])
+                .unwrap_or_else(|| vec![ValueTy::Double; def_params.len()])
         } else {
             Vec::new()
         };
@@ -6508,7 +6508,7 @@ impl<'a> Lowerer<'a> {
         }
         // A curried definition (`take = \n -> \xs -> …`) is niladic at the IR
         // level but its body is a nest of λs; their types come from inference's
-        // flattened λ-parameter list (`take` → `[Float, List]`).
+        // flattened λ-parameter list (`take` → `[Double, List]`).
         let saved_pending = self.pending_param_tys.take();
         if !is_anchor {
             self.pending_param_tys = self.fn_param_tys.get(name).cloned();
@@ -6548,7 +6548,7 @@ impl<'a> Lowerer<'a> {
         // the cell.
         self.emit_value(ValueInstr::ValueWriteCell { cell, src: dst });
         let ty = if is_anchor {
-            let arg_tys = def_params.iter().map(|_| ValueTy::Float).collect();
+            let arg_tys = def_params.iter().map(|_| ValueTy::Double).collect();
             ValueTy::Thunk(arg_tys, vec![ret_ty])
         } else {
             ret_ty
@@ -7012,7 +7012,7 @@ impl<'a> Lowerer<'a> {
                     };
                     let idx = k.saturating_sub(1) as usize;
                     while out.len() <= idx {
-                        out.push(ValueTy::Float);
+                        out.push(ValueTy::Double);
                     }
                     out[idx] = ty;
                 }
@@ -7177,13 +7177,13 @@ impl<'a> Lowerer<'a> {
                     };
                     // A bang sub-pattern (`Just !x`) forces its payload.
                     let payload_reg = self.force_bang_markers(p, payload_regs[idx]);
-                    let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Float);
+                    let raw = payload_tys.get(idx).cloned().unwrap_or(ValueTy::Double);
                     let pty = if is_builtin_sum {
                         match raw {
                             ValueTy::Var(k) => scrutinee_args
                                 .get(k.saturating_sub(1) as usize)
                                 .cloned()
-                                .unwrap_or(ValueTy::Float),
+                                .unwrap_or(ValueTy::Double),
                             t => t,
                         }
                     } else {
@@ -7245,9 +7245,9 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
             }
-            Pattern::LitFloat(v) => {
+            Pattern::LitDouble(v) => {
                 let lit_reg = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueConstFloat {
+                self.emit_value(ValueInstr::ValueConstDouble {
                     dst: lit_reg,
                     value: *v,
                 });
@@ -7309,13 +7309,13 @@ impl<'a> Lowerer<'a> {
                 // sub-test's matched block is where the arm continues.
                 let mut pass = self.cur_value_block;
                 for (i, arg) in args.iter().enumerate() {
-                    let raw = payload.get(i).cloned().unwrap_or(ValueTy::Float);
+                    let raw = payload.get(i).cloned().unwrap_or(ValueTy::Double);
                     let pty = if is_builtin {
                         match raw {
                             ValueTy::Var(k) => scrutinee_args
                                 .get(k.saturating_sub(1) as usize)
                                 .cloned()
-                                .unwrap_or(ValueTy::Float),
+                                .unwrap_or(ValueTy::Double),
                             t => t,
                         }
                     } else {
@@ -7442,7 +7442,7 @@ impl<'a> Lowerer<'a> {
             }
             self.cur_value_block = next;
         }
-        Ok(first_ty.unwrap_or(ValueTy::Float))
+        Ok(first_ty.unwrap_or(ValueTy::Double))
     }
 
     /// Resolve a bare constructor name to `(sum type, ctor index, payload)`.
@@ -7508,7 +7508,7 @@ impl<'a> Lowerer<'a> {
     fn subtree_size_impl(&self, vty: &ValueTy, visiting: &mut HashSet<String>) -> usize {
         match vty {
             ValueTy::Int
-            | ValueTy::Float
+            | ValueTy::Double
             | ValueTy::Bool
             | ValueTy::String
             | ValueTy::Buffer
@@ -7567,7 +7567,7 @@ impl<'a> Lowerer<'a> {
                     // today (every caller uses 256).
                     // TODO: parameterise this estimate over `BUF` once lowering
                     // is told the block size.
-                    let elem = args.last().unwrap_or(&ValueTy::Float);
+                    let elem = args.last().unwrap_or(&ValueTy::Double);
                     1 + Self::ARRAY_ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
                 "Map" => {
@@ -7593,7 +7593,7 @@ impl<'a> Lowerer<'a> {
                     .newtypes
                     .get(name)
                     .and_then(|n| self.env.vty_of_name(n))
-                    .unwrap_or(ValueTy::Float);
+                    .unwrap_or(ValueTy::Double);
                 let s = 1 + self.subtree_size_impl(&inner, visiting);
                 visiting.remove(name);
                 s
@@ -7641,7 +7641,7 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok(vec![dst])
             }
-            Expr::Float(v, _) => {
+            Expr::Double(v, _) => {
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueBufferConst { dst, value: *v });
                 Ok(vec![dst])
@@ -7867,7 +7867,7 @@ impl<'a> Lowerer<'a> {
                                         }
                                         for (fname, fscalar, default) in &schema.fields {
                                             match fscalar {
-                                                crate::types::ffi::FfiScalar::Float
+                                                crate::types::ffi::FfiScalar::Double
                                                 | crate::types::ffi::FfiScalar::Int => {
                                                     let val = field_values
                                                         .get(fname.as_str())
@@ -7927,7 +7927,7 @@ impl<'a> Lowerer<'a> {
                                                                 &band_schema.fields
                                                             {
                                                                 match bfscalar {
-                                                                    crate::types::ffi::FfiScalar::Float
+                                                                    crate::types::ffi::FfiScalar::Double
                                                                     | crate::types::ffi::FfiScalar::Int => {
                                                                         param_values.push(
                                                                             band_values
@@ -8242,7 +8242,7 @@ impl<'a> Lowerer<'a> {
         }
         for (fname, fscalar, default) in &schema.fields {
             match fscalar {
-                crate::types::ffi::FfiScalar::Float | crate::types::ffi::FfiScalar::Int => {
+                crate::types::ffi::FfiScalar::Double | crate::types::ffi::FfiScalar::Int => {
                     let val = field_values
                         .get(fname.as_str())
                         .copied()
@@ -8281,7 +8281,7 @@ impl<'a> Lowerer<'a> {
                             }
                             for (bfname, bfscalar, bdefault) in &band_schema.fields {
                                 match bfscalar {
-                                    crate::types::ffi::FfiScalar::Float
+                                    crate::types::ffi::FfiScalar::Double
                                     | crate::types::ffi::FfiScalar::Int => {
                                         param_values.push(
                                             band_values
@@ -8754,7 +8754,7 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
             span: *span,
         },
         Expr::Int(_, _)
-        | Expr::Float(_, _)
+        | Expr::Double(_, _)
         | Expr::Void(_)
         | Expr::Str(_, _)
         | Expr::Bool(_, _) => e.clone(),
@@ -8908,7 +8908,7 @@ fn const_i64(e: &Expr) -> Option<i64> {
 
 fn const_f64(e: &Expr) -> Option<f64> {
     match e {
-        Expr::Float(v, _) => Some(*v),
+        Expr::Double(v, _) => Some(*v),
         Expr::Int(v, _) => Some(*v as f64),
         Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
         Expr::Arith { op, lhs, rhs, .. } => {
@@ -9278,7 +9278,7 @@ pub fn lower_program_with_channels(
     lw.set_value_term(lw.cur_value_block, ValueTerm::Halt);
     // The runner contract: `main : IO ()`. The static type is the
     // only place the unit payload survives — the value track represents `()`
-    // as `Float(0.0)` once it travels through a closure cell (see
+    // as `Double(0.0)` once it travels through a closure cell (see
     // `Ir::main_io_unit`).
     let main_io_unit = main_result_is_io_unit(&entry_scheme.ty.vty);
     // The program's single result register: where the entry body's value
@@ -9732,7 +9732,7 @@ mod tests {
 
     #[test]
     fn record_construct_lowers_to_value_track() {
-        let ir = ir_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }");
+        let ir = ir_of("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }");
         assert!(ir.value_blocks[0]
             .instrs
             .iter()
@@ -9741,8 +9741,9 @@ mod tests {
 
     #[test]
     fn field_project_lowers_to_value_project() {
-        let ir =
-            ir_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x");
+        let ir = ir_of(
+            "data Point = { x: Double, y: Double }; p = Point { x: 1.0, y: 2.0 }; main = p.x",
+        );
         assert!(ir.value_blocks[0]
             .instrs
             .iter()
@@ -9751,7 +9752,7 @@ mod tests {
 
     #[test]
     fn newtype_construct_lowers_to_value_newtype() {
-        let ir = ir_of("newtype Hz = Float; main = Hz 440.0");
+        let ir = ir_of("newtype Hz = Double; main = Hz 440.0");
         assert!(ir.value_blocks[0]
             .instrs
             .iter()
@@ -9762,8 +9763,8 @@ mod tests {
     fn newtype_bare_ref_is_compile_error() {
         // `Hz` alone is not a value — the constructor requires its argument.
         let p = parse(
-            &tokenize("newtype Hz = Float; main = Hz").unwrap(),
-            "newtype Hz = Float; main = Hz".as_bytes(),
+            &tokenize("newtype Hz = Double; main = Hz").unwrap(),
+            "newtype Hz = Double; main = Hz".as_bytes(),
         )
         .unwrap();
         assert!(infer_program(&p, p.mode).is_err());
@@ -9772,7 +9773,7 @@ mod tests {
     #[test]
     fn match_lowers_to_value_match() {
         let ir = ir_of(
-            r"data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = case s of { Circle r -> r; Rect w h -> w; }",
+            r"data Shape = Circle Double | Rect Double Double; s = Circle 1.5; main = case s of { Circle r -> r; Rect w h -> w; }",
         );
         assert!(ir.value_blocks[0]
             .instrs
@@ -9787,7 +9788,7 @@ mod tests {
         // the output to the Circle arm's body register (not Rect's `w`, which
         // would be None at runtime).
         let ir = ir_of(
-            r"data Shape = Circle Float | Rect Float Float; s = Circle 1.5; main = case s of { Rect w h -> w; Circle r -> r; }",
+            r"data Shape = Circle Double | Rect Double Double; s = Circle 1.5; main = case s of { Rect w h -> w; Circle r -> r; }",
         );
         let matches = ir.value_blocks[0]
             .instrs
@@ -9821,7 +9822,7 @@ mod tests {
     fn lower_match_runtime_dispatch_emits_branch_ctor() {
         // A guarded arm can fail its guard at runtime, so the match must lower
         // to runtime BranchCtor dispatch instead of the static fast path.
-        let src = r"data Shape = Circle Float | Rect Float Float; main = case (Circle 1.5) of { Circle r | r > 0.0 -> r; Circle r -> r; Rect w h -> w; };";
+        let src = r"data Shape = Circle Double | Rect Double Double; main = case (Circle 1.5) of { Circle r | r > 0.0 -> r; Circle r -> r; Rect w h -> w; };";
         let toks = tokenize(src).unwrap();
         let p = parse(&toks, src.as_bytes()).unwrap();
         let tp = infer_program(&p, p.mode).unwrap();
@@ -9856,10 +9857,10 @@ mod tests {
         // of the static-only compile-time selection.
         let p = parse(
             &tokenize(
-                r"data Shape = Circle Float | Rect Float Float; main = case (Circle 1.5) of { Circle r | r > 0.5 -> r; Circle r -> r; Rect w h -> w; }",
+                r"data Shape = Circle Double | Rect Double Double; main = case (Circle 1.5) of { Circle r | r > 0.5 -> r; Circle r -> r; Rect w h -> w; }",
             )
             .unwrap(),
-            r"data Shape = Circle Float | Rect Float Float; main = case (Circle 1.5) of { Circle r | r > 0.5 -> r; Circle r -> r; Rect w h -> w; }"
+            r"data Shape = Circle Double | Rect Double Double; main = case (Circle 1.5) of { Circle r | r > 0.5 -> r; Circle r -> r; Rect w h -> w; }"
                 .as_bytes(),
         )
         .unwrap();
@@ -9909,13 +9910,13 @@ mod tests {
         let empty = HashSet::new();
         let lw = lw(&env, &empty);
         assert_eq!(
-            lw.subtree_size(&ValueTy::App("List".into(), vec![ValueTy::Float])),
+            lw.subtree_size(&ValueTy::App("List".into(), vec![ValueTy::Double])),
             1 + Lowerer::ELEM_EST
         );
         assert_eq!(
             lw.subtree_size(&ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float]
+                vec![ValueTy::String, ValueTy::Double]
             )),
             1 + Lowerer::ELEM_EST * 2
         );
@@ -9924,20 +9925,20 @@ mod tests {
             1 + Lowerer::ELEM_EST
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App("Maybe".into(), vec![ValueTy::Float])),
+            lw.subtree_size(&ValueTy::App("Maybe".into(), vec![ValueTy::Double])),
             2
         );
         assert_eq!(
             lw.subtree_size(&ValueTy::App(
                 "Pair".into(),
-                vec![ValueTy::Float, ValueTy::Int]
+                vec![ValueTy::Double, ValueTy::Int]
             )),
             3
         );
         assert_eq!(
             lw.subtree_size(&ValueTy::App(
                 "Either".into(),
-                vec![ValueTy::Float, ValueTy::Int]
+                vec![ValueTy::Double, ValueTy::Int]
             )),
             2
         );

@@ -24,35 +24,35 @@ fn run(src: &str) -> WorldState<f32, 256> {
 #[test]
 fn typeclass_method_resolves_at_compile_time() {
     // `show: a` declares the method over the class variable. `show f = f` is
-    // the Float instance's identity body: `show 1.0` resolves to it, binds
-    // `f := 1.0`, and the value output is Float(1.0). If resolution did not
+    // the Double instance's identity body: `show 1.0` resolves to it, binds
+    // `f := 1.0`, and the value output is Double(1.0). If resolution did not
     // happen (or the param binding were lost), the call could not compile.
     let src = r#"
         typeclass Show a where { show: a; }
-        instance Show Float where { show f = f; }
+        instance Show Double where { show f = f; }
         main = show 1.0;
     "#;
     let prog = run(src);
     let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
-    assert_eq!(val, &rill_lang::arena::Value::Float(1.0));
+    assert_eq!(val, &rill_lang::arena::Value::Double(1.0));
 }
 
 #[test]
 fn typeclass_selects_instance_by_argument_type() {
     // Two instances of the same class with different bodies: the argument's
     // static type must pick the right one. `show 1` (an Int literal) must
-    // resolve to the Int instance's body (2.5), not the Float instance's (1.5).
+    // resolve to the Int instance's body (2.5), not the Double instance's (1.5).
     let src = r#"
         typeclass Show a where { show: a; }
-        instance Show Float where { show f = 1.5; }
+        instance Show Double where { show f = 1.5; }
         instance Show Int where { show f = 2.5; }
         main = show 1;
     "#;
     let prog = run(src);
     let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
-    assert_eq!(val, &rill_lang::arena::Value::Float(2.5));
+    assert_eq!(val, &rill_lang::arena::Value::Double(2.5));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn recursive_typeclass_method_is_compile_error() {
     // overflow / SIGABRT of the compiler.
     let src = r#"
         typeclass Show a where { show: a; }
-        instance Show Float where { show f = show f; }
+        instance Show Double where { show f = show f; }
         main = show 1.0;
     "#;
     let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
@@ -83,7 +83,7 @@ fn transitive_recursive_typeclass_methods_are_compile_error() {
     // cycle through the chain, not just a method inlining itself.
     let src = r#"
         typeclass C a where { a: a; b: a; }
-        instance C Float where { a f = b f; b f = a f; }
+        instance C Double where { a f = b f; b f = a f; }
         main = a 1.0;
     "#;
     let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
@@ -129,11 +129,11 @@ fn recursive_constructor_class_method_is_compile_error() {
 #[test]
 fn buffer_value_does_not_select_scalar_instance() {
     // A Buffer computation (`sin 1.0 : Buffer`) is an ordinary value now, but
-    // it cannot select a `Show Float` instance — the argument type is not
+    // it cannot select a `Show Double` instance — the argument type is not
     // concrete (Buffer), so resolution fails.
     let src = r#"
         typeclass Show a where { show: a; }
-        instance Show Float where { show f = f; }
+        instance Show Double where { show f = f; }
         main = show (sin 1.0);
     "#;
     let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
@@ -157,7 +157,7 @@ fn instance_body_accepts_value_expression() {
     // channel at compile time even when the instance is never called.
     let src = r#"
         typeclass Show a where { show: a; }
-        instance Show Float where { show f = sin 1.0; }
+        instance Show Double where { show f = sin 1.0; }
         main = 1.0;
     "#;
     let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
@@ -205,6 +205,6 @@ fn user_def_shadows_builtin_eq_ord_method_names() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(6.0)
+        &rill_lang::arena::Value::Double(6.0)
     );
 }

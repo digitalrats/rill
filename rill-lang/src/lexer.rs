@@ -6,7 +6,7 @@ use crate::error::{CompileError, Span};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     /// Numeric literal that contains a `.` or exponent — a float.
-    Float(f64),
+    Double(f64),
     /// Numeric literal with no `.` — an integer.
     Int(i64),
     /// Identifier / keyword (`sin`, `min`, `process`, user names).
@@ -452,7 +452,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                     span,
                 })?;
                 out.push(Token {
-                    tok: Tok::Float(v),
+                    tok: Tok::Double(v),
                     span,
                 });
             } else {
@@ -623,7 +623,7 @@ mod tests {
     fn distinguishes_int_and_float() {
         assert_eq!(
             kinds("3 3.5 10"),
-            vec![Tok::Int(3), Tok::Float(3.5), Tok::Int(10), Tok::Eof]
+            vec![Tok::Int(3), Tok::Double(3.5), Tok::Int(10), Tok::Eof]
         );
     }
 
@@ -927,7 +927,7 @@ mod tests {
                 Tok::ThinArrow,
                 Tok::Ident("x".into()),
                 Tok::Plus,
-                Tok::Float(1.0),
+                Tok::Double(1.0),
                 Tok::Eof,
             ]
         );
@@ -938,10 +938,10 @@ mod tests {
         assert_eq!(
             kinds("1.0 -- a comment\n + 2.0"),
             vec![
-                Tok::Float(1.0),
+                Tok::Double(1.0),
                 Tok::Newline,
                 Tok::Plus,
-                Tok::Float(2.0),
+                Tok::Double(2.0),
                 Tok::Eof
             ]
         );
@@ -972,7 +972,7 @@ mod tests {
                 Tok::KwCase,
                 Tok::LParen,
                 Tok::Ident("C".into()),
-                Tok::Float(1.0),
+                Tok::Double(1.0),
                 Tok::RParen,
                 Tok::KwOf,
                 Tok::LBrace,
@@ -985,11 +985,11 @@ mod tests {
     #[test]
     fn lexes_double_colon() {
         assert_eq!(
-            kinds("x :: Float"),
+            kinds("x :: Double"),
             vec![
                 Tok::Ident("x".into()),
                 Tok::DoubleColon,
-                Tok::Ident("Float".into()),
+                Tok::Ident("Double".into()),
                 Tok::Eof,
             ]
         );
@@ -1000,11 +1000,11 @@ mod tests {
         assert_eq!(
             kinds("1.0 `add` 2.0"),
             vec![
-                Tok::Float(1.0),
+                Tok::Double(1.0),
                 Tok::Backtick,
                 Tok::Ident("add".into()),
                 Tok::Backtick,
-                Tok::Float(2.0),
+                Tok::Double(2.0),
                 Tok::Eof,
             ]
         );
@@ -1037,7 +1037,7 @@ mod tests {
     fn lexes_nested_block_comment_as_whitespace() {
         assert_eq!(
             kinds("1.0 {- a {- b -} c -} + 2.0"),
-            vec![Tok::Float(1.0), Tok::Plus, Tok::Float(2.0), Tok::Eof]
+            vec![Tok::Double(1.0), Tok::Plus, Tok::Double(2.0), Tok::Eof]
         );
     }
 
@@ -1050,12 +1050,12 @@ mod tests {
             vec![
                 Tok::Ident("x".into()),
                 Tok::Eq,
-                Tok::Float(1.0),
+                Tok::Double(1.0),
                 Tok::Semi,
                 Tok::Newline,
                 Tok::Ident("y".into()),
                 Tok::Eq,
-                Tok::Float(2.0),
+                Tok::Double(2.0),
                 Tok::Semi,
                 Tok::Eof,
             ]
@@ -1084,7 +1084,7 @@ mod tests {
                     value: "complete".into()
                 },
                 Tok::Newline,
-                Tok::Float(1.0),
+                Tok::Double(1.0),
                 Tok::Eof,
             ]
         );

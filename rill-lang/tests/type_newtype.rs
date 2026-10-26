@@ -20,8 +20,8 @@ fn run(src: &str) -> WorldState<f32, 256> {
 #[test]
 fn newtype_construct_runs() {
     // `h = Hz 440.0` is a newtype constructor; the value output holds a
-    // `Newtype` wrapping the inner `Float(440.0)`.
-    let prog = run("newtype Hz = Float; h = Hz 440.0; main = h");
+    // `Newtype` wrapping the inner `Double(440.0)`.
+    let prog = run("newtype Hz = Double; h = Hz 440.0; main = h");
     let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
     let inner = match val {
@@ -32,20 +32,20 @@ fn newtype_construct_runs() {
     };
     assert_eq!(
         prog.arena().get(inner).unwrap(),
-        &rill_lang::arena::Value::Float(440.0)
+        &rill_lang::arena::Value::Double(440.0)
     );
 }
 
 #[test]
 fn type_synonym_substitutes() {
-    // `type Angles = Float` substitutes into the record field type: `p.x`
-    // projects a Float, proving the synonym resolved to Float at compile time.
+    // `type Angles = Double` substitutes into the record field type: `p.x`
+    // projects a Double, proving the synonym resolved to Double at compile time.
     let prog = run(
-        "type Angles = Float; data Point = { x: Angles, y: Angles }; p = Point { x: 1.0, y: 2.0 }; main = p.x",
+        "type Angles = Double; data Point = { x: Angles, y: Angles }; p = Point { x: 1.0, y: 2.0 }; main = p.x",
     );
     let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
-    assert_eq!(val, &rill_lang::arena::Value::Float(1.0));
+    assert_eq!(val, &rill_lang::arena::Value::Double(1.0));
 }
 
 #[test]
@@ -53,8 +53,8 @@ fn type_declaration_order_does_not_matter() {
     // Regression: the synonym and newtype are declared AFTER the data type
     // that uses them. Registration must be order-independent.
     let prog =
-        run("data Volt = { v: Scale }; type Scale = Float; v = Volt { v: 12.0 }; main = v.v");
+        run("data Volt = { v: Scale }; type Scale = Double; v = Volt { v: 12.0 }; main = v.v");
     let v = prog.result().unwrap();
     let val = prog.arena().get(v).unwrap();
-    assert_eq!(val, &rill_lang::arena::Value::Float(12.0));
+    assert_eq!(val, &rill_lang::arena::Value::Double(12.0));
 }

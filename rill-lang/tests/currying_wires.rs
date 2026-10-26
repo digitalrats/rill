@@ -28,7 +28,7 @@ fn currying_applies_partially() {
     let v = prog.result().expect("the single run must produce a value");
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(7.0)
+        &rill_lang::arena::Value::Double(7.0)
     );
 }
 
@@ -39,7 +39,7 @@ fn currying_named_function() {
     let v = prog.result().expect("the single run must produce a value");
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(7.0)
+        &rill_lang::arena::Value::Double(7.0)
     );
 }
 
@@ -57,7 +57,7 @@ fn partial_application_captures_free_variable() {
     let v = prog.result().expect("the single run must produce a value");
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(13.0)
+        &rill_lang::arena::Value::Double(13.0)
     );
 }
 

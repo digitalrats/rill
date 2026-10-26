@@ -19,7 +19,7 @@ fn haskell2010_syntax_end_to_end() {
             ws <- toList xs
             ys <- fromList (map offset (map gain ws))
             zs <- toList ys
-            write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" zs)) stdout
+            write (Just (fold (\acc -> \x -> concat_string acc (show_double x)) "" zs)) stdout
             return ()
     "#;
     let mut runner = compile::<f32, 256>(src, ForeignRegistry::new())

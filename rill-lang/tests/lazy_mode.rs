@@ -48,7 +48,7 @@ fn nonrecursive_value_func_types_as_value() {
 
 #[test]
 fn recursive_float_value_func() {
-    // Recursion alone (Float -> Float, no List) — isolates the rate issue.
+    // Recursion alone (Double -> Double, no List) — isolates the rate issue.
     // (`+` is used because value-track infix `-` is a pre-existing parser
     // quirk — `+` in a lambda works, `-` does not.)
     let src = "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0)\nmain = countup 0.0";
@@ -80,8 +80,8 @@ fn complete_recursive_countup_runtime() {
     let src = "{-# MODE complete #-}\ncountup n = if n == 3.0 then 3.0 else countup (n + 1.0)\nmain = countup 0.0";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 3.0, "countup 0 should yield 3.0"),
-        other => panic!("expected Float(3.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, 3.0, "countup 0 should yield 3.0"),
+        other => panic!("expected Double(3.0), got {other:?}"),
     }
 }
 
@@ -95,10 +95,10 @@ headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = headv (tail (tail (tail (from 10.0))));";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => {
+        rill_lang::arena::Value::Double(x) => {
             assert_eq!(*x, 13.0, "from 10, third tail head -> 13.0")
         }
-        other => panic!("expected Float(12.0), got {other:?}"),
+        other => panic!("expected Double(12.0), got {other:?}"),
     }
 }
 
@@ -139,7 +139,7 @@ fn complete_from_produce_cons() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
                 prog.arena().get(*h).unwrap(),
-                &rill_lang::arena::Value::Float(10.0)
+                &rill_lang::arena::Value::Double(10.0)
             );
         }
         other => panic!("expected Cons, got {other:?}"),
@@ -154,7 +154,7 @@ fn complete_lazy_cons_finite() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
                 prog.arena().get(*h).unwrap(),
-                &rill_lang::arena::Value::Float(10.0)
+                &rill_lang::arena::Value::Double(10.0)
             );
         }
         other => panic!("expected Cons, got {other:?}"),
@@ -169,7 +169,7 @@ fn complete_from_head() {
         rill_lang::arena::Value::Sum(0, payload) => {
             assert_eq!(
                 prog.arena().get(payload[0]).unwrap(),
-                &rill_lang::arena::Value::Float(10.0)
+                &rill_lang::arena::Value::Double(10.0)
             );
         }
         other => panic!("expected Just(10.0), got {other:?}"),
@@ -184,7 +184,7 @@ fn complete_def_cons_no_recursion() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
                 prog.arena().get(*h).unwrap(),
-                &rill_lang::arena::Value::Float(10.0)
+                &rill_lang::arena::Value::Double(10.0)
             );
         }
         other => panic!("expected Cons, got {other:?}"),
@@ -201,8 +201,8 @@ sub n = cons (n - 1.0) (list);
 main = case (head (sub -2.0)) of { Nothing -> 0.0; Just x -> x };";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, -3.0, "-2.0 - 1.0 = -3.0"),
-        other => panic!("expected Float(-3.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, -3.0, "-2.0 - 1.0 = -3.0"),
+        other => panic!("expected Double(-3.0), got {other:?}"),
     }
 }
 
@@ -212,8 +212,8 @@ fn complete_countdown_with_minus() {
     let src = "{-# MODE complete #-}\ncountdown n = if n == 0.0 then 0.0 else countdown (n - 1.0);\nmain = countdown 3.0;";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "countdown 3 -> 0.0"),
-        other => panic!("expected Float(0.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, 0.0, "countdown 3 -> 0.0"),
+        other => panic!("expected Double(0.0), got {other:?}"),
     }
 }
 
@@ -225,8 +225,8 @@ fn complete_mutual_recursion_runtime() {
     let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 4.0;";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "even 4 -> 1.0"),
-        other => panic!("expected Float(1.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, 1.0, "even 4 -> 1.0"),
+        other => panic!("expected Double(1.0), got {other:?}"),
     }
 }
 
@@ -241,10 +241,10 @@ nth xs k = if k == 0.0 then case (head xs) of { Nothing -> 0.0; Just x -> x } el
 main = nth (from 10.0) 2.0;";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => {
+        rill_lang::arena::Value::Double(x) => {
             assert_eq!(*x, 12.0, "nth 2 (from 10) -> 12.0")
         }
-        other => panic!("expected Float(12.0), got {other:?}"),
+        other => panic!("expected Double(12.0), got {other:?}"),
     }
 }
 
@@ -261,7 +261,7 @@ main = take 2.0 (from 10.0);";
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
                 prog.arena().get(*h).unwrap(),
-                &rill_lang::arena::Value::Float(10.0)
+                &rill_lang::arena::Value::Double(10.0)
             );
         }
         other => panic!("expected Cons head 10.0, got {other:?}"),
@@ -278,10 +278,10 @@ headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = let xs = from 10.0 in headv (tail (tail xs));";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => {
+        rill_lang::arena::Value::Double(x) => {
             assert_eq!(*x, 12.0, "let xs = from 10; headv (tail tail xs) -> 12.0")
         }
-        other => panic!("expected Float(12.0), got {other:?}"),
+        other => panic!("expected Double(12.0), got {other:?}"),
     }
 }
 
@@ -296,7 +296,7 @@ fn complete_fibs_self_referential_local() {
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
                 prog.arena().get(*h).unwrap(),
-                &rill_lang::arena::Value::Float(0.0)
+                &rill_lang::arena::Value::Double(0.0)
             );
         }
         other => panic!("expected Cons head 0.0, got {other:?}"),
@@ -314,10 +314,10 @@ fibs = cons 0.0 (cons 1.0 (zipWith (\a -> \b -> a + b) fibs (tail fibs)));
 main = case (head (tail (tail (tail (tail fibs))))) of { Nothing -> 0.0; Just x -> x };";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => {
+        rill_lang::arena::Value::Double(x) => {
             assert_eq!(*x, 3.0, "fibs[4] -> 3.0")
         }
-        other => panic!("expected Float(3.0), got {other:?}"),
+        other => panic!("expected Double(3.0), got {other:?}"),
     }
 }
 
@@ -332,7 +332,7 @@ main = take 3.0 (repeat 42.0);";
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
                 prog.arena().get(*h).unwrap(),
-                &rill_lang::arena::Value::Float(42.0)
+                &rill_lang::arena::Value::Double(42.0)
             );
         }
         other => panic!("expected Cons head 42.0, got {other:?}"),
@@ -350,7 +350,7 @@ main = take 4.0 (iterate (\x -> x + 1.0) 0.0);";
         rill_lang::arena::Value::Cons(h, _) => {
             assert_eq!(
                 prog.arena().get(*h).unwrap(),
-                &rill_lang::arena::Value::Float(0.0)
+                &rill_lang::arena::Value::Double(0.0)
             );
         }
         other => panic!("expected Cons head 0.0, got {other:?}"),
@@ -375,8 +375,8 @@ fn complete_mutual_recursion_evens_odd() {
     let src = "{-# MODE complete #-}\neven n = if n == 0.0 then 1.0 else odd (n - 1.0);\nodd n = if n == 0.0 then 0.0 else even (n - 1.0);\nmain = even 5.0;";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "even 5 -> 0.0"),
-        other => panic!("expected Float(0.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, 0.0, "even 5 -> 0.0"),
+        other => panic!("expected Double(0.0), got {other:?}"),
     }
 }
 
@@ -390,8 +390,8 @@ headv xs = case (head xs) of { Nothing -> 0.0; Just x -> x };
 main = headv (let x = from 10.0 in x);";
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 10.0, "shared let thunk -> 10.0"),
-        other => panic!("expected Float(10.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, 10.0, "shared let thunk -> 10.0"),
+        other => panic!("expected Double(10.0), got {other:?}"),
     }
 }
 
@@ -406,8 +406,8 @@ odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
 main = if 1.0 == 2.0 then even 4.0 else even 3.0;"#;
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 0.0, "false arm: even 3 -> 0.0"),
-        other => panic!("expected Float(0.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, 0.0, "false arm: even 3 -> 0.0"),
+        other => panic!("expected Double(0.0), got {other:?}"),
     }
 }
 
@@ -419,15 +419,15 @@ odd  n = if n == 0.0 then 0.0 else even (n - 1.0);
 main = if 1.0 == 1.0 then even 4.0 else even 3.0;"#;
     let (prog, v) = eval_complete(src);
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(x) => assert_eq!(*x, 1.0, "true arm: even 4 -> 1.0"),
-        other => panic!("expected Float(1.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(*x, 1.0, "true arm: even 4 -> 1.0"),
+        other => panic!("expected Double(1.0), got {other:?}"),
     }
 }
 
 #[test]
 fn mutual_local_recursion_is_bottom() {
     // I2 regression: mutual LOCAL recursion (`a = b; b = a`) in the value track
-    // must force to Bottom (divergence is a value), not a wrong Float.
+    // must force to Bottom (divergence is a value), not a wrong Double.
     let src = r"{-# MODE complete #-}
 a = b;
 b = a;

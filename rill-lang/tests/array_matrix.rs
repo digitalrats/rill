@@ -1,4 +1,4 @@
-//! The reference DEMO for `Data.Array`: 2x2 and 3x3 `Array (Pair Int Int) Float`
+//! The reference DEMO for `Data.Array`: 2x2 and 3x3 `Array (Pair Int Int) Double`
 //! matrices, addressed by `Pair Int Int` cells.
 //!
 //! Every assertion pins an actual VALUE, not just a shape: the matrices are the
@@ -68,11 +68,11 @@ fn with_output<R: Send>(src: &str, f: impl FnOnce(&WorldState<f32, 256>, &Value)
     })
 }
 
-/// Run `src` and return its single `Float` value (the demo's scalar results).
+/// Run `src` and return its single `Double` value (the demo's scalar results).
 fn run_float(src: &str) -> f64 {
     with_output(src, |_prog, v| match v {
-        Value::Float(f) => *f,
-        other => panic!("expected a Float, got {other:?}\nsrc:\n{src}"),
+        Value::Double(f) => *f,
+        other => panic!("expected a Double, got {other:?}\nsrc:\n{src}"),
     })
 }
 
@@ -135,8 +135,8 @@ fn matrix(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i6
     let values = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect();
     let bounds = prog.arena().get(bounds).expect("bounds resolve").clone();
@@ -157,8 +157,8 @@ fn assoc_pairs(prog: &WorldState<f32, 256>, v: &Value) -> Vec<((i64, i64), f64)>
             let (ix, e) = pair_values(prog, &pair);
             let (i, j) = int_pair(prog, &ix);
             match e {
-                Value::Float(f) => ((i, j), f),
-                other => panic!("expected a Float element, got {other:?}"),
+                Value::Double(f) => ((i, j), f),
+                other => panic!("expected a Double element, got {other:?}"),
             }
         })
         .collect()

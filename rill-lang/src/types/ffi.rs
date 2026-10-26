@@ -13,7 +13,7 @@ use crate::types::ty::{DataInfo, TypeEnv, ValueTy};
 pub enum FfiParam {
     /// A signal channel: `FixedBuffer a`. Contributes one input arity.
     Signal,
-    /// A compile-time scalar parameter: `Float`/`Int`/`Bool`/`String`.
+    /// A compile-time scalar parameter: `Double`/`Int`/`Bool`/`String`.
     Scalar,
     /// Variadic signal channels: `List (FixedBuffer a)`. Consumes all remaining
     /// signal arguments.
@@ -54,8 +54,8 @@ pub struct FfiRecordSchema {
 /// The scalar element type of a record field.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FfiScalar {
-    /// A `Float`-typed field.
-    Float,
+    /// A `Double`-typed field.
+    Double,
     /// An `Int`-typed field.
     Int,
     /// A `List`-typed field of band records (`bands: List EqBand`): a sequence
@@ -142,7 +142,7 @@ pub fn foreign_param_names(name: &str) -> Vec<String> {
 }
 
 /// Read a record type's scalar fields from `TypeEnv::data_types`, converting
-/// `ValueTy::Float` → [`FfiScalar::Float`] and `ValueTy::Int` →
+/// `ValueTy::Double` → [`FfiScalar::Double`] and `ValueTy::Int` →
 /// [`FfiScalar::Int`]. A `List`-typed field of band records (`bands: List
 /// EqBand`) becomes [`FfiScalar::BandList`] carrying the band record type
 /// name. Defaults come from [`foreign_record_defaults`] (the legacy
@@ -157,7 +157,7 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
     for (name, vty, _) in fields {
         let default = foreign_record_defaults(type_name, name.as_str());
         match vty {
-            ValueTy::Float => out.push((name.clone(), FfiScalar::Float, default)),
+            ValueTy::Double => out.push((name.clone(), FfiScalar::Double, default)),
             ValueTy::Int => out.push((name.clone(), FfiScalar::Int, default)),
             // `bands: List EqBand` — a sequence of band records, each flattened
             // in the band schema's field order at lowering.
@@ -181,7 +181,7 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
 ///
 /// Supported parameter types:
 /// - `FixedBuffer a` → [`FfiParam::Signal`]
-/// - a name the registry marks as an FFI scalar (`Float`/`Int`/`Bool`/`String`)
+/// - a name the registry marks as an FFI scalar (`Double`/`Int`/`Bool`/`String`)
 ///   → [`FfiParam::Scalar`] — the REGISTRY decides, not a list here
 /// - `List (FixedBuffer a)` → [`FfiParam::VariadicSignal`]
 /// - `Tape a` → [`FfiParam::Resource`]
@@ -277,7 +277,7 @@ fn param_from_typeexpr(te: &TypeExpr) -> Option<FfiParam> {
 }
 
 /// [`param_from_typeexpr`] with the type registry in hand: a `TName` that the
-/// registry marks as an FFI scalar (`Float`/`Int`/`Bool`/`String`) is a SCALAR
+/// registry marks as an FFI scalar (`Double`/`Int`/`Bool`/`String`) is a SCALAR
 /// parameter; any other name is a record type. The registry decides — no
 /// private scalar-name list lives here.
 fn param_from_typeexpr_env(env: &TypeEnv, te: &TypeExpr) -> Option<FfiParam> {

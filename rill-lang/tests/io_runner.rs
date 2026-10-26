@@ -21,13 +21,13 @@ fn no_io_main_runs_to_completion() {
 #[test]
 fn memory_stream_roundtrip() {
     // fromList builds a memory input stream; toList drains it back to a List;
-    // show_float renders each element and fold concatenates them.
+    // show_double renders each element and fold concatenates them.
     let mut r = runner(
         r#"
 main = do {
     xs <- fromList [1.0, 2.0, 3.0];
     ys <- toList xs;
-    write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
+    write (Just (fold (\acc -> \x -> concat_string acc (show_double x)) "" ys)) stdout;
     return ()
 };
 "#,
@@ -79,16 +79,16 @@ main = do { xs <- fromList (from 0.0); return () };
 #[test]
 fn non_void_main_result_is_a_compile_error() {
     // `main : IO ()` constrains the ACTION's result, not just the action: an
-    // `IO Float` main is malformed and is rejected by the compile-time gate on
+    // `IO Double` main is malformed and is rejected by the compile-time gate on
     // the compile entry (`ir.main_io_unit`), before any world exists — not
     // latched at run time. (`main = return 1.0` on its own does not compile —
     // the monad is unconstrained — so the result type is fixed by an effect in
     // the block.)
     for src in [
         r#"main = do { write (Just "a") stdout; return 1.0 };"#,
-        // The value track erases `()` to `Float(0.0)` inside a closure cell,
+        // The value track erases `()` to `Double(0.0)` inside a closure cell,
         // so this case pins the static-type distinction: the block is typed
-        // `IO Float`, hence a 0.0 payload is NOT accepted as unit.
+        // `IO Double`, hence a 0.0 payload is NOT accepted as unit.
         r#"main = do { write (Just "a") stdout; return 0.0 };"#,
         r#"main = do { write (Just "a") stdout; return "s" };"#,
     ] {
@@ -107,7 +107,7 @@ fn non_void_main_result_is_a_compile_error() {
 #[test]
 fn void_main_result_succeeds() {
     // `return ()` travels through the value track's cell encoding (which
-    // represents unit as Float(0.0)); `main`'s static `IO ()` type accepts it.
+    // represents unit as Double(0.0)); `main`'s static `IO ()` type accepts it.
     let mut r = runner(r#"main = do { write (Just "a") stdout; return () };"#);
     r.run()
         .expect("`main` returning `()` must run to completion");

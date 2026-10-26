@@ -14,7 +14,7 @@ use rill_lang::CompileError;
 ///
 /// Value arithmetic preserves the `Int` track (an `Int` operand stays `Int`),
 /// so an instance body that adds projected integer fields yields `Int` while a
-/// float-literal body yields `Float`; both are compared as `f64`.
+/// float-literal body yields `Double`; both are compared as `f64`.
 fn run(src: &str) -> f64 {
     let (defs, expr) = src
         .rsplit_once("main = ")
@@ -24,7 +24,7 @@ fn run(src: &str) -> f64 {
     let prog = eval_ffi(defs, expr, ffi).expect("the program must compile and run");
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v) {
-        Some(rill_lang::arena::Value::Float(x)) => *x,
+        Some(rill_lang::arena::Value::Double(x)) => *x,
         Some(rill_lang::arena::Value::Int(i)) => *i as f64,
         other => panic!("expected a number, got {other:?}"),
     }

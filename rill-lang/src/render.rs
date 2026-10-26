@@ -374,7 +374,7 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, "()").ok();
             Ok(())
         }
-        Expr::Float(v, _) => {
+        Expr::Double(v, _) => {
             if *v == *v as i64 as f64 && v.is_finite() {
                 write!(buf, "{:.1}", v).ok();
             } else {
@@ -658,7 +658,7 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
         Pattern::LitInt(v) => {
             write!(buf, "{v}").ok();
         }
-        Pattern::LitFloat(v) => {
+        Pattern::LitDouble(v) => {
             write!(buf, "{v}").ok();
         }
         Pattern::LitBool(v) => {
@@ -721,7 +721,7 @@ mod tests {
                 params: vec![],
                 body: Expr::Apply {
                     name: "sine".into(),
-                    args: vec![Expr::Float(440.0, span()), Expr::Float(0.5, span())],
+                    args: vec![Expr::Double(440.0, span()), Expr::Double(0.5, span())],
                     span: span(),
                 },
                 span: span(),
@@ -744,7 +744,7 @@ mod tests {
                 params: vec![],
                 body: Expr::Apply {
                     name: "lowpass".into(),
-                    args: vec![Expr::Float(1000.0, span()), Expr::Float(0.7, span())],
+                    args: vec![Expr::Double(1000.0, span()), Expr::Double(0.7, span())],
                     span: span(),
                 },
                 span: span(),
@@ -771,7 +771,7 @@ mod tests {
                 }],
                 body: Expr::Arith {
                     op: ArithOp::Mul,
-                    lhs: Box::new(Expr::Float(2.0, span())),
+                    lhs: Box::new(Expr::Double(2.0, span())),
                     rhs: Box::new(Expr::Ref("gain".into(), span())),
                     span: span(),
                 },
@@ -802,7 +802,7 @@ mod tests {
                     body: Box::new(Expr::Arith {
                         op: ArithOp::Mul,
                         lhs: Box::new(Expr::Ref("x".into(), span())),
-                        rhs: Box::new(Expr::Float(2.0, span())),
+                        rhs: Box::new(Expr::Double(2.0, span())),
                         span: span(),
                     }),
                     span: span(),
@@ -883,17 +883,17 @@ mod tests {
     #[test]
     fn render_roundtrip_strict_product_data() {
         let dsl = render_roundtrip_program(
-            "data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }",
+            "data P = { x: !Double, y: Double }; main = P { x: 1.0, y: 2.0 }",
         );
         assert!(
-            dsl.contains("!Float"),
+            dsl.contains("!Double"),
             "strict field flag was lost in render: {dsl}"
         );
     }
 
     #[test]
     fn render_roundtrip_strict_sum_data() {
-        let dsl = render_roundtrip_program("data T = C !Int | D Float; main = C 1");
+        let dsl = render_roundtrip_program("data T = C !Int | D Double; main = C 1");
         assert!(
             dsl.contains("!Int"),
             "strict payload flag was lost in render: {dsl}"
@@ -910,14 +910,14 @@ mod tests {
             defs: vec![Def::Eval {
                 name: "main".into(),
                 params: vec![],
-                body: Expr::Float(1.0, span()),
+                body: Expr::Double(1.0, span()),
                 where_defs: vec![],
-                sig: Some(TypeExpr::TName("Float".into())),
+                sig: Some(TypeExpr::TName("Double".into())),
                 bang: false,
                 span: span(),
             }],
         };
-        assert_eq!(render(&prog).unwrap(), "main :: Float = 1.0");
+        assert_eq!(render(&prog).unwrap(), "main :: Double = 1.0");
     }
 
     #[test]
@@ -958,8 +958,8 @@ mod tests {
 
     #[test]
     fn render_roundtrip_def_signature() {
-        let dsl = roundtrip_main("main :: Float = 1.0;");
-        assert_eq!(dsl, "main :: Float = 1.0");
+        let dsl = roundtrip_main("main :: Double = 1.0;");
+        assert_eq!(dsl, "main :: Double = 1.0");
     }
 
     #[test]
@@ -973,8 +973,8 @@ mod tests {
 
     #[test]
     fn render_roundtrip_def_signature_with_where() {
-        let dsl = roundtrip_main("main :: Float = g where { g = 1.0; };");
-        assert_eq!(dsl, "main :: Float = g where {\n    g = 1.0;\n}");
+        let dsl = roundtrip_main("main :: Double = g where { g = 1.0; };");
+        assert_eq!(dsl, "main :: Double = g where {\n    g = 1.0;\n}");
     }
 
     #[test]
@@ -989,8 +989,8 @@ mod tests {
     fn render_roundtrip_multi_constraint_def_signature() {
         // Two or more constraints render as a parenthesized, comma-separated
         // list — the only Haskell 2010 form that re-parses.
-        let dsl = roundtrip_main("main :: (Ix i, Ix j) => Float = 1.0;");
-        assert_eq!(dsl, "main :: (Ix i, Ix j) => Float = 1.0");
+        let dsl = roundtrip_main("main :: (Ix i, Ix j) => Double = 1.0;");
+        assert_eq!(dsl, "main :: (Ix i, Ix j) => Double = 1.0");
     }
 
     #[test]
@@ -998,7 +998,7 @@ mod tests {
         // A `foreign` declaration renders a trailing `;` (render.rs
         // Def::Foreign arm) that the top-level parse loop — not the def parser
         // — consumes. Full-program round-trip must stay idempotent.
-        let src = r"foreign biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+        let src = r"foreign biquad : FixedBuffer f32 -> Double -> Double -> Double -> FixedBuffer f32;
 main = 1.0;";
         let tokens = crate::lexer::tokenize(src).unwrap();
         let program = crate::parser::parse(&tokens, src.as_bytes()).unwrap();
@@ -1015,7 +1015,7 @@ main = 1.0;";
     #[test]
     fn render_roundtrip_match_bare_ctor_arms() {
         let dsl = roundtrip_main(
-            r"data Shape = Circle Float | Rect Float Float; main = case s of { Circle r -> r; Rect w h -> w; };",
+            r"data Shape = Circle Double | Rect Double Double; main = case s of { Circle r -> r; Rect w h -> w; };",
         );
         assert_eq!(dsl, r"main = case s of { Circle r -> r; Rect w h -> w; }");
     }

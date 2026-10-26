@@ -28,8 +28,8 @@ fn eager_and_lazy_calls_still_work() {
 id2 = \x -> x;
 main = case (head (id2 [1.0, 2.0])) of { Nothing -> 0.0; Just x -> x };";
     match run_complete(src) {
-        rill_lang::arena::Value::Float(x) => assert_eq!(x, 1.0),
-        other => panic!("expected Float(1.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(x, 1.0),
+        other => panic!("expected Double(1.0), got {other:?}"),
     }
 }
 
@@ -42,8 +42,8 @@ fn closure_and_thunk_are_one_variant() {
 id2 = \x -> x;
 main = case (head (let y = id2 [1.0, 2.0] in y)) of { Nothing -> 0.0; Just x -> x };";
     match run_complete(src) {
-        rill_lang::arena::Value::Float(x) => assert_eq!(x, 1.0),
-        other => panic!("expected Float(1.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(x, 1.0),
+        other => panic!("expected Double(1.0), got {other:?}"),
     }
 }
 
@@ -55,7 +55,7 @@ fn fragment_call_with_record_construction_still_works() {
 mk = \x -> Pair { first: x, second: x };
 main = case (head ((mk [1.0, 2.0]).first)) of { Nothing -> 0.0; Just x -> x };";
     match run_complete(src) {
-        rill_lang::arena::Value::Float(x) => assert_eq!(x, 1.0),
-        other => panic!("expected Float(1.0), got {other:?}"),
+        rill_lang::arena::Value::Double(x) => assert_eq!(x, 1.0),
+        other => panic!("expected Double(1.0), got {other:?}"),
     }
 }

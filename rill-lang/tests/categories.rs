@@ -25,8 +25,8 @@ fn out_int(prog: &WorldState<f32, 256>) -> i64 {
 
 fn out_float(prog: &WorldState<f32, 256>) -> f64 {
     match prog.arena().get(prog.result().unwrap()).unwrap() {
-        rill_lang::arena::Value::Float(n) => *n,
-        other => panic!("expected Float, got {other:?}"),
+        rill_lang::arena::Value::Double(n) => *n,
+        other => panic!("expected Double, got {other:?}"),
     }
 }
 

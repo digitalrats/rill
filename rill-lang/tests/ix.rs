@@ -104,7 +104,7 @@ fn list_ints(prog: &WorldState<f32, 256>, v: &Value) -> Vec<i64> {
         .collect()
 }
 
-/// The Float payloads of a `List` value.
+/// The Double payloads of a `List` value.
 fn list_floats(prog: &WorldState<f32, 256>, v: &Value) -> Vec<f64> {
     let elems = match v {
         Value::List { elems } => elems.clone(),
@@ -113,8 +113,8 @@ fn list_floats(prog: &WorldState<f32, 256>, v: &Value) -> Vec<f64> {
     elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect()
 }
@@ -127,7 +127,7 @@ fn array_parts(v: &Value) -> (ArenaRef, Vec<ArenaRef>) {
     }
 }
 
-/// The flat Float elements of an `Array` value plus its bounds as Ints.
+/// The flat Double elements of an `Array` value plus its bounds as Ints.
 fn array_1d(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
     let (bounds, elems) = array_parts(v);
     let bounds = prog.arena().get(bounds).expect("bounds resolve").clone();
@@ -139,8 +139,8 @@ fn array_1d(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
     let values = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect();
     (values, (lo, hi))
@@ -322,7 +322,7 @@ fn index_is_the_ix_offset_and_the_array_accessor_by_argument_type() {
     // `Array` first argument → the constrained accessor (an element), whose
     // body must reach the METHOD through `index (bounds a) i`.
     let src = "main = index (arrayFromList (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1;";
-    assert_eq!(run(src).1, Value::Float(20.0));
+    assert_eq!(run(src).1, Value::Double(20.0));
 }
 
 #[test]
@@ -330,9 +330,9 @@ fn bang_reaches_the_array_accessor_through_an_ix_computed_offset() {
     // `!` desugars to `index` (Task 2). A NEGATIVE lower bound proves the whole
     // chain stays on the Int track: the offset is `0 - (-1) = 1`, so the
     // element is the middle one — and `arrayIndexFlat` requires a real
-    // `Value::Int` offset, so a Float offset would fault instead.
+    // `Value::Int` offset, so a Double offset would fault instead.
     let src = "main = (arrayFromList (Pair { first: -1, second: 1 }) [10.0, 20.0, 30.0]) ! 0;";
-    assert_eq!(run(src).1, Value::Float(20.0));
+    assert_eq!(run(src).1, Value::Double(20.0));
 }
 
 #[test]
@@ -340,7 +340,7 @@ fn two_dimensional_bang_indexes_row_major() {
     let src = "main = (listArray \
                  (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } }) \
                  [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]) ! Pair { first: 1, second: 2 };";
-    assert_eq!(run(src).1, Value::Float(6.0));
+    assert_eq!(run(src).1, Value::Double(6.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -379,8 +379,8 @@ fn list_array_pads_a_short_list_with_faulting_holes() {
     let src = format!("main = (\\a -> Pair {{ first: index a 0, second: index a 1 }}) ({arr});");
     let (prog, v) = run(&src);
     let (c0, c1) = pair_values(&prog, &v);
-    assert_eq!(c0, Value::Float(1.0));
-    assert_eq!(c1, Value::Float(2.0));
+    assert_eq!(c0, Value::Double(1.0));
+    assert_eq!(c1, Value::Double(2.0));
 
     // Forcing the padded tail faults cleanly (a fold over `arrayElems` forces
     // every element; position 2 is the hole).
@@ -425,8 +425,8 @@ fn array_leaves_unlisted_positions_as_faulting_holes() {
     assert_eq!(lo, Value::Int(0));
     assert_eq!(hi, Value::Int(3));
     let (c0, c2) = pair_values(&prog, &cells);
-    assert_eq!(c0, Value::Float(1.5));
-    assert_eq!(c2, Value::Float(3.5));
+    assert_eq!(c0, Value::Double(1.5));
+    assert_eq!(c2, Value::Double(3.5));
 
     // Forcing an unlisted position faults cleanly (a fold over `arrayElems`
     // forces every element; position 1 and 3 are holes).
@@ -493,8 +493,8 @@ fn assocs_pairs_each_index_with_its_element() {
             let pair = prog.arena().get(*r).expect("pair resolves").clone();
             let (i, e) = pair_values(&prog, &pair);
             match (i, e) {
-                (Value::Int(i), Value::Float(f)) => (i, f),
-                other => panic!("expected an (Int, Float) assoc, got {other:?}"),
+                (Value::Int(i), Value::Double(f)) => (i, f),
+                other => panic!("expected an (Int, Double) assoc, got {other:?}"),
             }
         })
         .collect();
@@ -534,8 +534,8 @@ fn list_cell_assocs(prog: &WorldState<f32, 256>, v: &Value) -> Vec<((i64, i64), 
             let (ix, e) = pair_values(prog, &pair);
             let (i, j) = pair_values(prog, &ix);
             match (i, j, e) {
-                (Value::Int(i), Value::Int(j), Value::Float(e)) => ((i, j), e),
-                other => panic!("expected a ((Int, Int), Float) assoc, got {other:?}"),
+                (Value::Int(i), Value::Int(j), Value::Double(e)) => ((i, j), e),
+                other => panic!("expected a ((Int, Int), Double) assoc, got {other:?}"),
             }
         })
         .collect()
@@ -666,8 +666,8 @@ fn ixmap_transposes_a_two_by_three_matrix() {
     let values: Vec<f64> = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect();
     // Row-major 3x2: (0,0)=m(0,0)=1, (0,1)=m(1,0)=4, (1,0)=m(0,1)=2, …
@@ -700,7 +700,7 @@ fn st_read_array_reaches_the_written_element() {
             a <- newArray (Pair { first: -1, second: 1 }) 0.0; \
             writeArray a 0 42.0; \
             readArray a 0 });";
-    assert_eq!(run(src).1, Value::Float(42.0));
+    assert_eq!(run(src).1, Value::Double(42.0));
 }
 
 #[test]
@@ -729,8 +729,8 @@ fn st_new_list_array_pads_a_short_list_with_faulting_holes() {
     );
     let (prog, v) = run(&src);
     let (c0, c1) = pair_values(&prog, &v);
-    assert_eq!(c0, Value::Float(1.0));
-    assert_eq!(c1, Value::Float(2.0));
+    assert_eq!(c0, Value::Double(1.0));
+    assert_eq!(c1, Value::Double(2.0));
 
     let msg = fault(&format!(
         "{{-# MODE complete #-}}\nmain = fold (\\a -> \\b -> a + b) 0.0 (arrayElems ({arr}));"
@@ -781,8 +781,8 @@ fn frozen_array_is_immutable_after_the_region_closes() {
                 return a }));";
     let (prog, v) = run(src);
     let (a, b) = pair_values(&prog, &v);
-    assert_eq!(a, Value::Float(99.0));
-    assert_eq!(b, Value::Float(99.0), "repeated reads are stable");
+    assert_eq!(a, Value::Double(99.0));
+    assert_eq!(b, Value::Double(99.0), "repeated reads are stable");
 }
 
 // ---------------------------------------------------------------------------
@@ -814,7 +814,7 @@ fn array_from_buffer_values_match_the_buffer_contents() {
     let src = "{-# MODE complete #-}\n\
         main = (\\ buf -> (arrayFromBuffer buf) ! 0) (sine 440.0 0.5 0.0);";
     match buffer_program(src).1 {
-        Value::Float(f) => assert!(f.is_finite(), "expected a real sample, got {f}"),
-        other => panic!("expected a Float element, got {other:?}"),
+        Value::Double(f) => assert!(f.is_finite(), "expected a real sample, got {f}"),
+        other => panic!("expected a Double element, got {other:?}"),
     }
 }

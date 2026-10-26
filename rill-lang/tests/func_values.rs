@@ -43,15 +43,15 @@ fn function_reference_calls_signal_definition() {
 #[test]
 fn function_reference_calls_value_definition() {
     // A func value over a VALUE function: `first p = p.x` (p is a value
-    // λ-parameter) called through `f` yields a VALUE output Float(5.0) — the
+    // λ-parameter) called through `f` yields a VALUE output Double(5.0) — the
     // value-track form of a named function-reference call.
     let prog = run(
-        "data Point = { x: Float, y: Float }; first p = p.x; f = first; main = f (Point { x: 5.0, y: 1.0 })",
+        "data Point = { x: Double, y: Double }; first p = p.x; f = first; main = f (Point { x: 5.0, y: 1.0 })",
     );
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(5.0)
+        &rill_lang::arena::Value::Double(5.0)
     );
 }
 
@@ -135,14 +135,14 @@ fn value_function_with_match_body_calls_correct_arm() {
     // A value function whose body is a `match` on its value λ-parameter:
     // substitution must descend into the match arms (with arm bindings
     // shadowing the outer parameter), so `f (Circle 7.0)` selects Circle's
-    // arm and yields Float(7.0).
+    // arm and yields Double(7.0).
     let prog = run(
-        r"data Shape = Circle Float | Rect Float Float; radius s = case s of { Circle r -> r; Rect w h -> w; }; f = radius; main = f (Circle 7.0)",
+        r"data Shape = Circle Double | Rect Double Double; radius s = case s of { Circle r -> r; Rect w h -> w; }; f = radius; main = f (Circle 7.0)",
     );
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(7.0)
+        &rill_lang::arena::Value::Double(7.0)
     );
 }
 

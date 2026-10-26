@@ -25,7 +25,7 @@ fn run_values(src: &str) -> Vec<f64> {
         rill_lang::arena::Value::List { elems } => elems
             .iter()
             .map(|r| match prog.arena().get(*r).unwrap() {
-                rill_lang::arena::Value::Float(f) => *f,
+                rill_lang::arena::Value::Double(f) => *f,
                 other => panic!("expected a List of floats, got element {other:?}"),
             })
             .collect(),

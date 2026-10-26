@@ -892,8 +892,8 @@ mod tests {
                 rhs,
                 ..
             } => {
-                assert!(matches!(lhs.as_ref(), Expr::Float(v, _) if *v == 2.0));
-                assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
+                assert!(matches!(lhs.as_ref(), Expr::Double(v, _) if *v == 2.0));
+                assert!(matches!(rhs.as_ref(), Expr::Double(v, _) if *v == 0.5));
             }
             other => panic!("expected Arith(Mul), got {other:?}"),
         }
@@ -910,8 +910,8 @@ mod tests {
                 rhs,
                 ..
             } => {
-                assert!(matches!(lhs.as_ref(), Expr::Float(v, _) if *v == 2.0));
-                assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 0.5));
+                assert!(matches!(lhs.as_ref(), Expr::Double(v, _) if *v == 2.0));
+                assert!(matches!(rhs.as_ref(), Expr::Double(v, _) if *v == 0.5));
             }
             other => panic!("expected Arith(Mul), got {other:?}"),
         }
@@ -948,10 +948,10 @@ mod tests {
     fn decl_ref_does_not_panic() {
         // A bare reference to a type declaration must not be inlined as a
         // signal body (declarations have no body to inline) — it stays a Ref.
-        let tokens = tokenize("data Point = { x: Float }; main = Point").unwrap();
+        let tokens = tokenize("data Point = { x: Double }; main = Point").unwrap();
         let program = parser::parse(
             &tokens,
-            "data Point = { x: Float }; main = Point".as_bytes(),
+            "data Point = { x: Double }; main = Point".as_bytes(),
         )
         .unwrap();
         let reduced = reduce(&program);

@@ -27,7 +27,7 @@ fn env_of(src: &str) -> TypeEnv {
 ///
 /// Value arithmetic preserves the `Int` track (an `Int` operand stays `Int`),
 /// so an instance body that adds projected integer fields yields `Int` while a
-/// float-literal body yields `Float`; both are compared as `f64`.
+/// float-literal body yields `Double`; both are compared as `f64`.
 fn run(src: &str) -> f64 {
     let (defs, expr) = src
         .rsplit_once("main = ")
@@ -37,7 +37,7 @@ fn run(src: &str) -> f64 {
     let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v) {
-        Some(rill_lang::arena::Value::Float(x)) => *x,
+        Some(rill_lang::arena::Value::Double(x)) => *x,
         Some(rill_lang::arena::Value::Int(i)) => *i as f64,
         other => panic!("expected a number, got {other:?}"),
     }
@@ -46,7 +46,7 @@ fn run(src: &str) -> f64 {
 /// Three instances of one probe class whose heads share a `Pair` prefix — the
 /// exact collision the head-name dispatch cannot resolve.
 const THREE_INDEX_INSTANCES: &str = r#"
-    typeclass C a where { size: Pair a a -> Float; }
+    typeclass C a where { size: Pair a a -> Double; }
     instance C Int where { size p = 1.0; }
     instance C (Pair Int Int) where { size p = 2.0; }
     instance C (Pair Int (Pair Int Int)) where { size p = 3.0; }
@@ -78,14 +78,14 @@ fn resolve_method_uses_the_full_applied_type_as_key() {
         .resolve_method("size", "Pair Int (Pair Int Int)")
         .expect("nested instance resolves by its full type");
     assert!(
-        matches!(&body, Expr::Float(v, _) if *v == 3.0),
+        matches!(&body, Expr::Double(v, _) if *v == 3.0),
         "expected the 3-D instance body, got {body:?}"
     );
     let (_, _, body) = env
         .resolve_method("size", "Pair Int Int")
         .expect("2-D instance resolves by its full type");
     assert!(
-        matches!(&body, Expr::Float(v, _) if *v == 2.0),
+        matches!(&body, Expr::Double(v, _) if *v == 2.0),
         "expected the 2-D instance body, got {body:?}"
     );
 }
@@ -137,12 +137,12 @@ fn dispatch_nullary_method_ref_with_applied_head() {
 
 #[test]
 fn dispatch_selects_the_class_var_argument_when_it_is_not_first() {
-    // `pick`'s class-var argument is the SECOND one (`Pair a a`); the `Float`
+    // `pick`'s class-var argument is the SECOND one (`Pair a a`); the `Double`
     // at 0 says nothing about the instance. Selecting on the first argument
-    // would unify `Pair a a` against `Float`, fail, and fall back to the wrong
+    // would unify `Pair a a` against `Double`, fail, and fall back to the wrong
     // head — the Haskell-2010-natural `index: Array a -> i -> a` shape.
     let src = r#"
-        typeclass Pick a where { pick: Float -> Pair a a -> Float; }
+        typeclass Pick a where { pick: Double -> Pair a a -> Double; }
         instance Pick Int where { pick b p = 1.0; }
         instance Pick (Pair Int Int) where { pick b p = 2.0; }
     "#;
@@ -162,11 +162,11 @@ fn dispatch_selects_the_class_var_argument_when_it_is_not_first() {
 fn dispatch_still_uses_the_head_name_for_bare_constructor_instances() {
     // Backward compatibility: a class whose instance head is a bare constructor
     // (`Monoid List` / a probe `C2 List`) is keyed by that head name, while the
-    // selector's recovered full type is applied (`List Float`). Resolution must
+    // selector's recovered full type is applied (`List Double`). Resolution must
     // fall back to the head name.
     let src = r#"
-        typeclass C2 a where { describe: a -> Float; }
-        instance C2 Float where { describe x = 1.0; }
+        typeclass C2 a where { describe: a -> Double; }
+        instance C2 Double where { describe x = 1.0; }
         instance C2 List where { describe xs = 2.0; }
         main = describe [1.0, 2.0] + describe 3.0;
     "#;

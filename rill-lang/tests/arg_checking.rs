@@ -3,7 +3,7 @@
 //! Haskell 2010 §4.1.3 requires an application's argument type to match the
 //! parameter type, so `f x = x + 1.0; f "str"` is a type error. Builtin calls
 //! already enforced this; user definitions were the one hole, accepting a
-//! `String` for a `Float` parameter and only failing later (or not at all).
+//! `String` for a `Double` parameter and only failing later (or not at all).
 //!
 //! Each test asserts a computed value or a rejection, never a bare `is_ok()`:
 //! a check that rejects everything would satisfy a bare `is_err()`, and one
@@ -51,7 +51,7 @@ fn rejection(src: &str) -> String {
 /// (`1 + 2` is `Int(3)`), so the assertion compares through `f64`.
 fn run_num(src: &str) -> f64 {
     match run_value(src) {
-        Value::Float(x) => x,
+        Value::Double(x) => x,
         Value::Int(i) => i as f64,
         other => panic!("expected a number, got {other:?}"),
     }
@@ -59,7 +59,7 @@ fn run_num(src: &str) -> f64 {
 
 #[test]
 fn a_string_argument_to_a_float_parameter_is_rejected() {
-    // The defect from the brief, reduced: `f`'s parameter is pinned to `Float`
+    // The defect from the brief, reduced: `f`'s parameter is pinned to `Double`
     // by its body (`x + 1.0`), and a `String` literal is passed instead.
     let msg = rejection(r#"f x = x + 1.0; main = f "str";"#);
     assert!(
@@ -71,14 +71,14 @@ fn a_string_argument_to_a_float_parameter_is_rejected() {
         "the error must name the argument position: {msg}"
     );
     assert!(
-        msg.contains("String") && msg.contains("Float"),
+        msg.contains("String") && msg.contains("Double"),
         "the error must name both types: {msg}"
     );
 }
 
 #[test]
 fn a_float_argument_to_an_int_parameter_is_rejected() {
-    // An explicit `Int -> Int` signature is the call-site contract: a `Float`
+    // An explicit `Int -> Int` signature is the call-site contract: a `Double`
     // literal does not inhabit `Int` (there is no `fromRational` narrowing).
     let msg = rejection(r#"f x :: Int -> Int = x; main = f 1.5;"#);
     assert!(
@@ -86,7 +86,7 @@ fn a_float_argument_to_an_int_parameter_is_rejected() {
         "the error must name the definition and the position: {msg}"
     );
     assert!(
-        msg.contains("Float") && msg.contains("Int"),
+        msg.contains("Double") && msg.contains("Int"),
         "the error must name both types: {msg}"
     );
 }
@@ -98,12 +98,12 @@ fn a_matching_argument_is_accepted() {
     assert_eq!(
         run_num(r#"f x = x + 1.0; main = f 1.0;"#),
         2.0,
-        "a matching Float argument must run to 2.0"
+        "a matching Double argument must run to 2.0"
     );
     // An explicit signature, an Int-literal argument (`fromInteger`-
     // polymorphic) and a repeated application all stay accepted.
     assert_eq!(
-        run_num(r#"f x :: Float -> Float = x + 1.0; main = f (f 1.0);"#),
+        run_num(r#"f x :: Double -> Double = x + 1.0; main = f (f 1.0);"#),
         3.0,
         "a nested matching call must run to 3.0"
     );
@@ -142,49 +142,49 @@ fn an_unresolved_argument_defers() {
     // (`if id2 true …` cannot express this — a pre-existing limitation of
     // `if`-condition typing, unrelated to argument checking.)
     assert_eq!(
-        run_value(r#"id2 x = x; main = concat_string (id2 "a") (show_float (id2 1.0));"#),
+        run_value(r#"id2 x = x; main = concat_string (id2 "a") (show_double (id2 1.0));"#),
         Value::String("a1.0".into()),
-        "the same definition must instantiate at String and Float in one program"
+        "the same definition must instantiate at String and Double in one program"
     );
 }
 
 #[test]
 fn higher_order_argument_is_checked() {
-    // A function-typed parameter is checked structurally: `g : Float -> Float`
-    // cannot be handed `\s -> show_float s` (a `Float -> String`). Both sides
+    // A function-typed parameter is checked structurally: `g : Double -> Double`
+    // cannot be handed `\s -> show_double s` (a `Double -> String`). Both sides
     // of the arrow are compared, not just the fact that both are functions.
     let msg = rejection(
-        r#"f :: (Float -> Float) -> Float; f = \g -> g 1.0; main = f (\s -> show_float s);"#,
+        r#"f :: (Double -> Double) -> Double; f = \g -> g 1.0; main = f (\s -> show_double s);"#,
     );
     assert!(
         msg.contains("`f`") && msg.contains("argument 1"),
         "the error must name the definition and the position: {msg}"
     );
     assert!(
-        msg.contains("Float -> String") && msg.contains("Float -> Float"),
+        msg.contains("Double -> String") && msg.contains("Double -> Double"),
         "the error must spell out both function types: {msg}"
     );
-    // The mirror image: a `Float -> String` parameter handed a
-    // `Float -> Float` closure.
+    // The mirror image: a `Double -> String` parameter handed a
+    // `Double -> Double` closure.
     let msg = rejection(
-        r#"f :: (Float -> String) -> String; f = \g -> g 1.0; main = f (\s -> s + 1.0);"#,
+        r#"f :: (Double -> String) -> String; f = \g -> g 1.0; main = f (\s -> s + 1.0);"#,
     );
     assert!(
-        msg.contains("Float -> Float") && msg.contains("Float -> String"),
+        msg.contains("Double -> Double") && msg.contains("Double -> String"),
         "the error must spell out both function types: {msg}"
     );
     // A MATCHING higher-order argument still runs: the same wrapper applied to
-    // a `Float -> Float` closure computes 4.0.
+    // a `Double -> Double` closure computes 4.0.
     assert_eq!(
-        run_num(r#"f :: (Float -> Float) -> Float; f = \g -> g 1.0; main = f (\x -> x * 4.0);"#),
+        run_num(r#"f :: (Double -> Double) -> Double; f = \g -> g 1.0; main = f (\x -> x * 4.0);"#),
         4.0,
         "a matching higher-order argument must run to 4.0"
     );
     // And the function-typed parameter's own RESULT is part of the contract.
     assert_eq!(
         run_value(
-            r#"f :: (Float -> String) -> String; f = \g -> g 2.0;
-               main = f (\x -> concat_string (show_float x) "!");"#
+            r#"f :: (Double -> String) -> String; f = \g -> g 2.0;
+               main = f (\x -> concat_string (show_double x) "!");"#
         ),
         Value::String("2.0!".into()),
         "a matching String-returning closure must run"

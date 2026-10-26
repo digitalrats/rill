@@ -36,7 +36,7 @@ pub struct TypedProgram {
     /// Resolved λ-parameter value types of every def whose parameters live in
     /// its scheme, keyed by definition name: named lambda-literal definitions
     /// (`take = \n -> \xs -> …`, a curried λ-nest) and signature-less
-    /// single-parameter defs (`first p = p.x`, a flat `Thunk([Point],[Float])`).
+    /// single-parameter defs (`first p = p.x`, a flat `Thunk([Point],[Double])`).
     /// Lowering types fragment-local parameter registers with these so a
     /// higher-order parameter is a `Func`, a record parameter its `Data` type,
     /// and field projection / function dispatch resolve at compile time.
@@ -45,7 +45,7 @@ pub struct TypedProgram {
     /// function or a self-recursive local), from the final substitution.
     /// Lowering types the def's shared cell with this so a recursive reference
     /// inside the body (`tail fibs`) resolves its static type (List) instead of
-    /// the Float fallback.
+    /// the Double fallback.
     pub shared_cell_result_tys: HashMap<String, ValueTy>,
     /// Named tape declarations (`name = tape_loop <capacity>`) extracted from
     /// the AST before inference (see [`crate::lib::extract_resources`]). Lowering
@@ -109,7 +109,7 @@ struct Ctx {
     method_lifting: HashSet<(String, String, String)>,
     /// Head-argument bindings of a constraint instance (`instance (Monad m) =>
     /// Arrow (Kleisli m)`): head arg name → concrete type taken from the
-    /// call-site concrete container's LEADING args (`Kleisli Maybe Float Float`
+    /// call-site concrete container's LEADING args (`Kleisli Maybe Double Double`
     /// → `m := Maybe`). The constraints discharge against these, and the
     /// instance body's own record construction unifies against the same
     /// concrete type via the expected-type threading.
@@ -124,11 +124,11 @@ struct Ctx {
     retry_inferred_defs: HashSet<String>,
     /// Names of definitions that carry an explicit `::` signature.
     ///
-    /// A signature IS the call-site contract: `f x :: Float -> Float` rejects a
+    /// A signature IS the call-site contract: `f x :: Double -> Double` rejects a
     /// `String` argument outright. A signature-LESS definition's parameter
     /// types are inferred from its body, where rill's numeric defaulting pins
-    /// an otherwise-unconstrained operand to `Float` (`sum2 p = p.first +
-    /// p.second` → `Pair Float Float -> Float`). That defaulted `Float` stands
+    /// an otherwise-unconstrained operand to `Double` (`sum2 p = p.first +
+    /// p.second` → `Pair Double Double -> Double`). That defaulted `Double` stands
     /// for a `Num`-polymorphic parameter, so the call-site argument check must
     /// not treat it as the concrete type the user wrote — see
     /// [`numeric_default_widens`].
@@ -621,7 +621,7 @@ fn nest_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
             }
             ty
         }
-        None => ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+        None => ret_tys.first().cloned().unwrap_or(ValueTy::Double),
     }
 }
 
@@ -640,7 +640,7 @@ fn applied_result(vty: &ValueTy, n: usize) -> ValueTy {
     }
     let rest = args[n..].to_vec();
     if rest.is_empty() {
-        res.first().cloned().unwrap_or(ValueTy::Float)
+        res.first().cloned().unwrap_or(ValueTy::Double)
     } else {
         ValueTy::Thunk(rest, res.clone())
     }
@@ -742,7 +742,7 @@ fn fresh_sum_vty(ctx: &mut Ctx, sum_name: &str) -> ValueTy {
 
 /// Substitute a parameterized record's type params into a field type
 /// (`data Kleisli m a b = { unKleisli: a -> m b }` → projecting `unKleisli` off
-/// `Kleisli Maybe Float Float` yields `Float -> Maybe Float`). The env's field
+/// `Kleisli Maybe Double Double` yields `Double -> Maybe Double`). The env's field
 /// types carry PLACEHOLDER ids (`Var(k)` for the k-th param, `TyConApp` heads in
 /// the same id space); the record's concrete args fill them in positionally.
 ///
@@ -831,7 +831,7 @@ fn is_const_value_ref(ctx: &Ctx, e: &Expr) -> bool {
         }
         match ctx.def_bodies.get(name.as_str()) {
             Some(Expr::Int(_, _)) => return true,
-            Some(Expr::Float(_, _)) => return true,
+            Some(Expr::Double(_, _)) => return true,
             Some(next @ Expr::Ref(_, _)) => cur = next,
             _ => return false,
         }
@@ -920,7 +920,7 @@ fn collect_static_calls(
                 collect_static_calls(a, src, bound, nodes, out);
             }
         }
-        Expr::Ref(_, _) | Expr::Int(_, _) | Expr::Float(_, _) | Expr::Str(_, _) => {}
+        Expr::Ref(_, _) | Expr::Int(_, _) | Expr::Double(_, _) | Expr::Str(_, _) => {}
         Expr::Neg(inner, _) => collect_static_calls(inner, src, bound, nodes, out),
         Expr::Arith { lhs, rhs, .. } => {
             collect_static_calls(lhs, src, bound, nodes, out);
@@ -1095,7 +1095,7 @@ fn class_var_pattern(ctx: &mut Ctx, sig: &crate::ast::TypeExpr, idx: usize) -> V
 
 /// Infer a typeclass method's argument or body expression (labeled by `what`
 /// for error messages): it must produce a single output channel that is either
-/// a value channel ([`Rate::Value`]) or a bare Float/Int literal (value-
+/// a value channel ([`Rate::Value`]) or a bare Double/Int literal (value-
 /// compatible in v1). Genuine signal computations (`sin 1.0`, arithmetic)
 /// cannot flow through the value track, so they are rejected here — at
 /// inference, with a clear message — rather than failing obscurely during
@@ -1127,11 +1127,11 @@ fn infer_method_value_vty_expected(
     match &t.vty {
         // A Buffer is an ordinary value (the block track is gone): a 0→1
         // Buffer expression is a valid value-track operand. Numeric literals
-        // stay Int/Float (their `Buffer` typing is the signal-constant
+        // stay Int/Double (their `Buffer` typing is the signal-constant
         // compatibility), everything else resolves to `Buffer`.
         ValueTy::Buffer => match e {
             Expr::Int(_, _) => Ok(ValueTy::Int),
-            Expr::Float(_, _) => Ok(ValueTy::Float),
+            Expr::Double(_, _) => Ok(ValueTy::Double),
             _ => Ok(ValueTy::Buffer),
         },
         vty => Ok(vty.clone()),
@@ -1185,7 +1185,7 @@ pub(crate) fn method_value_dispatch_env(
 
 /// Bind a constraint instance's head args from the LEADING args of the
 /// call-site concrete container (`instance (Monad m) => Arrow (Kleisli m)`:
-/// `Kleisli Maybe Float Float` + head `Kleisli m` → `m := Maybe`), recording
+/// `Kleisli Maybe Double Double` + head `Kleisli m` → `m := Maybe`), recording
 /// each binding in `ctx.type_var_bindings`, then discharge every constraint by
 /// instance lookup of the bound type. A head arg that is still an unresolved
 /// type variable at the call site is DEFERRED (recorded, not checked): the
@@ -1300,7 +1300,7 @@ pub(crate) fn class_var_pattern_vty(
 /// Whether a method signature's RESULT is the bare class variable itself
 /// (`mempty: m`, `empty: a`) — the only shape for which a call site's expected
 /// type IS the class variable's value. A signature that merely MENTIONS the
-/// class variable in its result (`wrap: Float -> Pair a a`) does not qualify:
+/// class variable in its result (`wrap: Double -> Pair a a`) does not qualify:
 /// its expected type is an application of the class variable, not the variable
 /// itself, so taking it as the solved value would dispatch on the wrong key.
 /// `forall`/constraint wrappers are transparent (mirrors [`sig_result_directed`]).
@@ -1321,7 +1321,7 @@ fn sig_result_is_bare_class_var(sig: &crate::ast::TypeExpr, class_var: &str) -> 
 /// must come from an argument whose signature type CONSTRAINS it:
 ///
 /// 1. the argument's signature type MENTIONS the class variable — otherwise its
-///    value says nothing about the instance (`pick: Bool -> Pair a a -> Float`
+///    value says nothing about the instance (`pick: Bool -> Pair a a -> Double`
 ///    must select on argument 1, not on the `Bool` at 0), and
 /// 2. the argument is not a bare nullary method reference — `mappend mempty xs`
 ///    must select on `xs`, even though `mappend: m -> m -> m` mentions the class
@@ -1363,7 +1363,7 @@ pub(crate) fn class_var_selector_index(
 ///
 /// Falls back to the selector's head-constructor name when the solved type has
 /// no registered instance (a bare-constructor head such as `Monoid List`
-/// answers a `List Float` selector) or when the class variable stays unsolved
+/// answers a `List Double` selector) or when the class variable stays unsolved
 /// (an open selector type) -- that is the pre-unification behaviour and keeps
 /// `Eq`/`Ord`/`Monoid` dispatch unchanged. A constructor class (arity >= 1) is
 /// always keyed by the head name; its partial head args are restored separately
@@ -1392,7 +1392,7 @@ pub(crate) fn method_dispatch_key(
                 // No parameter mentions the class variable, so the variable can
                 // only be the method's RESULT — and only when the result IS the
                 // bare class variable (`mempty: m`). A result that merely
-                // MENTIONS it (`wrap: Float -> Pair a a`) says nothing about the
+                // MENTIONS it (`wrap: Double -> Pair a a`) says nothing about the
                 // instance, so the head-name fallback below handles it.
                 let in_params = crate::types::ty::class_var_param_pattern(sig, class_var).is_some();
                 if in_params || !sig_result_is_bare_class_var(sig, class_var) {
@@ -1800,7 +1800,7 @@ fn scheme_constraints(
             continue;
         }
         // A context variable the signature's arguments and result never
-        // mention (`C i => Float`) has no type variable IN the scheme to pair
+        // mention (`C i => Double`) has no type variable IN the scheme to pair
         // with, so there is nothing a dictionary parameter could witness. Such
         // a signature is AMBIGUOUS, which Haskell 2010 rejects outright; rill
         // has no ambiguity check today (an open defect tracked separately, and
@@ -1836,7 +1836,7 @@ pub(crate) fn sig_func_parts(
     }
 }
 
-/// Convert a definition signature (`mk :: Ix i => Pair i i -> Float -> Float`)
+/// Convert a definition signature (`mk :: Ix i => Pair i i -> Double -> Double`)
 /// into its parameter and RESULT value types. Every signature type variable —
 /// the class variables of the context included — becomes a fresh unification
 /// variable shared by name, so a call site solves them by unifying its
@@ -1873,7 +1873,7 @@ fn def_sig_tys_conv(
 }
 
 /// Whether `name` is a DECLARED type rather than a signature type variable
-/// (`Float`, `Pair`, a user `data` type).
+/// (`Double`, `Pair`, a user `data` type).
 ///
 /// A thin alias for [`TypeEnv::is_type_name`] — the registry is the ONE
 /// predicate, so this cannot drift from the resolver
@@ -2141,7 +2141,7 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
         // A constraint / partial-head instance (`instance (Monad m) => Arrow
         // (Kleisli m)`) cannot have its bodies inferred in isolation: the head
         // args are abstract until a call site binds them to concrete types
-        // (`Kleisli Maybe Float Float` → `m := Maybe`), and a result-directed
+        // (`Kleisli Maybe Double Double` → `m := Maybe`), and a result-directed
         // method inside (`return (f x)`) needs that concrete type to resolve.
         // Bodies of such instances are inferred (and errors reported) at every
         // CALL SITE instead — the constraint discharge there is the real check.
@@ -2203,7 +2203,7 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
                         })
                         .first()
                         .cloned()
-                        .unwrap_or(ValueTy::Float),
+                        .unwrap_or(ValueTy::Double),
                     )
                 }
                 _ => None,
@@ -2391,7 +2391,7 @@ pub fn infer_program_with_entry(
     // newtypes, typeclasses, instances); phase 2 resolves data-type
     // field/payload types against the COMPLETE alias/newtype environment. A
     // single-pass registration would wrongly reject
-    // `data P = { x: Angles }; type Angles = Float; ...`.
+    // `data P = { x: Angles }; type Angles = Double; ...`.
     // The program is cloned so the prelude-combinator typing (below) can rewrite
     // it in place; inference, reduce and lower all consume the desugared form.
     let mut program = program.clone();
@@ -2676,7 +2676,7 @@ pub fn infer_program_with_entry(
     // λ-parameter function or a self-recursive local). Lowering types the def's
     // shared cell with this, so a recursive reference inside the body (`tail
     // fibs` — `fibs` still being compiled) resolves its static type (List)
-    // instead of the Float fallback.
+    // instead of the Double fallback.
     let mut shared_cell_result_tys: HashMap<String, ValueTy> = HashMap::new();
     for def in &program.defs {
         // Shared-cell defs: named λ-parameter functions (Anchor) and local
@@ -2691,7 +2691,7 @@ pub fn infer_program_with_entry(
                 // function value, so its shared-cell type is its λ signature —
                 // lowering needs it while the def's own anchor closure is still
                 // compiling, so a recursive self-call dispatches through the nest
-                // instead of falling back to `Float`.
+                // instead of falling back to `Double`.
                 !matches!(body, Expr::Lambda { .. }) || leading_lambda_count(body) > 1
             }
             _ => false,
@@ -2701,7 +2701,7 @@ pub fn infer_program_with_entry(
                 let out = &s.ty.vty;
                 let resolved = ctx.subst.resolve_value(out);
                 // The def's scheme already carries its FULL function type
-                // (`countup : Func([Float],[Float])`, `nth : <curried nest>`),
+                // (`countup : Func([Double],[Double])`, `nth : <curried nest>`),
                 // so the shared-cell capture type IS that signature. Wrapping it
                 // in another λ layer would double the parameter list, and an
                 // application through the captured value would then return the
@@ -2761,7 +2761,7 @@ struct DefBodyTy {
     sig_params: Vec<ValueTy>,
     /// Recovered λ-parameter types from the value-track retry, if any: empty
     /// when the first attempt typed the body (with signature types or the
-    /// scalar default). [`def_scheme`] prefers these over the `Float`
+    /// scalar default). [`def_scheme`] prefers these over the `Double`
     /// fallback so a signature-less def's scheme carries its structured
     /// parameters (`first p = p.x` → `p : Point`) instead of flattening them.
     lambda_param_tys: Vec<ValueTy>,
@@ -2849,10 +2849,10 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     if ctx.nested_group_depth == 0 {
         ctx.locals.clear();
     }
-    // Signature-driven parameter typing: a definition annotated `:: Float ->
+    // Signature-driven parameter typing: a definition annotated `:: Double ->
     // List a -> …` binds its λ-parameters to the signature's argument types
     // (shared type variables become fresh unification vars), instead of the
-    // scalar `Float` default. The effective parameter list is the signature's
+    // scalar `Double` default. The effective parameter list is the signature's
     // arity — `def.params()` is empty for a curried multi-parameter definition.
     let sig_param_tys: Option<Vec<ValueTy>> = def
         .sig()
@@ -2860,13 +2860,13 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         .filter(|tys| tys.len() == params.len());
     for (i, p) in params.iter().enumerate() {
         // λ-parameters take the signature's declared type when annotated. An
-        // unannotated parameter starts as a FRESH TYPE VARIABLE, not a `Float`
+        // unannotated parameter starts as a FRESH TYPE VARIABLE, not a `Double`
         // default: Haskell 2010 §4.1.2 infers `f x = x` as `a -> a`, and
-        // generalizes `a` at the definition. A `Float` default would make the
+        // generalizes `a` at the definition. A `Double` default would make the
         // scheme monomorphic, so the definition could never be applied at any
         // other type and a call-site argument check would reject valid
         // programs. The body's own demands still bind the variable (`x + 1.0`
-        // binds it to `Float`, `length x` to `List a`), so a scalar definition
+        // binds it to `Double`, `length x` to `List a`), so a scalar definition
         // ends up exactly as concrete as before.
         let ty = match sig_param_tys.as_ref().and_then(|tys| tys.get(i).cloned()) {
             Some(t) => t,
@@ -2926,7 +2926,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
             let retry = infer_expr(ctx, &body);
             // Carry the VALUE-track retry's resolved λ-parameter types in the
             // returned body type: the body's value demands (`tail xs` → xs :
-            // List, `k - 1.0` → k : Float) resolve the fresh param vars here,
+            // List, `k - 1.0` → k : Double) resolve the fresh param vars here,
             // and the final scheme would otherwise discard them (λ-params are
             // stored as signal scalars). `def_scheme` lifts them into the
             // scheme, and lowering's `fn_param_tys` rebuild reads them from
@@ -2937,14 +2937,14 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                     let lt = ctx.locals.get(p.name.as_str()).cloned();
                     let vty = match lt {
                         Some(t) => t.vty.clone(),
-                        _ => ValueTy::Float,
+                        _ => ValueTy::Double,
                     };
                     let resolved = ctx.subst.resolve_value(&vty);
                     // An unresolvable parameter (a Var never constrained by the
                     // body — a recursive call's arguments are not re-inferred)
-                    // is a v1 scalar λ-parameter: Float.
+                    // is a v1 scalar λ-parameter: Double.
                     param_tys.push(match resolved {
-                        ValueTy::Var(_) => ValueTy::Float,
+                        ValueTy::Var(_) => ValueTy::Double,
                         other => other,
                     });
                 }
@@ -2966,15 +2966,15 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
 /// Type a class-constrained definition's body ONCE, under its GIVEN constraints
 /// (design §3.0).
 ///
-/// `mk p v :: Ix i => Pair i i -> Float -> Float` is the judgement
-/// `Ix i => Pair i i -> Float -> Float`: the class variable `i` is ASSUMED, not
+/// `mk p v :: Ix i => Pair i i -> Double -> Double` is the judgement
+/// `Ix i => Pair i i -> Double -> Double`: the class variable `i` is ASSUMED, not
 /// solved. The body is therefore typed with `Ix i` in scope, so `rangeSize p`
 /// resolves against the incoming `Ix` DICTIONARY (an abstract witness) instead
 /// of demanding a concrete index type — which is exactly the old bug this
-/// replaces (typing `p` as the scalar `Float` default and failing).
+/// replaces (typing `p` as the scalar `Double` default and failing).
 ///
 /// The body's result is then checked against the signature's declared result
-/// type, so an ill-typed constrained body (`mk p :: Ix i => Pair i i -> Float =
+/// type, so an ill-typed constrained body (`mk p :: Ix i => Pair i i -> Double =
 /// "nope"`) is rejected at LOAD rather than per call site.
 ///
 /// GIVEN constraints are visible to nested λ-bodies and `where` definitions too
@@ -3023,7 +3023,7 @@ fn infer_constrained_def_body(
         // one the body's types carry. A constructor-class variable (`f` in
         // `Functor f`) is an application HEAD, which the signature conversion
         // spells by NAME; the witness then matches on that head. An AMBIGUOUS
-        // context (`C i => Float`, `i` in no argument or result) has no
+        // context (`C i => Double`, `i` in no argument or result) has no
         // variable to pair a dictionary with — the missing ambiguity check is an
         // open defect, and such a constraint is not a witness here either.
         let id = if arity == 0 {
@@ -3319,18 +3319,18 @@ fn infer_def_group_inner(ctx: &mut Ctx, defs: &[Def]) -> Result<(), CompileError
 /// Resolve a definition's parameter types through the substitution.
 ///
 /// Called after a body is inferred: a parameter the body constrained
-/// (`x + 1.0` → `Float`, `length x` → `List a`) resolves to its concrete type,
+/// (`x + 1.0` → `Double`, `length x` → `List a`) resolves to its concrete type,
 /// while a parameter the body never constrains (`f x = x`) stays a structural
 /// type variable. Keeping it a variable is what makes the definition's scheme
 /// genuinely polymorphic (Haskell 2010 §4.1.2), so `fn_param_tys` and the
 /// call-site argument check can tell "accepts anything" apart from "accepts
-/// `Float`".
+/// `Double`".
 fn resolved_param_tys(ctx: &Ctx, params: &[Param]) -> Vec<ValueTy> {
     params
         .iter()
         .map(|p| match ctx.locals.get(p.name.as_str()) {
             Some(t) => ctx.subst.resolve_value(&t.vty),
-            None => ValueTy::Float,
+            None => ValueTy::Double,
         })
         .collect()
 }
@@ -3345,12 +3345,12 @@ fn resolved_param_tys(ctx: &Ctx, params: &[Param]) -> Vec<ValueTy> {
 /// definition is stored curried (`Def::Eval::params` empty, body a λ-chain).
 /// An annotated definition reuses the argument types its body was checked
 /// against (`body_ty.sig_params`), so the scheme and the lowered parameter
-/// registers agree — a `Float` scheme for an `Int`-typed parameter is exactly
+/// registers agree — a `Double` scheme for an `Int`-typed parameter is exactly
 /// the divergence this avoids. An unannotated definition carries the parameter
 /// types its body was checked against (`body_ty.lambda_param_tys`) — concrete
 /// where the body constrained them (`first p = p.x` → `p : Point`), a type
 /// variable where it did not (`f x = x` → `a -> a`) — instead of the scalar
-/// `Float` default.
+/// `Double` default.
 ///
 /// The constraint list comes from the signature's `(C1 a, C2 b) =>` context
 /// (empty for an unconstrained definition). Each constraint's type variable is
@@ -3383,9 +3383,9 @@ fn def_scheme(
         ValueTy::Thunk(body_ty.sig_params.clone(), vec![body_ty.ty.vty.clone()])
     } else if body_ty.lambda_param_tys.len() == lam_count {
         // Recovered parameter types: the types the body was actually checked
-        // against (`x + 1.0` → `x : Float`, `p.x` → `p : Point`, an
+        // against (`x + 1.0` → `x : Double`, `p.x` → `p : Point`, an
         // unconstrained `x` → a type variable). Carrying them here — rather
-        // than the scalar `Float` fallback — keeps an unannotated definition's
+        // than the scalar `Double` fallback — keeps an unannotated definition's
         // polymorphism and gives the call-site argument check the real
         // parameter types.
         ValueTy::Thunk(
@@ -3393,14 +3393,14 @@ fn def_scheme(
             vec![body_ty.ty.vty.clone()],
         )
     } else {
-        let param_tys: Vec<ValueTy> = (0..lam_count).map(|_| ValueTy::Float).collect();
+        let param_tys: Vec<ValueTy> = (0..lam_count).map(|_| ValueTy::Double).collect();
         ValueTy::Thunk(param_tys, vec![body_ty.ty.vty.clone()])
     };
     (vty, Vec::new())
 }
 
 /// Resolve an arm/branch body's result value type: a value channel directly,
-/// or a bare `Int`/`Float` literal (signal-rate in v1 but value-compatible in
+/// or a bare `Int`/`Double` literal (signal-rate in v1 but value-compatible in
 /// value positions).
 fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, CompileError> {
     if bt.arity_in() != 0 || bt.arity_out() != 1 {
@@ -3412,7 +3412,7 @@ fn arm_result_vty(bt: ArrowTy, body: &Expr, span: Span) -> Result<ValueTy, Compi
     match &bt.vty {
         ValueTy::Buffer => match body {
             Expr::Int(_, _) => Ok(ValueTy::Int),
-            Expr::Float(_, _) => Ok(ValueTy::Float),
+            Expr::Double(_, _) => Ok(ValueTy::Double),
             _ => Err(CompileError::Type {
                 msg: "branch must be a value expression (0->1 value channel)".into(),
                 span,
@@ -3667,7 +3667,7 @@ fn bind_pattern(
             }
             Ok(())
         }
-        Pattern::LitInt(_) | Pattern::LitFloat(_) | Pattern::LitBool(_) | Pattern::LitStr(_) => {
+        Pattern::LitInt(_) | Pattern::LitDouble(_) | Pattern::LitBool(_) | Pattern::LitStr(_) => {
             Err(CompileError::Type {
                 msg: "literal pattern requires a scalar scrutinee".into(),
                 span: arm_span,
@@ -3699,7 +3699,7 @@ fn check_match_arms(
         ctx.locals = saved;
     }
     check_exhaustive_sum(ctx, sum_name, arms, span)?;
-    Ok(result.unwrap_or(ValueTy::Float))
+    Ok(result.unwrap_or(ValueTy::Double))
 }
 
 /// Pin a literal pattern's type to the scrutinee type (so a `Wire` scrutinee
@@ -3718,8 +3718,8 @@ fn check_scalar_pattern(
         }
         Pattern::Wild => Ok(()),
         Pattern::LitInt(_) => unify_value(scrutinee_vty, &ValueTy::Int, &mut ctx.subst, arm_span),
-        Pattern::LitFloat(_) => {
-            unify_value(scrutinee_vty, &ValueTy::Float, &mut ctx.subst, arm_span)
+        Pattern::LitDouble(_) => {
+            unify_value(scrutinee_vty, &ValueTy::Double, &mut ctx.subst, arm_span)
         }
         Pattern::LitBool(_) => unify_value(scrutinee_vty, &ValueTy::Bool, &mut ctx.subst, arm_span),
         Pattern::LitStr(_) => {
@@ -3860,9 +3860,9 @@ fn infer_expr_expected(
             Some(ValueTy::Buffer) => ValueTy::Buffer,
             _ => ValueTy::Int,
         })),
-        Expr::Float(_, _) => Ok(ArrowTy::value(match expected {
+        Expr::Double(_, _) => Ok(ArrowTy::value(match expected {
             Some(ValueTy::Buffer) => ValueTy::Buffer,
-            _ => ValueTy::Float,
+            _ => ValueTy::Double,
         })),
         Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
         Expr::Ref(name, span) => infer_ref_expected(ctx, name, *span, expected),
@@ -3901,7 +3901,7 @@ fn infer_expr_expected(
             ctx.defs = saved_defs;
             Ok(ty)
         }
-        Expr::Record(_, _) => Ok(ArrowTy::uniform(0, 1, ValueTy::Float)),
+        Expr::Record(_, _) => Ok(ArrowTy::uniform(0, 1, ValueTy::Double)),
         Expr::ActorParam { default, span, .. } => {
             if let Some(d) = default {
                 let ty = infer_expr(ctx, d)?;
@@ -4028,7 +4028,7 @@ fn infer_expr_expected(
                                         ValueTy::Var(k) => args
                                             .get(k.saturating_sub(1) as usize)
                                             .cloned()
-                                            .unwrap_or(ValueTy::Float),
+                                            .unwrap_or(ValueTy::Double),
                                         t => t.clone(),
                                     };
                                     Ok(ArrowTy::value_channel(fty))
@@ -4154,7 +4154,7 @@ fn infer_expr_expected(
                                     ValueTy::Var(k) => args
                                         .get(k.saturating_sub(1) as usize)
                                         .cloned()
-                                        .unwrap_or(ValueTy::Float),
+                                        .unwrap_or(ValueTy::Double),
                                     t => t.clone(),
                                 }),
                             _ => None,
@@ -4200,7 +4200,7 @@ fn infer_expr_expected(
             // `_` in match-scrutinee position is the identity value wire: it is
             // a Value channel with a fresh value type, pinned to the arm-derived
             // sum type (or a literal arm's scalar type) below by unification.
-            // Bare Int/Float literals are signal-rate channels in v1 but
+            // Bare Int/Double literals are signal-rate channels in v1 but
             // value-compatible in value positions (mirroring `arm_result_vty`).
             // Derive the arm constructors' sum type BEFORE inferring the
             // scrutinee, so the scrutinee can be inferred with that sum as its
@@ -4245,7 +4245,7 @@ fn infer_expr_expected(
             });
             let st = match scrutinee.as_ref() {
                 Expr::Int(_, _) => ArrowTy::value_channel(ValueTy::Int),
-                Expr::Float(_, _) => ArrowTy::value_channel(ValueTy::Float),
+                Expr::Double(_, _) => ArrowTy::value_channel(ValueTy::Double),
                 _ => infer_expr_expected(ctx, scrutinee, pre_expected)?,
             };
             // The scrutinee must be a single value channel (not a signal buffer).
@@ -4369,7 +4369,7 @@ fn infer_expr_expected(
                     ctx.locals = saved;
                 }
                 check_exhaustive_scalar(ctx, arms, &scrutinee_vty, *span)?;
-                Ok(ArrowTy::value_channel(result.unwrap_or(ValueTy::Float)))
+                Ok(ArrowTy::value_channel(result.unwrap_or(ValueTy::Double)))
             }
         }
         Expr::If {
@@ -4402,7 +4402,7 @@ fn infer_expr_expected(
             // Bind the parameters as value channels and infer the body; the
             // result type is the function type. v1 lambda parameters are
             // structural value types: the returned `Func` signature carries the
-            // parameter variables (NOT hardcoded `Float`), so a call site can
+            // parameter variables (NOT hardcoded `Double`), so a call site can
             // unify a concrete argument against them — a higher-order parameter
             // (`f` in `twice = fn f x -> f (f x)`) becomes a `Func`, a record
             // parameter (`p` in `pair_map`) becomes its `Data` type. Signal-wire
@@ -4475,7 +4475,7 @@ fn infer_expr_expected(
             }
             let elem_ty = elem_ty
                 .map(|t| ctx.subst.resolve_value(&t))
-                .unwrap_or(ValueTy::Float);
+                .unwrap_or(ValueTy::Double);
             Ok(ArrowTy::value_channel(ValueTy::App(
                 "List".into(),
                 vec![elem_ty],
@@ -4485,7 +4485,7 @@ fn infer_expr_expected(
             // Map literal with string keys: every entry's value must share ONE
             // type (mirroring the homogeneous List literal); that type is the
             // map's value type. A mixed-type literal is a compile error, and a
-            // non-Float value type (a List, a record) is carried accurately.
+            // non-Double value type (a List, a record) is carried accurately.
             let mut val_ty: Option<ValueTy> = None;
             for (_, ve) in entries {
                 let vt = infer_const_value(ctx, ve)?;
@@ -4497,7 +4497,7 @@ fn infer_expr_expected(
             }
             let val_ty = val_ty
                 .map(|t| ctx.subst.resolve_value(&t))
-                .unwrap_or(ValueTy::Float);
+                .unwrap_or(ValueTy::Double);
             Ok(ArrowTy::value_channel(ValueTy::App(
                 "Map".into(),
                 vec![ValueTy::String, val_ty],
@@ -4606,7 +4606,7 @@ fn infer_ref_expected(
                         &class_var,
                         &cv_subst,
                         sig,
-                        || it.next().unwrap_or(ValueTy::Float),
+                        || it.next().unwrap_or(ValueTy::Double),
                     );
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                     return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
@@ -4679,7 +4679,7 @@ fn infer_ref_expected(
                             &class_var,
                             &cv_subst0,
                             sig,
-                            || it.next().unwrap_or(ValueTy::Float),
+                            || it.next().unwrap_or(ValueTy::Double),
                         );
                         let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                         return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
@@ -4730,7 +4730,7 @@ fn infer_ref_expected(
                     );
                     let contract = match ret_ty {
                         Some(ret) => nest_thunk(&arg_tys, vec![ret]),
-                        None => arg_tys.first().cloned().unwrap_or(ValueTy::Float),
+                        None => arg_tys.first().cloned().unwrap_or(ValueTy::Double),
                     };
                     return Ok(ArrowTy::value_channel(contract));
                 }
@@ -4739,7 +4739,7 @@ fn infer_ref_expected(
     }
     // A reference to a compile-time NUMERIC constant (`c = 440.0`) in a
     // Buffer-expected position is a SIGNAL constant: a foreign signal slot
-    // `c : Buffer`. Otherwise the constant stays a Float value.
+    // `c : Buffer`. Otherwise the constant stays a Double value.
     if matches!(expected, Some(ValueTy::Buffer))
         && is_const_value_ref(ctx, &Expr::Ref(name.into(), span))
     {
@@ -4817,13 +4817,13 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         "empty_map" => {
             return Ok(ArrowTy::value_channel(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float],
+                vec![ValueTy::String, ValueTy::Double],
             )))
         }
         "empty_set" => {
             return Ok(ArrowTy::value_channel(ValueTy::App(
                 "Set".into(),
-                vec![ValueTy::Float],
+                vec![ValueTy::Double],
             )))
         }
         _ => {}
@@ -4886,7 +4886,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                     &class_var,
                     &ClassVarSubst::Var(u32::MAX),
                     &sig,
-                    || it.next().unwrap_or(ValueTy::Float),
+                    || it.next().unwrap_or(ValueTy::Double),
                 );
                 let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                 return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
@@ -4912,7 +4912,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
         "sin" | "cos" | "tan" | "sqrt" | "exp" | "ln" | "tanh" | "abs"
     ) {
         // A math builtin is an ordinary unary VALUE function, not a signal
-        // arrow: `abs b : Buffer` over a buffer, `abs 1.0 : Float` over a
+        // arrow: `abs b : Buffer` over a buffer, `abs 1.0 : Double` over a
         // scalar. The parameter and result are the same type.
         let s = ctx.fresh_vty();
         return Ok(ArrowTy::value(ValueTy::Thunk(vec![s.clone()], vec![s])));
@@ -5376,7 +5376,7 @@ fn infer_apply_expr(
         )));
     }
     Ok(ArrowTy::value_channel(
-        ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+        ret_tys.first().cloned().unwrap_or(ValueTy::Double),
     ))
 }
 
@@ -5806,8 +5806,9 @@ fn infer_apply_impl(
             // used as `lowpass 1000.0 0.7 1.0`). Re-infer a numeric constant with
             // `Buffer` expected so it unifies as a buffer channel.
             let numeric_const = at0.arity_out() == 1
-                && matches!(at0.vty, ValueTy::Float | ValueTy::Int)
-                && (matches!(a, Expr::Int(_, _) | Expr::Float(_, _)) || is_const_value_ref(ctx, a));
+                && matches!(at0.vty, ValueTy::Double | ValueTy::Int)
+                && (matches!(a, Expr::Int(_, _) | Expr::Double(_, _))
+                    || is_const_value_ref(ctx, a));
             let at = if pt == ValueTy::Buffer && numeric_const {
                 infer_expr_expected(ctx, a, Some(ValueTy::Buffer))?
             } else {
@@ -6059,7 +6060,7 @@ fn infer_apply_impl(
                     .collect();
                 // Seed the type-parameter placeholders from the record's own
                 // expected type when the heads match: `Kleisli m a b` built
-                // under an expected `Kleisli Maybe Float Float` pins `m :=
+                // under an expected `Kleisli Maybe Double Double` pins `m :=
                 // Maybe`, so a result-directed method inside a field value
                 // (`arr f = Kleisli (\ x -> return (f x))` inlined under a
                 // concrete container) resolves its instance. Each expected arg
@@ -6113,7 +6114,7 @@ fn infer_apply_impl(
                 // parameter from the substitution built by unifying the
                 // fields. `Var(k+1)` and the `TyConApp` head share one
                 // id space, so resolving `Var(k+1)` yields the concrete
-                // type (m → Maybe, a → Float, b → Float).
+                // type (m → Maybe, a → Double, b → Double).
                 if let Some(arity) = ctx.env.data_arities.get(name) {
                     if *arity > 0 {
                         let arg_tys: Vec<ValueTy> = (0..*arity)
@@ -6206,7 +6207,7 @@ fn infer_apply_impl(
         // against it, and build the parameterized result `App(sum_name, ...)`
         // with the FULL `arity` type args: each payload type lands at its
         // placeholder position (`Var(k)` → arg k-1), the rest stay fresh
-        // (`Left 5.0` is `App("Either", [Float, ?])`). The match pin pads the
+        // (`Left 5.0` is `App("Either", [Double, ?])`). The match pin pads the
         // scrutinee to `arity`, so the arities must agree.
         if let Some(arity) = ctx.env.ctor_arity(&sum_name) {
             let mut slots: Vec<Option<ValueTy>> = Vec::with_capacity(arity);
@@ -6326,14 +6327,14 @@ fn infer_apply_impl(
                     });
                 };
                 // Constraint instance: bind head args from the expected
-                // container's leading args (`Kleisli Maybe Float Float` + head
+                // container's leading args (`Kleisli Maybe Double Double` + head
                 // `Kleisli m` → `m := Maybe`) and discharge the constraints.
                 bind_constraint_instance(ctx, &class_name, &ty_name, &exp, span)?;
                 // The type checker SELECTED an instance here: record the
                 // dictionary lowering must pass (design §3.0 point 3).
                 record_selection(ctx, span, &class_name, &selection_evidence(&cv_subst));
                 // A PRIMITIVE instance (a compiler kernel: `Num Int`,
-                // `Num Float`, a buffer arithmetic instance, a structural
+                // `Num Double`, a buffer arithmetic instance, a structural
                 // Eq/Ord) has no source body. Its dictionary entry is the
                 // kernel, selected by (class, type, method) at lowering, so
                 // inference only needs the method's SIGNATURE, which the class
@@ -6349,7 +6350,7 @@ fn infer_apply_impl(
                     // A kernel-backed method: its type IS the class signature
                     // with the class variable solved to the dispatch type. The
                     // arguments are unified against the parameter types so a
-                    // call like `(+) 1.0 2.0` solves `a := Float`.
+                    // call like `(+) 1.0 2.0` solves `a := Double`.
                     let param_tys = signature_param_tys(ctx, &class_var, &cv_subst, sig);
                     for (i, a) in args.iter().enumerate() {
                         if let Some(pt) = param_tys.get(i) {
@@ -6372,7 +6373,7 @@ fn infer_apply_impl(
                         &class_var,
                         &cv_subst,
                         sig,
-                        || it.next().unwrap_or(ValueTy::Float),
+                        || it.next().unwrap_or(ValueTy::Double),
                     );
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                     return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
@@ -6424,7 +6425,7 @@ fn infer_apply_impl(
                         .get(p)
                         .cloned()
                         .map(|t| t.vty.clone())
-                        .unwrap_or(ValueTy::Float);
+                        .unwrap_or(ValueTy::Double);
                     unify_value(av, &pt, &mut ctx.subst, a.span())?;
                 }
                 let body_vty =
@@ -6466,7 +6467,7 @@ fn infer_apply_impl(
                         &class_var,
                         &ClassVarSubst::Var(u32::MAX),
                         sig,
-                        || it.next().unwrap_or(ValueTy::Float),
+                        || it.next().unwrap_or(ValueTy::Double),
                     );
                     for (i, a) in args.iter().enumerate() {
                         if let Some(pt) = param_tys.get(i) {
@@ -6496,7 +6497,7 @@ fn infer_apply_impl(
                 // Selector: the argument whose signature type mentions the class
                 // variable AND which is not a bare nullary method ref — both
                 // criteria must agree, because the same argument's concrete type
-                // solves the class variable (`pick: Bool -> Pair a a -> Float`
+                // solves the class variable (`pick: Bool -> Pair a a -> Double`
                 // selects on the `Pair`, `mappend mempty xs` on `xs`).
                 let Some(selector_idx) =
                     class_var_selector_index(sig, &class_var, args.len(), |i| {
@@ -6565,7 +6566,7 @@ fn infer_apply_impl(
                         &class_var,
                         &cv_subst,
                         sig,
-                        || it.next().unwrap_or(ValueTy::Float),
+                        || it.next().unwrap_or(ValueTy::Double),
                     );
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
                     return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
@@ -6613,7 +6614,7 @@ fn infer_apply_impl(
                         };
                         let (_, _, nbody) =
                             ctx.env.resolve_method(arg_name, ty_name.as_str()).unwrap();
-                        let expected = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                        let expected = param_tys.get(i).cloned().unwrap_or(ValueTy::Double);
                         infer_method_value_vty_expected(ctx, &nbody, "argument", Some(expected))?
                     };
                     param_bind.push(pt);
@@ -6712,7 +6713,7 @@ fn infer_apply_impl(
             let pattern = class_var_pattern(ctx, sig, container_idx);
             // A partial instance head (`Kleisli m`, head_args = ["m"]) means the
             // pattern matches the concrete container's args AFTER the bound
-            // head args (`Kleisli Maybe Float Float` → match `[Float, Float]`).
+            // head args (`Kleisli Maybe Double Double` → match `[Double, Double]`).
             let match_target = if head_args.is_empty() {
                 container_vty.clone()
             } else {
@@ -6826,7 +6827,7 @@ fn infer_apply_impl(
                     }
                     arg_vtys.push(container_vty.clone());
                 } else {
-                    let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Float);
+                    let exp = param_tys.get(i).cloned().unwrap_or(ValueTy::Double);
                     arg_vtys.push(infer_method_value_vty_expected(
                         ctx,
                         a,
@@ -6959,11 +6960,11 @@ fn infer_apply_impl(
                         // 0-in generator like `sine 440.0`, another foreign
                         // call, or a buffer value); a VALUE-rate channel (a
                         // string, a record, a lambda) is a type error. A bare
-                        // Float/Int literal IS a signal constant: infer it
+                        // Double/Int literal IS a signal constant: infer it
                         // with `Buffer` expected, exactly as the buffer
                         // arithmetic path does (`lowering` broadcasts a scalar
                         // to a buffer constant).
-                        let at = if matches!(&args[pos], Expr::Int(_, _) | Expr::Float(_, _)) {
+                        let at = if matches!(&args[pos], Expr::Int(_, _) | Expr::Double(_, _)) {
                             infer_expr_expected(ctx, &args[pos], Some(ValueTy::Buffer))?
                         } else {
                             infer_expr(ctx, &args[pos])?
@@ -7148,7 +7149,7 @@ fn infer_apply_impl(
                 let vt = infer_method_value_vty(ctx, a, "argument")?;
                 unify_value(&vt, pty, &mut ctx.subst, a.span())?;
             }
-            let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+            let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
             return Ok(ArrowTy::value_channel(ret_ty));
         }
     }
@@ -7209,7 +7210,7 @@ fn infer_apply_impl(
                 };
                 // Partial application (currying): fewer args than the
                 // signature produce a function over the remaining parameters.
-                // `add3 = add 3.0` types as `Func([Float], [Float])`.
+                // `add3 = add 3.0` types as `Func([Double], [Double])`.
                 if args.len() < arg_tys.len() {
                     for (a, pty) in args.iter().zip(arg_tys.iter()) {
                         let vt =
@@ -7240,7 +7241,7 @@ fn infer_apply_impl(
                 // `return`/`bind` resolve by instance.
                 pin_result_to_expected(
                     ctx,
-                    &ret_tys.first().cloned().unwrap_or(ValueTy::Float),
+                    &ret_tys.first().cloned().unwrap_or(ValueTy::Double),
                     expected.as_ref(),
                     span,
                 )?;
@@ -7271,7 +7272,7 @@ fn infer_apply_impl(
                         return Err(e);
                     }
                 }
-                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Float);
+                let ret_ty = ret_tys.first().cloned().unwrap_or(ValueTy::Double);
                 return Ok(ArrowTy::value_channel(ret_ty));
             }
             if let Some(ref_scheme) = target {
@@ -7302,17 +7303,17 @@ fn infer_apply_impl(
             // Partial application of a named definition (`add5 = add2 5.0` where
             // `add2` takes two λ-params): the remaining λ-params become the
             // value arguments of a first-class function value. The applied args
-            // must be value scalars, unified against Float (v1 λ-params are
-            // Float-typed).
+            // must be value scalars, unified against Double (v1 λ-params are
+            // Double-typed).
             if args.len() < scheme.lam_count {
                 let remaining = scheme.lam_count - args.len();
                 for a in args {
                     let vt = infer_const_value(ctx, a)?;
-                    unify_value(&vt, &ValueTy::Float, &mut ctx.subst, a.span())?;
+                    unify_value(&vt, &ValueTy::Double, &mut ctx.subst, a.span())?;
                 }
                 return Ok(ArrowTy::value_channel(nest_thunk(
-                    &vec![ValueTy::Float; remaining],
-                    vec![ValueTy::Float],
+                    &vec![ValueTy::Double; remaining],
+                    vec![ValueTy::Double],
                 )));
             }
             return Err(CompileError::Type {
@@ -7344,12 +7345,12 @@ fn infer_apply_impl(
     let arg = &args[0];
     // A numeric literal argument to a Buffer-consuming function (`sin 440.0`)
     // is a SIGNAL constant: infer it with `Buffer` expected so the literal
-    // unifies as a buffer value, not a value Float.
+    // unifies as a buffer value, not a value Double.
     let want_buffer = match ctx.subst.resolve_value(&callee.vty) {
         ValueTy::Thunk(caps, _) => caps.first().is_some_and(|c| matches!(c, ValueTy::Buffer)),
         _ => false,
     };
-    let at = if matches!(arg, Expr::Int(_, _) | Expr::Float(_, _)) && want_buffer {
+    let at = if matches!(arg, Expr::Int(_, _) | Expr::Double(_, _)) && want_buffer {
         infer_expr_expected(ctx, arg, Some(ValueTy::Buffer))?
     } else {
         infer_expr(ctx, arg)?
@@ -7361,7 +7362,7 @@ fn infer_apply_impl(
 /// types.
 ///
 /// Haskell 2010 §4.1.3 requires an application's argument type to match the
-/// parameter type, so a `String` passed to a `Float` parameter is a type error —
+/// parameter type, so a `String` passed to a `Double` parameter is a type error —
 /// builtin calls already enforce this, and a user definition must not be the one
 /// hole. `fn_ty` is the call-site INSTANTIATION of the definition's scheme (fresh
 /// variables per call, so polymorphic definitions stay polymorphic), and its
@@ -7376,7 +7377,7 @@ fn infer_apply_impl(
 /// Two rill value-track widenings stay accepted, because a buffer is an ordinary
 /// value and integer literals are `fromInteger`-polymorphic in Haskell 2010:
 /// a numeric formal takes a `Buffer` argument (and a `Buffer` formal takes any
-/// value), and a `Float` formal takes a bare `Int` literal. Everything else goes
+/// value), and a `Double` formal takes a bare `Int` literal. Everything else goes
 /// through [`unify_value`], whose failure is reported as an error naming the
 /// definition and the argument position.
 fn check_def_call_args(
@@ -7392,7 +7393,7 @@ fn check_def_call_args(
     // An explicit signature's parameter types are the types the user wrote, so
     // they are checked exactly. A signature-less definition's parameter types
     // are inferred from its body, where numeric defaulting pins an otherwise
-    // unconstrained operand to `Float`; that `Float` stands for a
+    // unconstrained operand to `Double`; that `Double` stands for a
     // `Num`-polymorphic parameter and tolerates an `Int` argument.
     let defaulted = !ctx.sig_defs.contains(name);
     for (i, (a, formal)) in args.iter().zip(formals.iter()).enumerate() {
@@ -7444,32 +7445,32 @@ fn def_arg_widens_to(formal: &ValueTy, actual: &ValueTy, arg: &Expr, defaulted: 
         // signal-constant / buffer-arithmetic path) and any value flows into a
         // `Buffer` parameter.
         (ValueTy::Buffer, _) => true,
-        (ValueTy::Float | ValueTy::Int, ValueTy::Buffer) => true,
-        // `f 2` against `Float -> …`: an integer literal is `fromInteger`-
-        // polymorphic (Haskell 2010 §6.4.1), so it inhabits `Float` too. A
-        // `Float` literal against an `Int` parameter is NOT (there is no
+        (ValueTy::Double | ValueTy::Int, ValueTy::Buffer) => true,
+        // `f 2` against `Double -> …`: an integer literal is `fromInteger`-
+        // polymorphic (Haskell 2010 §6.4.1), so it inhabits `Double` too. A
+        // `Double` literal against an `Int` parameter is NOT (there is no
         // `fromRational` narrowing), which is the mismatch this rejects.
-        (ValueTy::Float, ValueTy::Int) if matches!(arg, Expr::Int(_, _)) => true,
+        (ValueTy::Double, ValueTy::Int) if matches!(arg, Expr::Int(_, _)) => true,
         _ if defaulted => numeric_default_widens(formal, actual),
         _ => false,
     }
 }
 
-/// `Float` positions accept `Int` positions, structurally.
+/// `Double` positions accept `Int` positions, structurally.
 ///
 /// A body whose numeric operations default an unconstrained type variable
-/// through the primitive `Num Float` instance (`sum2 p = p.first + p.second`
-/// schemes as `Pair Float Float -> Float`) has no `Num`-polymorphic scheme yet
+/// through the primitive `Num Double` instance (`sum2 p = p.first + p.second`
+/// schemes as `Pair Double Double -> Double`) has no `Num`-polymorphic scheme yet
 /// — that is the dictionary work this task's stage leads to. `Pair Int Int` is
 /// nonetheless valid Haskell 2010 at that call site (`sum2 :: Num a => Pair a a
 /// -> a`), so rejecting it would be the check being wrong, not the program.
 ///
-/// The relation is DIRECTIONAL: a `Float` parameter tolerates an `Int`
+/// The relation is DIRECTIONAL: a `Double` parameter tolerates an `Int`
 /// argument, never the reverse. `f x :: Int -> Int = x` applied to `1.5`
 /// therefore still fails, which is the mismatch the brief requires.
 fn numeric_default_widens(formal: &ValueTy, actual: &ValueTy) -> bool {
     match (formal, actual) {
-        (ValueTy::Float, ValueTy::Float | ValueTy::Int) => true,
+        (ValueTy::Double, ValueTy::Double | ValueTy::Int) => true,
         (ValueTy::Int, ValueTy::Int) => true,
         (ValueTy::Bool, ValueTy::Bool) | (ValueTy::String, ValueTy::String) => true,
         (ValueTy::Void, ValueTy::Void) => true,
@@ -7502,7 +7503,7 @@ fn numeric_default_widens(formal: &ValueTy, actual: &ValueTy) -> bool {
 /// argument cannot type itself — a result-directed method (`return x`, `pure
 /// x`, `mempty`) needs a container — and when the formal is a FUNCTION type,
 /// where the parameter and result types are what the check compares. Threading
-/// it unconditionally would retype an integer literal in a `Float` parameter
+/// it unconditionally would retype an integer literal in a `Double` parameter
 /// position (`sum2 (Pair { first: 1, … })`) and reject a program that the
 /// `Num`-polymorphic reading accepts, so plain inference comes first.
 fn infer_argument_ty(ctx: &mut Ctx, e: &Expr, formal: &ValueTy) -> Result<ValueTy, CompileError> {
@@ -7535,10 +7536,10 @@ fn apply_one(
 ) -> Result<ArrowTy, CompileError> {
     match ctx.subst.resolve_value(&callee.vty) {
         ValueTy::Thunk(caps, res) => {
-            let param = caps.first().cloned().unwrap_or(ValueTy::Float);
+            let param = caps.first().cloned().unwrap_or(ValueTy::Double);
             unify_value(&arg.vty, &param, &mut ctx.subst, span)?;
             Ok(ArrowTy::value(
-                res.first().cloned().unwrap_or(ValueTy::Float),
+                res.first().cloned().unwrap_or(ValueTy::Double),
             ))
         }
         ValueTy::Var(_) => {
@@ -7637,13 +7638,13 @@ fn infer_collection_call(
             })
         }
     };
-    // The element type of a `List` value type; Float for a non-list.
+    // The element type of a `List` value type; Double for a non-list.
     let list_elem = |t: &ValueTy| -> ValueTy {
         match t {
             ValueTy::App(n, inner) if n == "List" => {
-                inner.first().cloned().unwrap_or(ValueTy::Float)
+                inner.first().cloned().unwrap_or(ValueTy::Double)
             }
-            _ => ValueTy::Float,
+            _ => ValueTy::Double,
         }
     };
     // `length`-style guards: a bulk list op's SOURCE must be a `List`. Without
@@ -7657,7 +7658,7 @@ fn infer_collection_call(
         let t = arg_vty(ctx, idx)?;
         match ctx.subst.resolve_value(&t) {
             ValueTy::App(n, inner) if n == "List" => {
-                Ok(inner.first().cloned().unwrap_or(ValueTy::Float))
+                Ok(inner.first().cloned().unwrap_or(ValueTy::Double))
             }
             ValueTy::Var(_) => {
                 let elem = ctx.fresh_vty();
@@ -7680,7 +7681,7 @@ fn infer_collection_call(
             // `length :: [a] -> Int` (Prelude). A non-collection has no
             // length, so it must be a TYPE error rather than a silent `0`:
             // the old arm discarded the argument's type entirely, which is how
-            // `length (mappend 1.0 2.0)` — a Float — answered 0.
+            // `length (mappend 1.0 2.0)` — a Double — answered 0.
             //
             // `Map`/`Set`/`Array` are rill's other sized containers and keep
             // their documented `length` (the interpreter counts their entries).
@@ -7777,7 +7778,7 @@ fn infer_collection_call(
                     span: args[0].span(),
                 });
             }
-            let ret_ty = closure_rets.first().cloned().unwrap_or(ValueTy::Float);
+            let ret_ty = closure_rets.first().cloned().unwrap_or(ValueTy::Double);
             Ok(ValueTy::App("List".into(), vec![ret_ty]))
         }
         "fold" => {
@@ -7873,7 +7874,7 @@ fn infer_collection_call(
             let lt = arg_vty(ctx, 0)?;
             let elem = match ctx.subst.resolve_value(&lt) {
                 ValueTy::App(n, inner) if n == "List" => {
-                    inner.first().cloned().unwrap_or(ValueTy::Float)
+                    inner.first().cloned().unwrap_or(ValueTy::Double)
                 }
                 ValueTy::Var(_) => {
                     let elem = ctx.fresh_vty();
@@ -7915,7 +7916,7 @@ fn infer_collection_call(
             if !args.is_empty() {
                 return Err(arity_err("0", args.len()));
             }
-            Ok(ValueTy::App("List".into(), vec![ValueTy::Float]))
+            Ok(ValueTy::App("List".into(), vec![ValueTy::Double]))
         }
         "insert" => match args.len() {
             3 => {
@@ -7942,9 +7943,9 @@ fn infer_collection_call(
             let mt = arg_vty(ctx, 1)?;
             let v = match &mt {
                 ValueTy::App(n, inner) if n == "Map" => {
-                    inner.get(1).cloned().unwrap_or(ValueTy::Float)
+                    inner.get(1).cloned().unwrap_or(ValueTy::Double)
                 }
-                _ => ValueTy::Float,
+                _ => ValueTy::Double,
             };
             Ok(ValueTy::App("Maybe".into(), vec![v]))
         }
@@ -7963,14 +7964,14 @@ fn infer_collection_call(
             }
             Ok(ValueTy::App(
                 "Map".into(),
-                vec![ValueTy::String, ValueTy::Float],
+                vec![ValueTy::String, ValueTy::Double],
             ))
         }
         "empty_set" => {
             if !args.is_empty() {
                 return Err(arity_err("0", args.len()));
             }
-            Ok(ValueTy::App("Set".into(), vec![ValueTy::Float]))
+            Ok(ValueTy::App("Set".into(), vec![ValueTy::Double]))
         }
         _ => Err(CompileError::Type {
             msg: format!("unknown collection op `{name}`"),
@@ -7992,7 +7993,7 @@ fn infer_param(args: &[Expr], span: Span) -> Result<ArrowTy, CompileError> {
             span: args[0].span(),
         });
     }
-    Ok(ArrowTy::uniform(0, 1, ValueTy::Float))
+    Ok(ArrowTy::uniform(0, 1, ValueTy::Double))
 }
 
 fn infer_arith(
@@ -8007,7 +8008,7 @@ fn infer_arith(
     // Signal arithmetic: at least one operand is a `Buffer` (a wire, a
     // combinator output, a foreign call). A numeric literal / constant on the
     // OTHER side is then a SIGNAL constant — unify it with `Buffer` so
-    // `_ * 0.5` types `0.5 : Buffer`, not a value `Float`.
+    // `_ * 0.5` types `0.5 : Buffer`, not a value `Double`.
     let a_buffer = matches!(a.vty, ValueTy::Buffer);
     let b_buffer = matches!(b.vty, ValueTy::Buffer);
     if a_buffer || b_buffer {
@@ -8028,32 +8029,33 @@ fn infer_arith(
     }
     // Value-track arithmetic: a value operand (a lambda parameter, a value
     // function, a field projection, ...) combined with another value operand
-    // or a bare Float/Int literal lowers on the value track and yields a Float
+    // or a bare Double/Int literal lowers on the value track and yields a Double
     // value channel — this is what makes lambda bodies like `fn x -> x * 2.0`
     // meaningful. A value channel mixed with a genuine signal computation
     // (`sin _`, a wire, a combinator) is still rejected.
     let a_value = !matches!(a.vty, ValueTy::Buffer);
     let b_value = !matches!(b.vty, ValueTy::Buffer);
     if a_value || b_value {
-        // A value operand must be a numeric scalar (Float/Int, or an as-yet
+        // A value operand must be a numeric scalar (Double/Int, or an as-yet
         // unresolved Var such as a lambda parameter). Func values, records and
         // newtypes cannot take part in arithmetic (spec: no arithmetic on
-        // closures); a bare Float/Int literal or a reference to a constant
+        // closures); a bare Double/Int literal or a reference to a constant
         // definition (`k = 2.0`) is value-compatible — the latter is a common
         // lambda free variable, captured by value into the closure env.
-        let scalar_vty = |v: &ValueTy| matches!(v, ValueTy::Float | ValueTy::Int | ValueTy::Var(_));
+        let scalar_vty =
+            |v: &ValueTy| matches!(v, ValueTy::Double | ValueTy::Int | ValueTy::Var(_));
         let mut unify_operand = |t: &ArrowTy, e: &Expr| -> Result<(), CompileError> {
             if t.arity_in() == 0 && t.arity_out() == 1 {
                 if scalar_vty(&t.vty) {
                     // A structural parameter variable in arithmetic is a
-                    // numeric scalar: bind it to Float so the lambda's
+                    // numeric scalar: bind it to Double so the lambda's
                     // Func signature resolves concretely (`fn x -> x * 2`
-                    // types `x` as Float, not an unconstrained Var).
+                    // types `x` as Double, not an unconstrained Var).
                     if matches!(&t.vty, ValueTy::Var(_)) {
-                        unify_value(&t.vty, &ValueTy::Float, &mut ctx.subst, e.span())?;
+                        unify_value(&t.vty, &ValueTy::Double, &mut ctx.subst, e.span())?;
                     }
                     return Ok(());
-                } else if matches!(e, Expr::Int(_, _) | Expr::Float(_, _))
+                } else if matches!(e, Expr::Int(_, _) | Expr::Double(_, _))
                     || is_const_value_ref(ctx, e)
                 {
                     return Ok(());
@@ -8069,9 +8071,9 @@ fn infer_arith(
         // Int-preserving value arithmetic: `+`/`-`/`*` over two `Int` operands
         // stays on the Int track, so an `Int`-typed slot (an `Ix` offset, an
         // array size) really holds a `Value::Int` at runtime. `/` is float
-        // division and always yields a `Float`; `%` is unsupported. A free Var
-        // operand was just bound to `Float` above, so mixed arithmetic and
-        // lambda parameters keep the old Float behavior. Lowering and the
+        // division and always yields a `Double`; `%` is unsupported. A free Var
+        // operand was just bound to `Double` above, so mixed arithmetic and
+        // lambda parameters keep the old Double behavior. Lowering and the
         // interpreter apply the same rule.
         let a_ty = ctx.subst.resolve_value(&a.vty);
         let b_ty = ctx.subst.resolve_value(&b.vty);
@@ -8083,19 +8085,19 @@ fn infer_arith(
         return Ok(ArrowTy::value_channel(if int_track {
             ValueTy::Int
         } else {
-            ValueTy::Float
+            ValueTy::Double
         }));
     }
     arith(ctx, &a, &b, span)
 }
 
 /// Whether `e` types as a SIGNAL constant: a 0→1 arrow whose single output is
-/// a numeric scalar (Float/Int or an unresolved Var) and whose expression is a
+/// a numeric scalar (Double/Int or an unresolved Var) and whose expression is a
 /// numeric literal or a reference to a compile-time constant (`k = 2.0`). In
 /// signal arithmetic such an operand unifies with `Buffer` (`_ * 0.5`).
 fn is_signal_const(ctx: &Ctx, t: &ArrowTy, e: &Expr) -> bool {
-    matches!(t.vty, ValueTy::Float | ValueTy::Int | ValueTy::Var(_))
-        && (matches!(e, Expr::Int(_, _) | Expr::Float(_, _)) || is_const_value_ref(ctx, e))
+    matches!(t.vty, ValueTy::Double | ValueTy::Int | ValueTy::Var(_))
+        && (matches!(e, Expr::Int(_, _) | Expr::Double(_, _)) || is_const_value_ref(ctx, e))
 }
 
 fn arith(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
@@ -8203,11 +8205,11 @@ mod tests {
     fn only_a_bare_class_var_result_is_selected_by_expected_type() {
         // A `mempty: m`-shaped result IS the class variable, so a call site's
         // expected type is its value — the "result-directed" solve. A result
-        // that merely MENTIONS the variable (`wrap: Float -> Pair a a`) is an
+        // that merely MENTIONS the variable (`wrap: Double -> Pair a a`) is an
         // APPLICATION of it: taking the expected type as the solved value would
         // dispatch on the wrong key, so that shape must not qualify.
         let expected_shape =
-            |ret: TypeExpr| TypeExpr::TFunc(vec![TypeExpr::TName("Float".into())], Box::new(ret));
+            |ret: TypeExpr| TypeExpr::TFunc(vec![TypeExpr::TName("Double".into())], Box::new(ret));
         let pair_of_var = TypeExpr::TApp(
             "Pair".into(),
             vec![TypeExpr::TName("a".into()), TypeExpr::TName("a".into())],
@@ -8222,12 +8224,12 @@ mod tests {
         );
         assert!(
             !sig_result_is_bare_class_var(&expected_shape(pair_of_var), "a"),
-            "`Float -> Pair a a` only MENTIONS the class variable"
+            "`Double -> Pair a a` only MENTIONS the class variable"
         );
         assert!(
             !sig_result_is_bare_class_var(
                 &TypeExpr::TFunc(
-                    vec![TypeExpr::TName("Float".into())],
+                    vec![TypeExpr::TName("Double".into())],
                     Box::new(TypeExpr::TName("b".into())),
                 ),
                 "a"
@@ -8263,14 +8265,14 @@ mod tests {
         // reach the type environment, because ctor lowering reads `DataInfo`
         // (never the AST) when deciding where to force.
         let t = ty_of(
-            "data T = C !Float; data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }",
+            "data T = C !Double; data P = { x: !Double, y: Double }; main = P { x: 1.0, y: 2.0 }",
         )
         .unwrap();
         match t.type_env.data_types.get("T") {
             Some(DataInfo::Sum(ctors)) => {
                 assert_eq!(ctors.len(), 1);
                 assert_eq!(ctors[0].0, "C");
-                assert_eq!(ctors[0].1, vec![(ValueTy::Float, true)]);
+                assert_eq!(ctors[0].1, vec![(ValueTy::Double, true)]);
             }
             other => panic!("expected Sum for T, got {other:?}"),
         }
@@ -8279,8 +8281,8 @@ mod tests {
                 assert_eq!(
                     fields,
                     &vec![
-                        ("x".to_string(), ValueTy::Float, true),
-                        ("y".to_string(), ValueTy::Float, false),
+                        ("x".to_string(), ValueTy::Double, true),
+                        ("y".to_string(), ValueTy::Double, false),
                     ]
                 );
             }
@@ -8335,7 +8337,7 @@ mod tests {
     #[test]
     fn let_expression_scoping() {
         let t = ty_of("main = let g = 0.5 in g * 0.5").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
@@ -8388,7 +8390,7 @@ mod tests {
 
     #[test]
     fn annotated_scheme_parameter_types_come_from_the_signature() {
-        // Direct scheme check (white-box): `Float`-based parameters in the
+        // Direct scheme check (white-box): `Double`-based parameters in the
         // scheme would make the definition's advertised type disagree with the
         // body that was checked against the signature.
         fn scheme_args(src: &str) -> Vec<ValueTy> {
@@ -8418,7 +8420,7 @@ mod tests {
                 other => panic!("expected a function scheme, got {other:?}"),
             }
         }
-        // A single parameter: the scheme used to advertise `Float` while the
+        // A single parameter: the scheme used to advertise `Double` while the
         // body was typed with `x : Int`.
         assert_eq!(
             scheme_args("inc x :: Int -> Int = x + 1;\nmain = 0.0;"),
@@ -8448,7 +8450,7 @@ mod tests {
                         "Pair".into(),
                         vec![TypeExpr::TName("i".into()), TypeExpr::TName("i".into())],
                     )],
-                    Box::new(TypeExpr::TName("Float".into())),
+                    Box::new(TypeExpr::TName("Double".into())),
                 )),
             )),
         );
@@ -8484,14 +8486,14 @@ mod tests {
 
     #[test]
     fn int_float_mismatch_errors() {
-        // A `Float` field does not unify with an `Int` field type.
+        // A `Double` field does not unify with an `Int` field type.
         assert!(ty_of("data P = { f: Int }; main = P { f: 1.0 }").is_err());
     }
 
     #[test]
     fn actor_param_no_default_typechecks() {
         let t = ty_of(r"main = if ?gain > 0.5 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
@@ -8527,8 +8529,8 @@ mod tests {
 
     #[test]
     fn data_record_constructor_infers_value_channel() {
-        let t =
-            ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
+        let t = ty_of("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }")
+            .unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
             ValueTy::Data("Point".into(), vec![])
@@ -8537,25 +8539,26 @@ mod tests {
 
     #[test]
     fn field_project_produces_float_value() {
-        let t =
-            ty_of("data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x")
-                .unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        let t = ty_of(
+            "data Point = { x: Double, y: Double }; p = Point { x: 1.0, y: 2.0 }; main = p.x",
+        )
+        .unwrap();
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn sum_match_branches_on_constructor() {
         let t = ty_of(
-            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r -> r; Rect w h -> w; }",
+            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r -> r; Rect w h -> w; }",
         )
         .unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn field_update_preserves_record_type() {
         let t = ty_of(
-            "data Point = { x: Float, y: Float }; p = Point { x: 1.0, y: 2.0 }; main = p.x := 3.0",
+            "data Point = { x: Double, y: Double }; p = Point { x: 1.0, y: 2.0 }; main = p.x := 3.0",
         )
         .unwrap();
         assert_eq!(
@@ -8568,30 +8571,30 @@ mod tests {
     fn match_arms_must_be_value_expressions() {
         // A bare literal arm body is value-compatible (`Circle r -> 1.0`);
         // arms are value channels, so a bare literal is accepted.
-        assert!(
-            ty_of(r"data Shape = Circle Float; main = case Circle 1.0 of { Circle r -> 1.0 }")
-                .is_ok()
-        );
+        assert!(ty_of(
+            r"data Shape = Circle Double; main = case Circle 1.0 of { Circle r -> 1.0 }"
+        )
+        .is_ok());
     }
 
     #[test]
     fn match_scrutinee_must_be_value() {
-        assert!(ty_of(r"data Shape = Circle Float; main = case 3 of { Circle r -> r }").is_err());
+        assert!(ty_of(r"data Shape = Circle Double; main = case 3 of { Circle r -> r }").is_err());
     }
 
     #[test]
     fn match_arms_same_sum_type() {
         assert!(
-            ty_of(r"data A = C Float; data B = C Int; main = case C 1.0 of { C r -> r }").is_err()
+            ty_of(r"data A = C Double; data B = C Int; main = case C 1.0 of { C r -> r }").is_err()
         );
     }
 
     #[test]
     fn match_too_many_arm_bindings_is_error() {
-        assert!(
-            ty_of(r"data Shape = Circle Float; main = case Circle 1.0 of { Circle r s -> r }")
-                .is_err()
-        );
+        assert!(ty_of(
+            r"data Shape = Circle Double; main = case Circle 1.0 of { Circle r s -> r }"
+        )
+        .is_err());
     }
 
     #[test]
@@ -8601,7 +8604,7 @@ mod tests {
         // exhaustiveness: without a wildcard the match must fail loudly, not
         // silently drop the guard.
         let res = ty_of(
-            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; };",
+            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; };",
         );
         let err = match res {
             Err(e) => e,
@@ -8615,12 +8618,12 @@ mod tests {
         // A wildcard arm makes the guarded match exhaustive; the guard is
         // type-checked as a Bool value.
         assert!(ty_of(
-            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; _ -> 0.0; };"
+            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; _ -> 0.0; };"
         )
         .is_ok());
         // A non-Bool guard is a type error.
         let res = ty_of(
-            r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r + 1.0 -> r; _ -> 0.0; };",
+            r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r | r + 1.0 -> r; _ -> 0.0; };",
         );
         assert!(
             res.is_err(),
@@ -8630,13 +8633,13 @@ mod tests {
 
     #[test]
     fn record_ctor_missing_field_is_error() {
-        assert!(ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0 }").is_err());
+        assert!(ty_of("data Point = { x: Double, y: Double }; main = Point { x: 1.0 }").is_err());
     }
 
     #[test]
     fn record_ctor_duplicate_field_is_error() {
         assert!(ty_of(
-            "data Point = { x: Float, y: Float }; main = Point { x: 1.0, x: 2.0, y: 3.0 }"
+            "data Point = { x: Double, y: Double }; main = Point { x: 1.0, x: 2.0, y: 3.0 }"
         )
         .is_err());
     }
@@ -8644,7 +8647,7 @@ mod tests {
     #[test]
     fn if_infers_bool_condition_and_branch_types() {
         let t = ty_of("main = if 1.0 < 2.0 then 1.0 else 2.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
         assert!(ty_of("main = if 1.0 then 1.0 else 2.0").is_err());
         assert!(ty_of("main = if 1.0 < 2.0 then 1 else 2").is_ok());
         let t2 = ty_of("main = if 1.0 < 2.0 then 1 else 2").unwrap();
@@ -8654,10 +8657,10 @@ mod tests {
     #[test]
     fn scalar_match_infers_literal_patterns_and_totality() {
         let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
         assert!(ty_of(r"main = case 0 of { 0 -> 1.0 }").is_err());
         let t2 = ty_of(r"main = case true of { true -> 1.0; false -> 2.0 }").unwrap();
-        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
@@ -8665,7 +8668,7 @@ mod tests {
         // `match 0 of {...}`: a bare Int literal is a signal-rate channel in v1
         // but value-compatible in value positions (mirroring arm_result_vty).
         let t = ty_of(r"main = case 0 of { 0 -> 1.0; _ -> 2.0; }").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
         let t2 = ty_of(r"main = case 0.0 of { 0.0 -> 1; _ -> 2; }").unwrap();
         assert_eq!(t2.def_schemes["main"].ty.vty, ValueTy::Int);
     }
@@ -8676,7 +8679,7 @@ mod tests {
         // NOT `Maybe`. The sum context must be re-derived from the payload type
         // at each pattern level.
         let t = ty_of(r"main = case Just (Left 2.0) of { Just (Left x) -> x; _ -> 0.0; }").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
@@ -8684,17 +8687,17 @@ mod tests {
         // Same nesting for a USER sum: `Wrap (Foo x)` — `Foo` is looked up in
         // `Inner`, not `Outer`.
         let t = ty_of(
-            r"data Inner = Foo Float; data Outer = Wrap Inner | Empty; main = case Wrap (Foo 2.0) of { Wrap (Foo x) -> x; _ -> 0.0; }",
+            r"data Inner = Foo Double; data Outer = Wrap Inner | Empty; main = case Wrap (Foo 2.0) of { Wrap (Foo x) -> x; _ -> 0.0; }",
         )
         .unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn type_after_data_resolves() {
         // Regression: the synonym is declared AFTER the data type that uses it.
         // Registration must be order-independent (two-phase: aliases first).
-        let t = ty_of("data P = { x: Angles }; type Angles = Float; main = P { x: 1.0 }").unwrap();
+        let t = ty_of("data P = { x: Angles }; type Angles = Double; main = P { x: 1.0 }").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
             ValueTy::Data("P".into(), vec![])
@@ -8706,21 +8709,21 @@ mod tests {
         // The newtype is declared AFTER the data type that uses it. The field
         // must resolve to `Newtype("Hz")` (not `Data("Hz")`), so constructing
         // it requires the explicit `Hz 440.0` wrapper.
-        let t = ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: Hz 440.0 }").unwrap();
+        let t = ty_of("data P = { f: Hz }; newtype Hz = Double; main = P { f: Hz 440.0 }").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
             ValueTy::Data("P".into(), vec![])
         );
-        // Newtypes are distinct wrappers: a bare Float does not satisfy a Hz
+        // Newtypes are distinct wrappers: a bare Double does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
         // (a pre-fix `Data("Hz")` field would accept nothing, not even `Hz 440.0`).
-        assert!(ty_of("data P = { f: Hz }; newtype Hz = Float; main = P { f: 440.0 }").is_err());
+        assert!(ty_of("data P = { f: Hz }; newtype Hz = Double; main = P { f: 440.0 }").is_err());
     }
 
     #[test]
     fn chained_alias_resolves() {
         let t =
-            ty_of("data P = { f: A }; type A = B; type B = Float; main = P { f: 1.0 }").unwrap();
+            ty_of("data P = { f: A }; type A = B; type B = Double; main = P { f: 1.0 }").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
             ValueTy::Data("P".into(), vec![])
@@ -8732,7 +8735,7 @@ mod tests {
         // A self-referential type would materialise an unbounded arena subtree
         // and exhaust the fixed capacity (spec §9.1 strict acyclicity).
         assert!(
-            ty_of("data List = Cons Float List | End Float; main = Cons 1.0 (End 2.0)").is_err()
+            ty_of("data List = Cons Double List | End Double; main = Cons 1.0 (End 2.0)").is_err()
         );
     }
 
@@ -8743,8 +8746,8 @@ mod tests {
 
     #[test]
     fn acyclic_data_type_still_compiles() {
-        let t =
-            ty_of("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }").unwrap();
+        let t = ty_of("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }")
+            .unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
             ValueTy::Data("Point".into(), vec![])
@@ -8782,12 +8785,12 @@ mod tests {
     #[test]
     fn value_channel_arithmetic_infers() {
         // double = fn x -> x * 2.0  -> lambda body is value arithmetic over
-        // value params, inferred as Func([Float], [Float]).
+        // value params, inferred as Func([Double], [Double]).
         let t = ty_of(r"double = \x -> x * 2.0; main = double").unwrap();
         match &t.def_schemes["main"].ty.vty {
             ValueTy::Thunk(arg_tys, ret_tys) => {
                 assert_eq!(arg_tys.len(), 1);
-                assert_eq!(ret_tys, &vec![ValueTy::Float]);
+                assert_eq!(ret_tys, &vec![ValueTy::Double]);
             }
             other => panic!("expected Func type, got {other:?}"),
         }
@@ -8796,22 +8799,22 @@ mod tests {
     #[test]
     fn partial_application_types_as_remaining_func() {
         // add3 = add 3.0 (partial application of a two-arg lambda) types as
-        // Func([Float], [Float]); fully applying it yields a Float.
+        // Func([Double], [Double]); fully applying it yields a Double.
         let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])
+            ValueTy::Thunk(vec![ValueTy::Double], vec![ValueTy::Double])
         );
         let t = ty_of(r"add = \a -> \b -> a + b; add3 = add 3.0; main = add3 4.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]
     fn named_def_partial_application_types_as_func() {
         // add5 = add2 5.0 (partial application of a named def) types as
-        // Func([Float], [Float]).
+        // Func([Double], [Double]).
         let t = ty_of("add2 a b = a + b; add5 = add2 5.0; main = add5 2.0").unwrap();
-        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Float);
+        assert_eq!(t.def_schemes["main"].ty.vty, ValueTy::Double);
     }
 
     #[test]

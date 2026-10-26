@@ -20,7 +20,7 @@ fn float_output(src: &str) -> f64 {
     let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap() {
-        rill_lang::arena::Value::Float(f) => *f,
+        rill_lang::arena::Value::Double(f) => *f,
         other => panic!("unexpected output {other:?}"),
     }
 }

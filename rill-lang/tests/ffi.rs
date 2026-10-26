@@ -32,7 +32,7 @@ fn buffer_typeclass_registers_from_signal_prelude() {
         main = 1.0;
     "#;
     // Compile + single run must succeed: the SIGNAL_PRELUDE parses, registers,
-    // and the instance kind-checks, and `main = 1.0` runs to a Float(1.0).
+    // and the instance kind-checks, and `main = 1.0` runs to a Double(1.0).
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
@@ -41,7 +41,7 @@ fn buffer_typeclass_registers_from_signal_prelude() {
     let prog = eval_ffi(defs, expr, ffi).unwrap();
     assert_eq!(
         prog.arena().get(prog.result().unwrap()).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }
 
@@ -67,7 +67,7 @@ fn foreign_fn_declaration_parses() {
     // `foreign fn name : TypeExpr;` — a carried signal signature. Parsing alone
     // is the bar here; resolution lands in Task 4.
     let src = r"
-        foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign biquad : Double -> Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = 1.0;
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -80,16 +80,16 @@ fn foreign_fn_declaration_parses() {
             _ => None,
         })
         .expect(r"foreign biquad not found");
-    // Pin the flat-curried signature shape: `Float -> Float -> Float -> Float
+    // Pin the flat-curried signature shape: `Double -> Double -> Double -> Double
     // -> FixedBuffer f32 -> FixedBuffer f32` (buffer-LAST: signal trails).
     assert_eq!(
         foreign,
         &rill_lang::ast::TypeExpr::TFunc(
             vec![
-                rill_lang::ast::TypeExpr::TName("Float".into()),
-                rill_lang::ast::TypeExpr::TName("Float".into()),
-                rill_lang::ast::TypeExpr::TName("Float".into()),
-                rill_lang::ast::TypeExpr::TName("Float".into()),
+                rill_lang::ast::TypeExpr::TName("Double".into()),
+                rill_lang::ast::TypeExpr::TName("Double".into()),
+                rill_lang::ast::TypeExpr::TName("Double".into()),
+                rill_lang::ast::TypeExpr::TName("Double".into()),
                 rill_lang::ast::TypeExpr::TApp(
                     "FixedBuffer".into(),
                     vec![rill_lang::ast::TypeExpr::TName("f32".into())]
@@ -108,18 +108,18 @@ fn foreign_sig_describes_signal_and_scalar_params() {
     use rill_lang::ast::TypeExpr;
     use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 
-    // `Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32` — the
+    // `Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32` — the
     // signal channel trails the scalar params (buffer-LAST).
     let te = TypeExpr::TFunc(
         vec![
-            TypeExpr::TName("Float".into()),
-            TypeExpr::TName("Float".into()),
-            TypeExpr::TName("Float".into()),
-            TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("Float".into())]),
+            TypeExpr::TName("Double".into()),
+            TypeExpr::TName("Double".into()),
+            TypeExpr::TName("Double".into()),
+            TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("Double".into())]),
         ],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
-            vec![TypeExpr::TName("Float".into())],
+            vec![TypeExpr::TName("Double".into())],
         )),
     );
     let env = TypeEnv::with_builtins();
@@ -140,7 +140,7 @@ fn foreign_sig_from_parser_flat_curried_form() {
     // Feed the real parser output into the descriptor to pin that compatibility.
     use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 
-    let src = r"foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32; main = 1.0;";
+    let src = r"foreign biquad : Double -> Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32; main = 1.0;";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
     let prog = rill_lang::parser::parse(&toks, src.as_bytes()).unwrap();
     let sig = prog
@@ -168,7 +168,7 @@ fn foreign_decl_registers_into_type_env() {
     // via the shared `register_decls` path (the same path inference phase 1 uses).
     // This is the compiler state Task 4 (infer foreign names) will consume.
     let src = r"
-        foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign biquad : Double -> Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = 1.0;
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -184,12 +184,12 @@ fn foreign_decl_registers_into_type_env() {
 
 #[test]
 fn foreign_fn_types_as_signal_arrow() {
-    // Task 13b: `gain : Float -> FixedBuffer f32 -> FixedBuffer f32` with its
+    // Task 13b: `gain : Double -> FixedBuffer f32 -> FixedBuffer f32` with its
     // scalar params and the signal over the program input — in the unary value
     // model the arrow typing is gone, but the foreign fn over the input still
     // types as a value program (arity_in is always 0; arity_out is 1).
     let src = r"
-        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign gain : Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -206,7 +206,7 @@ fn foreign_fn_wrong_arity_is_error() {
     // error (omitting a scalar is an arity error — only a TRAILING run of
     // omitted signals may be combinator-fed).
     let src = r"
-        foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign onepole : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = onepole 200.0;
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -228,7 +228,7 @@ fn foreign_fn_lowers_to_callblock() {
     use rill_lang::lower::lower_with_cafs;
 
     let src = r"
-        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign gain : Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -268,11 +268,11 @@ fn foreign_fn_lowers_to_callblock() {
 #[test]
 fn foreign_fn_signal_slot_rejects_value() {
     // A VALUE-channel expression in a Signal slot is a type error (rate check).
-    // Note: a bare Float literal is itself a Signal-rate constant signal
+    // Note: a bare Double literal is itself a Signal-rate constant signal
     // (0-in generator), so the rejection needs a genuine Value expression —
     // here a String literal in the trailing signal slot.
     let src = r#"
-        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign gain : Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 "oops";
     "#;
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -293,21 +293,21 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
     // inference counts a different arity. The descriptor must reject it.
     use rill_lang::types::ffi::{ffi_sig_from_typeexpr, FfiParam};
 
-    // `List (FixedBuffer f32) -> Float -> FixedBuffer f32` — variadic mid-signature.
+    // `List (FixedBuffer f32) -> Double -> FixedBuffer f32` — variadic mid-signature.
     let te = rill_lang::ast::TypeExpr::TFunc(
         vec![
             rill_lang::ast::TypeExpr::TApp(
                 "List".into(),
                 vec![rill_lang::ast::TypeExpr::TApp(
                     "FixedBuffer".into(),
-                    vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+                    vec![rill_lang::ast::TypeExpr::TName("Double".into())],
                 )],
             ),
-            rill_lang::ast::TypeExpr::TName("Float".into()),
+            rill_lang::ast::TypeExpr::TName("Double".into()),
         ],
         Box::new(rill_lang::ast::TypeExpr::TApp(
             "FixedBuffer".into(),
-            vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+            vec![rill_lang::ast::TypeExpr::TName("Double".into())],
         )),
     );
     let env = TypeEnv::with_builtins();
@@ -320,12 +320,12 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
             "List".into(),
             vec![rill_lang::ast::TypeExpr::TApp(
                 "FixedBuffer".into(),
-                vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+                vec![rill_lang::ast::TypeExpr::TName("Double".into())],
             )],
         )],
         Box::new(rill_lang::ast::TypeExpr::TApp(
             "FixedBuffer".into(),
-            vec![rill_lang::ast::TypeExpr::TName("Float".into())],
+            vec![rill_lang::ast::TypeExpr::TName("Double".into())],
         )),
     );
     let env = TypeEnv::with_builtins();
@@ -335,12 +335,12 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
 
 #[test]
 fn foreign_fn_non_terminal_variadic_fails_inference() {
-    // `foreign fn bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;`
+    // `foreign fn bad : List (FixedBuffer f32) -> Double -> FixedBuffer f32;`
     // — a non-terminal VariadicSignal — must be rejected: the descriptor
     // returns None, so `bad` does not resolve as a foreign builtin and any
     // call to it fails inference (value-model call form).
     let src = r"
-        foreign bad : List (FixedBuffer f32) -> Float -> FixedBuffer f32;
+        foreign bad : List (FixedBuffer f32) -> Double -> FixedBuffer f32;
         main = bad 0.5 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -382,7 +382,7 @@ fn foreign_fn_runs_end_to_end() {
     rill_lang::register::register_foreign_generators(&mut ffi);
 
     let src = r"
-        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign gain : Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let (defs, expr) = src
@@ -402,7 +402,7 @@ fn foreign_fn_not_registered_is_compile_error() {
 
     let ffi = ForeignRegistry::<f32>::new();
     let src = r"
-        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign gain : Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
     ";
     let err = match eval_at(src, "main", ffi, 44_100.0) {
@@ -437,7 +437,7 @@ fn signal_input_builtin_legacy_call_style_sugar() {
     // the same signal-input builtin now applies as an ordinary value function
     // over the program input. This pins the value-model typing.
     let src = r"
-        foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign onepole : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = onepole 200.0 0.7 (square 0.0 1.0 0.0);
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -563,7 +563,7 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
         &env,
         "sine",
         &TypeExpr::TFunc(
-            vec![f("Float"), f("Float"), f("Float")],
+            vec![f("Double"), f("Double"), f("Double")],
             Box::new(out.clone()),
         ),
     )
@@ -575,10 +575,10 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
         "biquad",
         &TypeExpr::TFunc(
             vec![
-                f("Float"),
-                f("Float"),
-                f("Float"),
-                f("Float"),
+                f("Double"),
+                f("Double"),
+                f("Double"),
+                f("Double"),
                 fb("FixedBuffer"),
             ],
             Box::new(out.clone()),
@@ -608,8 +608,8 @@ fn ffi_sig_param_names_fallback_to_index_for_unknown() {
 
     let te = TypeExpr::TFunc(
         vec![
-            TypeExpr::TName("Float".into()),
-            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Double".into()),
+            TypeExpr::TName("Double".into()),
             TypeExpr::TApp("FixedBuffer".into(), vec![TypeExpr::TName("f32".into())]),
         ],
         Box::new(TypeExpr::TApp(
@@ -633,7 +633,7 @@ fn tape_param_maps_to_resource() {
     let te = TypeExpr::TFunc(
         vec![
             TypeExpr::TApp("Tape".into(), vec![TypeExpr::TName("f32".into())]),
-            TypeExpr::TName("Float".into()),
+            TypeExpr::TName("Double".into()),
         ],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
@@ -713,7 +713,7 @@ fn record_param_missing_fields_use_zero_defaults() {
     // A partial record fills the omitted schema field with its default (0.0 in
     // the FFI schema — the catalog `data` declaration carries no defaults).
     let src = r"
-        data TestCfg = { a: Float, b: Float };
+        data TestCfg = { a: Double, b: Double };
         foreign cfg : TestCfg -> FixedBuffer f32;
         main = cfg { a: 1.5 };
     ";
@@ -748,7 +748,7 @@ fn resource_param_wires_tape_ref() {
     // A `Tape f32` param is a Resource: lowering sets the builtin's resource to
     // the symbolic `Ref` name (the build path resolves it in the registry).
     let src = r"
-        foreign read_head : Tape f32 -> Float -> FixedBuffer f32;
+        foreign read_head : Tape f32 -> Double -> FixedBuffer f32;
         main = read_head tape_0 0.1;
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -764,7 +764,7 @@ fn resource_param_wires_tape_ref() {
 #[ignore = "resource/tape deferred: architectural issues"]
 fn resource_param_rejects_non_ref_arg() {
     let src = r"
-        foreign read_head : Tape f32 -> Float -> FixedBuffer f32;
+        foreign read_head : Tape f32 -> Double -> FixedBuffer f32;
         main = read_head 0.5 0.1;
     ";
     let toks = rill_lang::lexer::tokenize(src).unwrap();
@@ -803,9 +803,9 @@ fn ffi_record_schema_bandlist_field() {
     assert_eq!(
         band.fields,
         vec![
-            ("freq".to_string(), FfiScalar::Float, Some(1000.0)),
-            ("q".to_string(), FfiScalar::Float, Some(1.0)),
-            ("gain_db".to_string(), FfiScalar::Float, Some(0.0)),
+            ("freq".to_string(), FfiScalar::Double, Some(1000.0)),
+            ("q".to_string(), FfiScalar::Double, Some(1.0)),
+            ("gain_db".to_string(), FfiScalar::Double, Some(0.0)),
             ("band_type".to_string(), FfiScalar::Int, Some(0.0)),
         ]
     );
@@ -1357,7 +1357,7 @@ fn tape_loop_read_head_compiles_and_runs() {
 #[test]
 #[ignore = "resource/tape deferred: architectural issues"]
 fn tape_loop_float_capacity_is_rejected() {
-    // `tape_loop` is declared `Int -> Tape f32`; a Float capacity (`1024.5`)
+    // `tape_loop` is declared `Int -> Tape f32`; a Double capacity (`1024.5`)
     // must be a compile error, not silently truncated to 1024.
     use rill_lang::ffi::ForeignRegistry;
     use rill_sampler::tape::lang::register_tape_ffi;
@@ -1371,7 +1371,7 @@ fn tape_loop_float_capacity_is_rejected() {
             e.to_string().contains("capacity"),
             "expected a capacity error, got: {e}"
         ),
-        Ok(_) => panic!("expected a compile error for a Float tape_loop capacity"),
+        Ok(_) => panic!("expected a compile error for a Double tape_loop capacity"),
     }
 }
 

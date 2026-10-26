@@ -91,7 +91,7 @@ let mut prog = compile::<f32>("main = 1.0 + 2.0;").unwrap();
 prog.run_value().unwrap();
 assert_eq!(
     prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
-    &Value::Float(3.0),
+    &Value::Double(3.0),
 );
 ```
 
@@ -187,7 +187,7 @@ stdin           :: InputStream String
 A complete program — build a memory stream, drain it, render the elements:
 
 ```haskell
-show_all acc x = concat_string acc (show_float x);
+show_all acc x = concat_string acc (show_double x);
 
 main = do {
     xs <- fromList [1.0, 2.0, 3.0];
@@ -207,7 +207,7 @@ main = do {
 - **Console ownership** — `stdin`/`stdout`/`stderr` are runtime-owned:
   `write Nothing` is inert on them. It closes **program-owned** sinks created by
   `makeOutputStream`.
-- **Rendering** — the IO surface has no `Show` typeclass: use `show_float`,
+- **Rendering** — the IO surface has no `Show` typeclass: use `show_double`,
   `show_int`, `show_bool`, and `concat_string`.
 
 ### ST and IO values
@@ -1034,14 +1034,14 @@ phase of the interpreter (the signal track stays whole-buffer SIMD).
 
 | Construct | Meaning |
 |---|---|
-| `data Point = { x: Float, y: Float }` | record (product) type; construct `Point { x: 1.0, y: 2.0 }`, project `p.x` |
-| `data Shape = Circle Float \| Rect Float Float` | sum type with constructors; case with `case s of { Circle r -> ...; Rect w h -> ...; }` |
-| `type Angles = Float` | type synonym (pure substitution) |
-| `newtype Hz = Float` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
+| `data Point = { x: Double, y: Double }` | record (product) type; construct `Point { x: 1.0, y: 2.0 }`, project `p.x` |
+| `data Shape = Circle Double \| Rect Double Double` | sum type with constructors; case with `case s of { Circle r -> ...; Rect w h -> ...; }` |
+| `type Angles = Double` | type synonym (pure substitution) |
+| `newtype Hz = Double` | distinct wrapper; construct `Hz 440.0` (no auto-unwrap in v1) |
 | `Bool`, `String` | scalar value types (value track only); literals `true`/`false`, `"text"` |
 | `List a`, `Map k v`, `Set a` | builtin containers (**open** — grow up to the pre-allocated arena pool) |
 | `Maybe a`, `Pair a b`, `Either a b` | builtin data types: `Maybe a = Just a \| Nothing`, `Pair a b = { first, second }`, `Either a b = Left a \| Right b` |
-| `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Float where { show f = ...; }` |
+| `typeclass Show a where { show: a; }` | ad-hoc polymorphism; `instance Show Double where { show f = ...; }` |
 | `\x -> x * 2.0` | first-class function (lambda literal); see below |
 | `f = double; main = f 21.0` | named function references (function values) |
 
@@ -1053,7 +1053,7 @@ A `data` value output is inspected via `RillProgram::value_outputs()`.
 
 The builtin containers and data types are **type constructors**: they take
 type arguments, applied by **juxtaposition** (consistent with the DSL) — e.g.
-`List Float` is `List` applied to `Float`. Collections are **open** (no
+`List Double` is `List` applied to `Double`. Collections are **open** (no
 capacity argument). `Bool`/`String` are leaf value types (kind `*`).
 
 | Constructor | Kind | Meaning |
@@ -1083,20 +1083,20 @@ is a detectable no-op (a build-budget bug), and the `growable-arena` feature
 shape; `length` needs none.
 
 ```haskell
-xs  = [1.0, 2.0, 3.0];          // List Float
+xs  = [1.0, 2.0, 3.0];          // List Double
 e   = list;                     // empty list
 ys  = cons 10.0 e;              // prepends; the list grows
-h   = head xs;                  // Maybe Float: Just 1.0 / Nothing
-t   = tail xs;                  // List Float
+h   = head xs;                  // Maybe Double: Just 1.0 / Nothing
+t   = tail xs;                  // List Double
 n   = length xs;                // Int
-z   = map (\x -> x * 2.0) xs;           // List Float — function first
-s   = fold (\a b -> a + b) 0.0 xs;      // Float
-f   = filter (\x -> x > 1.0) xs;        // List Float
+z   = map (\x -> x * 2.0) xs;           // List Double — function first
+s   = fold (\a b -> a + b) 0.0 xs;      // Double
+f   = filter (\x -> x > 1.0) xs;        // List Double
 
-m  = { "a": 1.0, "b": 2.0 };   // Map String Float
+m  = { "a": 1.0, "b": 2.0 };   // Map String Double
 m1 = insert "a" 9.0 m;         // replace-on-duplicate
 m2 = empty_map;                // empty Map k v (`map` is the HOF builtin)
-v  = lookup "a" m;             // Maybe Float
+v  = lookup "a" m;             // Maybe Double
 b  = member "a" m;             // Bool
 
 st = empty_set;                // empty Set a
@@ -1139,7 +1139,7 @@ let mut prog = compile::<f32>(
 prog.run_value().unwrap();
 assert_eq!(
     prog.arena().get(prog.value_outputs()[0].unwrap()).unwrap(),
-    &rill_lang::arena::Value::Float(12.0)
+    &rill_lang::arena::Value::Double(12.0)
 );
 ```
 
@@ -1183,7 +1183,7 @@ main = length (fmap (\x -> x * 2.0) [1.0, 2.0, 3.0]);   // Int(3)
   `map` builtin call — **zero runtime dispatch, no dictionaries**, preserving the
   existing typeclass property.
 - Open collections carry no capacity — a kind variable matches the **head
-  constructor** (`f a` with `List Float` binds `f := List`, `a := Float`).
+  constructor** (`f a` with `List Double` binds `f := List`, `a := Double`).
 - Parameterized user **sums** are not registered as type constructors in v1:
   `data Opt a = Some a | None` works as an ordinary (monomorphic) data type
   (construction + match) but cannot be a typeclass instance.
@@ -1248,7 +1248,7 @@ instance (Monad m) => Arrow (Kleisli m) where {
   m)` is the first instance with a **constraint list** before the class name
   and a **partial-application head** (`Kleisli m`). The leading head argument
   `m` is bound at the **call site** from the concrete container's leading type
-  arguments — `Kleisli Maybe Float Float` binds `m := Maybe` — and the
+  arguments — `Kleisli Maybe Double Double` binds `m := Maybe` — and the
   `Monad m` constraint is then discharged by ordinary instance lookup
   (`instance Monad Maybe`). The instance body may therefore call `return` /
   `bind` on the monad directly. A constraint that has no instance is a compile
@@ -1290,7 +1290,7 @@ is a compile error (one channel cannot live on both tracks):
 
 ```haskell
 main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
-main = (1.0, 2.0).first;  // -> Float(1.0)
+main = (1.0, 2.0).first;  // -> Double(1.0)
 ```
 
 In **type position**, `(b, d)` is sugar for `Pair b d` — the Arrow signatures
@@ -1312,7 +1312,7 @@ existing `fmap`, `pure`, `ap`, `return`, `bind`, `mempty`, `mappend`,
 
 Builtin instances: `Functor`/`Monad` for `List` (`fmap = map`, `bind =
 concat_map`), `Maybe`, `Either a`; `Monoid` for `List` (`append_list`), `String`
-(`concat_string`), `Float`, `Int`. New value-track IR ops back the category
+(`concat_string`), `Double`, `Int`. New value-track IR ops back the category
 instances: `ConcatMap`, `AppendList`, `ConcatString` — all buffer-pool-backed,
 no per-tick heap allocation.
 
@@ -1346,16 +1346,16 @@ value** — an environment snapshot at creation time — so
 ```haskell
 adder = \n -> \x -> x + n;   // a function returning a closure
 add2  = adder 2.0;               // partial application: a closure over `x`
-main  = add2 3.0;                // -> Float(5.0)
+main  = add2 3.0;                // -> Double(5.0)
 ```
 
 - **Currying** — applying fewer arguments than the signature produces a
   closure over the remaining parameters (`add3 = add 3.0; main = add3 4.0` →
-  `Float(7.0)`). Named λ-parameter definitions curry too
+  `Double(7.0)`). Named λ-parameter definitions curry too
   (`add5 = add2 5.0`).
 - **Higher-order functions** — a lambda parameter can itself be a function:
   `twice = \f x -> f (f x); double = \x -> x * 2.0; main = twice double 3.0`
-  → `Float(12.0)`. Function values flow through records and projections, so a
+  → `Double(12.0)`. Function values flow through records and projections, so a
   combinator can map over a fixed-shape container:
   `pair_map = \f p -> Pair { x: f p.x, y: f p.y }`.
 - **Signal-wire arguments** — a trailing `_` wire binds to the callee's LAST

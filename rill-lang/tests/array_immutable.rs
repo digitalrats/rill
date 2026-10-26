@@ -130,8 +130,8 @@ fn matrix(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, ((i64, i64), (i6
     let values = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect();
     let bounds = match v {
@@ -148,8 +148,8 @@ fn vector(prog: &WorldState<f32, 256>, v: &Value) -> (Vec<f64>, (i64, i64)) {
     let values = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect();
     let bounds = match v {
@@ -190,17 +190,17 @@ fn cell(i: i64, j: i64) -> String {
 ///
 /// The value is formatted with `Debug` so it always carries a decimal point
 /// (`10.0`, not `10`): an integer-looking literal would type as `Int` and a
-/// `List (Pair i Float)` association list would not unify.
+/// `List (Pair i Double)` association list would not unify.
 fn assoc(i: i64, j: i64, v: f64) -> String {
     format!("Pair {{ first: {}, second: {v:?} }}", cell(i, j))
 }
 
-/// Run `src` and return its `Float` value output.
+/// Run `src` and return its `Double` value output.
 fn float_of(src: &str) -> f64 {
     let (_prog, v) = run(src);
     match v {
-        Value::Float(f) => f,
-        other => panic!("expected a Float, got {other:?}\nsrc:\n{src}"),
+        Value::Double(f) => f,
+        other => panic!("expected a Double, got {other:?}\nsrc:\n{src}"),
     }
 }
 
@@ -302,7 +302,7 @@ fn two_dimensional_list_array_pads_or_truncates_to_the_range_size() {
     // list is LONG — the extra is silently dropped, yielding 4 elements.
     let with_3 = format!("main = listArray {} [0.0, 1.0, 2.0];", b2(0, 0, 1, 1));
     let (prog, v) = run(&with_3);
-    // The padded tail is a hole (a `Callable`), not a Float — assert the flat
+    // The padded tail is a hole (a `Callable`), not a Double — assert the flat
     // element count without forcing it.
     assert_eq!(array_elems(&v).len(), 4, "padded to the 4-cell size");
     let bounds = match &v {
@@ -337,7 +337,7 @@ fn two_dimensional_list_array_pads_or_truncates_to_the_range_size() {
     );
 
     // 3x2 = 6 cells (b2(0,0,2,1)): a 5-element list is SHORT (tail hole, not a
-    // Float); a 6-element list is exact.
+    // Double); a 6-element list is exact.
     let with_5_3x2 = format!(
         "main = listArray {} [0.0, 1.0, 2.0, 3.0, 4.0];",
         b2(0, 0, 2, 1)
@@ -458,8 +458,8 @@ fn update_leaves_the_source_matrix_unchanged() {
     );
     let (prog, v) = run(&src);
     let (updated, original) = pair_values(&prog, &v);
-    assert_eq!(updated, Value::Float(99.0));
-    assert_eq!(original, Value::Float(5.0), "the source keeps its element");
+    assert_eq!(updated, Value::Double(99.0));
+    assert_eq!(original, Value::Double(5.0), "the source keeps its element");
 }
 
 #[test]
@@ -524,8 +524,8 @@ fn array_builds_a_matrix_with_undefined_holes_for_unlisted_cells() {
     assert_eq!(int_pair(&prog, &low), (0, 0));
     assert_eq!(int_pair(&prog, &high), (1, 2));
     let (c1, c2) = pair_values(&prog, &cells);
-    assert_eq!(c1, Value::Float(1.5));
-    assert_eq!(c2, Value::Float(3.5));
+    assert_eq!(c1, Value::Double(1.5));
+    assert_eq!(c2, Value::Double(3.5));
 
     // Forcing an unlisted position faults cleanly (a fold over `arrayElems`
     // forces every element; the unlisted holes latch on the first push).
@@ -614,8 +614,8 @@ fn a_reindexed_matrix_is_indexable_and_remappable_without_a_binding() {
     let value = with_output(
         &format!("main = index {transposed} {};", cell(1, 0)),
         |_prog, v| match v {
-            Value::Float(f) => *f,
-            other => panic!("expected a Float, got {other:?}"),
+            Value::Double(f) => *f,
+            other => panic!("expected a Double, got {other:?}"),
         },
     );
     assert_eq!(value, 2.0);
@@ -679,7 +679,7 @@ fn the_accessor_composes_inside_a_larger_expression() {
 #[test]
 fn an_array_passes_through_a_function_as_a_value() {
     // Arrays are ordinary first-class values: a λ may take one and index it.
-    // The parameter is typed `Array (Pair Int Int) Float` by the ARGUMENT, so
+    // The parameter is typed `Array (Pair Int Int) Double` by the ARGUMENT, so
     // the accessor inside the body dispatches to the array definition rather
     // than to a numeric fallback.
     let src = format!("main = (\\ m -> m ! {}) {};", cell(1, 2), m3());
@@ -689,7 +689,7 @@ fn an_array_passes_through_a_function_as_a_value() {
 #[test]
 fn the_accessor_feeds_a_condition() {
     // The read participates in a Bool expression, so the accessor's result must
-    // be a `Float` the comparison can consume — not a wrapped or deferred value.
+    // be a `Double` the comparison can consume — not a wrapped or deferred value.
     assert_eq!(
         float_of(&format!(
             "main = if 4.0 < ({} ! {}) then 1.0 else 0.0;",
@@ -757,7 +757,7 @@ fn q1_user_ix_instances_keep_reads_working_but_array_construction_faults() {
     ));
     assert_eq!(
         v,
-        Value::Float(7.5),
+        Value::Double(7.5),
         "the user Ix instance must drive the language-side read"
     );
 

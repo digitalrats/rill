@@ -32,7 +32,7 @@ pub enum ValueTy {
     /// Integer value.
     Int,
     /// Floating point value.
-    Float,
+    Double,
     /// Boolean value type.
     Bool,
     /// String value type.
@@ -47,7 +47,7 @@ pub enum ValueTy {
     Data(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
     Newtype(String, Vec<ValueTy>),
-    /// Builtin constructor application: `List Float`.
+    /// Builtin constructor application: `List Double`.
     App(String, Vec<ValueTy>),
     /// A function/expression type (unary): capture types and result type.
     /// `Thunk([], [t])` is a constant `t`; `Thunk([a], [b])` is `\x:a -> b`.
@@ -172,7 +172,7 @@ pub struct Scheme {
     /// type always name the same variable. Only a constraint whose variable the
     /// signature actually mentions is recorded: a context over a declared type
     /// (`Ix Int => …`) is already discharged, and an AMBIGUOUS context
-    /// (`C i => Float`, where `i` occurs in no argument or result) has no
+    /// (`C i => Double`, where `i` occurs in no argument or result) has no
     /// variable to pair a dictionary with. Empty for an unconstrained scheme.
     pub constraints: Vec<(String, TypeVarId)>,
     /// The generalized value type.
@@ -194,7 +194,7 @@ pub struct Subst {
 /// A predefined (compiler-known) scalar type: the value type its NAME denotes,
 /// and whether the FFI layer may name it as a compile-time scalar parameter.
 ///
-/// `Float`, `Int`, `Bool` and `String` have a host scalar representation. A
+/// `Double`, `Int`, `Bool` and `String` have a host scalar representation. A
 /// buffer (`Buffer`) is an ordinary value that an FFI channel is made of — the
 /// channel type is `FixedBuffer`, not a scalar — and the unit type `()` has no
 /// host representation at all, so both are registered with
@@ -216,7 +216,7 @@ pub struct ScalarType {
 /// names are types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeEntry {
-    /// A predefined scalar/primitive value type (`Int`, `Float`, `Bool`,
+    /// A predefined scalar/primitive value type (`Int`, `Double`, `Bool`,
     /// `String`, `Buffer`, `()`).
     Scalar(ScalarType),
     /// A type constructor with its type-argument arity: a builtin container
@@ -229,7 +229,7 @@ pub enum TypeEntry {
     },
     /// A `newtype` wrapper.
     Newtype,
-    /// A `type` synonym (`type Angles = Float`) and the name it stands for.
+    /// A `type` synonym (`type Angles = Double`) and the name it stands for.
     Alias(String),
     /// A type variable: a lowercase name (Haskell 2010 §3.1), which is the
     /// binder / `forall` / class-variable space. Known, but NOT a type — an
@@ -308,7 +308,7 @@ pub struct InstanceInfo {
     pub methods: HashMap<String, (Vec<String>, Expr)>,
     /// True when this instance's method bodies are COMPILER KERNELS rather
     /// than source equations: a primitive numeric instance (`Num Int`,
-    /// `Num Float`, `Fractional Float`), a buffer instance (element-wise
+    /// `Num Double`, `Fractional Double`), a buffer instance (element-wise
     /// kernels), or a structurally derived `Eq`/`Ord` instance.
     ///
     /// Dispatch for such an instance does not look for a body — it selects the
@@ -449,7 +449,7 @@ pub(crate) fn split_curried_params(
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv {
     /// Predefined scalar/primitive types, in registration order: the ONE table
-    /// that says `Int`, `Float`, `Bool`, `String`, `Buffer` and `()` are types.
+    /// that says `Int`, `Double`, `Bool`, `String`, `Buffer` and `()` are types.
     /// Seeded once by [`TypeEnv::with_builtins`] and extended by
     /// [`TypeEnv::register_scalar`], so no other code needs a list of scalar
     /// names (the defect this table exists to remove).
@@ -616,8 +616,8 @@ instance (Monad m) => Arrow (Kleisli m) where {
 --  kernels (there are no source equations for a primitive), so the instance
 --  declarations are markers; the kernel is selected by the class + type pair.
 instance Num Int where { }
-instance Num Float where { }
-instance Fractional Float where { }
+instance Num Double where { }
+instance Fractional Double where { }
 
 --  A buffer is an ordinary value and a NUMERIC one: `Buffer` is a subclass of
 --  `Num` (and therefore of `Eq`/`Ord`), so it uses the SAME operator vocabulary
@@ -698,7 +698,7 @@ data OutputStream a;
 -- `a ++ b` desugars to this same name.
 (++) a b = append_list a b;
 
-instance Monoid Float where { mempty = 0.0; mappend a b = a + b; }
+instance Monoid Double where { mempty = 0.0; mappend a b = a + b; }
 instance Monoid String where { mempty = ""; mappend a b = concat_string a b; }
 -- Haskell 2010's `instance Monoid [a]` delegates TO `++` (`mappend = (++)`),
 -- not the other way round: `++` is the primitive and the instance is the
@@ -909,36 +909,36 @@ __prelude_end = ();
 /// declaration) and produces the tape index, which flows to `write_head` /
 /// `read_head` via their `Tape f32` resource params (Task 11).
 pub(crate) const BUILTIN_FOREIGN_DECLS: &str = r#"
-foreign sine : Float -> Float -> Float -> FixedBuffer f32;
-foreign saw : Float -> Float -> Float -> FixedBuffer f32;
-foreign square : Float -> Float -> Float -> FixedBuffer f32;
-foreign triangle : Float -> Float -> Float -> FixedBuffer f32;
-foreign noise : Float -> Float -> FixedBuffer f32;
-foreign ay38910 : Float -> Float -> FixedBuffer f32;
-foreign sampler : Float -> Float -> Float -> Float -> Float -> FixedBuffer f32;
+foreign sine : Double -> Double -> Double -> FixedBuffer f32;
+foreign saw : Double -> Double -> Double -> FixedBuffer f32;
+foreign square : Double -> Double -> Double -> FixedBuffer f32;
+foreign triangle : Double -> Double -> Double -> FixedBuffer f32;
+foreign noise : Double -> Double -> FixedBuffer f32;
+foreign ay38910 : Double -> Double -> FixedBuffer f32;
+foreign sampler : Double -> Double -> Double -> Double -> Double -> FixedBuffer f32;
 
 foreign integrator : FixedBuffer f32 -> FixedBuffer f32;
-foreign leaky_integrator : Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign moog : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign lowpass : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign highpass : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign biquad : Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign delay : Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign distortion : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign limiter : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign graphic_eq : Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign spectralgate : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign spectraldelay : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign convolver : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign analog_moog : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
-foreign lofi : Float -> Float -> Float -> Float -> Float -> Float -> Float -> FixedBuffer f32 -> FixedBuffer f32;
+foreign leaky_integrator : Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign onepole : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign moog : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign lowpass : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign highpass : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign biquad : Double -> Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign delay : Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign distortion : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign limiter : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign graphic_eq : Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign spectralgate : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign spectraldelay : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign convolver : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign analog_moog : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
+foreign lofi : Double -> Double -> Double -> Double -> Double -> Double -> Double -> FixedBuffer f32 -> FixedBuffer f32;
 foreign eq_parametric : EqConfig -> FixedBuffer f32 -> FixedBuffer f32;
 
 foreign tape_loop : Int -> Tape f32;
-foreign read_head : Tape f32 -> Float -> FixedBuffer f32;
+foreign read_head : Tape f32 -> Double -> FixedBuffer f32;
 
-data EqBand = { freq: Float, q: Float, gain_db: Float, band_type: Int };
+data EqBand = { freq: Double, q: Double, gain_db: Double, band_type: Int };
 data EqConfig = { bands: List EqBand };
 
 main = ();
@@ -1182,14 +1182,14 @@ impl TypeEnv {
             ..TypeEnv::default()
         };
         // The predefined scalar/primitive types: Haskell 2010 §6.4.1 spells the
-        // numeric leaves `Int`/`Float`, `Bool` and `String` are the Prelude's,
+        // numeric leaves `Int`/`Double`, `Bool` and `String` are the Prelude's,
         // `Buffer` is rill's buffer value, and `()` is the unit type (Haskell
         // 2010 spells the unit type as the empty tuple; there is no `Void`
         // type name). This is the ONE place that says which names are types —
         // every consumer asks [`TypeEnv::type_entry`].
         for (name, vty, ffi_scalar) in [
             ("Int", ValueTy::Int, true),
-            ("Float", ValueTy::Float, true),
+            ("Double", ValueTy::Double, true),
             ("Bool", ValueTy::Bool, true),
             ("String", ValueTy::String, true),
             ("Buffer", ValueTy::Buffer, false),
@@ -1401,7 +1401,7 @@ impl TypeEnv {
         //   stdout          :: OutputStream String
         //   stderr          :: OutputStream String
         //   stdin           :: InputStream String
-        //   show_float      :: Float -> String
+        //   show_double      :: Double -> String
         //   show_int        :: Int -> String
         //   show_bool       :: Bool -> String
         let forall_a = |inner: crate::ast::TypeExpr| {
@@ -1514,8 +1514,8 @@ impl TypeEnv {
             )),
         );
         env.builtin_sigs.insert(
-            "show_float".to_string(),
-            crate::ast::TypeExpr::TFunc(vec![tv("Float")], Box::new(tv("String"))),
+            "show_double".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![tv("Double")], Box::new(tv("String"))),
         );
         env.builtin_sigs.insert(
             "show_int".to_string(),
@@ -1645,7 +1645,7 @@ impl TypeEnv {
                 Box::new(arr_ie()),
             )),
         );
-        // Buffer bridge: concrete over the `Int`-indexed `Float` array the
+        // Buffer bridge: concrete over the `Int`-indexed `Double` array the
         // `FixedBuffer f32` maps to. The value-level type of a signal buffer is
         // `Buffer` (that is what the FFI apply path produces for a fully applied
         // generator and what a buffer-returning `main` yields), so these are
@@ -1655,13 +1655,13 @@ impl TypeEnv {
             "arrayFromBuffer".to_string(),
             crate::ast::TypeExpr::TFunc(
                 vec![tv("Buffer")],
-                Box::new(array(vec![tv("Int"), tv("Float")])),
+                Box::new(array(vec![tv("Int"), tv("Double")])),
             ),
         );
         env.builtin_sigs.insert(
             "bufferFromArray".to_string(),
             crate::ast::TypeExpr::TFunc(
-                vec![array(vec![tv("Int"), tv("Float")])],
+                vec![array(vec![tv("Int"), tv("Double")])],
                 Box::new(tv("Buffer")),
             ),
         );
@@ -2078,7 +2078,7 @@ impl TypeEnv {
     ///
     /// Resolution order (Haskell 2010 §3.1 lexical rules come first):
     ///
-    /// 1. a registered predefined scalar (`Int`, `Float`, `Bool`, `String`,
+    /// 1. a registered predefined scalar (`Int`, `Double`, `Bool`, `String`,
     ///    `Buffer`, `()`);
     /// 2. a `type` synonym, followed to its final target;
     /// 3. a `newtype` wrapper;
@@ -2153,7 +2153,7 @@ impl TypeEnv {
         self.data_types.get(name).map(|_| 0)
     }
 
-    /// The source spelling of a scalar value type (`Int`, `Float`, `Bool`,
+    /// The source spelling of a scalar value type (`Int`, `Double`, `Bool`,
     /// `String`, `Buffer`, `()`), read from the registry rather than a private
     /// table. `None` for a non-scalar value type.
     pub fn scalar_name_of(&self, v: &ValueTy) -> Option<String> {
@@ -2453,7 +2453,7 @@ impl TypeEnv {
                 None => Ok(()),
             },
             Expr::Int(..)
-            | Expr::Float(..)
+            | Expr::Double(..)
             | Expr::Void(..)
             | Expr::Str(..)
             | Expr::Ref(..)
@@ -2505,7 +2505,7 @@ impl TypeEnv {
         };
         match t {
             ValueTy::Int
-            | ValueTy::Float
+            | ValueTy::Double
             | ValueTy::Bool
             | ValueTy::String
             | ValueTy::Buffer
@@ -2590,7 +2590,7 @@ impl TypeEnv {
     }
 
     /// The DSL type name of a concrete value type, used to look up instances
-    /// (`Float`, `Int`, a data type name, a newtype name, a builtin ctor
+    /// (`Double`, `Int`, a data type name, a newtype name, a builtin ctor
     /// application's head like `List`/`Map`). `None` for unresolved type
     /// variables and function types — a method call or Ord-constrained key
     /// over such an argument cannot select an instance at compile time.
@@ -2604,7 +2604,7 @@ impl TypeEnv {
             // A buffer value's nominal type is `FixedBuffer`: that is the
             // instance head that provides its `Num` dictionary.
             ValueTy::Buffer => Some("FixedBuffer".to_string()),
-            ValueTy::Int | ValueTy::Float | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
+            ValueTy::Int | ValueTy::Double | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
                 self.scalar_name_of(v)
             }
             ValueTy::Data(n, _) => Some(n.clone()),
@@ -2776,7 +2776,7 @@ impl TypeEnv {
 
 /// Every argument index in a method signature whose type MENTIONS the class
 /// variable (`[0, 1]` for `mappend: m -> m -> m`, `[1]` for
-/// `pick: Bool -> Pair a a -> Float`). Empty when no argument mentions it (a
+/// `pick: Bool -> Pair a a -> Double`). Empty when no argument mentions it (a
 /// nullary method such as `mempty: m`).
 ///
 /// Callers select the dispatch selector from these indices: the class variable
@@ -2938,7 +2938,7 @@ pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
     fn key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
         Some(match v {
             ValueTy::Int
-            | ValueTy::Float
+            | ValueTy::Double
             | ValueTy::Bool
             | ValueTy::String
             | ValueTy::Buffer
@@ -3000,7 +3000,7 @@ pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
 pub fn kind_rank(v: &ValueTy) -> i8 {
     match v {
         ValueTy::Int => 0,
-        ValueTy::Float => 1,
+        ValueTy::Double => 1,
         ValueTy::Bool => 2,
         ValueTy::String => 3,
         ValueTy::Buffer => 4,
@@ -3104,12 +3104,18 @@ mod funcsig_tests {
 
     #[test]
     fn func_signature_carries_arg_and_result_types() {
-        let f = ValueTy::Thunk(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]);
+        let f = ValueTy::Thunk(
+            vec![ValueTy::Double, ValueTy::Double],
+            vec![ValueTy::Double],
+        );
         assert_eq!(
             f,
-            ValueTy::Thunk(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float])
+            ValueTy::Thunk(
+                vec![ValueTy::Double, ValueTy::Double],
+                vec![ValueTy::Double]
+            )
         );
-        let g = ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float]);
+        let g = ValueTy::Thunk(vec![ValueTy::Double], vec![ValueTy::Double]);
         assert_ne!(f, g);
     }
 }
@@ -3202,13 +3208,13 @@ mod hkt_value_ty_tests {
 
     #[test]
     fn app_constructs() {
-        let t = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let t = ValueTy::App("List".into(), vec![ValueTy::Double]);
         assert!(matches!(t, ValueTy::App(..)));
     }
 
     #[test]
     fn bool_string_are_leaves() {
-        assert_ne!(ValueTy::Bool, ValueTy::Float);
+        assert_ne!(ValueTy::Bool, ValueTy::Double);
         assert_ne!(ValueTy::String, ValueTy::Bool);
     }
 
@@ -3222,7 +3228,7 @@ mod hkt_value_ty_tests {
         let env = TypeEnv::with_builtins();
         assert_eq!(env.vty_of_name("Bool"), Some(ValueTy::Bool));
         assert_eq!(env.vty_of_name("String"), Some(ValueTy::String));
-        assert_eq!(env.vty_of_name("Float"), Some(ValueTy::Float));
+        assert_eq!(env.vty_of_name("Double"), Some(ValueTy::Double));
         assert_eq!(env.vty_of_name("Int"), Some(ValueTy::Int));
         // A name nothing declares is not a type (Haskell 2010 §3.1): a
         // phantom `Data("Integer", [])` would make `f :: Integer -> Integer`
@@ -3298,10 +3304,10 @@ mod hkt_value_ty_tests {
     fn match_ctor_pattern_rejects_extra_pattern_args() {
         let env = TypeEnv::with_builtins();
         let mut subst = Subst::default();
-        // Pattern `f a b` (two type args) against `App("List", [Float])`
+        // Pattern `f a b` (two type args) against `App("List", [Double])`
         // (one slot): the extra `b` slot must reject the match.
         let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0), ValueTy::Var(1)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Double]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             None
@@ -3314,14 +3320,14 @@ mod hkt_value_ty_tests {
         let mut subst = Subst::default();
         // `f a` (one arg) against a List (one slot) matches.
         let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let concrete = ValueTy::App("List".into(), vec![ValueTy::Double]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             Some("List".to_string())
         );
         // `f a b` (two args) against a Pair (two slots) matches.
         let pat2 = ValueTy::App("f".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
-        let concrete2 = ValueTy::App("Pair".into(), vec![ValueTy::Float, ValueTy::Int]);
+        let concrete2 = ValueTy::App("Pair".into(), vec![ValueTy::Double, ValueTy::Int]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat2, &concrete2, &mut subst),
             Some("Pair".to_string())
@@ -3404,7 +3410,7 @@ mod eq_ord_tests {
         let mut env = TypeEnv::with_builtins();
         env.data_types.insert(
             "Point".to_string(),
-            DataInfo::Record(vec![("x".to_string(), ValueTy::Float, false)]),
+            DataInfo::Record(vec![("x".to_string(), ValueTy::Double, false)]),
         );
         env.data_types.insert(
             "List".to_string(),
@@ -3420,7 +3426,7 @@ mod eq_ord_tests {
         assert!(env.typeclasses.contains_key("Eq"));
         assert!(env.typeclasses.contains_key("Ord"));
         let by_ty = &env.instances["Ord"];
-        assert!(by_ty.contains_key("Float"));
+        assert!(by_ty.contains_key("Double"));
         assert!(by_ty.contains_key("Int"));
         assert!(by_ty.contains_key("Bool"));
         assert!(by_ty.contains_key("String"));

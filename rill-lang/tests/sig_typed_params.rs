@@ -6,8 +6,8 @@
 //! The parser curries every multi-parameter definition into a λ-nest and clears
 //! `Def::Eval::params`, so an annotated `f a b :: Int -> Int -> Int` recovers
 //! its formal parameters from the signature's arity. Without that recovery the
-//! parameters fell back to the scalar `Float` default: the `Int` call site
-//! could not type-check, and a `Float` scheme contradicted an `Int`-typed body.
+//! parameters fell back to the scalar `Double` default: the `Int` call site
+//! could not type-check, and a `Double` scheme contradicted an `Int`-typed body.
 pub mod common;
 
 use common::*;
@@ -27,11 +27,11 @@ fn run_value(src: &str) -> Value {
 }
 
 /// Compile and run `src`, returning `main`'s value as a number. Value
-/// arithmetic preserves the `Int` track (`1 + 2` is `Int(3)`, not `Float(3.0)`),
+/// arithmetic preserves the `Int` track (`1 + 2` is `Int(3)`, not `Double(3.0)`),
 /// so an assertion compares through `f64` rather than pinning one spelling.
 fn run_num(src: &str) -> f64 {
     match run_value(src) {
-        Value::Float(x) => x,
+        Value::Double(x) => x,
         Value::Int(i) => i as f64,
         other => panic!("expected a number, got {other:?}"),
     }
@@ -39,7 +39,7 @@ fn run_num(src: &str) -> f64 {
 
 #[test]
 fn multi_parameter_signature_types_every_parameter() {
-    // `a` and `b` come from the signature, not from the `Float` default: the
+    // `a` and `b` come from the signature, not from the `Double` default: the
     // `Int` literals at the call site only unify if the scheme really is
     // `Int -> Int -> Int`.
     let src = "f a b :: Int -> Int -> Int = a + b;\nmain = f 1 2;";
@@ -57,10 +57,10 @@ fn multi_parameter_signature_drives_the_body_too() {
 
 #[test]
 fn single_parameter_signature_scheme_matches_the_body() {
-    // The scheme used to be `Float -> Int` while the body was checked with
-    // `x : Int` — the call site was typed by `Float` and the lowered parameter
+    // The scheme used to be `Double -> Int` while the body was checked with
+    // `x : Int` — the call site was typed by `Double` and the lowered parameter
     // register by `Int`. `n` is a closed `Int` value (a `length` result);
-    // unlike an integer literal sitting in an expected-`Float` position it has
+    // unlike an integer literal sitting in an expected-`Double` position it has
     // no coercion to hide the mismatch.
     let src = "n = length [1.0, 2.0];\ninc x :: Int -> Int = x + 1;\nmain = inc n;";
     assert_eq!(run_num(src), 3.0);
@@ -102,7 +102,7 @@ fn signature_less_accessor_call_names_the_missing_annotation() {
 
     // The advice is actionable: the same accessor with a signature compiles
     // and reads the array element.
-    let src = "at a i :: Array Int Float -> Int -> Float = a ! i;\n\
+    let src = "at a i :: Array Int Double -> Int -> Double = a ! i;\n\
                main = at (listArray (Pair { first: 0, second: 2 }) [1.0, 2.0, 3.0]) 1;";
-    assert_eq!(run_value(src), Value::Float(2.0));
+    assert_eq!(run_value(src), Value::Double(2.0));
 }

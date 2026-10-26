@@ -69,7 +69,7 @@ fn render_main(src: &str) -> String {
 fn annotation_pins_a_literal() {
     // `(1 :: Int)` is an Int: `show_int` (Int -> String) accepts it and renders
     // "1". Also assert the Int TRACK survives the annotation — `(1 :: Int) + 2`
-    // is `Value::Int(3)`, not a Float promoted through the erased node.
+    // is `Value::Int(3)`, not a Double promoted through the erased node.
     let shown = run_value("main = show_int (1 :: Int);");
     assert_eq!(shown, Value::String("1".into()));
 
@@ -179,35 +179,35 @@ fn annotation_tighter_than_arithmetic() {
 
 #[test]
 fn mismatched_annotation_is_a_type_error() {
-    // A `Float` literal cannot be annotated `Int`: the annotation pins the
+    // A `Double` literal cannot be annotated `Int`: the annotation pins the
     // inner type, so the two must unify.
     let mismatched = compile_err("main = 1.5 :: Int;");
     assert!(
-        mismatched.contains("Int") && mismatched.contains("Float"),
-        "expected a type mismatch between Int and Float, got: {mismatched}"
+        mismatched.contains("Int") && mismatched.contains("Double"),
+        "expected a type mismatch between Int and Double, got: {mismatched}"
     );
     // …and the same literal without the annotation compiles, so the error is
     // the annotation's doing and not the literal's.
-    assert_eq!(run_value("main = 1.5;"), Value::Float(1.5));
+    assert_eq!(run_value("main = 1.5;"), Value::Double(1.5));
 }
 
 #[test]
 fn annotation_erases_at_lowering() {
     // The annotated expression still evaluates to its value…
-    assert_eq!(run_value("main = (1.5 :: Float);"), Value::Float(1.5));
-    assert_eq!(run_value("main = 1.5;"), Value::Float(1.5));
+    assert_eq!(run_value("main = (1.5 :: Double);"), Value::Double(1.5));
+    assert_eq!(run_value("main = 1.5;"), Value::Double(1.5));
 
     // …and the IR is IDENTICAL to the un-annotated spelling: an annotation is
     // erased, not a runtime no-op instruction. Comparing the entry block's
     // instruction count catches a node that "passes the value through" by
     // emitting an extra register copy.
     assert_eq!(
-        entry_instrs("1.5 :: Float"),
+        entry_instrs("1.5 :: Double"),
         entry_instrs("1.5"),
         "`e :: t` must lower to exactly the IR of `e`"
     );
     assert_eq!(
-        entry_instrs("1.0 + 2.0 :: Float"),
+        entry_instrs("1.0 + 2.0 :: Double"),
         entry_instrs("1.0 + 2.0"),
         "an annotation on an infix expression must erase too"
     );
@@ -230,7 +230,11 @@ fn int_index_position_stays_int() {
            readArrayFlat a 1 \
          });",
     );
-    assert_eq!(plain, Value::Float(7.0), "the un-annotated index reads 7.0");
+    assert_eq!(
+        plain,
+        Value::Double(7.0),
+        "the un-annotated index reads 7.0"
+    );
 
     let annotated = run_value(
         "{-# MODE complete #-}\nmain = runST (\\s -> do { \
@@ -238,31 +242,31 @@ fn int_index_position_stays_int() {
            readArrayFlat a (1 :: Int) \
          });",
     );
-    assert_eq!(annotated, Value::Float(7.0), "an `:: Int` index reads 7.0");
+    assert_eq!(annotated, Value::Double(7.0), "an `:: Int` index reads 7.0");
 }
 
 #[test]
 fn int_index_position_rejects_a_float_offset() {
     // The un-annotated index above is `Int` at the TYPE level, not merely
     // "accepted at runtime": `readArrayFlat`'s second parameter is `Int`, so a
-    // genuinely `Float`-typed value in that position is a type error.
+    // genuinely `Double`-typed value in that position is a type error.
     //
     // This is the discriminating half of Review Focus 3 (design §3.6): the
     // value test alone cannot prove it, because the interpreter's flat-offset
-    // reader accepts an INTEGRAL `Value::Float` (`index 1.0` reads element 1 —
+    // reader accepts an INTEGRAL `Value::Double` (`index 1.0` reads element 1 —
     // the documented negated-literal wart). A `1.0` literal would therefore
     // both compile *and* run if the position were polymorphic, so the test
-    // routes a declared-`Float` BINDING into the position instead: only the
+    // routes a declared-`Double` BINDING into the position instead: only the
     // type checker can reject that, and only an `Int` position rejects it.
     let msg = compile_err(
-        "{-# MODE complete #-}\nk :: Float = 1.0;\nmain = runST (\\s -> do { \
+        "{-# MODE complete #-}\nk :: Double = 1.0;\nmain = runST (\\s -> do { \
            a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 7.0; \
            readArrayFlat a k \
          });",
     );
     assert!(
-        msg.contains("Float") && msg.contains("Int"),
-        "a Float-typed flat offset must be rejected naming both types, got: {msg}"
+        msg.contains("Double") && msg.contains("Int"),
+        "a Double-typed flat offset must be rejected naming both types, got: {msg}"
     );
 
     // The control: the SAME binding shape at `Int` compiles and reads element
@@ -275,7 +279,7 @@ fn int_index_position_rejects_a_float_offset() {
     );
     assert_eq!(
         int_key,
-        Value::Float(7.0),
+        Value::Double(7.0),
         "an Int-typed offset reads element 1"
     );
 }

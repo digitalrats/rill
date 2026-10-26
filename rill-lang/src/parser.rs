@@ -102,7 +102,7 @@ struct Parser<'a> {
     /// section operand.
     section_stop: Option<usize>,
     /// Offside column of a top-level `::` signature, when one is being parsed.
-    /// A juxtaposed type application (`Float f x`) would otherwise swallow the
+    /// A juxtaposed type application (`Double f x`) would otherwise swallow the
     /// NEXT declaration's head, so the type parser stops at a line indented less
     /// than the declaration that owns the signature (Haskell layout).
     type_layout_col: Option<usize>,
@@ -346,7 +346,7 @@ fn is_atom_start(tok: &Tok) -> bool {
         tok,
         Tok::Ident(_)
             | Tok::Int(_)
-            | Tok::Float(_)
+            | Tok::Double(_)
             | Tok::Str(_)
             | Tok::LParen
             | Tok::LBrace
@@ -367,7 +367,7 @@ fn peek_is_negative_literal(toks: &[Token], pos: usize) -> bool {
     let Some(next) = toks.get(pos + 1) else {
         return false;
     };
-    matches!(next.tok, Tok::Int(_) | Tok::Float(_)) && next.span.start == toks[pos].span.end
+    matches!(next.tok, Tok::Int(_) | Tok::Double(_)) && next.span.start == toks[pos].span.end
 }
 
 /// Whether the `!` at `pos` is a bang marker rather than the infix indexing
@@ -402,7 +402,7 @@ fn is_pattern_start(tok: &Tok) -> bool {
         tok,
         Tok::Ident(_)
             | Tok::Int(_)
-            | Tok::Float(_)
+            | Tok::Double(_)
             | Tok::Str(_)
             | Tok::KwTrue
             | Tok::KwFalse
@@ -701,9 +701,9 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(Pattern::LitInt(*v))
             }
-            Tok::Float(v) => {
+            Tok::Double(v) => {
                 self.bump();
-                Ok(Pattern::LitFloat(*v))
+                Ok(Pattern::LitDouble(*v))
             }
             Tok::Str(s) => {
                 self.bump();
@@ -812,7 +812,7 @@ impl<'a> Parser<'a> {
     ///
     /// Used by the type parser while a top-level `::` signature is being read:
     /// a signature ends at the next declaration, so a juxtaposed type
-    /// application (`Float f x` out of `f :: Float` followed by `f x = …`) must
+    /// application (`Double f x` out of `f :: Double` followed by `f x = …`) must
     /// not swallow that declaration's head. Inside one source LINE a type may
     /// still continue (`Pair Int\n    Int` stays one application).
     fn type_arg_closes_layout(&self) -> bool {
@@ -1036,7 +1036,7 @@ impl<'a> Parser<'a> {
             Tok::Bang => is_attached_bang(self.toks, self.cur()),
             Tok::Ident(_)
             | Tok::Int(_)
-            | Tok::Float(_)
+            | Tok::Double(_)
             | Tok::Str(_)
             | Tok::KwTrue
             | Tok::KwFalse
@@ -1346,7 +1346,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a type atom: a single atom, or a name applied to juxtaposed atoms
-    /// (`List Float`, `f a`). Juxtaposed arguments stay flat — each is one
+    /// (`List Double`, `f a`). Juxtaposed arguments stay flat — each is one
     /// non-absorbing [`Parser::parse_type_single`].
     fn parse_type_atom(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
@@ -2250,7 +2250,7 @@ impl<'a> Parser<'a> {
         let t = self.bump();
         match t.tok {
             Tok::Int(v) => Ok(Expr::Int(v, t.span)),
-            Tok::Float(v) => Ok(Expr::Float(v, t.span)),
+            Tok::Double(v) => Ok(Expr::Double(v, t.span)),
             Tok::Str(s) => Ok(Expr::Str(s, t.span)),
             Tok::Question => {
                 let start = t.span.start;
@@ -2279,11 +2279,13 @@ impl<'a> Parser<'a> {
                 let Some(next) = self.toks.get(self.pos) else {
                     return Ok(Expr::Ref("-".into(), t.span));
                 };
-                if matches!(next.tok, Tok::Int(_) | Tok::Float(_)) && next.span.start == t.span.end
+                if matches!(next.tok, Tok::Int(_) | Tok::Double(_)) && next.span.start == t.span.end
                 {
                     self.bump(); // the number
                     match next.tok {
-                        Tok::Float(v) => Ok(Expr::Neg(Box::new(Expr::Float(v, next.span)), t.span)),
+                        Tok::Double(v) => {
+                            Ok(Expr::Neg(Box::new(Expr::Double(v, next.span)), t.span))
+                        }
                         Tok::Int(v) => Ok(Expr::Neg(Box::new(Expr::Int(v, next.span)), t.span)),
                         _ => Ok(Expr::Ref("-".into(), t.span)),
                     }
@@ -2729,7 +2731,7 @@ mod tests {
                 if let Expr::Record(fields, _) = &args[0] {
                     assert_eq!(fields.len(), 2);
                     assert!(matches!(&fields[0].1, Expr::Arith { .. }));
-                    assert!(matches!(&fields[1].1, Expr::Float(3.0, _)));
+                    assert!(matches!(&fields[1].1, Expr::Double(3.0, _)));
                 } else {
                     panic!("expected Pair record, got {other:?}", other = args[0]);
                 }
@@ -2746,11 +2748,11 @@ mod tests {
         match curry_head(&body("main = 1.0 : 2.0 : list")) {
             Some(("cons", args)) => {
                 assert_eq!(args.len(), 2);
-                assert!(matches!(args[0], Expr::Float(1.0, _)));
+                assert!(matches!(args[0], Expr::Double(1.0, _)));
                 match curry_head(args[1]) {
                     Some(("cons", args)) => {
                         assert_eq!(args.len(), 2);
-                        assert!(matches!(args[0], Expr::Float(2.0, _)));
+                        assert!(matches!(args[0], Expr::Double(2.0, _)));
                         assert!(matches!(args[1], Expr::Ref(r, _) if r == "list"));
                     }
                     other => panic!("expected nested cons, got {other:?}"),
@@ -2778,8 +2780,8 @@ mod tests {
         match curry_head(&body("main = 1.0 `add` 2.0")) {
             Some(("add", args)) => {
                 assert_eq!(args.len(), 2);
-                assert!(matches!(args[0], Expr::Float(1.0, _)));
-                assert!(matches!(args[1], Expr::Float(2.0, _)));
+                assert!(matches!(args[0], Expr::Double(1.0, _)));
+                assert!(matches!(args[1], Expr::Double(2.0, _)));
             }
             other => panic!("expected `add` application, got {other:?}"),
         }
@@ -3054,7 +3056,7 @@ mod tests {
                 match curry_head(args[0]) {
                     Some(("ay38910", args)) => {
                         assert_eq!(args.len(), 2);
-                        assert!(matches!(args[0], Expr::Float(1750000.0, _)));
+                        assert!(matches!(args[0], Expr::Double(1750000.0, _)));
                         assert!(matches!(args[1], Expr::Ref(r, _) if r == "regs"));
                     }
                     other => panic!("expected ay38910 apply, got {other:?}"),
@@ -3378,7 +3380,9 @@ mod tests {
                     assert_eq!(name, "gain");
                     assert!(default.is_some());
                     if let Some(d) = default {
-                        assert!(matches!(d.as_ref(), Expr::Float(v, _) if (*v - 0.5).abs() < 1e-9));
+                        assert!(
+                            matches!(d.as_ref(), Expr::Double(v, _) if (*v - 0.5).abs() < 1e-9)
+                        );
                     }
                 }
                 other => panic!("expected ActorParam, got {other:?}"),
@@ -3415,26 +3419,26 @@ mod tests {
 
     #[test]
     fn parses_data_record_declaration() {
-        let p = prog("data Point = { x: Float, y: Float }; main = Point { x: 1.0, y: 2.0 }");
+        let p = prog("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Data { .. })));
     }
 
     #[test]
     fn parses_data_sum_declaration() {
-        let p = prog("data Shape = Circle Float | Rect Float Float; main = Circle 1.0");
+        let p = prog("data Shape = Circle Double | Rect Double Double; main = Circle 1.0");
         assert!(p.defs.iter().any(|d| matches!(d, Def::Sum { .. })));
     }
 
     #[test]
     fn parse_strict_product_field() {
-        let p = prog("data P = { x: !Float, y: Float }; main = P { x: 1.0, y: 2.0 }");
+        let p = prog("data P = { x: !Double, y: Double }; main = P { x: 1.0, y: 2.0 }");
         match &p.defs[0] {
             Def::Data { fields, .. } => {
                 assert_eq!(
                     fields,
                     &vec![
-                        ("x".to_string(), TypeExpr::TName("Float".into()), true),
-                        ("y".to_string(), TypeExpr::TName("Float".into()), false),
+                        ("x".to_string(), TypeExpr::TName("Double".into()), true),
+                        ("y".to_string(), TypeExpr::TName("Double".into()), false),
                     ]
                 );
             }
@@ -3444,7 +3448,7 @@ mod tests {
 
     #[test]
     fn parse_strict_sum_payload() {
-        let p = prog("data T = C !Int | D Float; main = C 1");
+        let p = prog("data T = C !Int | D Double; main = C 1");
         match &p.defs[0] {
             Def::Sum { ctors, .. } => {
                 assert_eq!(
@@ -3453,7 +3457,7 @@ mod tests {
                         ("C".to_string(), vec![(TypeExpr::TName("Int".into()), true)]),
                         (
                             "D".to_string(),
-                            vec![(TypeExpr::TName("Float".into()), false)]
+                            vec![(TypeExpr::TName("Double".into()), false)]
                         ),
                     ]
                 );
@@ -3465,13 +3469,13 @@ mod tests {
     #[test]
     fn newtype_strict_field_is_parse_error() {
         // Haskell 2010: newtypes cannot declare strict fields.
-        let src = "newtype Hz = Hz !Float; main = Hz 1.0";
+        let src = "newtype Hz = Hz !Double; main = Hz 1.0";
         assert!(parse(&tokenize(src).unwrap(), src.as_bytes()).is_err());
     }
 
     #[test]
     fn parses_type_and_newtype() {
-        let p = prog("type Angles = Float; newtype Hz = Float; main = Hz 440.0");
+        let p = prog("type Angles = Double; newtype Hz = Double; main = Hz 440.0");
         assert!(p.defs.iter().any(|d| matches!(d, Def::TypeAlias { .. })));
         assert!(p.defs.iter().any(|d| matches!(d, Def::Newtype { .. })));
     }
@@ -3556,10 +3560,10 @@ mod tests {
 
     #[test]
     fn tuple_type_desugars_to_pair() {
-        // `(Float, Float)` in type position must desugar to `TApp("Pair", …)` —
+        // `(Double, Double)` in type position must desugar to `TApp("Pair", …)` —
         // typeclass defs store the raw TypeExpr (no resolution), so compilation
         // alone cannot catch a wrong desugar target.
-        let p = prog("typeclass T a where { m: a (Float, Float) -> Float; }; main = 1.0");
+        let p = prog("typeclass T a where { m: a (Double, Double) -> Double; }; main = 1.0");
         match &p.defs[0] {
             Def::Typeclass { methods, .. } => {
                 assert_eq!(
@@ -3570,12 +3574,12 @@ mod tests {
                             vec![TypeExpr::TApp(
                                 "Pair".into(),
                                 vec![
-                                    TypeExpr::TName("Float".into()),
-                                    TypeExpr::TName("Float".into())
+                                    TypeExpr::TName("Double".into()),
+                                    TypeExpr::TName("Double".into())
                                 ]
                             )]
                         )],
-                        Box::new(TypeExpr::TName("Float".into()))
+                        Box::new(TypeExpr::TName("Double".into()))
                     )
                 );
             }
@@ -3625,7 +3629,7 @@ mod tests {
     fn parses_parenthesized_constraint_list_signature_context() {
         // `(C v, C v) => T` — a comma-separated constraint list.
         let sig =
-            eval_sig("ixmap :: (Ix i, Ix j) => Pair i i -> Pair j j -> Float = ixmap; main = 1.0");
+            eval_sig("ixmap :: (Ix i, Ix j) => Pair i i -> Pair j j -> Double = ixmap; main = 1.0");
         match &sig {
             TypeExpr::TConstrained(constraints, body) => {
                 assert_eq!(
@@ -3643,9 +3647,9 @@ mod tests {
 
     #[test]
     fn parenthesized_type_is_not_a_constraint_context() {
-        // `(Pair i i) -> Float` starts with `(` but holds ONE type, not a
+        // `(Pair i i) -> Double` starts with `(` but holds ONE type, not a
         // `C v` constraint pair — the constraint lookahead must not swallow it.
-        let sig = eval_sig("f :: (Pair i i) -> Float = f; main = 1.0");
+        let sig = eval_sig("f :: (Pair i i) -> Double = f; main = 1.0");
         match &sig {
             TypeExpr::TFunc(args, _) => assert_eq!(args.len(), 1),
             other => panic!("expected an unconstrained TFunc, got {other:?}"),
@@ -3655,7 +3659,7 @@ mod tests {
     #[test]
     fn unconstrained_signature_stays_unwrapped() {
         // Backward-compatible shape: no `=>` means no `TConstrained` wrapper.
-        let sig = eval_sig("f :: Float -> Float = f; main = 1.0");
+        let sig = eval_sig("f :: Double -> Double = f; main = 1.0");
         assert!(matches!(sig, TypeExpr::TFunc(ref args, _) if args.len() == 1));
     }
 
@@ -3676,7 +3680,7 @@ mod tests {
     fn unparenthesized_multi_constraint_is_rejected_with_a_diagnostic() {
         // `C v, C w => T` is not valid Haskell 2010; without the guard it fails
         // later on the comma with an unrelated "expected Eq" message.
-        let src = "f :: Ix i, Ix j => Float = f; main = 1.0";
+        let src = "f :: Ix i, Ix j => Double = f; main = 1.0";
         let err = parse(&tokenize(src).unwrap(), src.as_bytes())
             .expect_err("an unparenthesized multi-constraint context must fail");
         match err {
@@ -3690,12 +3694,12 @@ mod tests {
 
     #[test]
     fn parses_type_application() {
-        let p = prog("data V = { xs: List Float }; main = 1.0");
+        let p = prog("data V = { xs: List Double }; main = 1.0");
         match &p.defs[0] {
             Def::Data { fields, .. } => {
                 assert_eq!(
                     fields[0].1,
-                    TypeExpr::TApp("List".into(), vec![TypeExpr::TName("Float".into())])
+                    TypeExpr::TApp("List".into(), vec![TypeExpr::TName("Double".into())])
                 );
             }
             other => panic!("expected Data, got {other:?}"),
@@ -3789,7 +3793,7 @@ mod tests {
     #[test]
     fn parse_match_patterns_and_guards() {
         let p = prog(
-            r"data Shape = Circle Float | Rect Float Float; main = case s of { Circle r -> r; 0 -> 0.0; _ -> 1.0; n | n > 0 -> n; };",
+            r"data Shape = Circle Double | Rect Double Double; main = case s of { Circle r -> r; 0 -> 0.0; _ -> 1.0; n | n > 0 -> n; };",
         );
         let Expr::Match { arms, .. } = p.main_def().unwrap().body() else {
             panic!("expected a match expression");
@@ -3925,7 +3929,7 @@ mod tests {
         match body("main = 1.0 + 2.0 < 4.0") {
             Expr::Cmp { lhs, rhs, .. } => {
                 assert!(matches!(lhs.as_ref(), Expr::Arith { .. }));
-                assert!(matches!(rhs.as_ref(), Expr::Float(v, _) if *v == 4.0));
+                assert!(matches!(rhs.as_ref(), Expr::Double(v, _) if *v == 4.0));
             }
             other => panic!("expected Cmp, got {other:?}"),
         }

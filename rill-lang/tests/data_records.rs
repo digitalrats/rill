@@ -15,8 +15,8 @@ use rill_lang::ffi::ForeignRegistry;
 fn record_flow_through_process() {
     // `p` is a value binding (CAF) whose body is a record constructor; `main`
     // projects a field. The program must compile and run, and the single run
-    // result must hold Float(2.0) — the projected `p.x`.
-    let src = "data Point = { x: Float, y: Float }; p = Point { x: 2.0, y: 3.0 }; main = p.x";
+    // result must hold Double(2.0) — the projected `p.x`.
+    let src = "data Point = { x: Double, y: Double }; p = Point { x: 2.0, y: 3.0 }; main = p.x";
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
@@ -26,6 +26,6 @@ fn record_flow_through_process() {
     let v = prog.result().expect("the run must produce a single result");
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(2.0)
+        &rill_lang::arena::Value::Double(2.0)
     );
 }

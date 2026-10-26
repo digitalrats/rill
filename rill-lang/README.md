@@ -106,7 +106,7 @@ let mut world = WorldState::<f32, 256>::new(WorldConfig {
 test_eval(&ir, &mut world).unwrap();
 assert_eq!(
     world.arena().get(world.result().unwrap()).unwrap(),
-    &Value::Float(3.0),
+    &Value::Double(3.0),
 );
 ```
 
@@ -140,7 +140,7 @@ stdin           :: InputStream String
 A complete program — drain a memory stream and render each element:
 
 ```haskell
-show_all acc x = concat_string acc (show_float x);
+show_all acc x = concat_string acc (show_double x);
 main = do {
     xs <- fromList [1.0, 2.0, 3.0];
     ys <- toList xs;
@@ -158,7 +158,7 @@ main = do {
   closes a **program-owned** sink (`makeOutputStream`); on the console handles it
   is inert — a program cannot close the runtime's console.
 - **Rendering** — there is no `Show` typeclass in the IO surface: use
-  `show_float`, `show_int`, `show_bool`, and `concat_string`.
+  `show_double`, `show_int`, `show_bool`, and `concat_string`.
 
 ## Stack depth
 
@@ -208,7 +208,7 @@ A program is a list of definitions ending in `;`. One must be named `main`.
 
 ```haskell
 gain x = x * 0.5;            // a one-argument function (juxtaposed args — no parens)
-main = 1.0 + gain 1.0;       // a pure value: Float(1.5)
+main = 1.0 + gain 1.0;       // a pure value: Double(1.5)
 ```
 
 ### Application syntax
@@ -229,9 +229,9 @@ but juxtaposed is canonical.
 Records are written with **record literals** `{ key: val }`:
 
 ```haskell
-data Point = { x: Float, y: Float };
+data Point = { x: Double, y: Double };
 p = Point { x: 2.0, y: 3.0 };
-main = p.x;                  // field projection -> Float(2.0)
+main = p.x;                  // field projection -> Double(2.0)
 ```
 
 Records can be nested, and a **single-field record** can be constructed
@@ -248,7 +248,7 @@ newtype-style by passing the field value directly (`Box 3.0` ≡
 | `&& \|\| not` | boolean logic |
 | `sin cos tan sqrt exp ln tanh abs` | math builtins |
 | `min max` | selection |
-| `show_float` / `show_int` / `show_bool` | scalar to `String` |
+| `show_double` / `show_int` / `show_bool` | scalar to `String` |
 | `concat_string`, `length` | string/list helpers |
 
 **Complex arithmetic** (builtins, always available):
@@ -343,11 +343,11 @@ time. **The language owns the signature; Rust owns the implementation.**
 
 A foreign built-in is declared with the `foreign fn name : TypeExpr;` syntax.
 The signature is a curried arrow (`a -> b -> r`). Signal channels are typed
-`FixedBuffer f32`; scalar parameters use the scalar value types `Float` /
+`FixedBuffer f32`; scalar parameters use the scalar value types `Double` /
 `Int` / `Bool` / `String`; a variadic signal tail is `List (FixedBuffer f32)`:
 
 ```haskell
-foreign fn biquad : FixedBuffer f32 -> Float -> Float -> Float -> FixedBuffer f32;
+foreign fn biquad : FixedBuffer f32 -> Double -> Double -> Double -> FixedBuffer f32;
 foreign fn add    : FixedBuffer f32 -> FixedBuffer f32 -> FixedBuffer f32;
 foreign fn sum    : FixedBuffer f32 -> List (FixedBuffer f32) -> FixedBuffer f32;
 ```
@@ -356,7 +356,7 @@ Parameters occupy positional argument slots in declaration order — the signal
 channel at slot 0, the scalar at slot 1:
 
 ```haskell
-foreign fn gain : FixedBuffer f32 -> Float -> FixedBuffer f32;
+foreign fn gain : FixedBuffer f32 -> Double -> FixedBuffer f32;
 main = gain _ 0.5;
 ```
 
@@ -505,15 +505,15 @@ Beyond signals, a program can carry **values** — arena-paced, typed, and
 processed in the value-track phase:
 
 ```haskell
-data Point = { x: Float, y: Float };          // record type
-data Shape = Circle Float | Rect Float Float; // sum type
-newtype Hz  = Float;                          // distinct wrapper
-type Angles = Float;                          // synonym
+data Point = { x: Double, y: Double };          // record type
+data Shape = Circle Double | Rect Double Double; // sum type
+newtype Hz  = Double;                          // distinct wrapper
+type Angles = Double;                          // synonym
 typeclass Show a where { show: a; }           // ad-hoc polymorphism
-instance Show Float where { show f = f; }
+instance Show Double where { show f = f; }
 
 p = Point { x: 2.0, y: 3.0 };
-main = p.x;                                    // field projection -> Float(2.0)
+main = p.x;                                    // field projection -> Double(2.0)
 ```
 
 Values live in a **page-based arena** in the style of Alexandrescu's
@@ -535,7 +535,7 @@ runtime dispatch).
 ### Builtin value types and type constructors
 
 The value track ships scalar value types and builtin **type constructors**
-applied by juxtaposition (`List Float`):
+applied by juxtaposition (`List Double`):
 
 | Type | Kind | Meaning |
 |---|---|---|
@@ -561,17 +561,17 @@ default RT mode is a detectable no-op, not a per-container error).
 builtin.
 
 ```haskell
-xs  = [1.0, 2.0, 3.0];            // List Float
+xs  = [1.0, 2.0, 3.0];            // List Double
 ys  = cons 10.0 (list);           // prepend; the list grows
-h   = head xs;                    // Maybe Float: Just 1.0 / Nothing
+h   = head xs;                    // Maybe Double: Just 1.0 / Nothing
 n   = length xs;                  // Int
 z   = map (\x -> x * 2.0) xs;   // function first
-s   = fold (\a b -> a + b) 0.0 xs;   // Float
-f   = filter (\x -> x > 1.0) xs;     // List Float
+s   = fold (\a b -> a + b) 0.0 xs;   // Double
+f   = filter (\x -> x > 1.0) xs;     // List Double
 
-m  = { "a": 1.0, "b": 2.0 };      // Map String Float
+m  = { "a": 1.0, "b": 2.0 };      // Map String Double
 m1 = insert "a" 9.0 m;            // replace-on-duplicate
-v  = lookup "a" m;                // Maybe Float
+v  = lookup "a" m;                // Maybe Double
 b  = member "a" m;                // Bool
 st = insert 1 (empty_set);        // Set Int
 ```
@@ -584,7 +584,7 @@ function-typed key is a compile error.
 ### Arrays and `STArray` (Data.Array surface)
 
 Immutable arrays are first-class values: `Array i e` indexed by `Int` or
-`Pair Int Int` (a matrix is `Array (Pair Int Int) Float`). Use `listArray` for
+`Pair Int Int` (a matrix is `Array (Pair Int Int) Double`). Use `listArray` for
 sequential construction, or `array` with explicit associations. Index with the
 infix `!`; note that `!` is also the bang marker in patterns — `f !x` forces
 `x` to WHNF, while `a ! i` indexes an array.
@@ -600,7 +600,7 @@ The core vocabulary includes `bounds`, `elems`, `indices`, `assocs`, `update`,
 ```haskell
 b = Pair { first: 0, second: 2 };
 a = listArray b [10.0, 20.0, 30.0];
-main = a ! 1;                         // Float(20.0)
+main = a ! 1;                         // Double(20.0)
 ```
 
 Mutable arrays live in `ST`: `STArray s i e` can be built and mutated inside a
@@ -651,7 +651,7 @@ typeclass Monoid m      where { mempty: m; mappend: m -> m -> m; }
 ```
 
 Builtin instances: `Functor`/`Monad` for `List`, `Maybe`, `Either a`, `IO`, `ST
-s`; `Monoid` for `List` (`append_list`), `String` (`concat_string`), `Float`,
+s`; `Monoid` for `List` (`append_list`), `String` (`concat_string`), `Double`,
 `Int`. The partial-application forms `IO`, `ST s` are the monads the runner and
 `runST` execute.
 
@@ -673,8 +673,8 @@ argument, so it resolves by its *expected result type* — `mappend xs mempty`
 resolves `mempty` by the type of `xs`:
 
 ```haskell
-main = length (mappend [1.0, 2.0] mempty);   // List Float, mempty = list -> Int(2)
-main = mappend mempty 3.5;                    // Float, mempty = 0.0 -> Float(3.5)
+main = length (mappend [1.0, 2.0] mempty);   // List Double, mempty = list -> Int(2)
+main = mappend mempty 3.5;                    // Double, mempty = 0.0 -> Double(3.5)
 ```
 
 Using `mempty` where its result type is unknown is a compile error.
@@ -726,7 +726,7 @@ instance (Monad m) => Arrow (Kleisli m) where {
 This is the first **constraint-qualified instance** in the prelude. The
 instance head `Kleisli m` is a partial application: the leading head argument
 `m` is bound at the **call site** from the concrete container's leading type
-arguments — `Kleisli Maybe Float Float` binds `m := Maybe` — and the
+arguments — `Kleisli Maybe Double Double` binds `m := Maybe` — and the
 `Monad m` constraint is then discharged by ordinary instance lookup
 (`instance Monad Maybe`), so the bodies may call `return`/`bind` directly.
 
@@ -763,7 +763,7 @@ its operands. `value,value` builds a `Pair { first, second }`; a **mixed**
 
 ```haskell
 main = (1.0, 2.0);        // value,value -> Pair { first: 1.0, second: 2.0 }
-main = (1.0, 2.0).first;  // -> Float(1.0)
+main = (1.0, 2.0).first;  // -> Double(1.0)
 ```
 
 In **type position**, the same syntax desugars to the pair type: `(b, d)` is
@@ -774,9 +774,9 @@ A **field projection is a first-class function value** — a projected closure
 can be applied directly, parenthesized or bare:
 
 ```haskell
-data Box = { f: Float -> Float };
+data Box = { f: Double -> Double };
 b = Box { f: \x -> x * 2.0 };
-main = (b.f) 3.0;         // parenthesized projection applied: Float(6.0)
+main = (b.f) 3.0;         // parenthesized projection applied: Double(6.0)
 main = b.f 3.0;           // bare projection applied too
 ```
 
@@ -795,11 +795,11 @@ dispatch:
 ```haskell
 adder = \n -> \x -> x + n;   // a function returning a closure
 add2  = adder 2.0;               // partial application (currying)
-main  = add2 3.0;                // -> Float(5.0)
+main  = add2 3.0;                // -> Double(5.0)
 
 twice  = \f x -> f (f x);      // a higher-order combinator
 double = \x -> x * 2.0;
-main   = twice double 3.0;       // -> Float(12.0)
+main   = twice double 3.0;       // -> Double(12.0)
 ```
 
 - Lambda parameters can themselves be functions (HOF), flow through records

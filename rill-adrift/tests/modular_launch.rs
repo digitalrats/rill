@@ -121,7 +121,7 @@ fn launch_surfaces_a_run_error_through_the_case() {
     // already reported success.
     let def = system_def(RackDef::new(
         "bad_index",
-        "main = do { write (Just (show_float (arrayIndexFlat \
+        "main = do { write (Just (show_double (arrayIndexFlat \
          (arrayFromList (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 3))) stdout; \
          return () };",
     ));

@@ -32,7 +32,9 @@ fn roundtrips_scalar_main() {
 
 #[test]
 fn roundtrips_foreign_declaration() {
-    roundtrip("foreign onepole : Float -> Float -> FixedBuffer f32 -> FixedBuffer f32; main = ()");
+    roundtrip(
+        "foreign onepole : Double -> Double -> FixedBuffer f32 -> FixedBuffer f32; main = ()",
+    );
 }
 
 #[test]
@@ -45,12 +47,12 @@ fn roundtrips_conditional() {
 
 #[test]
 fn roundtrips_data_declaration() {
-    roundtrip("data Shape = Circle Float | Square; main = Circle 1.0");
+    roundtrip("data Shape = Circle Double | Square; main = Circle 1.0");
 }
 
 #[test]
 fn roundtrips_strict_data_declaration() {
-    roundtrip("data P = { x: !Float, y: Float }; data T = C !Int | D Float; main = C 1");
+    roundtrip("data P = { x: !Double, y: Double }; data T = C !Int | D Double; main = C 1");
 }
 
 #[test]

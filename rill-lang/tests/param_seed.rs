@@ -176,7 +176,7 @@ fn a_run_reads_sample_rate_from_the_world_field() {
     let r = prog.result().expect("the run must produce a result");
     assert_eq!(
         prog.arena().get(r),
-        Some(&Value::Float(48_000.0)),
+        Some(&Value::Double(48_000.0)),
         "`?sample_rate` must read the world's field value"
     );
 }
@@ -277,7 +277,7 @@ fn smooth_with_a_negative_sample_rate_is_identity() {
 #[test]
 fn a_seated_world_observes_param_changes_between_runs() {
     let mut runner = compile::<f32, BUF>(
-        r#"main = do { write (Just (show_float ?level)) stdout; return () };"#,
+        r#"main = do { write (Just (show_double ?level)) stdout; return () };"#,
         ForeignRegistry::new(),
     )
     .expect("compile");

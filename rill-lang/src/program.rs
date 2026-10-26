@@ -579,7 +579,7 @@ fn max_frag_cells(ir: &Ir) -> usize {
 
 /// Clamp a parameter value against its declared range.
 ///
-/// `Float` is clamped directly. `Int` is clamped in `f64` and truncated back to
+/// `Double` is clamped directly. `Int` is clamped in `f64` and truncated back to
 /// an integer, then nudged one step inside the range when a fractional bound
 /// would leave it outside — so an integer value always ends up in `[min, max]`.
 /// Every other variant carries no numeric range and passes through unchanged.
@@ -862,7 +862,7 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
     /// write plus a dirty flag.
     ///
     /// The value is clamped against the parameter's seated declaration range
-    /// (`Float` and `Int` alike); an undeclared name is stored as-is.
+    /// (`Double` and `Int` alike); an undeclared name is stored as-is.
     /// `"sample_rate"` is the world's
     /// [`Params::sample_rate`](rill_core::Params::sample_rate) field, not a
     /// named map entry.
@@ -923,7 +923,7 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
 
     /// The runtime value of a parameter declared in the IR, resolved **by
     /// name**: `"sample_rate"` reads [`Params::sample_rate`], everything else
-    /// the named map (an absent entry reads as `Float(0.0)`, the historical
+    /// the named map (an absent entry reads as `Double(0.0)`, the historical
     /// unset-parameter default).
     pub(crate) fn param_value(&self, name: &str) -> ParamValue {
         if name == SAMPLE_RATE_PARAM {

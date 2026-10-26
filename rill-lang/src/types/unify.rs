@@ -146,7 +146,7 @@ pub fn unify_value(
                 }
             }
         }
-        (ValueTy::Int, ValueTy::Int) | (ValueTy::Float, ValueTy::Float) => Ok(()),
+        (ValueTy::Int, ValueTy::Int) | (ValueTy::Double, ValueTy::Double) => Ok(()),
         (ValueTy::Bool, ValueTy::Bool) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
         (ValueTy::Buffer, ValueTy::Buffer) => Ok(()),
@@ -212,7 +212,7 @@ pub fn unify_value(
             }
         }
         // `m b` (a type-constructor variable applied to args) unifies with a
-        // concrete application `Maybe Float`: bind the head var to the bare
+        // concrete application `Maybe Double`: bind the head var to the bare
         // constructor, unify the args.
         (ValueTy::TyConApp(f, ax), other @ ValueTy::App(..))
         | (other @ ValueTy::App(..), ValueTy::TyConApp(f, ax)) => {
@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn value_int_float_mismatch_errors() {
         let mut s = Subst::default();
-        assert!(unify_value(&ValueTy::Int, &ValueTy::Float, &mut s, sp()).is_err());
+        assert!(unify_value(&ValueTy::Int, &ValueTy::Double, &mut s, sp()).is_err());
     }
 
     #[test]
@@ -280,27 +280,30 @@ mod tests {
         // concrete type binds it in `subst.value_map`, so a later resolve sees
         // the concrete type (a lambda parameter used as an HOF callee).
         let mut s = Subst::default();
-        unify_value(&ValueTy::Var(0), &ValueTy::Float, &mut s, sp()).unwrap();
-        assert_eq!(s.resolve_value(&ValueTy::Var(0)), ValueTy::Float);
+        unify_value(&ValueTy::Var(0), &ValueTy::Double, &mut s, sp()).unwrap();
+        assert_eq!(s.resolve_value(&ValueTy::Var(0)), ValueTy::Double);
         unify_value(&ValueTy::Var(1), &ValueTy::Var(0), &mut s, sp()).unwrap();
-        assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Float);
+        assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Double);
         unify_value(&ValueTy::Int, &ValueTy::Int, &mut s, sp()).unwrap();
-        // A Func binds structurally: var 2 -> Func([Float],[Float]).
+        // A Func binds structurally: var 2 -> Func([Double],[Double]).
         unify_value(
             &ValueTy::Var(2),
-            &ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float]),
+            &ValueTy::Thunk(vec![ValueTy::Double], vec![ValueTy::Double]),
             &mut s,
             sp(),
         )
         .unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::Var(2)),
-            ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])
+            ValueTy::Thunk(vec![ValueTy::Double], vec![ValueTy::Double])
         );
         // Arity mismatch through a bound var is still rejected.
         assert!(unify_value(
             &ValueTy::Var(2),
-            &ValueTy::Thunk(vec![ValueTy::Float, ValueTy::Float], vec![ValueTy::Float]),
+            &ValueTy::Thunk(
+                vec![ValueTy::Double, ValueTy::Double],
+                vec![ValueTy::Double]
+            ),
             &mut s,
             sp(),
         )
@@ -310,8 +313,8 @@ mod tests {
     #[test]
     fn unifies_app_with_matching_ctor() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Float]);
-        let b = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let a = ValueTy::App("List".into(), vec![ValueTy::Double]);
+        let b = ValueTy::App("List".into(), vec![ValueTy::Double]);
         unify_value(&a, &b, &mut s, sp()).unwrap();
     }
 
@@ -319,20 +322,20 @@ mod tests {
     fn unifies_app_with_type_var_binding() {
         let mut s = Subst::default();
         let a = ValueTy::App("List".into(), vec![ValueTy::Var(1)]);
-        let b = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let b = ValueTy::App("List".into(), vec![ValueTy::Double]);
         unify_value(&a, &b, &mut s, sp()).unwrap();
-        assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Float);
+        assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Double);
     }
 
     #[test]
     fn unifies_tyconvar_with_ctor_head() {
         let mut s = Subst::default();
         let pat = ValueTy::TyConVar(10);
-        let ctor = ValueTy::App("List".into(), vec![ValueTy::Float]);
+        let ctor = ValueTy::App("List".into(), vec![ValueTy::Double]);
         unify_value(&pat, &ctor, &mut s, sp()).unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::TyConVar(10)),
-            ValueTy::App("List".into(), vec![ValueTy::Float])
+            ValueTy::App("List".into(), vec![ValueTy::Double])
         );
     }
 
@@ -359,14 +362,14 @@ mod tests {
         unify_value(&ValueTy::TyConVar(7), &ValueTy::TyConVar(3), &mut s, sp()).unwrap();
         unify_value(
             &ValueTy::TyConVar(3),
-            &ValueTy::App("Maybe".into(), vec![ValueTy::Float]),
+            &ValueTy::App("Maybe".into(), vec![ValueTy::Double]),
             &mut s,
             sp(),
         )
         .unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::TyConVar(7)),
-            ValueTy::App("Maybe".into(), vec![ValueTy::Float])
+            ValueTy::App("Maybe".into(), vec![ValueTy::Double])
         );
     }
 
@@ -394,14 +397,14 @@ mod tests {
         let mut s = Subst::default();
         unify_value(&ValueTy::Bool, &ValueTy::Bool, &mut s, sp()).unwrap();
         unify_value(&ValueTy::String, &ValueTy::String, &mut s, sp()).unwrap();
-        assert!(unify_value(&ValueTy::Bool, &ValueTy::Float, &mut s, sp()).is_err());
+        assert!(unify_value(&ValueTy::Bool, &ValueTy::Double, &mut s, sp()).is_err());
     }
 
     #[test]
     fn app_ctor_head_mismatch_errors() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Float]);
-        let b = ValueTy::App("Map".into(), vec![ValueTy::Float]);
+        let a = ValueTy::App("List".into(), vec![ValueTy::Double]);
+        let b = ValueTy::App("Map".into(), vec![ValueTy::Double]);
         assert!(unify_value(&a, &b, &mut s, sp()).is_err());
     }
 }

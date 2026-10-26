@@ -134,7 +134,7 @@ pub fn compile<T: Transcendental, const BUF: usize>(
 /// internal `__rill_eval` marker as the entry name. `main` is not special here:
 /// a `main` binding inside `defs` is an ordinary value definition, so
 /// `compile_eval::<f32, 256>("main = 42.0", "main * 2.0", …)` evaluates to
-/// `Float(84.0)`.
+/// `Double(84.0)`.
 ///
 /// The scalar type `T` and block size `BUF` name the world the expression is
 /// meant to be run in; the emitted IR is scalar-type and block-size agnostic.
@@ -177,7 +177,7 @@ pub fn compile_eval<T: Transcendental, const BUF: usize>(
 /// let r = world.result().unwrap();
 /// assert_eq!(
 ///     world.arena().get(r).unwrap(),
-///     &rill_lang::arena::Value::Float(3.0)
+///     &rill_lang::arena::Value::Double(3.0)
 /// );
 /// ```
 pub fn test_eval<T: Transcendental, const BUF: usize>(

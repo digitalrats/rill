@@ -6,7 +6,7 @@ use crate::mode::Mode;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// A type name reference in a declaration (`Float`, `Hz`, `Point`, ...).
+/// A type name reference in a declaration (`Double`, `Hz`, `Point`, ...).
 pub type TypeName = String;
 
 /// A type expression in a declaration: concrete names, type variables,
@@ -17,7 +17,7 @@ pub type TypeName = String;
 pub enum TypeExpr {
     /// A concrete type name or a type variable.
     TName(String),
-    /// A constructor application: `f a`, `List Float`.
+    /// A constructor application: `f a`, `List Double`.
     TApp(String, Vec<TypeExpr>),
     /// A curried function type: `a -> b`.
     TFunc(Vec<TypeExpr>, Box<TypeExpr>),
@@ -132,8 +132,8 @@ pub enum Pattern {
     Wild,
     /// Integer literal.
     LitInt(i64),
-    /// Float literal.
-    LitFloat(f64),
+    /// Double literal.
+    LitDouble(f64),
     /// Boolean literal.
     LitBool(bool),
     /// String literal.
@@ -179,8 +179,8 @@ pub struct MatchArm {
 pub enum Expr {
     /// Integer literal.
     Int(i64, Span),
-    /// Float literal.
-    Float(f64, Span),
+    /// Double literal.
+    Double(f64, Span),
     /// Imaginary literal is gone (Haskell 2010 has no imaginary literal).
     /// Unit literal `()` — the sole inhabitant of `ValueTy::Void`.
     Void(Span),
@@ -340,7 +340,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Int(_, s)
-            | Expr::Float(_, s)
+            | Expr::Double(_, s)
             | Expr::Void(s)
             | Expr::Str(_, s)
             | Expr::Ref(_, s)
@@ -442,7 +442,7 @@ pub enum Def {
         /// The equations of this name, in source order (at least one).
         equations: Vec<Equation>,
         /// Optional `:: TypeExpr` signature annotation written inline
-        /// (`f x :: Float -> Float = …`). A standalone signature
+        /// (`f x :: Double -> Double = …`). A standalone signature
         /// ([`Def::Signature`]) is attached to its group by
         /// [`crate::desugar`].
         sig: Option<TypeExpr>,
@@ -467,7 +467,7 @@ pub enum Def {
         /// Type parameters (e.g. `a` in `data Box a`).
         tyvars: Vec<String>,
         /// Fields: (field name, type expression, strictness flag). A strict
-        /// field (`{ x: !Float }`) forces its argument to WHNF at construction
+        /// field (`{ x: !Double }`) forces its argument to WHNF at construction
         /// (Haskell 2010 strictness flag).
         fields: Vec<(String, TypeExpr, bool)>,
         /// Span.
@@ -573,7 +573,7 @@ pub enum Def {
     Foreign {
         /// Foreign function name (the builtin's registry name).
         name: String,
-        /// Carried type signature: `FixedBuffer f32 -> Float -> ... -> FixedBuffer f32`.
+        /// Carried type signature: `FixedBuffer f32 -> Double -> ... -> FixedBuffer f32`.
         sig: TypeExpr,
         /// Span.
         span: Span,
@@ -751,8 +751,8 @@ mod type_expr_tests {
             name: "P".into(),
             tyvars: vec![],
             fields: vec![
-                ("x".to_string(), TypeExpr::TName("Float".into()), true),
-                ("y".to_string(), TypeExpr::TName("Float".into()), false),
+                ("x".to_string(), TypeExpr::TName("Double".into()), true),
+                ("y".to_string(), TypeExpr::TName("Double".into()), false),
             ],
             span: Span::new(0, 10),
         };

@@ -1,4 +1,4 @@
-//! Haskell 2010 strict data fields: `data P = { x: !Float, y: Float }` and
+//! Haskell 2010 strict data fields: `data P = { x: !Double, y: Double }` and
 //! `data T = C !Int` force their arguments to WHNF at construction. A lazy
 //! field stores the argument as a thunk, unforced; strictness never changes
 //! the result of a terminating program.
@@ -29,7 +29,7 @@ fn strict_record_field_divergence_is_bottom() {
     // VM bottom is a first-class value: the force detects the divergence and
     // the field ends up WHNF (`Bottom`) — never an observable thunk.
     let (prog, v) = eval_main(
-        "data P = { x: !Float, y: Float }; a = a; main = P { x: a, y: 1.0 }",
+        "data P = { x: !Double, y: Double }; a = a; main = P { x: a, y: 1.0 }",
         Mode::Complete,
     );
     let fields = match prog.arena().get(v).unwrap() {
@@ -43,7 +43,7 @@ fn strict_record_field_divergence_is_bottom() {
         }
     }
     match prog.arena().get(fields[1]).unwrap() {
-        Value::Float(y) => assert_eq!(*y, 1.0),
+        Value::Double(y) => assert_eq!(*y, 1.0),
         other => panic!("expected y = 1.0, got {other:?}"),
     }
 }
@@ -54,7 +54,7 @@ fn lazy_record_field_stores_divergence_unforced() {
     // the record is WHNF, the field is a thunk. This pins that strictness is
     // per-field, not whole-ctor.
     let (prog, v) = eval_main(
-        "data P = { x: Float, y: Float }; a = a; main = P { x: a, y: 1.0 }",
+        "data P = { x: Double, y: Double }; a = a; main = P { x: a, y: 1.0 }",
         Mode::Complete,
     );
     let fields = match prog.arena().get(v).unwrap() {
@@ -70,7 +70,7 @@ fn lazy_record_field_stores_divergence_unforced() {
 #[test]
 fn strict_sum_ctor_divergence_is_bottom() {
     let (prog, v) = eval_main(
-        "data Opt = Has !Float | None; a = a; main = Has a",
+        "data Opt = Has !Double | None; a = a; main = Has a",
         Mode::Complete,
     );
     let payload = match prog.arena().get(v).unwrap() {
@@ -88,7 +88,7 @@ fn strict_sum_ctor_divergence_is_bottom() {
 #[test]
 fn lazy_sum_ctor_stores_payload_unforced() {
     let (prog, v) = eval_main(
-        "data Opt = Has Float | None; a = a; main = Has a",
+        "data Opt = Has Double | None; a = a; main = Has a",
         Mode::Complete,
     );
     let payload = match prog.arena().get(v).unwrap() {
@@ -122,7 +122,7 @@ fn force_count(ir: &rill_lang::Ir) -> usize {
 #[test]
 fn strict_record_field_emits_value_force() {
     let ir = compile_ir(
-        "data P = { x: !Float, y: Float }; p = P { x: 1.0, y: 2.0 }; main = p.y",
+        "data P = { x: !Double, y: Double }; p = P { x: 1.0, y: 2.0 }; main = p.y",
         Mode::Complete,
     );
     assert_eq!(force_count(&ir), 1);
@@ -131,7 +131,7 @@ fn strict_record_field_emits_value_force() {
 #[test]
 fn lazy_record_field_emits_no_force() {
     let ir = compile_ir(
-        "data P = { x: Float, y: Float }; p = P { x: 1.0, y: 2.0 }; main = p.y",
+        "data P = { x: Double, y: Double }; p = P { x: 1.0, y: 2.0 }; main = p.y",
         Mode::Complete,
     );
     assert_eq!(force_count(&ir), 0);
@@ -141,14 +141,14 @@ fn lazy_record_field_emits_no_force() {
 fn strict_sum_payload_emits_value_force() {
     assert_eq!(
         force_count(&compile_ir(
-            "data T = C !Float; main = C 1.5",
+            "data T = C !Double; main = C 1.5",
             Mode::Complete
         )),
         1
     );
     assert_eq!(
         force_count(&compile_ir(
-            "data T = C Float; main = C 1.5",
+            "data T = C Double; main = C 1.5",
             Mode::Complete
         )),
         0
@@ -160,21 +160,21 @@ fn strict_fields_are_behavioral_noop_in_strict_mode() {
     // `MODE strict` with strict data fields is behaviorally identical to no
     // `!`: the emitted force is a VM no-op (registers already hold WHNF).
     let (prog, v) = eval_main(
-        "data P = { x: !Float, y: Float }; p = P { x: 1.0, y: 2.0 }; main = p.y",
+        "data P = { x: !Double, y: Double }; p = P { x: 1.0, y: 2.0 }; main = p.y",
         Mode::Strict,
     );
     match prog.arena().get(v).unwrap() {
-        Value::Float(y) => assert_eq!(*y, 2.0),
-        other => panic!("expected Float(2.0) in strict mode, got {other:?}"),
+        Value::Double(y) => assert_eq!(*y, 2.0),
+        other => panic!("expected Double(2.0) in strict mode, got {other:?}"),
     }
     let (prog, v) = eval_main(
-        "data T = C !Float; main = case C 2.0 of { C x -> x }",
+        "data T = C !Double; main = case C 2.0 of { C x -> x }",
         Mode::Strict,
     );
     match prog.arena().get(v).unwrap() {
-        Value::Float(x) => assert_eq!(*x, 2.0),
+        Value::Double(x) => assert_eq!(*x, 2.0),
         other => {
-            panic!("expected Float(2.0) from a strict ctor case in strict mode, got {other:?}")
+            panic!("expected Double(2.0) from a strict ctor case in strict mode, got {other:?}")
         }
     }
 }
@@ -183,19 +183,19 @@ fn strict_fields_are_behavioral_noop_in_strict_mode() {
 fn strict_and_lazy_fields_agree_when_value_terminates() {
     // Strictness changes WHEN evaluation happens, never the result.
     let (prog, v) = eval_main(
-        "data P = { x: Float, y: Float }; p = P { x: 2.0, y: 3.0 }; main = p.y",
+        "data P = { x: Double, y: Double }; p = P { x: 2.0, y: 3.0 }; main = p.y",
         Mode::Complete,
     );
     match prog.arena().get(v).unwrap() {
-        Value::Float(y) => assert_eq!(*y, 3.0),
-        other => panic!("expected Float(3.0) with lazy x, got {other:?}"),
+        Value::Double(y) => assert_eq!(*y, 3.0),
+        other => panic!("expected Double(3.0) with lazy x, got {other:?}"),
     }
     let (prog, v) = eval_main(
-        "data P = { x: !Float, y: Float }; p = P { x: 2.0, y: 3.0 }; main = p.y",
+        "data P = { x: !Double, y: Double }; p = P { x: 2.0, y: 3.0 }; main = p.y",
         Mode::Complete,
     );
     match prog.arena().get(v).unwrap() {
-        Value::Float(y) => assert_eq!(*y, 3.0),
-        other => panic!("expected Float(3.0) with strict x, got {other:?}"),
+        Value::Double(y) => assert_eq!(*y, 3.0),
+        other => panic!("expected Double(3.0) with strict x, got {other:?}"),
     }
 }

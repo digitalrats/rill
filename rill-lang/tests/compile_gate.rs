@@ -37,7 +37,7 @@ fn rejected(src: &str, ffi: ForeignRegistry<f32>) -> CompileError {
 
 #[test]
 fn a_scalar_main_is_rejected_at_compile() {
-    // `main` must be an `IO ()` value: a plain `Float` is not one.
+    // `main` must be an `IO ()` value: a plain `Double` is not one.
     let err = rejected("main = 1.0 + 2.0", ForeignRegistry::new());
 
     let message = err.to_string();
@@ -99,7 +99,7 @@ fn an_effect_final_main_runs_and_a_non_unit_result_is_rejected() {
         .expect("an effect-final program must run to completion");
     assert_eq!(runner.stdout(), ["ok"]);
 
-    // (b) `do { …; return 1.0 }` types as `IO Float`, so the gate rejects it at
+    // (b) `do { …; return 1.0 }` types as `IO Double`, so the gate rejects it at
     // COMPILE time — the world is never built and the program never runs. The
     // runtime latch in `run_main_io` (`the final action's result is not ()`) is
     // belt-and-braces for a payload the static type cannot classify; through
@@ -126,7 +126,7 @@ fn a_set_param_between_runs_is_observed_by_the_second_run() {
     // (declared defaults are seeded absent-only), so a `set_param` written
     // between runs is the second run's value.
     let mut runner = compile::<f32, 256>(
-        r#"main = do { write (Just (show_float ?level)) stdout; return () };"#,
+        r#"main = do { write (Just (show_double ?level)) stdout; return () };"#,
         ForeignRegistry::new(),
     )
     .expect("compile");

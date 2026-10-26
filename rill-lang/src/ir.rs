@@ -113,8 +113,8 @@ pub enum ValueBuiltinOp {
     AppendList,
     /// Concatenate two strings (`Monoid String.mappend`).
     ConcatString,
-    /// Render a Float as a String (`show_float`).
-    ShowFloat,
+    /// Render a Double as a String (`show_double`).
+    ShowDouble,
     /// Render an Int as a String (`show_int`).
     ShowInt,
     /// Render a Bool as a String (`show_bool`): `true` → `"True"`,
@@ -139,10 +139,10 @@ pub enum ValueBuiltinOp {
     /// Return a NEW array with a binary accumulator applied to the given flat
     /// `(offset, value)` pairs: `arrayAccum arr f assocs`.
     ArrayAccum,
-    /// Copy a signal buffer into an immutable array of `Int`-indexed `Float`s
+    /// Copy a signal buffer into an immutable array of `Int`-indexed `Double`s
     /// (`lo = 0`, `hi = len - 1`): `arrayFromBuffer buf`.
     ArrayFromBuffer,
-    /// Copy an immutable `Int`-indexed `Float` array into a signal buffer:
+    /// Copy an immutable `Int`-indexed `Double` array into a signal buffer:
     /// `bufferFromArray arr`.
     BufferFromArray,
     /// The inclusive `Int` range of a bounds pair: `listRange (l, u)` →
@@ -364,18 +364,18 @@ pub enum ValueInstr {
         /// The value.
         value: i64,
     },
-    /// Create a Float value.
-    ValueConstFloat {
+    /// Create a Double value.
+    ValueConstDouble {
         /// Destination value register.
         dst: usize,
         /// The value.
         value: f64,
     },
-    /// Element-wise arithmetic on two value channels: reads the Float (or Int)
-    /// payloads of the value registers `a` and `b`, allocates the Float result
+    /// Element-wise arithmetic on two value channels: reads the Double (or Int)
+    /// payloads of the value registers `a` and `b`, allocates the Double result
     /// into `dst`. Unbound operands read as `0.0`.
     ValueAdd {
-        /// Destination value register (the Float result).
+        /// Destination value register (the Double result).
         dst: usize,
         /// Left operand value register.
         a: usize,
@@ -384,7 +384,7 @@ pub enum ValueInstr {
     },
     /// See [`ValueInstr::ValueAdd`].
     ValueSub {
-        /// Destination value register (the Float result).
+        /// Destination value register (the Double result).
         dst: usize,
         /// Left operand value register.
         a: usize,
@@ -393,7 +393,7 @@ pub enum ValueInstr {
     },
     /// See [`ValueInstr::ValueAdd`].
     ValueMul {
-        /// Destination value register (the Float result).
+        /// Destination value register (the Double result).
         dst: usize,
         /// Left operand value register.
         a: usize,
@@ -402,7 +402,7 @@ pub enum ValueInstr {
     },
     /// See [`ValueInstr::ValueAdd`].
     ValueDiv {
-        /// Destination value register (the Float result).
+        /// Destination value register (the Double result).
         dst: usize,
         /// Left operand value register.
         a: usize,
@@ -536,7 +536,7 @@ pub enum ValueInstr {
         /// The value.
         value: bool,
     },
-    /// Read a named parameter slot as a Float value.
+    /// Read a named parameter slot as a Double value.
     ///
     /// The IR index selects a NAME in [`Ir::params`]; the run-time store is the
     /// world's name-addressed [`rill_core::Params`]. `"sample_rate"` reads
@@ -548,9 +548,9 @@ pub enum ValueInstr {
         /// Index into [`Ir::params`].
         idx: usize,
     },
-    /// Read the world's sample rate as a Float value.
+    /// Read the world's sample rate as a Double value.
     ///
-    /// Executes to `Value::Float(world.params.sample_rate as f64)`. The
+    /// Executes to `Value::Double(world.params.sample_rate as f64)`. The
     /// `smooth` operator uses it to compute its one-pole coefficient at run
     /// time (the compiler never sees a sample rate); user-level `?sample_rate`
     /// resolves to the same field through [`ValueInstr::ValueReadParam`].
@@ -747,11 +747,11 @@ pub enum ValueInstr {
         /// Source value register (holds `Value::Buffer(src)`).
         src: usize,
     },
-    /// Fill a buffer with a scalar value register's Float payload.
+    /// Fill a buffer with a scalar value register's Double payload.
     ValueBufferFill {
         /// Destination value register (holds `Value::Buffer(dst)`).
         dst: usize,
-        /// Source scalar value register (Float).
+        /// Source scalar value register (Double).
         src: usize,
     },
     /// Schedule a write of `src` buffer into a block-state slot (applied at
@@ -912,9 +912,9 @@ pub struct Ir {
     /// [`ProgramRunner`](crate::program_runner::ProgramRunner) contract).
     ///
     /// The value track's closure-cell encoding represents `()` as
-    /// `Float(0.0)` (a cell's un-set state is `Value::Void`, so a stored unit
+    /// `Double(0.0)` (a cell's un-set state is `Value::Void`, so a stored unit
     /// reads back as `0.0`). That makes the runner's runtime payload check
-    /// ambiguous: `return ()` and `return 0.0` both arrive as `Float(0.0)`.
+    /// ambiguous: `return ()` and `return 0.0` both arrive as `Double(0.0)`.
     /// This static flag resolves the ambiguity — the erased unit encoding is
     /// accepted only when `main` is typed `IO ()`.
     pub main_io_unit: bool,
@@ -1045,7 +1045,7 @@ mod value_builtin_tests {
             ValueBuiltinOp::ConcatMap,
             ValueBuiltinOp::AppendList,
             ValueBuiltinOp::ConcatString,
-            ValueBuiltinOp::ShowFloat,
+            ValueBuiltinOp::ShowDouble,
             ValueBuiltinOp::ShowInt,
             ValueBuiltinOp::ShowBool,
             ValueBuiltinOp::ArrayFromList,

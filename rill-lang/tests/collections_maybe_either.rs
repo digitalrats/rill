@@ -21,18 +21,19 @@ fn nothing_and_just_via_match() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(42.0)
+        &rill_lang::arena::Value::Double(42.0)
     );
 }
 
 #[test]
 fn user_nullary_constructors_work() {
-    let prog =
-        run(r"data Color = Red | Green Float; main = case (Red) of { Red -> 1.0; Green g -> g; };");
+    let prog = run(
+        r"data Color = Red | Green Double; main = case (Red) of { Red -> 1.0; Green g -> g; };",
+    );
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }
 
@@ -42,7 +43,7 @@ fn pair_projection_and_either() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(2.0)
+        &rill_lang::arena::Value::Double(2.0)
     );
 }
 
@@ -63,7 +64,7 @@ fn either_ctors_and_match() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(5.0)
+        &rill_lang::arena::Value::Double(5.0)
     );
 }
 
@@ -74,7 +75,7 @@ fn right_ctor_places_payload_in_second_slot() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(7.0)
+        &rill_lang::arena::Value::Double(7.0)
     );
 }
 
@@ -85,7 +86,7 @@ fn nullary_match_is_arm_order_independent() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(42.0)
+        &rill_lang::arena::Value::Double(42.0)
     );
 }
 
@@ -99,7 +100,7 @@ fn lookup_key_via_let_binding_is_not_statically_misjudged() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(5.0)
+        &rill_lang::arena::Value::Double(5.0)
     );
 }
 
@@ -111,6 +112,6 @@ fn match_builtin_sum_with_compound_payload_projects() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }

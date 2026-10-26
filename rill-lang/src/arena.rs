@@ -28,7 +28,7 @@ pub enum ValueKind {
     /// Signed integer value.
     Int,
     /// Floating-point value.
-    Float,
+    Double,
     /// Boolean value.
     Bool,
     /// String value.
@@ -93,7 +93,7 @@ pub enum DictSlot {
 /// method (see [`DictSlot::Kernel`]).
 ///
 /// This is deliberately one variant per primitive operation, **not** one per
-/// class method: `(+)` for `Int`, for `Float` and for a buffer all select
+/// class method: `(+)` for `Int`, for `Double` and for a buffer all select
 /// [`KernelId::Add`], and a new class that reuses existing operations does not
 /// grow the enum. The compiler maps `(class, method)` to a kernel through
 /// `TypeEnv`, so the runtime value stays a positional vtable.
@@ -103,7 +103,7 @@ pub enum DictSlot {
 /// `ValueCompare`/`CmpOp`) is here as the six predicates plus the three-way
 /// [`KernelId::Compare`], and the numeric family covers both the scalar
 /// instructions and the whole-buffer kernels — a kernel implementation
-/// dispatches on its operand kinds, so `Add` serves `Num Float` and
+/// dispatches on its operand kinds, so `Add` serves `Num Double` and
 /// `Num (FixedBuffer a)` alike.
 ///
 /// **Implementation status.** `Eq`/`Ne`/`Lt`/`Gt`/`Le`/`Ge` are executable today
@@ -162,7 +162,7 @@ pub enum Value {
     /// Signed integer payload.
     Int(i64),
     /// Floating-point payload.
-    Float(f64),
+    Double(f64),
     /// Boolean payload.
     Bool(bool),
     /// String payload.
@@ -272,7 +272,7 @@ impl Value {
     pub fn kind(&self) -> ValueKind {
         match self {
             Value::Int(_) => ValueKind::Int,
-            Value::Float(_) => ValueKind::Float,
+            Value::Double(_) => ValueKind::Double,
             Value::Bool(_) => ValueKind::Bool,
             Value::String(_) => ValueKind::String,
             Value::Record(_) => ValueKind::Record,

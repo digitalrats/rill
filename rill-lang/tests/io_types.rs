@@ -29,7 +29,7 @@ fn from_list_types_as_io_input_stream() {
         t.vty,
         ValueTy::Data(
             "IO".into(),
-            vec![ValueTy::Data("InputStream".into(), vec![ValueTy::Float])]
+            vec![ValueTy::Data("InputStream".into(), vec![ValueTy::Double])]
         )
     );
 }
@@ -43,7 +43,7 @@ fn to_list_types_as_io_list() {
         t.vty,
         ValueTy::Data(
             "IO".into(),
-            vec![ValueTy::App("List".into(), vec![ValueTy::Float])]
+            vec![ValueTy::App("List".into(), vec![ValueTy::Double])]
         )
     );
 }

@@ -105,10 +105,10 @@ fn starray_read_write_modify_inside_a_region() {
     );
     let (prog, v) = run(&src);
     let (written, modified) = pair_values(&prog, &v);
-    assert_eq!(written, Value::Float(42.0), "writeArrayFlat stores");
+    assert_eq!(written, Value::Double(42.0), "writeArrayFlat stores");
     assert_eq!(
         modified,
-        Value::Float(1.0),
+        Value::Double(1.0),
         "modifyArrayFlat applies the function to the stored element"
     );
 }
@@ -143,7 +143,7 @@ fn starray_bounds_and_elems_read_the_whole_cell() {
     assert_eq!(count, Value::Int(3), "getElems returns every element");
     assert_eq!(
         overwritten,
-        Value::Float(9.0),
+        Value::Double(9.0),
         "the overwrite is visible in flat element order"
     );
 }
@@ -167,8 +167,8 @@ fn runst_array_freezes_to_an_immutable_array() {
     let values: Vec<f64> = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect();
     assert_eq!(
@@ -199,7 +199,7 @@ fn frozen_array_is_usable_after_the_region_closes() {
     let (prog, v) = run(&src);
     let (len, last) = pair_values(&prog, &v);
     assert_eq!(len, Value::Int(3), "the frozen array's flat length");
-    assert_eq!(last, Value::Float(30.0), "the frozen last element");
+    assert_eq!(last, Value::Double(30.0), "the frozen last element");
 }
 
 #[test]
@@ -244,8 +244,8 @@ fn freeze_keeps_the_element_claims_balanced() {
     let values: Vec<f64> = elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect();
     assert_eq!(values, vec![10.0, 20.0, 30.0]);
@@ -370,7 +370,7 @@ fn wrong_kind_handles_are_rejected_at_compile_time() {
 #[test]
 fn a_fractional_flat_offset_is_rejected_at_compile_time() {
     // The flat size/offset parameters are `Int`. The interpreter accepts an
-    // integral `Float` too (a negated literal arrives on the Float track — the
+    // integral `Double` too (a negated literal arrives on the Double track — the
     // documented wart), but a FRACTIONAL one is refused there rather than
     // truncated; the language already refuses it statically, so the interpreter
     // check is defensive (unit-tested in `forced_i64_accepts_int_and_integral_float_only`).
@@ -379,12 +379,12 @@ fn a_fractional_flat_offset_is_rejected_at_compile_time() {
         "{-# MODE complete #-}\nmain = runST (\\s -> do { a <- newArrayFlat (Pair { first: 0, second: 2 }) 3.0 0.0; readArrayFlat a 0 });",
     ] {
         let err = match compile_eval::<f32, 256>(src, "main", Mode::Strict) {
-            Ok(_) => panic!("a Float flat size/offset must be a compile error: {src}"),
+            Ok(_) => panic!("a Double flat size/offset must be a compile error: {src}"),
             Err(err) => err,
         };
         assert!(
-            format!("{err}").contains("Float with Int"),
-            "expected a Float/Int mismatch, got: {err}"
+            format!("{err}").contains("Double with Int"),
+            "expected a Double/Int mismatch, got: {err}"
         );
     }
 }

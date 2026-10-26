@@ -12,7 +12,7 @@ take n xs = if n == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0;
 from n = cons n (from (n + 1.0));
 main = do { xs <- fromList (take 3.0 (from 10.0));
     ys <- toList xs;
-    write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
+    write (Just (fold (\acc -> \x -> concat_string acc (show_double x)) "" ys)) stdout;
     return () };
 "#;
     let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).unwrap();

@@ -22,7 +22,7 @@ main = (\t -> runST (\s -> [t, s])) 1.0;";
 fn phantom_shadows_outer_value_binder() {
     // An outer value definition named `s` must be SHADOWED by the runST
     // phantom: `Ref("s")` in the body resolves to the phantom, so the result
-    // escapes and is rejected (not silently bound to the outer Float).
+    // escapes and is rejected (not silently bound to the outer Double).
     let src = r"{-# MODE complete #-}
 s = 2.0;
 main = runST (\s -> (s));";

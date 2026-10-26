@@ -68,7 +68,7 @@ fn an_undeclared_type_name_is_rejected() {
 
     // ... and the same holds for any other undeclared uppercase name, not just
     // the ones the brief happened to measure.
-    for name in ["Zork", "Integer", "Double", "Maybe2", "Listy"] {
+    for name in ["Zork", "Integer", "Word", "Maybe2", "Listy"] {
         let src = format!("f :: {name} -> Int; f x = 1; main = f 1;");
         let err = compile_err(&src);
         assert!(
@@ -98,6 +98,27 @@ fn char_is_still_undeclared_for_now() {
 }
 
 #[test]
+fn float_is_undeclared_after_the_rename() {
+    // `Float` used to be rill's name for the double-precision type. The type is
+    // now spelled `Double` (Haskell 2010 §6.4.1: `Float` is the
+    // single-precision type and rill does not have one yet), so the old
+    // spelling must denote NOTHING — exactly like `Char` above. A lingering
+    // alias would keep the name lying about its precision.
+    let err = compile_err("f :: Float -> Float; f x = x; main = f 1.0;");
+    assert!(
+        err.contains("unknown type name `Float`"),
+        "`Float` must be rejected as an unknown type, got: {err}"
+    );
+
+    // The registry agrees: no entry, no value type, and `Double` took its place.
+    let env = TypeEnv::with_builtins();
+    assert_eq!(env.type_entry("Float"), None);
+    assert_eq!(env.vty_of_name("Float"), None);
+    assert!(!env.is_type_name("Float"));
+    assert_eq!(env.vty_of_name("Double"), Some(ValueTy::Double));
+}
+
+#[test]
 fn a_type_variable_is_still_accepted() {
     // `Num a => a -> a`: `a` is lowercase, so it is a type VARIABLE, not a
     // type — the registry must return the variable arm for it, and the program
@@ -114,7 +135,7 @@ fn a_type_variable_is_still_accepted() {
     // A `forall`-bound variable and a class type variable are the same lexical
     // category, and neither is a declared type.
     let out = compile("g :: forall b. b -> b; g x = x; main = g 2.0;").expect("must compile");
-    assert!(out.contains("Float(2.0)"), "got {out}");
+    assert!(out.contains("Double(2.0)"), "got {out}");
 }
 
 #[test]
@@ -126,7 +147,7 @@ fn a_lowercase_name_is_a_type_variable() {
     // nominal type either.
     let out = compile("f :: FixedBuffer f32 -> FixedBuffer f32; f x = x; main = 1.0;")
         .expect("`f32` must be accepted as a type variable");
-    assert!(out.contains("Float(1.0)"), "got {out}");
+    assert!(out.contains("Double(1.0)"), "got {out}");
 
     let env = env_of("");
     assert_eq!(env.type_entry("f32"), Some(TypeEntry::Variable));
@@ -163,13 +184,13 @@ fn a_declared_data_type_is_accepted() {
     // The same for the other declaration forms: `newtype`, `type` synonym, and
     // an abstract type.
     let env = env_of(
-        "newtype Hz = Float; type Angles = Float; type HzAlias = Hz; data Opaque; \
+        "newtype Hz = Double; type Angles = Double; type HzAlias = Hz; data Opaque; \
          data Box a = { unBox: a };",
     );
     assert_eq!(env.type_entry("Hz"), Some(TypeEntry::Newtype));
     assert_eq!(
         env.type_entry("Angles"),
-        Some(TypeEntry::Alias("Float".into()))
+        Some(TypeEntry::Alias("Double".into()))
     );
     assert_eq!(
         env.type_entry("HzAlias"),
@@ -221,33 +242,33 @@ fn the_registry_is_the_single_source() {
     // consumer that keeps its own list is a failing assertion below.
     //
     // `register_scalar` keeps one name per value type, so registering
-    // `MyFloat` for `Float` RENAMES `Float` — otherwise a consumer could keep
+    // `MyDouble` for `Double` RENAMES `Double` — otherwise a consumer could keep
     // answering for the old spelling and this test could pass trivially.
     let mut baseline = TypeEnv::with_builtins();
     baseline.derive_eq_ord();
     let mut env = TypeEnv::with_builtins();
     env.register_scalar(
-        "MyFloat",
+        "MyDouble",
         ScalarType {
-            vty: ValueTy::Float,
+            vty: ValueTy::Double,
             ffi_scalar: true,
         },
     );
 
     // 1. The registry itself.
     assert!(matches!(
-        env.type_entry("MyFloat"),
+        env.type_entry("MyDouble"),
         Some(TypeEntry::Scalar(_))
     ));
-    assert_eq!(env.type_entry("Float"), None, "the old spelling is gone");
+    assert_eq!(env.type_entry("Double"), None, "the old spelling is gone");
 
     // 2. The declaration check (a signature mentioning the name must pass, and
     //    the old spelling must now fail).
-    assert!(env.is_type_name("MyFloat"));
-    assert!(!env.is_type_name("Float"));
+    assert!(env.is_type_name("MyDouble"));
+    assert!(!env.is_type_name("Double"));
     let defs = rill_lang::parser::parse(
-        &rill_lang::lexer::tokenize("f :: MyFloat -> MyFloat; f x = x; main = x;").unwrap(),
-        b"f :: MyFloat -> MyFloat; f x = x; main = x;",
+        &rill_lang::lexer::tokenize("f :: MyDouble -> MyDouble; f x = x; main = x;").unwrap(),
+        b"f :: MyDouble -> MyDouble; f x = x; main = x;",
     )
     .unwrap();
     assert!(
@@ -255,8 +276,8 @@ fn the_registry_is_the_single_source() {
         "the declaration check must accept a registered name"
     );
     let old = rill_lang::parser::parse(
-        &rill_lang::lexer::tokenize("f :: Float -> Float; f x = x; main = x;").unwrap(),
-        b"f :: Float -> Float; f x = x; main = x;",
+        &rill_lang::lexer::tokenize("f :: Double -> Double; f x = x; main = x;").unwrap(),
+        b"f :: Double -> Double; f x = x; main = x;",
     )
     .unwrap();
     assert!(
@@ -265,21 +286,21 @@ fn the_registry_is_the_single_source() {
     );
 
     // 3. The resolver.
-    assert_eq!(env.vty_of_name("MyFloat"), Some(ValueTy::Float));
-    assert_eq!(env.vty_of_name("Float"), None);
+    assert_eq!(env.vty_of_name("MyDouble"), Some(ValueTy::Double));
+    assert_eq!(env.vty_of_name("Double"), None);
 
     // 4. The derived `Eq`/`Ord` instance seed.
     env.derive_eq_ord();
     assert!(
-        env.instances["Eq"].contains_key("MyFloat"),
+        env.instances["Eq"].contains_key("MyDouble"),
         "the derived Eq seed must include a registered scalar"
     );
     assert!(
-        env.instances["Ord"].contains_key("MyFloat"),
+        env.instances["Ord"].contains_key("MyDouble"),
         "the derived Ord seed must include a registered scalar"
     );
     assert!(
-        !env.instances["Eq"].contains_key("Float"),
+        !env.instances["Eq"].contains_key("Double"),
         "the derived seed must not keep the old spelling: {:?}",
         env.instances["Eq"].keys().collect::<Vec<_>>()
     );
@@ -298,20 +319,20 @@ fn the_registry_is_the_single_source() {
     }
 
     // 5. The FFI scalar-vs-record classification.
-    assert!(env.is_ffi_scalar("MyFloat"));
-    assert!(!env.is_ffi_scalar("Float"));
+    assert!(env.is_ffi_scalar("MyDouble"));
+    assert!(!env.is_ffi_scalar("Double"));
     // The INVERSE question (is this name a type variable?) is the same registry
     // arm: `is_builtin_sig_var` — the builtin-signature converter — is one call
     // to `is_type_variable`, so a registered scalar is never mistaken for a
     // variable and a lowercase name always is. (A program cannot otherwise
     // observe that converter: it only reads compiler-owned builtin signatures,
     // so this is the closest reachable assertion. See the report.)
-    assert!(!env.is_type_variable("MyFloat"));
-    assert!(!env.is_type_variable("Float"));
+    assert!(!env.is_type_variable("MyDouble"));
+    assert!(!env.is_type_variable("Double"));
     assert!(env.is_type_variable("a"));
     assert!(!env.is_type_variable("Int"));
     let te = TypeExpr::TFunc(
-        vec![TypeExpr::TName("MyFloat".into())],
+        vec![TypeExpr::TName("MyDouble".into())],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
             vec![TypeExpr::TName("z".into())],
@@ -324,7 +345,7 @@ fn the_registry_is_the_single_source() {
         "a registered FFI scalar must classify as a Scalar parameter"
     );
     let old_te = TypeExpr::TFunc(
-        vec![TypeExpr::TName("Float".into())],
+        vec![TypeExpr::TName("Double".into())],
         Box::new(TypeExpr::TApp(
             "FixedBuffer".into(),
             vec![TypeExpr::TName("z".into())],
@@ -333,15 +354,18 @@ fn the_registry_is_the_single_source() {
     let old_sig = ffi_sig_from_typeexpr(&env, "probe", &old_te).expect("FFI sig");
     assert_eq!(
         old_sig.params,
-        vec![rill_lang::types::ffi::FfiParam::Record("Float".into())],
+        vec![rill_lang::types::ffi::FfiParam::Record("Double".into())],
         "the old spelling must no longer classify as a Scalar"
     );
 
     // 6. The diagnostic renderer.
-    assert_eq!(env.type_spelling(&ValueTy::Float), "MyFloat");
+    assert_eq!(env.type_spelling(&ValueTy::Double), "MyDouble");
     assert_eq!(
-        env.type_spelling(&ValueTy::Thunk(vec![ValueTy::Float], vec![ValueTy::Float])),
-        "MyFloat -> MyFloat"
+        env.type_spelling(&ValueTy::Thunk(
+            vec![ValueTy::Double],
+            vec![ValueTy::Double]
+        )),
+        "MyDouble -> MyDouble"
     );
     // The unit type's spelling is the registry's `()` (it has no other name).
     assert_eq!(env.type_spelling(&ValueTy::Void), "()");

@@ -2,7 +2,7 @@
 //!
 //! `stdin :: InputStream String`, `stdout`/`stderr :: OutputStream String` are
 //! the runner's realized console (line-oriented text — rill has no
-//! `ByteString`); `show_float`/`show_int`/`show_bool` render scalars to
+//! `ByteString`); `show_double`/`show_int`/`show_bool` render scalars to
 //! `String`. `reference_program_runs` runs the spec's §7 reference program
 //! end-to-end, and `write_nothing_does_not_close_the_console` pins the console
 //! close semantics the rest of this file relies on.
@@ -119,7 +119,7 @@ ref = runST (\s -> do {
 main = do {
     xs <- fromList (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);
     ys <- toList xs;
-    write (Just (concat_string "sum-ish: " (show_float ref))) stdout;
+    write (Just (concat_string "sum-ish: " (show_double ref))) stdout;
     return ()
 };
 "#;
@@ -129,7 +129,7 @@ main = do {
     //
     // The exact line pins the §7 payload: the region runs AND `writeSTRef`'s
     // write is observed (`readSTRef` yields 42.0, not the 0.0 initial value).
-    // `show_float` renders an integral f64 via `{:?}` → `"42.0"`, which is
+    // `show_double` renders an integral f64 via `{:?}` → `"42.0"`, which is
     // deterministic (a fixed value, a fixed formatter — no locale or formatting
     // state involved).
     let (stdout, _) = run(src, &[]);
@@ -164,7 +164,7 @@ main = do {
 fn show_renders_scalars() {
     let src = r#"
 main = do {
-    write (Just (show_float 1.5)) stdout;
+    write (Just (show_double 1.5)) stdout;
     write (Just (show_int 3)) stdout;
     write (Just (show_bool true)) stdout;
     write (Just (show_bool false)) stdout;
@@ -172,4 +172,25 @@ main = do {
 };
 "#;
     assert_eq!(run_stdout(src), ["1.5", "3", "True", "False"]);
+}
+
+#[test]
+fn double_renders_ghc_double_values() {
+    // `Double` is the double-precision type, so its arithmetic must be byte-for
+    // -byte what GHC prints for `Double`. These two strings are the reason the
+    // type is NAMED `Double`: `0.1 + 0.2` is not `0.3` in binary64, and
+    // `1.0 / 3.0` has the full 17-digit expansion. GHC's `Float`
+    // (single precision) would print `0.3` and `0.33333334` instead, so these
+    // assertions fail if the payload is ever narrowed to `f32`.
+    let src = r#"
+main = do {
+    write (Just (show_double (0.1 + 0.2))) stdout;
+    write (Just (show_double (1.0 / 3.0))) stdout;
+    return ()
+};
+"#;
+    assert_eq!(
+        run_stdout(src),
+        ["0.30000000000000004", "0.3333333333333333"]
+    );
 }

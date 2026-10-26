@@ -51,18 +51,18 @@ fn run_many(src: &str, runs: usize) -> (Vec<String>, usize, usize) {
     })
 }
 
-/// Shared program prefix: renders a `Maybe Float` as text (`Nothing` = EOF).
-const SHOW_MAYBE: &str = r#"show_mb m = case m of { Nothing -> "eof"; Just x -> show_float x };"#;
+/// Shared program prefix: renders a `Maybe Double` as text (`Nothing` = EOF).
+const SHOW_MAYBE: &str = r#"show_mb m = case m of { Nothing -> "eof"; Just x -> show_double x };"#;
 
 /// Wrap a stream-producing expression in `fromList` → `toList` → `stdout`,
-/// rendering the drained list with `fold`/`concat_string`/`show_float`.
+/// rendering the drained list with `fold`/`concat_string`/`show_double`.
 fn render(src_body: &str) -> Vec<String> {
     let src = format!(
         r#"
 main = do {{
     xs <- {src_body};
     ys <- toList xs;
-    write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
+    write (Just (fold (\acc -> \x -> concat_string acc (show_double x)) "" ys)) stdout;
     return ()
 }};
 "#
@@ -93,7 +93,7 @@ main = do {
     unread 2.0 xs;
     unread 3.0 xs;
     ys <- toList xs;
-    write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
+    write (Just (fold (\acc -> \x -> concat_string acc (show_double x)) "" ys)) stdout;
     return ()
 };
 "#;
@@ -147,7 +147,7 @@ fn write_nothing_closes_the_stream() {
 main = do {
     out <- makeOutputStream (\mb -> case mb of {
         Nothing -> write (Just "closed") stdout;
-        Just x -> write (Just (show_float x)) stdout
+        Just x -> write (Just (show_double x)) stdout
     });
     write (Just 1.0) out;
     write Nothing out;
@@ -212,7 +212,7 @@ main = do {
     xs <- fromList [1.0, 2.0, 3.0];
     out <- makeOutputStream (\mb -> case mb of {
         Nothing -> write (Just "|") stdout;
-        Just x -> write (Just (show_float x)) stdout
+        Just x -> write (Just (show_double x)) stdout
     });
     connect xs out;
     return ()
@@ -265,7 +265,7 @@ main = do {
     xs <- fromList [1.0, 2.0, 3.0, 4.0];
     out <- makeOutputStream (\mb -> case mb of {
         Nothing -> write (Just "closed") stdout;
-        Just x -> if x < 3.0 then write (Just (show_float x)) stdout else write Nothing stdout
+        Just x -> if x < 3.0 then write (Just (show_double x)) stdout else write Nothing stdout
     });
     connect xs out;
     return ()

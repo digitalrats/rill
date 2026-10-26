@@ -37,8 +37,8 @@ fn run_with(src: &str, mode: Mode) -> Result<f64, String> {
     let prog = eval_mode::<256>(defs, expr, ffi, mode).map_err(|e| e.to_string())?;
     let v = prog.result().ok_or("no value output")?;
     match prog.arena().get(v) {
-        Some(rill_lang::arena::Value::Float(x)) => Ok(*x),
-        other => Err(format!("expected Float, got {other:?}")),
+        Some(rill_lang::arena::Value::Double(x)) => Ok(*x),
+        other => Err(format!("expected Double, got {other:?}")),
     }
 }
 
@@ -224,24 +224,24 @@ fn the_bang_marker_and_the_infix_index_operator_stay_distinct() {
     // The SIGNATURE is what makes this a regression test. A signature-typed
     // bang parameter is only typed on the closure path: inlining the body
     // discards the parameter types and leaves the scalar numeric default, so
-    // `a` was typed `Float` and `a ! i` asked for `Ix Float`. Keeping the
+    // `a` was typed `Double` and `a ! i` asked for `Ix Double`. Keeping the
     // definition un-inlined (it must stay a closure anyway, because a bang
     // parameter forces its argument on entry) is what carries
-    // `Array Int Float` into the body. The signature is no longer the only
+    // `Array Int Double` into the body. The signature is no longer the only
     // route in — since the first-class λ-parameter work, a signature-less
     // accessor (`at a i = a ! i`) specializes its body per call site and
     // carries the array type without a `::`. This sig-typed form still pins
     // the bang contract: its closure path lowers to exactly one `ValueForce`,
     // the count asserted below.
     let src = "{-# MODE strict #-}\n\
-               at !a i :: Array Int Float -> Int -> Float = a ! i;\n\
+               at !a i :: Array Int Double -> Int -> Double = a ! i;\n\
                main = at (listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1";
     assert_eq!(run_strict(src).unwrap(), 20.0);
     // The same definition in the lazy mode, where the call goes through the
     // closure fragment instead of the strict inline path.
     assert_eq!(
         run(
-            "{-# MODE complete #-}\nat !a i :: Array Int Float -> Int -> Float = a ! i;\n\
+            "{-# MODE complete #-}\nat !a i :: Array Int Double -> Int -> Double = a ! i;\n\
              main = at (listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 2"
         )
         .unwrap(),
@@ -251,7 +251,7 @@ fn the_bang_marker_and_the_infix_index_operator_stay_distinct() {
     // sig-typed definition still lowers to exactly one WHNF force.
     assert_eq!(
         force_count(
-            "at !a i :: Array Int Float -> Int -> Float = a ! i;\n\
+            "at !a i :: Array Int Double -> Int -> Double = a ! i;\n\
              main = at (listArray (Pair { first: 0, second: 2 }) [10.0, 20.0, 30.0]) 1"
         ),
         1,
@@ -261,7 +261,7 @@ fn the_bang_marker_and_the_infix_index_operator_stay_distinct() {
     // whose body projects a record field. Inlining again lost the `Pair` type.
     assert_eq!(
         run(
-            "f !p q :: Pair Int Float -> Float -> Float = p.second + q;\n\
+            "f !p q :: Pair Int Double -> Double -> Double = p.second + q;\n\
              main = f (Pair { first: 1, second: 2.0 }) 3.0"
         )
         .unwrap(),

@@ -71,7 +71,7 @@ fn pair_values(prog: &WorldState<f32, 256>, v: &Value) -> (Value, Value) {
     )
 }
 
-/// The `Float` payloads of a `List` value, read through the arena.
+/// The `Double` payloads of a `List` value, read through the arena.
 fn list_floats(prog: &WorldState<f32, 256>, v: &Value) -> Vec<f64> {
     let elems = match v {
         Value::List { elems } => elems,
@@ -80,8 +80,8 @@ fn list_floats(prog: &WorldState<f32, 256>, v: &Value) -> Vec<f64> {
     elems
         .iter()
         .map(|r| match prog.arena().get(*r) {
-            Some(Value::Float(f)) => *f,
-            other => panic!("expected a Float element, got {other:?}"),
+            Some(Value::Double(f)) => *f,
+            other => panic!("expected a Double element, got {other:?}"),
         })
         .collect()
 }
@@ -149,7 +149,7 @@ fn array_length_is_the_flat_element_count() {
 #[test]
 fn array_index_flat_in_range_reads_the_element() {
     let src = format!("main = arrayIndexFlat {ARR_0_TO_2} 1;");
-    assert_eq!(run_value_output(&src), Value::Float(20.0));
+    assert_eq!(run_value_output(&src), Value::Double(20.0));
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn array_seed_on_inverted_bounds_is_a_valid_empty_array() {
 
 #[test]
 fn array_seed_rejects_an_unsupported_index_type() {
-    // Float bounds are not a prelude index shape: a clean fault (Q1).
+    // Double bounds are not a prelude index shape: a clean fault (Q1).
     let src = "main = arraySeed (Pair { first: 0.5, second: 2.0 }) 1.0;";
     let msg = fault(src);
     assert!(
@@ -234,7 +234,7 @@ fn array_from_assocs_last_association_for_a_cell_wins() {
     // (like `arrayUpdate`'s duplicate-offset rule, but index-typed).
     let src = "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems (arrayFromAssocs (Pair { first: 0, second: 1 }) [Pair { first: 0, second: 1.0 }, Pair { first: 0, second: 7.0 }, Pair { first: 1, second: 5.0 }]));";
     let prog = run(src);
-    assert_eq!(run_value_output(src), Value::Float(12.0));
+    assert_eq!(run_value_output(src), Value::Double(12.0));
     let _ = prog;
 }
 
@@ -244,7 +244,7 @@ fn array_from_assocs_resolves_2d_cells_against_the_stored_bounds() {
     // Cells resolve to offsets (1,2)->0, (1,3)->1, (2,2)->2, (2,3)->3; the
     // fold of all four listed values is 5.0+11.0+13.0+9.0 = 38.0.
     let src = "main = fold (\\a -> \\b -> a + b) 0.0 (arrayElems (arrayFromAssocs (Pair { first: Pair { first: 1, second: 2 }, second: Pair { first: 2, second: 3 } }) [Pair { first: Pair { first: 1, second: 2 }, second: 5.0 }, Pair { first: Pair { first: 1, second: 3 }, second: 11.0 }, Pair { first: Pair { first: 2, second: 2 }, second: 13.0 }, Pair { first: Pair { first: 2, second: 3 }, second: 9.0 }]));";
-    assert_eq!(run_value_output(src), Value::Float(38.0));
+    assert_eq!(run_value_output(src), Value::Double(38.0));
 }
 
 #[test]
@@ -262,8 +262,8 @@ fn array_from_assocs_rejects_an_out_of_rectangle_cell() {
 
 #[test]
 fn array_from_assocs_rejects_an_unsupported_index_type() {
-    // Float bounds are not a prelude index shape: a clean fault (Q1). The
-    // assoc list carries the same Float index so the program type-checks and
+    // Double bounds are not a prelude index shape: a clean fault (Q1). The
+    // assoc list carries the same Double index so the program type-checks and
     // the FAULT is a runtime one, not a compile-time type error.
     let src = "main = arrayFromAssocs (Pair { first: 0.5, second: 2.0 }) [Pair { first: 0.5, second: 1.0 }];";
     let msg = fault(src);
@@ -277,7 +277,7 @@ fn array_from_assocs_rejects_an_unsupported_index_type() {
 fn array_from_assocs_on_inverted_bounds_is_a_valid_empty_array() {
     // (0,-1) is the canonical empty range: zero elements, no fault. The empty
     // assocs list is built by mapping over an inverted `range` — a typed empty
-    // `List (Pair Int Float)` (the bare `[]` literal defaults to `List Float`
+    // `List (Pair Int Double)` (the bare `[]` literal defaults to `List Double`
     // and cannot unify with `List (Pair Int e)`).
     let src = "main = arrayElems (arrayFromAssocs (Pair { first: 0, second: -1 }) (map (\\i -> Pair { first: i, second: 0.0 }) (range (Pair { first: 1, second: 0 }))));";
     let prog = run(src);
@@ -415,7 +415,7 @@ fn array_from_list_accepts_a_cons_built_list() {
                              second: arrayIndexFlat (arrayFromList (Pair { first: 0, second: 1 }) (1.0 : 2.0 : [])) 1 };";
     let (len, second) = pair_values(&run(src), &output(&run(src)));
     assert_eq!(len, Value::Int(2), "the cons chain contributes 2 elements");
-    assert_eq!(second, Value::Float(2.0), "element 1 is 2.0");
+    assert_eq!(second, Value::Double(2.0), "element 1 is 2.0");
 }
 
 #[test]
@@ -433,7 +433,7 @@ fn empty_array_has_the_empty_range_bounds_and_no_elements() {
     // reads back exactly as written. Both bounds stay on the `Int` track:
     // value arithmetic preserves `Int` operands (and `neg` keeps the operand's
     // track), so `-1` reaches the array as `Value::Int(-1)`. Before the
-    // Int-preserving arithmetic change this was a `Float`, which the
+    // Int-preserving arithmetic change this was a `Double`, which the
     // interpreter accepted only through its integral-float tolerance.
     assert_eq!(lo, Value::Int(0), "the empty lower bound reads back");
     assert_eq!(hi, Value::Int(-1), "the empty upper bound reads back");

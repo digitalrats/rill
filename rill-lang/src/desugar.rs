@@ -691,7 +691,7 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
             span,
         },
         other @ (Expr::Int(..)
-        | Expr::Float(..)
+        | Expr::Double(..)
         | Expr::Void(..)
         | Expr::Str(..)
         | Expr::Ref(..)
@@ -729,7 +729,7 @@ mod tests {
         for src in [
             "f 0.0 = 1.0; f x = x;",
             "f x | x > 0.0 = 1.0 | otherwise = 2.0;",
-            "f :: Float -> Float;\nf x = x;",
+            "f :: Double -> Double;\nf x = x;",
             "f x = g where { g = x; };",
         ] {
             let defs = desugared(src);
@@ -768,7 +768,7 @@ mod tests {
         // The catch-all is a wildcard: its body re-binds the equation's own name
         // (`x`) to the shared argument parameter with a transparent `let`.
         assert_eq!(arms.len(), 2);
-        assert!(matches!(arms[0].pattern, Pattern::LitFloat(v) if v == 0.0));
+        assert!(matches!(arms[0].pattern, Pattern::LitDouble(v) if v == 0.0));
         assert!(matches!(arms[1].pattern, Pattern::Wild));
         assert!(
             matches!(&arms[1].guards[0].1, Expr::Let { defs, .. }
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn standalone_signature_attaches_to_the_binding() {
-        let defs = desugared("f :: Float -> Float;\nf x = x;");
+        let defs = desugared("f :: Double -> Double;\nf x = x;");
         assert_eq!(defs.len(), 1, "the signature is consumed: {defs:?}");
         assert!(
             eval_def_of(&defs, "f").sig().is_some(),

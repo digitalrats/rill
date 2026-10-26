@@ -43,7 +43,7 @@ fn eval(src: &str) -> WorldState<f32, BUF> {
 /// Read the single run's scalar output.
 fn scalar_output(world: &WorldState<f32, BUF>) -> f64 {
     match world.arena().get(world.result().unwrap()).unwrap() {
-        rill_lang::arena::Value::Float(v) => *v,
+        rill_lang::arena::Value::Double(v) => *v,
         other => panic!("expected a Float output, got {other:?}"),
     }
 }

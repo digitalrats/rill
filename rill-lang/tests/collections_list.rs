@@ -33,7 +33,7 @@ fn cons_builds_list_and_head_is_maybe() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }
 
@@ -43,7 +43,7 @@ fn map_fold_filter_over_list() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(12.0)
+        &rill_lang::arena::Value::Double(12.0)
     );
 }
 
@@ -67,7 +67,7 @@ fn cons_list_fold_sum() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(10.0)
+        &rill_lang::arena::Value::Double(10.0)
     );
 }
 
@@ -82,7 +82,7 @@ fn cons_prepends_new_head() {
         rill_lang::arena::Value::Sum(0, payload) => {
             assert_eq!(
                 prog.arena().get(payload[0]).unwrap(),
-                &rill_lang::arena::Value::Float(9.0)
+                &rill_lang::arena::Value::Double(9.0)
             );
         }
         other => panic!("expected Just 9.0, got {other:?}"),
@@ -113,7 +113,7 @@ fn colon_cons_chains_right_associatively() {
         rill_lang::arena::Value::Sum(0, payload) => {
             assert_eq!(
                 prog.arena().get(payload[0]).unwrap(),
-                &rill_lang::arena::Value::Float(1.0),
+                &rill_lang::arena::Value::Double(1.0),
                 "head of a cons chain must be the first element"
             );
         }
@@ -201,9 +201,9 @@ fn list_empty_has_zero_length() {
 #[test]
 fn map_result_element_type_comes_from_closure_return() {
     // `map (fn x -> x + 0.5) [1, 2, 3]` over an INT list must be typed
-    // `List Float` (the closure's RETURN type), not `List Int` (the source
+    // `List Double` (the closure's RETURN type), not `List Int` (the source
     // element type): a later `cons 4.0` must typecheck — it used to fail with a
-    // spurious "cannot unify Int with Float".
+    // spurious "cannot unify Int with Double".
     assert!(
         compile_eval::<f32, 256>(
             r"main = cons 4.0 (map (\x -> x + 0.5) [1, 2, 3]);",
@@ -211,7 +211,7 @@ fn map_result_element_type_comes_from_closure_return() {
             Mode::Strict,
         )
         .is_ok(),
-        "a type-changing map followed by a Float cons must compile"
+        "a type-changing map followed by a Double cons must compile"
     );
     // End-to-end length 4: the source needs spare capacity for the cons (map
     // preserves the source cap).
@@ -227,8 +227,8 @@ fn map_result_element_type_comes_from_closure_return() {
 
 #[test]
 fn map_preserves_type_when_closure_returns_same_type() {
-    // A same-type closure (`x * 2.0` : Float -> Float) keeps the map result a
-    // `List Float` — the common case must keep typechecking.
+    // A same-type closure (`x * 2.0` : Double -> Double) keeps the map result a
+    // `List Double` — the common case must keep typechecking.
     let prog = run(r"main = length (map (\x -> x * 2.0) [1.0, 2.0, 3.0]);");
     let v = prog.result().unwrap();
     assert_eq!(
@@ -248,6 +248,6 @@ fn match_over_non_analyzable_scrutinee_dispatches_at_runtime() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(2.0)
+        &rill_lang::arena::Value::Double(2.0)
     );
 }

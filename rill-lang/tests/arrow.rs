@@ -19,8 +19,8 @@ fn run(src: &str) -> WorldState<f32, 256> {
 
 fn out_float(prog: &WorldState<f32, 256>) -> f64 {
     match prog.arena().get(prog.result().unwrap()).unwrap() {
-        rill_lang::arena::Value::Float(n) => *n,
-        other => panic!("expected Float, got {other:?}"),
+        rill_lang::arena::Value::Double(n) => *n,
+        other => panic!("expected Double, got {other:?}"),
     }
 }
 
@@ -60,11 +60,11 @@ fn value_tuple_is_pair() {
             assert_eq!(fields.len(), 2);
             assert_eq!(
                 prog.arena().get(fields[0]).unwrap(),
-                &rill_lang::arena::Value::Float(1.0)
+                &rill_lang::arena::Value::Double(1.0)
             );
             assert_eq!(
                 prog.arena().get(fields[1]).unwrap(),
-                &rill_lang::arena::Value::Float(2.0)
+                &rill_lang::arena::Value::Double(2.0)
             );
         }
         other => panic!("expected Pair Record, got {other:?}"),
@@ -74,7 +74,7 @@ fn value_tuple_is_pair() {
 #[test]
 fn value_tuple_field_projection_is_first() {
     // `.first` on a value tuple forces the Pair into a value-consuming
-    // position: `(1.0, 2.0).first` yields `Float(1.0)`.
+    // position: `(1.0, 2.0).first` yields `Double(1.0)`.
     let prog = run("main = (1.0, 2.0).first;");
     assert_eq!(out_float(&prog), 1.0);
 }
@@ -88,11 +88,11 @@ fn mixed_value_signal_tuple_is_error() {
 
 #[test]
 fn tuple_type_desugars_to_pair() {
-    // `(Float, Float)` in type position is sugar for `Pair Float Float`.
+    // `(Double, Double)` in type position is sugar for `Pair Double Double`.
     // Compilation alone proves the typeclass signature parses and resolves —
     // `main` is a trivial 1.0.
     let src = r#"
-        typeclass T a where { m: a (Float, Float) -> Float; }
+        typeclass T a where { m: a (Double, Double) -> Double; }
         main = 1.0;
     "#;
     let _prog = run(src);
@@ -101,10 +101,10 @@ fn tuple_type_desugars_to_pair() {
 #[test]
 fn constraint_instance_container_arg_discharges() {
     // The constructor-class resolution path: `unwrap (Kleisli {..})` binds the
-    // container argument `a b c` against a CONCRETE `Kleisli Maybe Float Float`,
+    // container argument `a b c` against a CONCRETE `Kleisli Maybe Double Double`,
     // so the head arg `m := Maybe` is concrete when the `Monad m` constraint
     // discharges (strictly, by instance lookup), and the class pattern matches
-    // the container args AFTER the bound head (`[Float, Float]`).
+    // the container args AFTER the bound head (`[Double, Double]`).
     let src = r"
         typeclass Unwrap a where { unwrap: a b c -> c; }
         data Kleisli m a b = { unKleisli: a -> m b };
@@ -122,7 +122,7 @@ fn constraint_instance_container_arg_discharges() {
 fn field_projection_applies_as_function() {
     // `(b.f) 3.0` applies the projected closure.
     let src = r"
-        data Box = { f: Float -> Float };
+        data Box = { f: Double -> Double };
         b = Box { f: \x -> x * 2.0 };
         main = (b.f) 3.0;
     ";
@@ -135,7 +135,7 @@ fn let_bound_projected_closure_applies() {
     // `let u = b.f in u x`: a nullary func-value def whose body is a field
     // projection (not a `Ref`) must not drop the application during reduce.
     let src = r"
-        data Box = { f: Float -> Float };
+        data Box = { f: Double -> Double };
         b = Box { f: \x -> x * 2.0 };
         apply x = let u = b.f in u x;
         main = apply 3.0;
@@ -149,7 +149,7 @@ fn bare_field_projection_applies_as_function() {
     // `b.f 3.0` — a bare field projection applied as the callee (the shape
     // Task 9's Arrow instance body writes: `bind (k.unKleisli p.first) …`).
     let src = r"
-        data Box = { f: Float -> Float };
+        data Box = { f: Double -> Double };
         b = Box { f: \x -> x * 2.0 };
         main = b.f 3.0;
     ";
@@ -160,7 +160,7 @@ fn bare_field_projection_applies_as_function() {
 #[test]
 fn hkt_data_field_applies_type_parameter() {
     // `m b` in `data K m a b = { f: a -> m b }`: the type parameter m is
-    // applied as a constructor. Unify m := Maybe, a := Float, b := Float.
+    // applied as a constructor. Unify m := Maybe, a := Double, b := Double.
     //
     // The field projection `k.f` is passed to a first-class closure (`apply_f
     // = fn f x -> f x`) because applying a projected closure through a `let`
@@ -168,7 +168,7 @@ fn hkt_data_field_applies_type_parameter() {
     // (reduce drops the application when inlining a nullary func-value def
     // whose body is not a `Ref`). This test verifies the TYPE behavior of
     // TyConApp: without it, constructing `K { f: fn x -> Just x }` fails to
-    // unify `m b` with `Maybe Float`.
+    // unify `m b` with `Maybe Double`.
     let src = r"
         data K m a b = { f: a -> m b };
         k = K { f: \x -> Just x };
@@ -234,7 +234,7 @@ fn single_field_record_newtype_style() {
     // `Box (fn x -> x * 2.0)` constructs a single-field record from the field
     // VALUE — newtype-style, equivalent to `Box { f: fn x -> x * 2.0 }`.
     let src = r"
-        data Box = { f: Float -> Float };
+        data Box = { f: Double -> Double };
         b = Box (\x -> x * 2.0);
         main = b.f 21.0;
     ";
@@ -276,7 +276,7 @@ fn arrow_default_both_composes() {
     // (the key was held while `second g`'s default body re-entered `compose`).
     //
     // NOTE: the program passes a `Pair` input and projects `.first` because
-    // Arrow `both` maps a PAIR (`a (Pair b d) (Pair c e)`); the older Float
+    // Arrow `both` maps a PAIR (`a (Pair b d) (Pair c e)`); the older Double
     // input only compiled by accident (a placeholder-variable leak in record
     // projections left the arrow's input type unconstrained). The compile bar
     // is the default-chain typecheck, not the scaffold.
@@ -303,7 +303,7 @@ fn arrow_default_fan_composes() {
         };
     ";
     // `fan` maps a scalar to a PAIR (`a b (Pair c d)`), so the input is a
-    // Float (`3.0`) and the result projects `.first`.
+    // Double (`3.0`) and the result projects `.first`.
     assert!(
         compiles_with_deep_stack(src),
         "fan's default must compile (recursion guard must only fire on body re-entry)"

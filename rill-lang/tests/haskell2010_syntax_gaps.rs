@@ -34,7 +34,7 @@ fn error_of(defs: &str, expr: &str) -> CompileError {
     }
 }
 
-/// The `Float` payloads of the `List` that `defs` + `expr` evaluates to.
+/// The `Double` payloads of the `List` that `defs` + `expr` evaluates to.
 ///
 /// Order-sensitive: the `++` fixity tests assert ELEMENT ORDER, because
 /// `length`/sum are invariant under regrouping and would pass under both the
@@ -45,19 +45,19 @@ fn list_of(defs: &str, expr: &str) -> Vec<f64> {
         Value::List { elems } => elems
             .iter()
             .map(|r| match world.arena().get(*r) {
-                Some(Value::Float(f)) => *f,
-                other => panic!("expected a Float element, got {other:?}"),
+                Some(Value::Double(f)) => *f,
+                other => panic!("expected a Double element, got {other:?}"),
             })
             .collect(),
         other => panic!("expected a List result, got {other:?}"),
     }
 }
 
-/// The `Float` payload of the value expression.
+/// The `Double` payload of the value expression.
 fn float_of(defs: &str, expr: &str) -> f64 {
     match value_of(defs, expr) {
-        Value::Float(f) => f,
-        other => panic!("expected a Float result, got {other:?}"),
+        Value::Double(f) => f,
+        other => panic!("expected a Double result, got {other:?}"),
     }
 }
 
@@ -78,7 +78,7 @@ mod backticks {
         // `` 1.0 `add` 2.0 `` desugars to `add 1.0 2.0`.
         assert_eq!(
             value_of("add a b = a + b;", "1.0 `add` 2.0"),
-            Value::Float(3.0)
+            Value::Double(3.0)
         );
     }
 
@@ -89,13 +89,13 @@ mod backticks {
         // `2.0 * 1.0 `add` 2.0` ≡ `2.0 * (add 1.0 2.0)` = 6.0.
         assert_eq!(
             value_of("add a b = a + b;", "2.0 * 1.0 `add` 2.0"),
-            Value::Float(6.0)
+            Value::Double(6.0)
         );
         // ... while juxtaposed application still binds tighter than a backtick:
         // `1.0 `add` neg 2.0` ≡ `add 1.0 (neg 2.0)` = -1.0.
         assert_eq!(
             value_of("add a b = a + b; neg x = 0.0 - x;", "1.0 `add` neg 2.0"),
-            Value::Float(-1.0)
+            Value::Double(-1.0)
         );
     }
 
@@ -285,12 +285,12 @@ mod block_comments {
     fn nested_block_comment_is_skipped() {
         // Three levels of nesting, straddling a definition boundary.
         let defs = "{- outer {- middle {- deepest -} -} still outer -}\nx = 1.0;";
-        assert_eq!(value_of(defs, "x + 2.0"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "x + 2.0"), Value::Double(3.0));
 
         // The same inside an expression, with code on both sides.
         assert_eq!(
             value_of("", "1.0 {- a {- b -} c -} + 2.0"),
-            Value::Float(3.0)
+            Value::Double(3.0)
         );
     }
 
@@ -299,7 +299,7 @@ mod block_comments {
         // A multi-line comment is whitespace: the definitions before and after
         // it stay separate top-level definitions (layout must not fuse them).
         let defs = "x = 1.0;\n{- a comment\n   spanning {- two -}\n   lines -}\ny = 2.0;";
-        assert_eq!(value_of(defs, "x + y"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "x + y"), Value::Double(3.0));
     }
 
     #[test]
@@ -333,7 +333,7 @@ mod pragmas {
         // caps deeper recursion independently of this change.)
         let defs = "{-# MODE complete #-}\n\
                     sum_to n = if n == 0.0 then 0.0 else n + sum_to (n - 1.0);";
-        assert_eq!(value_of(defs, "sum_to 2.0"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "sum_to 2.0"), Value::Double(3.0));
     }
 
     #[test]
@@ -343,7 +343,7 @@ mod pragmas {
         let defs = "{- a leading comment -}\n\
                     {-# MODE complete #-}\n\
                     sum_to n = if n == 0.0 then 0.0 else n + sum_to (n - 1.0);";
-        assert_eq!(value_of(defs, "sum_to 2.0"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "sum_to 2.0"), Value::Double(3.0));
     }
 
     #[test]
@@ -375,17 +375,17 @@ mod where_clause_scope {
         // `g` closes over `x`; `f 1.0` = 1.0 + 1.0.
         assert_eq!(
             value_of("f x = g where { g = x + 1.0; };", "f 1.0"),
-            Value::Float(2.0)
+            Value::Double(2.0)
         );
         // A parameterised `where` binding closes over it too.
         assert_eq!(
             value_of("f x = g 1.0 where { g y = y + x; };", "f 1.0"),
-            Value::Float(2.0)
+            Value::Double(2.0)
         );
         // Two parameters, one of them used only inside the `where` clause.
         assert_eq!(
             value_of("f x z = g z where { g y = y + x; };", "f 1.0 2.0"),
-            Value::Float(3.0)
+            Value::Double(3.0)
         );
     }
 
@@ -393,7 +393,7 @@ mod where_clause_scope {
     fn where_bindings_are_visible_in_the_body() {
         assert_eq!(
             value_of("f x = g 10.0 where { g y = y * h; h = x + 1.0; };", "f 1.0"),
-            Value::Float(20.0)
+            Value::Double(20.0)
         );
     }
 
@@ -403,7 +403,7 @@ mod where_clause_scope {
         // parameters.
         assert_eq!(
             value_of("f x y = g where { g = x * 10.0 + y; };", "f 2.0 3.0"),
-            Value::Float(23.0)
+            Value::Double(23.0)
         );
         // `where` written around an EXPLICIT lambda captures nothing from it:
         // `f = \x -> e where { g = … }` leaves `x` out of the `where`'s scope,
@@ -414,7 +414,7 @@ mod where_clause_scope {
                 "x = 100.0; f = \\y -> z + y where { z = x + 1.0; };",
                 "f 1.0"
             ),
-            Value::Float(102.0)
+            Value::Double(102.0)
         );
     }
 
@@ -427,7 +427,7 @@ mod where_clause_scope {
                 "f x = g where { g = let { a = x + 1.0; } in a * 2.0; };",
                 "f 1.0"
             ),
-            Value::Float(4.0)
+            Value::Double(4.0)
         );
     }
 }
@@ -444,24 +444,24 @@ mod function_guards {
         let defs = "f x | x > 0.0 = 1.0 | otherwise = 2.0;";
         // Both sides of the guard, so the test distinguishes a working guard
         // from one that always takes the first alternative.
-        assert_eq!(value_of(defs, "f 1.0"), Value::Float(1.0));
-        assert_eq!(value_of(defs, "f (0.0 - 1.0)"), Value::Float(2.0));
+        assert_eq!(value_of(defs, "f 1.0"), Value::Double(1.0));
+        assert_eq!(value_of(defs, "f (0.0 - 1.0)"), Value::Double(2.0));
     }
 
     #[test]
     fn guards_are_tried_in_source_order() {
         // `x > 1.0` is checked first: 2.0 takes the first body, 0.5 the second.
         let defs = "f x | x > 2.0 = 10.0 | x > 1.0 = 20.0 | otherwise = 30.0;";
-        assert_eq!(value_of(defs, "f 3.0"), Value::Float(10.0));
-        assert_eq!(value_of(defs, "f 1.5"), Value::Float(20.0));
-        assert_eq!(value_of(defs, "f 0.0"), Value::Float(30.0));
+        assert_eq!(value_of(defs, "f 3.0"), Value::Double(10.0));
+        assert_eq!(value_of(defs, "f 1.5"), Value::Double(20.0));
+        assert_eq!(value_of(defs, "f 0.0"), Value::Double(30.0));
     }
 
     #[test]
     fn guard_bodies_may_reference_the_parameters() {
         assert_eq!(
             value_of("f x | x > 0.0 = x * 2.0 | otherwise = 0.0 - x;", "f 3.0"),
-            Value::Float(6.0)
+            Value::Double(6.0)
         );
     }
 
@@ -483,7 +483,7 @@ mod function_guards {
         // covers the definition just as well.
         assert_eq!(
             value_of("f x | x > 0.0 = 1.0 | true = 2.0;", "f (0.0 - 1.0)"),
-            Value::Float(2.0)
+            Value::Double(2.0)
         );
     }
 
@@ -507,9 +507,9 @@ mod function_guards {
     #[test]
     fn guards_combine_with_argument_patterns() {
         let defs = "f (Just x) | x > 2.0 = 10.0 | otherwise = 0.0; f Nothing = 99.0;";
-        assert_eq!(value_of(defs, "f (Just 3.0)"), Value::Float(10.0));
-        assert_eq!(value_of(defs, "f (Just 1.0)"), Value::Float(0.0));
-        assert_eq!(value_of(defs, "f Nothing"), Value::Float(99.0));
+        assert_eq!(value_of(defs, "f (Just 3.0)"), Value::Double(10.0));
+        assert_eq!(value_of(defs, "f (Just 1.0)"), Value::Double(0.0));
+        assert_eq!(value_of(defs, "f Nothing"), Value::Double(99.0));
     }
 
     #[test]
@@ -519,7 +519,7 @@ mod function_guards {
                 "f x | x > 0.0 = x + y | otherwise = 0.0 where { y = 10.0; };",
                 "f 1.0"
             ),
-            Value::Float(11.0)
+            Value::Double(11.0)
         );
     }
 }
@@ -537,8 +537,8 @@ mod argument_patterns {
         // The first equation wins for 0.0; the variable equation covers the
         // rest. Both directions are asserted, so a group that always took the
         // first (or the last) equation fails.
-        assert_eq!(value_of(defs, "f 0.0"), Value::Float(1.0));
-        assert_eq!(value_of(defs, "f 3.0"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "f 0.0"), Value::Double(1.0));
+        assert_eq!(value_of(defs, "f 3.0"), Value::Double(3.0));
     }
 
     #[test]
@@ -546,27 +546,27 @@ mod argument_patterns {
         // `f 0.0 0.0`, then `f 0.0 y`, then the catch-all — each more general
         // than the last, so a wrong order changes every answer.
         let defs = "f 0.0 0.0 = 1.0; f 0.0 y = 2.0; f x y = x + y;";
-        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(1.0));
-        assert_eq!(value_of(defs, "f 0.0 5.0"), Value::Float(2.0));
-        assert_eq!(value_of(defs, "f 5.0 6.0"), Value::Float(11.0));
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Double(1.0));
+        assert_eq!(value_of(defs, "f 0.0 5.0"), Value::Double(2.0));
+        assert_eq!(value_of(defs, "f 5.0 6.0"), Value::Double(11.0));
     }
 
     #[test]
     fn constructor_patterns_in_arguments() {
         let defs = "f Nothing = 1.0; f (Just x) = x;";
-        assert_eq!(value_of(defs, "f Nothing"), Value::Float(1.0));
-        assert_eq!(value_of(defs, "f (Just 3.0)"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "f Nothing"), Value::Double(1.0));
+        assert_eq!(value_of(defs, "f (Just 3.0)"), Value::Double(3.0));
     }
 
     #[test]
     fn wildcard_and_integer_patterns_in_arguments() {
         assert_eq!(
             value_of("f 0 = 1.0; f 1 = 2.0; f _ = 3.0;", "f 1"),
-            Value::Float(2.0)
+            Value::Double(2.0)
         );
         assert_eq!(
             value_of("f 0 = 1.0; f 1 = 2.0; f _ = 3.0;", "f 7"),
-            Value::Float(3.0)
+            Value::Double(3.0)
         );
     }
 
@@ -599,8 +599,8 @@ mod standalone_signatures {
     #[test]
     fn standalone_type_signature() {
         assert_eq!(
-            value_of("f :: Float -> Float;\nf x = x;", "f 2.0"),
-            Value::Float(2.0)
+            value_of("f :: Double -> Double;\nf x = x;", "f 2.0"),
+            Value::Double(2.0)
         );
     }
 
@@ -620,31 +620,31 @@ mod standalone_signatures {
     fn standalone_signature_attaches_to_a_later_binding() {
         // The signature precedes its binding, separated by another declaration.
         assert_eq!(
-            value_of("f :: Float -> Float;\ng = 5.0;\nf x = x + g;", "f 1.0"),
-            Value::Float(6.0)
+            value_of("f :: Double -> Double;\ng = 5.0;\nf x = x + g;", "f 1.0"),
+            Value::Double(6.0)
         );
     }
 
     #[test]
     fn standalone_signature_attaches_to_an_equation_group() {
-        let defs = "f :: Float -> Float;\nf 0.0 = 1.0; f x = x;";
-        assert_eq!(value_of(defs, "f 0.0"), Value::Float(1.0));
-        assert_eq!(value_of(defs, "f 3.0"), Value::Float(3.0));
+        let defs = "f :: Double -> Double;\nf 0.0 = 1.0; f x = x;";
+        assert_eq!(value_of(defs, "f 0.0"), Value::Double(1.0));
+        assert_eq!(value_of(defs, "f 3.0"), Value::Double(3.0));
     }
 
     #[test]
     fn standalone_signature_attaches_to_a_guarded_group() {
-        let defs = "f :: Float -> Float;\nf x | x > 0.0 = 1.0 | otherwise = 2.0;";
-        assert_eq!(value_of(defs, "f 1.0"), Value::Float(1.0));
-        assert_eq!(value_of(defs, "f (0.0 - 1.0)"), Value::Float(2.0));
+        let defs = "f :: Double -> Double;\nf x | x > 0.0 = 1.0 | otherwise = 2.0;";
+        assert_eq!(value_of(defs, "f 1.0"), Value::Double(1.0));
+        assert_eq!(value_of(defs, "f (0.0 - 1.0)"), Value::Double(2.0));
     }
 
     #[test]
     fn standalone_signature_needs_no_semicolon() {
         // Haskell layout: the signature ends where the next declaration begins.
         assert_eq!(
-            value_of("f :: Float -> Float\nf x = x + 1.0\n", "f 1.0"),
-            Value::Float(2.0)
+            value_of("f :: Double -> Double\nf x = x + 1.0\n", "f 1.0"),
+            Value::Double(2.0)
         );
     }
 
@@ -652,7 +652,10 @@ mod standalone_signatures {
     fn a_signature_without_a_binding_declares_nothing() {
         // Nothing binds `g`, so the declaration is inert; the program still
         // compiles and evaluates its own expression.
-        assert_eq!(value_of("g :: Float -> Float;", "1.0"), Value::Float(1.0));
+        assert_eq!(
+            value_of("g :: Double -> Double;", "1.0"),
+            Value::Double(1.0)
+        );
     }
 }
 
@@ -666,13 +669,13 @@ mod operator_sections {
     #[test]
     fn operator_section_right() {
         // `(+ 1.0)` ≡ `\x -> x + 1.0`.
-        assert_eq!(value_of("", "(+ 1.0) 2.0"), Value::Float(3.0));
+        assert_eq!(value_of("", "(+ 1.0) 2.0"), Value::Double(3.0));
     }
 
     #[test]
     fn operator_section_left() {
         // `(1.0 +)` ≡ `\x -> 1.0 + x`.
-        assert_eq!(value_of("", "(1.0 +) 2.0"), Value::Float(3.0));
+        assert_eq!(value_of("", "(1.0 +) 2.0"), Value::Double(3.0));
     }
 
     #[test]
@@ -681,12 +684,12 @@ mod operator_sections {
         // operand took: `(10.0 -)` is `\x -> 10.0 - x` = 7.0, `(- 3.0)` (unary
         // negation, not a section) differs. The left section is the
         // discriminating case.
-        assert_eq!(value_of("", "(10.0 -) 3.0"), Value::Float(7.0));
+        assert_eq!(value_of("", "(10.0 -) 3.0"), Value::Double(7.0));
     }
 
     #[test]
     fn sections_are_usable_as_values() {
-        assert_eq!(value_of("inc = (+ 1.0);", "inc 41.0"), Value::Float(42.0));
+        assert_eq!(value_of("inc = (+ 1.0);", "inc 41.0"), Value::Double(42.0));
     }
 }
 
@@ -707,11 +710,11 @@ mod equation_order {
         // earlier — including 0.0, which the first two equations only cover for
         // their SECOND argument.
         let defs = "f 0.0 0.0 = 1.0; f 0.0 2.0 = 3.0; f x y = x + y;";
-        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(1.0));
-        assert_eq!(value_of(defs, "f 0.0 2.0"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Double(1.0));
+        assert_eq!(value_of(defs, "f 0.0 2.0"), Value::Double(3.0));
         // Not covered by either literal equation, so the catch-all runs.
-        assert_eq!(value_of(defs, "f 0.0 5.0"), Value::Float(5.0));
-        assert_eq!(value_of(defs, "f 5.0 6.0"), Value::Float(11.0));
+        assert_eq!(value_of(defs, "f 0.0 5.0"), Value::Double(5.0));
+        assert_eq!(value_of(defs, "f 5.0 6.0"), Value::Double(11.0));
     }
 
     #[test]
@@ -720,7 +723,7 @@ mod equation_order {
         // one is unreachable (Haskell warns about that; it does not warn about
         // the order above). The computed value proves which equation ran.
         let defs = "f x y = x + y; f 0.0 0.0 = 1.0;";
-        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(0.0));
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Double(0.0));
     }
 
     #[test]
@@ -729,17 +732,17 @@ mod equation_order {
         // `f 0.0 y` first (it covers 0.0 in the first position) and only then
         // `f x 0.0`.
         let defs = "f 0.0 y = 10.0 + y; f x 0.0 = 20.0 + x; f x y = x + y;";
-        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Float(10.0));
-        assert_eq!(value_of(defs, "f 1.0 0.0"), Value::Float(21.0));
-        assert_eq!(value_of(defs, "f 1.0 2.0"), Value::Float(3.0));
+        assert_eq!(value_of(defs, "f 0.0 0.0"), Value::Double(10.0));
+        assert_eq!(value_of(defs, "f 1.0 0.0"), Value::Double(21.0));
+        assert_eq!(value_of(defs, "f 1.0 2.0"), Value::Double(3.0));
     }
 
     #[test]
     fn a_where_block_belongs_to_its_own_equation() {
         // Each equation's `where` scopes over that equation only.
         let defs = "f 0.0 = y where { y = 10.0; }; f x = x;";
-        assert_eq!(value_of(defs, "f 0.0"), Value::Float(10.0));
-        assert_eq!(value_of(defs, "f 5.0"), Value::Float(5.0));
+        assert_eq!(value_of(defs, "f 0.0"), Value::Double(10.0));
+        assert_eq!(value_of(defs, "f 5.0"), Value::Double(5.0));
     }
 }
 
@@ -775,7 +778,7 @@ mod io_program_path {
     /// explicitly — the OD-9 cases need a definition literally named `f`/`m`.
     fn run_stdout_of(name: &str, body: &str) -> Vec<String> {
         let src = format!(
-            "{body}\nmain = do {{ write (Just (show_float ({name} 1.5))) stdout; return () }};\n"
+            "{body}\nmain = do {{ write (Just (show_double ({name} 1.5))) stdout; return () }};\n"
         );
         run_on_stack(16 << 20, move || {
             let mut runner = compile::<f32, 256>(&src, ForeignRegistry::new())
@@ -815,7 +818,7 @@ mod io_program_path {
         assert_eq!(
             run_on_stack(16 << 20, || {
                 let src = "dbl 0.0 = 42.0; dbl x = x;\n\
-                           main = do { write (Just (show_float (dbl 0.0))) stdout; return () };";
+                           main = do { write (Just (show_double (dbl 0.0))) stdout; return () };";
                 let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).unwrap();
                 r.run().unwrap();
                 r.stdout().to_vec()
@@ -826,9 +829,9 @@ mod io_program_path {
 
     #[test]
     fn a_standalone_signature_run() {
-        let src = "dbl :: Float -> Float;\n\
+        let src = "dbl :: Double -> Double;\n\
                    dbl x = x;\n\
-                   main = do { write (Just (show_float (dbl 1.5))) stdout; return () };";
+                   main = do { write (Just (show_double (dbl 1.5))) stdout; return () };";
         assert_eq!(
             run_on_stack(16 << 20, || {
                 let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).unwrap();
@@ -901,7 +904,7 @@ mod io_program_path {
         // the user's definition. `main` here is the `write` effect, because the
         // user's `return` shadows the class method for the `IO ()` tail.
         let src = "return x = x + 1.0;\n\
-                   main = write (Just (show_float (return 1.5))) stdout;\n";
+                   main = write (Just (show_double (return 1.5))) stdout;\n";
         let out = run_on_stack(16 << 20, move || {
             compile::<f32, 256>(src, ForeignRegistry::new())
                 .and_then(|mut r| r.run().map(|()| r.stdout().to_vec()))
@@ -947,7 +950,7 @@ mod capture_avoiding_instantiation {
         assert_eq!(
             stdout_of(
                 "f x = x + 1.0;\n\
-                 main = do { write (Just (show_float (f 1.0))) stdout; return () };"
+                 main = do { write (Just (show_double (f 1.0))) stdout; return () };"
             ),
             ["2.0"]
         );
@@ -963,7 +966,7 @@ mod capture_avoiding_instantiation {
         assert_eq!(
             stdout_of(
                 "m x = x + 1.0;\n\
-                 main = do { write (Just (show_float (m 1.0))) stdout; return () };"
+                 main = do { write (Just (show_double (m 1.0))) stdout; return () };"
             ),
             ["2.0"]
         );
@@ -996,7 +999,7 @@ mod capture_avoiding_instantiation {
             stdout_of(
                 "return x = x + 1.0;\n\
                  main = do { write (Just \"a\") stdout;\n\
-                             write (Just (show_float (return 1.0))) stdout; };"
+                             write (Just (show_double (return 1.0))) stdout; };"
             ),
             ["a", "2.0"]
         );
@@ -1012,7 +1015,7 @@ mod capture_avoiding_instantiation {
         assert_eq!(
             stdout_of(
                 "f m = m + 1.0;\n\
-                 main = do { write (Just (show_float (f 3.0))) stdout; return () };"
+                 main = do { write (Just (show_double (f 3.0))) stdout; return () };"
             ),
             ["4.0"]
         );
@@ -1021,7 +1024,7 @@ mod capture_avoiding_instantiation {
         assert_eq!(
             stdout_of(
                 "m f = f + 1.0;\n\
-                 main = do { write (Just (show_float (m 3.0))) stdout; return () };"
+                 main = do { write (Just (show_double (m 3.0))) stdout; return () };"
             ),
             ["4.0"]
         );
@@ -1032,7 +1035,7 @@ mod capture_avoiding_instantiation {
         assert_eq!(
             stdout_of(
                 "add m f = m + f;\n\
-                 main = do { write (Just (show_float (add 3.0 4.0))) stdout; return () };"
+                 main = do { write (Just (show_double (add 3.0 4.0))) stdout; return () };"
             ),
             ["7.0"]
         );
@@ -1048,7 +1051,7 @@ mod capture_avoiding_instantiation {
         assert_eq!(
             stdout_of(
                 "f x = x + 1.0;\n\
-                 main = do { let g = f; write (Just (show_float (g 1.0))) stdout; return () };"
+                 main = do { let g = f; write (Just (show_double (g 1.0))) stdout; return () };"
             ),
             ["2.0"]
         );
@@ -1057,7 +1060,7 @@ mod capture_avoiding_instantiation {
         assert_eq!(
             stdout_of(
                 "m x = x + 1.0;\n\
-                 main = do { let u = m; write (Just (show_float (u 1.0))) stdout; return () };"
+                 main = do { let u = m; write (Just (show_double (u 1.0))) stdout; return () };"
             ),
             ["2.0"]
         );
@@ -1068,7 +1071,7 @@ mod capture_avoiding_instantiation {
         // parameter) would project a different function.
         assert_eq!(
             stdout_of(
-                "main = do { write (Just (show_float (\
+                "main = do { write (Just (show_double (\
                    case fmap (\\g -> g * 3.0) (Just 2.0) of { Nothing -> 0.0; Just v -> v }\
                  ))) stdout; return () };"
             ),

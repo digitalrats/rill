@@ -25,7 +25,7 @@ fn lambda_captures_parent_param_by_value() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(5.0)
+        &rill_lang::arena::Value::Double(5.0)
     );
 }
 
@@ -36,7 +36,7 @@ fn lambda_captures_top_level_def() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(42.0)
+        &rill_lang::arena::Value::Double(42.0)
     );
 }
 
@@ -49,6 +49,6 @@ fn nested_capture_produces_constant_output() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(7.0)
+        &rill_lang::arena::Value::Double(7.0)
     );
 }

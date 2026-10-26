@@ -33,11 +33,11 @@ main = 1.0;"#;
 
 #[test]
 fn multi_constraint_signature_roundtrips() {
-    let src = r#"ixmap a b :: (Ix i, Ix j) => Pair i i -> Pair j j -> Float = a;
+    let src = r#"ixmap a b :: (Ix i, Ix j) => Pair i i -> Pair j j -> Double = a;
 main = 1.0;"#;
     let first = render(&program(src)).unwrap();
     assert!(
-        first.contains("ixmap :: (Ix i, Ix j) => (Pair i i -> Pair j j -> Float) = "),
+        first.contains("ixmap :: (Ix i, Ix j) => (Pair i i -> Pair j j -> Double) = "),
         "two constraints render parenthesized and comma-separated: {first}"
     );
     assert_eq!(render(&program(&first)).unwrap(), first);
@@ -47,7 +47,7 @@ main = 1.0;"#;
 fn constrained_signature_does_not_break_typechecking() {
     // The constraint is recorded but not enforced yet; the body is an ordinary
     // unconstrained function and must compile and run.
-    let src = "f x :: Ix i => Float -> Float = x; main = f 1.0;";
+    let src = "f x :: Ix i => Double -> Double = x; main = f 1.0;";
     let (defs, expr) = src
         .rsplit_once("main = ")
         .expect("the source must bind `main` to the evaluated expression");
@@ -58,7 +58,7 @@ fn constrained_signature_does_not_break_typechecking() {
     let v = prog.result().expect("the run must produce a single result");
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(1.0)
+        &rill_lang::arena::Value::Double(1.0)
     );
 }
 
@@ -78,7 +78,7 @@ fn class_name_is_not_hardcoded() {
 fn constrained_signature_survives_typing() {
     // Pins the T5 contract: typing must NOT strip the context from
     // `Def::Eval.sig` — constrained-def dispatch reads it from there.
-    let src = "f x :: Ix i => Float -> Float = x;\nmain = f 1.0;";
+    let src = "f x :: Ix i => Double -> Double = x;\nmain = f 1.0;";
     let prog = program(src);
     let typed = rill_lang::types::infer::infer_program(&prog, prog.mode)
         .expect("a constrained signature must typecheck");
@@ -98,7 +98,7 @@ fn constrained_signature_survives_typing() {
                 &vec![("Ix".to_string(), "i".to_string())],
                 "typing must preserve the constraint list verbatim"
             );
-            assert_eq!(body.arg_count(), 1, "the body is still `Float -> Float`");
+            assert_eq!(body.arg_count(), 1, "the body is still `Double -> Double`");
         }
         other => panic!("the typed program lost the constrained signature: {other:?}"),
     }

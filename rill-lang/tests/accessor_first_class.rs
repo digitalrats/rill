@@ -8,7 +8,7 @@
 //! The first six tests pin the target behavior (Task 2's per-call-site
 //! specialization made them pass); the last two pin Task 3: the definition's
 //! SCHEME must carry the retry-recovered λ-parameter types (so a
-//! genuinely-unbound scalar stays `Float` while a structured parameter becomes
+//! genuinely-unbound scalar stays `Double` while a structured parameter becomes
 //! first-class), which is what lets a later task delete the `anchor_param_tys`
 //! side-channel.
 pub mod common;
@@ -34,7 +34,7 @@ fn run_value(src: &str) -> Value {
 /// Compile and run `src`, returning `main`'s value as a number.
 fn run_num(src: &str) -> f64 {
     match run_value(src) {
-        Value::Float(x) => x,
+        Value::Double(x) => x,
         Value::Int(i) => i as f64,
         other => panic!("expected a number, got {other:?}"),
     }
@@ -75,8 +75,8 @@ fn signature_less_array_accessor_reads_a_cell_in_complete() {
     let prog = eval_mode::<256>(defs, expr, ffi, Mode::Complete).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v).unwrap().clone() {
-        Value::Float(x) => assert_eq!(x, 2.0),
-        other => panic!("expected a Float, got {other:?}"),
+        Value::Double(x) => assert_eq!(x, 2.0),
+        other => panic!("expected a Double, got {other:?}"),
     }
 }
 
@@ -97,7 +97,7 @@ fn signature_less_accessor_works_with_a_2d_index_pair() {
 #[test]
 fn genuinely_unbound_params_stay_float() {
     // A signature-less def whose parameters never bind a class demand keeps the
-    // ordinary `Float` treatment — no per-call-site specialization, no change.
+    // ordinary `Double` treatment — no per-call-site specialization, no change.
     let src = "add a b = a + b;\nmain = add 2.0 3.0;";
     assert_eq!(run_num(src), 5.0);
 }
@@ -152,9 +152,9 @@ fn signature_less_single_param_scheme_carries_recovered_type() {
     // `first p = p.x`: a NON-curried signature-less def whose λ-parameter type
     // is recovered by the value-track retry (`p : Point` from the field
     // projection). The scheme must carry the recovered type (`Thunk([Point],
-    // [Float])`), not the `Float` fallback — that is the load-bearing
+    // [Double])`), not the `Double` fallback — that is the load-bearing
     // deliverable that lets a later task delete `anchor_param_tys`.
-    let src = "data Point = { x: Float, y: Float };\n\
+    let src = "data Point = { x: Double, y: Double };\n\
                 first p = p.x;\n\
                 main = first (Point { x: 5.0, y: 1.0 });";
     assert_eq!(run_num(src), 5.0);
@@ -258,8 +258,8 @@ fn recursive_signature_less_accessor_is_a_compile_error() {
     // eager path makes one), and its index class demand needs concrete
     // argument types at each step. Report the definition instead of looping.
     // NOTE: the natural `at a i = … else at a (i - 1)` shape never reaches
-    // lowering — Float-only arithmetic pins `i : Float`, so the `Int` index
-    // demand dies in inference (`cannot unify Int with Float`). This reachable
+    // lowering — Double-only arithmetic pins `i : Double`, so the `Int` index
+    // demand dies in inference (`cannot unify Int with Double`). This reachable
     // shape keeps `i` on the class-variable track and lands in lowering.
     let (defs, expr) = (
         "at a i = if 0.0 == (a ! i) then a ! i else at a i;",

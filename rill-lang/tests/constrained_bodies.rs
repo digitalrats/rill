@@ -32,7 +32,7 @@ fn mentions_var(t: &ValueTy, id: TypeVarId) -> bool {
             args.iter().any(|a| mentions_var(a, id))
         }
         ValueTy::Int
-        | ValueTy::Float
+        | ValueTy::Double
         | ValueTy::Bool
         | ValueTy::String
         | ValueTy::Buffer
@@ -221,7 +221,7 @@ fn dict_has_no_data_interpretation() {
     let dict_rank = kind_rank(&dict);
     for data in [
         ValueTy::Int,
-        ValueTy::Float,
+        ValueTy::Double,
         ValueTy::Bool,
         ValueTy::String,
         ValueTy::Buffer,
@@ -341,12 +341,12 @@ fn a_superclass_method_resolves_in_a_body() {
         t.dict_selections
     );
 
-    // The body must NOT have fallen back to a scalar `Float` instance: an
+    // The body must NOT have fallen back to a scalar `Double` instance: an
     // abstract witness is recorded, which no concrete dispatch can produce.
     assert!(
         !t.dict_selections
             .values()
-            .any(|(_, e)| matches!(e, ValueTy::Float | ValueTy::Int)),
+            .any(|(_, e)| matches!(e, ValueTy::Double | ValueTy::Int)),
         "a superclass call in a body must not dispatch to a scalar default; \
          selections: {:?}",
         t.dict_selections
@@ -415,7 +415,7 @@ fn an_ix_body_still_compiles() {
         .expect("the run must produce a single result");
     assert_eq!(
         world.arena().get(v),
-        Some(&rill_lang::arena::Value::Float(2.0)),
+        Some(&rill_lang::arena::Value::Double(2.0)),
         "`index arr 1` must read the second element through the Ix bodies"
     );
 }

@@ -25,7 +25,7 @@ fn twice_applies_twice() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(12.0)
+        &rill_lang::arena::Value::Double(12.0)
     );
 }
 
@@ -62,7 +62,7 @@ fn omega_combinator_is_compile_error() {
 fn map_combinator_over_fixed_shape() {
     // map over a 2-field record: apply f to each element -> a 2-field result.
     // pair_map = fn f p -> Pair (f p.x) (f p.y)
-    let prog = run(r"data Pair = { x: Float, y: Float };
+    let prog = run(r"data Pair = { x: Double, y: Double };
          pair_map = \f -> \p -> Pair { x: f p.x, y: f p.y };
          double = \x -> x * 2.0;
          main = pair_map double (Pair { x: 1.0, y: 2.0 })");
@@ -72,8 +72,8 @@ fn map_combinator_over_fixed_shape() {
             assert_eq!(fields.len(), 2);
             let x = prog.arena().get(fields[0]).unwrap();
             let y = prog.arena().get(fields[1]).unwrap();
-            assert_eq!(x, &rill_lang::arena::Value::Float(2.0));
-            assert_eq!(y, &rill_lang::arena::Value::Float(4.0));
+            assert_eq!(x, &rill_lang::arena::Value::Double(2.0));
+            assert_eq!(y, &rill_lang::arena::Value::Double(4.0));
         }
         other => panic!("expected Record, got {other:?}"),
     }
@@ -89,6 +89,6 @@ fn compose_three_times_does_not_exhaust_arena() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(3.0)
+        &rill_lang::arena::Value::Double(3.0)
     );
 }

@@ -82,7 +82,7 @@ fn unregistered_foreign_builtin_fails_at_seat() {
     // the world is seated, not at some later run.
     let ir = compile_ir(
         r"
-        foreign gain : Float -> FixedBuffer f32 -> FixedBuffer f32;
+        foreign gain : Double -> FixedBuffer f32 -> FixedBuffer f32;
         main = gain 0.5 (square 0.0 1.0 0.0);
         ",
         Mode::Complete,

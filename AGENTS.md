@@ -325,7 +325,7 @@ and admits no local exceptions:
 
 A buffer is an ordinary value. It participates in `Eq`, `Ord`, `Num`,
 `Fractional`, `Show`, `Semigroup` — the **same** classes, through **instances**,
-exactly like `Int` or `Float`. Do not introduce a buffer-specific class, a
+exactly like `Int` or `Double`. Do not introduce a buffer-specific class, a
 buffer-specific operator, a buffer branch in operator lowering, or a marker that
 routes buffers around the class system.
 

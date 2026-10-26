@@ -25,14 +25,14 @@ use rill_lang::types::ty::TypeEnv;
 /// instance's `probeSize` returns a distinct marker so the test can tell which
 /// one a call site specialized to.
 const PROBE_IX: &str = r#"
-    typeclass ProbeIx i where { probeSize: Pair i i -> Float; }
+    typeclass ProbeIx i where { probeSize: Pair i i -> Double; }
     instance ProbeIx Int where { probeSize b = 1.0; }
     instance ProbeIx (Pair Int Int) where { probeSize b = 2.0; }
 "#;
 
 /// A constrained definition whose body calls the `ProbeIx` method: it can only be
 /// typed AFTER a call site solves `i`.
-const PROBE_DEF: &str = "mk p v :: ProbeIx i => Pair i i -> Float -> Float = probeSize p;\n";
+const PROBE_DEF: &str = "mk p v :: ProbeIx i => Pair i i -> Double -> Double = probeSize p;\n";
 
 /// Infer `src` and return its type environment.
 fn env_of(src: &str) -> TypeEnv {
@@ -42,7 +42,7 @@ fn env_of(src: &str) -> TypeEnv {
 }
 
 /// Compile and evaluate the `main` expression of `src` in a single run,
-/// returning its Float value.
+/// returning its Double value.
 fn run(src: &str) -> f64 {
     let (defs, expr) = src
         .rsplit_once("main = ")
@@ -52,16 +52,16 @@ fn run(src: &str) -> f64 {
     let prog = eval_ffi(defs, expr, ffi).unwrap();
     let v = prog.result().expect("the run must produce a single result");
     match prog.arena().get(v) {
-        Some(rill_lang::arena::Value::Float(x)) => *x,
-        other => panic!("expected Float, got {other:?}"),
+        Some(rill_lang::arena::Value::Double(x)) => *x,
+        other => panic!("expected Double, got {other:?}"),
     }
 }
 
 #[test]
 fn constrained_def_registers_without_eager_body_inference() {
     // The body `probeSize p` is only dispatchable once a call site pins the
-    // class variable: eagerly typing it would bind `p` to `Float` and fail
-    // (`no instance of ProbeIx for Float`). A successful load therefore proves the
+    // class variable: eagerly typing it would bind `p` to `Double` and fail
+    // (`no instance of ProbeIx for Double`). A successful load therefore proves the
     // body was DEFERRED, not inferred.
     let src = format!("{PROBE_IX}\n{PROBE_DEF}\nmain = mk (0,9) 0.0;");
     let env = env_of(&src);
@@ -175,7 +175,7 @@ fn where_block_of_a_constrained_def_is_in_scope() {
     // A `where`-binding of the definition is visible in the (deferred) body and
     // is inlined at its use site — the same scoping plain definitions have.
     let src = format!(
-        "{PROBE_IX}\nmk p v :: ProbeIx i => Pair i i -> Float -> Float = probeSize p + off where {{ off = 0.5; }};\nmain = mk (0,9) 0.0;"
+        "{PROBE_IX}\nmk p v :: ProbeIx i => Pair i i -> Double -> Double = probeSize p + off where {{ off = 0.5; }};\nmain = mk (0,9) 0.0;"
     );
     assert_eq!(run(&src), 1.5);
 }
@@ -196,8 +196,8 @@ fn constrained_def_can_call_another_constrained_def() {
     // inner call (its argument is the outer definition's `Pair i i` parameter).
     let src = format!(
         "{PROBE_IX}\n\
-         inner p :: ProbeIx i => Pair i i -> Float = probeSize p;\n\
-         outer q :: ProbeIx i => Pair i i -> Float = inner q;\n\
+         inner p :: ProbeIx i => Pair i i -> Double = probeSize p;\n\
+         outer q :: ProbeIx i => Pair i i -> Double = inner q;\n\
          main = outer (0,9) + outer ((0,0),(2,2));"
     );
     assert_eq!(run(&src), 3.0);
@@ -209,11 +209,12 @@ fn specialized_body_result_must_match_the_signature() {
     // §3.0), so a body of another type is rejected at LOAD — before any call
     // site exists. This is stronger than the old per-specialization check in
     // lowering: the mismatch is now a plain inference error naming both types.
-    let src =
-        format!("{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Float = \"nope\";\nmain = mk (0,9);");
+    let src = format!(
+        "{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Double = \"nope\";\nmain = mk (0,9);"
+    );
     let msg = compile_err(&src);
     assert!(
-        msg.contains("cannot unify value type String with Float"),
+        msg.contains("cannot unify value type String with Double"),
         "expected the body/signature result mismatch, got: {msg}"
     );
 }
@@ -225,7 +226,7 @@ fn recursive_constrained_def_is_a_compile_error() {
     // so it is diagnosed. Direct self-recursion is caught by the general
     // fragment-recursion check, which runs before lowering.
     let src =
-        format!("{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Float = mk p;\nmain = mk (0,9);");
+        format!("{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Double = mk p;\nmain = mk (0,9);");
     let msg = compile_err(&src);
     assert!(
         msg.contains("recursive function call: `mk` calls itself"),
@@ -244,7 +245,7 @@ fn self_recursion_through_a_where_binding_is_a_compile_error() {
     // reports it directly instead of leaving it to lowering's specialization
     // guard. Either way the program must not compile.
     let src = format!(
-        "{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Float = g p where {{ g x = mk x; }};\nmain = mk (0,9);"
+        "{PROBE_IX}\nmk p :: ProbeIx i => Pair i i -> Double = g p where {{ g x = mk x; }};\nmain = mk (0,9);"
     );
     let msg = compile_err(&src);
     assert!(
@@ -261,7 +262,7 @@ fn self_recursion_through_a_where_binding_is_a_compile_error() {
 fn bare_reference_to_a_constrained_def_is_a_compile_error() {
     // `f = mk` has no call site at which `i` could be solved. Reporting that
     // directly beats lowering the deferred body against an unsolved variable
-    // and surfacing a misleading `no instance of ProbeIx for Float`.
+    // and surfacing a misleading `no instance of ProbeIx for Double`.
     let src = format!("{PROBE_IX}\n{PROBE_DEF}\nf = mk;\nmain = f (0,9) 0.0;");
     let msg = compile_err(&src);
     assert!(

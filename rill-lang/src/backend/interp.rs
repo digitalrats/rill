@@ -314,14 +314,14 @@ pub(crate) fn run_main_io<T: Transcendental, const BUF: usize>(
                         // silently discarding the payload.
                         //
                         // The value track's closure-cell encoding erases `()`
-                        // to `Float(0.0)` (a cell's un-set state is `Void`, so
+                        // to `Double(0.0)` (a cell's un-set state is `Void`, so
                         // a stored unit reads back as 0.0), so the erased form
                         // is accepted ONLY when `main` is statically `IO ()`
                         // (`ir.main_io_unit`): `main = do { …; return 0.0 }`
-                        // is typed `IO Float` and is still rejected.
+                        // is typed `IO Double` and is still rejected.
                         let payload_is_unit = match world.arena.get(payload) {
                             Some(Value::Void) => true,
-                            Some(Value::Float(f)) => ir.main_io_unit && *f == 0.0,
+                            Some(Value::Double(f)) => ir.main_io_unit && *f == 0.0,
                             _ => false,
                         };
                         if !payload_is_unit {
@@ -828,7 +828,7 @@ fn value_cmp_ref(arena: &Arena<Value>, a: &Value, b: &Value) -> i8 {
         // is transitive. A `partial_cmp`-with-`Equal`-fallback would be an
         // intransitive equivalence (NaN ≈ 3.0 but 3.0 < 5.0), breaking the
         // sorted Map/Set binary search.
-        (Float(x), Float(y)) => x.total_cmp(y) as i8,
+        (Double(x), Double(y)) => x.total_cmp(y) as i8,
         (Bool(x), Bool(y)) => x.cmp(y) as i8,
         (String(x), String(y)) => x.cmp(y) as i8,
         (Newtype(x), Newtype(y)) => value_cmp(arena, *x, *y),
@@ -917,7 +917,7 @@ fn kind_rank(v: &Value) -> i8 {
     match v {
         Bool(_) => 0,
         Int(_) => 1,
-        Float(_) => 2,
+        Double(_) => 2,
         String(_) => 3,
         Record(_) => 4,
         Sum(..) => 5,
@@ -953,7 +953,7 @@ enum ValueArith {
     Div,
 }
 
-/// A forced value-arithmetic operand, keeping the Int/Float KIND so integer
+/// A forced value-arithmetic operand, keeping the Int/Double KIND so integer
 /// arithmetic can stay on the Int track.
 ///
 /// `Bottom` propagates through strict arithmetic. An ABSENT slot (an operand
@@ -964,7 +964,7 @@ enum ValueArith {
 /// [`ArithmeticOperand::Absent`].
 enum ArithmeticOperand {
     Int(i64),
-    Float(f64),
+    Double(f64),
     Bottom,
     /// The register held nothing, or held a non-numeric value. The caller
     /// latches a value-track fault; it must NOT substitute a number.
@@ -987,16 +987,16 @@ fn arithmetic_operand<T: Transcendental, const BUF: usize>(
     match world.arena.get(head) {
         Some(Value::Bottom) => ArithmeticOperand::Bottom,
         Some(Value::Int(i)) => ArithmeticOperand::Int(*i),
-        Some(Value::Float(f)) => ArithmeticOperand::Float(*f),
+        Some(Value::Double(f)) => ArithmeticOperand::Double(*f),
         _ => ArithmeticOperand::Absent,
     }
 }
 
-/// Read a scalar value as `f64`: a Float reads directly, an Int widens.
+/// Read a scalar value as `f64`: a Double reads directly, an Int widens.
 /// Non-numeric values (records, sums, closures, `Void`) read as `None`.
 fn value_to_f64(v: &Value) -> Option<f64> {
     match v {
-        Value::Float(f) => Some(*f),
+        Value::Double(f) => Some(*f),
         Value::Int(i) => Some(*i as f64),
         _ => None,
     }
@@ -1008,9 +1008,9 @@ fn value_to_f64(v: &Value) -> Option<f64> {
 /// The result keeps the Int track: when BOTH operands are `Value::Int` and the
 /// operation is `+`, `-`, or `*`, the result is a `Value::Int` (wrapping, so a
 /// pathological overflow cannot panic a debug build). `/` always yields a
-/// `Float` — it is float division in this language, and truncating it would
-/// silently change `3 / 2`. Everything else (a `Float` operand, an unbound or
-/// non-numeric slot) computes in `f64` and yields a `Float`, exactly as before.
+/// `Double` — it is float division in this language, and truncating it would
+/// silently change `3 / 2`. Everything else (a `Double` operand, an unbound or
+/// non-numeric slot) computes in `f64` and yields a `Double`, exactly as before.
 /// The static type tracks this rule in `infer_arith` / `lower`'s `Expr::Arith`
 /// arm — a typed `Int` slot therefore holds a real `Value::Int`, which the flat
 /// array primitives require of an offset.
@@ -1071,14 +1071,14 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     }
     let av = match av {
         ArithmeticOperand::Int(i) => i as f64,
-        ArithmeticOperand::Float(f) => f,
+        ArithmeticOperand::Double(f) => f,
         ArithmeticOperand::Bottom | ArithmeticOperand::Absent => {
             unreachable!("bottom and absent operands are handled above")
         }
     };
     let bv = match bv {
         ArithmeticOperand::Int(i) => i as f64,
-        ArithmeticOperand::Float(f) => f,
+        ArithmeticOperand::Double(f) => f,
         ArithmeticOperand::Bottom | ArithmeticOperand::Absent => {
             unreachable!("bottom and absent operands are handled above")
         }
@@ -1089,7 +1089,7 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
         ValueArith::Mul => av * bv,
         ValueArith::Div => av / bv,
     };
-    world.value_regs[dst] = alloc_owned(ir, world, Value::Float(result));
+    world.value_regs[dst] = alloc_owned(ir, world, Value::Double(result));
 }
 
 /// Allocate a fresh `Value::Bottom` slot. `None` on arena exhaustion (a
@@ -1187,7 +1187,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                     // Payloads are pooled (no per-tick heap allocation).
                     world.value_regs[*dst + base] =
                         if matches!(world.arena.get(cr), Some(&Value::Void)) {
-                            alloc_owned(ir, world, Value::Float(0.0))
+                            alloc_owned(ir, world, Value::Double(0.0))
                         } else {
                             alloc_copy_slot(ir, world, cr)
                         };
@@ -1231,8 +1231,8 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         ValueInstr::ValueConstInt { dst, value } => {
             world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Int(*value));
         }
-        ValueInstr::ValueConstFloat { dst, value } => {
-            world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Float(*value));
+        ValueInstr::ValueConstDouble { dst, value } => {
+            world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Double(*value));
         }
         ValueInstr::ValueAdd { dst, a, b } => exec_value_arith(
             ir,
@@ -1633,7 +1633,7 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 // value is zero, like a delay line's. The leak path (a producer
                 // that failed and therefore never wrote) is closed at the WRITE
                 // below, which faults instead of leaving the slot stale.
-                _ => world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Float(0.0)),
+                _ => world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Double(0.0)),
             }
         }
         ValueInstr::ValueStateWrite { slot, src } => {
@@ -1727,11 +1727,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueReadParam { dst, idx } => {
             let v = param_at(ir, world, *idx);
-            world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Float(v));
+            world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Double(v));
         }
         ValueInstr::ValueReadSampleRate { dst } => {
             let v = world.params.sample_rate as f64;
-            world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Float(v));
+            world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Double(v));
         }
         ValueInstr::ValueConstString { dst, value } => {
             world.value_regs[*dst + base] = alloc_owned(ir, world, Value::String(value.clone()));
@@ -2007,11 +2007,11 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
             world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Buffer(di));
         }
         ValueInstr::ValueBufferFill { dst, src } => {
-            // Broadcast a scalar Float value register into a buffer constant.
+            // Broadcast a scalar Double value register into a buffer constant.
             let n = world.block_len;
             let v = match world.value_regs.get(*src + base).copied().flatten() {
                 Some(r) => match world.arena.get(r) {
-                    Some(Value::Float(f)) => Some(*f),
+                    Some(Value::Double(f)) => Some(*f),
                     Some(Value::Int(i)) => Some(*i as f64),
                     // A non-numeric scalar is a fault, not a zero-filled buffer:
                     // the latter is a plausible-looking signal built from
@@ -2107,7 +2107,7 @@ fn sorted_insert_pos<T: Transcendental, const BUF: usize>(
 /// An EMPTY list (`Nil`, or an empty `List`) is a legitimate empty result, not
 /// an error — the caller receives an empty buffer.
 ///
-/// Anything else — an absent register, a `Float`/`Bool`/record, or a chain whose
+/// Anything else — an absent register, a `Double`/`Bool`/record, or a chain whose
 /// tail is still an unforced non-list — LATCHES a value-track fault under
 /// `what` and returns `None`. This is deliberately central: the previous shape
 /// returned a bare `None`, and every caller that mapped it to "empty result"
@@ -3163,7 +3163,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 _ => None,
             };
         }
-        ShowFloat => {
+        ShowDouble => {
             let v = world
                 .value_regs
                 .get(base + args[0])
@@ -3175,7 +3175,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 v.and_then(|x| alloc_owned(ir, world, Value::String(format!("{x:?}"))));
         }
         ShowInt => {
-            // `show_int 3` renders `3` (decimal, no fractional part). A Float
+            // `show_int 3` renders `3` (decimal, no fractional part). A Double
             // operand is truncated defensively; typing makes it unreachable.
             let v = world
                 .value_regs
@@ -3185,7 +3185,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 .and_then(|r| world.arena.get(r))
                 .and_then(|v| match v {
                     Value::Int(i) => Some(*i),
-                    Value::Float(f) => Some(*f as i64),
+                    Value::Double(f) => Some(*f as i64),
                     _ => None,
                 });
             world.value_regs[dst] =
@@ -3194,7 +3194,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         ShowBool => {
             // Booleans are the `true`/`false` keywords in source, but they
             // render with the Haskell constructor spelling (per the spec's
-            // `show`), matching `show_float`'s `{:?}` conventions.
+            // `show`), matching `show_double`'s `{:?}` conventions.
             let v = world
                 .value_regs
                 .get(base + args[0])
@@ -3920,7 +3920,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
         }
         ArrayFromBuffer => {
             // arrayFromBuffer buf: copy the live block (`block_len` samples)
-            // into an immutable `Int`-indexed `Float` array with bounds
+            // into an immutable `Int`-indexed `Double` array with bounds
             // `(0, len - 1)`. The samples are read out first (a short buffer
             // borrow) so the per-element arena allocations happen afterwards.
             let si = buffer_index(ir, world, args[0], base);
@@ -3936,7 +3936,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 }
             };
             for sample in &scratch[..n] {
-                match world.arena.alloc(Value::Float(sample.to_f64())) {
+                match world.arena.alloc(Value::Double(sample.to_f64())) {
                     Ok(r) => elems.push(r),
                     Err(_) => {
                         for r in &elems {
@@ -3994,7 +3994,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             }
             let mut scratch = [T::ZERO; BUF];
             for (i, r) in elems.iter().enumerate() {
-                if let Some(Value::Float(f)) = world.arena.get(*r) {
+                if let Some(Value::Double(f)) = world.arena.get(*r) {
                     scratch[i] = T::from_f64(*f);
                 }
             }
@@ -4451,8 +4451,8 @@ fn release_st_cell<T: Transcendental, const BUF: usize>(
 /// Force `r` and read its numeric payload as an integer.
 ///
 /// The static type is `Int`, but the runtime payload of a NEGATED literal
-/// (`-1`) is a `Float`: value-track arithmetic (negation included) is
-/// Float-only, so an `Int`-typed slot can hold either kind. An accepted `Float`
+/// (`-1`) is a `Double`: value-track arithmetic (negation included) is
+/// Double-only, so an `Int`-typed slot can hold either kind. An accepted `Double`
 /// must be INTEGRAL (`fract() == 0.0`) — truncating `1.5` to `1` would silently
 /// address the wrong element. A non-numeric or fractional operand yields `None`;
 /// the caller latches the operation-specific fault.
@@ -4465,7 +4465,7 @@ fn forced_i64<T: Transcendental, const BUF: usize>(
     let r = force(ir, world, r, drops);
     match world.arena.get(r) {
         Some(Value::Int(i)) => Some(*i),
-        Some(Value::Float(f)) if f.is_finite() && f.fract() == 0.0 => Some(*f as i64),
+        Some(Value::Double(f)) if f.is_finite() && f.fract() == 0.0 => Some(*f as i64),
         _ => None,
     }
 }
@@ -6459,7 +6459,7 @@ mod value_track_tests {
             vec![ValueBlock {
                 instrs: vec![
                     ValueInstr::ValueConstInt { dst: 0, value: 42 },
-                    ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
+                    ValueInstr::ValueConstDouble { dst: 1, value: 1.5 },
                 ],
                 term: ValueTerm::Halt,
             }],
@@ -6475,7 +6475,7 @@ mod value_track_tests {
         let slot0 = world.arena.get(0).unwrap().clone();
         assert_eq!(slot0, crate::arena::Value::Int(42));
         let slot1 = world.arena.get(1).unwrap().clone();
-        assert_eq!(slot1, crate::arena::Value::Float(1.5));
+        assert_eq!(slot1, crate::arena::Value::Double(1.5));
     }
 
     #[test]
@@ -6561,7 +6561,7 @@ mod value_track_tests {
         );
         assert_eq!(
             world.arena.get(world.value_state[1].unwrap()).unwrap(),
-            &crate::arena::Value::Float(0.0)
+            &crate::arena::Value::Double(0.0)
         );
         exec_entry(&ir, &mut world).unwrap();
         // Run 2: the read saw run 1's 7 (the 1-run delay) and latched it
@@ -6583,7 +6583,7 @@ mod value_track_tests {
             vec![ValueBlock {
                 instrs: vec![
                     ValueInstr::ValueConstInt { dst: 0, value: 42 },
-                    ValueInstr::ValueConstFloat { dst: 1, value: 1.5 },
+                    ValueInstr::ValueConstDouble { dst: 1, value: 1.5 },
                 ],
                 term: ValueTerm::Halt,
             }],
@@ -6605,12 +6605,12 @@ mod value_track_tests {
 
     #[test]
     fn value_arith_computes_float_result() {
-        // Int and Float operands widen to f64; the result is always Float.
+        // Int and Double operands widen to f64; the result is always Double.
         let (ir, mut world) = prog_with(
             vec![ValueBlock {
                 instrs: vec![
                     ValueInstr::ValueConstInt { dst: 0, value: 3 },
-                    ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
+                    ValueInstr::ValueConstDouble { dst: 1, value: 2.0 },
                     ValueInstr::ValueAdd { dst: 2, a: 0, b: 1 },
                     ValueInstr::ValueMul { dst: 3, a: 1, b: 2 },
                     ValueInstr::ValueDiv { dst: 4, a: 3, b: 1 },
@@ -6629,9 +6629,9 @@ mod value_track_tests {
                 .unwrap()
                 .clone()
         };
-        assert_eq!(get(2), crate::arena::Value::Float(5.0), "3 + 2.0");
-        assert_eq!(get(3), crate::arena::Value::Float(10.0), "2.0 * 5.0");
-        assert_eq!(get(4), crate::arena::Value::Float(5.0), "10.0 / 2.0");
+        assert_eq!(get(2), crate::arena::Value::Double(5.0), "3 + 2.0");
+        assert_eq!(get(3), crate::arena::Value::Double(10.0), "2.0 * 5.0");
+        assert_eq!(get(4), crate::arena::Value::Double(5.0), "10.0 / 2.0");
     }
 
     #[test]
@@ -6773,14 +6773,14 @@ mod value_track_tests {
     fn forced_i64_accepts_int_and_integral_float_only() {
         // `forced_i64` is the flat-size/offset reader. An `Int` slot is the
         // normal case; the documented wart is that a NEGATED literal arrives as
-        // a Float on the value track, so an INTEGRAL float is accepted. A
+        // a Double on the value track, so an INTEGRAL float is accepted. A
         // fractional float must be REFUSED instead of truncating `1.5` to index
         // 1 — silently addressing the wrong element.
         let (ir, mut world) = prog_with(vec![], 0, 0, 0);
         let int = world.arena.alloc(Value::Int(3)).unwrap();
-        let integral = world.arena.alloc(Value::Float(2.0)).unwrap();
-        let negative = world.arena.alloc(Value::Float(-1.0)).unwrap();
-        let fractional = world.arena.alloc(Value::Float(1.5)).unwrap();
+        let integral = world.arena.alloc(Value::Double(2.0)).unwrap();
+        let negative = world.arena.alloc(Value::Double(-1.0)).unwrap();
+        let fractional = world.arena.alloc(Value::Double(1.5)).unwrap();
         let text = world.arena.alloc(Value::String("nope".into())).unwrap();
 
         let mut drops = Vec::new();
@@ -6852,7 +6852,7 @@ mod value_track_tests {
             vec![ValueBlock {
                 instrs: vec![
                     ValueInstr::ValueConstInt { dst: 0, value: 42 },
-                    ValueInstr::ValueConstFloat { dst: 1, value: 2.0 },
+                    ValueInstr::ValueConstDouble { dst: 1, value: 2.0 },
                     ValueInstr::ValueMul { dst: 0, a: 0, b: 1 },
                 ],
                 term: ValueTerm::Halt,
@@ -6864,7 +6864,7 @@ mod value_track_tests {
         run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(
             world.arena.get(world.value_regs[0].unwrap()).unwrap(),
-            &crate::arena::Value::Float(84.0)
+            &crate::arena::Value::Double(84.0)
         );
         assert_eq!(world.arena.live(), 2, "old dst occupant must be dropped");
     }
@@ -6956,8 +6956,8 @@ mod value_track_tests {
                             dst: 0,
                             value: true,
                         },
-                        ValueInstr::ValueConstFloat { dst: 1, value: 1.0 },
-                        ValueInstr::ValueConstFloat { dst: 2, value: 0.0 },
+                        ValueInstr::ValueConstDouble { dst: 1, value: 1.0 },
+                        ValueInstr::ValueConstDouble { dst: 2, value: 0.0 },
                         ValueInstr::ValueMove { dst: 3, src: 1 },
                     ],
                     term: ValueTerm::Branch {
@@ -6971,7 +6971,7 @@ mod value_track_tests {
                     term: ValueTerm::Fallthrough(3),
                 },
                 ValueBlock {
-                    instrs: vec![ValueInstr::ValueConstFloat {
+                    instrs: vec![ValueInstr::ValueConstDouble {
                         dst: 4,
                         value: 999.0,
                     }],
@@ -6983,7 +6983,7 @@ mod value_track_tests {
                 },
                 // Sentinel: must never run.
                 ValueBlock {
-                    instrs: vec![ValueInstr::ValueConstFloat {
+                    instrs: vec![ValueInstr::ValueConstDouble {
                         dst: 5,
                         value: 777.0,
                     }],
@@ -7005,12 +7005,12 @@ mod value_track_tests {
         );
         assert_eq!(
             world.arena.get(world.value_regs[3].unwrap()).unwrap(),
-            &crate::arena::Value::Float(1.0),
+            &crate::arena::Value::Double(1.0),
             "block 0's move landed the then-path value"
         );
         assert_eq!(
             world.arena.get(world.value_regs[4].unwrap()).unwrap(),
-            &crate::arena::Value::Float(0.0),
+            &crate::arena::Value::Double(0.0),
             "the Branch selected the then block, not the else (999.0)"
         );
         assert_eq!(
@@ -7033,8 +7033,8 @@ mod value_track_tests {
                             dst: 0,
                             value: false,
                         },
-                        ValueInstr::ValueConstFloat { dst: 1, value: 1.0 },
-                        ValueInstr::ValueConstFloat { dst: 2, value: 0.0 },
+                        ValueInstr::ValueConstDouble { dst: 1, value: 1.0 },
+                        ValueInstr::ValueConstDouble { dst: 2, value: 0.0 },
                     ],
                     term: ValueTerm::Branch {
                         cond: 0,
@@ -7043,14 +7043,14 @@ mod value_track_tests {
                     },
                 },
                 ValueBlock {
-                    instrs: vec![ValueInstr::ValueConstFloat {
+                    instrs: vec![ValueInstr::ValueConstDouble {
                         dst: 3,
                         value: 999.0,
                     }],
                     term: ValueTerm::Fallthrough(3),
                 },
                 ValueBlock {
-                    instrs: vec![ValueInstr::ValueConstFloat { dst: 3, value: 0.0 }],
+                    instrs: vec![ValueInstr::ValueConstDouble { dst: 3, value: 0.0 }],
                     term: ValueTerm::Fallthrough(3),
                 },
                 ValueBlock {
@@ -7059,7 +7059,7 @@ mod value_track_tests {
                 },
                 // Sentinel: must never run.
                 ValueBlock {
-                    instrs: vec![ValueInstr::ValueConstFloat {
+                    instrs: vec![ValueInstr::ValueConstDouble {
                         dst: 4,
                         value: 777.0,
                     }],
@@ -7073,7 +7073,7 @@ mod value_track_tests {
         run_main_blocks_for_tests(&ir, &mut world).unwrap();
         assert_eq!(
             world.arena.get(world.value_regs[3].unwrap()).unwrap(),
-            &crate::arena::Value::Float(0.0),
+            &crate::arena::Value::Double(0.0),
             "the false Branch ran the els block, not the then (999.0)"
         );
         assert_eq!(
@@ -7091,8 +7091,8 @@ mod value_cmp_tests {
     fn value_cmp_orders_structural() {
         use crate::arena::{Arena, Value};
         let mut a = Arena::with_capacity(16);
-        let r1 = a.alloc(Value::Float(1.0)).unwrap();
-        let r2 = a.alloc(Value::Float(2.0)).unwrap();
+        let r1 = a.alloc(Value::Double(1.0)).unwrap();
+        let r2 = a.alloc(Value::Double(2.0)).unwrap();
         assert!(value_cmp(&a, r1, r2) < 0);
         assert_eq!(value_cmp(&a, r1, r1), 0);
         assert!(value_cmp(&a, r2, r1) > 0);
@@ -7112,8 +7112,8 @@ mod value_cmp_tests {
     fn value_cmp_orders_containers() {
         use crate::arena::{Arena, Value};
         let mut a = Arena::with_capacity(32);
-        let f1 = a.alloc(Value::Float(1.0)).unwrap();
-        let f2 = a.alloc(Value::Float(2.0)).unwrap();
+        let f1 = a.alloc(Value::Double(1.0)).unwrap();
+        let f2 = a.alloc(Value::Double(2.0)).unwrap();
 
         // Sum: constructor index first, then payload.
         let s_1_1 = a.alloc(Value::Sum(0, vec![f1])).unwrap();
@@ -7392,7 +7392,7 @@ mod lazy_track_tests {
         let (ir, mut world) = prog_with(
             vec![ValueBlock {
                 instrs: vec![
-                    ValueInstr::ValueConstFloat { dst: 2, value: 1.5 },
+                    ValueInstr::ValueConstDouble { dst: 2, value: 1.5 },
                     ValueInstr::ValueLazy {
                         dst: 1,
                         env: 0,
@@ -7410,7 +7410,11 @@ mod lazy_track_tests {
         world.value_regs[0] = Some(env);
         run_main_blocks_for_tests(&ir, &mut world).unwrap();
         let res = world.value_regs[3].unwrap();
-        assert_eq!(world.arena.get(res).unwrap(), &Value::Float(8.5), "7 + 1.5");
+        assert_eq!(
+            world.arena.get(res).unwrap(),
+            &Value::Double(8.5),
+            "7 + 1.5"
+        );
     }
 
     #[test]

@@ -60,7 +60,7 @@ fn user_definition_shadows_a_prelude_definition() {
     // arity error even though lowering runs the user's body. Shadowing means
     // the user's ARITY and body both win.
     let src = r#"from a b = a + b;
-main = do { write (Just (show_float (from 1.0 2.0))) stdout; return () };"#;
+main = do { write (Just (show_double (from 1.0 2.0))) stdout; return () };"#;
     let mut r = compile::<f32, 256>(src, ForeignRegistry::new())
         .expect("user definition must shadow the Prelude one");
     r.run().expect("run must succeed");
@@ -78,7 +78,7 @@ from n = cons (n + 100.0) (from (n + 1.0));
 first_two xs = cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (cons (case (head (tail xs)) of { Nothing -> 0.0; Just x -> x }) (list));
 main = do { xs <- fromList (first_two (from 10.0));
     ys <- toList xs;
-    write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
+    write (Just (fold (\acc -> \x -> concat_string acc (show_double x)) "" ys)) stdout;
     return () };
 "#;
     let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).expect("program must compile");
@@ -110,7 +110,7 @@ fn complete_mode_still_exposes_the_recursive_prelude_from() {
     // Prelude `from` must stay usable there. `head (from 1.0)` forces only the
     // first element of an infinite list.
     let src = r#"{-# MODE complete #-}
-main = do { write (Just (show_float (case head (from 1.0) of { Nothing -> 0.0; Just x -> x }))) stdout; return () };"#;
+main = do { write (Just (show_double (case head (from 1.0) of { Nothing -> 0.0; Just x -> x }))) stdout; return () };"#;
     let mut r =
         compile::<f32, 256>(src, ForeignRegistry::new()).expect("complete program must compile");
     r.run().expect("run must succeed");
@@ -127,7 +127,7 @@ fn capacity_bound_does_not_count_prelude_definition_bodies() {
     fn capacity(n: usize) -> (usize, usize) {
         let src = format!(
             r#"take k xs = if k == 0.0 then list else cons (case (head xs) of {{ Nothing -> 0.0; Just x -> x }}) (take (k - 1.0) (tail xs));
-main = do {{ xs <- fromList (take {n}.0 (from 1.0)); ys <- toList xs; write (Just (show_float (fold (\ a -> \ x -> a + x) 0.0 ys))) stdout; return () }};"#
+main = do {{ xs <- fromList (take {n}.0 (from 1.0)); ys <- toList xs; write (Just (show_double (fold (\ a -> \ x -> a + x) 0.0 ys))) stdout; return () }};"#
         );
         let ir = rill_lang::compile_eval::<f32, 256>(&src, "main", rill_lang::mode::Mode::Complete)
             .expect("program must compile");
@@ -170,7 +170,7 @@ fn benchmark_size_take_64_runs_within_the_arena_budget() {
     // pins that `n = 64` stays inside it (the measured wall is n = 84).
     let src = r#"take k xs = if k == 0.0 then list else cons (case (head xs) of { Nothing -> 0.0; Just x -> x }) (take (k - 1.0) (tail xs));
 main = do { xs <- fromList (take 64.0 (from 1.0)); ys <- toList xs;
-    write (Just (show_float (fold (\ a -> \ x -> a + x) 0.0 ys))) stdout;
+    write (Just (show_double (fold (\ a -> \ x -> a + x) 0.0 ys))) stdout;
     return () };
 "#;
     let mut r = compile::<f32, 256>(src, ForeignRegistry::new()).expect("program must compile");

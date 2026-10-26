@@ -21,7 +21,7 @@ fn if_branch_type_mismatch() {
 
 #[test]
 fn match_missing_ctor() {
-    assert!(compile_eval::<f32, 256>(r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r -> r; };", "main", Mode::Strict)
+    assert!(compile_eval::<f32, 256>(r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r -> r; };", "main", Mode::Strict)
     .is_err());
 }
 
@@ -34,7 +34,7 @@ fn match_scalar_without_wildcard() {
 
 #[test]
 fn match_guarded_no_unguarded_fallback() {
-    assert!(compile_eval::<f32, 256>(r"data Shape = Circle Float | Rect Float Float; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; Rect w h -> w; };", "main", Mode::Strict)
+    assert!(compile_eval::<f32, 256>(r"data Shape = Circle Double | Rect Double Double; main = case Circle 1.0 of { Circle r | r > 0.0 -> r; Rect w h -> w; };", "main", Mode::Strict)
     .is_err());
 }
 

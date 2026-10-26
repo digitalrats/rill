@@ -28,7 +28,7 @@ fn fmap_over_maybe_matches() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(2.0)
+        &rill_lang::arena::Value::Double(2.0)
     );
 }
 
@@ -108,7 +108,7 @@ fn foldable_over_list() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(6.0)
+        &rill_lang::arena::Value::Double(6.0)
     );
 }
 
@@ -124,6 +124,6 @@ fn fmap_over_user_parameterized_data() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Float(30.0)
+        &rill_lang::arena::Value::Double(30.0)
     );
 }

@@ -38,11 +38,11 @@ fn complete(defs: &str, expr: &str) -> Result<Value, CompileError> {
         .map(|world| out_value(&world))
 }
 
-/// The `Float` payload of a Strict-mode result.
+/// The `Double` payload of a Strict-mode result.
 fn float_of(defs: &str, expr: &str) -> f64 {
     match strict(defs, expr).expect("the source must compile and run") {
-        Value::Float(f) => f,
-        other => panic!("expected a Float result, got {other:?}"),
+        Value::Double(f) => f,
+        other => panic!("expected a Double result, got {other:?}"),
     }
 }
 
@@ -62,15 +62,15 @@ fn string_of(defs: &str, expr: &str) -> String {
     }
 }
 
-/// The `Float` payloads of a `List` result — ORDER-sensitive.
+/// The `Double` payloads of a `List` result — ORDER-sensitive.
 fn list_of(defs: &str, expr: &str) -> Vec<f64> {
     let world = eval(defs, expr).expect("the source must compile and run");
     match out_value(&world) {
         Value::List { elems } => elems
             .iter()
             .map(|r| match world.arena().get(*r) {
-                Some(Value::Float(f)) => *f,
-                other => panic!("expected a Float element, got {other:?}"),
+                Some(Value::Double(f)) => *f,
+                other => panic!("expected a Double element, got {other:?}"),
             })
             .collect(),
         other => panic!("expected a List result, got {other:?}"),
@@ -242,7 +242,7 @@ mod method_values {
         // so an empty-string fallback is indistinguishable from a real fold of
         // empty input — hence the non-empty elements.
         assert_eq!(string_of("", "fold mappend \"\" [\"a\",\"b\"]"), "ab");
-        // Float dispatch through the same method value.
+        // Double dispatch through the same method value.
         assert_eq!(float_of("", "fold mappend 0.0 [1.0,2.0,3.0]"), 6.0);
         // List dispatch: `mappend` on lists delegates to `++` (Prelude).
         assert_eq!(
@@ -255,7 +255,7 @@ mod method_values {
     fn method_value_applied_directly_computes() {
         // The same dictionary entry reachable by direct application. G7 of the
         // audit was NOT a defect: `1.0 `mappend` 2.0` is 3.0 against rill's
-        // declared `instance Monoid Float`. Asserted here only because it is
+        // declared `instance Monoid Double`. Asserted here only because it is
         // the value the FOLD tests dispatch through — not as evidence for a
         // fix (it passed before this task).
         assert_eq!(float_of("", "mappend 1.0 2.0"), 3.0);
@@ -286,7 +286,7 @@ mod append_is_monomorphic_to_lists {
     #[test]
     fn non_list_append_operand_is_rejected() {
         // The audit's G8 spelling. In Haskell 2010 the second operand of `++`
-        // must be a list, so `[1.0,2.0]` (a list of Float) cannot be appended
+        // must be a list, so `[1.0,2.0]` (a list of Double) cannot be appended
         // to `list` (a list of List). Both modes must be LOUD — the old
         // behaviour was a silent `0` once the absent result reached `length`.
         for mode in [Mode::Strict, Mode::Complete] {
@@ -356,7 +356,7 @@ mod no_silent_list_answers {
 
     #[test]
     fn length_of_a_non_list_is_loud() {
-        // `length :: [a] -> Int`. A Float/Bool/String/record has no length, so
+        // `length :: [a] -> Int`. A Double/Bool/String/record has no length, so
         // the audit's `0` was a silent wrong answer. Both modes must reject it
         // or fault — never answer.
         for mode in [Mode::Strict, Mode::Complete] {
@@ -379,7 +379,7 @@ mod no_silent_list_answers {
     fn length_of_a_failed_operand_is_loud_not_zero() {
         // The audit's actual G7 observation: the `0` came from wrapping an
         // expression whose result is not a list in `length`. `mappend` on two
-        // Floats yields a Float, so `length` of it is a type error — the same
+        // Floats yields a Double, so `length` of it is a type error — the same
         // rule as G8, one root.
         for mode in [Mode::Strict, Mode::Complete] {
             assert!(
@@ -402,15 +402,15 @@ mod no_silent_list_answers {
         for mode in [Mode::Strict, Mode::Complete] {
             assert!(
                 !loud(mode, "", "map (\\x -> x) 1.0").is_empty(),
-                "{mode:?}: `map` over a Float must not answer"
+                "{mode:?}: `map` over a Double must not answer"
             );
             assert!(
                 !loud(mode, "", "filter (\\x -> true) 1.0").is_empty(),
-                "{mode:?}: `filter` over a Float must not answer"
+                "{mode:?}: `filter` over a Double must not answer"
             );
             assert!(
                 !loud(mode, "", "fold (+) 0.0 1.0").is_empty(),
-                "{mode:?}: `fold` over a Float must not answer"
+                "{mode:?}: `fold` over a Double must not answer"
             );
         }
     }
@@ -468,7 +468,7 @@ mod io_executable_path {
         assert_eq!(
             stdout_of(
                 "{-# MODE complete #-}\n\
-                 main = do { write (Just (show_float ((fold (\\a -> \\x -> a + x) 0.0 \
+                 main = do { write (Just (show_double ((fold (\\a -> \\x -> a + x) 0.0 \
                  (cons 1.0 (cons 2.0 (list)))) * 2.0))) stdout; return () };"
             ),
             ["6.0"],
@@ -480,7 +480,7 @@ mod io_executable_path {
         // defects), so the assertion is on the printed VALUE, not the count.
         let strict_out = stdout_of(
             "{-# MODE strict #-}\n\
-             main = do { write (Just (show_float ((fold (\\a -> \\x -> a + x) 0.0 \
+             main = do { write (Just (show_double ((fold (\\a -> \\x -> a + x) 0.0 \
              (cons 1.0 (cons 2.0 (list)))) * 2.0))) stdout; return () };",
         );
         assert!(
@@ -498,7 +498,7 @@ mod io_executable_path {
         // `0.0`; and it is not wrapped in `length`, whose guard would hide that.
         let mut runner = rill_lang::compile::<f32, 256>(
             "{-# MODE complete #-}\n\
-             main = do { write (Just (show_float ((fold (\\a -> \\x -> a + x) 0.0 \
+             main = do { write (Just (show_double ((fold (\\a -> \\x -> a + x) 0.0 \
              (fibs)) * 1.0))) stdout; return () };\n\
              fibs = cons 1.0 fibs;",
             ForeignRegistry::new(),

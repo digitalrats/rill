@@ -24,7 +24,7 @@ fn actor_param_defaults_to_zero() {
     let expr = expr.trim().trim_end_matches(';');
     let ffi = ForeignRegistry::<f32>::new();
     let prog = eval_ffi(defs, expr, ffi).unwrap();
-    assert_eq!(value_output(&prog), rill_lang::arena::Value::Float(0.0));
+    assert_eq!(value_output(&prog), rill_lang::arena::Value::Double(0.0));
 }
 
 // NOTE — DELETED (re-run surface removed; `test_eval` cannot inject params):

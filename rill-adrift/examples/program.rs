@@ -16,7 +16,7 @@ main = do {
     write (Just "Hello, world!") stdout;
     xs <- fromList [1.0, 2.0, 3.0];
     ys <- toList xs;
-    write (Just (fold (\acc -> \x -> concat_string acc (show_float x)) "" ys)) stdout;
+    write (Just (fold (\acc -> \x -> concat_string acc (show_double x)) "" ys)) stdout;
     return ()
 };
 "#;
