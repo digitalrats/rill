@@ -52,7 +52,7 @@ pub mod debug;
 #[cfg(feature = "serialization")]
 pub mod program_serde;
 
-pub use arena::{Arena, ArenaError, ArenaRef, ThunkState, Value, ValueKind};
+pub use arena::{Arena, ArenaError, ArenaRef, DictSlot, KernelId, ThunkState, Value, ValueKind};
 pub use error::{CompileError, Span};
 pub use ir::{Ir, ValueFunc, ValueInstr, ValueLayout};
 pub use program::{WorldConfig, WorldState};

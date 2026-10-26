@@ -551,6 +551,14 @@ fn recount_children<T: Transcendental, const BUF: usize>(
             _ = world.arena.copy(*h);
             _ = world.arena.copy(*t);
         }
+        // A dictionary owns its SUPERCLASS dictionaries; `methods` are code
+        // indices (`DictSlot::Fragment` indexes `Ir::fragments`), not refs, so
+        // they are never recounted. Mirrors `visit_refs`.
+        Value::Dictionary { supers, .. } => {
+            for s in supers {
+                _ = world.arena.copy(*s);
+            }
+        }
         // An unforced/forcing/bottom cell and bottom itself own nothing.
         Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
         // Leaf values own no children.
@@ -666,6 +674,17 @@ fn pool_clone_value<T: Transcendental, const BUF: usize>(
                 elems: out,
             }
         }
+        // A dictionary clones deeply: its `supers` refs are carried over so the
+        // clone stays RC-reachable, and `methods` are Copy code indices (no
+        // refs). The `supers` payload is deliberately NOT pooled — unlike
+        // Record/List/Set/Array it is not the value's only heap payload, and
+        // pooling it would need a matching `detach_payload` arm for the pool's
+        // take/put pair to stay symmetric (the invariant
+        // `arena::tests::array_clone_pooled_preserves_shape` pins for arrays).
+        Value::Dictionary { supers, methods } => Value::Dictionary {
+            supers: supers.clone(),
+            methods: methods.clone(),
+        },
         _ => v.clone(),
     }
 }
@@ -765,6 +784,13 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
             world.arena.drop_ref(*h);
             world.arena.drop_ref(*t);
         }
+        // A dictionary releases its SUPERCLASS dictionaries; `methods` are code
+        // indices, not refs (mirrors `visit_refs`).
+        Value::Dictionary { supers, .. } => {
+            for s in supers {
+                world.arena.drop_ref(*s);
+            }
+        }
         // An unforced/forcing/bottom cell and bottom itself own nothing.
         Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
         // Leaf values own no children.
@@ -779,7 +805,8 @@ fn drop_value_children<T: Transcendental, const BUF: usize>(
 /// `Record` by field order; a `Newtype` by its inner value; `List`/`Set`
 /// lexicographically over elements; `Array` by bounds then elements
 /// lexicographically; `Map` lexicographically over the sorted (key, value)
-/// pairs. Mixed kinds fall back to [`kind_rank`], so any two
+/// pairs; a `Dictionary` by superclass refs, then method slots. Mixed kinds
+/// fall back to [`kind_rank`], so any two
 /// acyclic values are comparable — this total cross-kind order is what makes
 /// arbitrary-typed `Map` keys work.
 ///
@@ -848,6 +875,26 @@ fn value_cmp_ref(arena: &Arena<Value>, a: &Value, b: &Value) -> i8 {
             px.len().cmp(&py.len()) as i8
         }
         (Callable { .. }, Callable { .. }) => 0, // unreachable for Ord-typed keys
+        // A dictionary compares structurally over its superclass refs, then (on
+        // a super tie) over its positional method slots. Two dictionaries with
+        // no superclasses are still comparable: the method half decides, so an
+        // `Eq`-over-dictionaries cannot collapse distinct vtables into one key.
+        (
+            Dictionary {
+                supers: sx,
+                methods: mx,
+            },
+            Dictionary {
+                supers: sy,
+                methods: my,
+            },
+        ) => {
+            let c = cmp_ref_slices(arena, sx, sy);
+            if c != 0 {
+                return c;
+            }
+            mx.cmp(my) as i8
+        }
         _ => kind_rank(a).cmp(&kind_rank(b)) as i8,
     }
 }
@@ -891,6 +938,9 @@ fn kind_rank(v: &Value) -> i8 {
         // previously-built values' cross-kind order stable.
         Array { .. } => 18,
         BuiltinCallable { .. } => 10,
+        // A dictionary is a fresh variant, so it appends after every existing
+        // rank; all previously-built values keep their cross-kind order.
+        Dictionary { .. } => 19,
     }
 }
 
@@ -7574,5 +7624,216 @@ mod lazy_track_tests {
         let mut drops2 = Vec::new();
         let r2 = force(&ir, &mut world, t2, &mut drops2);
         assert_eq!(r2, r, "the memo is shared across thunk values");
+    }
+}
+
+#[cfg(test)]
+mod dictionary_walker_tests {
+    //! The three raw-value walkers ([`recount_children`],
+    //! [`drop_value_children`], [`pool_clone_value`]) and the structural
+    //! comparison ([`value_cmp_ref`]) over a [`Value::Dictionary`].
+    //!
+    //! They are private, so their half of the dictionary contract is proven
+    //! here rather than in `tests/dictionary_value.rs`. Every test deliberately
+    //! allocates LIVE arena slots at the indices its `DictSlot::Fragment` slots
+    //! name: a walker that treated a fragment index as an arena ref would move
+    //! those slots' RC and fail immediately.
+
+    use super::*;
+    use crate::arena::{DictSlot, KernelId};
+    use crate::ir::{Ir, StateLayout, ValueLayout};
+    use crate::program::WorldConfig;
+
+    /// A seated world with a small arena. The walkers only touch `world.arena`,
+    /// but `recount_children`/`pool_clone_value` take the world mutably, so a
+    /// real world (not a bare arena) is what they run against.
+    fn world() -> (Ir, WorldState<f32, 256>) {
+        let ir = Ir {
+            main_io_unit: false,
+            num_inputs: 0,
+            num_outputs: 0,
+            state: StateLayout::default(),
+            builtins: Vec::new(),
+            params: Vec::new(),
+            value_blocks: Vec::new(),
+            value_entry: 0,
+            num_value_regs: 0,
+            result_reg: 0,
+            value_funcs: Vec::new(),
+            fragments: Vec::new(),
+            array_hole_frag: None,
+            max_call_regs: 0,
+            value_state: ValueLayout {
+                capacity: 16,
+                buffer_budget: 0,
+                value_state_slots: 0,
+            },
+            num_buffers: 0,
+            input_buffers: Vec::new(),
+            tapes: Vec::new(),
+        };
+        let mut w = WorldState::<f32, 256>::new(WorldConfig::default());
+        w.seat(&ir).unwrap();
+        (ir, w)
+    }
+
+    /// A dictionary whose `supers` names `super_ref` and whose two method slots
+    /// are FRAGMENTS `0` and `1` — the two lowest arena refs, which the test
+    /// keeps allocated so a ref-walking bug is observable.
+    fn dict(super_ref: ArenaRef) -> Value {
+        Value::Dictionary {
+            supers: vec![super_ref],
+            methods: vec![
+                DictSlot::Fragment { fragment: 0 },
+                DictSlot::Fragment { fragment: 1 },
+                DictSlot::Kernel(KernelId::Compare),
+            ],
+        }
+    }
+
+    /// Three live leaf slots (refs 0, 1) plus a superclass dictionary (ref 2).
+    fn seated(w: &mut WorldState<f32, 256>) -> (ArenaRef, ArenaRef, ArenaRef) {
+        let r0 = w.arena.alloc(Value::Int(0)).unwrap();
+        let r1 = w.arena.alloc(Value::Int(1)).unwrap();
+        let sup = w
+            .arena
+            .alloc(Value::Dictionary {
+                supers: Vec::new(),
+                methods: vec![DictSlot::Kernel(KernelId::Eq)],
+            })
+            .unwrap();
+        assert_eq!((r0, r1, sup), (0, 1, 2), "the test pins the slot layout");
+        (r0, r1, sup)
+    }
+
+    #[test]
+    fn recount_children_counts_supers_and_not_method_fragments() {
+        let (ir, mut w) = world();
+        let (r0, r1, sup) = seated(&mut w);
+        let v = dict(sup);
+        assert_eq!((r0, r1, sup), (0, 1, 2));
+
+        recount_children(&ir, &mut w, &v);
+
+        assert_eq!(
+            w.arena.rc(sup),
+            2,
+            "the super is recounted for the new owner"
+        );
+        assert_eq!(
+            w.arena.rc(r0),
+            1,
+            "a DictSlot::Fragment index is not an arena ref"
+        );
+        assert_eq!(w.arena.rc(r1), 1, "…likewise for the second slot");
+    }
+
+    #[test]
+    fn drop_value_children_releases_supers_and_not_method_fragments() {
+        let (ir, mut w) = world();
+        let (r0, r1, sup) = seated(&mut w);
+        let v = dict(sup);
+
+        drop_value_children(&ir, &mut w, &v);
+
+        assert_eq!(w.arena.rc(sup), 0, "the super's only owner was released");
+        assert!(w.arena.get(sup).is_none(), "the super's slot is freed");
+        assert_eq!(w.arena.rc(r0), 1, "slot 0 was not touched by the drop");
+        assert_eq!(w.arena.rc(r1), 1, "slot 1 was not touched by the drop");
+        assert!(matches!(w.arena.get(r0), Some(Value::Int(0))));
+        assert!(matches!(w.arena.get(r1), Some(Value::Int(1))));
+    }
+
+    #[test]
+    fn pool_clone_value_carries_the_supers() {
+        let (ir, mut w) = world();
+        let (_r0, _r1, sup) = seated(&mut w);
+        let original = w.arena.alloc(dict(sup)).unwrap();
+
+        let value = w.arena.get(original).cloned().unwrap();
+        let cloned = pool_clone_value(&ir, &mut w, &value);
+        match &cloned {
+            Value::Dictionary { supers, methods } => {
+                assert_eq!(supers, &vec![sup], "the clone keeps its super refs");
+                assert_eq!(methods.len(), 3, "the method slots survive the clone");
+                assert_eq!(methods[2], DictSlot::Kernel(KernelId::Compare));
+            }
+            other => panic!("expected a Dictionary, got {other:?}"),
+        }
+
+        // The full `alloc_copy` sequence: pooled clone, recount, store. The
+        // clone must keep the super reachable after the original is gone.
+        recount_children(&ir, &mut w, &cloned);
+        assert_eq!(w.arena.rc(sup), 2);
+        let copy = w.arena.alloc(cloned).unwrap();
+        w.arena.drop_ref(original);
+        assert_eq!(w.arena.rc(sup), 1, "the clone owns the surviving ref");
+        assert!(matches!(w.arena.get(sup), Some(Value::Dictionary { .. })));
+        w.arena.drop_ref(copy);
+        assert_eq!(w.arena.rc(sup), 0);
+    }
+
+    #[test]
+    fn value_cmp_ref_orders_dictionaries() {
+        let mut w: WorldState<f32, 256> = world().1;
+        let eq = w
+            .arena
+            .alloc(Value::Dictionary {
+                supers: Vec::new(),
+                methods: vec![DictSlot::Kernel(KernelId::Eq)],
+            })
+            .unwrap();
+        let a = w
+            .arena
+            .alloc(Value::Dictionary {
+                supers: vec![eq],
+                methods: vec![DictSlot::Fragment { fragment: 1 }],
+            })
+            .unwrap();
+        let same = w
+            .arena
+            .alloc(Value::Dictionary {
+                supers: vec![eq],
+                methods: vec![DictSlot::Fragment { fragment: 1 }],
+            })
+            .unwrap();
+        let other_method = w
+            .arena
+            .alloc(Value::Dictionary {
+                supers: vec![eq],
+                methods: vec![DictSlot::Fragment { fragment: 2 }],
+            })
+            .unwrap();
+        let no_supers = w
+            .arena
+            .alloc(Value::Dictionary {
+                supers: Vec::new(),
+                methods: vec![DictSlot::Fragment { fragment: 1 }],
+            })
+            .unwrap();
+        let int = w.arena.alloc(Value::Int(0)).unwrap();
+
+        assert_eq!(
+            value_cmp(&w.arena, a, same),
+            0,
+            "identical dictionaries compare equal"
+        );
+        assert!(
+            value_cmp(&w.arena, other_method, a) > 0,
+            "a later fragment index orders later"
+        );
+        assert!(
+            value_cmp(&w.arena, no_supers, a) < 0,
+            "fewer supers orders first"
+        );
+        assert!(
+            value_cmp(&w.arena, a, int) > 0,
+            "a dictionary outranks an Int by kind_rank"
+        );
+        // Antisymmetry: the total order must not depend on argument order.
+        assert_eq!(
+            value_cmp(&w.arena, a, other_method),
+            -value_cmp(&w.arena, other_method, a)
+        );
     }
 }

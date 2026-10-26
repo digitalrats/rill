@@ -11,3 +11,7 @@ pub use crate::error::{CompileError, Span};
 pub use crate::program::{WorldConfig, WorldState};
 pub use crate::program_runner::{run_on_stack, ProgramRunner};
 pub use crate::test_eval;
+
+// The runtime dictionary value's slot and kernel vocabulary (see
+// `Value::Dictionary`).
+pub use crate::arena::{DictSlot, KernelId};
