@@ -85,6 +85,33 @@ Root cause of the three WRONG/EXTRA rows: operators still go through the legacy
 `Expr::Arith` / `Expr::Cmp` path with a `kind_rank` fallback instead of the class
 methods (design §3.7 stages 4–9). This is **OD-16 / OD-17**.
 
+### A4b. Precision, buffer element types, and the numeric tower (measured 2026-10-26)
+
+| Construct | rill | GHC | Verdict |
+|---|---|---|---|
+| `Value::Float` payload | `f64` | `Float` is single precision (§6.4.1) | **WRONG — `Float` silently means `Double`** |
+| `Float` arithmetic precision | `1/3` → `0.3333333333333333`; `0.1+0.2` → `0.30000000000000004` | `0.33333334`; `0.3` | **WRONG — silent** |
+| `Double` | does not exist | real type | MISSING |
+| `f :: FixedBuffer Zork -> FixedBuffer Zork` | compiles and runs | unknown type | **WRONG — silent** (element type is discarded) |
+| `g :: FixedBuffer Int -> FixedBuffer Bool; g x = x` | compiles and runs | type error | **WRONG — silent** |
+| `instance Num (Tape f32)` | accepted as *nominal* `f32` | accepted, but `f32` is a **type variable** — an instance for all `a` | WRONG (different meaning) |
+| elementwise `a / b` on a buffer | works | needs `Fractional a` | missing constraint |
+| elementwise `sin`, `sqrt`, `exp`, `ln`, `tanh` on a buffer | works | needs `Floating a` | missing constraint |
+| elementwise `a % b` on a `Float` buffer | works | `No instance for 'Integral Float'` | **EXTRA — silent** |
+| `Floating` class | does not exist | `class Fractional a => Floating a` | MISSING |
+| `Integral` class | does not exist | `class (Real a, Enum a) => Integral a` | MISSING |
+| `Buffer` class | `typeclass (Num b) => Buffer b` — a `Num` subclass, so it licenses arithmetic it does not own | no such class; `Num`/`Fractional`/`Floating` are the tower | WRONG (wrong tower placement) |
+
+Root cause of the `FixedBuffer` rows: **the element-type argument is discarded**.
+`types/unify.rs:157` matches `ValueTy::Buffer` against `App("FixedBuffer", args)`
+only when `args.is_empty()`; `types/ffi.rs:258` checks only `args.len() == 1`.
+No element type is ever resolved — which is precisely why `f32` survived as a
+rill type name, and why a name registry alone cannot catch it (`f32` is lowercase,
+i.e. a type variable by Haskell's lexical rules).
+
+Fix order: §Task 5.5pre-0 (precision) → 5.5pre-1 (element type) → 5.5a
+(registry) → 5.5pre-2 (`Floating`/`Integral`, `Buffer` out of the tower).
+
 ## A5. Expressions and evaluation
 
 | Construct | rill | Verdict |
@@ -127,6 +154,10 @@ methods (design §3.7 stages 4–9). This is **OD-16 / OD-17**.
 | `(1::Int) + 1.0` | `2.0` | type error |
 | `"a\nb"` string escape | literal `\n` | newline |
 | mixed `Int`/`Float` comparison in general | `kind_rank` ordering | type error |
+| `Float` is really `Double` | f64 precision | single precision |
+| `FixedBuffer Zork` | accepted | unknown type |
+| `FixedBuffer Int` unified with `FixedBuffer Bool` | accepted | type error |
+| `%` on `Float` elements | accepted | `No instance for 'Integral Float'` |
 
 ---
 
