@@ -1,6 +1,6 @@
 # rill-lang: a real kind mechanism (K1–K2)
 
-> **Status:** ready to implement.
+> **Status:** **K1–K2 DONE** — commit `5fdced5` (1047 tests).
 > **Predecessors:** `2026-09-26-rill-lang-hkt-collections-design.md` (HKT
 > representation), `2026-10-25-rill-lang-runtime-dictionaries-design.md`
 > (dictionary model), `2026-10-25-rill-lang-dictionaries-stage1.md` (the
@@ -116,3 +116,35 @@ the types and leaves resolution to the dictionary work.
 - `instance Monoid [a]` kind-checks (checker-level until 5.5c's syntax lands).
 - The prelude loads; all baseline tests stay green; no `Cap` anywhere.
 - There is exactly **one** place that answers "what is this name's kind".
+
+## Outcome (implemented, `5fdced5`)
+
+`Kind` is a projection of `TypeEnv::type_entry` → `ctor_kinds`/`data_arities`/
+`scalars`; there is **one** place answering "what is this name's kind"
+(`TypeEnv::kind_of`), and no new name table.
+
+Controller-verified after the fact:
+
+| Check | Result |
+|---|---|
+| `f :: Pair Int -> Int` | rejected: ``expecting 1 more argument to `Pair Int`; expected a type, but `Pair Int` has kind `* -> *` `` |
+| `f :: List -> Int` / `f :: Maybe -> Int` / `f :: FixedBuffer -> Int` | rejected, same shape |
+| `f :: Pair -> Int` (bare) | rejected: `2 more arguments`, kind `* -> * -> *` |
+| `Pair Int Double`, `List Double`, `Maybe Double`, `FixedBuffer Double` | accepted |
+| `data P`, `data Box a`, `Num a => a -> a` | accepted (type variables and user data unaffected) |
+| `instance Functor Pair` | rejected as a kind error (`Pair` has kind `* -> * -> *`) |
+| `instance Monoid (Pair Int)` | rejected — `Monoid` wants `*` |
+| `instance Functor (Pair Int)` | **accepted and compiled** — `Pair Int` is `* -> *`, correct |
+| `instance Monoid List` | accepted (arity 1) |
+
+**Four enforcement paths** were guarded, not two: `sig_ty_to_vty`,
+`type_expr_to_vty`, `instantiate_builtin_sig_vty`, and the `conv` entry points,
+plus compiler-owned signatures at load. The prelude's heads are now checked too
+(the `from_prelude` skip is narrowed to bodies); all passed, none needed fixing.
+
+**New defect recorded — OD-22 (open):** `instance Functor (Pair Int)` kind-checks
+but a method call on `Pair Int a` cannot dispatch (the registry keys the instance
+by its full spelling while dispatch resolves the head constructor). Verified in
+GHC that a partial head is dispatched correctly
+(`instance Functor (MyPair Int)` → `fmap (+1) (MyPair 1 2)` = `(1,3)`), so this is
+a real divergence, owned by the dictionary/dispatch work.
