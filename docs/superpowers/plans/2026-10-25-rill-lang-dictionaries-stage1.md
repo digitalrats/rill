@@ -261,16 +261,24 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 > **Backward compatibility is explicitly NOT required** (user decision): old
 > spellings are removed, not aliased.
 
-This task is split into four live sub-tasks plus one deferred.
+**No sub-task of 5.5 is currently startable.** Two are done, three are blocked
+on work outside this plan — measured, not assumed:
 
-| Order | Sub-task | Status / why here |
+| Sub-task | Status | Blocked on |
 |---|---|---|
-| 1 | **5.5a** — one type-name registry; `Void` → `()` | **DONE** `59ffecd` |
-| 2 | **5.5pre-0** — rename `Float` → `Double` (the name was wrong, the precision was not) | **DONE** `0e78439` |
-| 3 | **5.5b** — `Char`; `String = [Char]` | ready — needs only the registry (a `Char` scalar is one entry) |
-| 4 | **5.5c** — `List a` → `[a]`, `Pair a b` → `(a, b)` | ready — mechanical, largest radius, independent |
-| — | **5.5pre-1** — `FixedBuffer`/`Tape` carry a real element type | **DEFERRED** until per-buffer pools exist (see its section) |
-| — | ~~5.5pre-2~~ — `Floating`/`Integral` | **DELETED** — it duplicated P3 Step 3 and P4 Step 3 of `2026-10-25-rill-lang-typeclass-layer.md`; the one requirement it added (`Buffer` must not be a `Num` subclass; conditional instances per element) is recorded there, in P3 Step 4 |
+| **5.5a** — one type-name registry; `Void` → `()` | **DONE** `59ffecd` | — |
+| **5.5pre-0** — `Float` → `Double` (the name was wrong, not the precision) | **DONE** `0e78439` | — |
+| **5.5pre-1** — `FixedBuffer`/`Tape` element type | **DEFERRED** | per-buffer f32/f64 pools: the element is a host monomorphisation parameter (`WorldState<T, BUF>`, `compile::<f32, BUF>`), so `FixedBuffer a` cannot honestly constrain `a` |
+| **5.5b** — `Char`, `String = [Char]` | **DEFERRED** | type-level list syntax + dictionary builders: `String` is a primitive, and `String = [Char]` makes every string instance a conditional head (`instance Monoid [Char]`) |
+| **5.5c** — `[a]`, `(a, b)` | **DEFERRED** | type-level list syntax + dictionary builders: `f :: [Int] -> [Int]` is not parsable today, and `instance Monoid [a]` needs a builder |
+| ~~5.5pre-2~~ — `Floating`/`Integral` | **DELETED** | duplicated P3/P4 of `2026-10-25-rill-lang-typeclass-layer.md`; its unique requirement moved to P3 Step 4 |
+
+**Consequence: the next unit of work is the dictionary stages, not 5.5.**
+Everything left in 5.5 needs either per-buffer pools or dictionary builders —
+that is, design `§3.7` steps 2–4 (build dictionaries at seat; pass a dictionary
+as a parameter; project a slot). Doing 5.5 first would mean renaming a nominal
+`List` to look like `[]` while behaving like `List`, which is worse than the
+current honest `List`.
 
 > **Ordering rule:** anything that adds a type name must land *after* 5.5a, or
 > it will add a seventh `matches!` list — the exact defect 5.5a removes.
@@ -469,40 +477,71 @@ Tests (in `type_names.rs`): `an_undeclared_type_name_is_rejected`,
 
 ---
 
-#### Task 5.5b: `Char` as a real type; `String = [Char]`
+#### Task 5.5b (DEFERRED): `Char` and `String = [Char]`
 
-**Files:** the registry (5.5a), the lexer/parser for character literals,
-`rill-lang/src/types/ty.rs` (a `Char` scalar), tests.
+> **Deferred.** `Char` looks like "one registry entry", but `String = [Char]`
+> turns `String` from a primitive into a **list of characters**, which changes
+> the representation of every string in the language and every instance over it.
 
-- [ ] **Step 1: Add `Char` to the registry** with a real runtime representation
-  (a `char` payload in `Value`, its `ValueKind`, and its walker arms — `Char` is
-  a leaf, so no RC children).
-- [ ] **Step 2: Character literals `'a'`** in the lexer and parser, including the
-  escapes the Report defines (`\n`, `\t`, `\\`, `\'`, `\"`, `\0`–`\255`,
-  `\x…`, `\o…`).
-- [ ] **Step 3: `String` is `[Char]`** — `String` stays a synonym; `show`/rendering
-  of a `Char` must produce `'a'`.
-- [ ] **Step 4: Tests** — `'a'` literal, escapes, `String` as `[Char]`, ordering
-  on `Char`.
-- [ ] **Step 5: Commit** — `git commit -m 'feat(lang): Char type and character literals'`
+**Measured on `0d18b60`:**
+
+- `Char` is a single scalar, so adding it is genuinely one registry entry plus a
+  `Value` payload with no RC children. That part is cheap.
+- But the Report defines `String = [Char]`, and rill's `String` is a **primitive**
+  (`Value::String`, `ValueTy::String`, `TyCon`-level). Making the synonym real
+  means `String` becomes `[Char]`, i.e. a list value — a representation change,
+  not a name change.
+- The prelude's instances immediately become conditional heads:
+  `instance Monoid String` → `instance Monoid [Char]`. GHC accepts
+  `instance Monoid [a]` (verified) but **rejects `instance Monoid List`**
+  (`Not in scope: type constructor or class ‘List’`, verified).
+- `[a]` is not even a parsable type in rill today:
+  `f :: [Int] -> [Int]` → `parse error: expected type expression, found LBracket`,
+  and so is `[] a`. `(Int, Double)` and `List Int` do parse.
+
+So 5.5b cannot land before list syntax-as-type exists, and the instance heads it
+implies need dictionary builders. **It belongs with 5.5c, after the same
+precondition.**
 
 ---
 
-#### Task 5.5c: `List a` → `[a]`, `Pair a b` → `(a, b)`
+#### Task 5.5c (DEFERRED): `[a]` and `(a, b)` — built-in type syntax, not a rename
 
-**Files:** the registry and every use site (compiler-driven).
+> **Deferred.** This is not a rename. `List`/`Pair` are *nominal* constructors in
+> rill; `[]` and `(,)` are **built-in type syntax** in Haskell, and the
+> difference is structural.
 
-- [ ] **Step 1: Inventory** — record `Pair`/`List` counts before touching
-  anything (`grep -rn '\bPair\b' --include='*.rs' rill-lang` → 284 in `src`,
-  271 in tests; `\bList\b` → 262 in `src`).
-- [ ] **Step 2: `List a` → `[a]`** — the list type constructor is spelled `[]`;
-  list literals and `:` already exist.
-- [ ] **Step 3: `Pair a b` → `(a, b)`** — tuple type and tuple syntax; a genuine
-  named record (`data EqBand = { … }`) is NOT a tuple and keeps its record
-  syntax. Add `fst`/`snd`.
-- [ ] **Step 4: Prove nothing else moved** — every remaining failure must be a
-  deliberate part of the rename, listed in the report.
-- [ ] **Step 5: Commit** — `git commit -m 'refactor(lang): spell List and Pair the Haskell way'`
+**Measured on `0d18b60`:**
+
+| Check | Result |
+|---|---|
+| `f :: [Int] -> [Int]` (type syntax) | **parse error**, `expected type expression, found LBracket` |
+| `f :: [] a -> [] a` | **parse error** |
+| `f :: List Int -> List Int` | parses |
+| `f :: (Int, Double) -> …` | parses (tuple syntax exists) |
+| `List Int` ↔ `List Bool` unification | **accepted** — element not checked (OD-18) |
+| `GHC: f :: List Int -> Int` | `Not in scope: type constructor or class ‘List’` |
+| `GHC: instance Monoid List` | same error |
+| `GHC: instance Monoid [a]` / `Functor []` | accepted |
+
+The real work:
+
+1. **Type-level list syntax.** The parser must accept `[t]` as a type and
+   `(t1, t2)` as a type (the latter partly exists), producing the built-in
+   constructors rather than a `TApp("List", …)`.
+2. **`Pair` → tuple.** `Pair a b` becomes `(a, b)`; `Pair { first, second }`
+   construction/`fst`/`snd` follow. `Pair` is a nominal record today.
+3. **Instance heads with a variable.** `instance Monoid [a]`, `Functor [a]`,
+   `Monad [a]` replace `… List`. A head whose argument is a *variable* is a
+   **conditional instance**, which needs a dictionary builder (design §3.10) —
+   nothing else can express `$fMonoidList :: Monoid [a]`.
+4. **Element checking.** After the change `List Int` and `List Bool` must be
+   different types. Today they unify (OD-18), so the rename alone would move the
+   defect rather than fix it.
+
+**Precondition:** dictionary builders (design §3.10) and type-level list/tuple
+syntax. Both must exist first; otherwise the result is a nominal `List` renamed
+to look like `[]` while behaving like `List` — the worst outcome.
 
 ---
 
