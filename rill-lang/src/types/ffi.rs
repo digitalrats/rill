@@ -181,7 +181,8 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
 ///
 /// Supported parameter types:
 /// - `FixedBuffer a` → [`FfiParam::Signal`]
-/// - `Float`/`Int`/`Bool`/`String` → [`FfiParam::Scalar`]
+/// - a name the registry marks as an FFI scalar (`Float`/`Int`/`Bool`/`String`)
+///   → [`FfiParam::Scalar`] — the REGISTRY decides, not a list here
 /// - `List (FixedBuffer a)` → [`FfiParam::VariadicSignal`]
 /// - `Tape a` → [`FfiParam::Resource`]
 /// - any other `TName` (a `Data` record type) → [`FfiParam::Record(name)`]
@@ -189,7 +190,7 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
 /// The result type is one or more `FixedBuffer` channels (`FixedBuffer a` →
 /// 1 out; `(FixedBuffer a, FixedBuffer b)` → 2 outs). Returns `None` for a
 /// malformed signature (non-carried, unsupported result).
-pub fn ffi_sig_from_typeexpr(name: &str, te: &TypeExpr) -> Option<FfiSig> {
+pub fn ffi_sig_from_typeexpr(env: &TypeEnv, name: &str, te: &TypeExpr) -> Option<FfiSig> {
     // Unroll the carried arrows into a flat param list.
     let mut params = Vec::new();
     let mut ret = te;
@@ -199,7 +200,7 @@ pub fn ffi_sig_from_typeexpr(name: &str, te: &TypeExpr) -> Option<FfiSig> {
                 // The parser's carried arrows are flat (`a -> b -> c -> r` →
                 // `TFunc([a,b,c], r)`); a nested one-arg TFunc also unrolls here.
                 for a in args {
-                    params.push(param_from_typeexpr(a)?);
+                    params.push(param_from_typeexpr_env(env, a)?);
                 }
                 ret = r;
             }
@@ -270,11 +271,19 @@ fn param_from_typeexpr(te: &TypeExpr) -> Option<FfiParam> {
             // `Tape a` — a named shared buffer (resource), not a signal.
             Some(FfiParam::Resource)
         }
-        TypeExpr::TName(n) if matches!(n.as_str(), "Float" | "Int" | "Bool" | "String") => {
-            Some(FfiParam::Scalar)
-        }
         TypeExpr::TName(n) => Some(FfiParam::Record(n.clone())),
         _ => None,
+    }
+}
+
+/// [`param_from_typeexpr`] with the type registry in hand: a `TName` that the
+/// registry marks as an FFI scalar (`Float`/`Int`/`Bool`/`String`) is a SCALAR
+/// parameter; any other name is a record type. The registry decides — no
+/// private scalar-name list lives here.
+fn param_from_typeexpr_env(env: &TypeEnv, te: &TypeExpr) -> Option<FfiParam> {
+    match te {
+        TypeExpr::TName(n) if env.is_ffi_scalar(n) => Some(FfiParam::Scalar),
+        _ => param_from_typeexpr(te),
     }
 }
 

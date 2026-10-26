@@ -948,7 +948,7 @@ mod tests {
             let vty = crate::types::infer::data_field_vty(&env, &[], te);
             assert_eq!(
                 render_type_key(te),
-                crate::types::ty::value_type_key(&vty).expect("concrete type spells a key"),
+                crate::types::ty::value_type_key(&env, &vty).expect("concrete type spells a key"),
                 "registry and dispatch must spell {te:?} identically"
             );
         }

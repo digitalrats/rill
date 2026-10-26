@@ -206,12 +206,12 @@ fn dict_has_no_data_interpretation() {
 
     // A dictionary is never a registry key, so it can never select an instance.
     assert_eq!(
-        value_type_key(&dict),
+        value_type_key(&env, &dict),
         None,
         "a dictionary must not spell an instance-registry key"
     );
     assert_eq!(
-        value_type_key(&ValueTy::Int),
+        value_type_key(&env, &ValueTy::Int),
         Some("Int".to_string()),
         "control: a concrete type still spells its key"
     );

@@ -191,6 +191,59 @@ pub struct Subst {
     pub value_map: HashMap<TypeVarId, ValueTy>,
 }
 
+/// A predefined (compiler-known) scalar type: the value type its NAME denotes,
+/// and whether the FFI layer may name it as a compile-time scalar parameter.
+///
+/// `Float`, `Int`, `Bool` and `String` have a host scalar representation. A
+/// buffer (`Buffer`) is an ordinary value that an FFI channel is made of — the
+/// channel type is `FixedBuffer`, not a scalar — and the unit type `()` has no
+/// host representation at all, so both are registered with
+/// `ffi_scalar: false`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScalarType {
+    /// The value type the name denotes.
+    pub vty: ValueTy,
+    /// Whether a `foreign` signature may name this type as a SCALAR parameter.
+    pub ffi_scalar: bool,
+}
+
+/// The registry's answer for one type-level NAME: what, if anything, that name
+/// denotes.
+///
+/// One table answers every question about a type name ([`TypeEnv::type_entry`]),
+/// so the declaration check, the resolver, the derived-instance seed, the FFI
+/// classification, and the diagnostic renderer can never disagree about which
+/// names are types.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeEntry {
+    /// A predefined scalar/primitive value type (`Int`, `Float`, `Bool`,
+    /// `String`, `Buffer`, `()`).
+    Scalar(ScalarType),
+    /// A type constructor with its type-argument arity: a builtin container
+    /// (`List` → 1), a builtin data shape (`Maybe` → 1), or a program
+    /// `data`/abstract declaration (`data Box a` → 1, a monomorphic
+    /// `data Point` → 0).
+    TypeCtor {
+        /// Number of type arguments the constructor takes.
+        arity: usize,
+    },
+    /// A `newtype` wrapper.
+    Newtype,
+    /// A `type` synonym (`type Angles = Float`) and the name it stands for.
+    Alias(String),
+    /// A type variable: a lowercase name (Haskell 2010 §3.1), which is the
+    /// binder / `forall` / class-variable space. Known, but NOT a type — an
+    /// unknown type does not exist here, it is a variable.
+    Variable,
+}
+
+impl TypeEntry {
+    /// Whether this entry denotes a TYPE (`false` only for a type variable).
+    pub fn is_type(&self) -> bool {
+        !matches!(self, TypeEntry::Variable)
+    }
+}
+
 /// Shape of a declared data type.
 #[derive(Debug, Clone)]
 pub enum DataInfo {
@@ -395,6 +448,16 @@ pub(crate) fn split_curried_params(
 /// type names identically (no order dependence, no duplicated resolution).
 #[derive(Debug, Clone, Default)]
 pub struct TypeEnv {
+    /// Predefined scalar/primitive types, in registration order: the ONE table
+    /// that says `Int`, `Float`, `Bool`, `String`, `Buffer` and `()` are types.
+    /// Seeded once by [`TypeEnv::with_builtins`] and extended by
+    /// [`TypeEnv::register_scalar`], so no other code needs a list of scalar
+    /// names (the defect this table exists to remove).
+    ///
+    /// Order is significant only for the reverse lookup
+    /// ([`TypeEnv::scalar_name_of`]): a later registration for the same value
+    /// type renames it.
+    pub scalars: Vec<(String, ScalarType)>,
     /// Type synonyms (alias name → target name).
     pub type_aliases: HashMap<String, String>,
     /// Newtype wrappers (wrapper name → inner type name).
@@ -1057,10 +1120,14 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
 }
 
 impl TypeEnv {
-    /// A `TypeEnv` with the builtin constructor table, the builtin
-    /// `Maybe`/`Pair`/`Either` type shapes, and the category-theory prelude
-    /// (`Functor`/`Applicative`/`Monad`/`Monoid` classes + instances)
-    /// registered.
+    /// A `TypeEnv` with the predefined scalar registry, the builtin
+    /// constructor table, the builtin `Maybe`/`Pair`/`Either` type shapes, and
+    /// the category-theory prelude (`Functor`/`Applicative`/`Monad`/`Monoid`
+    /// classes + instances) registered.
+    ///
+    /// The scalars are seeded ONCE here; a program's own declarations extend
+    /// this same environment ([`crate::types::infer::infer_program_with`]), so
+    /// there is no second name table anywhere.
     pub fn with_builtins() -> Self {
         let ctor_kinds = [
             ("List".to_string(), 1usize),
@@ -1114,6 +1181,22 @@ impl TypeEnv {
             typeclasses,
             ..TypeEnv::default()
         };
+        // The predefined scalar/primitive types: Haskell 2010 §6.4.1 spells the
+        // numeric leaves `Int`/`Float`, `Bool` and `String` are the Prelude's,
+        // `Buffer` is rill's buffer value, and `()` is the unit type (Haskell
+        // 2010 spells the unit type as the empty tuple; there is no `Void`
+        // type name). This is the ONE place that says which names are types —
+        // every consumer asks [`TypeEnv::type_entry`].
+        for (name, vty, ffi_scalar) in [
+            ("Int", ValueTy::Int, true),
+            ("Float", ValueTy::Float, true),
+            ("Bool", ValueTy::Bool, true),
+            ("String", ValueTy::String, true),
+            ("Buffer", ValueTy::Buffer, false),
+            ("()", ValueTy::Void, false),
+        ] {
+            env.register_scalar(name, ScalarType { vty, ffi_scalar });
+        }
         // The single language prelude: classes, instances, the primitive
         // tokens, and the buffer type — declared in rill-lang itself so they are
         // first-class entities. A parse failure here is a compiler bug (the
@@ -1919,18 +2002,18 @@ impl TypeEnv {
     /// (`Maybe`/`Pair`/`Either`) and the builtin ctor kinds (`List`/`Set`/`Map`,
     /// whose structural order the interpreter's `value_cmp` implements) — plus
     /// newtypes (derived by their inner, spec §2.5; `value_cmp` unwraps them)
-    /// and the scalar leaves. `Func` types get no instance. Derived instances
-    /// are markers: their method bodies are not run — the interpreter's
-    /// `value_cmp` implements the order.
+    /// and every registered SCALAR leaf. `Func` types get no instance. Derived
+    /// instances are markers: their method bodies are not run — the
+    /// interpreter's `value_cmp` implements the order.
+    ///
+    /// The scalar leaves come from [`Self::scalars`] — the one registry — not
+    /// from a private list here: a name added to the registry is seeded here
+    /// without touching this function.
     pub fn derive_eq_ord(&mut self) {
-        let mut names: Vec<String> = self.data_types.keys().cloned().collect();
+        let mut names: Vec<String> = self.scalars.iter().map(|(n, _)| n.clone()).collect();
+        names.extend(self.data_types.keys().cloned());
         names.extend(self.ctor_kinds.keys().cloned());
         names.extend(self.newtypes.keys().cloned());
-        names.extend(
-            ["Int", "Float", "Bool", "String"]
-                .iter()
-                .map(|s| s.to_string()),
-        );
         for class in ["Eq", "Ord"] {
             let by_ty = self.instances.entry(class.to_string()).or_default();
             for n in &names {
@@ -1976,31 +2059,506 @@ impl TypeEnv {
         Some(total.saturating_sub(head_args.len()))
     }
 
-    /// Resolve a DSL type name to a value type, following type synonyms and
-    /// newtype wrappers. Alias chains resolve iteratively with a bounded loop
-    /// (cycle-safe): each pass follows one link and there are at most
-    /// `len(aliases)` distinct links to follow.
-    pub fn vty_of_name(&self, name: &str) -> ValueTy {
-        let mut cur = name.to_string();
-        for _ in 0..=self.type_aliases.len() {
-            match self.type_aliases.get(&cur) {
-                Some(target) => cur = target.clone(),
-                None => break,
+    /// Register a predefined scalar type under `name`. Registering a second
+    /// name for the SAME value type RENAMES it: the earlier spelling is
+    /// dropped, so one value type never has two registered names and
+    /// [`Self::scalar_name_of`] stays a function.
+    pub fn register_scalar(&mut self, name: impl Into<String>, ty: ScalarType) {
+        let name = name.into();
+        self.scalars.retain(|(n, s)| *n == name || s.vty != ty.vty);
+        if let Some(slot) = self.scalars.iter_mut().find(|(n, _)| *n == name) {
+            slot.1 = ty;
+        } else {
+            self.scalars.push((name, ty));
+        }
+    }
+
+    /// The registry entry for a type-level NAME — the single answer to "what
+    /// does this name denote".
+    ///
+    /// Resolution order (Haskell 2010 §3.1 lexical rules come first):
+    ///
+    /// 1. a registered predefined scalar (`Int`, `Float`, `Bool`, `String`,
+    ///    `Buffer`, `()`);
+    /// 2. a `type` synonym, followed to its final target;
+    /// 3. a `newtype` wrapper;
+    /// 4. a declared `data`/abstract type or a builtin constructor, with its
+    ///    type-argument arity;
+    /// 5. any other LOWERCASE name — a type VARIABLE (it is not a type, but it
+    ///    is a well-formed name in the type language);
+    /// 6. otherwise `None`: an UPPERCASE name that no declaration introduced
+    ///    does not exist (`unknown type name`).
+    pub fn type_entry(&self, name: &str) -> Option<TypeEntry> {
+        if let Some((_, scalar)) = self.scalars.iter().find(|(n, _)| n == name) {
+            return Some(TypeEntry::Scalar(scalar.clone()));
+        }
+        // A synonym denotes whatever its FINAL target denotes; a chain that
+        // loops (or ends at a name that is not a type) denotes nothing. The
+        // walk is bounded by the alias count, so a cycle terminates.
+        if self.type_aliases.contains_key(name) {
+            let mut cur = name;
+            let mut hops = 0usize;
+            while let Some(target) = self.type_aliases.get(cur) {
+                hops += 1;
+                if hops > self.type_aliases.len() {
+                    return None;
+                }
+                cur = target.as_str();
+            }
+            return match self.type_entry(cur)? {
+                TypeEntry::Variable | TypeEntry::Alias(_) => None,
+                _ => Some(TypeEntry::Alias(cur.to_string())),
+            };
+        }
+        if self.newtypes.contains_key(name) {
+            return Some(TypeEntry::Newtype);
+        }
+        if let Some(arity) = self.type_ctor_arity(name) {
+            return Some(TypeEntry::TypeCtor { arity });
+        }
+        if name.chars().next().is_some_and(char::is_lowercase) {
+            return Some(TypeEntry::Variable);
+        }
+        None
+    }
+
+    /// Whether `name` denotes a TYPE: a registry entry that is not a type
+    /// variable. This is the ONE declaration predicate.
+    ///
+    /// A lowercase name is a type variable by Haskell 2010's lexical rules, so
+    /// it is NOT a declared type even though the registry recognizes it as a
+    /// well-formed variable name; an undeclared uppercase name is simply not a
+    /// type at all.
+    pub fn is_type_name(&self, name: &str) -> bool {
+        self.type_entry(name).is_some_and(|e| e.is_type())
+    }
+
+    /// Whether `name` is a type VARIABLE: a lowercase name that no declaration
+    /// shadows (Haskell 2010 §3.1).
+    pub fn is_type_variable(&self, name: &str) -> bool {
+        matches!(self.type_entry(name), Some(TypeEntry::Variable))
+    }
+
+    /// The type-argument arity of a declared type constructor (builtin
+    /// container, builtin data shape, `data`, or abstract type). `None` when
+    /// `name` is not a constructor.
+    pub fn type_ctor_arity(&self, name: &str) -> Option<usize> {
+        if let Some(a) = self.ctor_kinds.get(name) {
+            return Some(*a);
+        }
+        if let Some(a) = self.data_arities.get(name) {
+            return Some(*a);
+        }
+        // A monomorphic declaration (`data Point`, `data World`) has arity 0.
+        self.data_types.get(name).map(|_| 0)
+    }
+
+    /// The source spelling of a scalar value type (`Int`, `Float`, `Bool`,
+    /// `String`, `Buffer`, `()`), read from the registry rather than a private
+    /// table. `None` for a non-scalar value type.
+    pub fn scalar_name_of(&self, v: &ValueTy) -> Option<String> {
+        self.scalars
+            .iter()
+            .find(|(_, s)| &s.vty == v)
+            .map(|(n, _)| n.clone())
+    }
+
+    /// Whether a `foreign` signature may name `name` as a SCALAR parameter.
+    /// A typed registry miss (`Foo` not declared) is not a scalar either.
+    pub fn is_ffi_scalar(&self, name: &str) -> bool {
+        matches!(
+            self.type_entry(name),
+            Some(TypeEntry::Scalar(ScalarType {
+                ffi_scalar: true,
+                ..
+            }))
+        )
+    }
+
+    /// Whether `name` is a WELL-FORMED type-level name: a registered type or a
+    /// type variable (a lowercase name). `false` only for an uppercase name no
+    /// declaration introduced.
+    pub fn is_known_type_name(&self, name: &str) -> bool {
+        self.type_entry(name).is_some()
+    }
+
+    /// Reject every type expression in `defs` that names a type the registry
+    /// does not have.
+    ///
+    /// This is the enforcement point of Haskell 2010 §3.1: an uppercase
+    /// identifier in a type position MUST name a declared type, so
+    /// `f :: Integer -> Integer` is an error rather than a function over a
+    /// phantom type nothing can inhabit. A lowercase name is a type variable
+    /// and always passes.
+    ///
+    /// Every place a program can write a type expression is walked: definition
+    /// signatures (including `where`/`let` blocks), expression annotations,
+    /// `data`/`newtype`/`type`/abstract declarations, constructor payloads,
+    /// typeclass method and default signatures, and `instance` heads and
+    /// contexts. The prelude and the builtin `foreign` catalog are not walked —
+    /// they are compiler-owned and correct by construction.
+    pub fn validate_type_names(&self, defs: &[Def]) -> Result<(), CompileError> {
+        for def in defs {
+            self.validate_def_type_names(def)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::validate_type_names`] for one definition, recursing into
+    /// `where` blocks and the type annotations of its body.
+    fn validate_def_type_names(&self, def: &Def) -> Result<(), CompileError> {
+        match def {
+            Def::Data {
+                tyvars,
+                fields,
+                span,
+                ..
+            } => {
+                for (_, t, _) in fields {
+                    self.validate_type_expr(t, tyvars, *span)?;
+                }
+            }
+            Def::Sum {
+                tyvars,
+                ctors,
+                span,
+                ..
+            } => {
+                for (_, payload) in ctors {
+                    for (t, _) in payload {
+                        self.validate_type_expr(t, tyvars, *span)?;
+                    }
+                }
+            }
+            // `type A = B` / `newtype A = B`: `B` must denote a type, because
+            // the wrapper's inner type is resolved from it. A synonym may name
+            // a synonym declared later (the env registers every alias before
+            // this runs), and a chain that never reaches a type is unknown.
+            Def::TypeAlias { target, span, .. } | Def::Newtype { target, span, .. } => {
+                if !self.is_known_type_name(target) || !self.is_type_name(target) {
+                    return Err(unknown_type_error(target, *span));
+                }
+            }
+            Def::Abstract { .. } => {}
+            Def::Typeclass {
+                var,
+                methods,
+                defaults,
+                span,
+                ..
+            } => {
+                let tyvars = vec![var.clone()];
+                for (_, sig) in methods {
+                    self.validate_type_expr(sig, &tyvars, *span)?;
+                }
+                for (_, _, body) in defaults {
+                    self.validate_body_type_names(body, &tyvars)?;
+                }
+            }
+            Def::Instance {
+                head,
+                constraints,
+                method_bodies,
+                span,
+                ..
+            } => {
+                // An instance head binds its own type variables (`Kleisli m`,
+                // `Pair Int Int`); a context binds its class variables.
+                let mut tyvars: Vec<String> = Vec::new();
+                collect_type_app_vars(head, &mut tyvars);
+                tyvars.extend(constraints.iter().map(|(_, v)| v.clone()));
+                self.validate_type_expr(head, &tyvars, *span)?;
+                for (_, _, body) in method_bodies {
+                    self.validate_body_type_names(body, &tyvars)?;
+                }
+            }
+            Def::Foreign { sig, span, .. } => {
+                self.validate_type_expr(sig, &[], *span)?;
+            }
+            Def::Eval {
+                sig,
+                body,
+                where_defs,
+                span,
+                ..
+            } => {
+                if let Some(sig) = sig {
+                    self.validate_type_expr(sig, &[], *span)?;
+                }
+                for w in where_defs {
+                    self.validate_def_type_names(w)?;
+                }
+                self.validate_body_type_names(body, &[])?;
+            }
+            // The parser's equation form: the bodies live in the equations,
+            // each with its own `where` block. `desugar` turns them into a
+            // `Def::Eval` before inference, so walking them here is what makes
+            // an unknown type in `f 0 = …` caught either way.
+            Def::Equations {
+                sig,
+                equations,
+                span,
+                ..
+            } => {
+                if let Some(sig) = sig {
+                    self.validate_type_expr(sig, &[], *span)?;
+                }
+                for eq in equations {
+                    for w in &eq.where_defs {
+                        self.validate_def_type_names(w)?;
+                    }
+                    for (g, b) in &eq.guards {
+                        self.validate_body_type_names(g, &[])?;
+                        self.validate_body_type_names(b, &[])?;
+                    }
+                }
+            }
+            Def::Signature { sig, span, .. } => {
+                self.validate_type_expr(sig, &[], *span)?;
             }
         }
-        match cur.as_str() {
-            "Float" => ValueTy::Float,
-            "Int" => ValueTy::Int,
-            "Bool" => ValueTy::Bool,
-            "String" => ValueTy::String,
-            "Buffer" => ValueTy::Buffer,
-            "()" => ValueTy::Void,
-            n => {
-                if self.newtypes.contains_key(n) {
-                    ValueTy::Newtype(n.to_string(), vec![])
+        Ok(())
+    }
+
+    /// Reject an unknown type name anywhere in one type expression.
+    ///
+    /// `tyvars` are the locally bound type-variable names (`data Box a` binds
+    /// `a`, a typeclass binds its class variable, `forall`/`instance` bind
+    /// their own); a name there is a variable whatever its case, exactly as
+    /// Haskell's scoping works. With no binder in scope a LOWERCASE name is
+    /// still a type variable by the lexical rule.
+    fn validate_type_expr(
+        &self,
+        te: &crate::ast::TypeExpr,
+        tyvars: &[String],
+        span: Span,
+    ) -> Result<(), CompileError> {
+        use crate::ast::TypeExpr;
+        match te {
+            TypeExpr::TName(n) => {
+                if tyvars.iter().any(|v| v == n) || self.is_known_type_name(n) {
+                    Ok(())
                 } else {
-                    ValueTy::Data(n.to_string(), vec![])
+                    Err(unknown_type_error(n, span))
                 }
+            }
+            TypeExpr::TApp(head, args) => {
+                if !tyvars.iter().any(|v| v == head) && !self.is_known_type_name(head) {
+                    return Err(unknown_type_error(head, span));
+                }
+                for a in args {
+                    self.validate_type_expr(a, tyvars, span)?;
+                }
+                Ok(())
+            }
+            TypeExpr::TFunc(args, ret) => {
+                for a in args {
+                    self.validate_type_expr(a, tyvars, span)?;
+                }
+                self.validate_type_expr(ret, tyvars, span)
+            }
+            TypeExpr::TForall(bound, inner) => {
+                let mut inner_vars: Vec<String> = tyvars.to_vec();
+                inner_vars.extend(bound.iter().cloned());
+                self.validate_type_expr(inner, &inner_vars, span)
+            }
+            TypeExpr::TConstrained(constraints, inner) => {
+                // A context's variables are bound by the context itself.
+                let mut inner_vars: Vec<String> = tyvars.to_vec();
+                inner_vars.extend(constraints.iter().map(|(_, v)| v.clone()));
+                self.validate_type_expr(inner, &inner_vars, span)
+            }
+        }
+    }
+
+    /// [`Self::validate_type_expr`] over every type annotation inside an
+    /// expression (`e :: T`, `let …`, lambdas, `case` arms).
+    fn validate_body_type_names(&self, e: &Expr, tyvars: &[String]) -> Result<(), CompileError> {
+        match e {
+            Expr::Annot { expr, ty, span } => {
+                self.validate_type_expr(ty, tyvars, *span)?;
+                self.validate_body_type_names(expr, tyvars)
+            }
+            Expr::Let { defs, body, .. } => {
+                for d in defs {
+                    self.validate_def_type_names(d)?;
+                }
+                self.validate_body_type_names(body, tyvars)
+            }
+            Expr::Lambda { body, .. } => self.validate_body_type_names(body, tyvars),
+            Expr::Apply { args, .. } => {
+                for a in args {
+                    self.validate_body_type_names(a, tyvars)?;
+                }
+                Ok(())
+            }
+            Expr::ApplyExpr { callee, args, .. } => {
+                self.validate_body_type_names(callee, tyvars)?;
+                for a in args {
+                    self.validate_body_type_names(a, tyvars)?;
+                }
+                Ok(())
+            }
+            Expr::Neg(inner, _) => self.validate_body_type_names(inner, tyvars),
+            Expr::Arith { lhs, rhs, .. }
+            | Expr::Cmp { lhs, rhs, .. }
+            | Expr::Logic { lhs, rhs, .. } => {
+                self.validate_body_type_names(lhs, tyvars)?;
+                self.validate_body_type_names(rhs, tyvars)
+            }
+            Expr::If {
+                cond, then, els, ..
+            } => {
+                self.validate_body_type_names(cond, tyvars)?;
+                self.validate_body_type_names(then, tyvars)?;
+                self.validate_body_type_names(els, tyvars)
+            }
+            Expr::Record(fields, _) => {
+                for (_, fe) in fields {
+                    self.validate_body_type_names(fe, tyvars)?;
+                }
+                Ok(())
+            }
+            Expr::ListLit(elems, _) => {
+                for el in elems {
+                    self.validate_body_type_names(el, tyvars)?;
+                }
+                Ok(())
+            }
+            Expr::MapLit(entries, _) => {
+                for (_, ve) in entries {
+                    self.validate_body_type_names(ve, tyvars)?;
+                }
+                Ok(())
+            }
+            Expr::FieldProject { record, .. } => self.validate_body_type_names(record, tyvars),
+            Expr::FieldUpdate { record, value, .. } => {
+                self.validate_body_type_names(record, tyvars)?;
+                self.validate_body_type_names(value, tyvars)
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.validate_body_type_names(scrutinee, tyvars)?;
+                for arm in arms {
+                    for (g, b) in &arm.guards {
+                        self.validate_body_type_names(g, tyvars)?;
+                        self.validate_body_type_names(b, tyvars)?;
+                    }
+                }
+                Ok(())
+            }
+            Expr::ActorParam { default, .. } => match default {
+                Some(d) => self.validate_body_type_names(d, tyvars),
+                None => Ok(()),
+            },
+            Expr::Int(..)
+            | Expr::Float(..)
+            | Expr::Void(..)
+            | Expr::Str(..)
+            | Expr::Ref(..)
+            | Expr::Bool(..) => Ok(()),
+        }
+    }
+
+    /// Resolve a DSL type name to a value type, following type synonyms.
+    ///
+    /// `None` when the name denotes no type (an undeclared uppercase name) —
+    /// callers report it as `unknown type name`. A lowercase name that is not a
+    /// declared type is a TYPE VARIABLE and also returns `None` here: it
+    /// resolves to a fresh unification variable, which is the caller's job
+    /// (see [`Self::is_type_name`], the predicate that separates the two cases).
+    pub fn vty_of_name(&self, name: &str) -> Option<ValueTy> {
+        match self.type_entry(name)? {
+            TypeEntry::Scalar(s) => Some(s.vty),
+            TypeEntry::Alias(target) => self.vty_of_name(&target),
+            TypeEntry::Newtype => Some(ValueTy::Newtype(name.to_string(), vec![])),
+            TypeEntry::TypeCtor { .. } => Some(ValueTy::Data(name.to_string(), vec![])),
+            TypeEntry::Variable => None,
+        }
+    }
+
+    /// A user-facing spelling of a value type for diagnostics: nominals by
+    /// name, SCALARS by their registry spelling, and type variables by letter
+    /// (`a`, `b`, …) so a partially-resolved function type still reads like a
+    /// type.
+    ///
+    /// The scalar spellings come from [`Self::scalars`], so a name added to the
+    /// registry renders under that name with no separate table to update.
+    pub fn type_spelling(&self, t: &ValueTy) -> String {
+        let mut names: HashMap<TypeVarId, String> = HashMap::new();
+        self.type_spelling_named(t, &mut names)
+    }
+
+    /// [`Self::type_spelling`] with a shared variable-naming map, so the same
+    /// variable keeps its letter throughout one rendered type.
+    fn type_spelling_named(&self, t: &ValueTy, names: &mut HashMap<TypeVarId, String>) -> String {
+        let var_name = |id: TypeVarId, names: &mut HashMap<TypeVarId, String>| {
+            let next = names.len();
+            names
+                .entry(id)
+                .or_insert_with(|| {
+                    let letter = (b'a' + (next % 26) as u8) as char;
+                    letter.to_string()
+                })
+                .clone()
+        };
+        match t {
+            ValueTy::Int
+            | ValueTy::Float
+            | ValueTy::Bool
+            | ValueTy::String
+            | ValueTy::Buffer
+            | ValueTy::Void => self.scalar_name_of(t).unwrap_or_else(|| format!("{t:?}")),
+            // A dictionary is not a data type, so it has no nominal name — spell
+            // it as the class witness it is.
+            ValueTy::Dict(class) => format!("Dict {class}"),
+            ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+                if args.is_empty() {
+                    n.clone()
+                } else {
+                    let rendered: Vec<String> = args
+                        .iter()
+                        .map(|a| self.type_spelling_named(a, names))
+                        .collect();
+                    format!("{n} {}", rendered.join(" "))
+                }
+            }
+            ValueTy::Thunk(args, rets) => {
+                // A function type, rendered `A -> B` (curried chains flatten),
+                // so a higher-order mismatch names what the parameter really
+                // demands.
+                let (cap, res) = flatten_thunk(&ValueTy::Thunk(args.clone(), rets.clone()));
+                if cap.is_empty() && res.is_empty() {
+                    // A bare named definition reference types as an EMPTY
+                    // `Thunk` until it is applied, so it has no signature to
+                    // spell out.
+                    return "a function value".to_string();
+                }
+                let mut parts: Vec<String> = cap
+                    .iter()
+                    .map(|a| {
+                        let s = self.type_spelling_named(a, names);
+                        if s.contains(' ') && !s.starts_with('(') {
+                            format!("({s})")
+                        } else {
+                            s
+                        }
+                    })
+                    .collect();
+                for r in &res {
+                    parts.push(self.type_spelling_named(r, names));
+                }
+                parts.join(" -> ")
+            }
+            ValueTy::Var(v) | ValueTy::TyConVar(v) => var_name(*v, names),
+            ValueTy::TyConApp(f, args) => {
+                let head = var_name(*f, names);
+                let rendered: Vec<String> = args
+                    .iter()
+                    .map(|a| self.type_spelling_named(a, names))
+                    .collect();
+                format!("{head} {}", rendered.join(" "))
             }
         }
     }
@@ -2036,15 +2594,19 @@ impl TypeEnv {
     /// application's head like `List`/`Map`). `None` for unresolved type
     /// variables and function types — a method call or Ord-constrained key
     /// over such an argument cannot select an instance at compile time.
+    ///
+    /// A scalar's spelling comes from [`Self::scalars`] (the one registry).
+    /// `FixedBuffer` instead of the registered `Buffer` is deliberate: a buffer
+    /// value's instance head is the constructor that provides its `Num`
+    /// dictionary.
     pub fn type_name_of_vty(&self, v: &ValueTy) -> Option<String> {
         match v {
-            ValueTy::Int => Some("Int".to_string()),
-            ValueTy::Float => Some("Float".to_string()),
-            ValueTy::Bool => Some("Bool".to_string()),
-            ValueTy::String => Some("String".to_string()),
             // A buffer value's nominal type is `FixedBuffer`: that is the
             // instance head that provides its `Num` dictionary.
             ValueTy::Buffer => Some("FixedBuffer".to_string()),
+            ValueTy::Int | ValueTy::Float | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
+                self.scalar_name_of(v)
+            }
             ValueTy::Data(n, _) => Some(n.clone()),
             ValueTy::Newtype(n, _) => Some(n.clone()),
             ValueTy::App(n, _) => Some(n.clone()),
@@ -2168,8 +2730,10 @@ impl TypeEnv {
         }
         let res = match self.newtypes.get(name) {
             Some(inner) => match self.vty_of_name(inner) {
-                ValueTy::Data(data_name, _) => self.check_acyclic_name(&data_name, visiting),
-                ValueTy::Newtype(nw_name, _) => self.check_acyclic_newtype(&nw_name, visiting),
+                Some(ValueTy::Data(data_name, _)) => self.check_acyclic_name(&data_name, visiting),
+                Some(ValueTy::Newtype(nw_name, _)) => {
+                    self.check_acyclic_newtype(&nw_name, visiting)
+                }
                 _ => Ok(()),
             },
             None => Ok(()),
@@ -2275,27 +2839,110 @@ fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
     }
 }
 
-/// Canonical registry-key spelling of a concrete value type: `Int`,
-/// `Pair Int Int`, `Pair Int (Pair Int Int)`. A nested application is
-/// parenthesized so the spelling matches the parser's instance-head rendering
-/// ([`crate::render::render_type_key`]).
+/// The compile error for a type name nothing declares.
+fn unknown_type_error(name: &str, span: Span) -> CompileError {
+    CompileError::Type {
+        msg: format!("unknown type name `{name}`"),
+        span,
+    }
+}
+
+/// The compile error for an unknown type name where no source span is at hand
+/// (a name inside a compiler-built signature).
+pub(crate) fn unknown_type_name(name: &str) -> CompileError {
+    unknown_type_error(name, Span::new(0, 0))
+}
+
+/// Flatten a curried unary-thunk nest into its full argument and result lists.
 ///
-/// `None` when the type is not concrete (an unresolved variable, a
-/// type-constructor variable, a function type, a dictionary): such a type
-/// cannot name an instance, and the caller falls back to the head-constructor
-/// lookup.
+/// The unary value model represents a multi-parameter function as a nest of
+/// single-argument thunks (`\a -> \b -> …`), so a call site that applies `n`
+/// arguments peels `n` layers. A non-`Thunk`, or a `Thunk` whose single result
+/// is not itself a `Thunk`, flattens to itself.
+fn flatten_thunk(vty: &ValueTy) -> (Vec<ValueTy>, Vec<ValueTy>) {
+    let mut args: Vec<ValueTy> = Vec::new();
+    let mut cur = vty.clone();
+    loop {
+        match cur {
+            ValueTy::Thunk(caps, res) => {
+                args.extend(caps);
+                if res.len() == 1 {
+                    if let ValueTy::Thunk(..) = &res[0] {
+                        cur = res[0].clone();
+                        continue;
+                    }
+                }
+                return (args, res);
+            }
+            other => {
+                if args.is_empty() {
+                    return (Vec::new(), vec![other]);
+                }
+                return (args, vec![other]);
+            }
+        }
+    }
+}
+
+/// Collect the type-variable names an instance head binds: every lowercase
+/// name used as a bare type or as an applied head (`Kleisli m` binds `m`,
+/// `Pair Int Int` binds nothing).
+fn collect_type_app_vars(te: &crate::ast::TypeExpr, out: &mut Vec<String>) {
+    use crate::ast::TypeExpr;
+    match te {
+        TypeExpr::TName(n) | TypeExpr::TApp(n, _) => {
+            if n.chars().next().is_some_and(char::is_lowercase) && !out.iter().any(|v| v == n) {
+                out.push(n.clone());
+            }
+            if let TypeExpr::TApp(_, args) = te {
+                for a in args {
+                    collect_type_app_vars(a, out);
+                }
+            }
+        }
+        TypeExpr::TFunc(args, ret) => {
+            for a in args {
+                collect_type_app_vars(a, out);
+            }
+            collect_type_app_vars(ret, out);
+        }
+        TypeExpr::TForall(bound, inner) => {
+            for b in bound {
+                if !out.iter().any(|v| v == b) {
+                    out.push(b.clone());
+                }
+            }
+            collect_type_app_vars(inner, out);
+        }
+        TypeExpr::TConstrained(constraints, inner) => {
+            for (_, v) in constraints {
+                if !out.iter().any(|x| x == v) {
+                    out.push(v.clone());
+                }
+            }
+            collect_type_app_vars(inner, out);
+        }
+    }
+}
+
+/// Canonical spelling of a concrete value type: `Int`, `Pair Int Int`,
+/// `Pair Int (Pair Int Int)`. A nested application is parenthesized so the
+/// spelling matches the parser's instance-head rendering
+/// ([`TypeEnv::render_type_key`]'s counterpart in `render`).
 ///
-/// Public so tests can assert the exact spelling the instance registry is keyed
-/// by.
-pub fn value_type_key(v: &ValueTy) -> Option<String> {
-    fn key(v: &ValueTy) -> Option<String> {
+/// This is the INSTANCE-REGISTRY KEY: a `ValueTy` and an `instance C T` head
+/// spell a type the same way only if both go through one function, which is why
+/// scalars are spelled from [`TypeEnv::scalars`] and not from a private list
+/// here.
+pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
+    fn key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
         Some(match v {
-            ValueTy::Int => "Int".to_string(),
-            ValueTy::Float => "Float".to_string(),
-            ValueTy::Bool => "Bool".to_string(),
-            ValueTy::String => "String".to_string(),
-            ValueTy::Buffer => "Buffer".to_string(),
-            ValueTy::Void => "()".to_string(),
+            ValueTy::Int
+            | ValueTy::Float
+            | ValueTy::Bool
+            | ValueTy::String
+            | ValueTy::Buffer
+            | ValueTy::Void => env.scalar_name_of(v)?,
             // A dictionary is never a registry key: it is compiler-side
             // evidence of a constraint, not a type an instance is declared for.
             ValueTy::Dict(_) => return None,
@@ -2316,7 +2963,7 @@ pub fn value_type_key(v: &ValueTy) -> Option<String> {
                         if nested {
                             out.push('(');
                         }
-                        out.push_str(&key(a)?);
+                        out.push_str(&key(env, a)?);
                         if nested {
                             out.push(')');
                         }
@@ -2327,7 +2974,7 @@ pub fn value_type_key(v: &ValueTy) -> Option<String> {
             _ => return None,
         })
     }
-    key(v)
+    key(env, v)
 }
 
 /// A stable ordinal RANK for a value type: a total order over the type FORMS.
@@ -2573,10 +3220,78 @@ mod hkt_value_ty_tests {
         // became `Data("String", [])`, which failed to unify with string
         // literals (`ValueTy::String`).
         let env = TypeEnv::with_builtins();
-        assert_eq!(env.vty_of_name("Bool"), ValueTy::Bool);
-        assert_eq!(env.vty_of_name("String"), ValueTy::String);
-        assert_eq!(env.vty_of_name("Float"), ValueTy::Float);
-        assert_eq!(env.vty_of_name("Int"), ValueTy::Int);
+        assert_eq!(env.vty_of_name("Bool"), Some(ValueTy::Bool));
+        assert_eq!(env.vty_of_name("String"), Some(ValueTy::String));
+        assert_eq!(env.vty_of_name("Float"), Some(ValueTy::Float));
+        assert_eq!(env.vty_of_name("Int"), Some(ValueTy::Int));
+        // A name nothing declares is not a type (Haskell 2010 §3.1): a
+        // phantom `Data("Integer", [])` would make `f :: Integer -> Integer`
+        // typecheck over a type no value can inhabit.
+        assert_eq!(env.vty_of_name("Integer"), None);
+        assert_eq!(env.vty_of_name("Void"), None);
+        assert_eq!(env.vty_of_name("()"), Some(ValueTy::Void));
+    }
+
+    #[test]
+    fn the_prelude_and_builtin_catalog_pass_their_own_name_check() {
+        // The prelude declares `World`, `STState`, `STRef`, `STArray`, `ST`,
+        // `IO`, `InputStream`, `OutputStream`, `Kleisli`, `Tape`, and the
+        // catalog adds its record types. Every one of them MUST resolve through
+        // the same registry a program's names do — otherwise the prelude would
+        // be a second, privileged name space and `World` would be a type only
+        // by accident.
+        let env = TypeEnv::with_builtins();
+        for name in [
+            "World",
+            "STState",
+            "STRef",
+            "STArray",
+            "ST",
+            "IO",
+            "InputStream",
+            "OutputStream",
+            "Kleisli",
+            "Tape",
+            "Buffer",
+            "FixedBuffer",
+            "EqBand",
+            "EqConfig",
+        ] {
+            assert!(
+                env.is_type_name(name),
+                "prelude/catalog type `{name}` must be a registry entry"
+            );
+        }
+        // The prelude's Buffer instances name `FixedBuffer a` / `Tape f32`
+        // where `f32` is a type VARIABLE, so the prelude's own name use is
+        // exactly what the program-level rule permits.
+        assert_eq!(env.type_entry("f32"), Some(TypeEntry::Variable));
+        // And the prelude's declarations pass the program-level check verbatim:
+        // every name it mentions is registered, including forward references
+        // inside one prelude text (the whole text is registered before the
+        // check would run for a program).
+        assert_eq!(
+            env.type_ctor_arity("Kleisli"),
+            Some(3),
+            "Kleisli m a b has arity 3"
+        );
+        assert_eq!(env.type_ctor_arity("ST"), Some(2));
+        assert_eq!(env.type_ctor_arity("World"), Some(0));
+
+        // The strongest form of the same guarantee: the prelude TEXT passes the
+        // program-level name check verbatim. If a prelude declaration ever
+        // mentions a name the registry does not carry, this fails — which is
+        // exactly the "rejecting undeclared names broke a prelude declaration"
+        // failure mode, caught here instead of at a user's first compile.
+        let toks = crate::lexer::tokenize(PRELUDE).unwrap();
+        let prog = crate::parser::parse(&toks, PRELUDE.as_bytes()).unwrap();
+        env.validate_type_names(&prog.defs)
+            .expect("the prelude must pass the same name check a program does");
+
+        let toks = crate::lexer::tokenize(BUILTIN_FOREIGN_DECLS).unwrap();
+        let prog = crate::parser::parse(&toks, BUILTIN_FOREIGN_DECLS.as_bytes()).unwrap();
+        env.validate_type_names(&prog.defs)
+            .expect("the builtin catalog must pass the same name check a program does");
     }
 
     #[test]

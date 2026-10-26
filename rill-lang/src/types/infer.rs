@@ -7,7 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use super::ty::{
-    concat_map_result_elem, ArrowTy, Block, DataInfo, Scheme, Subst, TypeEnv, TypeVarId, ValueTy,
+    concat_map_result_elem, ArrowTy, Block, DataInfo, Scheme, Subst, TypeEntry, TypeEnv, TypeVarId,
+    ValueTy,
 };
 use super::unify::unify_value;
 use crate::ast::{Def, Expr, MatchArm, Param, Pattern, Program};
@@ -673,6 +674,12 @@ fn sum_ctor_payload(ctx: &Ctx, sum_name: &str, ctor: &str) -> Option<Vec<ValueTy
 /// field `value: a` becomes `Var(1)`, mirroring the builtin `Maybe`/`Pair`
 /// shapes). Concrete type names resolve through [`TypeEnv::vty_of_name`].
 ///
+/// A free lowercase name that no declaration shadows (`f32` in
+/// `FixedBuffer f32`) stays the nominal placeholder it has always been: it is a
+/// type VARIABLE by Haskell's lexical rules, and giving buffer element types a
+/// real meaning is a separate task. An undeclared UPPERCASE name never reaches
+/// here — registration validation rejects it first.
+///
 /// Exposed for the category-prelude data registration (`Kleisli m a b` is
 /// declared in the prelude and registered by [`TypeEnv::with_builtins`]).
 pub(crate) fn data_field_vty(
@@ -683,7 +690,9 @@ pub(crate) fn data_field_vty(
     match te {
         crate::ast::TypeExpr::TName(n) => match tyvars.iter().position(|t| t == n) {
             Some(k) => ValueTy::Var((k + 1) as u32),
-            None => env.vty_of_name(n),
+            None => env
+                .vty_of_name(n)
+                .unwrap_or_else(|| ValueTy::Data(n.clone(), vec![])),
         },
         crate::ast::TypeExpr::TApp(head, args) => {
             // A type PARAMETER applied as a constructor (`m b` in
@@ -1393,7 +1402,7 @@ pub(crate) fn method_dispatch_key(
                 }
             });
         if let Some(solved) = solved {
-            if let Some(key) = crate::types::ty::value_type_key(&solved) {
+            if let Some(key) = crate::types::ty::value_type_key(env, &solved) {
                 let registered = env
                     .instances
                     .get(class_name)
@@ -1475,7 +1484,7 @@ pub(crate) fn first_arg_solves_class_var(env: &TypeEnv, name: &str, selector_ty:
         env.class_var_solved_ty(&sig, &class_var, selector_ty, PROBE_VAR, &mut fresh)
             .and_then(|solved| {
                 solved_for_debug = Some(solved.clone());
-                crate::types::ty::value_type_key(&solved)
+                crate::types::ty::value_type_key(env, &solved)
             })
     } else {
         // A constructor class (`Functor f`) dispatches by the container head.
@@ -1560,6 +1569,13 @@ pub(crate) fn signature_param_and_result_tys_conv(
 /// Convert a type expression to a value type, substituting the class variable
 /// per `subst` and mapping each other type variable to a fresh unification
 /// variable shared by name (`g : a -> b` and `xs : f a` agree on `a`).
+///
+/// Type names resolve through the registry ([`TypeEnv::type_entry`]): a
+/// lowercase name is a type variable (one fresh variable per name), and every
+/// other name is a TYPE. An undeclared uppercase name cannot reach this
+/// function — [`validate_type_names`] rejects it when the environment is built
+/// — so the fallback below is only the type-variable placeholder shape a data
+/// field keeps for a free lowercase name (`FixedBuffer f32`).
 fn conv(
     env: &TypeEnv,
     class_var: &str,
@@ -1570,17 +1586,14 @@ fn conv(
 ) -> ValueTy {
     match te {
         crate::ast::TypeExpr::TName(n) if n == class_var => match class_var_subst {
-            ClassVarSubst::Ctor(c) => env.vty_of_name(c),
+            ClassVarSubst::Ctor(c) => resolve_type_name(env, c),
             ClassVarSubst::Ty(t) => t.clone(),
             ClassVarSubst::Var(id) => ValueTy::Var(*id),
         },
-        crate::ast::TypeExpr::TName(n) => {
-            if is_declared_type_name(env, n) {
-                env.vty_of_name(n)
-            } else {
-                vars.entry(n.clone()).or_insert_with(fresh).clone()
-            }
-        }
+        crate::ast::TypeExpr::TName(n) => match env.type_entry(n) {
+            Some(TypeEntry::Variable) | None => vars.entry(n.clone()).or_insert_with(fresh).clone(),
+            Some(_) => resolve_type_name(env, n),
+        },
         crate::ast::TypeExpr::TApp(head, args) if head == class_var => {
             let vargs: Vec<ValueTy> = args
                 .iter()
@@ -1593,7 +1606,7 @@ fn conv(
                     } else if env.data_arities.contains_key(ctor) {
                         ValueTy::Data(ctor.to_string(), vargs)
                     } else {
-                        env.vty_of_name(ctor)
+                        resolve_type_name(env, ctor)
                     }
                 }
                 // The class variable is a fully applied type used as a
@@ -1647,6 +1660,14 @@ fn conv(
             conv(env, class_var, class_var_subst, vars, fresh, inner)
         }
     }
+}
+
+/// The value type a registry-confirmed type name denotes. The name is already
+/// known to be a type ([`TypeEnv::type_entry`]); a registry hit that cannot be
+/// spelled as a value type degrades to its nominal form rather than panicking.
+fn resolve_type_name(env: &TypeEnv, name: &str) -> ValueTy {
+    env.vty_of_name(name)
+        .unwrap_or_else(|| ValueTy::Data(name.to_string(), vec![]))
 }
 
 /// Prepend a partial instance head's bound args to each container-typed
@@ -1853,13 +1874,12 @@ fn def_sig_tys_conv(
 
 /// Whether `name` is a DECLARED type rather than a signature type variable
 /// (`Float`, `Pair`, a user `data` type).
+///
+/// A thin alias for [`TypeEnv::is_type_name`] — the registry is the ONE
+/// predicate, so this cannot drift from the resolver
+/// ([`TypeEnv::vty_of_name`]) again.
 pub(crate) fn is_declared_type_name(env: &TypeEnv, name: &str) -> bool {
-    matches!(name, "Float" | "Int" | "Bool" | "String" | "Buffer" | "()")
-        || env.data_types.contains_key(name)
-        || env.newtypes.contains_key(name)
-        || env.type_aliases.contains_key(name)
-        || env.ctor_kinds.contains_key(name)
-        || env.data_arities.contains_key(name)
+    env.is_type_name(name)
 }
 
 /// Discharge a constrained definition's class context against the types a call
@@ -1892,7 +1912,7 @@ pub(crate) fn discharge_def_constraints(
         // name (`Maybe`). Mirrors `method_dispatch_key`.
         let arity = env.typeclasses.get(class).map(|c| c.arity).unwrap_or(0);
         let key = if arity == 0 {
-            crate::types::ty::value_type_key(bound)
+            crate::types::ty::value_type_key(env, bound)
         } else {
             env.type_name_of_vty(bound)
         };
@@ -1988,7 +2008,7 @@ pub(crate) fn sig_ty_to_vty(
     match te {
         crate::ast::TypeExpr::TName(n) => match bindings.get(n) {
             Some(t) => t.clone(),
-            None if is_declared_type_name(env, n) => env.vty_of_name(n),
+            None if is_declared_type_name(env, n) => resolve_type_name(env, n),
             None => vars.entry(n.clone()).or_insert_with(fresh).clone(),
         },
         crate::ast::TypeExpr::TApp(head, args) => {
@@ -2015,7 +2035,7 @@ pub(crate) fn sig_ty_to_vty(
                         .entry(head.clone())
                         .or_insert_with(|| {
                             if is_declared_type_name(env, head) {
-                                env.vty_of_name(head)
+                                resolve_type_name(env, head)
                             } else {
                                 fresh()
                             }
@@ -2168,7 +2188,7 @@ fn validate_instances(ctx: &mut Ctx) -> Result<(), CompileError> {
                 (Some(cv), Some(sig)) => signature_param_tys(ctx, &cv, &cv_subst, &sig),
                 _ => params
                     .iter()
-                    .map(|_| ctx.env.vty_of_name(&ty_name))
+                    .map(|_| resolve_type_name(&ctx.env, &ty_name))
                     .collect(),
             };
             // The method body's EXPECTED result type (from the signature's
@@ -2510,6 +2530,16 @@ pub fn infer_program_with_entry(
     // otherwise materialise an unbounded subtree and exhaust the arena at
     // runtime (spec §9.1).
     env.check_acyclic()?;
+
+    // Every type-level name a program writes must denote a type: `Integer`,
+    // `Char`, `Double`, `Void` and any other undeclared uppercase name are
+    // `unknown type name` (Haskell 2010 §3.1 — an uppercase identifier in a
+    // type position names a declared type; a lowercase one is a type
+    // variable). This runs against the COMPLETE environment, so declaration
+    // order inside the program does not matter, and it covers every consumer
+    // of a type name at once because each of them resolves through this same
+    // environment.
+    env.validate_type_names(&user_defs)?;
 
     // Reject recursive function definitions (v1's acyclic call contract): a
     // runtime dispatch chain must terminate, so the call stack is statically
@@ -4896,7 +4926,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
     // Foreign (FFI) declaration: type through the language-side signature. A bare
     // ref is valid when every param is a signal channel (no scalar params yet).
     if let Some(fsig) = ctx.env.foreign_sigs.get(name).cloned() {
-        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&ctx.env, name, &fsig) {
             if sig
                 .params
                 .iter()
@@ -5002,10 +5032,12 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
             // A NAME that is not a declared type is a TYPE VARIABLE, not a
             // nominal `Data` type: `(+) : a -> a -> a` mentions `a` as the
             // class variable, and turning it into `Data("a")` makes it
-            // un-unifiable with every concrete type. A fresh unification
-            // variable per name is the correct reading (`vty_of_name` is only
-            // for declared types).
-            Ok(ctx.env.vty_of_name(n))
+            // un-unifiable with every concrete type. A name the registry does
+            // not know is an unknown type (§3.1) — the builtin catalog is
+            // compiler-owned and correct, so a miss here is a compiler bug.
+            ctx.env
+                .vty_of_name(n)
+                .ok_or_else(|| crate::types::ty::unknown_type_name(n))
         }
         crate::ast::TypeExpr::TApp(head, args) => {
             let mut targs = Vec::with_capacity(args.len());
@@ -5040,14 +5072,10 @@ fn type_expr_to_vty(ctx: &Ctx, te: &crate::ast::TypeExpr) -> Result<ValueTy, Com
 
 /// Whether a name in a builtin signature is a type VARIABLE rather than a
 /// declared type: a lowercase placeholder (`a`, `b`, `s`) that no declaration
-/// or primitive resolves.
+/// resolves. The registry is the single answer — this is the type-variable arm
+/// of [`TypeEnv::type_entry`], not a private name list.
 fn is_builtin_sig_var(ctx: &Ctx, name: &str) -> bool {
-    !matches!(name, "Float" | "Int" | "Bool" | "String" | "Buffer" | "()")
-        && !ctx.env.data_types.contains_key(name)
-        && !ctx.env.newtypes.contains_key(name)
-        && !ctx.env.type_aliases.contains_key(name)
-        && ctx.env.ctor_arity(name).is_none()
-        && !ctx.env.data_arities.contains_key(name)
+    ctx.env.is_type_variable(name)
 }
 
 /// Collect every `forall`-bound name in a type expression, nested ones
@@ -5138,7 +5166,9 @@ fn instantiate_builtin_sig_vty(
                 vars.insert(n.clone(), v.clone());
                 return Ok(v);
             }
-            Ok(ctx.env.vty_of_name(n))
+            ctx.env
+                .vty_of_name(n)
+                .ok_or_else(|| crate::types::ty::unknown_type_name(n))
         }
         TypeExpr::TApp(head, args) => {
             let mut targs = Vec::with_capacity(args.len());
@@ -6142,7 +6172,7 @@ fn infer_apply_impl(
             });
         }
         let vt = infer_const_value(ctx, &args[0])?;
-        let inner = ctx.env.vty_of_name(&inner_name);
+        let inner = resolve_type_name(&ctx.env, &inner_name);
         unify_value(&vt, &inner, &mut ctx.subst, args[0].span())?;
         return Ok(ArrowTy::value_channel(ValueTy::Newtype(
             name.to_string(),
@@ -6838,7 +6868,7 @@ fn infer_apply_impl(
     // at args[0], the constant at args[1]); a variadic signal tail consumes all
     // remaining args.
     if let Some(fsig) = ctx.env.foreign_sigs.get(name).cloned() {
-        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+        if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(&ctx.env, name, &fsig) {
             let variadic_idx = sig
                 .params
                 .iter()
@@ -7388,8 +7418,8 @@ fn check_def_call_args(
                 msg: format!(
                     "argument {} of `{name}` has type {}, but the parameter has type {}: {e}",
                     i + 1,
-                    type_spelling(&actual),
-                    type_spelling(&formal)
+                    ctx.env.type_spelling(&actual),
+                    ctx.env.type_spelling(&formal)
                 ),
                 span: a.span(),
             });
@@ -7463,81 +7493,6 @@ fn numeric_default_widens(formal: &ValueTy, actual: &ValueTy) -> bool {
                     .all(|(f, a)| numeric_default_widens(f, a))
         }
         _ => false,
-    }
-}
-
-/// A user-facing spelling of a value type for diagnostics: nominals by name,
-/// scalars by their Haskell spelling, and type variables by letter (`a`, `b`,
-/// …) so a partially-resolved function type still reads like a type.
-fn type_spelling(t: &ValueTy) -> String {
-    let mut names: HashMap<TypeVarId, String> = HashMap::new();
-    type_spelling_named(t, &mut names)
-}
-
-/// [`type_spelling`] with a shared variable-naming map, so the same variable
-/// keeps its letter throughout one rendered type.
-fn type_spelling_named(t: &ValueTy, names: &mut HashMap<TypeVarId, String>) -> String {
-    let var_name = |id: TypeVarId, names: &mut HashMap<TypeVarId, String>| {
-        let next = names.len();
-        names
-            .entry(id)
-            .or_insert_with(|| {
-                let letter = (b'a' + (next % 26) as u8) as char;
-                letter.to_string()
-            })
-            .clone()
-    };
-    match t {
-        ValueTy::Int => "Int".to_string(),
-        ValueTy::Float => "Float".to_string(),
-        ValueTy::Bool => "Bool".to_string(),
-        ValueTy::String => "String".to_string(),
-        ValueTy::Buffer => "Buffer".to_string(),
-        ValueTy::Void => "()".to_string(),
-        // A dictionary is not a data type, so it has no nominal name — spell it
-        // as the class witness it is.
-        ValueTy::Dict(class) => format!("Dict {class}"),
-        ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
-            if args.is_empty() {
-                n.clone()
-            } else {
-                let rendered: Vec<String> =
-                    args.iter().map(|a| type_spelling_named(a, names)).collect();
-                format!("{n} {}", rendered.join(" "))
-            }
-        }
-        ValueTy::Thunk(args, rets) => {
-            // A function type, rendered `A -> B` (curried chains flatten), so a
-            // higher-order mismatch names what the parameter really demands.
-            let (cap, res) = flatten_thunk(&ValueTy::Thunk(args.clone(), rets.clone()));
-            if cap.is_empty() && res.is_empty() {
-                // A bare named definition reference types as an EMPTY `Thunk`
-                // until it is applied, so it has no signature to spell out.
-                return "a function value".to_string();
-            }
-            let mut parts: Vec<String> = cap
-                .iter()
-                .map(|a| {
-                    let s = type_spelling_named(a, names);
-                    if s.contains(' ') && !s.starts_with('(') {
-                        format!("({s})")
-                    } else {
-                        s
-                    }
-                })
-                .collect();
-            for r in &res {
-                parts.push(type_spelling_named(r, names));
-            }
-            parts.join(" -> ")
-        }
-        ValueTy::Var(v) | ValueTy::TyConVar(v) => var_name(*v, names),
-        ValueTy::TyConApp(f, args) => {
-            let head = var_name(*f, names);
-            let rendered: Vec<String> =
-                args.iter().map(|a| type_spelling_named(a, names)).collect();
-            format!("{head} {}", rendered.join(" "))
-        }
     }
 }
 

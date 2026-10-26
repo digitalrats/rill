@@ -122,7 +122,8 @@ fn foreign_sig_describes_signal_and_scalar_params() {
             vec![TypeExpr::TName("Float".into())],
         )),
     );
-    let sig = ffi_sig_from_typeexpr("biquad", &te).expect("FFI sig");
+    let env = TypeEnv::with_builtins();
+    let sig = ffi_sig_from_typeexpr(&env, "biquad", &te).expect("FFI sig");
     assert_eq!(sig.params.len(), 4);
     assert!(matches!(sig.params[0], FfiParam::Scalar));
     assert!(matches!(sig.params[1], FfiParam::Scalar));
@@ -150,7 +151,8 @@ fn foreign_sig_from_parser_flat_curried_form() {
             _ => None,
         })
         .expect(r"foreign biquad not found");
-    let ffi = ffi_sig_from_typeexpr("biquad", sig).expect("FFI sig from parser output");
+    let env = TypeEnv::with_builtins();
+    let ffi = ffi_sig_from_typeexpr(&env, "biquad", sig).expect("FFI sig from parser output");
     assert_eq!(ffi.params.len(), 5);
     assert!(matches!(ffi.params[0], FfiParam::Scalar));
     assert!(matches!(ffi.params[1], FfiParam::Scalar));
@@ -308,7 +310,8 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
             vec![rill_lang::ast::TypeExpr::TName("Float".into())],
         )),
     );
-    assert_eq!(ffi_sig_from_typeexpr("bad", &te), None);
+    let env = TypeEnv::with_builtins();
+    assert_eq!(ffi_sig_from_typeexpr(&env, "bad", &te), None);
 
     // A terminal VariadicSignal is still accepted (`List (FixedBuffer f32) ->
     // FixedBuffer f32`).
@@ -325,7 +328,8 @@ fn foreign_sig_rejects_non_terminal_variadic_signal() {
             vec![rill_lang::ast::TypeExpr::TName("Float".into())],
         )),
     );
-    let sig = ffi_sig_from_typeexpr("sum_all", &ok).expect("terminal variadic is accepted");
+    let env = TypeEnv::with_builtins();
+    let sig = ffi_sig_from_typeexpr(&env, "sum_all", &ok).expect("terminal variadic is accepted");
     assert!(matches!(sig.params[0], FfiParam::VariadicSignal));
 }
 
@@ -554,7 +558,9 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
     let f = |n: &str| TypeExpr::TName(n.into());
     let fb = |n: &str| TypeExpr::TApp(n.into(), vec![TypeExpr::TName("f32".into())]);
 
+    let env = TypeEnv::with_builtins();
     let sig = ffi_sig_from_typeexpr(
+        &env,
         "sine",
         &TypeExpr::TFunc(
             vec![f("Float"), f("Float"), f("Float")],
@@ -565,6 +571,7 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
     assert_eq!(sig.param_names, vec!["freq", "amp", "phase"]);
 
     let sig = ffi_sig_from_typeexpr(
+        &env,
         "biquad",
         &TypeExpr::TFunc(
             vec![
@@ -581,6 +588,7 @@ fn ffi_sig_param_names_filled_from_catalog_table() {
     assert_eq!(sig.param_names, vec!["type", "cutoff", "q", "gain_db"]);
 
     let sig = ffi_sig_from_typeexpr(
+        &env,
         "eq_parametric",
         &TypeExpr::TFunc(vec![f("EqConfig"), fb("FixedBuffer")], Box::new(out)),
     )
@@ -609,7 +617,8 @@ fn ffi_sig_param_names_fallback_to_index_for_unknown() {
             vec![TypeExpr::TName("f32".into())],
         )),
     );
-    let sig = ffi_sig_from_typeexpr("not_a_catalog_builtin", &te).unwrap();
+    let env = TypeEnv::with_builtins();
+    let sig = ffi_sig_from_typeexpr(&env, "not_a_catalog_builtin", &te).unwrap();
     assert_eq!(sig.param_names, vec!["param0", "param1"]);
 }
 
@@ -631,7 +640,8 @@ fn tape_param_maps_to_resource() {
             vec![TypeExpr::TName("f32".into())],
         )),
     );
-    let sig = ffi_sig_from_typeexpr("read_head", &te).unwrap();
+    let env = TypeEnv::with_builtins();
+    let sig = ffi_sig_from_typeexpr(&env, "read_head", &te).unwrap();
     assert!(matches!(sig.params[0], FfiParam::Resource));
     assert!(matches!(sig.params[1], FfiParam::Scalar));
 }
@@ -918,7 +928,7 @@ fn foreign_param_names_never_fallback_to_index_for_catalog() {
     let env = TypeEnv::with_builtins();
     let mut scalar_builtins = 0usize;
     for (name, te) in &env.foreign_sigs {
-        let Some(sig) = ffi_sig_from_typeexpr(name, te) else {
+        let Some(sig) = ffi_sig_from_typeexpr(&env, name, te) else {
             continue;
         };
         let n_scalar = sig

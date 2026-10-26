@@ -812,14 +812,15 @@ struct Lowerer<'a> {
 ///
 /// [`value_type_key`]: crate::types::ty::value_type_key
 fn check_specialized_result(
+    env: &TypeEnv,
     name: &str,
     actual: &ValueTy,
     declared: &ValueTy,
     span: Span,
 ) -> Result<(), CompileError> {
     let (Some(actual), Some(declared)) = (
-        crate::types::ty::value_type_key(actual),
-        crate::types::ty::value_type_key(declared),
+        crate::types::ty::value_type_key(env, actual),
+        crate::types::ty::value_type_key(env, declared),
     ) else {
         return Ok(());
     };
@@ -3071,7 +3072,9 @@ impl<'a> Lowerer<'a> {
                 // `param_bindings` (pushed via `set_param` before `process`).
                 // The `Algorithm` stays a pure function over its baked params.
                 if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
-                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+                    if let Some(sig) =
+                        crate::types::ffi::ffi_sig_from_typeexpr(self.env, name, &fsig)
+                    {
                         let mut param_values = Vec::new();
                         let mut param_bindings = Vec::new();
                         let mut signal_srcs = Vec::new();
@@ -4677,7 +4680,7 @@ impl<'a> Lowerer<'a> {
         self.value_locals.pop();
         self.value_local_ctors.pop();
         let (r, t) = res?;
-        check_specialized_result(name, &t, &sig_ret, span)?;
+        check_specialized_result(self.env, name, &t, &sig_ret, span)?;
         Ok((r, t))
     }
 
@@ -5644,7 +5647,7 @@ impl<'a> Lowerer<'a> {
             return Ok((dst, ty));
         }
         if let Some(fsig) = self.env.foreign_sigs.get(name).cloned() {
-            if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+            if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(self.env, name, &fsig) {
                 if sig
                     .params
                     .iter()
@@ -7589,7 +7592,7 @@ impl<'a> Lowerer<'a> {
                     .env
                     .newtypes
                     .get(name)
-                    .map(|n| self.env.vty_of_name(n))
+                    .and_then(|n| self.env.vty_of_name(n))
                     .unwrap_or(ValueTy::Float);
                 let s = 1 + self.subtree_size_impl(&inner, visiting);
                 visiting.remove(name);
@@ -7711,7 +7714,7 @@ impl<'a> Lowerer<'a> {
                 // single positional cursor over call_args mirrors inference
                 // (`gain _ 0.5` → the Wire at [0], the constant at [1]).
                 if let Some(fsig) = self.env.foreign_sigs.get(name.as_str()).cloned() {
-                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+                    if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(self.env, name, &fsig) {
                         let variadic_idx = sig
                             .params
                             .iter()
@@ -8329,7 +8332,7 @@ impl<'a> Lowerer<'a> {
         _span: Span,
     ) -> Result<Vec<usize>, CompileError> {
         if let Some(fsig) = self.env.foreign_sigs.get(name).cloned() {
-            if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(name, &fsig) {
+            if let Some(sig) = crate::types::ffi::ffi_sig_from_typeexpr(self.env, name, &fsig) {
                 let signal_ins = sig
                     .params
                     .iter()
