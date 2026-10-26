@@ -269,6 +269,16 @@ This task is split into three independently green sub-tasks.
 
 **Files:** `rill-lang/src/types/{ty.rs, infer.rs, ffi.rs}` + `rill-lang/tests/type_names.rs` (new)
 
+**Priority: Haskell 2010 / GHC behaviour. Backward compatibility is NOT required.**
+Where the current behaviour and Haskell 2010 disagree, Haskell wins and the
+current behaviour changes. No aliases, no deprecation shims, no "keep the old
+spelling working" — a name that Haskell 2010 does not have is *removed*, and a
+name that means something different in Haskell is *corrected*, even when that
+breaks existing rill programs and tests. When a test fails because it asserted
+the old behaviour, the test is wrong: change the test and say so in the report.
+The only thing that must not change is behaviour that already agrees with
+Haskell 2010 (all such tests stay green).
+
 **The measured defect.** Scalar type names are hard-coded as `matches!` lists in
 **six** places that disagree:
 
