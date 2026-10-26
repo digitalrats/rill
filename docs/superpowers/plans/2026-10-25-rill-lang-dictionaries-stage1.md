@@ -326,6 +326,18 @@ Decisions for the task:
   `Integer` / `Word` / `Ordering` acceptance. `Double` may later be added as a
   real type; it is *not* silently accepted in the meantime.
 
+#### Staging (measured on `5421744`)
+
+The rename is far larger than one dispatch: `Pair` 284 in `src` + 271 in tests,
+`List` 262 in `src`, `Void` 73. It is split into three independently green
+sub-tasks, in this order:
+
+| Sub-task | Scope | Why this order |
+|---|---|---|
+| **5.5a** | phantom type names → compile error; `Void` → `()` | closes a static-typing hole; tiny blast radius |
+| **5.5b** | `Char` as a real type + character literals; `String = [Char]` | needs 5.5a first (otherwise `Char` is just another phantom) |
+| **5.5c** | `List a` → `[a]`, `Pair a b` → `(a, b)` | purely mechanical, largest radius, independent of a/b |
+
 - [ ] **Step 1: Inventory the exact sites**
 
 ```bash
