@@ -261,16 +261,16 @@ git commit -m 'feat(lang): runtime dictionary value with RC support'
 > **Backward compatibility is explicitly NOT required** (user decision): old
 > spellings are removed, not aliased.
 
-This task is split into six independently green sub-tasks.
+This task is split into four live sub-tasks plus one deferred.
 
-| Order | Sub-task | Why here |
+| Order | Sub-task | Status / why here |
 |---|---|---|
-| 1 | **5.5a** — one type-name registry; `Void` → `()` | the single source every later sub-task consults; landing it first also means `Double` is added as **one registry entry** instead of a seventh hard-coded list |
-| 2 | **5.5pre-0** — rename `Float` → `Double` (the name was wrong, the precision was not) | depends on the registry: the renamed entry must be one registry line, not a sixth list. Leaves `Float` single precision to P3 |
-| 3 | **5.5pre-1** — `FixedBuffer`/`Tape` take a real element type | needs the registry to resolve the element type (`FixedBuffer Zork` must be an error) |
-| 4 | **5.5pre-2** — `Floating`/`Integral`; `Buffer` is not a `Num` subclass | needs the element type to put the constraint on |
-| 5 | **5.5b** — `Char`; `String = [Char]` | needs the registry (a `Char` scalar is one entry) |
-| 6 | **5.5c** — `List a` → `[a]`, `Pair a b` → `(a, b)` | mechanical, largest radius, independent |
+| 1 | **5.5a** — one type-name registry; `Void` → `()` | **DONE** `59ffecd` |
+| 2 | **5.5pre-0** — rename `Float` → `Double` (the name was wrong, the precision was not) | **DONE** `0e78439` |
+| 3 | **5.5b** — `Char`; `String = [Char]` | ready — needs only the registry (a `Char` scalar is one entry) |
+| 4 | **5.5c** — `List a` → `[a]`, `Pair a b` → `(a, b)` | ready — mechanical, largest radius, independent |
+| — | **5.5pre-1** — `FixedBuffer`/`Tape` carry a real element type | **DEFERRED** until per-buffer pools exist (see its section) |
+| — | ~~5.5pre-2~~ — `Floating`/`Integral` | **DELETED** — it duplicated P3 Step 3 and P4 Step 3 of `2026-10-25-rill-lang-typeclass-layer.md`; the one requirement it added (`Buffer` must not be a `Num` subclass; conditional instances per element) is recorded there, in P3 Step 4 |
 
 > **Ordering rule:** anything that adds a type name must land *after* 5.5a, or
 > it will add a seventh `matches!` list — the exact defect 5.5a removes.
@@ -332,130 +332,58 @@ without losing anything.
 
 ---
 
-#### Task 5.5pre-1: `FixedBuffer` and `Tape` take a real element type; the FFI carries it
+#### Task 5.5pre-1 (DEFERRED): a buffer element type needs per-buffer pools
 
-> **Why:** `FixedBuffer` is declared with arity 1 but its argument is
-> **discarded**. Measured on `023994e`:
+> **Deferred, not dropped.** It cannot be done honestly until the buffer pools
+> carry a precision per buffer. Recorded here with the reason and the exact
+> precondition, so it is not lost and not attempted prematurely.
+
+**The measured defect (still open):** `FixedBuffer`'s type argument is
+**discarded**. `unify.rs:157` matches `ValueTy::Buffer` against
+`App("FixedBuffer", args)` only when `args.is_empty()`, so measured on `023994e`:
 
 ```
-f :: FixedBuffer Zork -> FixedBuffer Zork;  f x = x   → rejected (5.5a's registry)
-g :: FixedBuffer Int  -> FixedBuffer Bool;  g x = x   → compiles AND runs   ← the defect
+g :: FixedBuffer Int  -> FixedBuffer Bool;  g x = x   -> compiles AND runs   <- the defect
+f :: FixedBuffer Zork -> FixedBuffer Zork;  f x = x   -> rejected (5.5a registry)
 ```
 
-> `unify.rs:157` matches `ValueTy::Buffer` against `App("FixedBuffer", args)`
-> only when `args.is_empty()`, and `ffi.rs:259` checks only `args.len() == 1`.
-> The element type is never compared, which is why `f32` survived as a name and
-> why two different element types unify. `Array` has the same hole (`Array Int
-> Int` unifies with `Array Int Bool`) — see the follow-up note.
+**Why it cannot be fixed now.** The element type is not a language-level fact
+today; it is a Rust monomorphisation parameter of the whole program:
 
-#### The decision: a buffer's element type is `Double`
-
-The buffer *stores* `T` (f32 at every call site today), but **any sample that
-enters the language becomes `Value::Double`**: `interp.rs:3939` allocates
-`Value::Double(sample.to_f64())` when a buffer is read as a list. So the
-language's only observable element type is `Double`, and `Double` is the correct
-declared element. Declaring `f32` would mean the type system promises f32
-precision in a value that is f64 — a new silent divergence, not a fix.
-
-Therefore, uniformly:
-
-| Spelling | Meaning |
+| Layer | Today |
 |---|---|
-| `FixedBuffer Double` | the buffer type; element is `Double` |
-| `Tape Double` | a shared buffer resource; element is `Double` |
-| `FixedBuffer f32`, `Tape f32` | **removed** (no alias; backward compat not required) |
-| `FixedBuffer Int`, `FixedBuffer Bool`, `Tape Char` | **type error**: the element must be `Double` |
+| `rill_core::buffer::FixedBuffer<T, SIZE>` | the physical storage, `data: [T; SIZE]` |
+| `RegionHandle<T>` | a pointer into it (`Rc`, offset, len) — not storage |
+| `WorldState<T, BUF>` | **one `T` for the whole world**: `buffers: Vec<RegionHandle<T>>`, `block_state: Vec<FixedBuffer<T, BUF>>` |
+| `compile::<f32, BUF>(src, ffi)` | the host picks `T`; **zero** call sites use `f64` |
 
-This also removes the last host-spelling type name from rill source, and it is
-consistent with 5.5pre-0: the double-precision type is `Double`.
+So every buffer in a world has the same element, chosen outside the language.
+`FixedBuffer a` therefore cannot promise anything that depends on `a`: the only
+conversion that consumes `a` is `T::from_f64` at the language→storage
+boundary (`interp.rs:1950`, `2033`). Declaring the element `Double` today would
+promise f64 precision in an f32 store — a new silent divergence, not a fix.
+Declaring it `f32` would expose a host spelling as a rill type name. Neither is
+conformance.
 
-- [ ] **Step 1: Carry the element.** `ValueTy::Buffer` →
-  `ValueTy::Buffer(Box<ValueTy>)` (or `App("FixedBuffer", [elem])` — the
-  implementer picks, but there must be **one** representation, not two). Rubble:
-  89 `ValueTy::Buffer` sites in `src` (86 constructed/patterned, 83 as bare
-  patterns needing a new binding).
-- [ ] **Step 2: Enforce it in unification.** `FixedBuffer a` unifies with
-  `FixedBuffer b` only when `a` and `b` unify; `Buffer(elem)` never unifies with
-  a non-buffer type. Replace the `args.is_empty()` arm at `unify.rs:157` — do
-  not add a second arm.
-- [ ] **Step 3: Element must be `Double`.** After this task the only valid
-  element is `Double` (`FixedBuffer Double`, `Tape Double`). Any other element
-  — `Int`, `Bool`, `Char`, or a type variable in a position where a concrete
-  element is required — is a type error naming the requirement. (When a
-  single-precision `Float` lands in P3 it becomes a second valid element; that is
-  a one-line registry/instance change, not a redesign.)
-- [ ] **Step 4: The FFI layer carries the element.** `FfiParam::Signal` and
-  `FfiParam::Resource` gain the element type, and `ffi_sig_from_typeexpr` records
-  it instead of discarding it. Reject a signature whose element disagrees with
-  the host's sample type at the point where the host type is known. Today
-  `FixedBuffer f32`, `FixedBuffer Double`, `FixedBuffer Int` and
-  `FixedBuffer Zork` classify identically — that must stop.
-- [ ] **Step 5: Migrate the source.** Every `FixedBuffer f32` / `Tape f32` in
-  `rill-lang/src` (64) and the tests (62) becomes `... Double`, including the
-  prelude's `instance Num (Tape f32)` / `instance Buffer (Tape f32)` and the
-  `foreign` declarations at `ty.rs:938-939`.
-- [ ] **Step 6: Delete the leftover nominal fallback.** 5.5a's report flagged
-  that `data_field_vty` still invents a nominal `Data(name, [])` for a free
-  lowercase name so that `FixedBuffer f32` keeps a placeholder shape. With the
-  element real and spelled `Double`, that fallback must go: a lowercase unbound
-  name is a **type variable**, never a nominal type.
-- [ ] **Step 7: Prove it.** `g :: FixedBuffer Int -> FixedBuffer Bool; g x = x`
-  must be a type error; `FixedBuffer Double` must work end to end (construct a
-  buffer, read it back, elementwise arithmetic); the FFI classification must
-  distinguish elements.
-- [ ] **Step 8: Commit** —
-  `git commit -m 'feat(lang): FixedBuffer and Tape carry a real element type'`
+**The precondition that unlocks it (decided with the user):** future work adds
+**f64 buffer pools** alongside the f32 ones. At that point the precision becomes
+a property of a *buffer* rather than of the *program*:
 
-**Follow-up, recorded not fixed here:** `Array`/`STArray` do not check their
-element parameter either (`Array Int Int` unifies with `Array Int Bool`). Same
-class of defect, separate task — it belongs with the collection work, not with
-the buffer element type. Recorded in `DOCS-GAPS.md`.
+- `WorldState` holds per-precision pools (`Vec<RegionHandle<f32>>` **and**
+  `Vec<RegionHandle<f64>>`), and `Value::Buffer(usize)` becomes pool-tagged;
+- the element type becomes a real language parameter (`FixedBuffer Float` /
+  `FixedBuffer Double`), honest in both directions;
+- the conditional instance `instance (Floating a) => Num (FixedBuffer a)`
+  becomes expressible — it needs a dictionary **builder** (design §3.10,
+  `DictSlot::Builder`), the same machinery `instance (Monad m) => Arrow
+  (Kleisli m)` needs.
 
----
-
-#### Task 5.5pre-2: `Floating` and `Integral`; `Buffer` stops being a `Num` subclass
-
-> **Why:** the buffer operation set already demands more than `Num`. Measured
-> on `56160d6` — these all compile and run on `FixedBuffer`:
-
-| Operation | Class required by Haskell 2010 | rill today |
-|---|---|---|
-| `a + b`, `negate`, `abs`, `signum` | `Num` | works |
-| `a / b`, `recip` | `Fractional` | works |
-| `sin`, `cos`, `tan`, `sqrt`, `exp`, `ln`, `tanh` | **`Floating`** | works |
-| `a % b` | `Integral` (GHC: `No instance for 'Integral Float'`) | **works on Float elements — WRONG** |
-| `min`, `max`, `compare` | `Ord` | works |
-
-So `Num a => Buffer a` cannot be right: `Num` does not license `sin`. And `%`
-on `Float` elements is a silent wrong answer of the same class as `1 == 1.0`.
-
-**Decided (user):** option 1 — `%` on a non-`Integral` element is a type
-error, matching GHC.
-
-- [ ] **Step 1: Add `Floating`** exactly as the Report's tower:
-  `class Fractional a => Floating a` with `pi`, `exp`, `log`, `sqrt`, `(**)`,
-  `logBase`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
-  `tanh`, `asinh`, `acosh`, `atanh`. rill currently spells `ln`; per the
-  Haskell-first rule the Report name is `log` (keep `ln` only if §3.4's
-  surface keeps it — decide and record).
-- [ ] **Step 2: Add `Integral`** — `class (Real a, Enum a) => Integral a` with
-  `quot`, `rem`, `div`, `mod`, `quotRem`, `divMod`, `toInteger`. This needs
-  `Real`/`Enum` from the tower; if they are not there yet, add only what
-  `Integral` needs and record what remains.
-- [ ] **Step 3: `Buffer` is a container class, not a numeric one.** Replace
-  `typeclass (Num b) => Buffer b` with a class that says what it means, and give
-  `FixedBuffer` its numeric instances **conditioned on the element**:
-  `instance (Floating a) => Num (FixedBuffer a)` etc., plus
-  `instance (Integral a) => Integral (FixedBuffer a)` for elementwise `quot`/`rem`.
-  A context on the *instance head* is what the Report allows (§4.3.1);
-  `data Floating a => FixedBuffer a` would be illegal (verified: GHC rejects
-  `Illegal datatype context`).
-- [ ] **Step 4: A constraint-parameterised instance head needs a dictionary
-  builder** — design §3.10's `DictSlot::Builder`. `instance (Floating a) =>
-  Num (FixedBuffer a)` is exactly `$fNumFixedBuffer :: Floating a => Num
-  (FixedBuffer a)`, a dictionary that is a *function of another dictionary*.
-- [ ] **Step 5: `%` on `Float` elements is now a type error**, and `+`/`/`/`sin`
-  still work. Prove all three.
+- [ ] **Do not start this task before the per-buffer pools exist.** The
+      conformance rule forbids documenting a gap *instead of* behaviour, but it
+      equally forbids shipping a type annotation that lies about the value.
+- [ ] When it does start: carry the element in `ValueTy::Buffer`, enforce it in
+      `unify`, carry it in `FfiParam::Signal`/`Resource`, and remove `f32` from
+      rill source entirely.
 
 ---
 
