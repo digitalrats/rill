@@ -10,9 +10,12 @@ pub mod common;
 
 use common::*;
 use rill_lang::arena::Value;
+use rill_lang::ast::{Def, Expr, TypeExpr};
 use rill_lang::compile_eval;
 use rill_lang::ffi::ForeignRegistry;
+use rill_lang::lexer::tokenize;
 use rill_lang::mode::Mode;
+use rill_lang::parser::parse;
 
 /// Compile and evaluate the `main` expression of `src` in a single run,
 /// returning its value.
@@ -108,6 +111,46 @@ fn annotation_binds_looser_than_application() {
 }
 
 #[test]
+fn annotation_ast_groups_the_application_inside() {
+    // Review Focus 2, pinned on the AST rather than through a value: `f x :: Int`
+    // must PARSE as `Annot { expr: Apply { f, [x] }, ty: Int }`. A value test
+    // alone leaves one hole — a parser that produced
+    // `Apply { f, [Annot { x, Int }] }` and an inference that then unified the
+    // parameter with `Int` could still compute the right answer for a
+    // single-shaped program. The tree shape removes that ambiguity, and it is
+    // the shape the design's precedence claim ("`f x :: Int` parses as
+    // `(f x) :: Int`") is literally about.
+    let src = "main = f x :: Int;";
+    let toks = tokenize(src).unwrap();
+    let prog = parse(&toks, src.as_bytes()).unwrap();
+    let Def::Eval { body, .. } = prog.main_def().expect("`main` must be parsed") else {
+        panic!("`main = f x :: Int` must parse to an Eval definition");
+    };
+    let body = body;
+
+    let Expr::Annot { expr, ty, .. } = body else {
+        panic!("`f x :: Int` must parse to an Annot, got {body:?}");
+    };
+    assert_eq!(
+        *ty,
+        TypeExpr::TName("Int".into()),
+        "the annotation is `Int`"
+    );
+    match expr.as_ref() {
+        Expr::Apply { name, args, .. } => {
+            assert_eq!(name, "f", "the annotated expression is the application");
+            assert_eq!(args.len(), 1, "the application keeps its one argument");
+            assert!(
+                matches!(&args[0], Expr::Ref(n, _) if n == "x"),
+                "the argument is the bare `x`, not `x :: Int`: got {:?}",
+                args[0]
+            );
+        }
+        other => panic!("the annotated side must be the application `f x`, got {other:?}"),
+    }
+}
+
+#[test]
 fn annotation_tighter_than_arithmetic() {
     // A parenthesized annotation inside an arithmetic operand parses and
     // evaluates: `x + (y :: Int)` is 3 + 4 = 7.
@@ -196,4 +239,43 @@ fn int_index_position_stays_int() {
          });",
     );
     assert_eq!(annotated, Value::Float(7.0), "an `:: Int` index reads 7.0");
+}
+
+#[test]
+fn int_index_position_rejects_a_float_offset() {
+    // The un-annotated index above is `Int` at the TYPE level, not merely
+    // "accepted at runtime": `readArrayFlat`'s second parameter is `Int`, so a
+    // genuinely `Float`-typed value in that position is a type error.
+    //
+    // This is the discriminating half of Review Focus 3 (design §3.6): the
+    // value test alone cannot prove it, because the interpreter's flat-offset
+    // reader accepts an INTEGRAL `Value::Float` (`index 1.0` reads element 1 —
+    // the documented negated-literal wart). A `1.0` literal would therefore
+    // both compile *and* run if the position were polymorphic, so the test
+    // routes a declared-`Float` BINDING into the position instead: only the
+    // type checker can reject that, and only an `Int` position rejects it.
+    let msg = compile_err(
+        "{-# MODE complete #-}\nk :: Float = 1.0;\nmain = runST (\\s -> do { \
+           a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 7.0; \
+           readArrayFlat a k \
+         });",
+    );
+    assert!(
+        msg.contains("Float") && msg.contains("Int"),
+        "a Float-typed flat offset must be rejected naming both types, got: {msg}"
+    );
+
+    // The control: the SAME binding shape at `Int` compiles and reads element
+    // 1, so the rejection above is the offset's type and not the shape.
+    let int_key = run_value(
+        "{-# MODE complete #-}\nk :: Int = 1;\nmain = runST (\\s -> do { \
+           a <- newArrayFlat (Pair { first: 0, second: 2 }) 3 7.0; \
+           readArrayFlat a k \
+         });",
+    );
+    assert_eq!(
+        int_key,
+        Value::Float(7.0),
+        "an Int-typed offset reads element 1"
+    );
 }
