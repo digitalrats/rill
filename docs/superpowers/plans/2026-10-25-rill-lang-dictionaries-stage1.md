@@ -290,6 +290,42 @@ finds every site.
 - `show_float`/`show_int`/`show_bool` are rill-specific and stay; `show` is a
   separate gap (inventory A1).
 
+#### Scalar type names — measured, and two defects to fix
+
+rill has exactly four scalar type names in `ValueTy` (`Int`, `Float`, `Bool`,
+`String`) plus `Void`. Probed on `b2ba351`:
+
+| Name | `vty_of_name` | Haskell 2010 | Verdict |
+|---|---|---|---|
+| `Int` | `Int` | `Int` | OK |
+| `Float` | `Float` | `Float` (single precision) | OK |
+| `Bool` | `Bool` | `Bool` | OK |
+| `String` | `String` | `[Char]` synonym | OK (kept as a synonym) |
+| `Void` | `Data("Void", [])` | `()` | **WRONG** — rill spells unit `Void`; Haskell uses `()`, and rill ALSO parses `()`, so two names mean the same thing while `Void` is a phantom |
+| `Char` | `Data("Char", [])` | `Char` | **MISSING** — no `Char` value exists, yet the name type-checks |
+| `Double` | `Data("Double", [])` | `Double` | **EXTRA** — accepted, types a program, but no value can ever have it |
+| `Integer`, `Word`, `Ordering` | `Data(…)` | real types | **EXTRA** — same phantom acceptance |
+
+The two defects:
+
+1. **Phantom type names.** Any identifier parses as a type at a signature, and an
+   undeclared name becomes `Data(name, [])`. So `f :: Integer -> Integer; f x = x`
+   **compiles and runs** although no `Integer` value exists. This is a hole in
+   static typing: it must be a compile error, or the type must exist for real.
+2. **`Void` vs `()` for unit.** Haskell 2010 spells the unit type `()`. rill
+   accepts both, and `Void` is a phantom while `()` resolves correctly.
+
+Decisions for the task:
+
+- `()` is the unit type; `Void` is removed (no alias — backward compatibility is
+  not required).
+- `Char` becomes a **real** type with character literals `'a'`, and `String`
+  stays `[Char]`.
+- **Every other name that is not declared must be a compile error**, not a
+  phantom `Data`. That is the general fix, and it also closes the `Double` /
+  `Integer` / `Word` / `Ordering` acceptance. `Double` may later be added as a
+  real type; it is *not* silently accepted in the meantime.
+
 - [ ] **Step 1: Inventory the exact sites**
 
 ```bash
