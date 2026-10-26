@@ -268,7 +268,7 @@ on work outside this plan — measured, not assumed:
 |---|---|---|
 | **5.5a** — one type-name registry; `Void` → `()` | **DONE** `59ffecd` | — |
 | **5.5pre-0** — `Float` → `Double` (the name was wrong, not the precision) | **DONE** `0e78439` | — |
-| **5.5pre-1** — `FixedBuffer`/`Tape` element type | **DEFERRED** | per-buffer f32/f64 pools: the element is a host monomorphisation parameter (`WorldState<T, BUF>`, `compile::<f32, BUF>`), so `FixedBuffer a` cannot honestly constrain `a` |
+| **5.5pre-1** — `FixedBuffer`/`Tape` element type | **READY** — the one legal element is `Double` | nothing: keep the parameter, stop discarding it. Monomorphic instance heads avoid needing a dictionary builder |
 | **5.5b** — `Char`, `String = [Char]` | **DEFERRED** | type-level list syntax + dictionary builders: `String` is a primitive, and `String = [Char]` makes every string instance a conditional head (`instance Monoid [Char]`) |
 | **5.5c** — `[a]`, `(a, b)` | **DEFERRED** | type-level list syntax + dictionary builders: `f :: [Int] -> [Int]` is not parsable today, and `instance Monoid [a]` needs a builder |
 | ~~5.5pre-2~~ — `Floating`/`Integral` | **DELETED** | duplicated P3/P4 of `2026-10-25-rill-lang-typeclass-layer.md`; its unique requirement moved to P3 Step 4 |
@@ -356,13 +356,12 @@ without losing anything.
   only host sample type in use is f32: **zero** `compile::<f64>` call sites).
 - Therefore `Double` is the only element a program can name or observe.
 
-**Known and accepted:** the store is f32, so a `Double` element is a **widened**
-f32. The existing test states it explicitly —
-`array_buffer.rs:157`: `assert_eq!(first, Value::Double(f64::from(direct[0])))`.
-This is not a conformance divergence: `FixedBuffer` has no Haskell counterpart,
-so no Report rule governs its internal precision. It is also exactly why the
-parameter must stay — when f64 pools (or a real `Float`) arrive, the same
-`FixedBuffer Double` becomes literally exact with **no type change**.
+**Precision is out of scope here** (user, 2026-10-26): `Float` is about to be
+added, so the store's current f32 width is not a question this task answers. The
+element is `Double` because that is the one element the language can name today;
+what the store will hold is settled by the pool/`Float` work, and the same
+`FixedBuffer Double` stays correct either way — which is precisely why the
+parameter must not be removed.
 
 **Measured defects to close:**
 
