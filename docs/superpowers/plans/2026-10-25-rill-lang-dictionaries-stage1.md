@@ -293,12 +293,25 @@ f :: Double -> Double;    f x = x + 1.0;  f 1.0 → 2.0
 
 The fix is not a seventh list: it is **one registry**.
 
+**Where the registry lives is decided: compile time only.** One `TypeEnv`
+object, seeded at load with the fixed set of predefined built-in types
+(`TypeEnv::with_builtins`, interpreter code) and then extended by the program's
+own declarations. It is *not* mirrored into `WorldState`. After full runtime
+polymorphism every observable operation is either resolved statically or carried
+by a dictionary slot — dispatch is a slot index, `show`/`==`/`compare` are
+dictionary methods, `deriving` output is a fragment — so a runtime name table
+would have no consumer, and a second copy would recreate this very defect
+(two or more structures that must agree). The runtime's type knowledge is the
+dictionary table itself (one vtable per used `(class, type)` pair, by index, no
+names) — see the design's §3.2.1, which records this decision and the evidence.
+
 - [ ] **Step 1: Introduce the registry.** Extend `TypeEnv` with
   `type_entry(&self, name: &str) -> Option<TypeEntry>` covering scalars (`Int`,
   `Float`, `Bool`, `String`, `Buffer`, `()`), builtin constructors with arity,
   `data`, `newtype`, `type` aliases, abstract types, and class type variables.
   The existing maps stay as storage; scalar entries are added so they are no
-  longer special-cased in code.
+  longer special-cased in code. Builtins are seeded once per environment; a
+  program's declarations extend the same object.
 - [ ] **Step 2: One predicate and one resolver.** `vty_of_name` returns
   `Option<ValueTy>` (unknown ⇒ `unknown type name`). Replace all six sites with
   registry calls.
@@ -308,7 +321,9 @@ The fix is not a seventh list: it is **one registry**.
   the registry *once* and asserts every consumer sees it (declaration check,
   `vty_of_name`, derived-instance seed, FFI scalar check, renderer). It must
   fail if any consumer keeps its own list.
-- [ ] **Step 5: Verify and commit.**
+- [ ] **Step 5: Verify and commit.** No `WorldState` field is added; a
+  runtime-name lookup would be an anti-goal (*no strings in the dispatch
+  path*).
 
 ```bash
 cargo test -p rill-lang --features dsp && cargo clippy -p rill-lang --features dsp && cargo fmt --check

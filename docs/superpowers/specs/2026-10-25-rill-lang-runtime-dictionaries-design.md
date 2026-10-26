@@ -199,6 +199,42 @@ method of every class.
   aggregate plus its `supers` vector; the accounting adds a constant per
   *used* instance, not per call site.
 
+#### 3.2.1 There is no runtime type-name registry — the dictionary IS the type evidence
+
+The type-name registry is a **compile-time** structure and stays in
+[`TypeEnv`](crate::types::ty::TypeEnv). It is never mirrored into `realWorld`,
+not now and not after runtime polymorphism is fully implemented. This was
+proposed (twice: a fixed built-in registry in interpreter code plus the
+program's registry on the world, analogous to dictionaries) and rejected on
+evidence:
+
+| Runtime need | How it is served after full runtime polymorphism | Needs a name registry? |
+|---|---|---|
+| dispatch (`(+)` on `Int`) | static slot index (§3.3) | no |
+| `show` / `read` | a `Show`/`Read` dictionary method — `DictSlot::Fragment` | no |
+| `==` / `compare` | `DictSlot::Kernel(KernelId::…)` | no |
+| `deriving` output | compile-time; the generated body is a fragment in the dictionary | no |
+| numeric literal defaulting | compile-time, at the top of inference | no |
+| user instances | `DictSlot::Fragment` — the fragment *is* the behaviour | no |
+
+Every operation that a Haskell 2010 program can observe is either resolved
+statically or carried by a dictionary slot. A name table at runtime would have
+no consumer: it could not participate in dispatch (anti-goal: *no strings in
+the dispatch path*), and duplicating the registry would recreate exactly the
+defect that the single compile-time registry exists to remove — several
+structures that must agree and silently drift.
+
+The information a name registry could still provide is *enumeration* ("which
+types does this program declare"), which is a tooling/REPL question answered by
+the compiler's `TypeEnv`, not an evaluation question. The runtime side of the
+same information is the **dictionary table** (§3.2: one `ArenaRef` per used
+`(class, type)` pair) — a table of vtables, addressed by index, with no names
+and no types in it. That table is the whole of the runtime's type knowledge,
+which is what "the existing dictionary metadata is enough" means concretely.
+
+Consequence for the naming work: the type-name registry (Task 5.5a) is a
+compile-time refactor in `TypeEnv`; it does not add a field to `WorldState`.
+
 ### 3.3 Dispatch: what the compiler emits
 
 | Source | Emitted shape |
