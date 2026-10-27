@@ -184,3 +184,22 @@ fn int_still_wraps_where_integer_does_not() {
     let wrapped = run(&shows_i64("9223372036854775807 + 1"));
     assert_eq!(wrapped, "-9223372036854775808");
 }
+
+#[test]
+fn integer_literals_are_arbitrary_precision() {
+    // A literal far outside i64 must LEX and keep every digit.
+    assert_eq!(
+        run(&shows_int("123456789012345678901234567890 :: Integer")),
+        "123456789012345678901234567890"
+    );
+}
+
+#[test]
+fn an_out_of_range_literal_on_the_int_track_truncates_like_ghc() {
+    // GHC warns "Literal … is out of the Int range" and truncates. rill has no
+    // warning channel; the value must still be the same i64 GHC produces.
+    assert_eq!(
+        run(&shows_i64("123456789012345678901234567890")),
+        "-4362896299872285998"
+    );
+}

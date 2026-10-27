@@ -286,7 +286,7 @@ fn extract_resources(
             if ctor == "tape_loop" || ctor == "TapeLoop" {
                 match args.as_slice() {
                     [Expr::Int(v, _)] => {
-                        let cap = *v as usize;
+                        let cap = crate::lower::literal_to_i64(v) as usize;
                         if cap == 0 {
                             return Err(CompileError::Unsupported(format!(
                                 "tape '{}' has zero capacity",

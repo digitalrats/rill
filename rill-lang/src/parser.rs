@@ -631,8 +631,9 @@ impl<'a> Parser<'a> {
                 Ok(Pattern::Wild)
             }
             Tok::Int(v) => {
+                let v = v.clone();
                 self.bump();
-                Ok(Pattern::LitInt(*v))
+                Ok(Pattern::LitInt(v))
             }
             Tok::Double(v) => {
                 self.bump();
@@ -2315,11 +2316,13 @@ impl<'a> Parser<'a> {
                 if matches!(next.tok, Tok::Int(_) | Tok::Double(_)) && next.span.start == t.span.end
                 {
                     self.bump(); // the number
-                    match next.tok {
+                    match &next.tok {
                         Tok::Double(v) => {
-                            Ok(Expr::Neg(Box::new(Expr::Double(v, next.span)), t.span))
+                            Ok(Expr::Neg(Box::new(Expr::Double(*v, next.span)), t.span))
                         }
-                        Tok::Int(v) => Ok(Expr::Neg(Box::new(Expr::Int(v, next.span)), t.span)),
+                        Tok::Int(v) => {
+                            Ok(Expr::Neg(Box::new(Expr::Int(v.clone(), next.span)), t.span))
+                        }
                         _ => Ok(Expr::Ref("-".into(), t.span)),
                     }
                 } else {
@@ -3060,7 +3063,7 @@ mod tests {
                 Some(("f", args)) => {
                     assert_eq!(args.len(), 2);
                     assert!(matches!(args[0], Expr::Ref(g, _) if g == "g"));
-                    assert!(matches!(args[1], Expr::Int(2, _)));
+                    assert!(matches!(&args[1], Expr::Int(v, _) if *v == 2.into()));
                 }
                 other => panic!("expected Apply, got {other:?}"),
             },
@@ -3284,7 +3287,7 @@ mod tests {
                     Expr::Record(fields, _) => {
                         assert_eq!(fields.len(), 1);
                         assert_eq!(fields[0].0, "channels");
-                        assert!(matches!(fields[0].1, Expr::Int(3, _)));
+                        assert!(matches!(&fields[0].1, Expr::Int(v, _) if *v == 3.into()));
                     }
                     other => panic!("expected Record, got {other:?}"),
                 }
@@ -3823,7 +3826,7 @@ mod tests {
             arms[0].guards[0].0.is_none(),
             "a bare `Circle r -> r` arm carries no guard at all"
         );
-        assert!(matches!(arms[1].pattern, Pattern::LitInt(0)));
+        assert!(matches!(&arms[1].pattern, Pattern::LitInt(v) if *v == 0.into()));
         assert!(matches!(arms[2].pattern, Pattern::Wild));
         assert!(matches!(&arms[3].pattern, Pattern::Var(v) if v == "n"));
         assert!(
@@ -4005,7 +4008,7 @@ mod tests {
         match curry_head(&body("main = a ! i + 1")) {
             Some(("+", args)) => {
                 assert!(matches!(curry_head(args[0]), Some(("index", inner)) if inner.len() == 2));
-                assert!(matches!(args[1], Expr::Int(1, _)));
+                assert!(matches!(&args[1], Expr::Int(v, _) if *v == 1.into()));
             }
             other => panic!("expected `+` at the root, got {other:?}"),
         }
@@ -4033,7 +4036,7 @@ mod tests {
             panic!("expected an `index` application for `main = a!1`, got {e:?}");
         };
         assert_eq!(args.len(), 2);
-        assert!(matches!(args[1], Expr::Int(1, _)));
+        assert!(matches!(&args[1], Expr::Int(v, _) if *v == 1.into()));
     }
 
     #[test]

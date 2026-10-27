@@ -2,6 +2,7 @@
 
 use crate::error::Span;
 use crate::mode::Mode;
+use num_bigint::BigInt;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -86,8 +87,11 @@ pub enum Pattern {
     Var(String),
     /// Matches anything, binds nothing (`_`).
     Wild,
-    /// Integer literal.
-    LitInt(i64),
+    /// Integer literal, at arbitrary precision. A case-pattern integer is
+    /// matched against an `Int` scrutinee, so lowering converts it with
+    /// `literal_to_i64` (GHC's truncation) — the pattern stays on the `Int`
+    /// track.
+    LitInt(BigInt),
     /// Double literal.
     LitDouble(f64),
     /// String literal.
@@ -137,8 +141,11 @@ pub struct MatchArm {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Expr {
-    /// Integer literal.
-    Int(i64, Span),
+    /// Integer literal, at arbitrary precision — `123456789012345678901234567890`
+    /// is a valid literal. Which value track it lands on is decided at
+    /// lowering time (an `Integer`-annotated literal keeps every digit; an
+    /// unannotated one converts with `literal_to_i64`).
+    Int(BigInt, Span),
     /// Double literal.
     Double(f64, Span),
     /// Imaginary literal is gone (Haskell 2010 has no imaginary literal).

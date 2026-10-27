@@ -1,14 +1,17 @@
 //! Hand-written tokeniser. Produces `Token`s carrying source spans.
 
 use crate::error::{CompileError, Span};
+use num_bigint::BigInt;
 
 /// A lexical token kind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     /// Numeric literal that contains a `.` or exponent — a float.
     Double(f64),
-    /// Numeric literal with no `.` — an integer.
-    Int(i64),
+    /// Numeric literal with no `.` — an integer. Carries arbitrary precision:
+    /// `123456789012345678901234567890` is a valid literal (GHC accepts it as
+    /// an `Integer`).
+    Int(BigInt),
     /// Identifier / keyword (`sin`, `min`, `process`, user names).
     Ident(String),
     /// String literal, e.g. `"cutoff"`.
@@ -452,7 +455,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                     span,
                 });
             } else {
-                let v: i64 = text.parse().map_err(|_| CompileError::Lex {
+                let v: BigInt = text.parse().map_err(|_| CompileError::Lex {
                     msg: format!("invalid int literal `{text}`"),
                     span,
                 })?;
@@ -617,7 +620,12 @@ mod tests {
     fn distinguishes_int_and_float() {
         assert_eq!(
             kinds("3 3.5 10"),
-            vec![Tok::Int(3), Tok::Double(3.5), Tok::Int(10), Tok::Eof]
+            vec![
+                Tok::Int(3.into()),
+                Tok::Double(3.5),
+                Tok::Int(10.into()),
+                Tok::Eof
+            ]
         );
     }
 
@@ -707,7 +715,7 @@ mod tests {
                 Tok::LParen,
                 Tok::Str("freq".into()),
                 Tok::Comma,
-                Tok::Int(440),
+                Tok::Int(440.into()),
                 Tok::RParen,
                 Tok::Eof,
             ]
@@ -722,7 +730,7 @@ mod tests {
                 Tok::KwLet,
                 Tok::Ident("x".into()),
                 Tok::Eq,
-                Tok::Int(1),
+                Tok::Int(1.into()),
                 Tok::KwIn,
                 Tok::Ident("x".into()),
                 Tok::Eof,

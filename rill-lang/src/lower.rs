@@ -12,6 +12,7 @@ use crate::ir::{
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
 use crate::types::ty::{concat_map_result_elem, DataInfo, TypeEnv, ValueTy};
+use num_bigint::BigInt;
 
 /// Match a concrete value type against a structural pattern that may contain
 /// fresh `Var` positions (a record's freshened field type), recording each
@@ -1280,11 +1281,14 @@ impl<'a> Lowerer<'a> {
                 if matches!(expected, Some(ValueTy::Integer)) {
                     self.emit_value(ValueInstr::ValueConstInteger {
                         dst,
-                        value: Box::new((*v).into()),
+                        value: Box::new(v.clone()),
                     });
                     return Ok((dst, ValueTy::Integer));
                 }
-                self.emit_value(ValueInstr::ValueConstInt { dst, value: *v });
+                self.emit_value(ValueInstr::ValueConstInt {
+                    dst,
+                    value: literal_to_i64(v),
+                });
                 Ok((dst, ValueTy::Int))
             }
             Expr::Double(v, _) => {
@@ -1312,7 +1316,7 @@ impl<'a> Lowerer<'a> {
             // untouched. Stage 7a only: it is subsumed when stage 7b makes
             // literals `fromInteger`-polymorphic.
             Expr::Annot { expr, ty, .. } => {
-                let integer_annotation = const_i64(expr).is_some()
+                let integer_annotation = const_bigint(expr).is_some()
                     && matches!(
                         ty,
                         crate::ast::TypeExpr::TName(n)
@@ -3543,16 +3547,19 @@ impl<'a> Lowerer<'a> {
                 // the one place a statically-`Int` slot held a `Value::Double` —
                 // and an `Ix` offset computed from a negative lower bound then
                 // failed the interpreter's "index is not an Int" check.
-                if let Some(v) = const_i64(inner) {
+                if let Some(v) = const_bigint(inner) {
                     let dst = self.fresh_value_reg();
                     if matches!(expected, Some(ValueTy::Integer)) {
                         self.emit_value(ValueInstr::ValueConstInteger {
                             dst,
-                            value: Box::new((-v).into()),
+                            value: Box::new(-v),
                         });
                         return Ok((dst, ValueTy::Integer));
                     }
-                    self.emit_value(ValueInstr::ValueConstInt { dst, value: -v });
+                    self.emit_value(ValueInstr::ValueConstInt {
+                        dst,
+                        value: literal_to_i64(&-v),
+                    });
                     return Ok((dst, ValueTy::Int));
                 }
                 match const_f64(inner) {
@@ -7521,7 +7528,7 @@ impl<'a> Lowerer<'a> {
                 let lit_reg = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueConstInt {
                     dst: lit_reg,
-                    value: *v,
+                    value: literal_to_i64(v),
                 });
                 Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
             }
@@ -7936,7 +7943,7 @@ impl<'a> Lowerer<'a> {
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueBufferConst {
                     dst,
-                    value: *v as f64,
+                    value: literal_to_f64(v),
                 });
                 Ok(vec![dst])
             }
@@ -8293,7 +8300,9 @@ impl<'a> Lowerer<'a> {
                                             // `tape_loop : Int -> Tape Double` —
                                             // exactly one integer-constant arg.
                                             let cap = match ctor_args.as_slice() {
-                                                [Expr::Int(v, _)] => *v as usize,
+                                                [Expr::Int(v, _)] => {
+                                                    literal_to_i64(v) as usize
+                                                }
                                                 _ => {
                                                     return Err(CompileError::Type {
                                                         msg: "tape_loop takes exactly one positive integer capacity"
@@ -9140,22 +9149,61 @@ fn body_carries_class_demand(env: &TypeEnv, e: &Expr) -> bool {
     refs.iter().any(|n| env.class_of_method(n).is_some())
 }
 
-/// The INTEGER value of a constant expression, when it is an integer literal
-/// (possibly nested under unary minus). Unlike [`const_f64`] this does NOT
-/// accept float literals or arithmetic: it is used where the constant must stay
-/// on the Int track (`Expr::Neg` of an integer literal).
-fn const_i64(e: &Expr) -> Option<i64> {
+/// The arbitrary-precision integer value of a constant expression, when it is
+/// an integer literal (possibly nested under unary minus). Unlike [`const_f64`]
+/// this does NOT accept float literals or arithmetic: it is used where the
+/// constant must stay on the Int track (`Expr::Neg` of an integer literal) and
+/// deciding whether a literal is an integer constant at all.
+fn const_bigint(e: &Expr) -> Option<BigInt> {
     match e {
-        Expr::Int(v, _) => Some(*v),
-        Expr::Neg(inner, _) => const_i64(inner).map(|v| -v),
+        Expr::Int(v, _) => Some(v.clone()),
+        Expr::Neg(inner, _) => const_bigint(inner).map(|v| -v),
         _ => None,
     }
+}
+
+/// Reduce an arbitrary-precision integer literal to the `i64` the `Int` track
+/// carries, reproducing GHC's `-Woverflowed-literals` behaviour exactly.
+///
+/// GHC accepts an out-of-range integer literal: it takes the literal's value
+/// modulo `2^64` and reinterprets the low 64 bits as two's-complement `i64`,
+/// emitting `Literal … is out of the Int range` as a warning. rill has no
+/// warning channel, so only the VALUE is reproduced:
+/// `123456789012345678901234567890` becomes `-4362896299872285998`, which is
+/// what GHC 9.10.3 prints for the same literal at `Int` type.
+///
+/// This is THE conversion boundary. The AST and the tokeniser carry a
+/// [`BigInt`]; every site that needs an `i64` (Ix offsets, array/tape
+/// capacities, the `Int` value track, `Int`-track case patterns) calls this one
+/// helper. Nothing below this point sees a `BigInt` on the `Int` track.
+pub(crate) fn literal_to_i64(v: &BigInt) -> i64 {
+    // The low 64 bits of the magnitude: the digit vector is little-endian, so
+    // its first word IS the low word, and it is absent only for zero.
+    let (sign, digits) = v.to_u64_digits();
+    let low = digits.first().copied().unwrap_or(0);
+    // Reinterpreting those bits as two's complement is `as i64`; a negative
+    // literal reaches them through `wrapping_neg`, which keeps the low word.
+    match sign {
+        num_bigint::Sign::Minus => low.wrapping_neg() as i64,
+        _ => low as i64,
+    }
+}
+
+/// The `f64` value of an arbitrary-precision integer literal.
+///
+/// This is Haskell's `fromInteger :: Integer -> Double`: correctly rounded, and
+/// saturating to `INFINITY` outside `f64`'s finite range. The exact decimal text
+/// goes through Rust's correctly rounded `str::parse`; `num-bigint`'s own
+/// `to_f64` truncates the mantissa instead of rounding, and `num-traits` is not
+/// a direct dependency of this crate.
+fn literal_to_f64(v: &BigInt) -> f64 {
+    v.to_str_radix(10).parse().unwrap_or(f64::NAN)
 }
 
 fn const_f64(e: &Expr) -> Option<f64> {
     match e {
         Expr::Double(v, _) => Some(*v),
-        Expr::Int(v, _) => Some(*v as f64),
+        Expr::Int(v, _) => Some(literal_to_f64(v)),
         Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
         // Constant arithmetic: an infix operator IS an application of the
         // method (`a + b` ≡ `(+) a b`), so folding matches the same shape.
@@ -10258,5 +10306,52 @@ mod tests {
                 "expected a {op:?} effect instruction"
             );
         }
+    }
+
+    #[test]
+    fn literal_to_i64_reproduces_ghcs_truncation() {
+        // Measured on GHC 9.10.3: `show (n :: Int)` for each literal below. GHC
+        // accepts every one of them and warns `-Woverflowed-literals`; the
+        // values are what must match.
+        for (literal, ghc) in [
+            ("123456789012345678901234567890", -4362896299872285998i64),
+            ("9223372036854775808", i64::MIN),
+            ("18446744073709551616", 0),
+            ("18446744073709551621", 5),
+            ("-18446744073709551621", -5),
+            (
+                "10000000000000000000000000000000000000000",
+                -5047021154770878464,
+            ),
+            ("9223372036854775807", i64::MAX),
+            ("-9223372036854775808", i64::MIN),
+            // GHC parses this as `negate 9223372036854775809`: the literal
+            // truncates to `-9223372036854775807` and the negation yields the
+            // MAXIMUM, not the minimum. Negating before converting is what makes
+            // this case right — converting first and negating twice is not.
+            ("-9223372036854775809", i64::MAX),
+            ("-18446744073709551616", 0),
+            ("-18446744073709551617", -1),
+            ("0", 0),
+            ("1", 1),
+            ("-1", -1),
+        ] {
+            let v: BigInt = literal.parse().unwrap();
+            assert_eq!(
+                literal_to_i64(&v),
+                ghc,
+                "literal {literal} must truncate to GHC's value"
+            );
+        }
+    }
+
+    #[test]
+    fn an_in_range_literal_converts_exactly() {
+        // The boundary is only a boundary: every value that FITS is untouched,
+        // so ordinary arithmetic keeps working through the conversion.
+        let v: BigInt = "1234567890123".parse().unwrap();
+        assert_eq!(literal_to_i64(&v), 1234567890123);
+        assert_eq!(literal_to_i64(&-v.clone()), -1234567890123);
+        assert_eq!(literal_to_f64(&v), 1234567890123.0);
     }
 }
