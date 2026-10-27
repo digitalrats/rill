@@ -149,7 +149,9 @@ pub fn unify_value(
                 }
             }
         }
-        (ValueTy::Int, ValueTy::Int) | (ValueTy::Double, ValueTy::Double) => Ok(()),
+        (ValueTy::Int, ValueTy::Int)
+        | (ValueTy::Double, ValueTy::Double)
+        | (ValueTy::Integer, ValueTy::Integer) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
         // `FixedBuffer a` unifies with `FixedBuffer b` exactly when `a` unifies
         // with `b`: the element is part of the type, so `FixedBuffer Int` and

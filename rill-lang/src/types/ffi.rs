@@ -162,6 +162,9 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
         match vty {
             ValueTy::Double => out.push((name.clone(), FfiScalar::Double, default)),
             ValueTy::Int => out.push((name.clone(), FfiScalar::Int, default)),
+            // `Integer` has no host scalar representation: a bignum record
+            // field cannot cross the FFI boundary as an f32/i64 parameter.
+            ValueTy::Integer => {}
             // `bands: List EqBand` — a sequence of band records, each flattened
             // in the band schema's field order at lowering.
             ValueTy::Con(head, args)

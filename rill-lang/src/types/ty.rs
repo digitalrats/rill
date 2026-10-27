@@ -35,6 +35,12 @@ pub enum ValueTy {
     Int,
     /// Floating point value.
     Double,
+    /// Arbitrary-precision integer value (`Integer`), Haskell 2010 §6.4.
+    ///
+    /// A numeric LEAF like [`ValueTy::Int`] — not a `Con`. It is registered in
+    /// the one type registry, so its `Eq`/`Ord` instances are derived by the
+    /// registry pass rather than declared anywhere.
+    Integer,
     /// String value type.
     String,
     /// A signal buffer over an element type (a block of `elem` samples):
@@ -775,6 +781,7 @@ instance (Monad m) => Arrow (Kleisli m) where {
 --  kernels (there are no source equations for a primitive), so the instance
 --  declarations are markers; the kernel is selected by the class + type pair.
 instance Num Int where { }
+instance Num Integer where { }
 instance Num Double where { }
 instance Fractional Double where { }
 
@@ -1439,6 +1446,10 @@ impl TypeEnv {
         for (name, vty, ffi_scalar, buffer_element) in [
             ("Int", ValueTy::Int, true, false),
             ("Double", ValueTy::Double, true, true),
+            // Haskell 2010 §6.4: `Integer` is the arbitrary-precision integer
+            // type. It is NOT an FFI scalar (no host C type denotes a bignum)
+            // and NOT a buffer element (samples are doubles).
+            ("Integer", ValueTy::Integer, false, false),
             ("String", ValueTy::String, true, false),
             ("()", ValueTy::Void, false, false),
         ] {
@@ -1785,6 +1796,10 @@ impl TypeEnv {
         env.builtin_sigs.insert(
             "show_int".to_string(),
             crate::ast::TypeExpr::TFunc(vec![tv("Int")], Box::new(tv("String"))),
+        );
+        env.builtin_sigs.insert(
+            "show_integer".to_string(),
+            crate::ast::TypeExpr::TFunc(vec![tv("Integer")], Box::new(tv("String"))),
         );
         env.builtin_sigs.insert(
             "show_bool".to_string(),
@@ -2829,7 +2844,7 @@ impl TypeEnv {
     ///
     /// This is the enforcement point of Haskell 2010 §3.1: an uppercase
     /// identifier in a type position MUST name a declared type, so
-    /// `f :: Integer -> Integer` is an error rather than a function over a
+    /// `f :: Word8 -> Word8` is an error rather than a function over a
     /// phantom type nothing can inhabit. A lowercase name is a type variable
     /// and always passes.
     ///
@@ -3240,7 +3255,7 @@ impl TypeEnv {
             ValueTy::Buffer(elem) => {
                 format!("FixedBuffer {}", self.type_spelling_named(elem, names))
             }
-            ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void => {
+            ValueTy::Int | ValueTy::Double | ValueTy::Integer | ValueTy::String | ValueTy::Void => {
                 self.scalar_name_of(t).unwrap_or_else(|| format!("{t:?}"))
             }
             // A dictionary is not a data type, so it has no nominal name — spell
@@ -3374,7 +3389,7 @@ impl TypeEnv {
             // monomorphic head whose key is the full applied type — see
             // [`value_type_key`]).
             ValueTy::Buffer(_) => Some("FixedBuffer".to_string()),
-            ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void => {
+            ValueTy::Int | ValueTy::Double | ValueTy::Integer | ValueTy::String | ValueTy::Void => {
                 self.scalar_name_of(v)
             }
             ValueTy::Con(n, _) => Some(n.clone()),
@@ -3752,7 +3767,7 @@ pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
             // (FixedBuffer Double)` head renders as. The key therefore
             // distinguishes elements: there is no `Buffer`-spelled key.
             ValueTy::Buffer(elem) => format!("FixedBuffer {}", key(env, elem)?),
-            ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void => {
+            ValueTy::Int | ValueTy::Double | ValueTy::Integer | ValueTy::String | ValueTy::Void => {
                 env.scalar_name_of(v)?
             }
             // A dictionary is never a registry key: it is compiler-side
@@ -3830,6 +3845,9 @@ pub fn kind_rank(v: &ValueTy) -> i8 {
         ValueTy::TyConVar(_) => 11,
         ValueTy::TyConApp(..) => 12,
         ValueTy::Dict(_) => 13,
+        // `Integer` is a fresh leaf form, so it appends after every existing
+        // rank; no established ordering is reshuffled.
+        ValueTy::Integer => 14,
     }
 }
 
@@ -4048,10 +4066,14 @@ mod hkt_value_ty_tests {
         assert_eq!(env.vty_of_name("String"), Some(ValueTy::String));
         assert_eq!(env.vty_of_name("Double"), Some(ValueTy::Double));
         assert_eq!(env.vty_of_name("Int"), Some(ValueTy::Int));
+        // `Integer` is a registered numeric LEAF (Haskell 2010 §6.4): its name
+        // denotes the arbitrary-precision integer type, not a phantom `Data`
+        // application and not an unknown name.
+        assert_eq!(env.vty_of_name("Integer"), Some(ValueTy::Integer));
         // A name nothing declares is not a type (Haskell 2010 §3.1): a
-        // phantom `Data("Integer", [])` would make `f :: Integer -> Integer`
+        // phantom `Data("Word8", [])` would make `f :: Word8 -> Word8`
         // typecheck over a type no value can inhabit.
-        assert_eq!(env.vty_of_name("Integer"), None);
+        assert_eq!(env.vty_of_name("Word8"), None);
         assert_eq!(env.vty_of_name("Void"), None);
         assert_eq!(env.vty_of_name("()"), Some(ValueTy::Void));
     }

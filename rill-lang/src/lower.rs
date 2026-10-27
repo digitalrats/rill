@@ -183,6 +183,7 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
     matches!(
         i,
         ValueInstr::ValueConstInt { .. }
+            | ValueInstr::ValueConstInteger { .. }
             | ValueInstr::ValueConstDouble { .. }
             | ValueInstr::ValueAdd { .. }
             | ValueInstr::ValueSub { .. }
@@ -1271,6 +1272,17 @@ impl<'a> Lowerer<'a> {
         match e {
             Expr::Int(v, _) => {
                 let dst = self.fresh_value_reg();
+                // An integer literal under an `:: Integer` annotation is an
+                // `Integer` constant (`(2 :: Integer)`). This narrow rule is
+                // stage 7a only: it disappears when stage 7b makes every
+                // integer literal a `fromInteger`-polymorphic value.
+                if matches!(expected, Some(ValueTy::Integer)) {
+                    self.emit_value(ValueInstr::ValueConstInteger {
+                        dst,
+                        value: Box::new((*v).into()),
+                    });
+                    return Ok((dst, ValueTy::Integer));
+                }
                 self.emit_value(ValueInstr::ValueConstInt { dst, value: *v });
                 Ok((dst, ValueTy::Int))
             }
@@ -1288,7 +1300,27 @@ impl<'a> Lowerer<'a> {
             // reading the value the way it actually lowers: an `Int` literal
             // stays `ValueTy::Int` in an `Ix` offset position even when it is
             // annotated `:: Int`.
-            Expr::Annot { expr, .. } => self.lower_value_expected(expr, expected),
+            //
+            // The ONE exception is a numeric literal annotated with the
+            // registered `Integer` leaf: `(2 :: Integer)` must lower as an
+            // `Integer` constant, so the annotation becomes the literal's
+            // expected type. The annotation is still erased — it contributes no
+            // instruction — and every other annotation keeps passing the
+            // caller's `expected` through untouched. Stage 7a only: it is
+            // subsumed when stage 7b makes literals `fromInteger`-polymorphic.
+            Expr::Annot { expr, ty, .. } => {
+                let integer_annotation = matches!(expr.as_ref(), Expr::Int(_, _))
+                    && matches!(
+                        ty,
+                        crate::ast::TypeExpr::TName(n)
+                            if self.env.vty_of_name(n) == Some(ValueTy::Integer)
+                    );
+                if integer_annotation {
+                    self.lower_value_expected(expr, Some(&ValueTy::Integer))
+                } else {
+                    self.lower_value_expected(expr, expected)
+                }
+            }
             Expr::FieldProject {
                 record,
                 field,
@@ -3482,18 +3514,20 @@ impl<'a> Lowerer<'a> {
                     }
                     None => {
                         let (ir, inner_ty) = self.lower_value(inner)?;
-                        let int_track = matches!(inner_ty, ValueTy::Int);
                         let zero = self.fresh_value_reg();
-                        if int_track {
-                            self.emit_value(ValueInstr::ValueConstInt {
+                        match inner_ty {
+                            ValueTy::Int => self.emit_value(ValueInstr::ValueConstInt {
                                 dst: zero,
                                 value: 0,
-                            });
-                        } else {
-                            self.emit_value(ValueInstr::ValueConstDouble {
+                            }),
+                            ValueTy::Integer => self.emit_value(ValueInstr::ValueConstInteger {
+                                dst: zero,
+                                value: Box::new(0.into()),
+                            }),
+                            _ => self.emit_value(ValueInstr::ValueConstDouble {
                                 dst: zero,
                                 value: 0.0,
-                            });
+                            }),
                         }
                         let dst = self.fresh_value_reg();
                         self.emit_value(ValueInstr::ValueSub {
@@ -3501,14 +3535,7 @@ impl<'a> Lowerer<'a> {
                             a: zero,
                             b: ir,
                         });
-                        Ok((
-                            dst,
-                            if int_track {
-                                ValueTy::Int
-                            } else {
-                                ValueTy::Double
-                            },
-                        ))
+                        Ok((dst, inner_ty))
                     }
                 }
             }
@@ -3815,6 +3842,7 @@ impl<'a> Lowerer<'a> {
             "concat_string",
             "show_double",
             "show_int",
+            "show_integer",
             "show_bool",
             "not",
             "and",
@@ -3902,6 +3930,7 @@ impl<'a> Lowerer<'a> {
             ("concat_string", 2) => ConcatString,
             ("show_double", 1) => ShowDouble,
             ("show_int", 1) => ShowInt,
+            ("show_integer", 1) => ShowInteger,
             ("show_bool", 1) => ShowBool,
             // Immutable array storage (flat, type-agnostic). The arity is part
             // of the key: `arrayUpdate`'s assoc list is a distinct operand from
@@ -4042,6 +4071,7 @@ impl<'a> Lowerer<'a> {
             "concat_string" => Ok(ValueTy::String),
             "show_double" => Ok(ValueTy::String),
             "show_int" => Ok(ValueTy::String),
+            "show_integer" => Ok(ValueTy::String),
             "show_bool" => Ok(ValueTy::String),
             "list" => Ok(ValueTy::Con("List".into(), vec![ValueTy::Double])),
             "insert" => match args.len() {
@@ -5654,12 +5684,15 @@ impl<'a> Lowerer<'a> {
                     self.emit_value(ValueInstr::ValueBufferBin { dst, op, a, b });
                     return Ok((dst, self.env.buffer_vty()));
                 }
-                let ret = if matches!(arg_tys.first(), Some(ValueTy::Int))
-                    && matches!(arg_tys.get(1), Some(ValueTy::Int))
-                {
-                    ValueTy::Int
-                } else {
-                    ValueTy::Double
+                // The result track follows the operands' ONE numeric type: two
+                // `Int`s stay `Int`, two `Integer`s stay `Integer`, everything
+                // else is `Double`. A mixed pair is unreachable — `(+)`'s `Num a
+                // => a -> a -> a` rejects it — so the fallback is the existing
+                // Double case, not a widening.
+                let ret = match (arg_tys.first(), arg_tys.get(1)) {
+                    (Some(ValueTy::Int), Some(ValueTy::Int)) => ValueTy::Int,
+                    (Some(ValueTy::Integer), Some(ValueTy::Integer)) => ValueTy::Integer,
+                    _ => ValueTy::Double,
                 };
                 let dst = self.fresh_value_reg();
                 let (a, b) = (arg_regs[0], arg_regs[1]);
@@ -7684,6 +7717,9 @@ impl<'a> Lowerer<'a> {
         match vty {
             ValueTy::Int
             | ValueTy::Double
+            // `Integer` is a leaf payload of the same representation cost as
+            // `Int`: one arena slot, no nested subtree.
+            | ValueTy::Integer
             | ValueTy::String
             | ValueTy::Buffer(_)
             | ValueTy::Void

@@ -2597,8 +2597,8 @@ pub fn infer_program_with_entry(
     // runtime (spec §9.1).
     env.check_acyclic()?;
 
-    // Every type-level name a program writes must denote a type: `Integer`,
-    // `Char`, `Double`, `Void` and any other undeclared uppercase name are
+    // Every type-level name a program writes must denote a type: `Char`,
+    // `Word8`, `Void` and any other undeclared uppercase name are
     // `unknown type name` (Haskell 2010 §3.1 — an uppercase identifier in a
     // type position names a declared type; a lowercase one is a type
     // variable). This runs against the COMPLETE environment, so declaration
@@ -3923,6 +3923,10 @@ fn infer_expr_expected(
             // A numeric literal in a Buffer-expected position is a signal
             // constant (`_ * 0.5` → `0.5 : Buffer`).
             Some(ValueTy::Buffer(_)) => ctx.env.buffer_vty(),
+            // `(2 :: Integer)` — an integer literal at `Integer` type. This
+            // narrow rule is stage 7a only: it disappears when stage 7b makes
+            // every integer literal a `fromInteger`-polymorphic value.
+            Some(ValueTy::Integer) => ValueTy::Integer,
             _ => ValueTy::Int,
         })),
         Expr::Double(_, _) => Ok(ArrowTy::value(match expected {

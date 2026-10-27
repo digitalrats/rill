@@ -1,5 +1,6 @@
 //! IR evaluator: the block-only executor.
 
+use num_bigint::BigInt;
 use rill_core::buffer::FixedBuffer;
 use rill_core::math::vector::ScalarVector4;
 use rill_core::math::Transcendental;
@@ -797,6 +798,8 @@ fn value_cmp_ref(arena: &Arena<Value>, a: &Value, b: &Value) -> i8 {
     use Value::*;
     match (a, b) {
         (Int(x), Int(y)) => x.cmp(y) as i8,
+        // Numeric order, exactly like `Int` — not sign-magnitude byte order.
+        (Integer(x), Integer(y)) => x.cmp(y) as i8,
         // `total_cmp` is a genuine total order: NaN sorts greatest and NaN ≡
         // NaN, so NaN keys in maps and sets stay well-defined and the ordering
         // is transitive. A `partial_cmp`-with-`Equal`-fallback would be an
@@ -916,6 +919,9 @@ fn kind_rank(v: &Value) -> i8 {
         // A dictionary is a fresh variant, so it appends after every existing
         // rank; all previously-built values keep their cross-kind order.
         Dictionary { .. } => 19,
+        // `Integer` is a fresh variant; appended so every existing rank keeps
+        // its cross-kind meaning.
+        Integer(_) => 20,
     }
 }
 
@@ -939,6 +945,7 @@ enum ValueArith {
 /// [`ArithmeticOperand::Absent`].
 enum ArithmeticOperand {
     Int(i64),
+    Integer(BigInt),
     Double(f64),
     Bottom,
     /// The register held nothing, or held a non-numeric value. The caller
@@ -962,6 +969,7 @@ fn arithmetic_operand<T: Transcendental, const BUF: usize>(
     match world.arena.get(head) {
         Some(Value::Bottom) => ArithmeticOperand::Bottom,
         Some(Value::Int(i)) => ArithmeticOperand::Int(*i),
+        Some(Value::Integer(i)) => ArithmeticOperand::Integer(i.clone()),
         Some(Value::Double(f)) => ArithmeticOperand::Double(*f),
         _ => ArithmeticOperand::Absent,
     }
@@ -1044,9 +1052,36 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
             return;
         }
     }
+    // Exact `Integer` `+`/`-`/`*`: no wrapping, no f64 round-trip. `/` is not
+    // available — `Integer` has no `Fractional` instance, so the typed front
+    // end never reaches here with `Div`.
+    if let (ArithmeticOperand::Integer(x), ArithmeticOperand::Integer(y)) = (&av, &bv) {
+        let exact = match op {
+            ValueArith::Add => Some(x + y),
+            ValueArith::Sub => Some(x - y),
+            ValueArith::Mul => Some(x * y),
+            ValueArith::Div => None,
+        };
+        if let Some(v) = exact {
+            world.value_regs[dst] = alloc_owned(ir, world, Value::Integer(v));
+            return;
+        }
+    }
     let av = match av {
         ArithmeticOperand::Int(i) => i as f64,
         ArithmeticOperand::Double(f) => f,
+        // An `Integer` never mixes with a floating operand: the type system
+        // keeps the two apart, so reaching here is a lowering bug. Latch a
+        // fault rather than rounding a bignum into an f64.
+        ArithmeticOperand::Integer(_) => {
+            latch_fault(
+                ir,
+                world,
+                "arithmetic mixes an Integer operand with a floating one",
+            );
+            world.value_regs[dst] = None;
+            return;
+        }
         ArithmeticOperand::Bottom | ArithmeticOperand::Absent => {
             unreachable!("bottom and absent operands are handled above")
         }
@@ -1054,6 +1089,17 @@ fn exec_value_arith<T: Transcendental, const BUF: usize>(
     let bv = match bv {
         ArithmeticOperand::Int(i) => i as f64,
         ArithmeticOperand::Double(f) => f,
+        // See the `av` arm above: mixed-kind arithmetic is a fault, not a
+        // rounding.
+        ArithmeticOperand::Integer(_) => {
+            latch_fault(
+                ir,
+                world,
+                "arithmetic mixes an Integer operand with a floating one",
+            );
+            world.value_regs[dst] = None;
+            return;
+        }
         ArithmeticOperand::Bottom | ArithmeticOperand::Absent => {
             unreachable!("bottom and absent operands are handled above")
         }
@@ -1205,6 +1251,17 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
         }
         ValueInstr::ValueConstInt { dst, value } => {
             world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Int(*value));
+        }
+        ValueInstr::ValueConstInteger { dst, value } => {
+            // Release the previous occupant first: the payload is a heap
+            // `BigInt`, so a re-assigned register must not leak it. (Registers
+            // are SSA in lowering, so this is the defensive hand-written-IR
+            // case, exactly like `ValueMove`.)
+            if let Some(old) = world.value_regs[*dst + base].take() {
+                drops.push(old);
+            }
+            world.value_regs[*dst + base] =
+                alloc_owned(ir, world, Value::Integer((**value).clone()));
         }
         ValueInstr::ValueConstDouble { dst, value } => {
             world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Double(*value));
@@ -3147,6 +3204,23 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 });
             world.value_regs[dst] =
                 v.and_then(|i| alloc_owned(ir, world, Value::String(i.to_string())));
+        }
+        ShowInteger => {
+            // Exact decimal expansion: no truncation fallback, because
+            // `show_integer` is typed `Integer -> String` — a non-`Integer`
+            // operand is a lowering bug and yields "no value", never a rounded
+            // rendering of a bignum.
+            let v = world
+                .value_regs
+                .get(base + args[0])
+                .copied()
+                .flatten()
+                .and_then(|r| world.arena.get(r))
+                .and_then(|v| match v {
+                    Value::Integer(i) => Some(i.to_string()),
+                    _ => None,
+                });
+            world.value_regs[dst] = v.and_then(|s| alloc_owned(ir, world, Value::String(s)));
         }
         ShowBool => {
             // Booleans are the `true`/`false` keywords in source, but they

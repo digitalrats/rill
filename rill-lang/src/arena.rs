@@ -9,6 +9,8 @@
 
 pub use rill_core::memory::{Arena, ArenaError, ArenaRef, ArenaValue, BufferPool};
 
+use num_bigint::BigInt;
+
 /// Call-by-need state of a thunk cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ThunkState {
@@ -40,6 +42,8 @@ pub enum ValueKind {
     Int,
     /// Floating-point value.
     Double,
+    /// Arbitrary-precision integer value (`Integer`).
+    Integer,
     /// String value.
     String,
     /// Record with named fields stored as arena refs.
@@ -172,6 +176,12 @@ pub enum Value {
     Int(i64),
     /// Floating-point payload.
     Double(f64),
+    /// Arbitrary-precision integer payload — Haskell 2010 `Integer`.
+    ///
+    /// A leaf: the payload is boxed-in-enum (`BigInt` is 32 bytes) and owns no
+    /// arena children, exactly like [`Value::Int`]. `Int` and `Integer` are
+    /// DISTINCT types; nothing widens one into the other implicitly.
+    Integer(BigInt),
     /// String payload.
     String(String),
     /// Record fields, one arena ref per field.
@@ -284,6 +294,7 @@ impl Value {
         match self {
             Value::Int(_) => ValueKind::Int,
             Value::Double(_) => ValueKind::Double,
+            Value::Integer(_) => ValueKind::Integer,
             Value::String(_) => ValueKind::String,
             Value::Record(_) => ValueKind::Record,
             Value::Sum(_, _) => ValueKind::Sum,
@@ -368,6 +379,8 @@ impl ArenaValue for Value {
                 }
             }
             Value::ThunkCell(ThunkState::Forced(r)) => f(*r),
+            // Leaves that own no arena children: an `Integer` payload is a
+            // `BigInt` (a plain owned integer, not a ref), exactly like `Int`.
             Value::ThunkCell(_) | Value::Bottom | Value::Nil => {}
             Value::Cons(h, t) => {
                 f(*h);
@@ -450,6 +463,23 @@ impl ArenaValue for Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_is_a_leaf_value_of_the_same_size_class() {
+        use num_bigint::BigInt;
+        // `Integer` is a numeric LEAF: it owns no arena children.
+        let v = Value::Integer(BigInt::from(1_000_000_000_000_000_000_i64));
+        assert_eq!(v.kind(), ValueKind::Integer);
+        let mut seen: Vec<ArenaRef> = Vec::new();
+        v.visit_refs(|r| seen.push(r));
+        assert!(seen.is_empty(), "an Integer must own no arena refs");
+        // The payload is 32 bytes; the enum must not grow past its current 48.
+        assert!(
+            std::mem::size_of::<Value>() <= 48,
+            "Value must not grow: {} bytes",
+            std::mem::size_of::<Value>()
+        );
+    }
 
     #[test]
     fn thunk_visits_env_and_cell() {

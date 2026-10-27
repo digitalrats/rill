@@ -9,6 +9,7 @@
 //! consumes the same structure.
 
 use crate::builtin::BuiltinKind;
+use num_bigint::BigInt;
 
 /// A register index into the per-sample scratch file.
 pub type Reg = usize;
@@ -117,6 +118,9 @@ pub enum ValueBuiltinOp {
     ShowDouble,
     /// Render an Int as a String (`show_int`).
     ShowInt,
+    /// Render an `Integer` as a String (`show_integer`): the exact decimal
+    /// expansion of the arbitrary-precision value.
+    ShowInteger,
     /// Render a Bool as a String (`show_bool`): `True` → `"True"`,
     /// `False` → `"False"` (the Haskell constructor spelling).
     ShowBool,
@@ -349,6 +353,13 @@ pub enum ValueInstr {
         dst: usize,
         /// The value.
         value: i64,
+    },
+    /// Create an `Integer` value (Haskell 2010 arbitrary-precision integer).
+    ValueConstInteger {
+        /// Destination value register.
+        dst: usize,
+        /// The value. Boxed: an `Integer` payload is wider than a register.
+        value: Box<BigInt>,
     },
     /// Create a Double value.
     ValueConstDouble {
@@ -1100,6 +1111,7 @@ mod value_builtin_tests {
             ValueBuiltinOp::ConcatString,
             ValueBuiltinOp::ShowDouble,
             ValueBuiltinOp::ShowInt,
+            ValueBuiltinOp::ShowInteger,
             ValueBuiltinOp::ShowBool,
             ValueBuiltinOp::ArrayFromList,
             ValueBuiltinOp::ArrayBounds,
@@ -1114,6 +1126,6 @@ mod value_builtin_tests {
             ValueBuiltinOp::ArrayFromAssocs,
             ValueBuiltinOp::ArraySeed,
         ];
-        assert_eq!(ops.len(), 34);
+        assert_eq!(ops.len(), 35);
     }
 }

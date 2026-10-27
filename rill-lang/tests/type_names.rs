@@ -1,12 +1,15 @@
 //! Type-NAME conformance (Haskell 2010 §3.1): a name denotes a type only if
 //! something declared it, and a lowercase name is a type variable.
 //!
-//! rill used to accept any name in a type position, so `f :: Integer ->
-//! Integer` compiled and ran although no `Integer` value exists. The registry
+//! rill used to accept any name in a type position, so `f :: Zork -> Zork`
+//! compiled and ran although no `Zork` value exists. The registry
 //! ([`TypeEnv::type_entry`]) is now the single answer to "does this name denote
 //! a type": the declaration check, the resolver, the derived-instance seed, the
 //! FFI classification and the diagnostic renderer all read it, so they cannot
 //! disagree again.
+//!
+//! `Integer` used to be the example here. It is a REGISTERED scalar now
+//! (Report §6.4), so the placeholder is `Zork` and the guarantee is unchanged.
 
 pub mod common;
 
@@ -56,19 +59,19 @@ fn env_of(defs: &str) -> TypeEnv {
 
 #[test]
 fn an_undeclared_type_name_is_rejected() {
-    // `Integer` is a Haskell 2010 Prelude type, but rill has no `Integer`
-    // representation — so the name denotes nothing and the signature is an
-    // unknown-type error (GHC's `Not in scope: type constructor or class
-    // 'Integer'`). Before the registry this compiled and ran, returning `1`.
-    let err = compile_err("f :: Integer -> Integer; f x = x; main = f 1;");
+    // `Integer` IS a registered Haskell 2010 Prelude type now (Report §6.4), so
+    // the placeholder this test used to name is gone. The GUARANTEE it asserts
+    // is unchanged: an uppercase name nothing declares denotes nothing, so a
+    // signature mentioning it is an unknown-type error (GHC's `Not in scope:
+    // type constructor or class 'Zork'`).
+    let err = compile_err("f :: Zork -> Zork; f x = x; main = f 1;");
     assert!(
-        err.contains("unknown type name `Integer`"),
+        err.contains("unknown type name `Zork`"),
         "the error must name the undeclared type, got: {err}"
     );
 
-    // ... and the same holds for any other undeclared uppercase name, not just
-    // the ones the brief happened to measure.
-    for name in ["Zork", "Integer", "Word", "Maybe2", "Listy"] {
+    // ... and the same holds for any other undeclared uppercase name.
+    for name in ["Zork", "Word", "Maybe2", "Listy"] {
         let src = format!("f :: {name} -> Int; f x = 1; main = f 1;");
         let err = compile_err(&src);
         assert!(
@@ -76,6 +79,14 @@ fn an_undeclared_type_name_is_rejected() {
             "`{name}` must be rejected as an unknown type, got: {err}"
         );
     }
+
+    // The other half, now that `Integer` is real: the name resolves in the
+    // registry and a signature over it compiles — `f :: Integer -> Integer` is
+    // no longer the phantom-type defect this test was written for.
+    let env = TypeEnv::with_builtins();
+    assert_eq!(env.vty_of_name("Integer"), Some(ValueTy::Integer));
+    compile("f :: Integer -> Integer; f x = x; main = 1.0;")
+        .expect("a registered type name must be accepted");
 }
 
 #[test]
