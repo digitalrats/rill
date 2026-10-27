@@ -1,6 +1,6 @@
 # rill-lang: dictionary stages — stage 2 (dictionary construction at seat)
 
-> **Status:** ready to implement.
+> **Status:** **DONE** — commit `105bf22` (1087 tests).
 > **Design:** `2026-10-25-rill-lang-runtime-dictionaries-design.md` §3.2 (where
 > dictionaries live), §3.7 step 2 (this stage), §3.9 (missing kernels).
 > **Predecessors, all landed:** §3.7 step 0 (`f439106`, `03bd4ee`, `4d7ff99`) and
@@ -95,28 +95,28 @@ then never return a silent hole, and stage 7 has an exact checklist.
 
 ## Steps
 
-- [ ] **Step 1: One kernel table.** Extract `(class, method) → Option<KernelId>`
+- [x] **Step 1: One kernel table.** Extract `(class, method) → Option<KernelId>`
       into a single function; refactor `lower_primitive_method` to use it and
       delete the inline `match` arms it replaces. Behaviour identical.
-- [ ] **Step 2: `DictDesc` + `Ir::dicts`.** Add the descriptor type and the IR
+- [x] **Step 2: `DictDesc` + `Ir::dicts`.** Add the descriptor type and the IR
       field (empty for programs that mention no classes).
-- [ ] **Step 3: Build the descriptor set in lowering.** From `dict_selections`
+- [x] **Step 3: Build the descriptor set in lowering.** From `dict_selections`
       plus the declared superclass closure; topological order; `ty_key` from the
       existing identity function; `DictSlot::Fragment` for source instances
       (`Ir::fragments`) and `DictSlot::Kernel` for primitives. A cyclic closure
       is a hard error.
-- [ ] **Step 4: Seat materialises them.** `WorldState::dicts: Vec<ArenaRef>`, one
+- [x] **Step 4: Seat materialises them.** `WorldState::dicts: Vec<ArenaRef>`, one
       `Value::Dictionary` per descriptor, supers resolved by index; all four RC
       walkers already handle the value, so no new walker work.
-- [ ] **Step 5: Debug accessors.** `dicts_len()`, a descriptor↔slot consistency
+- [x] **Step 5: Debug accessors.** `dicts_len()`, a descriptor↔slot consistency
       check, and the unimplemented-kernel report from the "visible, not silent"
       section.
-- [ ] **Step 6: Prove it.** A program using `Num Double`, `Ord Double`,
+- [x] **Step 6: Prove it.** A program using `Num Double`, `Ord Double`,
       `Eq Double` gets a dictionary for each **and** for the `Eq`/`Ord`
       superclasses `Num` declares; every slot is a fragment or a kernel; the
       unimplemented-kernel list equals §3.9's six names and nothing else; a
       program with no classes gets an empty table.
-- [ ] **Step 7: No behaviour change.** Full suite green; nothing reads the table
+- [x] **Step 7: No behaviour change.** Full suite green; nothing reads the table
       yet.
 
 ## Acceptance
@@ -138,3 +138,40 @@ Steps 3–8: passing a dictionary parameter, projecting a slot, deleting
 `lower_primitive_method` / `lower_constrained_apply_site`, literal
 `fromInteger`, defaulting. Those change dispatch; this stage only builds the
 table and proves it correct.
+
+## Outcome (`105bf22`)
+
+Controller-verified after the fact:
+
+| Check | Result |
+|---|---|
+| Dictionary table for `same`/`lt`/`add` on `Double` | `dicts=3` — `Eq Double`, `Ord Double`, `Num Double` |
+| Topological order | `[0] Eq supers=[]`, `[1] Ord supers=["Eq(0)"]`, `[2] Num supers=["Eq(0)","Ord(1)"]` — every superclass ref points backwards; one forward pass suffices |
+| One kernel table | `kernels::kernel_for_method` (`kernels.rs:37`); consumed by `lower_primitive_method` **and** the descriptor builder; the inline `match (class, name)` arms are gone |
+| Missing kernels | exactly six and nothing else: `Compare`, `Negate`, scalar `Abs`, `Signum`, `FromInteger`, `Recip` — matches design §3.9 |
+| Class-free program | `dicts=0` |
+| Behaviour | unchanged; 1087 tests green |
+| `Ir` serialisation | `Ir` carries no `Serialize`, so no JSON tag moved; `program_json` (serialization + dsp) stays 8/8 |
+
+### Gaps handed to stage 3 (found, not papered over)
+
+1. **Prelude bodies' selections are unmerged** — their spans index the prelude
+   text, so a dictionary needed *only* inside a prelude body has no descriptor.
+2. **Infix operators record nothing** — `1.0 < 2.0` and `1.0 == 2.0` produce
+   `dicts=0`, because operator dispatch still goes through the legacy
+   `Expr::Arith`/`Expr::Cmp` path (P-A's unfinished half). Method-call syntax
+   (`(<) a b`) does record.
+3. **`fmap` over a concrete container never calls `record_selection`.**
+4. **Given-constraint witnesses have no concrete type**, so `Num a => a -> a`
+   yields no dictionary — correct for now (nothing to build yet), and it becomes
+   "the caller supplies it" at stage 3.
+5. **Some Complete-mode bodies that capture become a precise gap.**
+
+Also fixed on the way: a latent `subtree_size` panic on a bare `List`/`Set`/`Map`.
+
+### Consequence
+
+Stage 2 builds and proves the table, but **no ordinary program exercises it yet**:
+operators (gap 2) and `fmap` (gap 3) are exactly the two ways a user mentions a
+class, and neither records a selection. Closing gaps 2–3 belongs to stage 3–4,
+where a dictionary becomes an argument and a slot is projected.
