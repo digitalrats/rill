@@ -1,6 +1,6 @@
 # rill-lang: `Bool` as a real data type — B1 (erase the special case)
 
-> **Status:** ready to implement. Tracked as **OD-26 / B1**.
+> **Status:** **DONE** — commit `d5bb035` (1109 tests). Tracked as **OD-26 / B1**.
 > **Decision (user, 2026-10-27):** take **B** — full erasure — split into two
 > independent tasks. This plan is **B1**. `Eq`/`Ord` for sum types and the
 > `App` vs `Data` unification defect are **B2**, a separate task.
@@ -54,33 +54,33 @@ short-circuits for free.
 
 ## Scope (B1 only)
 
-- [ ] **Step 1: Declare the type.** `data Bool = False | True` in the PRELUDE,
+- [x] **Step 1: Declare the type.** `data Bool = False | True` in the PRELUDE,
       registered as a sum type with two nullary constructors.
-- [ ] **Step 2: Constructors in expressions.** `True` / `False` parse and resolve
+- [x] **Step 2: Constructors in expressions.** `True` / `False` parse and resolve
       to the constructors (`Expr::Ref`). `true` / `false` stay accepted as
       **aliases** so existing programs and tests do not have to change their
       spelling; the Report's spelling (`True`/`False`) becomes the canonical one.
-- [ ] **Step 3: Constructors in patterns.** `True` / `False` work as constructor
+- [x] **Step 3: Constructors in patterns.** `True` / `False` work as constructor
       patterns, matching the same way `case` on a sum already does.
-- [ ] **Step 4: Delete the special case.** Remove `ValueTy::Bool`,
+- [x] **Step 4: Delete the special case.** Remove `ValueTy::Bool`,
       `Value::Bool`, `ValueKind::Bool`, `Expr::Bool`, `Pattern::LitBool`,
       `Tok::KwTrue`/`KwFalse` (after step 2 keeps the aliases), and
       `ValueInstr::ValueBool`. Every match arm the compiler reports is either
       replaced by the `Sum`/`Data` path or deleted. **The `Bool` value type is
       now `Data("Bool", [])` everywhere.**
-- [ ] **Step 5: `if` uses `BranchCtor`.** The condition is a `Data("Bool", [])`
+- [x] **Step 5: `if` uses `BranchCtor`.** The condition is a `Data("Bool", [])`
       value; `True` is ctor tag 1, `False` tag 0 (declaration order: `False |
       True`, so `False` = 0). Delete `value_reg_is_true` and any
       `ValueTerm::Branch` use whose only purpose was a boolean condition.
-- [ ] **Step 6: `&&` / `||` become Prelude functions** with the Report's
+- [x] **Step 6: `&&` / `||` become Prelude functions** with the Report's
       equations. Delete `Expr::Logic` and `ValueInstr::ValueLogic`.
-- [ ] **Step 7: Prove OD-25 is fixed.** `false && loop 1.0` → `False`;
+- [x] **Step 7: Prove OD-25 is fixed.** `false && loop 1.0` → `False`;
       `true || loop 1.0` → `True`; `true && loop 1.0` still diverges. Quote the
       three results.
-- [ ] **Step 8: Prove the constructors are real.** `myAnd True y = y; myAnd False
+- [x] **Step 8: Prove the constructors are real.** `myAnd True y = y; myAnd False
       _ = False` compiles and runs — this is what decides whether `&&` could be a
       function at all.
-- [ ] **Step 9: Full suite + gates.** `show_bool` keeps working (it is
+- [x] **Step 9: Full suite + gates.** `show_bool` keeps working (it is
       rill-specific; it must render the constructor, not a removed variant).
 
 ## Acceptance
@@ -110,3 +110,51 @@ short-circuits for free.
 capability (`Bool` ordering) until B2 restores it for sum types generally. That
 is the accepted cost of removing the special case; B1's report must list every
 test that had to be changed or skipped because of it.
+
+## Outcome (`d5bb035`)
+
+Controller-verified after the fact.
+
+**All seven special points are gone** (grep count zero for each):
+`ValueTy::Bool`, `Value::Bool`, `ValueKind::Bool`, `Expr::Bool`,
+`Pattern::LitBool`, `Tok::KwTrue`, `Tok::KwFalse`, `ValueInstr::ValueBool`,
+`ValueInstr::ValueLogic`, `Expr::Logic`, `value_reg_is_true`.
+
+| Check | Result |
+|---|---|
+| `True` / `False` in pattern position | `myAnd True y = y; myAnd False _ = False` compiles and runs → `False` |
+| lowercase aliases | `true && false` → `False` |
+| `show_bool True` | → `True` |
+| `if` branching | via `BranchCtor` on the constructor tag; `ValueTerm::Branch` deleted |
+| **OD-25** | pinned by `bool_data_type::od_25_short_circuit_comes_from_laziness`: `False && loop 1.0` → `False`, `True \|\| loop 1.0` → `True`, and the two controls (`True && loop`, `False \|\| loop`) still diverge — so the passing cases are real short-circuits, not a blanket skip |
+| fixity | `infixr 3 &&` / `infixr 2 \|\|` preserved (`True \|\| True && False` = `True`) |
+| operators as values | `(&&) True True`, `(\|\|) False True` work |
+
+### The B2 regression, stated plainly
+
+These worked before B1 and are **type errors** now, because user sum types have
+no `Eq`/`Ord` and their unification is broken
+(`App("Bool", [])` vs `Data("Bool", [])`):
+
+| Expression | Before | After B1 |
+|---|---|---|
+| `False == False` | `True` | type error |
+| `False < True` | `True` | type error |
+| `compare True False` | worked | type error |
+
+One existing test had to be rewritten
+(`haskell2010_syntax_gaps::fixity_4_4_2::comparison_operators_are_non_associative`
+used `(1.0==2.0)==(3.0>4.0)`, which now needs `Eq Bool`); it feeds both
+comparisons to a constructor-pattern function instead, so non-associativity is
+still asserted.
+
+**No `Bool`-specific `Eq`/`Ord` was added** — that would recreate the special case
+this task removes. Restoring boolean ordering is **B2**: `Eq`/`Ord`/`deriving`
+for sum types plus the `App` vs `Data` unification defect.
+
+### Deliberate deviation from the plan
+
+`ValueTerm::Branch` was deleted rather than kept beside `BranchCtor`: once `if`,
+guards and literal tests all move to `BranchCtor`, nothing but a boolean
+condition ever used it. Keeping a dead variant would have been the "two paths"
+defect this work exists to remove.
