@@ -748,24 +748,20 @@ instance Num (Tape Double) where { }
 instance Buffer (FixedBuffer Double) where { }
 instance Buffer (Tape Double) where { }
 
---  Legacy Buffer-arrow combinators (`Buffer -> Buffer` as first-class
---  values), retained as plain value functions after the signal surface
---  syntax (`:` / `,` / `<:` / `:>` and the `~` / `@` stateful operators)
---  was removed. `seq`/`par`/`split`/`merge` compose Buffer arrows directly;
---  they use the builtin `Pair a b` record (`first`/`second`) to carry two
---  channels.
-
---  `seq f g` runs f then g on one channel: `\ x -> g (f x)`.
-seq = \ f -> \ g -> \ x -> g (f x);
---  `par f g` runs f and g independently on a two-channel Pair:
---  `\ p -> Pair { first: f p.first, second: g p.second }`.
-par = \ f -> \ g -> \ p -> Pair { first: f p.first, second: g p.second };
---  `split f g` fans one channel out to both f and g:
---  `\ x -> Pair { first: f x, second: g x }`.
-split = \ f -> \ g -> \ x -> Pair { first: f x, second: g x };
---  `merge f g` sums the two channels through f and g into one:
---  `\ p -> f p.first + g p.second`.
-merge = \ f -> \ g -> \ p -> f p.first + g p.second;
+--  The Faust-style Buffer-arrow combinators (`seq` / `par` / `split` /
+--  `merge`) were REMOVED. They were leftovers of the signal surface that was
+--  deleted with the `:` / `,` / `<:` / `:>` syntax, and they conflicted with
+--  Haskell 2010:
+--
+--  * `seq` is a Prelude function in Haskell 2010 (`seq :: a -> b -> b`, the
+--    strictness primitive). rill's combinator gave the name an unrelated
+--    meaning, so an ordinary Haskell 2010 program using `seq` could not be
+--    written — a name exists in both languages and meant different things.
+--  * `par`, `split` and `merge` are not Prelude names, but they are unused: no
+--    test and no library program composes a Buffer arrow with them.
+--
+--  If they return, they belong as a variation of `do`-notation sugar over
+--  `Buffer`, not as value bindings occupying Prelude names.
 
 --  `otherwise` — the GHC Prelude's guard fallback is an ordinary Bool VALUE,
 --  not a keyword: `otherwise = True`. A definition here (rather than a token in

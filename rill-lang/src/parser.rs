@@ -17,7 +17,6 @@ enum InfixOp {
     Sub,
     Mul,
     Div,
-    Rem,
     CmpEq,
     CmpNe,
     CmpLt,
@@ -40,7 +39,7 @@ impl InfixOp {
     fn is_arith(self) -> bool {
         matches!(
             self,
-            InfixOp::Add | InfixOp::Sub | InfixOp::Mul | InfixOp::Div | InfixOp::Rem
+            InfixOp::Add | InfixOp::Sub | InfixOp::Mul | InfixOp::Div
         )
     }
 
@@ -50,7 +49,6 @@ impl InfixOp {
             InfixOp::Sub => ArithOp::Sub,
             InfixOp::Mul => ArithOp::Mul,
             InfixOp::Div => ArithOp::Div,
-            InfixOp::Rem => ArithOp::Rem,
             _ => unreachable!("not an arithmetic operator"),
         }
     }
@@ -162,10 +160,13 @@ fn infix_binding_power(t: &Tok) -> Option<(InfixOp, u8, u8)> {
         // `+ -` — `infixl 6`.
         Tok::Plus => (InfixOp::Add, 11, 12),
         Tok::Minus => (InfixOp::Sub, 11, 12),
-        // `* / %` — `infixl 7` (`%` is rill-specific and shares the level).
+        // `* /` — `infixl 7`. (`%` is NOT an operator here: Haskell 2010 has no
+        // `(%)` in the Prelude — `Data.Ratio.%` is a constructor — and the
+        // remainder operations are the ordinary functions `mod` / `rem` /
+        // `div` / `quot`. rill spelled `rem` as `%`, which took a name that
+        // means something else in Haskell, so `%` was removed.)
         Tok::Star => (InfixOp::Mul, 13, 14),
         Tok::Slash => (InfixOp::Div, 13, 14),
-        Tok::Percent => (InfixOp::Rem, 13, 14),
         // `!` — rill's infix indexing (`index`), the analog of Haskell's `!!`.
         // `infixl 9`: `a ! i + 1` ≡ `(a ! i) + 1`, `a ! b ! c` ≡ `(a ! b) ! c`.
         // `!` is the index operator in expression position regardless of
@@ -190,7 +191,6 @@ fn infix_op_from_name(name: &str) -> Option<InfixOp> {
         "-" => InfixOp::Sub,
         "*" => InfixOp::Mul,
         "/" => InfixOp::Div,
-        "%" => InfixOp::Rem,
         "==" => InfixOp::CmpEq,
         "!=" => InfixOp::CmpNe,
         "<" => InfixOp::CmpLt,
@@ -289,7 +289,6 @@ fn desugar_infix_op(op: InfixOp, lhs: Expr, rhs: Expr) -> Expr {
         | InfixOp::Sub
         | InfixOp::Mul
         | InfixOp::Div
-        | InfixOp::Rem
         | InfixOp::CmpEq
         | InfixOp::CmpNe
         | InfixOp::CmpLt
@@ -325,7 +324,6 @@ fn bare_operator_name(tok: &Tok) -> Option<&'static str> {
         Tok::Minus => "-",
         Tok::Star => "*",
         Tok::Slash => "/",
-        Tok::Percent => "%",
         Tok::EqEq => "==",
         Tok::NotEq => "/=",
         Tok::Lt => "<",
@@ -2333,7 +2331,6 @@ impl<'a> Parser<'a> {
             }
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
             Tok::Slash => Ok(Expr::Ref("/".into(), t.span)),
-            Tok::Percent => Ok(Expr::Ref("%".into(), t.span)),
             Tok::Ident(name) => {
                 if self.peek().tok == Tok::Dot {
                     let proj = self.parse_field(Expr::Ref(name, t.span), t.span.start)?;

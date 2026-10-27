@@ -707,7 +707,9 @@ fn arith_info(op: &ArithOp) -> (u8, u8, u8, &'static str) {
         ArithOp::Sub => (11, 11, 12, "-"),
         ArithOp::Mul => (13, 13, 14, "*"),
         ArithOp::Div => (13, 13, 14, "/"),
-        ArithOp::Rem => (13, 13, 14, "%"),
+        // `rem`/`mod` are ordinary functions in Haskell 2010, not operators;
+        // the core exists but no infix spelling maps to it.
+        ArithOp::Rem => (13, 13, 14, "rem"),
     }
 }
 

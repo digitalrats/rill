@@ -2290,9 +2290,9 @@ pub fn infer_program_with(program: &Program, mode: Mode) -> Result<TypedProgram,
 /// explicit at both call sites. Before this rule existed, inference filtered
 /// user defs OUT by Prelude name (so the name was typed with the Prelude's
 /// scheme) while lowering's `name -> Def` map overwrote last-wins (so the
-/// name RAN the user's body): a user `merge`/`seq` was silently typed with the
-/// Prelude's arity and then failed to unify, or worse, ran a body of the wrong
-/// shape.
+/// name RAN the user's body): a user def shadowing a Prelude value definition
+/// was silently typed with the Prelude's arity and then failed to unify, or
+/// worse, ran a body of the wrong shape.
 ///
 /// Definitions that cannot own a value name (data/typeclass/instance/foreign
 /// declarations) never shadow anything: only [`Def::Eval`] defs enter the
@@ -2445,12 +2445,16 @@ pub fn infer_program_with_entry(
     // make every Strict-mode program fail) and the shadowing set
     // [`merge_prelude_defs`] consults.
     let user_defs: Vec<crate::ast::Def> = program.defs.clone();
-    // Prelude function definitions (the Buffer-arrow combinators:
-    // `seq`/`par`/`split`/`merge`) are typed HERE, BEFORE the user's `data`
-    // declarations register (a user `data Pair` would otherwise shadow the
-    // builtin `Pair a b` the combinators' bodies use). They are pure functions,
-    // so typing them against the builtin env is sound; they then flow into
-    // `program.defs` so reduce/lower see them as ordinary top-level defs.
+    // Prelude function definitions are typed HERE, BEFORE the user's `data`
+    // declarations register (a user `data` would otherwise shadow a builtin
+    // record the prelude bodies use). They are pure functions, so typing them
+    // against the builtin env is sound; they then flow into `program.defs` so
+    // reduce/lower see them as ordinary top-level defs.
+    //
+    // This list is EMPTY at present: the Faust-style Buffer-arrow combinators
+    // (`seq`/`par`/`split`/`merge`) were removed — `seq` occupies a Haskell
+    // 2010 Prelude name with an unrelated meaning, and the other three were
+    // dead. The mechanism stays for the next prelude value definition.
     //
     // The Prelude is typed as a WHOLE: one of its defs may call another
     // (`from` is recursive), and a user shadowing one name must not make a
@@ -2624,11 +2628,12 @@ pub fn infer_program_with_entry(
         dict_selections: HashMap::new(),
     };
 
-    // The prelude combinators were already typed above (against the builtin
+    // Prelude value definitions were already typed above (against the builtin
     // env, before user `data` shadowed any builtin record). Seed their schemes
     // into the main context and exclude them from the per-program re-inference
-    // so `seq`/`par`/`split`/`merge` resolve without re-typing (a user `data
-    // Pair` would otherwise shadow the builtin `Pair` the bodies use).
+    // so they resolve without re-typing (a user `data Pair` would otherwise
+    // shadow the builtin `Pair` the bodies use). The list is empty today; see
+    // the note above on the removed Buffer-arrow combinators.
     //
     // `prelude_defs` is already the SHADOWED list (see `merge_prelude_defs`): a
     // Prelude def whose name a user def owns is absent, so seeding it cannot

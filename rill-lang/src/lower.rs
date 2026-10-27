@@ -3482,7 +3482,7 @@ impl<'a> Lowerer<'a> {
                         ArithOp::Div => BinArith::Div,
                         ArithOp::Rem => {
                             return Err(CompileError::Type {
-                                msg: "buffer `%` is not supported".into(),
+                                msg: "buffer remainder is not supported".into(),
                                 span: *span,
                             });
                         }
@@ -3524,7 +3524,7 @@ impl<'a> Lowerer<'a> {
                     },
                     ArithOp::Rem => {
                         return Err(CompileError::Type {
-                            msg: "value `%` is not supported".into(),
+                            msg: "value remainder is not supported".into(),
                             span: *span,
                         });
                     }
@@ -5772,7 +5772,6 @@ impl<'a> Lowerer<'a> {
             "-" => ArithOp::Sub,
             "*" => ArithOp::Mul,
             "/" => ArithOp::Div,
-            "%" => ArithOp::Rem,
             other => unreachable!("not an arithmetic operator: {other}"),
         };
         let arith = Expr::Arith {
@@ -8615,7 +8614,6 @@ impl<'a> Lowerer<'a> {
             "-" => Some(BinArith::Sub),
             "*" => Some(BinArith::Mul),
             "/" => Some(BinArith::Div),
-            "%" => Some(BinArith::Rem),
             "min" => Some(BinArith::Min),
             "max" => Some(BinArith::Max),
             "atan2" => Some(BinArith::Atan2),
