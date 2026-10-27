@@ -79,7 +79,7 @@ Haskell 2010 names.
 | `add 1.0 2.0` | `3.0` | `3.0` | OK |
 | `id x = x` at `Int` and `Float` | works | works | OK |
 | integer literal in a `Float` context (`f x = x + 1.0; f 1`) | `2.0` | `2.0` | OK |
-| defaulting (`1 + 2` → `Int`) | `Int` | `Integer` | OK for rill's numeral set (documented mapping) |
+| defaulting (`1 + 2` → `Int`) | `Int` (`i64`) | `Integer` (bignum, no `Bounded` instance) | **WRONG — not a "numeral set" choice.** `1 + 2` is `Integer` in GHC, so it does **not** overflow; rill's is `Int`, so it does. Verified: `maxBound :: Int + 1` wraps to `-9223372036854775808`, while `1 + 2 + 10^27` gives `1000000000000000000000000003` in GHC. `Integer` does not exist in rill at all (`unknown type name`), so `fromInteger` has no target type. Recorded as **OD-27**; belongs with stage 7. |
 
 Root cause of the three WRONG/EXTRA rows: operators still go through the legacy
 `Expr::Arith` / `Expr::Cmp` path with a `kind_rank` fallback instead of the class
