@@ -36,7 +36,45 @@ cannot unify value type App("Bool", []) with Data("Bool", [])
 `data_arities`, and `infer.rs:5266` (`if data_arities.contains_key(head) {
 Data } else { App }`) then builds `App` for it while other paths build `Data`.
 
+## The exact seam (measured — this is the whole task)
+
+There is already **one** correct arity answer, `TypeEnv::type_ctor_arity`
+(`ty.rs:2380`):
+
+```rust
+if let Some(a) = self.ctor_kinds.get(name)  { return Some(*a); }
+if let Some(a) = self.data_arities.get(name) { return Some(*a); }
+self.data_types.get(name).map(|_| 0)   // a monomorphic declaration is arity 0
+```
+
+Its last line already treats a nullary declaration as arity **0**. The defect is
+that the `Data`-vs-`App` DECISION does not call it — it calls
+`data_arities.contains_key` inline in three places, and a nullary type is absent
+there:
+
+| Site | Current test | `Bool` today |
+|---|---|---|
+| `ty.rs:2688` `ctor_application` | `data_arities.contains_key(head)` | **false** → `App` |
+| `infer.rs:5266` builtin-sig instantiation | `data_arities.contains_key(head)` | **false** → `App` |
+| `infer.rs:1684` ctor application | `data_arities.contains_key(ctor)` | **false** → `App` |
+| `ty.rs:2420` `kind_of` | `ctor_kinds \|\| data_arities` | **false** → `None`, i.e. "no kind" |
+
+So `Bool` gets `App("Bool", [])` where a declared type is expected, while
+`ValueTy::bool_ty()` and the sum-construction path build `Data("Bool", [])` — and
+unification rejects the pair. **The fix is to route every one of those decisions
+through `type_ctor_arity`** (or a `is_declared_type(name)` derived from it), not
+to add a table.
+
+**This is why the earlier attempt drifted:** with `data_arities` looking like the
+only arity source, "give it a kind" appears to need a new structure. It does not —
+`type_ctor_arity` already exists and `kind_of` only needs to stop second-guessing
+it. **Adding a parallel kind/arity table is a FAILURE of this task**; the
+required change deletes inline questions in favour of the one function that
+already answers them.
+
 ## Why this is not a one-line fix
+
+
 
 `infer.rs:2602` documents the current state as **deliberate**:
 
