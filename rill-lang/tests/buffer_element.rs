@@ -113,8 +113,8 @@ fn a_buffer_never_unifies_with_a_non_buffer() {
         ValueTy::Int,
         ValueTy::Double,
         ValueTy::bool_ty(),
-        ValueTy::Data("FixedBuffer".into(), vec![]),
-        ValueTy::App("List".into(), vec![ValueTy::Double]),
+        ValueTy::Con("FixedBuffer".into(), vec![]),
+        ValueTy::Con("List".into(), vec![ValueTy::Double]),
     ] {
         assert!(
             rill_lang::types::unify::unify_value(
@@ -131,7 +131,7 @@ fn a_buffer_never_unifies_with_a_non_buffer() {
     // element-free application is NOT the buffer type.
     assert_ne!(
         ValueTy::Buffer(Box::new(ValueTy::Double)),
-        ValueTy::App("FixedBuffer".into(), vec![])
+        ValueTy::Con("FixedBuffer".into(), vec![])
     );
 }
 

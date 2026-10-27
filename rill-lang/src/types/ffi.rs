@@ -164,12 +164,12 @@ pub fn ffi_record_schema(env: &TypeEnv, type_name: &str) -> Option<FfiRecordSche
             ValueTy::Int => out.push((name.clone(), FfiScalar::Int, default)),
             // `bands: List EqBand` — a sequence of band records, each flattened
             // in the band schema's field order at lowering.
-            ValueTy::App(head, args)
+            ValueTy::Con(head, args)
                 if head == "List"
                     && args.len() == 1
-                    && matches!(&args[0], ValueTy::Data(_band_ty, _)) =>
+                    && matches!(&args[0], ValueTy::Con(_band_ty, _)) =>
             {
-                let ValueTy::Data(band_ty, _) = &args[0] else {
+                let ValueTy::Con(band_ty, _) = &args[0] else {
                     unreachable!()
                 };
                 out.push((name.clone(), FfiScalar::BandList(band_ty.clone()), default));

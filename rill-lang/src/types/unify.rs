@@ -8,7 +8,7 @@ use crate::error::{CompileError, Span};
 /// Whether the (resolved) value type `ty` transitively contains the variable
 /// `v` (a `Var` or `TyConVar` id) — the occurs-check. A variable chain is
 /// followed (with a visited set, so a pre-existing cyclic binding cannot loop),
-/// and compound types (`Func`, `Data`, `Newtype`, `App`) are walked
+/// and compound types (`Thunk`, `Con`, `Newtype`) are walked
 /// structurally. `Int`/`Double`/`String` are leaves.
 fn value_contains_var(subst: &Subst, ty: &ValueTy, v: TypeVarId) -> bool {
     let mut seen = HashSet::new();
@@ -45,7 +45,7 @@ fn value_contains_var_impl(
                     .iter()
                     .any(|r| value_contains_var_impl(subst, r, v, seen))
         }
-        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => args
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => args
             .iter()
             .any(|a| value_contains_var_impl(subst, a, v, seen)),
         // `m b` (a type-constructor variable applied to args): check the head
@@ -71,7 +71,7 @@ fn value_contains_var_impl(
 /// Value-type variables resolve structurally and RECORD their bindings in
 /// `subst.value_map`: unifying a `Var` with a concrete type binds it (a lambda
 /// parameter used as a higher-order-function callee becomes a `Func`; a record
-/// parameter becomes its `Data` type), so lowering sees concrete parameter
+/// parameter becomes its `Con` type), so lowering sees concrete parameter
 /// types. A `Var` unified with another `Var` chains the bindings (union-find by
 /// variable id keeps the chains acyclic). Binding a `Var` to a COMPOUND type
 /// that (transitively) contains it is an **occurs-check** violation — it would
@@ -92,7 +92,7 @@ pub fn unify_value(
             }
             // Union-find by lower id, exactly like the Var↔Var arm: kind
             // variables chain in `value_map`, so `TyConVar(7) ~ TyConVar(3)`
-            // followed by `TyConVar(3) ~ App(..)` makes `TyConVar(7)` resolve
+            // followed by `TyConVar(3) ~ Con(..)` makes `TyConVar(7)` resolve
             // to the concrete constructor. Kind-aware unification (which would
             // reject a kind variable chained to a plain `*` variable) is
             // refined in Phase 8.
@@ -153,36 +153,37 @@ pub fn unify_value(
         (ValueTy::String, ValueTy::String) => Ok(()),
         // `FixedBuffer a` unifies with `FixedBuffer b` exactly when `a` unifies
         // with `b`: the element is part of the type, so `FixedBuffer Int` and
-        // `FixedBuffer Bool` are different types. A buffer NEVER unifies with a
+        // `FixedBuffer Double` are different types. A buffer NEVER unifies with a
         // non-buffer — this arm is the whole rule, and there is no
-        // `App("FixedBuffer", [elem])` second shape.
+        // `Con("FixedBuffer", [elem])` second shape.
         (ValueTy::Buffer(a), ValueTy::Buffer(b)) => unify_value(a, b, subst, span),
         (ValueTy::Void, ValueTy::Void) => Ok(()),
         // Dictionaries unify by CLASS IDENTITY: a `Num` witness is exactly a
         // `Num` witness and never another class's. A dictionary is not a data
-        // type, so every mixed pair (`Dict` vs `Int`/`Data`/`App`/…) falls
+        // type, so every mixed pair (`Dict` vs `Int`/`Con`/…) falls
         // through to the catch-all and is rejected.
         (ValueTy::Dict(x), ValueTy::Dict(y)) if x == y => Ok(()),
-        (ValueTy::Data(x, ax), ValueTy::Data(y, ay))
-        | (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay))
-            if x == y && ax.len() == ay.len() =>
-        {
+        // THE constructor-application rule: `Con(x, ax)` ~ `Con(y, ay)` when the
+        // heads name the same constructor and the arguments unify positionally.
+        // There is exactly one such arm because there is exactly one
+        // representation of a constructor application (GHC's `TyConApp`).
+        (ValueTy::Con(x, ax), ValueTy::Con(y, ay)) if x == y && ax.len() == ay.len() => {
             for (m, n) in ax.iter().zip(ay.iter()) {
                 unify_value(m, n, subst, span)?;
             }
             Ok(())
         }
-        (ValueTy::App(cx, ax), ValueTy::App(cy, ay)) if cx == cy && ax.len() == ay.len() => {
-            for (x, y) in ax.iter().zip(ay.iter()) {
-                unify_value(x, y, subst, span)?;
+        (ValueTy::Newtype(x, ax), ValueTy::Newtype(y, ay)) if x == y && ax.len() == ay.len() => {
+            for (m, n) in ax.iter().zip(ay.iter()) {
+                unify_value(m, n, subst, span)?;
             }
             Ok(())
         }
         // A class-var (kind variable) unifies with a concrete constructor
         // application head, checking nothing here beyond the binding — arity is
         // checked at instance-resolution time (Phase 8).
-        (ValueTy::TyConVar(f), other @ ValueTy::App(..))
-        | (other @ ValueTy::App(..), ValueTy::TyConVar(f)) => {
+        (ValueTy::TyConVar(f), other @ ValueTy::Con(..))
+        | (other @ ValueTy::Con(..), ValueTy::TyConVar(f)) => {
             if value_contains_var(subst, other, *f) {
                 return Err(CompileError::Type {
                     msg: format!(
@@ -213,9 +214,9 @@ pub fn unify_value(
         // `m b` (a type-constructor variable applied to args) unifies with a
         // concrete application `Maybe Double`: bind the head var to the bare
         // constructor, unify the args.
-        (ValueTy::TyConApp(f, ax), other @ ValueTy::App(..))
-        | (other @ ValueTy::App(..), ValueTy::TyConApp(f, ax)) => {
-            let ValueTy::App(c, ay) = other else {
+        (ValueTy::TyConApp(f, ax), other @ ValueTy::Con(..))
+        | (other @ ValueTy::Con(..), ValueTy::TyConApp(f, ax)) => {
+            let ValueTy::Con(c, ay) = other else {
                 unreachable!()
             };
             if ax.len() != ay.len() {
@@ -224,8 +225,9 @@ pub fn unify_value(
                     span,
                 });
             }
-            // Bind the head variable to the bare constructor (TyConVar ~ App-head).
-            subst.value_map.insert(*f, ValueTy::App(c.clone(), vec![]));
+            // Bind the head variable to the bare constructor
+            // (`TyConVar ~ Con`-head).
+            subst.value_map.insert(*f, ValueTy::Con(c.clone(), vec![]));
             for (x, y) in ax.iter().zip(ay.iter()) {
                 unify_value(x, y, subst, span)?;
             }
@@ -267,9 +269,9 @@ mod tests {
     }
 
     #[test]
-    fn value_matching_data_unifies() {
+    fn value_matching_con_unifies() {
         let mut s = Subst::default();
-        let p = ValueTy::Data("Point".into(), vec![]);
+        let p = ValueTy::Con("Point".into(), vec![]);
         unify_value(&p, &p, &mut s, sp()).unwrap();
     }
 
@@ -310,18 +312,18 @@ mod tests {
     }
 
     #[test]
-    fn unifies_app_with_matching_ctor() {
+    fn unifies_con_with_matching_ctor() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Double]);
-        let b = ValueTy::App("List".into(), vec![ValueTy::Double]);
+        let a = ValueTy::Con("List".into(), vec![ValueTy::Double]);
+        let b = ValueTy::Con("List".into(), vec![ValueTy::Double]);
         unify_value(&a, &b, &mut s, sp()).unwrap();
     }
 
     #[test]
-    fn unifies_app_with_type_var_binding() {
+    fn unifies_con_with_type_var_binding() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Var(1)]);
-        let b = ValueTy::App("List".into(), vec![ValueTy::Double]);
+        let a = ValueTy::Con("List".into(), vec![ValueTy::Var(1)]);
+        let b = ValueTy::Con("List".into(), vec![ValueTy::Double]);
         unify_value(&a, &b, &mut s, sp()).unwrap();
         assert_eq!(s.resolve_value(&ValueTy::Var(1)), ValueTy::Double);
     }
@@ -330,23 +332,23 @@ mod tests {
     fn unifies_tyconvar_with_ctor_head() {
         let mut s = Subst::default();
         let pat = ValueTy::TyConVar(10);
-        let ctor = ValueTy::App("List".into(), vec![ValueTy::Double]);
+        let ctor = ValueTy::Con("List".into(), vec![ValueTy::Double]);
         unify_value(&pat, &ctor, &mut s, sp()).unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::TyConVar(10)),
-            ValueTy::App("List".into(), vec![ValueTy::Double])
+            ValueTy::Con("List".into(), vec![ValueTy::Double])
         );
     }
 
     #[test]
     fn recursive_kind_is_rejected_by_occurs_check() {
-        // TyConVar(5) unified with App("List", [TyConVar(5)]) is a recursive
+        // TyConVar(5) unified with Con("List", [TyConVar(5)]) is a recursive
         // kind: `f = List f`. The occurs-check must catch the TyConVar nested
-        // inside the App argument list.
+        // inside the Con argument list.
         let mut s = Subst::default();
         assert!(unify_value(
             &ValueTy::TyConVar(5),
-            &ValueTy::App("List".into(), vec![ValueTy::TyConVar(5)]),
+            &ValueTy::Con("List".into(), vec![ValueTy::TyConVar(5)]),
             &mut s,
             sp(),
         )
@@ -361,14 +363,14 @@ mod tests {
         unify_value(&ValueTy::TyConVar(7), &ValueTy::TyConVar(3), &mut s, sp()).unwrap();
         unify_value(
             &ValueTy::TyConVar(3),
-            &ValueTy::App("Maybe".into(), vec![ValueTy::Double]),
+            &ValueTy::Con("Maybe".into(), vec![ValueTy::Double]),
             &mut s,
             sp(),
         )
         .unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::TyConVar(7)),
-            ValueTy::App("Maybe".into(), vec![ValueTy::Double])
+            ValueTy::Con("Maybe".into(), vec![ValueTy::Double])
         );
     }
 
@@ -380,19 +382,19 @@ mod tests {
         unify_value(&ValueTy::Var(4), &ValueTy::TyConVar(6), &mut s, sp()).unwrap();
         unify_value(
             &ValueTy::TyConVar(6),
-            &ValueTy::App("List".into(), vec![ValueTy::Int]),
+            &ValueTy::Con("List".into(), vec![ValueTy::Int]),
             &mut s,
             sp(),
         )
         .unwrap();
         assert_eq!(
             s.resolve_value(&ValueTy::Var(4)),
-            ValueTy::App("List".into(), vec![ValueTy::Int])
+            ValueTy::Con("List".into(), vec![ValueTy::Int])
         );
     }
 
     #[test]
-    fn bool_is_a_data_application_and_string_is_a_leaf() {
+    fn bool_is_a_con_application_and_string_is_a_leaf() {
         let mut s = Subst::default();
         let b = ValueTy::bool_ty();
         unify_value(&b, &b, &mut s, sp()).unwrap();
@@ -401,10 +403,10 @@ mod tests {
     }
 
     #[test]
-    fn app_ctor_head_mismatch_errors() {
+    fn con_ctor_head_mismatch_errors() {
         let mut s = Subst::default();
-        let a = ValueTy::App("List".into(), vec![ValueTy::Double]);
-        let b = ValueTy::App("Map".into(), vec![ValueTy::Double]);
+        let a = ValueTy::Con("List".into(), vec![ValueTy::Double]);
+        let b = ValueTy::Con("Map".into(), vec![ValueTy::Double]);
         assert!(unify_value(&a, &b, &mut s, sp()).is_err());
     }
 }

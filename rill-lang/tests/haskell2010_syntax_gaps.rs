@@ -244,15 +244,14 @@ mod fixity_4_4_2 {
         }
         // Parenthesizing restores an `infix 4` chain — proving the error is
         // about associativity, not about the comparison operators themselves.
-        // The operands are fed to a user function rather than re-compared:
-        // `(1.0 == 2.0) == (3.0 > 4.0)` needs `Eq Bool`, and `Bool` is now an
-        // ordinary sum type whose `Eq` instance is not usable until the
-        // sum-type `Eq`/`Ord` work lands (the tracked App-vs-Data unification
-        // defect). Feeding the two booleans to a constructor-pattern function
-        // exercises the same parenthesized comparisons without that dependency.
-        let defs = "sameB True True = True;\nsameB False False = True;\nsameB _ _ = False;";
-        assert!(bool_of(defs, "sameB (1.0 == 2.0) (3.0 > 4.0)"));
-        assert!(!bool_of(defs, "sameB (1.0 == 2.0) (1.0 < 2.0)"));
+        // `(1.0 == 2.0) == (3.0 > 4.0)` is `False == False` = True, and
+        // `(1.0 == 2.0) == (1.0 < 2.0)` is `False == True` = False, so a
+        // re-grouped reading changes the value. (This half was previously
+        // written around a user `sameB` helper because `Eq Bool` did not work;
+        // `Bool` is an ordinary sum type whose derived `Eq` compares by
+        // constructor tag, so the direct spelling is correct Haskell 2010.)
+        assert!(bool_of("", "(1.0 == 2.0) == (3.0 > 4.0)"));
+        assert!(!bool_of("", "(1.0 == 2.0) == (1.0 < 2.0)"));
         assert!(bool_of("", "1.0 < 2.0 && 2.0 < 3.0"));
     }
 

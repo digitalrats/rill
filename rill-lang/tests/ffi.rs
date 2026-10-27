@@ -13,7 +13,7 @@ fn signal_prelude_registers_fixedbuffer_and_buffer() {
     // under the full applied type — the element is part of the instance, and
     // there is no element-free `FixedBuffer` key.
     let env = TypeEnv::with_builtins();
-    assert_eq!(env.ctor_arity("FixedBuffer"), Some(1));
+    assert_eq!(env.type_ctor_arity("FixedBuffer"), Some(1));
     assert_eq!(env.buffer_role("FixedBuffer"), Some(BufferRole::Channel));
     assert!(env.typeclasses.contains_key("Buffer"));
     assert!(env
@@ -548,7 +548,7 @@ fn builtin_catalog_registers_record_data_types() {
             assert_eq!(fields.len(), 1);
             assert!(matches!(
                 &fields[0].1,
-                rill_lang::types::ty::ValueTy::App(head, args)
+                rill_lang::types::ty::ValueTy::Con(head, args)
                     if head == "List" && args.len() == 1
             ));
         }

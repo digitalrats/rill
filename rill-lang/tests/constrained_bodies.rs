@@ -28,7 +28,7 @@ fn mentions_var(t: &ValueTy, id: TypeVarId) -> bool {
         ValueTy::Thunk(args, rets) => {
             args.iter().any(|a| mentions_var(a, id)) || rets.iter().any(|r| mentions_var(r, id))
         }
-        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => {
             args.iter().any(|a| mentions_var(a, id))
         }
         ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void | ValueTy::Dict(_) => {
@@ -161,8 +161,8 @@ fn dict_unifies_only_with_the_same_class() {
     // the class name.
     for data in [
         ValueTy::Int,
-        ValueTy::Data("Num".to_string(), vec![]),
-        ValueTy::App("Num".to_string(), vec![ValueTy::Int]),
+        ValueTy::Con("Num".to_string(), vec![]),
+        ValueTy::Con("Num".to_string(), vec![ValueTy::Int]),
         ValueTy::Newtype("Num".to_string(), vec![]),
     ] {
         let mut s = Subst::default();
@@ -198,7 +198,7 @@ fn dict_has_no_data_interpretation() {
     );
     // ... while a real data type of that spelling does.
     assert_eq!(
-        env.type_name_of_vty(&ValueTy::Data("Num".to_string(), vec![])),
+        env.type_name_of_vty(&ValueTy::Con("Num".to_string(), vec![])),
         Some("Num".to_string()),
         "control: a nominal data type still names itself"
     );
@@ -225,9 +225,9 @@ fn dict_has_no_data_interpretation() {
         ValueTy::String,
         ValueTy::Buffer(Box::new(ValueTy::Double)),
         ValueTy::Void,
-        ValueTy::Data("Pair".to_string(), vec![]),
+        ValueTy::Con("Pair".to_string(), vec![]),
         ValueTy::Newtype("Wrap".to_string(), vec![]),
-        ValueTy::App("List".to_string(), vec![]),
+        ValueTy::Con("List".to_string(), vec![]),
         ValueTy::Thunk(vec![], vec![ValueTy::Int]),
         ValueTy::Var(0),
         ValueTy::TyConVar(0),

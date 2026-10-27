@@ -38,17 +38,16 @@ fn match_field_expected(
             true
         }
         ValueTy::TyConApp(f, pat_args) => match concrete {
-            ValueTy::App(c, c_args) | ValueTy::Data(c, c_args) | ValueTy::Newtype(c, c_args) => {
+            ValueTy::Con(c, c_args) | ValueTy::Newtype(c, c_args) => {
                 if pat_args.len() != c_args.len() {
                     return false;
                 }
                 if let Some((_, existing)) = bindings.iter().find(|(b, _)| b == f) {
-                    if !matches!(existing, ValueTy::App(h, _) | ValueTy::Data(h, _) | ValueTy::Newtype(h, _) if h == c)
-                    {
+                    if !matches!(existing, ValueTy::Con(h, _) | ValueTy::Newtype(h, _) if h == c) {
                         return false;
                     }
                 } else {
-                    bindings.push((*f, ValueTy::App(c.clone(), vec![])));
+                    bindings.push((*f, ValueTy::Con(c.clone(), vec![])));
                 }
                 pat_args
                     .iter()
@@ -72,21 +71,17 @@ fn match_field_expected(
             }
             _ => false,
         },
-        ValueTy::Data(n, pat_args) | ValueTy::Newtype(n, pat_args) | ValueTy::App(n, pat_args) => {
-            match concrete {
-                ValueTy::Data(c, c_args)
-                | ValueTy::Newtype(c, c_args)
-                | ValueTy::App(c, c_args) => {
-                    n == c
-                        && pat_args.len() == c_args.len()
-                        && pat_args
-                            .iter()
-                            .zip(c_args.iter())
-                            .all(|(p, c)| match_field_expected(p, c, bindings))
-                }
-                _ => false,
+        ValueTy::Con(n, pat_args) | ValueTy::Newtype(n, pat_args) => match concrete {
+            ValueTy::Con(c, c_args) | ValueTy::Newtype(c, c_args) => {
+                n == c
+                    && pat_args.len() == c_args.len()
+                    && pat_args
+                        .iter()
+                        .zip(c_args.iter())
+                        .all(|(p, c)| match_field_expected(p, c, bindings))
             }
-        }
+            _ => false,
+        },
         _ => pattern == concrete,
     }
 }
@@ -98,7 +93,7 @@ fn param_placeholder_max(ty: &ValueTy) -> u32 {
     match ty {
         ValueTy::Var(k) | ValueTy::TyConVar(k) => *k,
         ValueTy::TyConApp(f, args) => args.iter().fold(*f, |m, a| m.max(param_placeholder_max(a))),
-        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => {
             args.iter().fold(0, |m, a| m.max(param_placeholder_max(a)))
         }
         ValueTy::Thunk(args, rets) => args
@@ -125,9 +120,7 @@ fn is_concrete_ty(v: &ValueTy) -> bool {
         // registry key. Excluding it keeps this predicate exactly in step with
         // `value_type_key`.
         ValueTy::Dict(_) => false,
-        ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
-            args.iter().all(is_concrete_ty)
-        }
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => args.iter().all(is_concrete_ty),
         // A buffer is concrete only when its element is: `FixedBuffer a` has no
         // registry key, exactly like `App("FixedBuffer", [Var])` does not.
         ValueTy::Buffer(elem) => is_concrete_ty(elem),
@@ -274,7 +267,7 @@ fn concrete_or_double(t: ValueTy) -> ValueTy {
 /// that returns `0.0`.
 fn main_result_is_io_unit(t: &ValueTy) -> bool {
     match t {
-        ValueTy::Data(name, args) => {
+        ValueTy::Con(name, args) => {
             name == "IO" && args.len() == 1 && matches!(args.first(), Some(ValueTy::Void))
         }
         _ => false,
@@ -284,7 +277,7 @@ fn main_result_is_io_unit(t: &ValueTy) -> bool {
 /// The type arguments of a `List` value type (`[elem]`), if `t` is one.
 fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     match t {
-        ValueTy::App(name, inner) if name == "List" => Some(inner),
+        ValueTy::Con(name, inner) if name == "List" => Some(inner),
         _ => None,
     }
 }
@@ -293,7 +286,7 @@ fn list_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
 /// is one.
 fn array_type_args(t: &ValueTy) -> Option<&Vec<ValueTy>> {
     match t {
-        ValueTy::App(name, inner) if name == "Array" => Some(inner),
+        ValueTy::Con(name, inner) if name == "Array" => Some(inner),
         _ => None,
     }
 }
@@ -333,7 +326,7 @@ fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
     // Matching only `App` silently degraded a 2-D bound (`Pair (Pair Int Int)
     // (Pair Int Int)`) to a flat `Int` index.
     match t {
-        Some(ValueTy::App(name, inner)) | Some(ValueTy::Data(name, inner)) if name == "Pair" => {
+        Some(ValueTy::Con(name, inner)) if name == "Pair" => {
             inner.first().cloned().unwrap_or(ValueTy::Int)
         }
         _ => ValueTy::Int,
@@ -346,7 +339,7 @@ fn pair_index_ty(t: Option<&ValueTy>) -> ValueTy {
 /// value side of the pair).
 fn pair_second_ty(t: Option<&ValueTy>) -> ValueTy {
     match t {
-        Some(ValueTy::App(name, inner)) | Some(ValueTy::Data(name, inner)) if name == "Pair" => {
+        Some(ValueTy::Con(name, inner)) if name == "Pair" => {
             inner.get(1).cloned().unwrap_or(ValueTy::Int)
         }
         _ => ValueTy::Int,
@@ -370,12 +363,7 @@ fn bind_pattern_vars(
         (ValueTy::Var(v), actual) if !matches!(actual, ValueTy::Var(w) if w == v) => {
             out.entry(*v).or_insert_with(|| actual.clone());
         }
-        (ValueTy::Data(pn, pa), ValueTy::Data(an, aa))
-        | (ValueTy::App(pn, pa), ValueTy::App(an, aa))
-        | (ValueTy::Data(pn, pa), ValueTy::App(an, aa))
-        | (ValueTy::App(pn, pa), ValueTy::Data(an, aa))
-            if pn == an && pa.len() == aa.len() =>
-        {
+        (ValueTy::Con(pn, pa), ValueTy::Con(an, aa)) if pn == an && pa.len() == aa.len() => {
             for (p, a) in pa.iter().zip(aa.iter()) {
                 bind_pattern_vars(p, a, out);
             }
@@ -410,15 +398,11 @@ fn subst_value_vars(t: &ValueTy, vars: &HashMap<crate::types::TypeVarId, ValueTy
             Some(bound) => bound.clone(),
             None => t.clone(),
         },
-        ValueTy::Data(n, args) => ValueTy::Data(
+        ValueTy::Con(n, args) => ValueTy::Con(
             n.clone(),
             args.iter().map(|a| subst_value_vars(a, vars)).collect(),
         ),
         ValueTy::Newtype(n, args) => ValueTy::Newtype(
-            n.clone(),
-            args.iter().map(|a| subst_value_vars(a, vars)).collect(),
-        ),
-        ValueTy::App(n, args) => ValueTy::App(
             n.clone(),
             args.iter().map(|a| subst_value_vars(a, vars)).collect(),
         ),
@@ -442,11 +426,7 @@ fn subst_value_vars(t: &ValueTy, vars: &HashMap<crate::types::TypeVarId, ValueTy
 /// a frozen `Array i e`.
 fn starray_handle_types(t: Option<&ValueTy>) -> (ValueTy, ValueTy) {
     let args = match t {
-        Some(ValueTy::Data(name, args)) | Some(ValueTy::App(name, args))
-            if name == "STArray" && args.len() == 3 =>
-        {
-            Some(args)
-        }
+        Some(ValueTy::Con(name, args)) if name == "STArray" && args.len() == 3 => Some(args),
         _ => None,
     };
     let index = args
@@ -562,7 +542,7 @@ fn pin_ret_head_types(
         return (arg_tys.to_vec(), ret_tys.to_vec());
     };
     let repl = match exp {
-        ValueTy::Data(c, _) | ValueTy::App(c, _) => ValueTy::App(c.clone(), vec![]),
+        ValueTy::Con(c, _) => ValueTy::Con(c.clone(), vec![]),
         _ => return (arg_tys.to_vec(), ret_tys.to_vec()),
     };
     let Some(ValueTy::TyConApp(hv, _)) = ret_tys.first() else {
@@ -591,7 +571,7 @@ fn subst_tycon_head(t: &ValueTy, hv: u32, repl: &ValueTy) -> ValueTy {
             let args: Vec<ValueTy> = args.iter().map(|a| subst_tycon_head(a, hv, repl)).collect();
             if *f == hv {
                 match repl {
-                    ValueTy::App(c, _) => ValueTy::App(c.clone(), args),
+                    ValueTy::Con(c, _) => ValueTy::Con(c.clone(), args),
                     _ => ValueTy::TyConApp(*f, args),
                 }
             } else {
@@ -602,15 +582,11 @@ fn subst_tycon_head(t: &ValueTy, hv: u32, repl: &ValueTy) -> ValueTy {
             a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
             r.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
         ),
-        ValueTy::Data(n, a) => ValueTy::Data(
+        ValueTy::Con(n, a) => ValueTy::Con(
             n.clone(),
             a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
         ),
         ValueTy::Newtype(n, a) => ValueTy::Newtype(
-            n.clone(),
-            a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
-        ),
-        ValueTy::App(n, a) => ValueTy::App(
             n.clone(),
             a.iter().map(|x| subst_tycon_head(x, hv, repl)).collect(),
         ),
@@ -1021,10 +997,7 @@ impl<'a> Lowerer<'a> {
             dst: rec,
             fields: vec![effect],
         });
-        (
-            rec,
-            ValueTy::Data("ST".into(), vec![ValueTy::Void, payload]),
-        )
+        (rec, ValueTy::Con("ST".into(), vec![ValueTy::Void, payload]))
     }
 
     /// Lower `runSTArray (fn s -> body)` — the freezing sibling of `runST`.
@@ -1117,13 +1090,13 @@ impl<'a> Lowerer<'a> {
             starray_handle_types(arg_tys.first())
         };
         let payload = if allocates {
-            ValueTy::Data("STArray".into(), vec![ValueTy::Void, index.clone(), elem])
+            ValueTy::Con("STArray".into(), vec![ValueTy::Void, index.clone(), elem])
         } else if matches!(op, ValueEffectOp::ReadArrayFlat) {
             elem
         } else if matches!(op, ValueEffectOp::GetArrayBounds) {
-            ValueTy::App("Pair".into(), vec![index.clone(), index])
+            ValueTy::Con("Pair".into(), vec![index.clone(), index])
         } else if matches!(op, ValueEffectOp::GetArrayElems) {
-            ValueTy::App("List".into(), vec![elem])
+            ValueTy::Con("List".into(), vec![elem])
         } else {
             // `writeArrayFlat` / `modifyArrayFlat`.
             ValueTy::Void
@@ -1255,7 +1228,7 @@ impl<'a> Lowerer<'a> {
     fn note_container(&mut self, vty: &ValueTy) {
         if matches!(
             vty,
-            ValueTy::App(name, _) if matches!(name.as_str(), "List" | "Map" | "Set" | "Array")
+            ValueTy::Con(name, _) if matches!(name.as_str(), "List" | "Map" | "Set" | "Array")
         ) {
             self.container_tys.push(vty.clone());
         }
@@ -1340,12 +1313,11 @@ impl<'a> Lowerer<'a> {
                     })
                     .collect();
                 let rec_expected: Option<ValueTy> = if rec_candidates.len() == 1 {
-                    let arity = self
-                        .env
-                        .data_arities
-                        .get(&rec_candidates[0])
-                        .copied()
-                        .unwrap_or(0);
+                    // `type_ctor_arity` is the ONE arity answer: it covers a
+                    // builtin record (`Pair a b` in `ctor_kinds`) and a declared
+                    // one alike, so the record's type args are fresh vars either
+                    // way.
+                    let arity = self.env.type_ctor_arity(&rec_candidates[0]).unwrap_or(0);
                     let args = (0..arity)
                         .map(|_| {
                             let v = self.next_tyvar;
@@ -1353,7 +1325,7 @@ impl<'a> Lowerer<'a> {
                             ValueTy::Var(v)
                         })
                         .collect::<Vec<_>>();
-                    Some(ValueTy::Data(rec_candidates[0].clone(), args))
+                    Some(ValueTy::Con(rec_candidates[0].clone(), args))
                 } else {
                     None
                 };
@@ -1367,7 +1339,7 @@ impl<'a> Lowerer<'a> {
                 // inlined instance bodies. Mismatch/unknown → keep the fresh
                 // args (the record's own lowering stays as before).
                 let rec_expected = match (&rec_expected, expected) {
-                    (Some(ValueTy::Data(rname, rargs)), Some(exp)) => {
+                    (Some(ValueTy::Con(rname, rargs)), Some(exp)) => {
                         let fty = match self.env.data_types.get(rname) {
                             Some(DataInfo::Record(fields)) => fields
                                 .iter()
@@ -1397,7 +1369,7 @@ impl<'a> Lowerer<'a> {
                             }
                         });
                         match bound {
-                            Some(args) => Some(ValueTy::Data(rname.clone(), args)),
+                            Some(args) => Some(ValueTy::Con(rname.clone(), args)),
                             None => rec_expected,
                         }
                     }
@@ -1408,16 +1380,17 @@ impl<'a> Lowerer<'a> {
                     None => self.lower_value(record)?,
                 };
                 let rec_name = match &rec_vty {
-                    ValueTy::Data(n, _) => n.clone(),
-                    // Builtin records (`Pair a b`) are parameterized as `App`.
-                    ValueTy::App(n, _) if self.env.ctor_arity(n).is_some() => n.clone(),
+                    // Every constructor application is the one `Con` shape: a
+                    // builtin record (`Pair a b`) names its type the same way a
+                    // declared one does.
+                    ValueTy::Con(n, _) => n.clone(),
                     // An unresolved record (a lambda parameter typed
                     // structurally, e.g. `p` of the swap lambda `fn p -> Pair {
                     // first: p.second, … }`): the field name uniquely identifies
                     // the record type (`first`/`second` → `Pair`) — use the
                     // threaded candidate.
                     ValueTy::Var(_) => match &rec_expected {
-                        Some(ValueTy::Data(n, _)) | Some(ValueTy::App(n, _)) => n.clone(),
+                        Some(ValueTy::Con(n, _)) => n.clone(),
                         _ => {
                             return Err(CompileError::Type {
                                 msg: "field projection requires a record value".into(),
@@ -1461,13 +1434,9 @@ impl<'a> Lowerer<'a> {
                 // concrete monad, not placeholder ids.
                 let field_ty = &fields[field_index].1;
                 let rec_args: Option<Vec<ValueTy>> = match &rec_vty {
-                    ValueTy::Data(_, args) | ValueTy::App(_, args) if !args.is_empty() => {
-                        Some(args.clone())
-                    }
+                    ValueTy::Con(_, args) if !args.is_empty() => Some(args.clone()),
                     ValueTy::Var(_) => match &rec_expected {
-                        Some(ValueTy::Data(_, args)) | Some(ValueTy::App(_, args)) => {
-                            Some(args.clone())
-                        }
+                        Some(ValueTy::Con(_, args)) => Some(args.clone()),
                         _ => None,
                     },
                     _ => None,
@@ -1486,9 +1455,10 @@ impl<'a> Lowerer<'a> {
             } => {
                 let (rec_reg, rec_vty) = self.lower_value(record)?;
                 let rec_name = match &rec_vty {
-                    ValueTy::Data(n, _) => n.clone(),
-                    // Builtin records (`Pair a b`) are parameterized as `App`.
-                    ValueTy::App(n, _) if self.env.ctor_arity(n).is_some() => n.clone(),
+                    // Every constructor application is the one `Con` shape: a
+                    // builtin record (`Pair a b`) names its type the same way a
+                    // declared one does.
+                    ValueTy::Con(n, _) => n.clone(),
                     _ => {
                         return Err(CompileError::Type {
                             msg: "field update requires a data record".into(),
@@ -1542,12 +1512,12 @@ impl<'a> Lowerer<'a> {
                     None
                 };
                 let scrutinee_expected: Option<ValueTy> = match &pre_sum {
-                    Some(n) if self.env.ctor_arity(n).is_some() => {
+                    Some(n) if self.env.type_ctor_arity(n).is_some() => {
                         let v = self.next_tyvar;
                         self.next_tyvar += 1;
-                        Some(ValueTy::App(n.clone(), vec![ValueTy::Var(v)]))
+                        Some(ValueTy::Con(n.clone(), vec![ValueTy::Var(v)]))
                     }
-                    Some(n) => Some(ValueTy::Data(n.clone(), vec![])),
+                    Some(n) => Some(ValueTy::Con(n.clone(), vec![])),
                     None => None,
                 };
                 let (scrutinee_reg, scrutinee_vty) = match &scrutinee_expected {
@@ -1559,7 +1529,7 @@ impl<'a> Lowerer<'a> {
                 // intersection of candidate sum types). A scalar match (only
                 // literal/wildcard/variable arms) has no sum.
                 let sum_name = match &scrutinee_vty {
-                    ValueTy::Data(n, _) => Some(n.clone()),
+                    ValueTy::Con(n, _) => Some(n.clone()),
                     _ if arms
                         .iter()
                         .any(|a| matches!(a.pattern.strip_bang(), Pattern::Ctor(_, _))) =>
@@ -1598,11 +1568,10 @@ impl<'a> Lowerer<'a> {
                 // type carries none.
                 let is_builtin_sum = sum_name
                     .as_ref()
-                    .map(|n| self.env.ctor_arity(n).is_some())
+                    .map(|n| self.env.type_ctor_arity(n).is_some())
                     .unwrap_or(false);
                 let scrutinee_args: Vec<ValueTy> = match &scrutinee_vty {
-                    ValueTy::App(_, args) => args.clone(),
-                    ValueTy::Data(_, args) if !args.is_empty() => args.clone(),
+                    ValueTy::Con(_, args) if !args.is_empty() => args.clone(),
                     _ if is_builtin_sum => self.builtin_sum_scrutinee_args(scrutinee),
                     _ => vec![],
                 };
@@ -1916,7 +1885,7 @@ impl<'a> Lowerer<'a> {
                             });
                             return Ok(self.finish_st_effect(
                                 init,
-                                ValueTy::Data(
+                                ValueTy::Con(
                                     "STRef".into(),
                                     vec![ValueTy::Void, concrete_or_double(ty)],
                                 ),
@@ -1925,7 +1894,7 @@ impl<'a> Lowerer<'a> {
                         ValueEffectOp::ReadStRef => {
                             let (r, ty) = self.lower_value(&call_args[0])?;
                             let elem = match &ty {
-                                ValueTy::Data(n, args) if n == "STRef" && args.len() == 2 => {
+                                ValueTy::Con(n, args) if n == "STRef" && args.len() == 2 => {
                                     concrete_or_double(args[1].clone())
                                 }
                                 _ => ValueTy::Double,
@@ -2023,18 +1992,16 @@ impl<'a> Lowerer<'a> {
                                 .and_then(list_type_args)
                                 .and_then(|inner| inner.first().cloned())
                                 .unwrap_or(ValueTy::Double);
-                            ValueTy::Data("InputStream".into(), vec![elem])
+                            ValueTy::Con("InputStream".into(), vec![elem])
                         }
                         ValueEffectOp::StreamToList => {
                             let elem = match arg_tys.first() {
-                                Some(ValueTy::Data(n, a))
-                                    if n == "InputStream" && !a.is_empty() =>
-                                {
+                                Some(ValueTy::Con(n, a)) if n == "InputStream" && !a.is_empty() => {
                                     a[0].clone()
                                 }
                                 _ => ValueTy::Double,
                             };
-                            ValueTy::App("List".into(), vec![elem])
+                            ValueTy::Con("List".into(), vec![elem])
                         }
                         _ => ValueTy::Void,
                     };
@@ -2049,7 +2016,7 @@ impl<'a> Lowerer<'a> {
                         dst: rec,
                         fields: vec![effect],
                     });
-                    return Ok((rec, ValueTy::Data("IO".into(), vec![payload])));
+                    return Ok((rec, ValueTy::Con("IO".into(), vec![payload])));
                 }
                 // The remaining io-streams operations (`read`, `atEnd`,
                 // `unread`, `connect`, `makeInputStream`, `makeOutputStream`).
@@ -2095,11 +2062,11 @@ impl<'a> Lowerer<'a> {
                         let v = self.next_tyvar;
                         self.next_tyvar += 1;
                         let elem = ValueTy::Var(v);
-                        let maybe_elem = ValueTy::App("Maybe".into(), vec![elem.clone()]);
-                        let io_void = ValueTy::Data("IO".into(), vec![ValueTy::Void]);
+                        let maybe_elem = ValueTy::Con("Maybe".into(), vec![elem.clone()]);
+                        let io_void = ValueTy::Con("IO".into(), vec![ValueTy::Void]);
                         let expected = match op {
                             ValueEffectOp::StreamMakeInput => {
-                                ValueTy::Data("IO".into(), vec![maybe_elem])
+                                ValueTy::Con("IO".into(), vec![maybe_elem])
                             }
                             _ => ValueTy::Thunk(vec![maybe_elem], vec![io_void]),
                         };
@@ -2119,8 +2086,8 @@ impl<'a> Lowerer<'a> {
                             ValueEffectOp::StreamMakeInput => "InputStream",
                             _ => "OutputStream",
                         };
-                        let payload = ValueTy::Data(name.into(), vec![elem]);
-                        return Ok((rec, ValueTy::Data("IO".into(), vec![payload])));
+                        let payload = ValueTy::Con(name.into(), vec![elem]);
+                        return Ok((rec, ValueTy::Con("IO".into(), vec![payload])));
                     }
                     let mut arg_regs = Vec::with_capacity(arity);
                     let mut arg_tys = Vec::with_capacity(arity);
@@ -2132,16 +2099,14 @@ impl<'a> Lowerer<'a> {
                     // The stream element type when the lowered operand reveals
                     // it; the runtime's numeric value type otherwise.
                     let elem = arg_tys.first().and_then(|ty| match ty {
-                        ValueTy::Data(n, args) | ValueTy::App(n, args)
-                            if n == "InputStream" || n == "OutputStream" =>
-                        {
+                        ValueTy::Con(n, args) if n == "InputStream" || n == "OutputStream" => {
                             args.first().cloned()
                         }
                         _ => None,
                     });
                     let payload = match op {
                         ValueEffectOp::StreamRead => {
-                            ValueTy::App("Maybe".into(), vec![elem.unwrap_or(ValueTy::Double)])
+                            ValueTy::Con("Maybe".into(), vec![elem.unwrap_or(ValueTy::Double)])
                         }
                         ValueEffectOp::StreamAtEnd => ValueTy::bool_ty(),
                         _ => ValueTy::Void,
@@ -2157,7 +2122,7 @@ impl<'a> Lowerer<'a> {
                         dst: rec,
                         fields: vec![effect],
                     });
-                    return Ok((rec, ValueTy::Data("IO".into(), vec![payload])));
+                    return Ok((rec, ValueTy::Con("IO".into(), vec![payload])));
                 }
                 // `smooth sig ms` — one-pole smoothing over a Buffer.
                 if name == "smooth" {
@@ -2366,8 +2331,8 @@ impl<'a> Lowerer<'a> {
                             // (`Kleisli (fn x -> return (f x))` → `return`) resolves
                             // by the concrete monad.
                             let rec_args: Option<Vec<ValueTy>> = match expected {
-                                Some(ValueTy::Data(n, a)) if n == name => Some(a.clone()),
-                                Some(ValueTy::App(n, a)) if n == name => Some(a.clone()),
+                                Some(ValueTy::Con(n, a)) if n == name => Some(a.clone()),
+                                Some(ValueTy::Con(n, a)) if n == name => Some(a.clone()),
                                 _ => None,
                             };
                             let mut field_regs = Vec::with_capacity(fields.len());
@@ -2427,8 +2392,8 @@ impl<'a> Lowerer<'a> {
                             // head-arg-aware dispatch sees `Pair Int Int` rather
                             // than a bare `Pair`.
                             let ret = match rec_args {
-                                Some(a) if !a.is_empty() => ValueTy::Data(name.clone(), a),
-                                _ => ValueTy::Data(
+                                Some(a) if !a.is_empty() => ValueTy::Con(name.clone(), a),
+                                _ => ValueTy::Con(
                                     name.clone(),
                                     record_args_from_fields(&fields, &field_tys),
                                 ),
@@ -2485,7 +2450,7 @@ impl<'a> Lowerer<'a> {
                         ctor: ctor_idx as u32,
                         payload: payload_regs,
                     });
-                    return Ok((dst, ValueTy::Data(sum_name, vec![])));
+                    return Ok((dst, ValueTy::Con(sum_name, vec![])));
                 }
                 // Newtype constructor: `Hz 440.0` wraps its single argument.
                 if self.env.newtypes.contains_key(name) {
@@ -2913,7 +2878,7 @@ impl<'a> Lowerer<'a> {
                         // head's args (`m`) from the expected's leading args,
                         // the remaining class-var slots freshened.
                         let container_expected: Option<ValueTy> = match &expected {
-                            Some(ValueTy::Data(c, args)) | Some(ValueTy::App(c, args)) => {
+                            Some(ValueTy::Con(c, args)) => {
                                 let inst = self
                                     .env
                                     .instances
@@ -2930,10 +2895,10 @@ impl<'a> Lowerer<'a> {
                                             cargs.push(ValueTy::Var(v));
                                         }
                                         Some(match expected {
-                                            Some(ValueTy::Data(..)) => {
-                                                ValueTy::Data(c.clone(), cargs)
+                                            Some(ValueTy::Con(..)) => {
+                                                ValueTy::Con(c.clone(), cargs)
                                             }
-                                            _ => ValueTy::App(c.clone(), cargs),
+                                            _ => ValueTy::Con(c.clone(), cargs),
                                         })
                                     }
                                     None => None,
@@ -2950,19 +2915,16 @@ impl<'a> Lowerer<'a> {
                         // Constraint instance: bind head args from the
                         // container's LEADING args and discharge the
                         // constraints before resolving the constructor.
-                        match &container_vty {
-                            ValueTy::App(c, _) | ValueTy::Data(c, _) => {
-                                self.bind_head_args_and_discharge(
-                                    &class_name,
-                                    c,
-                                    &container_vty,
-                                    *span,
-                                )?;
-                            }
-                            _ => {}
+                        if let ValueTy::Con(c, _) = &container_vty {
+                            self.bind_head_args_and_discharge(
+                                &class_name,
+                                c,
+                                &container_vty,
+                                *span,
+                            )?;
                         }
                         let ctor = match &container_vty {
-                            ValueTy::App(c, _) | ValueTy::Data(c, _) => c.clone(),
+                            ValueTy::Con(c, _) => c.clone(),
                             _ => {
                                 return Err(CompileError::Type {
                                     msg: format!(
@@ -3635,7 +3597,7 @@ impl<'a> Lowerer<'a> {
                         op: ValueBuiltinOp::Nil,
                         args: Vec::new(),
                     });
-                    return Ok((dst, ValueTy::App("List".into(), vec![ValueTy::Double])));
+                    return Ok((dst, ValueTy::Con("List".into(), vec![ValueTy::Double])));
                 }
                 let mut regs = Vec::with_capacity(elems.len());
                 let mut elem_ty = ValueTy::Double;
@@ -3647,7 +3609,7 @@ impl<'a> Lowerer<'a> {
                 let _ = regs.len();
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueListLit { dst, elems: regs });
-                let ret = ValueTy::App("List".into(), vec![elem_ty]);
+                let ret = ValueTy::Con("List".into(), vec![elem_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
             }
@@ -3668,7 +3630,7 @@ impl<'a> Lowerer<'a> {
                 let _ = keys.len();
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueMapLit { dst, keys, vals });
-                let ret = ValueTy::App("Map".into(), vec![ValueTy::String, val_ty]);
+                let ret = ValueTy::Con("Map".into(), vec![ValueTy::String, val_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
             }
@@ -4018,17 +3980,17 @@ impl<'a> Lowerer<'a> {
             "cons" if self.mode == Mode::Complete => {
                 // LazyCons: the tail may be any value (a thunk), so the strict
                 // List shape-check does not apply; the result is a List.
-                Ok(ValueTy::App("List".into(), vec![ValueTy::Double]))
+                Ok(ValueTy::Con("List".into(), vec![ValueTy::Double]))
             }
             "cons" | "filter" => match args.get(1).and_then(list_type_args) {
-                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                Some(inner) => Ok(ValueTy::Con("List".into(), inner.clone())),
                 _ => Err(CompileError::Type {
                     msg: format!("{name} expects a List, got {:?}", args.get(1)),
                     span,
                 }),
             },
             "tail" => match args.first().and_then(list_type_args) {
-                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                Some(inner) => Ok(ValueTy::Con("List".into(), inner.clone())),
                 _ => Err(CompileError::Type {
                     msg: format!("{name} expects a List, got {:?}", args.first()),
                     span,
@@ -4039,7 +4001,7 @@ impl<'a> Lowerer<'a> {
                     Some(inner) => inner.first().cloned().unwrap_or(ValueTy::Double),
                     _ => ValueTy::Double,
                 };
-                Ok(ValueTy::App("Maybe".into(), vec![elem]))
+                Ok(ValueTy::Con("Maybe".into(), vec![elem]))
             }
             "length" => Ok(ValueTy::Int),
             "map" => {
@@ -4056,7 +4018,7 @@ impl<'a> Lowerer<'a> {
                         _ => ValueTy::Double,
                     },
                 };
-                Ok(ValueTy::App("List".into(), vec![elem]))
+                Ok(ValueTy::Con("List".into(), vec![elem]))
             }
             // fold's result is the accumulator/seed type (mirrors inference).
             "fold" => Ok(args.get(1).cloned().unwrap_or(ValueTy::Double)),
@@ -4068,10 +4030,10 @@ impl<'a> Lowerer<'a> {
                 };
                 let closure_ty = args.first().unwrap_or(&ValueTy::Double);
                 let elem = concat_map_result_elem(closure_ty, source_elem);
-                Ok(ValueTy::App("List".into(), vec![elem]))
+                Ok(ValueTy::Con("List".into(), vec![elem]))
             }
             "append_list" => match args.first().and_then(list_type_args) {
-                Some(inner) => Ok(ValueTy::App("List".into(), inner.clone())),
+                Some(inner) => Ok(ValueTy::Con("List".into(), inner.clone())),
                 _ => Err(CompileError::Type {
                     msg: format!("append_list expects a List, got {:?}", args.first()),
                     span,
@@ -4081,11 +4043,11 @@ impl<'a> Lowerer<'a> {
             "show_double" => Ok(ValueTy::String),
             "show_int" => Ok(ValueTy::String),
             "show_bool" => Ok(ValueTy::String),
-            "list" => Ok(ValueTy::App("List".into(), vec![ValueTy::Double])),
+            "list" => Ok(ValueTy::Con("List".into(), vec![ValueTy::Double])),
             "insert" => match args.len() {
                 3 => {
                     check_ord(args.first().unwrap_or(&ValueTy::Double), "key")?;
-                    Ok(ValueTy::App(
+                    Ok(ValueTy::Con(
                         "Map".into(),
                         vec![
                             args.first().cloned().unwrap_or(ValueTy::Double),
@@ -4095,7 +4057,7 @@ impl<'a> Lowerer<'a> {
                 }
                 _ => {
                     check_ord(args.first().unwrap_or(&ValueTy::Double), "element")?;
-                    Ok(ValueTy::App(
+                    Ok(ValueTy::Con(
                         "Set".into(),
                         vec![args.first().cloned().unwrap_or(ValueTy::Double)],
                     ))
@@ -4104,22 +4066,22 @@ impl<'a> Lowerer<'a> {
             "lookup" => {
                 check_ord(args.first().unwrap_or(&ValueTy::Double), "key")?;
                 let v = match args.get(1) {
-                    Some(ValueTy::App(name, inner)) if name == "Map" => {
+                    Some(ValueTy::Con(name, inner)) if name == "Map" => {
                         inner.get(1).cloned().unwrap_or(ValueTy::Double)
                     }
                     _ => ValueTy::Double,
                 };
-                Ok(ValueTy::App("Maybe".into(), vec![v]))
+                Ok(ValueTy::Con("Maybe".into(), vec![v]))
             }
             "member" => {
                 check_ord(args.first().unwrap_or(&ValueTy::Double), "key")?;
                 Ok(ValueTy::bool_ty())
             }
-            "empty_map" => Ok(ValueTy::App(
+            "empty_map" => Ok(ValueTy::Con(
                 "Map".into(),
                 vec![ValueTy::String, ValueTy::Double],
             )),
-            "empty_set" => Ok(ValueTy::App("Set".into(), vec![ValueTy::Double])),
+            "empty_set" => Ok(ValueTy::Con("Set".into(), vec![ValueTy::Double])),
             // Immutable array storage (flat, type-agnostic): the static types
             // mirror the builtin signatures. Index types fall back to the
             // builtin `Int` (never a numeric `Double`), element types to the
@@ -4130,7 +4092,7 @@ impl<'a> Lowerer<'a> {
                     .get(1)
                     .and_then(list_type_args)
                     .and_then(|i| i.first().cloned());
-                Ok(ValueTy::App(
+                Ok(ValueTy::Con(
                     "Array".into(),
                     vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
@@ -4146,7 +4108,7 @@ impl<'a> Lowerer<'a> {
                     .and_then(list_type_args)
                     .and_then(|i| i.first())
                     .map(|first| pair_second_ty(Some(first)));
-                Ok(ValueTy::App(
+                Ok(ValueTy::Con(
                     "Array".into(),
                     vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
@@ -4154,16 +4116,16 @@ impl<'a> Lowerer<'a> {
             "arraySeed" => {
                 let index = pair_index_ty(args.first());
                 let elem = args.get(1).cloned();
-                Ok(ValueTy::App(
+                Ok(ValueTy::Con(
                     "Array".into(),
                     vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
             }
             "arrayBounds" => {
                 let index = array_index_ty(args.first());
-                Ok(ValueTy::App("Pair".into(), vec![index.clone(), index]))
+                Ok(ValueTy::Con("Pair".into(), vec![index.clone(), index]))
             }
-            "arrayElems" => Ok(ValueTy::App(
+            "arrayElems" => Ok(ValueTy::Con(
                 "List".into(),
                 vec![array_elem_ty(args.first())],
             )),
@@ -4173,7 +4135,7 @@ impl<'a> Lowerer<'a> {
                 // it). `arrayIndexFlat` then reads its element type from the
                 // same checked array type.
                 let arr = match args.first() {
-                    Some(ty @ ValueTy::App(name, _)) if name == "Array" => ty.clone(),
+                    Some(ty @ ValueTy::Con(name, _)) if name == "Array" => ty.clone(),
                     other => {
                         return Err(CompileError::Type {
                             msg: format!("{name} expects an Array, got {other:?}"),
@@ -4187,13 +4149,13 @@ impl<'a> Lowerer<'a> {
                     Ok(arr)
                 }
             }
-            "arrayFromBuffer" => Ok(ValueTy::App(
+            "arrayFromBuffer" => Ok(ValueTy::Con(
                 "Array".into(),
                 vec![ValueTy::Int, ValueTy::Double],
             )),
             "bufferFromArray" => Ok(self.env.buffer_vty()),
             // `listRange (l, u)`: the inclusive Int range as a flat list.
-            "listRange" => Ok(ValueTy::App("List".into(), vec![ValueTy::Int])),
+            "listRange" => Ok(ValueTy::Con("List".into(), vec![ValueTy::Int])),
             // `arrayFromListChecked bounds rangeSize elems`: the element list is
             // the THIRD operand (the size sits between bounds and elements), so
             // the assembled type reads the index off the bounds and the element
@@ -4204,7 +4166,7 @@ impl<'a> Lowerer<'a> {
                     .get(2)
                     .and_then(list_type_args)
                     .and_then(|i| i.first().cloned());
-                Ok(ValueTy::App(
+                Ok(ValueTy::Con(
                     "Array".into(),
                     vec![index, concrete_or_double(elem.unwrap_or(ValueTy::Double))],
                 ))
@@ -4253,7 +4215,7 @@ impl<'a> Lowerer<'a> {
             None => (vec![], vec![]),
         };
         let concrete_args = match container_vty {
-            ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+            ValueTy::Con(_, a) => a.clone(),
             _ => vec![],
         };
         if concrete_args.is_empty() && !head_args.is_empty() {
@@ -5814,11 +5776,11 @@ impl<'a> Lowerer<'a> {
                 args: vec![],
             });
             let ret = match op {
-                ValueBuiltinOp::ListEmpty => ValueTy::App("List".into(), vec![ValueTy::Double]),
+                ValueBuiltinOp::ListEmpty => ValueTy::Con("List".into(), vec![ValueTy::Double]),
                 ValueBuiltinOp::MapEmpty => {
-                    ValueTy::App("Map".into(), vec![ValueTy::String, ValueTy::Double])
+                    ValueTy::Con("Map".into(), vec![ValueTy::String, ValueTy::Double])
                 }
-                _ => ValueTy::App("Set".into(), vec![ValueTy::Double]),
+                _ => ValueTy::Con("Set".into(), vec![ValueTy::Double]),
             };
             self.note_container(&ret);
             return Ok((dst, ret));
@@ -5830,15 +5792,15 @@ impl<'a> Lowerer<'a> {
         let stdio = match name {
             "stdout" => Some((
                 crate::program::STDOUT_HANDLE,
-                ValueTy::Data("OutputStream".into(), vec![ValueTy::String]),
+                ValueTy::Con("OutputStream".into(), vec![ValueTy::String]),
             )),
             "stderr" => Some((
                 crate::program::STDERR_HANDLE,
-                ValueTy::Data("OutputStream".into(), vec![ValueTy::String]),
+                ValueTy::Con("OutputStream".into(), vec![ValueTy::String]),
             )),
             "stdin" => Some((
                 crate::program::STDIN_HANDLE,
-                ValueTy::Data("InputStream".into(), vec![ValueTy::String]),
+                ValueTy::Con("InputStream".into(), vec![ValueTy::String]),
             )),
             _ => None,
         };
@@ -5921,7 +5883,7 @@ impl<'a> Lowerer<'a> {
                     ctor: ctor_idx as u32,
                     payload: vec![],
                 });
-                return Ok((dst, ValueTy::Data(sum_name, vec![])));
+                return Ok((dst, ValueTy::Con(sum_name, vec![])));
             }
         }
         let def = self
@@ -7048,7 +7010,7 @@ impl<'a> Lowerer<'a> {
             return Some(sum_name);
         }
         // A type constructor name used directly (`List`, `Box`, `Maybe`).
-        if self.env.ctor_arity(ctor).is_some() || self.env.data_arities.contains_key(ctor) {
+        if self.env.type_ctor_arity(ctor).is_some() {
             return Some(ctor.to_string());
         }
         None
@@ -7199,7 +7161,7 @@ impl<'a> Lowerer<'a> {
                 let Some((sum_name, _, payload)) = self.sum_ctor(name) else {
                     return vec![];
                 };
-                if self.env.ctor_arity(&sum_name).is_none() {
+                if self.env.type_ctor_arity(&sum_name).is_none() {
                     // User sum — its payloads are already concrete.
                     return vec![];
                 }
@@ -7474,15 +7436,13 @@ impl<'a> Lowerer<'a> {
                         msg: format!("unknown constructor `{name}`"),
                         span,
                     })?;
-                let is_builtin = self.env.ctor_arity(&ctor_sum).is_some();
+                let is_builtin = self.env.type_ctor_arity(&ctor_sum).is_some();
                 // The concrete type args of the scrutinee at this level: a
                 // concrete `App`/`Data` type carries them; a bare construction
                 // (`Data(name, [])`) or an unbound wire falls back to the
                 // top-level recovered args.
                 let scrutinee_args: Vec<ValueTy> = match vty {
-                    ValueTy::App(_, args) | ValueTy::Data(_, args) if !args.is_empty() => {
-                        args.clone()
-                    }
+                    ValueTy::Con(_, args) if !args.is_empty() => args.clone(),
                     _ => top_args.to_vec(),
                 };
                 let payload_regs: Vec<usize> =
@@ -7527,7 +7487,7 @@ impl<'a> Lowerer<'a> {
                     // outer `[Maybe a]` typed `x` as a whole `Maybe`, and a
                     // method call on it then dispatched on the wrong type.
                     let sub_args: Vec<ValueTy> = match &pty {
-                        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                        ValueTy::Con(_, a) => a.clone(),
                         _ => Vec::new(),
                     };
                     pass = self.lower_pattern_test(
@@ -7739,7 +7699,7 @@ impl<'a> Lowerer<'a> {
                     .map(|t| self.subtree_size_impl(t, visiting))
                     .sum::<usize>()
             }
-            ValueTy::App(name, args) => match name.as_str() {
+            ValueTy::Con(name, args) => match name.as_str() {
                 "Maybe" => {
                     1 + args
                         .first()
@@ -7799,10 +7759,44 @@ impl<'a> Lowerer<'a> {
                             + self.subtree_size_impl(v, visiting))
                 }
                 _ => {
-                    1 + args
-                        .iter()
-                        .map(|t| self.subtree_size_impl(t, visiting))
-                        .sum::<usize>()
+                    // A DECLARED data type (record, sum, or opaque token)
+                    // resolves its shape through `data_types` — a question about
+                    // the constructor, not a second type representation.
+                    if !visiting.insert(name.clone()) {
+                        return 1;
+                    }
+                    let s = match self.env.data_types.get(name) {
+                        Some(DataInfo::Record(fields)) => {
+                            1 + fields
+                                .iter()
+                                .map(|(_, t, _)| self.subtree_size_impl(t, visiting))
+                                .sum::<usize>()
+                        }
+                        Some(DataInfo::Sum(ctors)) => {
+                            // The constructed ctor is a runtime choice; the
+                            // static bound is the largest ctor's full payload
+                            // subtree.
+                            1 + ctors
+                                .iter()
+                                .map(|(_, payload)| {
+                                    payload
+                                        .iter()
+                                        .map(|(t, _)| self.subtree_size_impl(t, visiting))
+                                        .sum::<usize>()
+                                })
+                                .max()
+                                .unwrap_or(0)
+                        }
+                        // An opaque declaration's value is a handle: one slot.
+                        Some(DataInfo::Opaque) | None => {
+                            1 + args
+                                .iter()
+                                .map(|t| self.subtree_size_impl(t, visiting))
+                                .sum::<usize>()
+                        }
+                    };
+                    visiting.remove(name);
+                    s
                 }
             },
             ValueTy::Newtype(name, _) => {
@@ -7816,36 +7810,6 @@ impl<'a> Lowerer<'a> {
                     .and_then(|n| self.env.vty_of_name(n))
                     .unwrap_or(ValueTy::Double);
                 let s = 1 + self.subtree_size_impl(&inner, visiting);
-                visiting.remove(name);
-                s
-            }
-            ValueTy::Data(name, _) => {
-                if !visiting.insert(name.clone()) {
-                    return 1;
-                }
-                let s = match self.env.data_types.get(name) {
-                    Some(DataInfo::Record(fields)) => {
-                        1 + fields
-                            .iter()
-                            .map(|(_, t, _)| self.subtree_size_impl(t, visiting))
-                            .sum::<usize>()
-                    }
-                    Some(DataInfo::Sum(ctors)) => {
-                        // The constructed ctor is a runtime choice; the static
-                        // bound is the largest ctor's full payload subtree.
-                        1 + ctors
-                            .iter()
-                            .map(|(_, payload)| {
-                                payload
-                                    .iter()
-                                    .map(|(t, _)| self.subtree_size_impl(t, visiting))
-                                    .sum::<usize>()
-                            })
-                            .max()
-                            .unwrap_or(0)
-                    }
-                    Some(DataInfo::Opaque) | None => 1,
-                };
                 visiting.remove(name);
                 s
             }
@@ -10104,33 +10068,33 @@ mod tests {
         let empty = HashSet::new();
         let lw = lw(&env, &empty);
         assert_eq!(
-            lw.subtree_size(&ValueTy::App("List".into(), vec![ValueTy::Double])),
+            lw.subtree_size(&ValueTy::Con("List".into(), vec![ValueTy::Double])),
             1 + Lowerer::ELEM_EST
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App(
+            lw.subtree_size(&ValueTy::Con(
                 "Map".into(),
                 vec![ValueTy::String, ValueTy::Double]
             )),
             1 + Lowerer::ELEM_EST * 2
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App("Set".into(), vec![ValueTy::Int])),
+            lw.subtree_size(&ValueTy::Con("Set".into(), vec![ValueTy::Int])),
             1 + Lowerer::ELEM_EST
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App("Maybe".into(), vec![ValueTy::Double])),
+            lw.subtree_size(&ValueTy::Con("Maybe".into(), vec![ValueTy::Double])),
             2
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App(
+            lw.subtree_size(&ValueTy::Con(
                 "Pair".into(),
                 vec![ValueTy::Double, ValueTy::Int]
             )),
             3
         );
         assert_eq!(
-            lw.subtree_size(&ValueTy::App(
+            lw.subtree_size(&ValueTy::Con(
                 "Either".into(),
                 vec![ValueTy::Double, ValueTy::Int]
             )),

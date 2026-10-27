@@ -50,12 +50,17 @@ pub enum ValueTy {
     /// The unit type `()`. The only inhabitant is `Value::Void` (allocated by
     /// the value track's `ValueConstVoid`); used for `IO ()` actions.
     Void,
-    /// A named data record, parameterized by its type arguments.
-    Data(String, Vec<ValueTy>),
+    /// A TYPE CONSTRUCTOR applied to its type arguments — GHC's `TyConApp
+    /// TyCon [Type]`: `List Double`, `Pair Int Int`, `Maybe a`, `Bool`, `IO a`.
+    ///
+    /// There is exactly ONE representation for "a constructor applied to
+    /// arguments", whether the constructor is a declared `data`/abstract type or
+    /// a builtin. Whether a name denotes an algebraic data type is a question
+    /// asked of the [`TypeEnv::is_declared_data`] query, never of a second type
+    /// shape.
+    Con(String, Vec<ValueTy>),
     /// A newtype wrapping another value type.
     Newtype(String, Vec<ValueTy>),
-    /// Builtin constructor application: `List Double`.
-    App(String, Vec<ValueTy>),
     /// A function/expression type (unary): capture types and result type.
     /// `Thunk([], [t])` is a constant `t`; `Thunk([a], [b])` is `\x:a -> b`.
     /// Replaces the legacy `Func` (same two-list shape, unary core model).
@@ -83,6 +88,24 @@ pub enum ValueTy {
     Dict(String),
 }
 
+/// Whether a VALUE type admits a structural `Eq`/`Ord`.
+///
+/// A function type does not: Haskell 2010 defines no `Eq (a -> b)`, and a
+/// declaration carrying one is a handle rather than data. Everything else is
+/// comparable structurally — a scalar directly, a constructor application when
+/// its arguments are, a buffer when its element is.
+fn is_comparable_vty(t: &ValueTy) -> bool {
+    match t {
+        ValueTy::Thunk(..) => false,
+        ValueTy::Var(_) | ValueTy::TyConVar(_) => true,
+        ValueTy::TyConApp(_, args) => args.iter().all(is_comparable_vty),
+        ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => args.iter().all(is_comparable_vty),
+        ValueTy::Buffer(elem) => is_comparable_vty(elem),
+        ValueTy::Dict(_) => false,
+        _ => true,
+    }
+}
+
 impl ValueTy {
     /// The type of a unary function capturing `captures` and producing
     /// `result`: `\x:a -> b` is `Thunk([a], [b])`.
@@ -103,7 +126,7 @@ impl ValueTy {
     /// `member`, `atEnd`, `show_bool`, `not`) do not each re-spell it — there is
     /// no `Bool` case in the type system.
     pub fn bool_ty() -> ValueTy {
-        ValueTy::Data("Bool".to_string(), Vec::new())
+        ValueTy::Con("Bool".to_string(), Vec::new())
     }
 }
 
@@ -113,7 +136,7 @@ impl ValueTy {
 pub(crate) fn concat_map_result_elem(closure_ty: &ValueTy, source_elem: ValueTy) -> ValueTy {
     match closure_ty {
         ValueTy::Thunk(_, rets) => match rets.first() {
-            Some(ValueTy::App(name, inner)) if name == "List" => {
+            Some(ValueTy::Con(name, inner)) if name == "List" => {
                 inner.first().cloned().unwrap_or(source_elem)
             }
             _ => source_elem,
@@ -594,18 +617,15 @@ pub struct TypeEnv {
     /// appear as a buffer constructor in a signature, and how the FFI classifies
     /// them. Seeded by [`TypeEnv::with_builtins`].
     pub buffer_ctors: HashMap<String, BufferRole>,
-    /// User-declared parameterized data types: name → number of type
-    /// parameters (`data Box a` → 1). Used to kind-check constructor instances
-    /// against a class's arity (`Functor f` needs `Box a`, not `Pair a b`).
+    /// DECLARED types that carry type parameters: name → number of type
+    /// parameters (`data Box a` → 1, `data Opt a = …` → 1). A monomorphic
+    /// declaration has no entry and answers arity `0` through
+    /// [`Self::type_ctor_arity`]'s `data_types` fallback.
     ///
-    /// v1 registers only parameterized RECORDS here, not sums. A parameterized
-    /// user sum (`data Opt a = Some a | None`) works as an ordinary data type
-    /// (construction + match both stay monomorphic `Data(name, [])`), but its
-    /// match-pin path is not slot-carrying like a record's field projection, so
-    /// an instance body would hit the confusing `Data("Opt", [Var(_)])` vs
-    /// `Data("Opt", [])` unify error. Leaving sums out of this table makes such
-    /// an instance fail the kind check with a clean "not a type constructor"
-    /// / arity message instead. See `validate_instances`.
+    /// Feeds [`Self::type_ctor_arity`], the ONE arity answer, which projects
+    /// the kind a constructor has ([`Self::kind_of`]). It is therefore part of
+    /// a name's KIND, not a representation choice: a parameterized sum records
+    /// its parameters here exactly like a parameterized record.
     pub data_arities: HashMap<String, usize>,
     /// Foreign function declarations: name → declared `TypeExpr` signature.
     /// The language-side contract for Rust-implemented builtins (SP-3a FFI layer).
@@ -2254,22 +2274,78 @@ impl TypeEnv {
         }
     }
 
-    /// Register a derived (structural) `Eq`/`Ord` instance for every concrete
-    /// data type currently in the env — user data types, the builtin shapes
-    /// (`Maybe`/`Pair`/`Either`) and the builtin ctor kinds (`List`/`Set`/`Map`,
-    /// whose structural order the interpreter's `value_cmp` implements) — plus
-    /// newtypes (derived by their inner, spec §2.5; `value_cmp` unwraps them)
-    /// and every registered SCALAR leaf. `Func` types get no instance. Derived
-    /// instances are markers: their method bodies are not run — the
-    /// interpreter's `value_cmp` implements the order.
+    /// Register a derived (structural) `Eq`/`Ord` instance for every type the
+    /// language can COMPARE structurally:
     ///
-    /// The scalar leaves come from [`Self::scalars`] — the one registry — not
-    /// from a private list here: a name added to the registry is seeded here
-    /// without touching this function.
+    /// * every registered SCALAR leaf (`Int`, `Double`, `String`, `Buffer`,
+    ///   `()`), from [`Self::scalars`] — the one registry — not from a private
+    ///   list here;
+    /// * every DECLARED data type whose shape is a [`DataInfo::Record`] or a
+    ///   [`DataInfo::Sum`] — the two shapes that have fields/payloads to
+    ///   compare. A [`DataInfo::Opaque`] declaration (`World`, `STState`,
+    ///   `STRef`, the io-stream handles) names a HANDLE with nothing to
+    ///   inspect, so no instance is derived — GHC likewise has no `Eq`/`Ord`
+    ///   for such a type;
+    /// * the builtin container constructors ([`Self::ctor_kinds`] —
+    ///   `List`/`Set`/`Map`/`Array`/`Pair`/`Either`/`Maybe`), whose structural
+    ///   order the interpreter's `value_cmp` implements — unless the name is an
+    ///   OPAQUE declaration (`STArray`);
+    /// * every newtype (derived by its inner, spec §2.5; `value_cmp` unwraps
+    ///   it).
+    ///
+    /// `Thunk` values get no instance. Every entry is inserted only when the
+    /// name has none, so an EXPLICIT `instance Eq T`/`instance Ord T` always
+    /// wins. Derived instances are markers: their method bodies are not run —
+    /// the interpreter's `value_cmp` implements the order.
+    /// Whether a declared type's values admit a STRUCTURAL comparison.
+    ///
+    /// A sum is comparable when every payload is; a record when every field is.
+    /// A field of function type is not: functions have no defined equality, and
+    /// a declaration that carries one is a handle (`Tape`, `ST`, `IO`,
+    /// `Kleisli`), not an ordinary value. Deriving `Eq`/`Ord` for such a type
+    /// would promise a comparison the runtime cannot honour.
+    fn is_comparable_declaration(&self, info: &DataInfo) -> bool {
+        match info {
+            DataInfo::Opaque => false,
+            DataInfo::Sum(ctors) => ctors
+                .iter()
+                .all(|(_, payload)| payload.iter().all(|(t, _)| is_comparable_vty(t))),
+            DataInfo::Record(fields) => fields.iter().all(|(_, t, _)| is_comparable_vty(t)),
+        }
+    }
+
+    /// Give every COMPARABLE declared type a structural `Eq`/`Ord` marker.
+    ///
+    /// Called once after the prelude and the program's declarations are
+    /// registered. A type that cannot be compared (an opaque handle, or a
+    /// declaration carrying a function field) is skipped rather than given an
+    /// instance the runtime could not honour.
     pub fn derive_eq_ord(&mut self) {
         let mut names: Vec<String> = self.scalars.iter().map(|(n, _)| n.clone()).collect();
-        names.extend(self.data_types.keys().cloned());
-        names.extend(self.ctor_kinds.keys().cloned());
+        // A declared type derives structural `Eq`/`Ord` only when it is
+        // COMPARABLE: a sum, or a record whose fields are all comparable. A
+        // record that carries a FUNCTION field is a handle, not data — `Tape`,
+        // `ST`, `IO` and `Kleisli` all wrap a function or a region token, so
+        // ordering them is meaningless (and `IO`/`ST` would order two unrelated
+        // computations). `DataInfo::Opaque` is excluded for the same reason.
+        names.extend(
+            self.data_types
+                .iter()
+                .filter(|(_, info)| self.is_comparable_declaration(info))
+                .map(|(n, _)| n.clone()),
+        );
+        names.extend(
+            self.ctor_kinds
+                .keys()
+                // A handle stays a handle even when it is also registered as a
+                // builtin container (`STArray`).
+                .filter(|n| {
+                    self.data_types
+                        .get(*n)
+                        .is_none_or(|info| self.is_comparable_declaration(info))
+                })
+                .cloned(),
+        );
         names.extend(self.newtypes.keys().cloned());
         for class in ["Eq", "Ord"] {
             let by_ty = self.instances.entry(class.to_string()).or_default();
@@ -2290,10 +2366,6 @@ impl TypeEnv {
         }
     }
 
-    /// Value arity of a builtin constructor (`None` if not a builtin).
-    pub fn ctor_arity(&self, name: &str) -> Option<usize> {
-        self.ctor_kinds.get(name).copied()
-    }
     /// Register a predefined scalar type under `name`. Registering a second
     /// name for the SAME value type RENAMES it: the earlier spelling is
     /// dropped, so one value type never has two registered names and
@@ -2391,38 +2463,26 @@ impl TypeEnv {
     /// The KIND of a type-level name — the ONE place that answers "what is
     /// this name's kind".
     ///
-    /// The answer is a pure PROJECTION of the arity the registry already
-    /// records, never a second table of names:
+    /// The answer is a pure PROJECTION of [`Self::type_ctor_arity`] — the one
+    /// arity answer — never a second table of names and never a second guess:
     ///
     /// | registry entry | kind |
     /// |---|---|
     /// | scalar (`Int`, `Double`, `Bool`, `String`, `Buffer`, `()`) | `*` |
     /// | `newtype` wrapper | `*` |
     /// | `type` synonym | the target's kind |
-    /// | [`Self::ctor_kinds`] / [`Self::data_arities`] entry, arity `n` | `* -> … -> *` (`n` arrows) |
+    /// | a declared type or builtin constructor, arity `n` | `* -> … -> *` (`n` arrows) |
     /// | lowercase name (a type variable) | unknown — its binder gives it |
     ///
     /// `None` means "not a kind this table knows": a type VARIABLE (a lowercase
-    /// name, whose kind its binder supplies — see the class-`arity` rule) or a
-    /// declared type whose parameters the registry does not record (a
-    /// parameterized SUM, and any declaration reached only through
-    /// [`Self::data_types`]). An unknown kind is never an error: it is the
-    /// caller's context that would have to judge it, and this table cannot.
+    /// name, whose kind its binder supplies — see the class-`arity` rule). An
+    /// unknown kind is never an error: it is the caller's context that would
+    /// have to judge it, and this table cannot.
     pub fn kind_of(&self, name: &str) -> Option<Kind> {
         match self.type_entry(name)? {
             TypeEntry::Scalar(_) | TypeEntry::Newtype => Some(Kind::TYPE),
             TypeEntry::Alias(target) => self.kind_of(&target),
-            TypeEntry::TypeCtor { arity } => {
-                // `type_ctor_arity` reports `0` for two very different things:
-                // an EXACT zero (a builtin `data_arities` entry with no
-                // parameters) and a declared `data` type whose parameters the
-                // registry does not record. Only an exact arity is a kind.
-                if self.ctor_kinds.contains_key(name) || self.data_arities.contains_key(name) {
-                    Some(Kind::of_arity(arity))
-                } else {
-                    None
-                }
-            }
+            TypeEntry::TypeCtor { arity } => Some(Kind::of_arity(arity)),
             TypeEntry::Variable => None,
         }
     }
@@ -2674,22 +2734,31 @@ impl TypeEnv {
     /// builtin signatures) agrees:
     ///
     /// * a buffer CHANNEL constructor (`FixedBuffer elem`) becomes the buffer
-    ///   value type [`ValueTy::Buffer`] — never a second `App("FixedBuffer", …)`
+    ///   value type [`ValueTy::Buffer`] — never a second `Con("FixedBuffer", …)`
     ///   shape;
-    /// * a declared parameterized data type (`IO a`, `ST s a`, a user
-    ///   `data Box a`) keeps the `Data` flavour it is constructed and matched
-    ///   with;
-    /// * every other application (a builtin container: `List`, `Pair`, `Array`)
-    ///   is `App`.
+    /// * every other application is [`ValueTy::Con`] — the ONE representation
+    ///   of "a constructor applied to arguments", whether the constructor is a
+    ///   declared `data` type (`IO a`, `ST s a`, a user `data Box a`) or a
+    ///   builtin container (`List`, `Pair`, `Array`). Whether a name denotes an
+    ///   algebraic data type is [`Self::is_declared_data`]'s question, never a
+    ///   representation choice here.
     pub fn ctor_application(&self, head: &str, args: Vec<ValueTy>) -> ValueTy {
         if let Some(buf) = self.channel_ctor_vty(head, &args) {
             return buf;
         }
-        if self.data_arities.contains_key(head) {
-            ValueTy::Data(head.to_string(), args)
-        } else {
-            ValueTy::App(head.to_string(), args)
-        }
+        ValueTy::Con(head.to_string(), args)
+    }
+
+    /// Whether `name` is a DECLARED data type — a `data`/`data … = …`/abstract
+    /// declaration registered in [`Self::data_types`], including the builtin
+    /// shapes (`Maybe`/`Pair`/`Either`) and a declared opaque token (`World`).
+    ///
+    /// This is a QUERY about a constructor, the analogue of GHC's `isAlgType`:
+    /// callers ask it to validate an instance head or to describe an FFI
+    /// parameter. It never picks a type REPRESENTATION — every constructor
+    /// application is the one [`ValueTy::Con`] shape.
+    pub fn is_declared_data(&self, name: &str) -> bool {
+        self.data_types.contains_key(name)
     }
 
     /// The [`BufferRole`] of a buffer type constructor name (`FixedBuffer`,
@@ -3133,7 +3202,7 @@ impl TypeEnv {
             TypeEntry::Scalar(s) => Some(s.vty),
             TypeEntry::Alias(target) => self.vty_of_name(&target),
             TypeEntry::Newtype => Some(ValueTy::Newtype(name.to_string(), vec![])),
-            TypeEntry::TypeCtor { .. } => Some(ValueTy::Data(name.to_string(), vec![])),
+            TypeEntry::TypeCtor { .. } => Some(ValueTy::Con(name.to_string(), vec![])),
             TypeEntry::Variable => None,
         }
     }
@@ -3177,7 +3246,7 @@ impl TypeEnv {
             // A dictionary is not a data type, so it has no nominal name — spell
             // it as the class witness it is.
             ValueTy::Dict(class) => format!("Dict {class}"),
-            ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+            ValueTy::Con(n, args) | ValueTy::Newtype(n, args) => {
                 if args.is_empty() {
                     n.clone()
                 } else if let Some(spelling) = self.source_spelling_named(n, args, names) {
@@ -3308,9 +3377,8 @@ impl TypeEnv {
             ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void => {
                 self.scalar_name_of(v)
             }
-            ValueTy::Data(n, _) => Some(n.clone()),
+            ValueTy::Con(n, _) => Some(n.clone()),
             ValueTy::Newtype(n, _) => Some(n.clone()),
-            ValueTy::App(n, _) => Some(n.clone()),
             // A dictionary is not a nominal data type. Its payload is the
             // CLASS name, which names a class — never a type an instance can be
             // registered for, so it must not select an instance.
@@ -3320,7 +3388,7 @@ impl TypeEnv {
     }
 
     /// Match a class-var signature pattern against a concrete value type.
-    /// `f a` (pattern head is the class var) matches `App("List", [Int])`
+    /// `f a` (pattern head is the class var) matches `Con("List", [Int])`
     /// by binding the class var to the constructor and unifying the remaining
     /// pattern args with the concrete's args positionally. Open collections
     /// carry no capacity slot. Returns the bound constructor name on success.
@@ -3331,13 +3399,13 @@ impl TypeEnv {
         concrete: &ValueTy,
         subst: &mut Subst,
     ) -> Option<String> {
-        if let ValueTy::App(f, p_args) = pat {
+        if let ValueTy::Con(f, p_args) = pat {
             if f == class_var {
-                // The concrete side is either a builtin constructor
-                // (`App("List", [..])` / `App("Maybe", [t])`) or a user data
-                // type (`Data("Box", [..])`).
+                // The concrete side is a constructor application — a builtin
+                // (`List`, `Maybe`) or a declared data type (`Box`); both are
+                // the one `Con` shape.
                 let (c, c_args) = match concrete {
-                    ValueTy::App(c, a) | ValueTy::Data(c, a) => (c, a),
+                    ValueTy::Con(c, a) => (c, a),
                     _ => return None,
                 };
                 // Match the pattern args positionally against the concrete's.
@@ -3389,7 +3457,7 @@ impl TypeEnv {
             Some(DataInfo::Record(fields)) => {
                 for (_, t, _) in fields {
                     match t {
-                        ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
+                        ValueTy::Con(inner, _) => self.check_acyclic_name(inner, visiting)?,
                         ValueTy::Newtype(inner, _) => {
                             self.check_acyclic_newtype(inner, visiting)?
                         }
@@ -3401,7 +3469,7 @@ impl TypeEnv {
                 for (_, payload) in ctors {
                     for (t, _) in payload {
                         match t {
-                            ValueTy::Data(inner, _) => self.check_acyclic_name(inner, visiting)?,
+                            ValueTy::Con(inner, _) => self.check_acyclic_name(inner, visiting)?,
                             ValueTy::Newtype(inner, _) => {
                                 self.check_acyclic_newtype(inner, visiting)?
                             }
@@ -3431,7 +3499,7 @@ impl TypeEnv {
         }
         let res = match self.newtypes.get(name) {
             Some(inner) => match self.vty_of_name(inner) {
-                Some(ValueTy::Data(data_name, _)) => self.check_acyclic_name(&data_name, visiting),
+                Some(ValueTy::Con(data_name, _)) => self.check_acyclic_name(&data_name, visiting),
                 Some(ValueTy::Newtype(nw_name, _)) => {
                     self.check_acyclic_newtype(&nw_name, visiting)
                 }
@@ -3510,11 +3578,11 @@ pub(crate) fn class_var_param_pattern(
     class_var_param_indices(sig, class_var).into_iter().next()
 }
 
-/// Normalize a value type for instance-head matching: every concrete
-/// constructor application becomes an `App` (`Data`/`Newtype` → `App`), with the
-/// arguments normalized too. The value side distinguishes a builtin ctor
-/// application (`App`) from a declared shape (`Data`/`Newtype`), but the
-/// registry treats `Pair Int Int` as one type; [`unify_value`] compares variants
+/// Normalize a value type for instance-head matching: a NEWTYPE application
+/// becomes an ordinary constructor application ([`ValueTy::Con`]), with the
+/// arguments normalized too. An instance head's pattern is always a constructor
+/// application, so a newtype spelling on the value side (`Newtype("Hz")`) is
+/// matched as the constructor it names — [`unify_value`] compares variants
 /// strictly, so both sides of an instance-head match are normalized first.
 ///
 /// A buffer needs no arm here: a buffer VALUE is already
@@ -3523,8 +3591,8 @@ pub(crate) fn class_var_param_pattern(
 /// stand — there is exactly one buffer representation.
 fn normalize_ctor_app(v: &ValueTy) -> ValueTy {
     match v {
-        ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
-            ValueTy::App(n.clone(), args.iter().map(normalize_ctor_app).collect())
+        ValueTy::Con(n, args) | ValueTy::Newtype(n, args) => {
+            ValueTy::Con(n.clone(), args.iter().map(normalize_ctor_app).collect())
         }
         ValueTy::TyConApp(f, args) => {
             ValueTy::TyConApp(*f, args.iter().map(normalize_ctor_app).collect())
@@ -3690,7 +3758,7 @@ pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
             // A dictionary is never a registry key: it is compiler-side
             // evidence of a constraint, not a type an instance is declared for.
             ValueTy::Dict(_) => return None,
-            ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
+            ValueTy::Con(n, args) | ValueTy::Newtype(n, args) => {
                 if args.is_empty() {
                     n.clone()
                 } else {
@@ -3699,9 +3767,7 @@ pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
                         out.push(' ');
                         let nested = matches!(
                             a,
-                            ValueTy::Data(_, inner)
-                                | ValueTy::Newtype(_, inner)
-                                | ValueTy::App(_, inner)
+                            ValueTy::Con(_, inner) | ValueTy::Newtype(_, inner)
                                 if !inner.is_empty()
                         );
                         if nested {
@@ -3726,7 +3792,7 @@ pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
 /// This is the ordering CONTRACT for any code that must put value types in a
 /// deterministic order (diagnostic listing, tie-breaking): rank ascending breaks
 /// every tie the same way. It is not a type judgement — two distinct types share
-/// a rank (`Data("A")` and `Data("B")` are both rank 6), so a rank comparison
+/// a rank (`Con("A")` and `Con("B")` are both rank 6), so a rank comparison
 /// can give a stable order but can never prove equality.
 ///
 /// Every variant has an EXPLICIT rank (no wildcard), so a new type form must be
@@ -3746,16 +3812,19 @@ pub fn kind_rank(v: &ValueTy) -> i8 {
         ValueTy::Int => 0,
         ValueTy::Double => 1,
         // Rank 2 belonged to the retired primitive boolean leaf. `Bool` is now
-        // `Data("Bool", [])` and ranks as a data form (6); the slot stays
-        // vacant rather than renumbering every later form.
+        // `Con("Bool", [])` and ranks as a constructor application (6); the slot
+        // stays vacant rather than renumbering every later form.
         ValueTy::String => 3,
         // A buffer ranks by its FORM (the element it carries does not give it a
         // different rank: rank orders forms, not types).
         ValueTy::Buffer(_) => 4,
         ValueTy::Void => 5,
-        ValueTy::Data(..) => 6,
+        // One constructor application, one rank. Rank 8 belonged to the retired
+        // second application shape (`App`); the slot stays vacant rather than
+        // renumbering every later form, exactly as rank 2 did for the retired
+        // primitive boolean leaf.
+        ValueTy::Con(..) => 6,
         ValueTy::Newtype(..) => 7,
-        ValueTy::App(..) => 8,
         ValueTy::Thunk(..) => 9,
         ValueTy::Var(_) => 10,
         ValueTy::TyConVar(_) => 11,
@@ -3800,7 +3869,7 @@ impl Subst {
             ),
             ValueTy::TyConApp(f, args) => {
                 // Resolve the head variable; a bound head (a concrete
-                // constructor) rewrites the application to `App(c, args)`.
+                // constructor) rewrites the application to `Con(c, args)`.
                 let resolved_args: Vec<ValueTy> = args
                     .iter()
                     .map(|a| self.resolve_value_depth(a, depth + 1))
@@ -3817,19 +3886,18 @@ impl Subst {
                     // container.
                     ValueTy::TyConVar(w) => ValueTy::TyConApp(w, resolved_args),
                     ValueTy::Var(w) => ValueTy::TyConApp(w, resolved_args),
-                    ValueTy::App(c, _) => ValueTy::App(c, resolved_args),
+                    ValueTy::Con(c, _) => ValueTy::Con(c, resolved_args),
                     _other => ValueTy::TyConApp(*f, resolved_args),
                 }
             }
-            ValueTy::Data(name, args) | ValueTy::Newtype(name, args) | ValueTy::App(name, args) => {
+            ValueTy::Con(name, args) | ValueTy::Newtype(name, args) => {
                 let resolved: Vec<ValueTy> = args
                     .iter()
                     .map(|a| self.resolve_value_depth(a, depth + 1))
                     .collect();
                 match t {
-                    ValueTy::Data(..) => ValueTy::Data(name.clone(), resolved),
                     ValueTy::Newtype(..) => ValueTy::Newtype(name.clone(), resolved),
-                    _ => ValueTy::App(name.clone(), resolved),
+                    _ => ValueTy::Con(name.clone(), resolved),
                 }
             }
             _ => t.clone(),
@@ -3956,15 +4024,15 @@ mod hkt_value_ty_tests {
 
     #[test]
     fn app_constructs() {
-        let t = ValueTy::App("List".into(), vec![ValueTy::Double]);
-        assert!(matches!(t, ValueTy::App(..)));
+        let t = ValueTy::Con("List".into(), vec![ValueTy::Double]);
+        assert!(matches!(t, ValueTy::Con(..)));
     }
 
     #[test]
     fn bool_is_a_declared_data_type_and_string_is_a_leaf() {
         // `Bool` is an ordinary declared sum type: `Data("Bool", [])`, exactly
         // like `Maybe`/`Either`. It is NOT a primitive value type.
-        assert_eq!(ValueTy::bool_ty(), ValueTy::Data("Bool".into(), vec![]));
+        assert_eq!(ValueTy::bool_ty(), ValueTy::Con("Bool".into(), vec![]));
         assert_ne!(ValueTy::bool_ty(), ValueTy::Double);
         assert_ne!(ValueTy::String, ValueTy::bool_ty());
     }
@@ -4056,8 +4124,8 @@ mod hkt_value_ty_tests {
         let mut subst = Subst::default();
         // Pattern `f a b` (two type args) against `App("List", [Double])`
         // (one slot): the extra `b` slot must reject the match.
-        let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0), ValueTy::Var(1)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Double]);
+        let pat = ValueTy::Con("f".into(), vec![ValueTy::Var(0), ValueTy::Var(1)]);
+        let concrete = ValueTy::Con("List".into(), vec![ValueTy::Double]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             None
@@ -4069,15 +4137,15 @@ mod hkt_value_ty_tests {
         let env = TypeEnv::with_builtins();
         let mut subst = Subst::default();
         // `f a` (one arg) against a List (one slot) matches.
-        let pat = ValueTy::App("f".into(), vec![ValueTy::Var(0)]);
-        let concrete = ValueTy::App("List".into(), vec![ValueTy::Double]);
+        let pat = ValueTy::Con("f".into(), vec![ValueTy::Var(0)]);
+        let concrete = ValueTy::Con("List".into(), vec![ValueTy::Double]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat, &concrete, &mut subst),
             Some("List".to_string())
         );
         // `f a b` (two args) against a Pair (two slots) matches.
-        let pat2 = ValueTy::App("f".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
-        let concrete2 = ValueTy::App("Pair".into(), vec![ValueTy::Double, ValueTy::Int]);
+        let pat2 = ValueTy::Con("f".into(), vec![ValueTy::Var(1), ValueTy::Var(2)]);
+        let concrete2 = ValueTy::Con("Pair".into(), vec![ValueTy::Double, ValueTy::Int]);
         assert_eq!(
             env.match_ctor_pattern("f", &pat2, &concrete2, &mut subst),
             Some("Pair".to_string())
@@ -4094,7 +4162,7 @@ mod channel_tests {
         // Linear lambda model: no Channel/Rate — a signal is just a buffer value
         // type, which CARRIES its element.
         let sig = ValueTy::Buffer(Box::new(ValueTy::Double));
-        let val = ValueTy::Data("Point".into(), vec![]);
+        let val = ValueTy::Con("Point".into(), vec![]);
         assert_eq!(sig, ValueTy::Buffer(Box::new(ValueTy::Double)));
         assert_ne!(sig, val);
         // The element is part of the type: a different element is a different
@@ -4117,16 +4185,20 @@ mod ctor_table_tests {
 
     #[test]
     fn builtin_ctor_kinds_and_arities() {
+        // The builtin container table itself, and — through it —
+        // `type_ctor_arity`, the ONE arity answer every caller reads.
         let env = TypeEnv::with_builtins();
-        assert!(env.ctor_arity("List") == Some(1)); // elem
-        assert!(env.ctor_arity("Maybe") == Some(1));
-        assert!(env.ctor_arity("Set") == Some(1));
-        assert!(env.ctor_arity("Map") == Some(2));
-        assert!(env.ctor_arity("Pair") == Some(2));
-        assert!(env.ctor_arity("Either") == Some(2));
-        assert!(env.ctor_arity("Array") == Some(2)); // i e
-        assert!(env.ctor_arity("STArray") == Some(3)); // s i e
-        assert!(env.ctor_arity("Nope").is_none());
+        assert_eq!(env.ctor_kinds.get("List"), Some(&1)); // elem
+        assert_eq!(env.ctor_kinds.get("Maybe"), Some(&1));
+        assert_eq!(env.ctor_kinds.get("Set"), Some(&1));
+        assert_eq!(env.ctor_kinds.get("Map"), Some(&2));
+        assert_eq!(env.ctor_kinds.get("Pair"), Some(&2));
+        assert_eq!(env.ctor_kinds.get("Either"), Some(&2));
+        assert_eq!(env.ctor_kinds.get("Array"), Some(&2)); // i e
+        assert_eq!(env.ctor_kinds.get("STArray"), Some(&3)); // s i e
+        assert_eq!(env.type_ctor_arity("List"), Some(1));
+        assert_eq!(env.type_ctor_arity("STArray"), Some(3));
+        assert_eq!(env.type_ctor_arity("Nope"), None);
         // `STArray`'s arity lives in BOTH tables: `ctor_kinds` above AND the
         // abstract prelude declaration (`data STArray s i e;` registers
         // `data_arities`). Pin the declarations to each other so they cannot
@@ -4195,5 +4267,71 @@ mod eq_ord_tests {
         assert!(by_ty.contains_key("Point"));
         assert!(by_ty.contains_key("List"));
         assert!(!by_ty.contains_key("Thunk"), "Thunk has no derived Ord");
+    }
+
+    #[test]
+    fn opaque_handles_get_no_derived_instance() {
+        // An OPAQUE declaration names a HANDLE — a world/state token, a cell, a
+        // stream. There is nothing structural to compare, and GHC derives no
+        // `Eq`/`Ord` for such a type, so the seed must skip it. Every name here
+        // is `DataInfo::Opaque` in the prelude.
+        let mut env = TypeEnv::with_builtins();
+        env.derive_eq_ord();
+        for handle in [
+            "World",
+            "STState",
+            "STRef",
+            "STArray",
+            "InputStream",
+            "OutputStream",
+        ] {
+            assert!(
+                matches!(env.data_types.get(handle), Some(DataInfo::Opaque)),
+                "`{handle}` must be an opaque declaration for this test to mean anything"
+            );
+            assert!(
+                !env.instances["Eq"].contains_key(handle),
+                "`{handle}` is a handle: no derived Eq"
+            );
+            assert!(
+                !env.instances["Ord"].contains_key(handle),
+                "`{handle}` is a handle: no derived Ord"
+            );
+        }
+        // Control: a RECORD and a SUM still derive, so the exclusion is about
+        // the declaration's shape and not about dropping data types wholesale.
+        assert!(matches!(
+            env.data_types.get("EqBand"),
+            Some(DataInfo::Record(_))
+        ));
+        assert!(matches!(env.data_types.get("Bool"), Some(DataInfo::Sum(_))));
+        assert!(env.instances["Eq"].contains_key("EqBand"));
+        assert!(env.instances["Ord"].contains_key("Bool"));
+    }
+
+    #[test]
+    fn an_explicit_instance_is_not_overwritten() {
+        // The seed inserts only when the key is absent: a program's own
+        // `instance Ord World` (however unusual) or a hand-written instance for
+        // a comparable type must survive `derive_eq_ord`.
+        let mut env = TypeEnv::with_builtins();
+        env.instances.entry("Ord".to_string()).or_default().insert(
+            "Double".to_string(),
+            InstanceInfo {
+                class: "Ord".to_string(),
+                head: crate::ast::TypeExpr::TName("Double".to_string()),
+                ty: "Double".to_string(),
+                constraints: vec![],
+                head_args: vec![],
+                methods: HashMap::new(),
+                primitive: false,
+                from_prelude: false,
+            },
+        );
+        env.derive_eq_ord();
+        assert!(
+            !env.instances["Ord"]["Double"].primitive,
+            "the explicit instance must not be replaced by the derived marker"
+        );
     }
 }

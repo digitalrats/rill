@@ -69,29 +69,34 @@ fn kind_mismatch_is_compile_error() {
 }
 
 #[test]
-fn parameterized_user_sum_instance_is_kind_error() {
-    // User parameterized sums are NOT registered in `data_arities` (only user
-    // RECORDS are): the sum's match pin / ctor-construction paths stay
-    // monomorphic `Data(name, [])`, so a parameterized sum as a typeclass
-    // instance would hit the confusing "cannot unify Data(\"Opt\", [Var(_)])
-    // with Data(\"Opt\", [])" error. v1 rejects it up front with a clean
-    // kind/arity message instead. Sums still work as ordinary data types
-    // (construction + match); they just cannot be instances.
+fn parameterized_user_sum_instance_is_accepted() {
+    // Haskell 2010 §4.1.1: `data Opt a = Some a | None` declares a type
+    // constructor of kind `* -> *`, so `instance Functor Opt` is a legal
+    // instance. This test used to assert the opposite — a documented v1
+    // restriction that existed only because user sums were left out of the
+    // arity table (their monomorphic `Data(name, [])` pins could not unify with
+    // the parameterized spelling). There is one constructor application shape
+    // now, the arity table records the declaration's parameters, and the
+    // instance is accepted and runs.
     let src = r#"
         typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
         data Opt a = Some a | None;
-        instance Functor Opt where { fmap g o = o; }
-        main = 1.0;
+        instance Functor Opt where {
+            fmap g o = case o of { Some x -> Some (g x); None -> None; };
+        }
+        main = case fmap (\ x -> x + 1.0) (Some 1.0) of { Some y -> y; None -> 0.0; };
     "#;
-    let res = compile_eval::<f32, 256>(src, "main", Mode::Strict);
-    let msg = format!(
-        "{}",
-        res.err()
-            .expect("a parameterized user sum instance must be rejected")
-    );
-    assert!(
-        msg.contains("is not a type constructor") && msg.contains("`Functor` expects kind"),
-        "expected the kind diagnostic for an unrecorded constructor, got: {msg}"
+    let ir = compile_eval::<f32, 256>(src, "main", Mode::Strict)
+        .expect("a parameterized user sum instance is a legal Haskell 2010 program");
+    let mut world = WorldState::<f32, 256>::new(rill_lang::program::WorldConfig {
+        ffi: Some(rill_lang::ffi::ForeignRegistry::new()),
+        ..Default::default()
+    });
+    rill_lang::test_eval(&ir, &mut world).unwrap();
+    let r = world.result().unwrap();
+    assert_eq!(
+        world.arena().get(r).unwrap(),
+        &rill_lang::arena::Value::Double(2.0)
     );
 }
 

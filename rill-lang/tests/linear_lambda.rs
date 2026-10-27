@@ -35,5 +35,5 @@ fn list_and_float_are_equal_data() {
 #[test]
 fn record_is_an_ordinary_value_type() {
     let t = arrowty("data Point = { x: Double, y: Double }; main = Point { x: 1.0, y: 2.0 }");
-    assert!(matches!(&t.vty, ValueTy::Data(name, _) if name == "Point"));
+    assert!(matches!(&t.vty, ValueTy::Con(name, _) if name == "Point"));
 }

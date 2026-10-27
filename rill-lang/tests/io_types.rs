@@ -18,7 +18,7 @@ fn arrowty(src: &str) -> rill_lang::types::ty::ArrowTy {
 fn write_output_types_as_io_void() {
     // `write : Maybe a -> OutputStream a -> IO ()` — the result is `IO Void`.
     let t = arrowty(r#"main = write (Just "x") stdout"#);
-    assert_eq!(t.vty, ValueTy::Data("IO".into(), vec![ValueTy::Void]));
+    assert_eq!(t.vty, ValueTy::Con("IO".into(), vec![ValueTy::Void]));
 }
 
 #[test]
@@ -27,9 +27,9 @@ fn from_list_types_as_io_input_stream() {
     let t = arrowty("main = fromList [1.0, 2.0]");
     assert_eq!(
         t.vty,
-        ValueTy::Data(
+        ValueTy::Con(
             "IO".into(),
-            vec![ValueTy::Data("InputStream".into(), vec![ValueTy::Double])]
+            vec![ValueTy::Con("InputStream".into(), vec![ValueTy::Double])]
         )
     );
 }
@@ -41,9 +41,9 @@ fn to_list_types_as_io_list() {
     let t = arrowty("main = do { xs <- fromList [1.0]; toList xs }");
     assert_eq!(
         t.vty,
-        ValueTy::Data(
+        ValueTy::Con(
             "IO".into(),
-            vec![ValueTy::App("List".into(), vec![ValueTy::Double])]
+            vec![ValueTy::Con("List".into(), vec![ValueTy::Double])]
         )
     );
 }
@@ -53,5 +53,5 @@ fn do_notation_over_io_uses_monad_instance() {
     // A do-block over IO binds through `instance Monad IO`; the result is the
     // final action's type.
     let t = arrowty(r#"main = do { xs <- fromList [1.0]; write (Just "x") stdout; return () }"#);
-    assert_eq!(t.vty, ValueTy::Data("IO".into(), vec![ValueTy::Void]));
+    assert_eq!(t.vty, ValueTy::Con("IO".into(), vec![ValueTy::Void]));
 }

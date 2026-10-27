@@ -292,7 +292,7 @@ impl GivenVar {
             // whose head is that class variable.
             None => matches!(
                 t,
-                ValueTy::App(n, _) | ValueTy::Data(n, _) | ValueTy::Newtype(n, _)
+                ValueTy::Con(n, _) | ValueTy::Newtype(n, _)
                     if *n == self.name
             ),
         }
@@ -304,7 +304,7 @@ impl GivenVar {
     fn abstract_ty(&self) -> ValueTy {
         match self.id {
             Some(id) => ValueTy::Var(id),
-            None => ValueTy::App(self.name.clone(), Vec::new()),
+            None => ValueTy::Con(self.name.clone(), Vec::new()),
         }
     }
 }
@@ -538,7 +538,7 @@ fn infer_method_under_given(
 fn selection_evidence(cv: &ClassVarSubst) -> ValueTy {
     match cv {
         ClassVarSubst::Ty(t) => t.clone(),
-        ClassVarSubst::Ctor(c) => ValueTy::App(c.clone(), Vec::new()),
+        ClassVarSubst::Ctor(c) => ValueTy::Con(c.clone(), Vec::new()),
         ClassVarSubst::Var(id) => ValueTy::Var(*id),
     }
 }
@@ -741,7 +741,7 @@ pub(crate) fn data_field_vty_with_free(
             if let Some(k) = tyvars.iter().position(|t| t == head) {
                 ValueTy::TyConApp((k + 1) as u32, vargs)
             } else {
-                ValueTy::App(head.clone(), vargs)
+                ValueTy::Con(head.clone(), vargs)
             }
         }
         crate::ast::TypeExpr::TFunc(args, ret) => ValueTy::Thunk(
@@ -759,18 +759,18 @@ pub(crate) fn data_field_vty_with_free(
     }
 }
 
-/// The value type of a value of sum type `sum_name`: builtin sums are
-/// parameterized (`Maybe a`, `Either a b`) and compare/construct as `App`,
-/// while user sums are monomorphic `Data`. A fresh live value variable fills
-/// each builtin type parameter (the shape's `Var(1)`/`Var(2)` placeholders are
-/// NOT live unification vars — see [`TypeEnv::with_builtins`]).
+/// The value type of a value of sum type `sum_name`: a parameterized sum
+/// (`Maybe a`, `Either a b`, a user `data Opt a`) is a constructor application
+/// with one fresh live value variable per type parameter (the builtin shape's
+/// `Var(1)`/`Var(2)` placeholders are NOT live unification vars — see
+/// [`TypeEnv::with_builtins`]); a monomorphic one has none.
 fn fresh_sum_vty(ctx: &mut Ctx, sum_name: &str) -> ValueTy {
-    match ctx.env.ctor_arity(sum_name) {
+    match ctx.env.type_ctor_arity(sum_name) {
         Some(arity) => {
             let args = (0..arity).map(|_| ctx.fresh_vty()).collect();
-            ValueTy::App(sum_name.into(), args)
+            ValueTy::Con(sum_name.into(), args)
         }
-        None => ValueTy::Data(sum_name.into(), vec![]),
+        None => ValueTy::Con(sum_name.into(), vec![]),
     }
 }
 
@@ -793,8 +793,7 @@ pub(crate) fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueT
                 let head = args.get((*f).saturating_sub(1) as usize).cloned();
                 let sub_args = xs.iter().map(|x| sub(x, args)).collect();
                 match head {
-                    Some(ValueTy::App(c, _)) => ValueTy::App(c, sub_args),
-                    Some(ValueTy::Data(c, _)) => ValueTy::Data(c, sub_args),
+                    Some(ValueTy::Con(c, _)) => ValueTy::Con(c, sub_args),
                     Some(ValueTy::Newtype(c, _)) => ValueTy::Newtype(c, sub_args),
                     // An unresolved head (a fresh record type arg) carries the
                     // LIVE var id, not the placeholder id — so the substituted
@@ -809,13 +808,10 @@ pub(crate) fn substitute_field_params(fty: &ValueTy, args: &[ValueTy]) -> ValueT
                 fa.iter().map(|x| sub(x, args)).collect(),
                 fr.iter().map(|x| sub(x, args)).collect(),
             ),
-            ValueTy::Data(n, a) => {
-                ValueTy::Data(n.clone(), a.iter().map(|x| sub(x, args)).collect())
-            }
+            ValueTy::Con(n, a) => ValueTy::Con(n.clone(), a.iter().map(|x| sub(x, args)).collect()),
             ValueTy::Newtype(n, a) => {
                 ValueTy::Newtype(n.clone(), a.iter().map(|x| sub(x, args)).collect())
             }
-            ValueTy::App(n, a) => ValueTy::App(n.clone(), a.iter().map(|x| sub(x, args)).collect()),
             // A parameterized buffer record field: the element is substituted
             // like any other type argument.
             ValueTy::Buffer(elem) => ValueTy::Buffer(Box::new(sub(elem, args))),
@@ -1115,7 +1111,7 @@ fn class_var_pattern(ctx: &mut Ctx, sig: &crate::ast::TypeExpr, idx: usize) -> V
     match container_te {
         Some(crate::ast::TypeExpr::TApp(head, type_args)) => {
             let fresh: Vec<ValueTy> = type_args.iter().map(|_| ctx.fresh_vty()).collect();
-            ValueTy::App(head, fresh)
+            ValueTy::Con(head, fresh)
         }
         _ => unreachable!(
             "class_var_pattern requires a TApp at container_idx (class_var_arg_index guarantees it)"
@@ -1270,7 +1266,7 @@ fn bind_constraint_instance(
         None => (vec![], vec![]),
     };
     let concrete_args = match container_vty {
-        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+        ValueTy::Con(_, a) => a.clone(),
         _ => vec![],
     };
     for (k, hv) in head_args.iter().enumerate() {
@@ -1521,7 +1517,7 @@ pub(crate) fn first_arg_solves_class_var(env: &TypeEnv, name: &str, selector_ty:
     fn value_has_var(ty: &ValueTy, var: TypeVarId) -> bool {
         match ty {
             ValueTy::Var(id) | ValueTy::TyConVar(id) => *id == var,
-            ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
+            ValueTy::Con(_, args) | ValueTy::Newtype(_, args) => {
                 args.iter().any(|t| value_has_var(t, var))
             }
             ValueTy::Thunk(args, rets) => {
@@ -1679,10 +1675,11 @@ fn conv(
                 .collect();
             match class_var_subst {
                 ClassVarSubst::Ctor(ctor) => {
-                    if env.ctor_arity(ctor).is_some() {
-                        ValueTy::App(ctor.to_string(), vargs)
-                    } else if env.data_arities.contains_key(ctor) {
-                        ValueTy::Data(ctor.to_string(), vargs)
+                    // One representation: a constructor the registry knows gets
+                    // the one `Con` shape. A name it does not know is not a
+                    // constructor at all and resolves nominally.
+                    if env.type_ctor_arity(ctor).is_some() {
+                        ValueTy::Con(ctor.to_string(), vargs)
                     } else {
                         resolve_type_name(env, ctor)
                     }
@@ -1691,11 +1688,8 @@ fn conv(
                 // constructor: splice its own arguments ahead of the new ones
                 // (arity-0 classes never reach this).
                 ClassVarSubst::Ty(t) => match t {
-                    ValueTy::App(n, pre) => {
-                        ValueTy::App(n.clone(), pre.iter().cloned().chain(vargs).collect())
-                    }
-                    ValueTy::Data(n, pre) => {
-                        ValueTy::Data(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                    ValueTy::Con(n, pre) => {
+                        ValueTy::Con(n.clone(), pre.iter().cloned().chain(vargs).collect())
                     }
                     ValueTy::Newtype(n, pre) => {
                         ValueTy::Newtype(n.clone(), pre.iter().cloned().chain(vargs).collect())
@@ -1706,15 +1700,10 @@ fn conv(
             }
         }
         crate::ast::TypeExpr::TApp(head, args) => {
-            // A DECLARED data type keeps its `Data` flavour, exactly as
-            // `instantiate_builtin_sig_vty` builds a builtin signature's type:
-            // `data_arities` is the set of parameterized declarations (`ST`,
-            // `STArray`, `IO`, user `data`), while the builtin containers
-            // (`List`, `Pair`, `Array`) stay `App`. The two must agree, or a
-            // constrained definition's signature would produce `App("ST", …)`
-            // where the ST machinery (and `runSTArray`'s payload check) expects
-            // `Data("ST", …)`, and `unify_value` — which does not conflate the
-            // flavours — would reject the call site.
+            // One representation for every application: the converter never
+            // chooses between "declared" and "builtin" shapes — whether a name
+            // is an algebraic data type is a question about the constructor
+            // ([`TypeEnv::is_declared_data`]), not a spelling of the type.
             let vargs: Vec<ValueTy> = args
                 .iter()
                 .map(|a| conv(env, class_var, class_var_subst, vars, fresh, a))
@@ -1743,14 +1732,14 @@ fn conv(
 /// spelled as a value type degrades to its nominal form rather than panicking.
 fn resolve_type_name(env: &TypeEnv, name: &str) -> ValueTy {
     env.vty_of_name(name)
-        .unwrap_or_else(|| ValueTy::Data(name.to_string(), vec![]))
+        .unwrap_or_else(|| ValueTy::Con(name.to_string(), vec![]))
 }
 
 /// Prepend a partial instance head's bound args to each container-typed
 /// signature param type. `instance (Monad m) => Arrow (Kleisli m)` resolves
-/// `a b c` to `Data("Kleisli", [b, c])` (the head `m` is dropped by the
+/// `a b c` to `Con("Kleisli", [b, c])` (the head `m` is dropped by the
 /// signature conversion in [`signature_param_tys_conv`]); this restores it to
-/// `Data("Kleisli", [m, b, c])` with the concrete head binding from the call
+/// `Con("Kleisli", [m, b, c])` with the concrete head binding from the call
 /// site (`m := Maybe`), so a result-directed SECOND argument (`arr g` in
 /// `compose (arr f) (arr g)`) resolves `return` by the concrete monad.
 pub(crate) fn prepend_instance_head_args(
@@ -1783,24 +1772,19 @@ pub(crate) fn prepend_instance_head_args(
 /// INSIDE `t` — not only at the top level.
 ///
 /// The signature conversion drops the head (`m a` for `instance Monad (ST s)`
-/// becomes `Data("ST", [a])`), and the class var can sit under a FUNCTION type
+/// becomes `Con("ST", [a])`), and the class var can sit under a FUNCTION type
 /// (`bind: m a -> (a -> m b) -> m b`: the second parameter's `m b` is inside a
 /// `Thunk`). Restoring only the top level left the callback's return type one
 /// argument short, so a body whose own computation was the full `ST s e`
 /// failed to unify with it.
 fn prepend_head_args_into_class_var(t: &mut ValueTy, ctor: &str, head_values: &[ValueTy]) {
     match t {
-        ValueTy::Data(c, args) if c == ctor => {
+        ValueTy::Con(c, args) if c == ctor => {
             let mut full = head_values.to_vec();
             full.extend(args.clone());
             // The head values themselves may mention the container kind; they
             // are opaque to this repair (they come from the call site).
-            *t = ValueTy::Data(c.clone(), full);
-        }
-        ValueTy::App(c, args) if c == ctor => {
-            let mut full = head_values.to_vec();
-            full.extend(args.clone());
-            *t = ValueTy::App(c.clone(), full);
+            *t = ValueTy::Con(c.clone(), full);
         }
         ValueTy::Thunk(args, rets) => {
             for a in args.iter_mut() {
@@ -2046,7 +2030,7 @@ pub(crate) fn bind_sig_type_vars(
         }
         crate::ast::TypeExpr::TApp(head, args) => {
             let actual_args: &[ValueTy] = match actual {
-                ValueTy::App(_, a) | ValueTy::Data(_, a) | ValueTy::Newtype(_, a) => a,
+                ValueTy::Con(_, a) | ValueTy::Newtype(_, a) => a,
                 _ => &[],
             };
             if !is_declared_type_name(env, head) {
@@ -2055,7 +2039,7 @@ pub(crate) fn bind_sig_type_vars(
                 // the instance registry is keyed by.
                 if let Some(c) = env.type_name_of_vty(actual) {
                     out.entry(head.clone())
-                        .or_insert_with(|| ValueTy::App(c, vec![]));
+                        .or_insert_with(|| ValueTy::Con(c, vec![]));
                 }
             }
             for (a, av) in args.iter().zip(actual_args.iter()) {
@@ -2115,11 +2099,8 @@ fn sig_ty_to_vty_inner(
                 // A bound type-constructor variable is applied: splice its own
                 // arguments ahead of the new ones (`m := Maybe`, `m a` →
                 // `Maybe a`).
-                Some(ValueTy::App(n, pre)) => {
-                    ValueTy::App(n.clone(), pre.iter().cloned().chain(vargs).collect())
-                }
-                Some(ValueTy::Data(n, pre)) => {
-                    ValueTy::Data(n.clone(), pre.iter().cloned().chain(vargs).collect())
+                Some(ValueTy::Con(n, pre)) => {
+                    ValueTy::Con(n.clone(), pre.iter().cloned().chain(vargs).collect())
                 }
                 Some(ValueTy::Newtype(n, pre)) => {
                     ValueTy::Newtype(n.clone(), pre.iter().cloned().chain(vargs).collect())
@@ -2138,11 +2119,8 @@ fn sig_ty_to_vty_inner(
                         .clone();
                     match head_ty {
                         ValueTy::Var(v) | ValueTy::TyConVar(v) => ValueTy::TyConApp(v, vargs),
-                        ValueTy::App(n, pre) => {
-                            ValueTy::App(n, pre.into_iter().chain(vargs).collect())
-                        }
-                        ValueTy::Data(n, pre) => {
-                            ValueTy::Data(n, pre.into_iter().chain(vargs).collect())
+                        ValueTy::Con(n, pre) => {
+                            ValueTy::Con(n, pre.into_iter().chain(vargs).collect())
                         }
                         // A declared constructor applied to MORE arguments than
                         // its head alone (`FixedBuffer Double` resolves to the
@@ -2598,17 +2576,15 @@ pub fn infer_program_with_entry(
                     })
                     .collect();
                 env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
-                // NOTE: parameterized user SUMS are intentionally NOT registered
-                // in `data_arities` (only parameterized RECORDS are). A sum's
-                // match-pin and ctor-construction paths stay monomorphic
-                // `Data(name, [])`, so a parameterized sum as a typeclass
-                // instance would fail instance-body validation with the
-                // confusing `Data("Opt", [Var(_)])` vs `Data("Opt", [])` unify
-                // error. Leaving sums out of the table makes `instance` fail
-                // the kind check in `validate_instances` with a clean "not a
-                // type constructor" / arity message. Sums still work as
-                // ordinary data types (construction + match); they just cannot
-                // be instances in v1. See `TypeEnv::data_arities`.
+                // A parameterized SUM records its arity exactly like a record:
+                // `data Opt a = …` has kind `* -> *`, which is what the kind
+                // projection must answer (Haskell 2010 §4.1.1 gives a data
+                // declaration its parameter count). The old exclusion existed
+                // only because the two constructor-application shapes could not
+                // unify; there is one `Con` shape now.
+                if !tyvars.is_empty() {
+                    env.data_arities.insert(name.clone(), tyvars.len());
+                }
             }
             _ => {}
         }
@@ -3525,9 +3501,7 @@ fn vty_mentions_tyvar(t: &ValueTy, id: TypeVarId) -> bool {
             args.iter().any(|a| vty_mentions_tyvar(a, id))
                 || rets.iter().any(|r| vty_mentions_tyvar(r, id))
         }
-        ValueTy::Data(_, a) | ValueTy::Newtype(_, a) | ValueTy::App(_, a) => {
-            a.iter().any(|x| vty_mentions_tyvar(x, id))
-        }
+        ValueTy::Con(_, a) | ValueTy::Newtype(_, a) => a.iter().any(|x| vty_mentions_tyvar(x, id)),
         // The element is part of the buffer type: a variable element is
         // mentioned by the buffer, so a region phantom / quantified element
         // cannot hide inside it.
@@ -3580,7 +3554,7 @@ fn value_free_vars_into(t: &ValueTy, subst: &Subst, acc: &mut Vec<TypeVarId>) {
                 value_free_vars_into(r, subst, acc);
             }
         }
-        ValueTy::Data(_, a) | ValueTy::Newtype(_, a) | ValueTy::App(_, a) => {
+        ValueTy::Con(_, a) | ValueTy::Newtype(_, a) => {
             for x in a {
                 value_free_vars_into(x, subst, acc);
             }
@@ -3614,12 +3588,12 @@ fn value_instantiate(t: &ValueTy, fresh: &HashMap<TypeVarId, TypeVarId>) -> Valu
             args.iter().map(|a| value_instantiate(a, fresh)).collect(),
             rets.iter().map(|r| value_instantiate(r, fresh)).collect(),
         ),
-        ValueTy::Data(name, a) | ValueTy::Newtype(name, a) | ValueTy::App(name, a) => {
+        ValueTy::Con(name, a) | ValueTy::Newtype(name, a) => {
             let a = a.iter().map(|x| value_instantiate(x, fresh)).collect();
             match t {
-                ValueTy::Data(..) => ValueTy::Data(name.clone(), a),
+                ValueTy::Con(..) => ValueTy::Con(name.clone(), a),
                 ValueTy::Newtype(..) => ValueTy::Newtype(name.clone(), a),
-                _ => ValueTy::App(name.clone(), a),
+                _ => ValueTy::Con(name.clone(), a),
             }
         }
         // A quantified element variable must be FRESHENED with the buffer, or
@@ -3726,16 +3700,16 @@ fn bind_pattern(
             // scrutinees whose type is still a fresh var).
             let resolved = ctx.subst.resolve_value(vty);
             let sum_name = match &resolved {
-                ValueTy::App(n, _) | ValueTy::Data(n, _)
+                ValueTy::Con(n, _)
                     if matches!(ctx.env.data_types.get(n.as_str()), Some(DataInfo::Sum(_))) =>
                 {
                     n.clone()
                 }
                 _ => fallback_sum.to_string(),
             };
-            let is_builtin = ctx.env.ctor_arity(&sum_name).is_some();
+            let is_builtin = ctx.env.type_ctor_arity(&sum_name).is_some();
             let scrutinee_args: Vec<ValueTy> = match &resolved {
-                ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                ValueTy::Con(_, a) => a.clone(),
                 _ => vec![],
             };
             let payload = match sum_ctor_payload(ctx, &sum_name, name) {
@@ -4036,26 +4010,15 @@ fn infer_expr_expected(
             let rec_expected = if rec_candidates.len() == 1 {
                 let rec_name = &rec_candidates[0];
                 // A builtin constructor (`Pair a b`) lives in `ctor_kinds`, not
-                // `data_arities`. Consult both so the record's type args are
-                // FRESH vars, not the placeholder positions `Var(1)`/`Var(2)`
-                // from [`DataInfo::Record`] — those placeholders share the id
-                // space with live inference vars, so leaking them corrupts the
-                // substitution (`p.second` typed as raw `Var(2)`).
-                let arity = ctx
-                    .env
-                    .data_arities
-                    .get(rec_name)
-                    .copied()
-                    .or_else(|| ctx.env.ctor_arity(rec_name))
-                    .unwrap_or(0);
+                // `data_arities`; `type_ctor_arity` is the ONE answer, so the
+                // record's type args are FRESH vars, not the placeholder
+                // positions `Var(1)`/`Var(2)` from [`DataInfo::Record`] — those
+                // placeholders share the id space with live inference vars, so
+                // leaking them corrupts the substitution (`p.second` typed as
+                // raw `Var(2)`).
+                let arity = ctx.env.type_ctor_arity(rec_name).unwrap_or(0);
                 let args = (0..arity).map(|_| ctx.fresh_vty()).collect::<Vec<_>>();
-                // Builtin constructors are spelled `App`; user data types `Data`.
-                let shape = if ctx.env.ctor_arity(rec_name).is_some() {
-                    ValueTy::App(rec_name.clone(), args)
-                } else {
-                    ValueTy::Data(rec_name.clone(), args)
-                };
-                Some(shape)
+                Some(ValueTy::Con(rec_name.clone(), args))
             } else {
                 None
             };
@@ -4071,7 +4034,7 @@ fn infer_expr_expected(
                 });
             }
             match &t.vty {
-                ValueTy::Data(name, args) => match ctx.env.data_types.get(name.as_str()) {
+                ValueTy::Con(name, args) => match ctx.env.data_types.get(name.as_str()) {
                     Some(DataInfo::Record(fields)) => {
                         let fty = fields
                             .iter()
@@ -4101,40 +4064,6 @@ fn infer_expr_expected(
                         span: *span,
                     }),
                 },
-                ValueTy::App(name, args)
-                    if ctx.env.ctor_arity(name.as_str()).is_some()
-                        || matches!(
-                            ctx.env.data_types.get(name.as_str()),
-                            Some(DataInfo::Record(_))
-                        ) =>
-                {
-                    // placeholder `Var(1)`/`Var(2)` positions, resolved against
-                    // the concrete type args.
-                    match ctx.env.data_types.get(name.as_str()) {
-                        Some(DataInfo::Record(fields)) => {
-                            match fields.iter().position(|(f, _, _)| f == field) {
-                                Some(idx) => {
-                                    let fty = match &fields[idx].1 {
-                                        ValueTy::Var(k) => args
-                                            .get(k.saturating_sub(1) as usize)
-                                            .cloned()
-                                            .unwrap_or(ValueTy::Double),
-                                        t => t.clone(),
-                                    };
-                                    Ok(ArrowTy::value_channel(fty))
-                                }
-                                None => Err(CompileError::Type {
-                                    msg: format!("no field `{field}` in `{name}`"),
-                                    span: *span,
-                                }),
-                            }
-                        }
-                        _ => Err(CompileError::Type {
-                            msg: format!("`{name}` is not a record type"),
-                            span: *span,
-                        }),
-                    }
-                }
                 ValueTy::Var(_) => {
                     // Deferred record: the record type is not resolved here (a
                     // value function's λ-parameter). When the field uniquely
@@ -4146,7 +4075,7 @@ fn infer_expr_expected(
                     // record defers to a fresh var, resolved when the function
                     // is called with a concrete argument (`reduce` β-reduces).
                     let field_ty = match &rec_expected {
-                        Some(ValueTy::Data(name, args)) | Some(ValueTy::App(name, args)) => {
+                        Some(ValueTy::Con(name, args)) => {
                             match ctx.env.data_types.get(name.as_str()) {
                                 Some(DataInfo::Record(fields)) => fields
                                     .iter()
@@ -4192,7 +4121,7 @@ fn infer_expr_expected(
                 });
             }
             match &rt.vty {
-                ValueTy::Data(name, _) => {
+                ValueTy::Con(name, args) => {
                     if matches!(
                         ctx.env.data_types.get(name.as_str()),
                         Some(DataInfo::Opaque)
@@ -4210,7 +4139,7 @@ fn infer_expr_expected(
                             DataInfo::Record(fields) => fields
                                 .iter()
                                 .find(|(f, _, _)| f == field)
-                                .map(|(_, t, _)| t.clone()),
+                                .map(|(_, t, _)| substitute_field_params(t, args)),
                             _ => None,
                         });
                     let fty = match fty {
@@ -4224,40 +4153,6 @@ fn infer_expr_expected(
                     };
                     // COW update: the new value must be a constant or a value
                     // channel whose type matches the declared field type.
-                    let vt = infer_const_value(ctx, value)?;
-                    unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
-                    Ok(rt)
-                }
-                ValueTy::App(name, args) if ctx.env.ctor_arity(name.as_str()).is_some() => {
-                    // Builtin record (`Pair a b`): the field type is a
-                    // placeholder `Var(k)` position resolved against the
-                    // concrete type args.
-                    let fty = ctx
-                        .env
-                        .data_types
-                        .get(name.as_str())
-                        .and_then(|info| match info {
-                            DataInfo::Record(fields) => fields
-                                .iter()
-                                .position(|(f, _, _)| f == field)
-                                .map(|idx| match &fields[idx].1 {
-                                    ValueTy::Var(k) => args
-                                        .get(k.saturating_sub(1) as usize)
-                                        .cloned()
-                                        .unwrap_or(ValueTy::Double),
-                                    t => t.clone(),
-                                }),
-                            _ => None,
-                        });
-                    let fty = match fty {
-                        Some(t) => t,
-                        None => {
-                            return Err(CompileError::Type {
-                                msg: format!("no field `{field}` in `{name}`"),
-                                span: *span,
-                            });
-                        }
-                    };
                     let vt = infer_const_value(ctx, value)?;
                     unify_value(&vt, &fty, &mut ctx.subst, value.span())?;
                     Ok(rt)
@@ -4325,12 +4220,12 @@ fn infer_expr_expected(
                 None
             };
             let pre_expected: Option<ValueTy> = pre_sum.as_ref().and_then(|n| {
-                ctx.env.ctor_arity(n).map(|arity| {
+                ctx.env.type_ctor_arity(n).map(|arity| {
                     let mut args: Vec<ValueTy> = Vec::new();
                     while args.len() < arity {
                         args.push(ctx.fresh_vty());
                     }
-                    ValueTy::App(n.clone(), args)
+                    ValueTy::Con(n.clone(), args)
                 })
             });
             let st = match scrutinee.as_ref() {
@@ -4363,7 +4258,7 @@ fn infer_expr_expected(
             let resolved = ctx.subst.resolve_value(&scrutinee_vty);
             // An opaque value has no constructors or fields to inspect: it
             // cannot be pattern-matched (`data W; f w = case w of { … }`).
-            if let ValueTy::Data(name, _) = &resolved {
+            if let ValueTy::Con(name, _) = &resolved {
                 if matches!(
                     ctx.env.data_types.get(name.as_str()),
                     Some(DataInfo::Opaque)
@@ -4374,16 +4269,12 @@ fn infer_expr_expected(
                     });
                 }
             }
+            // A DECLARED type pins the scrutinee to itself; a builtin
+            // non-declared constructor (`List`, `Map`) does not, so the arm
+            // constructors decide. That is a question about the constructor
+            // (`is_declared_data`), not about the type's shape.
             let scrutinee_sum = match &resolved {
-                ValueTy::Data(name, _) => Some(name.clone()),
-                ValueTy::App(name, _)
-                    if matches!(
-                        ctx.env.data_types.get(name.as_str()),
-                        Some(DataInfo::Sum(_))
-                    ) =>
-                {
-                    Some(name.clone())
-                }
+                ValueTy::Con(name, _) if ctx.env.is_declared_data(name) => Some(name.clone()),
                 _ => None,
             };
             if arms
@@ -4432,18 +4323,18 @@ fn infer_expr_expected(
                 // Builtin sums keep their concrete type args (fresh when the
                 // scrutinee carries none); user sums pin to the monomorphic
                 // `Data`.
-                let pin_ty = match ctx.env.ctor_arity(&sum_name) {
+                let pin_ty = match ctx.env.type_ctor_arity(&sum_name) {
                     Some(arity) => {
                         let mut args: Vec<ValueTy> = match &scrutinee_vty {
-                            ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                            ValueTy::Con(_, a) => a.clone(),
                             _ => vec![],
                         };
                         while args.len() < arity {
                             args.push(ctx.fresh_vty());
                         }
-                        ValueTy::App(sum_name.clone(), args)
+                        ValueTy::Con(sum_name.clone(), args)
                     }
-                    None => ValueTy::Data(sum_name.clone(), vec![]),
+                    None => ValueTy::Con(sum_name.clone(), vec![]),
                 };
                 unify_value(&scrutinee_vty, &pin_ty, &mut ctx.subst, *span)?;
                 let result = check_match_arms(ctx, &sum_name, &pin_ty, arms, *span)?;
@@ -4565,7 +4456,7 @@ fn infer_expr_expected(
             let elem_ty = elem_ty
                 .map(|t| ctx.subst.resolve_value(&t))
                 .unwrap_or(ValueTy::Double);
-            Ok(ArrowTy::value_channel(ValueTy::App(
+            Ok(ArrowTy::value_channel(ValueTy::Con(
                 "List".into(),
                 vec![elem_ty],
             )))
@@ -4587,7 +4478,7 @@ fn infer_expr_expected(
             let val_ty = val_ty
                 .map(|t| ctx.subst.resolve_value(&t))
                 .unwrap_or(ValueTy::Double);
-            Ok(ArrowTy::value_channel(ValueTy::App(
+            Ok(ArrowTy::value_channel(ValueTy::Con(
                 "Map".into(),
                 vec![ValueTy::String, val_ty],
             )))
@@ -4855,7 +4746,7 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
     if let Some(info) = ctx.env.data_types.get(name) {
         match info {
             DataInfo::Record(_) => {
-                return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])))
+                return Ok(ArrowTy::value_channel(ValueTy::Con(name.into(), vec![])))
             }
             DataInfo::Sum(_) => {
                 return Err(CompileError::Type {
@@ -4885,19 +4776,19 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
             // `list` is the polymorphic empty list: the element type is a
             // fresh var that unifies with the context. `mempty = list` (Monoid
             // List) must be usable at any element type.
-            return Ok(ArrowTy::value_channel(ValueTy::App(
+            return Ok(ArrowTy::value_channel(ValueTy::Con(
                 "List".into(),
                 vec![ctx.fresh_vty()],
             )));
         }
         "empty_map" => {
-            return Ok(ArrowTy::value_channel(ValueTy::App(
+            return Ok(ArrowTy::value_channel(ValueTy::Con(
                 "Map".into(),
                 vec![ValueTy::String, ValueTy::Double],
             )))
         }
         "empty_set" => {
-            return Ok(ArrowTy::value_channel(ValueTy::App(
+            return Ok(ArrowTy::value_channel(ValueTy::Con(
                 "Set".into(),
                 vec![ValueTy::Double],
             )))
@@ -5263,11 +5154,9 @@ fn instantiate_builtin_sig_vty_inner(
             for a in args {
                 targs.push(instantiate_builtin_sig_vty_inner(ctx, a, vars)?);
             }
-            if ctx.env.data_arities.contains_key(head.as_str()) {
-                Ok(ValueTy::Data(head.clone(), targs))
-            } else {
-                Ok(ValueTy::App(head.clone(), targs))
-            }
+            // One representation: a declared type and a builtin constructor
+            // both build the one `Con` application.
+            Ok(ValueTy::Con(head.clone(), targs))
         }
         TypeExpr::TFunc(args, ret) => {
             let mut targs = Vec::with_capacity(args.len());
@@ -5483,10 +5372,7 @@ fn pin_result_to_expected(
 ) -> Result<(), CompileError> {
     if let Some(exp) = expected {
         let exp = ctx.subst.resolve_value(exp);
-        if matches!(
-            exp,
-            ValueTy::Data(..) | ValueTy::App(..) | ValueTy::Newtype(..)
-        ) {
+        if matches!(exp, ValueTy::Con(..) | ValueTy::Newtype(..)) {
             let ret = ctx.subst.resolve_value(ret);
             unify_value(&ret, &exp, &mut ctx.subst, span)?;
         }
@@ -5742,7 +5628,7 @@ fn infer_apply_impl(
         let body_vty = bt.vty.clone();
         let resolved_body = ctx.subst.resolve_value(&body_vty);
         let (ret_vty, is_st) = match &resolved_body {
-            ValueTy::Data(n, st_args) if n == "ST" && st_args.len() == 2 => {
+            ValueTy::Con(n, st_args) if n == "ST" && st_args.len() == 2 => {
                 unify_value(&st_args[0], &ValueTy::TyConVar(s_id), &mut ctx.subst, span)?;
                 (st_args[1].clone(), true)
             }
@@ -5756,9 +5642,7 @@ fn infer_apply_impl(
         if is_runst_array {
             let payload = ctx.subst.resolve_value(&ret_vty);
             let (index, elem) = match (is_st, &payload) {
-                (true, ValueTy::Data(n, args) | ValueTy::App(n, args))
-                    if n == "STArray" && args.len() == 3 =>
-                {
+                (true, ValueTy::Con(n, args)) if n == "STArray" && args.len() == 3 => {
                     unify_value(&args[0], &ValueTy::TyConVar(s_id), &mut ctx.subst, span)?;
                     (args[1].clone(), args[2].clone())
                 }
@@ -5774,7 +5658,7 @@ fn infer_apply_impl(
             // the phantom (the same check-escaping rule as `runST`).
             let frozen = ctx
                 .subst
-                .resolve_value(&ValueTy::App("Array".into(), vec![index, elem]));
+                .resolve_value(&ValueTy::Con("Array".into(), vec![index, elem]));
             if vty_mentions_tyvar(&frozen, s_id) || ctx.subst.value_map.contains_key(&s_id) {
                 return Err(CompileError::Type {
                     msg: "ST region result escapes the phantom type s".into(),
@@ -5815,7 +5699,7 @@ fn infer_apply_impl(
             let exp = ctx.subst.resolve_value(exp);
             if matches!(
                 exp,
-                ValueTy::Data(..) | ValueTy::App(..) | ValueTy::Newtype(..) | ValueTy::Thunk(..)
+                ValueTy::Con(..) | ValueTy::Newtype(..) | ValueTy::Thunk(..)
             ) {
                 unify_value(&resolved, &exp, &mut ctx.subst, span)?;
             }
@@ -5880,7 +5764,7 @@ fn infer_apply_impl(
             // argument then selects its instance. Other parameters keep plain
             // inference (their expected type may be a signal channel).
             let resolved_pt = ctx.subst.resolve_value(&pt);
-            let directed = matches!(&resolved_pt, ValueTy::Data(n, _) if n == "IO")
+            let directed = matches!(&resolved_pt, ValueTy::Con(n, _) if n == "IO")
                 || matches!(resolved_pt, ValueTy::Thunk(..));
             let at0 = if directed {
                 infer_expr_expected(ctx, a, Some(pt.clone()))?
@@ -6056,14 +5940,14 @@ fn infer_apply_impl(
                         });
                     }
                 }
-                // Builtin records (`Pair a b`) carry PLACEHOLDER type
-                // parameters (`Var(1)`, `Var(2)`) that are NOT live
+                // A parameterized record — a builtin shape (`Pair a b`) or a
+                // declared `data Kleisli m a b` alike — carries PLACEHOLDER
+                // type parameters (`Var(1)`, `Var(2)`) that are NOT live
                 // unification vars. Freshen each placeholder to a fresh
                 // live var BEFORE unifying the fields: unifying the raw
                 // ids would bind them in the live subst, colliding with
                 // subsequently freshened ids (`Pair { first: 1.0,
                 // second: 2 }` failed on the second field).
-                let is_builtin = ctx.env.ctor_arity(name).is_some();
                 // Track which placeholder a freshened field replaced
                 // (`Var(k)` / `TyConVar(k)` / `TyConApp(k, ..)` head →
                 // fresh var), so parameterized user data can resolve
@@ -6116,19 +6000,13 @@ fn infer_apply_impl(
                                 .map(|x| freshen_placeholder(x, bindings, ctx))
                                 .collect(),
                         ),
-                        ValueTy::Data(n, a) => ValueTy::Data(
+                        ValueTy::Con(n, a) => ValueTy::Con(
                             n.clone(),
                             a.iter()
                                 .map(|x| freshen_placeholder(x, bindings, ctx))
                                 .collect(),
                         ),
                         ValueTy::Newtype(n, a) => ValueTy::Newtype(
-                            n.clone(),
-                            a.iter()
-                                .map(|x| freshen_placeholder(x, bindings, ctx))
-                                .collect(),
-                        ),
-                        ValueTy::App(n, a) => ValueTy::App(
                             n.clone(),
                             a.iter()
                                 .map(|x| freshen_placeholder(x, bindings, ctx))
@@ -6156,8 +6034,7 @@ fn infer_apply_impl(
                 // types below resolve through the substitution.
                 if let Some(exp) = &expected {
                     let eargs = match ctx.subst.resolve_value(exp) {
-                        ValueTy::Data(n, a) if n == *name => Some(a.clone()),
-                        ValueTy::App(n, a) if n == *name => Some(a.clone()),
+                        ValueTy::Con(n, a) if n == *name => Some(a.clone()),
                         _ => None,
                     };
                     if let Some(eargs) = eargs {
@@ -6191,21 +6068,15 @@ fn infer_apply_impl(
                     let vt = infer_const_value_expected(ctx, e, Some(&fty_resolved))?;
                     unify_value(&vt, &fty, &mut ctx.subst, e.span())?;
                 }
-                if is_builtin {
-                    let arg_tys: Vec<ValueTy> = field_tys
-                        .iter()
-                        .map(|(_, t)| ctx.subst.resolve_value(t))
-                        .collect();
-                    return Ok(ArrowTy::value_channel(ValueTy::App(name.into(), arg_tys)));
-                }
-                // Parameterized user data (`data Kleisli m a b`): resolve each type
-                // parameter from the substitution built by unifying the
-                // fields. `Var(k+1)` and the `TyConApp` head share one
-                // id space, so resolving `Var(k+1)` yields the concrete
-                // type (m → Maybe, a → Double, b → Double).
-                if let Some(arity) = ctx.env.data_arities.get(name) {
-                    if *arity > 0 {
-                        let arg_tys: Vec<ValueTy> = (0..*arity)
+                // A PARAMETERIZED record (a builtin shape `Pair a b`, a
+                // declared `data Kleisli m a b`, `data ST s a`): resolve each
+                // type parameter from the substitution built by unifying the
+                // fields. `Var(k+1)` and the `TyConApp` head share one id
+                // space, so resolving `Var(k+1)` yields the concrete type
+                // (m → Maybe, a → Double, b → Double).
+                match ctx.env.type_ctor_arity(name) {
+                    Some(arity) if arity > 0 => {
+                        let arg_tys: Vec<ValueTy> = (0..arity)
                             .map(|k| {
                                 let pid = (k + 1) as u32;
                                 match placeholder_bindings.get(&pid) {
@@ -6228,10 +6099,14 @@ fn infer_apply_impl(
                                 }
                             })
                             .collect();
-                        return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), arg_tys)));
+                        return Ok(ArrowTy::value_channel(ValueTy::Con(name.into(), arg_tys)));
+                    }
+                    // A MONOMORPHIC record: it carries no type arguments. The
+                    // freshly resolved field types are not its type args.
+                    _ => {
+                        return Ok(ArrowTy::value_channel(ValueTy::Con(name.into(), vec![])));
                     }
                 }
-                return Ok(ArrowTy::value_channel(ValueTy::Data(name.into(), vec![])));
             }
             DataInfo::Sum(_) => {
                 // Applying the sum type name itself is not a constructor call.
@@ -6297,7 +6172,7 @@ fn infer_apply_impl(
         // placeholder position (`Var(k)` → arg k-1), the rest stay fresh
         // (`Left 5.0` is `App("Either", [Double, ?])`). The match pin pads the
         // scrutinee to `arity`, so the arities must agree.
-        if let Some(arity) = ctx.env.ctor_arity(&sum_name) {
+        if let Some(arity) = ctx.env.type_ctor_arity(&sum_name) {
             let mut slots: Vec<Option<ValueTy>> = Vec::with_capacity(arity);
             for _ in 0..arity {
                 slots.push(None);
@@ -6325,13 +6200,13 @@ fn infer_apply_impl(
                     None => arg_tys.push(ctx.fresh_vty()),
                 }
             }
-            return Ok(ArrowTy::value_channel(ValueTy::App(sum_name, arg_tys)));
+            return Ok(ArrowTy::value_channel(ValueTy::Con(sum_name, arg_tys)));
         }
         for (e, pty) in args.iter().zip(payload.iter()) {
             let vt = infer_const_value(ctx, e)?;
             unify_value(&vt, pty, &mut ctx.subst, e.span())?;
         }
-        return Ok(ArrowTy::value_channel(ValueTy::Data(sum_name, vec![])));
+        return Ok(ArrowTy::value_channel(ValueTy::Con(sum_name, vec![])));
     }
     // Typeclass method call: `show x` resolves at compile time to the instance
     // of the class declaring `show` for the concrete type of `x` (v1 requires
@@ -6843,7 +6718,7 @@ fn infer_apply_impl(
             // leading args, the remaining class-var slots freshened.
             let class_info_for_container = ctx.env.typeclasses.get(&class_name).cloned();
             let container_expected: Option<ValueTy> = match &expected {
-                Some(ValueTy::Data(c, args)) | Some(ValueTy::App(c, args)) => {
+                Some(ValueTy::Con(c, args)) => {
                     let inst = ctx.env.instances.get(&class_name).and_then(|m| m.get(c));
                     match inst {
                         Some(i) => {
@@ -6858,8 +6733,8 @@ fn infer_apply_impl(
                                 cargs.push(ctx.fresh_vty());
                             }
                             Some(match expected {
-                                Some(ValueTy::Data(..)) => ValueTy::Data(c.clone(), cargs),
-                                _ => ValueTy::App(c.clone(), cargs),
+                                Some(ValueTy::Con(..)) => ValueTy::Con(c.clone(), cargs),
+                                _ => ValueTy::Con(c.clone(), cargs),
                             })
                         }
                         None => None,
@@ -6880,7 +6755,7 @@ fn infer_apply_impl(
             // args and discharge the constraints, then match the class pattern
             // against the REMAINING args.
             let container_head: Option<String> = match &container_vty {
-                ValueTy::App(c, _) | ValueTy::Data(c, _) => Some(c.clone()),
+                ValueTy::Con(c, _) => Some(c.clone()),
                 _ => None,
             };
             let (head_args, _) = match &container_head {
@@ -6888,11 +6763,11 @@ fn infer_apply_impl(
                 None => (vec![], vec![]),
             };
             let concrete_args = match &container_vty {
-                ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                ValueTy::Con(_, a) => a.clone(),
                 _ => vec![],
             };
-            // Build the class-var pattern (`f a` → `App("f", [fresh])`) from the
-            // container argument's signature type.
+            // Build the class-var pattern (`f a` → `Con("f", [fresh])`) from
+            // the container argument's signature type.
             let pattern = class_var_pattern(ctx, sig, container_idx);
             // A partial instance head (`Kleisli m`, head_args = ["m"]) means the
             // pattern matches the concrete container's args AFTER the bound
@@ -6901,11 +6776,8 @@ fn infer_apply_impl(
                 container_vty.clone()
             } else {
                 match &container_vty {
-                    ValueTy::App(c, _) => {
-                        ValueTy::App(c.clone(), concrete_args[head_args.len()..].to_vec())
-                    }
-                    ValueTy::Data(c, _) => {
-                        ValueTy::Data(c.clone(), concrete_args[head_args.len()..].to_vec())
+                    ValueTy::Con(c, _) => {
+                        ValueTy::Con(c.clone(), concrete_args[head_args.len()..].to_vec())
                     }
                     _ => container_vty.clone(),
                 }
@@ -7659,9 +7531,8 @@ fn numeric_default_widens(formal: &ValueTy, actual: &ValueTy) -> bool {
         (ValueTy::Int, ValueTy::Int) => true,
         (ValueTy::String, ValueTy::String) => true,
         (ValueTy::Void, ValueTy::Void) => true,
-        (ValueTy::Data(f, fa), ValueTy::Data(a, aa))
-        | (ValueTy::Newtype(f, fa), ValueTy::Newtype(a, aa))
-        | (ValueTy::App(f, fa), ValueTy::App(a, aa)) => {
+        (ValueTy::Con(f, fa), ValueTy::Con(a, aa))
+        | (ValueTy::Newtype(f, fa), ValueTy::Newtype(a, aa)) => {
             f == a
                 && fa.len() == aa.len()
                 && fa
@@ -7826,7 +7697,7 @@ fn infer_collection_call(
     // The element type of a `List` value type; Double for a non-list.
     let list_elem = |t: &ValueTy| -> ValueTy {
         match t {
-            ValueTy::App(n, inner) if n == "List" => {
+            ValueTy::Con(n, inner) if n == "List" => {
                 inner.first().cloned().unwrap_or(ValueTy::Double)
             }
             _ => ValueTy::Double,
@@ -7842,12 +7713,12 @@ fn infer_collection_call(
     let require_list = |ctx: &mut Ctx, idx: usize, what: &str| -> Result<ValueTy, CompileError> {
         let t = arg_vty(ctx, idx)?;
         match ctx.subst.resolve_value(&t) {
-            ValueTy::App(n, inner) if n == "List" => {
+            ValueTy::Con(n, inner) if n == "List" => {
                 Ok(inner.first().cloned().unwrap_or(ValueTy::Double))
             }
             ValueTy::Var(_) => {
                 let elem = ctx.fresh_vty();
-                let list = ValueTy::App("List".into(), vec![elem.clone()]);
+                let list = ValueTy::Con("List".into(), vec![elem.clone()]);
                 unify_value(&list, &t, &mut ctx.subst, args[idx].span())?;
                 Ok(elem)
             }
@@ -7857,7 +7728,7 @@ fn infer_collection_call(
             }),
         }
     };
-    let list_of = |t: &ValueTy| ValueTy::App("List".into(), vec![list_elem(t)]);
+    let list_of = |t: &ValueTy| ValueTy::Con("List".into(), vec![list_elem(t)]);
     match name {
         "length" => {
             if args.len() != 1 {
@@ -7877,8 +7748,8 @@ fn infer_collection_call(
             // be an `Array`) a spurious unification failure.
             let at = arg_vty(ctx, 0)?;
             match ctx.subst.resolve_value(&at) {
-                ValueTy::App(n, _) if n == "List" => {}
-                ValueTy::App(n, _) if n == "Map" || n == "Set" || n == "Array" => {}
+                ValueTy::Con(n, _) if n == "List" => {}
+                ValueTy::Con(n, _) if n == "Map" || n == "Set" || n == "Array" => {}
                 ValueTy::Var(_) => {}
                 other => {
                     return Err(CompileError::Type {
@@ -7897,7 +7768,7 @@ fn infer_collection_call(
             let lt = arg_vty(ctx, 1)?;
             let elem = list_elem(&lt);
             unify_value(&xt, &elem, &mut ctx.subst, args[0].span())?;
-            Ok(ValueTy::App("List".into(), vec![elem]))
+            Ok(ValueTy::Con("List".into(), vec![elem]))
         }
         "head" => {
             if args.len() != 1 {
@@ -7910,11 +7781,11 @@ fn infer_collection_call(
             let fresh = ctx.fresh_vty();
             unify_value(
                 &lt,
-                &ValueTy::App("List".into(), vec![fresh]),
+                &ValueTy::Con("List".into(), vec![fresh]),
                 &mut ctx.subst,
                 args[0].span(),
             )?;
-            Ok(ValueTy::App("Maybe".into(), vec![list_elem(&lt)]))
+            Ok(ValueTy::Con("Maybe".into(), vec![list_elem(&lt)]))
         }
         "tail" => {
             if args.len() != 1 {
@@ -7924,7 +7795,7 @@ fn infer_collection_call(
             let fresh = ctx.fresh_vty();
             unify_value(
                 &lt,
-                &ValueTy::App("List".into(), vec![fresh]),
+                &ValueTy::Con("List".into(), vec![fresh]),
                 &mut ctx.subst,
                 args[0].span(),
             )?;
@@ -7964,7 +7835,7 @@ fn infer_collection_call(
                 });
             }
             let ret_ty = closure_rets.first().cloned().unwrap_or(ValueTy::Double);
-            Ok(ValueTy::App("List".into(), vec![ret_ty]))
+            Ok(ValueTy::Con("List".into(), vec![ret_ty]))
         }
         "fold" => {
             if args.len() != 3 {
@@ -8033,7 +7904,7 @@ fn infer_collection_call(
             }
             expect_closure(ctx, 1, "unary")?;
             let elem = require_list(ctx, 1, "source")?;
-            Ok(ValueTy::App("List".into(), vec![elem]))
+            Ok(ValueTy::Con("List".into(), vec![elem]))
         }
         "concat_map" => {
             if args.len() != 2 {
@@ -8045,7 +7916,7 @@ fn infer_collection_call(
             let ft = ctx.subst.resolve_value(&ft0);
             // See `concat_map_result_elem`: `(a -> List b) -> List a -> List b`.
             let b = concat_map_result_elem(&ft, elem);
-            Ok(ValueTy::App("List".into(), vec![b]))
+            Ok(ValueTy::Con("List".into(), vec![b]))
         }
         "append_list" => {
             if args.len() != 2 {
@@ -8058,12 +7929,12 @@ fn infer_collection_call(
             // an ordinary function value instead of only in infix position.
             let lt = arg_vty(ctx, 0)?;
             let elem = match ctx.subst.resolve_value(&lt) {
-                ValueTy::App(n, inner) if n == "List" => {
+                ValueTy::Con(n, inner) if n == "List" => {
                     inner.first().cloned().unwrap_or(ValueTy::Double)
                 }
                 ValueTy::Var(_) => {
                     let elem = ctx.fresh_vty();
-                    let list = ValueTy::App("List".into(), vec![elem.clone()]);
+                    let list = ValueTy::Con("List".into(), vec![elem.clone()]);
                     unify_value(&list, &lt, &mut ctx.subst, args[0].span())?;
                     elem
                 }
@@ -8085,7 +7956,7 @@ fn infer_collection_call(
             // and `fold (++) [] [1.0,2.0]` — ill-typed in Haskell 2010 —
             // silently produced no result.
             let rt = arg_vty(ctx, 1)?;
-            let list_ty = ValueTy::App("List".into(), vec![elem.clone()]);
+            let list_ty = ValueTy::Con("List".into(), vec![elem.clone()]);
             unify_value(&list_ty, &rt, &mut ctx.subst, args[1].span())?;
             Ok(list_ty)
         }
@@ -8101,7 +7972,7 @@ fn infer_collection_call(
             if !args.is_empty() {
                 return Err(arity_err("0", args.len()));
             }
-            Ok(ValueTy::App("List".into(), vec![ValueTy::Double]))
+            Ok(ValueTy::Con("List".into(), vec![ValueTy::Double]))
         }
         "insert" => match args.len() {
             3 => {
@@ -8109,13 +7980,13 @@ fn infer_collection_call(
                 let vt = arg_vty(ctx, 1)?;
                 let _ = arg_vty(ctx, 2)?;
                 check_ord(ctx, &kt, "key")?;
-                Ok(ValueTy::App("Map".into(), vec![kt, vt]))
+                Ok(ValueTy::Con("Map".into(), vec![kt, vt]))
             }
             2 => {
                 let kt = arg_vty(ctx, 0)?;
                 let _ = arg_vty(ctx, 1)?;
                 check_ord(ctx, &kt, "element")?;
-                Ok(ValueTy::App("Set".into(), vec![kt]))
+                Ok(ValueTy::Con("Set".into(), vec![kt]))
             }
             _ => Err(arity_err("2 or 3", args.len())),
         },
@@ -8127,12 +7998,12 @@ fn infer_collection_call(
             check_ord(ctx, &kt, "key")?;
             let mt = arg_vty(ctx, 1)?;
             let v = match &mt {
-                ValueTy::App(n, inner) if n == "Map" => {
+                ValueTy::Con(n, inner) if n == "Map" => {
                     inner.get(1).cloned().unwrap_or(ValueTy::Double)
                 }
                 _ => ValueTy::Double,
             };
-            Ok(ValueTy::App("Maybe".into(), vec![v]))
+            Ok(ValueTy::Con("Maybe".into(), vec![v]))
         }
         "member" => {
             if args.len() != 2 {
@@ -8147,7 +8018,7 @@ fn infer_collection_call(
             if !args.is_empty() {
                 return Err(arity_err("0", args.len()));
             }
-            Ok(ValueTy::App(
+            Ok(ValueTy::Con(
                 "Map".into(),
                 vec![ValueTy::String, ValueTy::Double],
             ))
@@ -8156,7 +8027,7 @@ fn infer_collection_call(
             if !args.is_empty() {
                 return Err(arity_err("0", args.len()));
             }
-            Ok(ValueTy::App("Set".into(), vec![ValueTy::Double]))
+            Ok(ValueTy::Con("Set".into(), vec![ValueTy::Double]))
         }
         _ => Err(CompileError::Type {
             msg: format!("unknown collection op `{name}`"),
@@ -8306,7 +8177,7 @@ mod tests {
         let t = ty_of("main = do { write Nothing stdout; return () }").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Data("IO".into(), vec![ValueTy::Void])
+            ValueTy::Con("IO".into(), vec![ValueTy::Void])
         );
     }
 
@@ -8599,7 +8470,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Data("Point".into(), vec![])
+            ValueTy::Con("Point".into(), vec![])
         );
     }
 
@@ -8629,7 +8500,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Data("Point".into(), vec![])
+            ValueTy::Con("Point".into(), vec![])
         );
     }
 
@@ -8766,7 +8637,7 @@ mod tests {
         let t = ty_of("data P = { x: Angles }; type Angles = Double; main = P { x: 1.0 }").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Data("P".into(), vec![])
+            ValueTy::Con("P".into(), vec![])
         );
     }
 
@@ -8778,7 +8649,7 @@ mod tests {
         let t = ty_of("data P = { f: Hz }; newtype Hz = Double; main = P { f: Hz 440.0 }").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Data("P".into(), vec![])
+            ValueTy::Con("P".into(), vec![])
         );
         // Newtypes are distinct wrappers: a bare Double does not satisfy a Hz
         // field (no automatic wrapping) — this is what the ordering fix buys
@@ -8792,7 +8663,7 @@ mod tests {
             ty_of("data P = { f: A }; type A = B; type B = Double; main = P { f: 1.0 }").unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Data("P".into(), vec![])
+            ValueTy::Con("P".into(), vec![])
         );
     }
 
@@ -8816,7 +8687,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             t.def_schemes["main"].ty.vty,
-            ValueTy::Data("Point".into(), vec![])
+            ValueTy::Con("Point".into(), vec![])
         );
     }
 
@@ -8838,7 +8709,7 @@ mod tests {
             ValueTy::Thunk(_, ret) => {
                 assert_eq!(ret.len(), 1);
                 match &ret[0] {
-                    ValueTy::App(name, _) => {
+                    ValueTy::Con(name, _) => {
                         assert_eq!(name.as_str(), "Pair");
                     }
                     other => panic!("expected Pair result, got {other:?}"),

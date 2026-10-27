@@ -174,10 +174,7 @@ fn a_declared_data_type_is_accepted() {
         Some(TypeEntry::TypeCtor { arity: 3 })
     );
     assert!(env.is_type_name("P"));
-    assert_eq!(
-        env.vty_of_name("P"),
-        Some(ValueTy::Data("P".into(), vec![]))
-    );
+    assert_eq!(env.vty_of_name("P"), Some(ValueTy::Con("P".into(), vec![])));
 
     let out = compile("data P = { x: Int }; f :: P -> Int; f p = p.x; main = f (P { x: 7 });")
         .expect("a declared data type must be accepted");
