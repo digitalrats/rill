@@ -128,9 +128,14 @@ fn recursive_constructor_class_method_is_compile_error() {
 
 #[test]
 fn buffer_value_does_not_select_scalar_instance() {
-    // A Buffer computation (`sin 1.0 : Buffer`) is an ordinary value now, but
-    // it cannot select a `Show Double` instance — the argument type is not
-    // concrete (Buffer), so resolution fails.
+    // A Buffer computation is an ordinary value, but it cannot select a
+    // `Show Double` instance: the operand's type is `Buffer`, never `Double`.
+    //
+    // The rejection is reported at the ARGUMENT, because `sin 1.0` is itself
+    // ill-typed (`sin` takes a `Buffer`; a bare literal is not one), and a
+    // type checker that reported the outer method first would hide the real
+    // cause. What must never happen is the other reading: a silent selection of
+    // `Show Double` for a Buffer, or a successful compile.
     let src = r#"
         typeclass Show a where { show: a; }
         instance Show Double where { show f = f; }
@@ -141,12 +146,35 @@ fn buffer_value_does_not_select_scalar_instance() {
     match res.expect_err("compile failed") {
         rill_lang::CompileError::Type { msg, .. } => {
             assert!(
-                msg.contains("cannot resolve method `show`"),
-                "expected method-resolution message, got: {msg}",
+                msg.contains("`sin`") || msg.contains("cannot resolve method `show`"),
+                "expected a diagnostic naming the ill-typed argument or the \
+                 unresolved method, got: {msg}",
+            );
+            assert!(
+                !msg.contains("no instance of `Show`"),
+                "a Buffer must not select `Show Double`: {msg}"
             );
         }
         other => panic!("expected a Type error, got {other:?}"),
     }
+    // The same program with a literal operand DOES select the instance, so the
+    // rejection above is about the Buffer, not about `show` being unusable.
+    let ok = r#"
+        typeclass Show a where { show: a; }
+        instance Show Double where { show f = f; }
+        main = show 1.0;
+    "#;
+    let ir = compile_eval::<f32, 256>(ok, "main", Mode::Strict).expect("`show 1.0` must compile");
+    assert!(
+        ir.dicts
+            .iter()
+            .any(|d| d.class == "Show" && d.ty_key == "Double"),
+        "`show 1.0` selects `Show Double`; table = {:?}",
+        ir.dicts
+            .iter()
+            .map(|d| (d.class.clone(), d.ty_key.clone()))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]

@@ -200,18 +200,39 @@ fn list_empty_has_zero_length() {
 
 #[test]
 fn map_result_element_type_comes_from_closure_return() {
-    // `map (fn x -> x + 0.5) [1, 2, 3]` over an INT list must be typed
-    // `List Double` (the closure's RETURN type), not `List Int` (the source
-    // element type): a later `cons 4.0` must typecheck — it used to fail with a
-    // spurious "cannot unify Int with Double".
+    // A map over an INT list whose closure RETURNS a Double must be typed
+    // `List Double` (the closure's return type), not `List Int` (the source
+    // element type), so a later `cons 4.0` typechecks.
+    //
+    // The closure must be `Int -> Double` in its own right: rill's integer
+    // literals are monomorphic `Int` (no `fromInteger` elaboration yet —
+    // design §3.6, stage 7), so `\x -> x + 0.5` over an `Int` list is the
+    // `Fractional Int` error GHC reports for the same program with the list
+    // pinned: `map (\x -> x + 0.5) ([1,2,3] :: [Int])` →
+    // "No instance for 'Fractional Int' arising from the literal '0.5'". The
+    // `if` closure below has type `Int -> Double`, which GHC accepts
+    // (`4.0 : map (\x -> if x > 0 then 1.0 else 0.0) ([1,2,3] :: [Int])`
+    // evaluates to `[4.0,1.0,1.0,1.0]`).
+    assert!(
+        compile_eval::<f32, 256>(
+            r"main = cons 4.0 (map (\x -> if x > 0 then 1.0 else 0.0) [1, 2, 3]);",
+            "main",
+            Mode::Strict,
+        )
+        .is_ok(),
+        "a type-changing map followed by a Double cons must compile"
+    );
+    // And the `Fractional Int` program really is rejected, not silently
+    // retyped: the same expression with a fractional literal beside an `Int`
+    // list element.
     assert!(
         compile_eval::<f32, 256>(
             r"main = cons 4.0 (map (\x -> x + 0.5) [1, 2, 3]);",
             "main",
             Mode::Strict,
         )
-        .is_ok(),
-        "a type-changing map followed by a Double cons must compile"
+        .is_err(),
+        "`x + 0.5` over an `Int` element is `Fractional Int` (GHC: type error)"
     );
     // End-to-end length 4: the source needs spare capacity for the cons (map
     // preserves the source cap).

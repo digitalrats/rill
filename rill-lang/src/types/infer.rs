@@ -959,10 +959,6 @@ fn collect_static_calls(
         }
         Expr::Ref(_, _) | Expr::Int(_, _) | Expr::Double(_, _) | Expr::Str(_, _) => {}
         Expr::Neg(inner, _) => collect_static_calls(inner, src, bound, nodes, out),
-        Expr::Arith { lhs, rhs, .. } => {
-            collect_static_calls(lhs, src, bound, nodes, out);
-            collect_static_calls(rhs, src, bound, nodes, out);
-        }
         Expr::Let { defs, body, .. } => {
             let mut inner = bound.clone();
             for d in defs {
@@ -991,7 +987,7 @@ fn collect_static_calls(
         Expr::Bool(_, _) => {}
         Expr::Void(_) => {}
         Expr::Annot { expr, .. } => collect_static_calls(expr, src, bound, nodes, out),
-        Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
+        Expr::Logic { lhs, rhs, .. } => {
             collect_static_calls(lhs, src, bound, nodes, out);
             collect_static_calls(rhs, src, bound, nodes, out);
         }
@@ -1173,6 +1169,34 @@ fn infer_method_value_vty_expected(
         },
         vty => Ok(vty.clone()),
     }
+}
+
+/// Unify one argument of a PRIMITIVE method call against the method's
+/// parameter type.
+///
+/// A numeric LITERAL is a `Buffer` constant when the parameter is a `Buffer`:
+/// `sine 440.0 0.5 0.0 * 0.5` feeds `0.5` to `(*)`'s second operand, whose type
+/// is the block's. Haskell 2010 gets this from literal polymorphism
+/// (`fromRational`), which rill does not implement yet (design §3.6, stage 7);
+/// until it does, a literal in a buffer position is the constant that fills the
+/// block — exactly what lowering's `buffer_operand` emits. The rule is
+/// deliberately NARROW: a literal never stands in for a DIFFERENT scalar type,
+/// so `1 == 1.0` and `(1 :: Int) + 1.0` stay type errors (rill has no
+/// `fromInteger` elaboration to unify them).
+fn unify_method_arg(
+    ctx: &mut Ctx,
+    param: &ValueTy,
+    actual: &ValueTy,
+    arg: &Expr,
+) -> Result<(), CompileError> {
+    let numeric_literal = matches!(arg, Expr::Int(_, _) | Expr::Double(_, _));
+    if numeric_literal
+        && matches!(ctx.subst.resolve_value(param), ValueTy::Buffer(_))
+        && !matches!(ctx.subst.resolve_value(actual), ValueTy::Buffer(_))
+    {
+        return Ok(());
+    }
+    unify_value(param, actual, &mut ctx.subst, arg.span())
 }
 
 /// Whether `e` is a bare reference to a nullary method of `class_name` (e.g./// `mempty` in `mappend xs mempty`) — such an argument resolves by the selector
@@ -1448,8 +1472,26 @@ pub(crate) fn method_dispatch_key(
                 if registered {
                     return Some((key, ClassVarSubst::Ty(solved)));
                 }
-                // No instance under the full type: fall through to the head
-                // constructor, which is how a bare or partial head is keyed.
+                // No instance under the full type: the registry is keyed by the
+                // HEAD constructor (a structurally derived `Eq Array` answers
+                // every `Array i e`), so the LOOKUP falls back to the head.
+                // The substitution must still be the SOLVED TYPE: the method's
+                // signature is then instantiated at `Array Int Double`, which is
+                // what the arguments actually are. Substituting the bare head
+                // instead would type the parameter as `Data("Array", [])` and
+                // reject the real argument — the mismatch that made
+                // `(a :: Array Int Double) < b` fail while the shape says
+                // nothing is wrong.
+                if let Some(head) = env.type_name_of_vty(&solved) {
+                    if env
+                        .instances
+                        .get(class_name)
+                        .map(|by_ty| by_ty.contains_key(head.as_str()))
+                        .unwrap_or(false)
+                    {
+                        return Some((head, ClassVarSubst::Ty(solved)));
+                    }
+                }
             }
         }
     }
@@ -3204,10 +3246,6 @@ fn collect_ref_names(e: &Expr, out: &mut HashSet<String>) {
             }
         }
         Expr::Neg(inner, _) => collect_ref_names(inner, out),
-        Expr::Arith { lhs, rhs, .. } => {
-            collect_ref_names(lhs, out);
-            collect_ref_names(rhs, out);
-        }
         Expr::If {
             cond, then, els, ..
         } => {
@@ -3930,11 +3968,11 @@ fn infer_expr_expected(
         })),
         Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
         Expr::Ref(name, span) => infer_ref_expected(ctx, name, *span, expected),
-        Expr::Neg(inner, span) => {
-            let t = infer_expr(ctx, inner)?;
-            check_all_numeric(ctx, &t, *span)?;
-            Ok(t)
-        }
+        // Unary minus keeps the operand's type: `-3` is an `Int`, `-3.0` a
+        // `Double`. Haskell 2010 spells it `negate x`, whose `Num` dictionary
+        // is a later stage's slot projection; the operand unification is what
+        // makes a mixed `-(1) + 1.0` a type error.
+        Expr::Neg(inner, _span) => infer_expr(ctx, inner),
         Expr::Annot { expr, ty, span } => {
             // `e :: T` (Haskell 2010 §3.12). The annotation pins the inner
             // expression's type and the whole node takes the declared type:
@@ -3952,7 +3990,6 @@ fn infer_expr_expected(
             infer_apply_expr(ctx, callee, args, *span, expected)
         }
         Expr::Str(_, _) => Ok(ArrowTy::value_channel(ValueTy::String)),
-        Expr::Arith { op, lhs, rhs, span } => infer_arith(ctx, *op, lhs, rhs, *span),
         Expr::Let {
             defs,
             body,
@@ -4567,14 +4604,6 @@ fn infer_expr_expected(
                 vec![ValueTy::String, val_ty],
             )))
         }
-        Expr::Cmp { lhs, rhs, .. } => {
-            // Value-track comparison: both sides are value constants (any
-            // types — the interpreter's `value_cmp` is a cross-kind total
-            // order). The result is a Bool value channel.
-            let _ = infer_const_value(ctx, lhs)?;
-            let _ = infer_const_value(ctx, rhs)?;
-            Ok(ArrowTy::value_channel(ValueTy::Bool))
-        }
         Expr::Logic { lhs, rhs, .. } => {
             let _ = infer_const_value(ctx, lhs)?;
             let _ = infer_const_value(ctx, rhs)?;
@@ -4960,16 +4989,6 @@ fn infer_ref_inner(ctx: &mut Ctx, name: &str, span: Span) -> Result<ArrowTy, Com
                 span,
             });
         }
-    }
-    if matches!(name, "+" | "-" | "*" | "/" | "%") {
-        // Haskell 2010 Prelude: an arithmetic operator is an ordinary CURRIED
-        // function value (`(+) :: a -> a -> a`), not a bare scalar. Typing it
-        // as a 2-argument thunk is what lets `(+) 1.0 2.0`, `fold (+) 0 xs`
-        // and `inc = (+) 1.0` work — the same shape the binary math builtins
-        // (`min`/`max`) already use.
-        let s = ctx.fresh_vty();
-        let ty = nest_thunk(&[s.clone(), s.clone()], vec![s]);
-        return Ok(ArrowTy::value(ty));
     }
     if matches!(
         name,
@@ -6597,18 +6616,102 @@ fn infer_apply_impl(
                         span,
                     });
                 };
-                let arg_vty = infer_method_value_vty(ctx, &args[selector_idx], "argument")?;
+                // Every operand shares the class variable (`(+) :: a -> a ->
+                // a`, `(<) :: a -> a -> Bool`), so the instance is solved by
+                // ANY concrete operand — not only by the signature's selector
+                // position. `?gain > 0.5` has an unresolved actor parameter in
+                // the selector slot and a `Double` literal beside it; Haskell
+                // unifies the two and selects `Ord Double`.
                 let env = ctx.env.clone();
-                let cv_var = ctx.fresh_id();
-                let Some((ty_name, cv_subst)) = method_dispatch_key(
-                    &env,
-                    &class_name,
-                    &class_var,
-                    sig,
-                    &arg_vty,
-                    cv_var,
-                    || ctx.fresh_vty(),
-                ) else {
+                // A NON-selector operand's own typing failure is not this
+                // dispatch's to report: the argument is typed again against the
+                // method's parameter type below, where the diagnostic names the
+                // method. The SELECTOR's is (`show (sin 1.0)` must report the
+                // `sin` error, not "the argument type is not concrete").
+                let try_dispatch =
+                    |ctx: &mut Ctx,
+                     arg: &Expr|
+                     -> Result<Option<(String, ClassVarSubst)>, CompileError> {
+                        let cv_var = ctx.fresh_id();
+                        let vty = infer_method_value_vty(ctx, arg, "argument")?;
+                        // Resolve through the substitution: the operand may
+                        // already be bound (`a + b` where `a` was pinned by a
+                        // previous argument or by defaulting), and an unresolved
+                        // `Var` in the selector position names no instance.
+                        let vty = ctx.subst.resolve_value(&vty);
+                        Ok(method_dispatch_key(
+                            &env,
+                            &class_name,
+                            &class_var,
+                            sig,
+                            &vty,
+                            cv_var,
+                            || ctx.fresh_vty(),
+                        ))
+                    };
+                let mut dispatch = try_dispatch(ctx, &args[selector_idx])?;
+                if dispatch.is_none() {
+                    for (i, a) in args.iter().enumerate() {
+                        if i == selector_idx {
+                            continue;
+                        }
+                        if let Some(d) = try_dispatch(ctx, a).unwrap_or(None) {
+                            dispatch = Some(d);
+                            break;
+                        }
+                    }
+                }
+                // NUMERIC DEFAULTING (Haskell 2010 §4.3.4). An operand whose
+                // type the body never constrains — the λ-parameter of
+                // `twice x = x + x`, `from n = cons n (from (n + 1.0))` — leaves
+                // the class variable unsolved, and no dictionary can be built
+                // for an unknown type. Haskell resolves this by defaulting a
+                // `Num`-constrained variable to `Integer`/`Double` at the
+                // definition's generalisation point; rill has no defaulting pass
+                // yet, so the same default (`Double`) is applied here, at the one
+                // place the class variable is solved. Only `Num`/`Fractional`
+                // (the numeric classes the arithmetic operators belong to)
+                // default: an unsolved `Eq`/`Ord` variable is still an error, and
+                // a genuinely MIXED pair is rejected by the operand unification
+                // in the primitive branch below, not defaulted away.
+                //
+                // Haskell §4.3.4 defaults only a variable left ambiguous at the
+                // enclosing binding's top level — never a variable the
+                // surrounding signature BINDS. So an operand that IS a `given`
+                // witness keeps it abstract: `f :: Ord a => a -> a = (+) x x`
+                // must stay the error it is (`Num` is not entailed by `Ord`),
+                // not silently become `Double`.
+                if dispatch.is_none() && matches!(class_name.as_str(), "Num" | "Fractional") {
+                    let given_ids: Vec<TypeVarId> = ctx.given.iter().filter_map(|g| g.id).collect();
+                    let mut defaulted: Option<ValueTy> = None;
+                    for a in args.iter() {
+                        let vty = infer_method_value_vty(ctx, a, "argument")?;
+                        if let ValueTy::Var(id) = ctx.subst.resolve_value(&vty) {
+                            if given_ids.contains(&id) {
+                                continue;
+                            }
+                            unify_value(&vty, &ValueTy::Double, &mut ctx.subst, a.span())?;
+                            defaulted = Some(ctx.subst.resolve_value(&vty));
+                        }
+                    }
+                    // Use the type the defaulting loop just SOLVED. Re-inferring
+                    // the same expression would produce FRESH variables (a
+                    // polymorphic `pick 1` instantiates anew each time) and lose
+                    // the default.
+                    if let Some(vty) = defaulted {
+                        let cv_var = ctx.fresh_id();
+                        dispatch = method_dispatch_key(
+                            &env,
+                            &class_name,
+                            &class_var,
+                            sig,
+                            &vty,
+                            cv_var,
+                            || ctx.fresh_vty(),
+                        );
+                    }
+                }
+                let Some((ty_name, cv_subst)) = dispatch else {
                     return Err(CompileError::Type {
                         msg: format!(
                             "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
@@ -6639,7 +6742,7 @@ fn infer_apply_impl(
                                 "argument",
                                 Some(pt.clone()),
                             )?;
-                            unify_value(pt, &at, &mut ctx.subst, a.span())?;
+                            unify_method_arg(ctx, pt, &at, a)?;
                         }
                     }
                     let mut fresh_ids: Vec<ValueTy> = Vec::new();
@@ -6654,8 +6757,19 @@ fn infer_apply_impl(
                         sig,
                         || it.next().unwrap_or(ValueTy::Double),
                     );
+                    // A FULL application yields the signature's RESULT; fewer
+                    // arguments than parameters is a partial application and
+                    // keeps the curried remainder (Haskell 2010 §4.3.3). This is
+                    // what makes `1.0 + 2.0 : Double` and `(+) 1.0 : Double ->
+                    // Double`, and it is the type the enclosing expression
+                    // unifies against (`f (n + 1.0)` checks `Double`, not the
+                    // whole remaining signature).
                     let ret = ret.unwrap_or_else(|| ctx.fresh_vty());
-                    return Ok(ArrowTy::value(nest_thunk(&param_tys, vec![ret])));
+                    let rest: Vec<ValueTy> = param_tys[args.len().min(param_tys.len())..].to_vec();
+                    if rest.is_empty() {
+                        return Ok(ArrowTy::value(nest_thunk(&[], vec![ret])));
+                    }
+                    return Ok(ArrowTy::value(nest_thunk(&rest, vec![ret])));
                 }
                 let (_, params, body) = match ctx.env.resolve_method(name, ty_name.as_str()) {
                     Some(r) => r,
@@ -8082,140 +8196,6 @@ fn infer_param(args: &[Expr], span: Span) -> Result<ArrowTy, CompileError> {
         });
     }
     Ok(ArrowTy::uniform(0, 1, ValueTy::Double))
-}
-
-fn infer_arith(
-    ctx: &mut Ctx,
-    op: crate::ast::ArithOp,
-    lhs: &Expr,
-    rhs: &Expr,
-    span: Span,
-) -> Result<ArrowTy, CompileError> {
-    let a = infer_expr(ctx, lhs)?;
-    let b = infer_expr(ctx, rhs)?;
-    // Signal arithmetic: at least one operand is a `Buffer` (a wire, a
-    // combinator output, a foreign call). A numeric literal / constant on the
-    // OTHER side is then a SIGNAL constant — unify it with `Buffer` so
-    // `_ * 0.5` types `0.5 : Buffer`, not a value `Double`.
-    let a_buffer = matches!(a.vty, ValueTy::Buffer(_));
-    let b_buffer = matches!(b.vty, ValueTy::Buffer(_));
-    if a_buffer || b_buffer {
-        // A numeric literal / constant on the non-buffer side is a SIGNAL
-        // constant: `_ * 0.5` types `0.5 : Buffer`. Re-infer it with `Buffer`
-        // as the expected channel type so the literal unifies as a buffer.
-        let a = if !a_buffer && is_signal_const(ctx, &a, lhs) {
-            infer_expr_expected(ctx, lhs, Some(ctx.env.buffer_vty()))?
-        } else {
-            a
-        };
-        let b = if !b_buffer && is_signal_const(ctx, &b, rhs) {
-            infer_expr_expected(ctx, rhs, Some(ctx.env.buffer_vty()))?
-        } else {
-            b
-        };
-        return arith(ctx, &a, &b, span);
-    }
-    // Value-track arithmetic: a value operand (a lambda parameter, a value
-    // function, a field projection, ...) combined with another value operand
-    // or a bare Double/Int literal lowers on the value track and yields a Double
-    // value channel — this is what makes lambda bodies like `fn x -> x * 2.0`
-    // meaningful. A value channel mixed with a genuine signal computation
-    // (`sin _`, a wire, a combinator) is still rejected.
-    let a_value = !matches!(a.vty, ValueTy::Buffer(_));
-    let b_value = !matches!(b.vty, ValueTy::Buffer(_));
-    if a_value || b_value {
-        // A value operand must be a numeric scalar (Double/Int, or an as-yet
-        // unresolved Var such as a lambda parameter). Func values, records and
-        // newtypes cannot take part in arithmetic (spec: no arithmetic on
-        // closures); a bare Double/Int literal or a reference to a constant
-        // definition (`k = 2.0`) is value-compatible — the latter is a common
-        // lambda free variable, captured by value into the closure env.
-        let scalar_vty =
-            |v: &ValueTy| matches!(v, ValueTy::Double | ValueTy::Int | ValueTy::Var(_));
-        let mut unify_operand = |t: &ArrowTy, e: &Expr| -> Result<(), CompileError> {
-            if t.arity_in() == 0 && t.arity_out() == 1 {
-                if scalar_vty(&t.vty) {
-                    // A structural parameter variable in arithmetic is a
-                    // numeric scalar: bind it to Double so the lambda's
-                    // Func signature resolves concretely (`fn x -> x * 2`
-                    // types `x` as Double, not an unconstrained Var).
-                    if matches!(&t.vty, ValueTy::Var(_)) {
-                        unify_value(&t.vty, &ValueTy::Double, &mut ctx.subst, e.span())?;
-                    }
-                    return Ok(());
-                } else if matches!(e, Expr::Int(_, _) | Expr::Double(_, _))
-                    || is_const_value_ref(ctx, e)
-                {
-                    return Ok(());
-                }
-            }
-            Err(CompileError::Type {
-                msg: "value-channel arithmetic requires numeric value operands".into(),
-                span: e.span(),
-            })
-        };
-        unify_operand(&a, lhs)?;
-        unify_operand(&b, rhs)?;
-        // Int-preserving value arithmetic: `+`/`-`/`*` over two `Int` operands
-        // stays on the Int track, so an `Int`-typed slot (an `Ix` offset, an
-        // array size) really holds a `Value::Int` at runtime. `/` is float
-        // division and always yields a `Double`; `%` is unsupported. A free Var
-        // operand was just bound to `Double` above, so mixed arithmetic and
-        // lambda parameters keep the old Double behavior. Lowering and the
-        // interpreter apply the same rule.
-        let a_ty = ctx.subst.resolve_value(&a.vty);
-        let b_ty = ctx.subst.resolve_value(&b.vty);
-        let int_track = matches!(
-            op,
-            crate::ast::ArithOp::Add | crate::ast::ArithOp::Sub | crate::ast::ArithOp::Mul
-        ) && matches!(a_ty, ValueTy::Int)
-            && matches!(b_ty, ValueTy::Int);
-        return Ok(ArrowTy::value_channel(if int_track {
-            ValueTy::Int
-        } else {
-            ValueTy::Double
-        }));
-    }
-    arith(ctx, &a, &b, span)
-}
-
-/// Whether `e` types as a SIGNAL constant: a 0→1 arrow whose single output is
-/// a numeric scalar (Double/Int or an unresolved Var) and whose expression is a
-/// numeric literal or a reference to a compile-time constant (`k = 2.0`). In
-/// signal arithmetic such an operand unifies with `Buffer` (`_ * 0.5`).
-fn is_signal_const(ctx: &Ctx, t: &ArrowTy, e: &Expr) -> bool {
-    matches!(t.vty, ValueTy::Double | ValueTy::Int | ValueTy::Var(_))
-        && (matches!(e, Expr::Int(_, _) | Expr::Double(_, _)) || is_const_value_ref(ctx, e))
-}
-
-fn arith(ctx: &mut Ctx, a: &ArrowTy, b: &ArrowTy, span: Span) -> Result<ArrowTy, CompileError> {
-    reject_value_channels(a, span)?;
-    reject_value_channels(b, span)?;
-    unify_value(&a.vty, &b.vty, &mut ctx.subst, span)?;
-    Ok(ArrowTy::value(a.vty.clone()))
-}
-
-fn check_all_numeric(_ctx: &mut Ctx, _t: &ArrowTy, _span: Span) -> Result<(), CompileError> {
-    Ok(())
-}
-
-/// Reject value-rate output channels from signal combinators.
-///
-/// Value channels are the value-track's arena values (records, sums, func
-/// values); composing one through `:`, `<:`, `:>`, `~`, `@`, or arithmetic has
-/// no block representation — a bare func value (`f = double` used as a signal)
-/// would otherwise typecheck as an Int block and panic in lowering. Value
-/// programs are single expressions, so this never rejects a valid program.
-/// Unresolved `Var`s pass (they unify with `Buffer` when the combinator
-/// connects to a buffer channel).
-fn reject_value_channels(t: &ArrowTy, span: Span) -> Result<(), CompileError> {
-    if !matches!(t.vty, ValueTy::Buffer(_) | ValueTy::Var(_)) {
-        return Err(CompileError::Type {
-            msg: "a value channel cannot be used in a signal combinator".into(),
-            span,
-        });
-    }
-    Ok(())
 }
 
 #[cfg(test)]

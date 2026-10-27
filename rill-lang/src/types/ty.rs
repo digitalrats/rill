@@ -2976,9 +2976,7 @@ impl TypeEnv {
                 Ok(())
             }
             Expr::Neg(inner, _) => self.validate_body_type_names(inner, tyvars),
-            Expr::Arith { lhs, rhs, .. }
-            | Expr::Cmp { lhs, rhs, .. }
-            | Expr::Logic { lhs, rhs, .. } => {
+            Expr::Logic { lhs, rhs, .. } => {
                 self.validate_body_type_names(lhs, tyvars)?;
                 self.validate_body_type_names(rhs, tyvars)
             }

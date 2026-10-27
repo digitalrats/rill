@@ -5,7 +5,7 @@
 //! isomorphism between JSON and DSL representations. Rendering is total:
 //! `if` and `match` render every arm, including guarded alternatives.
 
-use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, Pattern, Program, TypeExpr};
+use crate::ast::{Def, Expr, LogicOp, Pattern, Program, TypeExpr};
 use crate::error::CompileError;
 use crate::mode::Mode;
 use std::fmt::Write;
@@ -492,6 +492,14 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             Ok(())
         }
         Expr::Apply { name, args, .. } => {
+            // An `Apply` whose NAME is an infix operator is what the parser
+            // produces for the infix spelling (`a + b` and `(+) a b` are the
+            // same AST — Haskell 2010 §3.4, System FC has no operator node).
+            // Render it infix so the source round-trips readably; the binding
+            // powers come from the same §4.4.2 table the parser uses.
+            if let (Some(info), 2) = (infix_spelling(name), args.len()) {
+                return render_bin(&args[0], &args[1], buf, outer_bp, info);
+            }
             render_callee_name(name, buf);
             for a in args {
                 write!(buf, " ").ok();
@@ -500,6 +508,13 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             Ok(())
         }
         Expr::ApplyExpr { callee, args, .. } => {
+            // The currying pass rewrites a two-argument application into a
+            // chain of unary ones, so the operator application the parser
+            // produced for `a + b` arrives here as `((+) a) b`. Recognise that
+            // chain and render it infix, exactly like a direct `Apply`.
+            if let Some((lhs, rhs, info)) = infix_application(callee, args) {
+                return render_bin(lhs, rhs, buf, outer_bp, info);
+            }
             write!(buf, "(").ok();
             render_expr(callee, buf, 0)?;
             write!(buf, ")").ok();
@@ -544,7 +559,6 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             }
             Ok(())
         }
-        Expr::Arith { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, arith_info(op)),
         Expr::Let { defs, body, .. } => {
             write!(buf, "let ").ok();
             if defs.len() > 1 {
@@ -676,9 +690,44 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, " }}").ok();
             Ok(())
         }
-        Expr::Cmp { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, cmp_info(op)),
         Expr::Logic { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, logic_info(op)),
     }
+}
+
+/// A two-operand operator application, ready to render infix: the operands and
+/// the operator's binding powers.
+type InfixOperands<'a> = (&'a Expr, &'a Expr, (u8, u8, u8, &'static str));
+
+/// Recognise the curried form of a two-argument operator application:
+/// `((+) a) b` (the AST the currying pass builds for both `a + b` and
+/// `(+) a b`). Returns the two operands and the operator's binding powers so
+/// the caller can render it infix.
+fn infix_application<'a>(callee: &'a Expr, args: &'a [Expr]) -> Option<InfixOperands<'a>> {
+    // `(+) a b` written as a parenthesized operator head: the parser keeps the
+    // whole application as one `ApplyExpr` over `Ref(op)`.
+    if let (Expr::Ref(name, _), [lhs, rhs]) = (callee, args) {
+        return Some((lhs, rhs, infix_spelling(name)?));
+    }
+    // `((+) a) b` — the curried chain the parser builds for the written infix
+    // spelling and for `(+) a b` inside an application argument.
+    let [rhs] = args else {
+        return None;
+    };
+    let Expr::ApplyExpr {
+        callee: inner,
+        args: first_args,
+        ..
+    } = callee
+    else {
+        return None;
+    };
+    let [lhs] = first_args.as_slice() else {
+        return None;
+    };
+    let Expr::Ref(name, _) = inner.as_ref() else {
+        return None;
+    };
+    Some((lhs, rhs, infix_spelling(name)?))
 }
 
 /// Render a binary node with parenthesization based on its binding power.
@@ -701,27 +750,35 @@ fn render_bin(
     Ok(())
 }
 
-fn arith_info(op: &ArithOp) -> (u8, u8, u8, &'static str) {
-    match op {
-        ArithOp::Add => (11, 11, 12, "+"),
-        ArithOp::Sub => (11, 11, 12, "-"),
-        ArithOp::Mul => (13, 13, 14, "*"),
-        ArithOp::Div => (13, 13, 14, "/"),
-        // `rem`/`mod` are ordinary functions in Haskell 2010, not operators;
-        // the core exists but no infix spelling maps to it.
-        ArithOp::Rem => (13, 13, 14, "rem"),
-    }
-}
-
-fn cmp_info(op: &CmpOp) -> (u8, u8, u8, &'static str) {
-    match op {
-        CmpOp::Eq => (3, 3, 4, "=="),
-        CmpOp::Ne => (3, 3, 4, "!="),
-        CmpOp::Lt => (3, 3, 4, "<"),
-        CmpOp::Gt => (3, 3, 4, ">"),
-        CmpOp::Le => (3, 3, 4, "<="),
-        CmpOp::Ge => (3, 3, 4, ">="),
-    }
+/// The infix spelling and binding powers `(prec, l_bp, r_bp, symbol)` of an
+/// application NAME that denotes an infix operator, or `None` for every other
+/// function. `prec` is the node's own level; a child is parenthesized when the
+/// level it inherits (`l_bp` on the left, `r_bp` on the right) is above its own.
+///
+/// The numbers are the parser's (§4.4.2, scaled): a left-associative operator
+/// yields the same type on its left (`r_bp = prec + 1` parenthesizes it on the
+/// right), a right-associative one the mirror image, and the non-associative
+/// comparisons parenthesize a comparison on EITHER side (`l_bp = r_bp = prec + 1`)
+/// so `(a == b) == c` — legal only parenthesized — round-trips as written.
+fn infix_spelling(name: &str) -> Option<(u8, u8, u8, &'static str)> {
+    Some(match name {
+        // `infix 4`, non-associative.
+        "==" => (5, 6, 6, "=="),
+        "/=" => (5, 6, 6, "/="),
+        "<" => (5, 6, 6, "<"),
+        ">" => (5, 6, 6, ">"),
+        "<=" => (5, 6, 6, "<="),
+        ">=" => (5, 6, 6, ">="),
+        // `infixr 5` / `infixr 6`.
+        "++" => (7, 8, 7, "++"),
+        "<>" => (9, 10, 9, "<>"),
+        // `infixl 6` / `infixl 7`.
+        "+" => (11, 11, 12, "+"),
+        "-" => (11, 11, 12, "-"),
+        "*" => (13, 13, 14, "*"),
+        "/" => (13, 13, 14, "/"),
+        _ => return None,
+    })
 }
 
 fn logic_info(op: &LogicOp) -> (u8, u8, u8, &'static str) {
@@ -872,10 +929,9 @@ mod tests {
                     span: span(),
                     bang: false,
                 }],
-                body: Expr::Arith {
-                    op: ArithOp::Mul,
-                    lhs: Box::new(Expr::Double(2.0, span())),
-                    rhs: Box::new(Expr::Ref("gain".into(), span())),
+                body: Expr::Apply {
+                    name: "*".into(),
+                    args: vec![Expr::Double(2.0, span()), Expr::Ref("gain".into(), span())],
                     span: span(),
                 },
                 span: span(),
@@ -902,10 +958,9 @@ mod tests {
                         span: span(),
                         bang: false,
                     }],
-                    body: Box::new(Expr::Arith {
-                        op: ArithOp::Mul,
-                        lhs: Box::new(Expr::Ref("x".into(), span())),
-                        rhs: Box::new(Expr::Double(2.0, span())),
+                    body: Box::new(Expr::Apply {
+                        name: "*".into(),
+                        args: vec![Expr::Ref("x".into(), span()), Expr::Double(2.0, span())],
                         span: span(),
                     }),
                     span: span(),
@@ -957,13 +1012,19 @@ mod tests {
         let dsl = render_roundtrip_program("(++) a b = append_list a b;");
         assert!(dsl.starts_with("(++) "), "head lost its parentheses: {dsl}");
 
-        // The same for an operator used in INFIX position: the left operand's
-        // callee must be a parenthesized atom, not a bare operator.
+        // An operator APPLICATION renders back in INFIX position: `a ++ b` and
+        // `(++) a b` are the same AST (`Expr::Apply { name: "++" }`), and the
+        // infix spelling is what a reader wrote — a bare `++ a b` would not
+        // re-parse at all.
         let infix = render_roundtrip_program("xs = [1.0] ++ [2.0];");
-        assert!(
-            infix.contains("(++)"),
-            "an operator callee must be parenthesized: {infix}"
+        assert_eq!(
+            infix, "xs = [1.0] ++ [2.0]",
+            "an operator application must render infix: {infix}"
         );
+        // The prefix spelling produces the same AST and therefore the same
+        // rendering — the two spellings are one binding (Haskell 2010 §3.4).
+        let prefix = render_roundtrip_program("xs = (++) [1.0] [2.0];");
+        assert_eq!(prefix, "xs = [1.0] ++ [2.0]", "prefix spelling: {prefix}");
     }
 
     /// Render the WHOLE program (data/type declarations included), re-parse the

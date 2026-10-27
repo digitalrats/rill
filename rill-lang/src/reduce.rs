@@ -89,12 +89,6 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
             args: args.iter().map(|a| substitute(a, subst)).collect(),
             span: *span,
         },
-        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
-            op: *op,
-            lhs: Box::new(substitute(lhs, subst)),
-            rhs: Box::new(substitute(rhs, subst)),
-            span: *span,
-        },
         Expr::FieldProject {
             record,
             field,
@@ -191,12 +185,6 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 .collect(),
             *span,
         ),
-        Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
-            op: *op,
-            lhs: Box::new(substitute(lhs, subst)),
-            rhs: Box::new(substitute(rhs, subst)),
-            span: *span,
-        },
         Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
             op: *op,
             lhs: Box::new(substitute(lhs, subst)),
@@ -634,12 +622,6 @@ fn reduce_expr(
                 reduced_body
             }
         }
-        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
-            op: *op,
-            lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            rhs: Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            span: *span,
-        },
         Expr::Neg(inner, span) => Expr::Neg(
             Box::new(reduce_expr(inner, ctx, cafs, reducing, mode)),
             *span,
@@ -682,12 +664,6 @@ fn reduce_expr(
                 .collect(),
             *span,
         ),
-        Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
-            op: *op,
-            lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            rhs: Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            span: *span,
-        },
         Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
             op: *op,
             lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
@@ -816,7 +792,6 @@ pub fn reduce(program: &Program) -> Program {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::ArithOp;
     use crate::lexer::tokenize;
     use crate::parser;
     use crate::types::infer::infer_program;
@@ -846,9 +821,6 @@ mod tests {
     fn contains_name(e: &Expr, name: &str) -> bool {
         match e {
             Expr::Ref(n, _) => n == name,
-            Expr::Arith { lhs, rhs, .. } => {
-                contains_name(lhs.as_ref(), name) || contains_name(rhs.as_ref(), name)
-            }
             Expr::Apply { args, .. } => args.iter().any(|a| contains_name(a, name)),
             Expr::ApplyExpr { callee, args, .. } => {
                 contains_name(callee.as_ref(), name) || args.iter().any(|a| contains_name(a, name))
@@ -861,6 +833,40 @@ mod tests {
             }
             _ => false,
         }
+    }
+
+    /// Assert that `e` is `op lhs rhs` in the parser's shape — either the flat
+    /// `Apply` a section-free spelling produces or the right-nested unary
+    /// `ApplyExpr` chain the currying pass builds — with the two given literals.
+    fn assert_op_application(e: &Expr, op: &str, lhs_v: f64, rhs_v: f64) {
+        // Flatten a name-based application chain to `(name, [args])`.
+        fn head(e: &Expr) -> Option<(&str, Vec<&Expr>)> {
+            match e {
+                Expr::Apply { name, args, .. } => Some((name.as_str(), args.iter().collect())),
+                Expr::ApplyExpr { callee, args, .. } => match callee.as_ref() {
+                    Expr::Ref(n, _) => Some((n.as_str(), args.iter().collect())),
+                    _ => {
+                        let (n, mut all) = head(callee)?;
+                        all.extend(args.iter());
+                        Some((n, all))
+                    }
+                },
+                _ => None,
+            }
+        }
+        let Some((name, args)) = head(e) else {
+            panic!("expected an application, got {e:?}");
+        };
+        assert_eq!(name, op, "expected `{op}`, got {e:?}");
+        assert_eq!(args.len(), 2, "`{op}` must have two operands, got {e:?}");
+        assert!(
+            matches!(args[0], Expr::Double(v, _) if *v == lhs_v),
+            "left operand of `{op}` must be {lhs_v}, got {e:?}"
+        );
+        assert!(
+            matches!(args[1], Expr::Double(v, _) if *v == rhs_v),
+            "right operand of `{op}` must be {rhs_v}, got {e:?}"
+        );
     }
 
     #[test]
@@ -885,47 +891,24 @@ mod tests {
     fn simple_apply_is_inlined() {
         // main = g 2.0 where { g x = x * 0.5; }  →  main = 2.0 * 0.5
         let body = reduced_body("main = g 2.0 where { g x = x * 0.5; }");
-        match &body {
-            Expr::Arith {
-                op: ArithOp::Mul,
-                lhs,
-                rhs,
-                ..
-            } => {
-                assert!(matches!(lhs.as_ref(), Expr::Double(v, _) if *v == 2.0));
-                assert!(matches!(rhs.as_ref(), Expr::Double(v, _) if *v == 0.5));
-            }
-            other => panic!("expected Arith(Mul), got {other:?}"),
-        }
+        // The body is the method application `(*) 2.0 0.5` — an infix operator
+        // IS an application (System FC), so β-reduction reaches its arguments.
+        // (The currying pass stores a two-argument application as a chain of
+        // unary `ApplyExpr`s, hence `apply_head` rather than a flat `Apply`.)
+        assert_op_application(&body, "*", 2.0, 0.5);
     }
 
     #[test]
     fn nested_apply_is_inlined() {
         // main = h where { f x = x * 0.5; g y = f y; h = g 2.0; }  →  2.0 * 0.5
         let body = reduced_body("main = h where { f x = x * 0.5; g y = f y; h = g 2.0; }");
-        match &body {
-            Expr::Arith {
-                op: ArithOp::Mul,
-                lhs,
-                rhs,
-                ..
-            } => {
-                assert!(matches!(lhs.as_ref(), Expr::Double(v, _) if *v == 2.0));
-                assert!(matches!(rhs.as_ref(), Expr::Double(v, _) if *v == 0.5));
-            }
-            other => panic!("expected Arith(Mul), got {other:?}"),
-        }
+        assert_op_application(&body, "*", 2.0, 0.5);
     }
 
     #[test]
     fn top_level_call_is_inlined() {
         let body = reduced_body("sq x = x * x; main = sq 2.0");
-        match &body {
-            Expr::Arith {
-                op: ArithOp::Mul, ..
-            } => {}
-            other => panic!("expected Arith(Mul), got {other:?}"),
-        }
+        assert_op_application(&body, "*", 2.0, 2.0);
     }
 
     #[test]

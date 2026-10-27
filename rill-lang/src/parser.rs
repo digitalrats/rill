@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{ArithOp, CmpOp, Def, Expr, LogicOp, MatchArm, Param, Pattern, Program, TypeExpr};
+use crate::ast::{Def, Expr, LogicOp, MatchArm, Param, Pattern, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 use crate::mode::Mode;
@@ -36,21 +36,32 @@ enum InfixOp {
 }
 
 impl InfixOp {
-    fn is_arith(self) -> bool {
-        matches!(
-            self,
-            InfixOp::Add | InfixOp::Sub | InfixOp::Mul | InfixOp::Div
-        )
-    }
-
-    fn to_arith(self) -> ArithOp {
-        match self {
-            InfixOp::Add => ArithOp::Add,
-            InfixOp::Sub => ArithOp::Sub,
-            InfixOp::Mul => ArithOp::Mul,
-            InfixOp::Div => ArithOp::Div,
-            _ => unreachable!("not an arithmetic operator"),
-        }
+    /// The NAME this operator denotes as an ordinary application — the class
+    /// method for every operator that is one (System FC: `a + b` ≡ `(+) a b`),
+    /// or the Prelude function behind `:`, `++`, `!` and `,`.
+    ///
+    /// `None` for the operators that are NOT applications: `&&`/`||` (short
+    /// circuit, [`Expr::Logic`]) and a backtick application (already desugared
+    /// before the right operand is parsed).
+    fn method_name(self) -> Option<&'static str> {
+        Some(match self {
+            InfixOp::Add => "+",
+            InfixOp::Sub => "-",
+            InfixOp::Mul => "*",
+            InfixOp::Div => "/",
+            InfixOp::CmpEq => "==",
+            InfixOp::CmpNe => "/=",
+            InfixOp::CmpLt => "<",
+            InfixOp::CmpGt => ">",
+            InfixOp::CmpLe => "<=",
+            InfixOp::CmpGe => ">=",
+            InfixOp::Cons => "cons",
+            InfixOp::Par => "Pair",
+            InfixOp::Index => "index",
+            InfixOp::AppendList => "++",
+            InfixOp::AppendSemigroup => "<>",
+            InfixOp::LogicAnd | InfixOp::LogicOr | InfixOp::Backtick => return None,
+        })
     }
 
     fn is_logic(self) -> bool {
@@ -65,6 +76,10 @@ impl InfixOp {
         }
     }
 
+    /// Whether this is a comparison operator (`infix 4`, non-associative in
+    /// Haskell 2010 §4.4.2). The Pratt loop uses this only for the
+    /// non-associativity check; the operator itself desugars like every other
+    /// class method.
     fn is_cmp(self) -> bool {
         matches!(
             self,
@@ -75,18 +90,6 @@ impl InfixOp {
                 | InfixOp::CmpLe
                 | InfixOp::CmpGe
         )
-    }
-
-    fn to_cmp(self) -> CmpOp {
-        match self {
-            InfixOp::CmpEq => CmpOp::Eq,
-            InfixOp::CmpNe => CmpOp::Ne,
-            InfixOp::CmpLt => CmpOp::Lt,
-            InfixOp::CmpGt => CmpOp::Gt,
-            InfixOp::CmpLe => CmpOp::Le,
-            InfixOp::CmpGe => CmpOp::Ge,
-            _ => unreachable!("not a comparison operator"),
-        }
     }
 }
 
@@ -208,21 +211,16 @@ fn infix_op_from_name(name: &str) -> Option<InfixOp> {
 }
 
 /// Desugar one infix application `lhs op rhs` into the AST node the operator
-/// denotes: elementwise arithmetic, logic, a comparison, or a call to the
-/// Prelude function behind `:`, `++` and `!`.
+/// denotes: a call to the class method (or Prelude function) the operator
+/// names, or — for `&&`/`||` only — a short-circuit [`Expr::Logic`] node.
 ///
 /// Shared by the Pratt loop and by operator sections (Haskell 2010 §3.5), so a
 /// section's body is byte-identical to the parenthesized infix spelling.
 fn desugar_infix_op(op: InfixOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span().merge(rhs.span());
-    if op.is_arith() {
-        return Expr::Arith {
-            op: op.to_arith(),
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span,
-        };
-    }
+    // `&&` / `||` are NOT class methods: they are short-circuit control flow
+    // (Haskell 2010 has no `Logic` class), so they keep a bespoke node whose
+    // lowering evaluates the left operand first and may skip the right one.
     if op.is_logic() {
         return Expr::Logic {
             op: op.to_logic(),
@@ -231,72 +229,33 @@ fn desugar_infix_op(op: InfixOp, lhs: Expr, rhs: Expr) -> Expr {
             span,
         };
     }
-    if op.is_cmp() {
-        return Expr::Cmp {
-            op: op.to_cmp(),
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span,
-        };
-    }
-    // A backticked function was already desugared before the right operand was
-    // parsed, and every remaining shape is handled below.
-    debug_assert_ne!(op, InfixOp::Backtick);
-    match op {
-        // `:` — list cons: `a : b` ≡ `cons a b`.
-        InfixOp::Cons => Expr::Apply {
-            name: "cons".to_string(),
-            args: vec![lhs, rhs],
-            span,
-        },
-        // `,` — value tuple: `a , b` ≡ `Pair { first: a, second: b }`.
-        InfixOp::Par => Expr::Apply {
+    // `,` is not an operator in Haskell 2010 — it is tuple syntax. rill spells
+    // its value tuple `a , b` as `Pair { first: a, second: b }`.
+    if op == InfixOp::Par {
+        return Expr::Apply {
             name: "Pair".to_string(),
             args: vec![Expr::Record(
                 vec![("first".to_string(), lhs), ("second".to_string(), rhs)],
                 span,
             )],
             span,
-        },
-        // `!` — infix indexing: `a ! i` ≡ `index a i`.
-        InfixOp::Index => Expr::Apply {
-            name: "index".to_string(),
-            args: vec![lhs, rhs],
-            span,
-        },
-        // `++` — list append. Desugars to the NAME `++`, not to
-        // `append_list`: Haskell 2010 defines `++` as an ordinary function
-        // (Prelude `(++) :: [a] -> [a] -> [a]`), so the infix form and the
-        // first-class `(++)` form must resolve through the same binding —
-        // including a user definition that shadows the Prelude one.
-        InfixOp::AppendList => Expr::Apply {
-            name: "++".to_string(),
-            args: vec![lhs, rhs],
-            span,
-        },
-        // `<>` — Semigroup append, resolved like `++` (Haskell 2010 defines it as
-        // an ordinary class method, so the infix and bare forms share a binding).
-        InfixOp::AppendSemigroup => Expr::Apply {
-            name: "<>".to_string(),
-            args: vec![lhs, rhs],
-            span,
-        },
-        // A backticked function was already desugared before the right operand
-        // was parsed; `,` is handled above.
-        InfixOp::Backtick => unreachable!("backtick is desugared before the rhs"),
-        // The elementwise forms returned above.
-        InfixOp::Add
-        | InfixOp::Sub
-        | InfixOp::Mul
-        | InfixOp::Div
-        | InfixOp::CmpEq
-        | InfixOp::CmpNe
-        | InfixOp::CmpLt
-        | InfixOp::CmpGt
-        | InfixOp::CmpLe
-        | InfixOp::CmpGe
-        | InfixOp::LogicAnd
-        | InfixOp::LogicOr => unreachable!("elementwise operators are desugared above"),
+        };
+    }
+    // Every remaining operand-taking operator is a NAME applied to both
+    // operands — `a + b` IS `(+) a b` (System FC: there is no operator node in
+    // the core). `+ - * /` are the `Num`/`Fractional` methods and `== /= < <=
+    // > >=` the `Eq`/`Ord` ones, so the infix form and the first-class `(+)`
+    // form resolve through the same binding — including a user definition that
+    // shadows the class method — and inference's existing method dispatch
+    // records the dictionary selection for both. `:`, `++` and `!` are the
+    // Prelude functions behind them, resolved exactly the same way.
+    let name = op
+        .method_name()
+        .expect("every remaining infix operator is a named application");
+    Expr::Apply {
+        name: name.to_string(),
+        args: vec![lhs, rhs],
+        span,
     }
 }
 
@@ -2564,10 +2523,6 @@ fn curry_expr(e: &mut Expr) {
         }
         Expr::Neg(inner, _) => curry_expr(inner),
         Expr::Annot { expr, .. } => curry_expr(expr),
-        Expr::Arith { lhs, rhs, .. } => {
-            curry_expr(lhs);
-            curry_expr(rhs);
-        }
         Expr::Let { defs, body, .. } => {
             curry_defs_in(defs);
             curry_expr(body);
@@ -2613,10 +2568,6 @@ fn curry_expr(e: &mut Expr) {
             for (_, v) in fields.iter_mut() {
                 curry_expr(v);
             }
-        }
-        Expr::Cmp { lhs, rhs, .. } => {
-            curry_expr(lhs);
-            curry_expr(rhs);
         }
         Expr::Logic { lhs, rhs, .. } => {
             curry_expr(lhs);
@@ -2716,7 +2667,10 @@ mod tests {
                     Expr::Lambda { params, body, .. } => {
                         assert_eq!(params.len(), 1);
                         assert_eq!(params[0].name, "x");
-                        assert!(matches!(body.as_ref(), Expr::Arith { .. }));
+                        // `1.0 * 0.5` is the method application `(*) 1.0 0.5`.
+                        assert!(
+                            matches!(curry_head(body.as_ref()), Some(("*", args)) if args.len() == 2)
+                        );
                     }
                     other => panic!("expected nested lambda, got {other:?}"),
                 }
@@ -2765,7 +2719,9 @@ mod tests {
                 assert_eq!(args.len(), 1);
                 if let Expr::Record(fields, _) = &args[0] {
                     assert_eq!(fields.len(), 2);
-                    assert!(matches!(&fields[0].1, Expr::Arith { .. }));
+                    assert!(
+                        matches!(curry_head(&fields[0].1), Some(("*", args)) if args.len() == 2)
+                    );
                     assert!(matches!(&fields[1].1, Expr::Double(3.0, _)));
                 } else {
                     panic!("expected Pair record, got {other:?}", other = args[0]);
@@ -2826,15 +2782,14 @@ mod tests {
     fn backtick_binds_tighter_than_arithmetic() {
         // Default fixity `infixl 9` is tighter than `*` (7):
         // `2.0 * 1.0 `add` 2.0` ≡ `2.0 * (add 1.0 2.0)`.
-        match body("main = 2.0 * 1.0 `add` 2.0") {
-            Expr::Arith {
-                op: ArithOp::Mul,
-                rhs,
-                ..
-            } => match curry_head(&rhs) {
-                Some(("add", args)) => assert_eq!(args.len(), 2),
-                other => panic!("expected a nested `add` application, got {other:?}"),
-            },
+        match curry_head(&body("main = 2.0 * 1.0 `add` 2.0")) {
+            Some(("*", args)) => {
+                assert_eq!(args.len(), 2);
+                match curry_head(args[1]) {
+                    Some(("add", inner)) => assert_eq!(inner.len(), 2),
+                    other => panic!("expected a nested `add` application, got {other:?}"),
+                }
+            }
             other => panic!("expected a multiplication at the root, got {other:?}"),
         }
     }
@@ -2997,33 +2952,23 @@ mod tests {
     fn arithmetic_levels_are_six_and_seven() {
         // `infixl 7 *` binds tighter than `infixl 6 +`; both are left
         // associative: `a - b - c` ≡ `(a - b) - c`.
-        assert!(matches!(
-            body("main = a + b * c"),
-            Expr::Arith {
-                op: ArithOp::Add,
-                ..
-            }
-        ));
-        assert!(matches!(
-            body("main = a * b + c"),
-            Expr::Arith {
-                op: ArithOp::Add,
-                ..
-            }
-        ));
-        match body("main = a - b - c") {
-            Expr::Arith {
-                op: ArithOp::Sub,
-                lhs,
-                ..
-            } => assert!(
-                matches!(
-                    *lhs,
-                    Expr::Arith {
-                        op: ArithOp::Sub,
-                        ..
-                    }
-                ),
+        match curry_head(&body("main = a + b * c")) {
+            Some(("+", args)) => assert!(
+                matches!(curry_head(args[1]), Some(("*", inner)) if inner.len() == 2),
+                "`*` must nest under `+`"
+            ),
+            other => panic!("expected `+` at the root, got {other:?}"),
+        }
+        match curry_head(&body("main = a * b + c")) {
+            Some(("+", args)) => assert!(
+                matches!(curry_head(args[0]), Some(("*", inner)) if inner.len() == 2),
+                "`*` must nest under `+`"
+            ),
+            other => panic!("expected `+` at the root, got {other:?}"),
+        }
+        match curry_head(&body("main = a - b - c")) {
+            Some(("-", args)) => assert!(
+                matches!(curry_head(args[0]), Some(("-", inner)) if inner.len() == 2),
                 "left-associative `-` must nest on the left"
             ),
             other => panic!("expected `-` at the root, got {other:?}"),
@@ -3033,11 +2978,9 @@ mod tests {
     #[test]
     fn plusplus_binds_tighter_than_comparison() {
         // `xs ++ ys == zs` ≡ `(xs ++ ys) == zs`: the comparison is the root.
-        match body("main = xs ++ ys == zs") {
-            Expr::Cmp {
-                op: CmpOp::Eq, lhs, ..
-            } => match curry_head(&lhs) {
-                Some(("++", args)) => assert_eq!(args.len(), 2),
+        match curry_head(&body("main = xs ++ ys == zs")) {
+            Some(("==", args)) => match curry_head(args[0]) {
+                Some(("++", inner)) => assert_eq!(inner.len(), 2),
                 other => {
                     panic!("expected `++` as the comparison's left side, got {other:?}")
                 }
@@ -3385,19 +3328,15 @@ mod tests {
     fn parse_actor_param_no_default() {
         let p = prog("main = 1.0 * ?gain");
         let main = p.main_def().unwrap();
-        match main.body() {
-            Expr::Arith {
-                op: ArithOp::Mul,
-                rhs,
-                ..
-            } => match rhs.as_ref() {
+        match curry_head(main.body()) {
+            Some(("*", args)) => match args[1] {
                 Expr::ActorParam { name, default, .. } => {
                     assert_eq!(name, "gain");
                     assert!(default.is_none());
                 }
                 other => panic!("expected ActorParam, got {other:?}"),
             },
-            other => panic!("expected Arith(Mul), got {other:?}"),
+            other => panic!("expected `(*)` at the root, got {other:?}"),
         }
     }
 
@@ -3405,12 +3344,8 @@ mod tests {
     fn parse_actor_param_with_default() {
         let p = prog("main = 1.0 * ?gain=0.5");
         let main = p.main_def().unwrap();
-        match main.body() {
-            Expr::Arith {
-                op: ArithOp::Mul,
-                rhs,
-                ..
-            } => match rhs.as_ref() {
+        match curry_head(main.body()) {
+            Some(("*", args)) => match args[1] {
                 Expr::ActorParam { name, default, .. } => {
                     assert_eq!(name, "gain");
                     assert!(default.is_some());
@@ -3422,7 +3357,7 @@ mod tests {
                 }
                 other => panic!("expected ActorParam, got {other:?}"),
             },
-            other => panic!("expected Arith(Mul), got {other:?}"),
+            other => panic!("expected `(*)` at the root, got {other:?}"),
         }
     }
 
@@ -3849,7 +3784,10 @@ mod tests {
         assert!(matches!(arms[2].pattern, Pattern::Wild));
         assert!(matches!(&arms[3].pattern, Pattern::Var(v) if v == "n"));
         assert!(
-            matches!(arms[3].guards[0].0, Expr::Cmp { .. }),
+            matches!(
+                curry_head(&arms[3].guards[0].0),
+                Some((">", args)) if args.len() == 2
+            ),
             "a guarded arm's first alternative is the written guard (`n > 0`)"
         );
     }
@@ -3952,8 +3890,8 @@ mod tests {
     fn comparison_binds_tighter_than_logic() {
         match body("main = a < b || c > d") {
             Expr::Logic { lhs, rhs, .. } => {
-                assert!(matches!(lhs.as_ref(), Expr::Cmp { .. }));
-                assert!(matches!(rhs.as_ref(), Expr::Cmp { .. }));
+                assert!(matches!(curry_head(&lhs), Some(("<", args)) if args.len() == 2));
+                assert!(matches!(curry_head(&rhs), Some((">", args)) if args.len() == 2));
             }
             other => panic!("expected Logic, got {other:?}"),
         }
@@ -3961,12 +3899,12 @@ mod tests {
 
     #[test]
     fn arithmetic_binds_tighter_than_comparison() {
-        match body("main = 1.0 + 2.0 < 4.0") {
-            Expr::Cmp { lhs, rhs, .. } => {
-                assert!(matches!(lhs.as_ref(), Expr::Arith { .. }));
-                assert!(matches!(rhs.as_ref(), Expr::Double(v, _) if *v == 4.0));
+        match curry_head(&body("main = 1.0 + 2.0 < 4.0")) {
+            Some(("<", args)) => {
+                assert!(matches!(curry_head(args[0]), Some(("+", inner)) if inner.len() == 2));
+                assert!(matches!(args[1], Expr::Double(v, _) if *v == 4.0));
             }
-            other => panic!("expected Cmp, got {other:?}"),
+            other => panic!("expected `<` at the root, got {other:?}"),
         }
     }
 
@@ -3976,7 +3914,7 @@ mod tests {
             Expr::Lambda { params, body, .. } => {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].name, "x");
-                assert!(matches!(body.as_ref(), Expr::Arith { .. }));
+                assert!(matches!(curry_head(body.as_ref()), Some(("+", args)) if args.len() == 2));
             }
             other => panic!("expected Lambda, got {other:?}"),
         }
@@ -4016,17 +3954,12 @@ mod tests {
     #[test]
     fn bang_index_binds_tighter_than_plus() {
         // `a ! i + 1` ≡ `(a ! i) + 1` — indexing sits just below application.
-        match body("main = a ! i + 1") {
-            Expr::Arith {
-                op: ArithOp::Add,
-                lhs,
-                rhs,
-                ..
-            } => {
-                assert!(matches!(curry_head(&lhs), Some(("index", args)) if args.len() == 2));
-                assert!(matches!(rhs.as_ref(), Expr::Int(1, _)));
+        match curry_head(&body("main = a ! i + 1")) {
+            Some(("+", args)) => {
+                assert!(matches!(curry_head(args[0]), Some(("index", inner)) if inner.len() == 2));
+                assert!(matches!(args[1], Expr::Int(1, _)));
             }
-            other => panic!("expected Arith, got {other:?}"),
+            other => panic!("expected `+` at the root, got {other:?}"),
         }
     }
 

@@ -76,41 +76,13 @@ impl TypeExpr {
     }
 }
 
-/// Arithmetic operators (elementwise, 2→1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum ArithOp {
-    /// `+`
-    Add,
-    /// `-`
-    Sub,
-    /// `*`
-    Mul,
-    /// `/`
-    Div,
-    /// `%`
-    Rem,
-}
-
-/// A value-track comparison operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum CmpOp {
-    /// `==`
-    Eq,
-    /// `!=`
-    Ne,
-    /// `<`
-    Lt,
-    /// `>`
-    Gt,
-    /// `<=`
-    Le,
-    /// `>=`
-    Ge,
-}
-
 /// A value-track boolean logic operator.
+///
+/// `&&` / `||` are the ONLY operator nodes in the AST: they are short-circuit
+/// control flow, not class methods (Haskell 2010 has no `Logic` class), so they
+/// cannot be ordinary applications. Every other infix operator is sugar over a
+/// named function or class method and desugars to `Expr::Apply` in the parser
+/// (Haskell 2010 §3.4, System FC).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum LogicOp {
@@ -209,18 +181,6 @@ pub enum Expr {
     },
     /// Unary negation `-expr`.
     Neg(Box<Expr>, Span),
-    // --- arithmetic ---
-    /// Elementwise arithmetic `lhs op rhs`.
-    Arith {
-        /// The operator.
-        op: ArithOp,
-        /// Left operand.
-        lhs: Box<Expr>,
-        /// Right operand.
-        rhs: Box<Expr>,
-        /// Full span.
-        span: Span,
-    },
     /// `let defs in body` — expression-level mutually-recursive bindings.
     Let {
         /// Definitions (may contain Anchors and Locals).
@@ -311,18 +271,7 @@ pub enum Expr {
     ListLit(Vec<Expr>, Span),
     /// Map literal `{ "k": v, ... }` (string keys).
     MapLit(Vec<(String, Expr)>, Span),
-    /// Value-track comparison `a < b` (only valid in value position).
-    Cmp {
-        /// The operator.
-        op: CmpOp,
-        /// Left operand.
-        lhs: Box<Expr>,
-        /// Right operand.
-        rhs: Box<Expr>,
-        /// Full span.
-        span: Span,
-    },
-    /// Value-track logic `a && b` / `a || b`.
+    /// Short-circuit logic `a && b` / `a || b` (only valid in value position).
     Logic {
         /// The operator.
         op: LogicOp,
@@ -347,7 +296,6 @@ impl Expr {
             | Expr::Neg(_, s) => *s,
             Expr::Apply { span, .. }
             | Expr::ApplyExpr { span, .. }
-            | Expr::Arith { span, .. }
             | Expr::Let { span, .. }
             | Expr::Record(_, span)
             | Expr::ActorParam { span, .. }
@@ -360,7 +308,6 @@ impl Expr {
             | Expr::Bool(_, span)
             | Expr::ListLit(_, span)
             | Expr::MapLit(_, span)
-            | Expr::Cmp { span, .. }
             | Expr::Logic { span, .. } => *span,
         }
     }

@@ -11,12 +11,12 @@
 //! value is asserted alongside where it makes the claim sharper (the program
 //! really ran).
 //!
-//! The method-call spelling is `(==) x y` / `(+) x y`, not the infix `x == y`:
-//! rill's infix operators are still `Expr::Cmp`/`Expr::Arith` nodes rather than
-//! the class-method sugar Haskell 2010 §3.4 requires, so an infix operator never
-//! reaches method dispatch and records no selection. That is an OPEN defect
-//! (the paused P-A task), and the tests below use the spelling that exists so
-//! the dictionary contract is pinned rather than the operator gap.
+//! Both spellings are exercised: infix `x == y` and prefix `(==) x y` are the
+//! SAME AST (`Expr::Apply { name: "==" }`, Haskell 2010 §3.4 — System FC has no
+//! operator node), so an infix operator reaches method dispatch and records a
+//! selection exactly like the prefix form. Stage 3a made that true; before it,
+//! infix operators were bespoke `Expr::Arith`/`Expr::Cmp` nodes that recorded
+//! nothing.
 
 mod common;
 
@@ -53,6 +53,244 @@ fn sup_classes(ir: &Ir, idx: usize) -> Vec<&str> {
         .iter()
         .map(|&i| ir.dicts[i].class.as_str())
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3a: an INFIX operator is class-method sugar, so it selects a dictionary
+// ---------------------------------------------------------------------------
+//
+// Haskell 2010 §3.4 / System FC: `a + b` IS `(+) a b`, and there is no operator
+// node in the core. The parser desugars every class-method operator to the same
+// `Expr::Apply` the prefix spelling produces, so both reach method dispatch and
+// record the same selection. Before stage 3a these went through bespoke
+// `Expr::Arith`/`Expr::Cmp` nodes whose inference only asked "is this numeric?",
+// and `1.0 == 2.0` produced `dicts=0`.
+
+#[test]
+fn infix_comparison_records_the_eq_dictionary() {
+    // `Eq` has no superclasses: the table is exactly `Eq Double`.
+    let ir = ir_of("main = 1.0 == 2.0;");
+    assert_eq!(
+        table(&ir),
+        vec![("Eq".to_string(), "Double".to_string())],
+        "`1.0 == 2.0` must select `Eq Double`; table = {:?}",
+        table(&ir)
+    );
+    // `/=` is `Eq`'s other method.
+    let ir = ir_of("main = 1.0 /= 2.0;");
+    assert_eq!(
+        table(&ir),
+        vec![("Eq".to_string(), "Double".to_string())],
+        "`1.0 /= 2.0` must select `Eq Double`; table = {:?}",
+        table(&ir)
+    );
+    // And it still computes the value.
+    let world = eval("", "1.0 == 2.0").expect("the program must run");
+    assert_eq!(out_value(&world), Value::Bool(false));
+}
+
+#[test]
+fn infix_ordering_records_ord_with_its_eq_superclass() {
+    // `Ord Double` holds `Eq Double` (design §3.0), so an ordering operator
+    // yields BOTH — and in superclass-first order.
+    for expr in ["1.0 < 2.0", "1.0 <= 2.0", "1.0 > 2.0", "1.0 >= 2.0"] {
+        let ir = ir_of(&format!("main = {expr};"));
+        assert_eq!(
+            table(&ir),
+            vec![
+                ("Eq".to_string(), "Double".to_string()),
+                ("Ord".to_string(), "Double".to_string())
+            ],
+            "`{expr}` must select `Ord Double` and its `Eq` superclass; table = {:?}",
+            table(&ir)
+        );
+    }
+    // `Ord`'s `Eq` superclass really is wired: `supers` points at the `Eq`
+    // descriptor, not at an empty vector.
+    let ir = ir_of("main = 1.0 < 2.0;");
+    let ord = ir
+        .dicts
+        .iter()
+        .position(|d| d.class == "Ord")
+        .expect("`Ord Double`");
+    assert_eq!(sup_classes(&ir, ord), vec!["Eq"], "`Ord` holds `Eq`");
+    assert_eq!(
+        out_value(&eval("", "1.0 < 2.0").unwrap()),
+        Value::Bool(true)
+    );
+}
+
+#[test]
+fn infix_arithmetic_records_num_and_fractional() {
+    // `Num` declares `(Eq a, Ord a)`, so all three arrive; `/` also needs
+    // `Fractional`, which holds `Num`.
+    for expr in ["1.0 + 2.0", "1.0 - 2.0", "1.0 * 2.0"] {
+        let ir = ir_of(&format!("main = {expr};"));
+        assert_eq!(
+            table(&ir),
+            vec![
+                ("Eq".to_string(), "Double".to_string()),
+                ("Ord".to_string(), "Double".to_string()),
+                ("Num".to_string(), "Double".to_string())
+            ],
+            "`{expr}` must select `Num Double` plus its superclass closure; table = {:?}",
+            table(&ir)
+        );
+    }
+    let ir = ir_of("main = 1.0 / 2.0;");
+    let mut classes: Vec<&str> = ir.dicts.iter().map(|d| d.class.as_str()).collect();
+    classes.sort_unstable();
+    assert_eq!(
+        classes,
+        vec!["Eq", "Fractional", "Num", "Ord"],
+        "`1.0 / 2.0` must select `Fractional Double` through `Num`; table = {:?}",
+        table(&ir)
+    );
+    assert_eq!(
+        out_value(&eval("", "1.0 + 2.0").unwrap()),
+        Value::Double(3.0)
+    );
+}
+
+#[test]
+fn the_infix_and_prefix_spellings_select_the_same_dictionary() {
+    // One binding, one judgement (Haskell 2010 §3.4). The parser produces the
+    // same AST for `a + b` and `(+) a b`, so the tables must be identical.
+    for (infix, prefix) in [
+        ("1.0 + 2.0", "(+) 1.0 2.0"),
+        ("1.0 == 2.0", "(==) 1.0 2.0"),
+        ("1.0 < 2.0", "(<) 1.0 2.0"),
+        ("1.0 /= 2.0", "(/=) 1.0 2.0"),
+        ("1.0 / 2.0", "(/) 1.0 2.0"),
+    ] {
+        let infix_ir = ir_of(&format!("main = {infix};"));
+        let prefix_ir = ir_of(&format!("main = {prefix};"));
+        assert_eq!(
+            table(&infix_ir),
+            table(&prefix_ir),
+            "`{infix}` and `{prefix}` are one binding: tables must match              (infix {:?}, prefix {:?})",
+            table(&infix_ir),
+            table(&prefix_ir)
+        );
+        assert!(
+            !infix_ir.dicts.is_empty(),
+            "`{infix}` must select at least one dictionary"
+        );
+    }
+}
+
+#[test]
+fn a_dictionary_is_still_built_once_per_pair_not_per_operator() {
+    // Six operator call sites at `Double` still produce the three numeric
+    // dictionaries, one slot each (design §3.2).
+    let ir = ir_of("main = (1.0 + 2.0) * 3.0 - 4.0 / 2.0 == 7.0;");
+    assert_eq!(
+        ir.dicts.len(),
+        4,
+        "Eq, Ord, Num and Fractional — one dictionary per PAIR; table = {:?}",
+        table(&ir)
+    );
+    let world = eval("", "(1.0 + 2.0) * 3.0 - 4.0 / 2.0 == 7.0").expect("runs");
+    assert_eq!(world.dicts_len(), 4);
+    assert_eq!(out_value(&world), Value::Bool(true));
+}
+
+#[test]
+fn an_operator_section_selects_through_the_same_desugaring() {
+    // Haskell 2010 §3.5: a section is `\x -> x op e` (or the mirrored form), and
+    // `desugar_infix_op` is shared with the Pratt loop — so a section's body is
+    // byte-identical to the parenthesized infix spelling, and its dictionary
+    // selection is the same one.
+    let right = ir_of("main = (+ 1.0) 2.0;");
+    let left = ir_of("main = (1.0 +) 2.0;");
+    let plain = ir_of("main = 1.0 + 2.0;");
+    assert_eq!(
+        table(&right),
+        table(&plain),
+        "`(+ 1.0)` must select what `1.0 + 2.0` selects; table = {:?}",
+        table(&right)
+    );
+    assert_eq!(
+        table(&left),
+        table(&plain),
+        "`(1.0 +)` must select what `1.0 + 2.0` selects; table = {:?}",
+        table(&left)
+    );
+    // Operand order is observable, so pin the values too: `(1.0 -)` is
+    // `\x -> 1.0 - x`, and `(1.0 -) 5.0` is -4.0 (not 4.0).
+    assert_eq!(
+        out_value(&eval("", "(+ 1.0) 2.0").unwrap()),
+        Value::Double(3.0)
+    );
+    assert_eq!(
+        out_value(&eval("", "(1.0 -) 5.0").unwrap()),
+        Value::Double(-4.0)
+    );
+}
+
+#[test]
+fn a_mixed_int_and_double_operand_is_a_type_error_not_a_wrong_answer() {
+    // OD-16 / OD-17. Before stage 3a these were `Expr::Cmp`/`Expr::Arith` nodes
+    // that typed both sides independently and compared them with the
+    // interpreter's cross-kind `kind_rank` total order — so `1 == 1.0` was
+    // `false` (GHC: `True`) and `5 < 2.0` was `true` (GHC: a type error). Both
+    // are now the unification failure Haskell 2010 requires: rill has no
+    // `fromInteger`/`fromRational` literal elaboration yet (design §3.6, stage
+    // 7), so `Int` and `Double` cannot become one `Num a`.
+    for (src, why) in [
+        ("main = 1 == 1.0;", "GHC: `1 == 1.0` is True"),
+        ("main = 1 /= 1.0;", "GHC: `1 /= 1.0` is False"),
+        ("main = 5 < 2.0;", "GHC: `5 < 2.0` is a type error"),
+        ("main = 2 < 1.5;", "GHC: `2 < 1.5` is a type error"),
+        (
+            "i :: Int = 1; f :: Double = 1.0; main = i == f;",
+            "GHC: `(1 :: Int) == (1.0 :: Double)` is a type error",
+        ),
+        (
+            "main = (1 :: Int) + 1.0;",
+            "GHC: No instance for `Fractional Int`",
+        ),
+        (
+            "main = 1.0 + 1;",
+            "GHC: `1` in a `Double` position unifies only through fromInteger",
+        ),
+    ] {
+        let err = compile_eval::<f32, 256>(src, "main", Mode::Strict)
+            .err()
+            .unwrap_or_else(|| panic!("`{src}` must be a type error ({why})"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot unify"),
+            "`{src}` must fail on operand unification ({why}), got: {msg}"
+        );
+    }
+    // The same-kind programs are unaffected: `Int` stays `Int`, `Double` stays
+    // `Double`, and both compute.
+    let int = ir_of("main = 1 + 2;");
+    assert!(
+        has(&int, "Num", "Int"),
+        "`1 + 2` is `Num Int`; table = {:?}",
+        table(&int)
+    );
+    assert_eq!(out_value(&eval("", "1 + 2").unwrap()), Value::Int(3));
+    let dbl = ir_of("main = 1.0 + 2.0;");
+    assert!(
+        has(&dbl, "Num", "Double"),
+        "`1.0 + 2.0` is `Num Double`; table = {:?}",
+        table(&dbl)
+    );
+    assert_eq!(
+        out_value(&eval("", "1.0 + 2.0").unwrap()),
+        Value::Double(3.0)
+    );
+}
+
+#[test]
+fn a_bare_literal_mentions_no_class() {
+    // A literal is not a method call: `main = 1.0` builds no dictionary, which
+    // keeps the table an accurate record of what the program USES.
+    let ir = ir_of("main = 1.0;");
+    assert!(ir.dicts.is_empty(), "table = {:?}", table(&ir));
 }
 
 // ---------------------------------------------------------------------------
@@ -157,10 +395,36 @@ mul a b :: Double -> Double -> Double = (*) a b;
 }
 
 #[test]
-fn a_program_mentioning_no_class_gets_an_empty_table() {
-    // A program with no method call has no dictionary to build — the table is
-    // empty, and the seated world holds no dictionary slot either.
+fn arithmetic_operators_alone_build_the_numeric_dictionaries() {
+    // `+` and `*` ARE `Num` methods (Haskell 2010 §3.4), so a program written
+    // entirely with infix arithmetic mentions `Num` and needs its dictionary —
+    // plus the `Eq`/`Ord` the class declares as superclasses. Stage 3a is what
+    // makes that true: before it, the same program produced an EMPTY table
+    // because the operators never reached method dispatch.
     let ir = ir_of("main = 1.0 + 2.0 * 3.0;");
+    let mut classes: Vec<&str> = ir.dicts.iter().map(|d| d.class.as_str()).collect();
+    classes.sort_unstable();
+    assert_eq!(
+        classes,
+        vec!["Eq", "Num", "Ord"],
+        "infix arithmetic must mention `Num` and its superclass closure; table = {:?}",
+        table(&ir)
+    );
+    assert!(ir.dict_gaps.is_empty(), "and no gaps: {:?}", ir.dict_gaps);
+    let world = eval("", "1.0 + 2.0 * 3.0").expect("the program must run");
+    assert_eq!(
+        world.dicts_len(),
+        ir.dicts.len(),
+        "the seated table matches the IR's"
+    );
+    assert_eq!(out_value(&world), Value::Double(7.0));
+}
+
+#[test]
+fn a_program_mentioning_no_class_gets_an_empty_table() {
+    // A literal is not a method call: `main = 1.0` mentions no class, so the
+    // table is empty and the seated world holds no dictionary slot.
+    let ir = ir_of("main = 1.0;");
     assert!(
         ir.dicts.is_empty(),
         "a class-free program must have an empty dictionary table, got {:?}",
@@ -172,10 +436,10 @@ fn a_program_mentioning_no_class_gets_an_empty_table() {
         "an empty table has no holes: {:?}",
         missing_kernels(&ir)
     );
-    let world = eval("", "1.0 + 2.0 * 3.0").expect("the program must run");
+    let world = eval("", "1.0").expect("the program must run");
     assert_eq!(world.dicts_len(), 0, "the seated table is empty too");
     assert!(world.missing_kernels().is_empty());
-    assert_eq!(out_value(&world), Value::Double(7.0));
+    assert_eq!(out_value(&world), Value::Double(1.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,7 +1276,24 @@ fn a_constrained_instance_is_reported_as_a_gap_not_a_broken_dictionary() {
     )
     .expect("the program must run");
     assert_eq!(out_value(&world), Value::Double(6.0));
-    assert_eq!(world.dicts_len(), 0, "no `Arrow K` dictionary was built");
+    // No `Arrow K` entry (the gap above), and the only dictionaries are the
+    // ones the BODY's method calls select: `\x -> x * 2.0` mentions `Num
+    // Double`, whose superclass closure brings `Eq`/`Ord`.
+    assert!(
+        !has(&ir, "Arrow", "K"),
+        "`Arrow K` must stay a gap, not a dictionary; table = {:?}",
+        table(&ir)
+    );
+    assert!(
+        has(&ir, "Num", "Double"),
+        "the lambda's `*` selects `Num Double`; table = {:?}",
+        table(&ir)
+    );
+    assert_eq!(
+        world.dicts_len(),
+        ir.dicts.len(),
+        "the seated table matches the IR's descriptors"
+    );
 }
 
 #[test]

@@ -242,9 +242,13 @@ mod fixity_4_4_2 {
                 "`{src}`: the diagnostic must name the rule, got {err}"
             );
         }
-        // Parenthesizing restores it — proving the error is about associativity,
-        // not about comparing three values.
-        assert!(!bool_of("", "(1.0 == 2.0) == 3.0"));
+        // Parenthesizing restores an `infix 4` chain — proving the error is
+        // about associativity, not about comparing booleans. Both operands must
+        // still be the SAME type: `(1.0 == 2.0) == 3.0` is `No instance for
+        // 'Fractional Bool'` in GHC (verified), so the legal form compares the
+        // two bool results.
+        assert!(bool_of("", "(1.0 == 2.0) == (3.0 > 4.0)"));
+        assert!(!bool_of("", "(1.0 == 2.0) == (1.0 < 2.0)"));
         assert!(bool_of("", "1.0 < 2.0 && 2.0 < 3.0"));
     }
 

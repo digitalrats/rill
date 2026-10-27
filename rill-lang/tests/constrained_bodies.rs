@@ -327,13 +327,11 @@ fn a_superclass_method_resolves_in_a_body() {
     // Typing this needs `a` to stay ABSTRACT — the old model had no concrete
     // receiver to dispatch `==` on.
     //
-    // The METHOD-CALL spelling `(==) x y` is used deliberately: rill's infix
-    // operators are still `Expr::Cmp`/`Expr::Arith` nodes rather than the
-    // class-method sugar Haskell 2010 §3.4 requires, so `x == y` does not reach
-    // method dispatch at all. That operator-to-method desugaring is the paused
-    // P-A task of the typeclass-layer design and is an OPEN defect: this test
-    // pins the superclass resolution the dictionary model needs, on the spelling
-    // that exists today.
+    // Both spellings: `x == y` and `(==) x y` are the SAME AST (Haskell 2010
+    // §3.4 — `desugar_infix_op` produces the `Ref("==")` application), so the
+    // infix form must resolve against the given `Ord` witness exactly like the
+    // prefix one. That was OD-13: before dictionary stage 3a the infix spelling
+    // never reached method dispatch and recorded nothing.
     let t = typed("f x y :: Ord a => a -> a -> Bool = (==) x y;\nmain = 0.0;");
     assert_eq!(
         selection_for(&t, "Eq"),
@@ -364,14 +362,49 @@ fn a_superclass_method_resolves_in_a_body() {
         t.dict_selections
     );
 
+    // An INFIX comparison records the same given witness as the prefix one —
+    // the property OD-13 denied.
+    for (infix_src, prefix_src, class) in [
+        (
+            "f x y :: Ord a => a -> a -> Bool = x == y;\nmain = 0.0;",
+            "f x y :: Ord a => a -> a -> Bool = (==) x y;\nmain = 0.0;",
+            "Eq",
+        ),
+        (
+            "f x y :: Ord a => a -> a -> Bool = x < y;\nmain = 0.0;",
+            "f x y :: Ord a => a -> a -> Bool = (<) x y;\nmain = 0.0;",
+            "Ord",
+        ),
+    ] {
+        let infix = typed(infix_src);
+        let prefix = typed(prefix_src);
+        assert_eq!(
+            selection_for(&infix, class),
+            Some(ValueTy::Dict("Ord".to_string())),
+            "`{infix_src}` must record the GIVEN `Ord` witness for `{class}`;              selections: {:?}",
+            infix.dict_selections
+        );
+        assert_eq!(
+            selection_for(&infix, class),
+            selection_for(&prefix, class),
+            "the infix and prefix spellings are one binding: {infix_src} vs {prefix_src}"
+        );
+    }
+
     // A constrained body that calls a method of a class the context neither
     // names nor entails is still rejected, so the given context is a genuine
-    // restriction and not a blanket "anything goes".
-    let msg = type_err("f x :: Ord a => a -> a = (+) x x;\nmain = 0.0;");
-    assert!(
-        msg.contains("cannot resolve method `+`"),
-        "`(+)` (Num) under only `Ord a` must be rejected, got: {msg}"
-    );
+    // restriction and not a blanket "anything goes". BOTH spellings are checked:
+    // numeric defaulting must not rescue `Num` under an `Ord`-only context.
+    for src in [
+        "f x :: Ord a => a -> a = (+) x x;\nmain = 0.0;",
+        "f x :: Ord a => a -> a = x + x;\nmain = 0.0;",
+    ] {
+        let msg = type_err(src);
+        assert!(
+            msg.contains("cannot resolve method `+`"),
+            "`+` (Num) under only `Ord a` must be rejected, got: {msg} ({src})"
+        );
+    }
 }
 
 #[test]

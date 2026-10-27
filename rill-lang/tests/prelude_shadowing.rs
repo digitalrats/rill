@@ -156,10 +156,15 @@ main = do {{ xs <- fromList (take {n}.0 (from 1.0)); ys <- toList xs; write (Jus
             "arena budget grew with demand for `length (take n (from 1.0))` at n = {n}"
         );
     }
+    // (1208, 4832) with dictionary stage 3a: `+`/`-`/`==` in these bodies are
+    // class-method applications instead of bespoke operator nodes, so the
+    // method path emits a few more value registers per call. The value is still
+    // a property of the PROGRAM (the loop above proves it does not move with
+    // `n`), which is what this test exists for.
     assert_eq!(
         length_one,
-        (1104, 4416),
-        "recorded length-expression budget"
+        (1208, 4832),
+        "recorded length-expression budget (dictionary stage 3a)"
     );
     // The drain program's budget rose from (2120, 8480) with dictionary stage 2:
     // it uses `do`-notation over `IO`, so it now also compiles the `IO` monad
@@ -168,8 +173,8 @@ main = do {{ xs <- fromList (take {n}.0 (from 1.0)); ys <- toList xs; write (Jus
     // PROGRAM, not of demand — which is the property this test exists for.
     assert_eq!(
         one,
-        (3880, 15520),
-        "recorded drain-program budget (dictionary stage 2)"
+        (3984, 15936),
+        "recorded drain-program budget (dictionary stage 3a)"
     );
 }
 

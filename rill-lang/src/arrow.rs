@@ -27,7 +27,7 @@
 //! | `A :> B` | `Expr::Merge` | fan-in sum `out(A) = k·in(B)` |
 //! | `A ~ B` | `Expr::Loop` | 1-block delayed loop `in(B) ≤ out(A)`, `out(B) ≤ in(A)` |
 //! | `A @ n` | `Expr::Delay` | block-level delay, `n` constant |
-//! | `a + b` | `Expr::Arith` | elementwise |
+//! | `a + b` | `Expr::Apply { name: "+" }` | elementwise (`Num`'s kernel) |
 //!
 //! Fan-out/fan-in factors (`k`) are resolved at lowering from the inferred
 //! channel arities (arity-indexed arrows).
@@ -39,5 +39,5 @@
 //!
 //! The re-exports below are the arrow core and its type model.
 
-pub use crate::ast::{ArithOp, Expr};
+pub use crate::ast::Expr;
 pub use crate::types::ty::{ArrowTy, Block, Scheme, ValueTy};

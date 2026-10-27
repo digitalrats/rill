@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::arena::KernelId;
-use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
+use crate::ast::{Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::error::{CompileError, Span};
 use crate::ir::{
     BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Ir, LogicOp, ParamDef, StateLayout,
@@ -526,21 +526,6 @@ fn nest_value_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
     }
 }
 
-/// Map a parsed comparison operator to its IR form (the two enums share their
-/// variant names, so the match is mechanical).
-fn cmp_op_from_ast(op: crate::ast::CmpOp) -> CmpOp {
-    use crate::ast::CmpOp as A;
-    use crate::ir::CmpOp as I;
-    match op {
-        A::Eq => I::Eq,
-        A::Ne => I::Ne,
-        A::Lt => I::Lt,
-        A::Gt => I::Gt,
-        A::Le => I::Le,
-        A::Ge => I::Ge,
-    }
-}
-
 /// Map a parsed logic operator to its IR form.
 fn logic_op_from_ast(op: crate::ast::LogicOp) -> LogicOp {
     use crate::ast::LogicOp as A;
@@ -657,6 +642,14 @@ struct Lowerer<'a> {
     /// Fresh type-variable counter (for `signature_param_tys_conv` in the
     /// typeclass method-call lowering, which threads expected types).
     next_tyvar: u32,
+    /// The dictionary the type checker SELECTED at each method call, keyed by
+    /// the call's span (from `TypedProgram::dict_selections`). Lowering has no
+    /// unification substitution, so its own static types are often coarser than
+    /// inference's (`x` bound by `Just x` from a `Maybe a` scrutinee is a `Var`
+    /// here, `Double` there). The recorded selection is the AUTHORITATIVE
+    /// answer: a method call that finds one uses it instead of re-deriving the
+    /// instance from the coarser type.
+    dict_selections: HashMap<Span, (String, ValueTy)>,
     /// Fresh-name counter for capture-avoiding method instantiation. Every
     /// instantiation renames the method's own parameters to `$`-prefixed names
     /// carrying this value, so two instantiations never share a binding name
@@ -2601,6 +2594,7 @@ impl<'a> Lowerer<'a> {
                                     ty_name.as_str(),
                                     call_args,
                                     *span,
+                                    None,
                                 );
                             }
                             let (params, body) = match self.instantiate_method(
@@ -2740,23 +2734,47 @@ impl<'a> Lowerer<'a> {
                                 });
                             };
                             let (arg_reg, arg_vty) = self.lower_value(&call_args[selector_idx])?;
-                            let cv_var = self.next_tyvar;
-                            self.next_tyvar += 1;
-                            let Some((ty_name, cv_subst)) =
-                                crate::types::infer::method_dispatch_key(
-                                    self.env,
-                                    &class_name,
-                                    &class_var,
-                                    sig,
-                                    &arg_vty,
-                                    cv_var,
-                                    || {
-                                        let v = self.next_tyvar;
-                                        self.next_tyvar += 1;
-                                        ValueTy::Var(v)
-                                    },
-                                )
-                            else {
+                            // The instance the type checker selected at this call
+                            // site, when it recorded one. It is authoritative:
+                            // lowering's own static types are coarser than
+                            // inference's substitution, and re-deriving the
+                            // instance from them would reject a program that
+                            // already type-checked.
+                            let dispatch = self.recorded_selection(*span, &class_name);
+                            let dispatch = match dispatch {
+                                Some(d) => Some(d),
+                                None => {
+                                    // NUMERIC DEFAULTING, mirroring inference
+                                    // (Haskell 2010 §4.3.4): an operand whose
+                                    // static type lowering never resolved (`a`
+                                    // in `\a -> \b -> a + b` with no call site
+                                    // pinning it) is the defaulted `Double`.
+                                    let arg_dispatch_vty =
+                                        if matches!(class_name.as_str(), "Num" | "Fractional")
+                                            && matches!(arg_vty, ValueTy::Var(_))
+                                        {
+                                            ValueTy::Double
+                                        } else {
+                                            arg_vty.clone()
+                                        };
+                                    let cv_var = self.next_tyvar;
+                                    self.next_tyvar += 1;
+                                    crate::types::infer::method_dispatch_key(
+                                        self.env,
+                                        &class_name,
+                                        &class_var,
+                                        sig,
+                                        &arg_dispatch_vty,
+                                        cv_var,
+                                        || {
+                                            let v = self.next_tyvar;
+                                            self.next_tyvar += 1;
+                                            ValueTy::Var(v)
+                                        },
+                                    )
+                                }
+                            };
+                            let Some((ty_name, cv_subst)) = dispatch else {
                                 return Err(CompileError::Type {
                                     msg: format!(
                                         "cannot resolve method `{name}` of `{class_name}`: the argument type is not concrete"
@@ -2764,7 +2782,9 @@ impl<'a> Lowerer<'a> {
                                     span: call_args[selector_idx].span(),
                                 });
                             };
-                            // Primitive instance: dispatch to the kernel.
+                            // Primitive instance: dispatch to the kernel,
+                            // reusing the selector register the dispatch above
+                            // already emitted.
                             if self.is_primitive_instance(&class_name, ty_name.as_str()) {
                                 return self.lower_primitive_method(
                                     &class_name,
@@ -2772,6 +2792,7 @@ impl<'a> Lowerer<'a> {
                                     ty_name.as_str(),
                                     call_args,
                                     *span,
+                                    Some((selector_idx, arg_reg, arg_vty)),
                                 );
                             }
                             let (params, body) = match self.instantiate_method(
@@ -3465,89 +3486,6 @@ impl<'a> Lowerer<'a> {
                 self.emit_call(dst, cr, arg_regs);
                 Ok((dst, ret_ty))
             }
-            Expr::Arith { op, lhs, rhs, span } => {
-                // Buffer arithmetic (`i1 * 0.5` over signals): if either
-                // operand is a `Buffer` value, the op is element-wise over
-                // buffers (`ValueBufferBin`); otherwise it is scalar value
-                // arithmetic (`ValueAdd`/…).
-                let (a_reg, a_ty) = self.lower_value(lhs)?;
-                let (b_reg, b_ty) = self.lower_value(rhs)?;
-                let buffer_op =
-                    matches!(a_ty, ValueTy::Buffer(_)) || matches!(b_ty, ValueTy::Buffer(_));
-                if buffer_op {
-                    let arith = match op {
-                        ArithOp::Add => BinArith::Add,
-                        ArithOp::Sub => BinArith::Sub,
-                        ArithOp::Mul => BinArith::Mul,
-                        ArithOp::Div => BinArith::Div,
-                        ArithOp::Rem => {
-                            return Err(CompileError::Type {
-                                msg: "buffer remainder is not supported".into(),
-                                span: *span,
-                            });
-                        }
-                    };
-                    // A scalar operand (`0.5`) must materialize as a buffer
-                    // constant for the element-wise op.
-                    let a = self.buffer_operand(a_reg, &a_ty)?;
-                    let b = self.buffer_operand(b_reg, &b_ty)?;
-                    let dst = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueBufferBin {
-                        dst,
-                        op: arith,
-                        a,
-                        b,
-                    });
-                    return Ok((dst, self.env.buffer_vty()));
-                }
-                let dst = self.fresh_value_reg();
-                self.emit_value(match op {
-                    ArithOp::Add => ValueInstr::ValueAdd {
-                        dst,
-                        a: a_reg,
-                        b: b_reg,
-                    },
-                    ArithOp::Sub => ValueInstr::ValueSub {
-                        dst,
-                        a: a_reg,
-                        b: b_reg,
-                    },
-                    ArithOp::Mul => ValueInstr::ValueMul {
-                        dst,
-                        a: a_reg,
-                        b: b_reg,
-                    },
-                    ArithOp::Div => ValueInstr::ValueDiv {
-                        dst,
-                        a: a_reg,
-                        b: b_reg,
-                    },
-                    ArithOp::Rem => {
-                        return Err(CompileError::Type {
-                            msg: "value remainder is not supported".into(),
-                            span: *span,
-                        });
-                    }
-                });
-                // Int-preserving value arithmetic: `+`/`-`/`*` over two `Int`
-                // operands stays on the Int track (`Value::Int` at runtime,
-                // `ValueTy::Int` statically). `/` is float division, so it
-                // always yields a `Double`; `%` is unsupported. This mirrors
-                // `infer_arith` and the interpreter's `exec_value_arith` — the
-                // three must agree, or an `Int`-typed slot would hold a
-                // `Value::Double` (which the flat array primitives reject).
-                let int_track = matches!(op, ArithOp::Add | ArithOp::Sub | ArithOp::Mul)
-                    && matches!(a_ty, ValueTy::Int)
-                    && matches!(b_ty, ValueTy::Int);
-                Ok((
-                    dst,
-                    if int_track {
-                        ValueTy::Int
-                    } else {
-                        ValueTy::Double
-                    },
-                ))
-            }
             Expr::Neg(inner, _span) => {
                 // Negative literal / unary minus in value position. A numeric
                 // literal folds to a negative constant; anything else lowers as
@@ -3730,18 +3668,6 @@ impl<'a> Lowerer<'a> {
                 let ret = ValueTy::App("Map".into(), vec![ValueTy::String, val_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
-            }
-            Expr::Cmp { op, lhs, rhs, .. } => {
-                let (a, _) = self.lower_value(lhs)?;
-                let (b, _) = self.lower_value(rhs)?;
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueCompare {
-                    dst,
-                    op: cmp_op_from_ast(*op),
-                    a,
-                    b,
-                });
-                Ok((dst, ValueTy::Bool))
             }
             Expr::Logic { op, lhs, rhs, .. } => {
                 let (a, _) = self.lower_value(lhs)?;
@@ -4791,11 +4717,14 @@ impl<'a> Lowerer<'a> {
         // at runtime through the shared-cell closure path). Keep those on the
         // eager anchor path.
         if self.recursive_locals.contains(name) {
-            // A recursing DEFERRED def would re-specialize itself at every
-            // application, expanding forever (there is no shared cell to anchor
-            // on, and its class demand needs concrete argument types at each
-            // step). Report it rather than loop.
-            if self.is_deferred_sigless_def(name) {
+            // Specializing a recursive body would re-enter this site at every
+            // step and expand forever, so a recursive definition always keeps
+            // the eager path. Complete mode has a SHARED CELL to anchor the
+            // cycle on (the STG model), so the eager path works there. Strict
+            // mode has no cell: a body that ALSO needs per-call-site class
+            // dispatch would have to specialize to resolve it, so report the
+            // definition instead of looping.
+            if self.mode != Mode::Complete && self.is_deferred_sigless_def(name) {
                 return Some(Err(CompileError::Type {
                     msg: format!("recursive signature-less curried definition `{name}`"),
                     span,
@@ -5022,7 +4951,13 @@ impl<'a> Lowerer<'a> {
         // class variable — the same misleading `no instance of … for Double`
         // the constrained guard reports instead. A value local or fragment
         // capture of the same name shadows the definition.
+        //
+        // EXCEPT in complete mode, where a recursive def lives in a shared cell
+        // (the STG model): the cell's closure is compiled once from the body, so
+        // the reference resolves there and needs no specialization.
+        let anchored_cycle = self.mode == Mode::Complete && self.recursive_locals.contains(name);
         if self.is_deferred_sigless_def(name)
+            && !anchored_cycle
             && !self.value_locals.iter().any(|s| s.contains_key(name))
             && !self.fragment_captures.iter().any(|(n, _)| n == name)
         {
@@ -5620,6 +5555,54 @@ impl<'a> Lowerer<'a> {
     /// `Eq`/`Ord` comparison over the structural order, `Num`/`Fractional`
     /// scalar arithmetic, and buffer arithmetic (which the existing buffer fork
     /// emitted before the class layer existed).
+    /// `prefetched` carries an argument the dispatch step ALREADY lowered —
+    /// `(index, register, static type)` — so it is not lowered a second time.
+    /// Dispatch has to lower the selector argument to get its static type, and
+    /// re-lowering it for the kernel would emit its instructions twice: a closed
+    /// CAF operand (`osc = sine …`) would instantiate its generator twice in one
+    /// expression, and an effectful operand would run its effects twice.
+    /// The instance the type checker SELECTED for the method call at `span`, as
+    /// the dispatch key and its substitution.
+    ///
+    /// The recorded EVIDENCE is the resolved class variable (`Pair Int Int` for
+    /// `pick 1.0 ((0,0),(2,2))`), not the selector argument's type — so it is
+    /// used as the class-variable substitution directly, and the registry key is
+    /// the one that substitution renders as.
+    ///
+    /// Inference solves the class variable with its full substitution; lowering
+    /// has none, so its own static type for the same operand can be coarser (`x`
+    /// bound by `Just x` from a `Maybe a` scrutinee stays a `Var` here while
+    /// inference solved it to `Double`). Re-deriving the instance from the
+    /// coarser type would reject a program that type-checked, so the recorded
+    /// selection is consulted FIRST — it is the same judgement, recorded once.
+    fn recorded_selection(
+        &mut self,
+        span: Span,
+        class_name: &str,
+    ) -> Option<(String, crate::types::infer::ClassVarSubst)> {
+        let (recorded_class, evidence) = self.dict_selections.get(&span)?.clone();
+        if recorded_class != class_name {
+            return None;
+        }
+        // A GIVEN witness (`Dict("Ord")`) has no concrete instance to lower
+        // here; those flows keep their existing path.
+        if matches!(evidence, ValueTy::Dict(_)) {
+            return None;
+        }
+        let key = crate::types::ty::value_type_key(self.env, &evidence)
+            .or_else(|| self.env.type_name_of_vty(&evidence))?;
+        if !self
+            .env
+            .instances
+            .get(class_name)
+            .map(|by_ty| by_ty.contains_key(key.as_str()))
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        Some((key, crate::types::infer::ClassVarSubst::Ty(evidence)))
+    }
+
     fn lower_primitive_method(
         &mut self,
         class_name: &str,
@@ -5627,11 +5610,19 @@ impl<'a> Lowerer<'a> {
         ty_name: &str,
         call_args: &[Expr],
         span: Span,
+        prefetched: Option<(usize, usize, ValueTy)>,
     ) -> Result<(usize, ValueTy), CompileError> {
         // Lower the arguments once; a primitive kernel consumes registers.
         let mut arg_regs: Vec<usize> = Vec::with_capacity(call_args.len());
         let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(call_args.len());
-        for a in call_args {
+        for (i, a) in call_args.iter().enumerate() {
+            if let Some((idx, reg, ty)) = &prefetched {
+                if *idx == i {
+                    arg_regs.push(*reg);
+                    arg_tys.push(ty.clone());
+                    continue;
+                }
+            }
             let (r, t) = self.lower_value(a)?;
             arg_regs.push(r);
             arg_tys.push(t);
@@ -5767,17 +5758,9 @@ impl<'a> Lowerer<'a> {
         let b = "$op_b".to_string();
         let lhs = Expr::Ref(a.clone(), span);
         let rhs = Expr::Ref(b.clone(), span);
-        let ast_op = match op {
-            "+" => ArithOp::Add,
-            "-" => ArithOp::Sub,
-            "*" => ArithOp::Mul,
-            "/" => ArithOp::Div,
-            other => unreachable!("not an arithmetic operator: {other}"),
-        };
-        let arith = Expr::Arith {
-            op: ast_op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
+        let arith = Expr::Apply {
+            name: op.to_string(),
+            args: vec![lhs, rhs],
             span,
         };
         let inner = Expr::Lambda {
@@ -5815,11 +5798,13 @@ impl<'a> Lowerer<'a> {
         // An arithmetic operator used as a VALUE (`(+)`, `fold (+) 0 xs`,
         // `inc = (+) 1.0`): Haskell 2010 Prelude — `(+) :: a -> a -> a` is an
         // ordinary curried function, not only infix sugar. Build the equivalent
-        // `\a -> \b -> a + b` so it flows through the same closure machinery as
-        // any other function value (arity, partial application and dispatch are
-        // then already implemented). A USER definition of the same name wins:
-        // it is a real binding, so it is handled below.
-        if matches!(name, "+" | "-" | "*" | "/" | "%") && !self.defs.contains_key(name) {
+        // `\a -> \b -> a + b` — the SAME application the parser produces for the
+        // infix spelling — so it flows through the closure machinery as any
+        // other function value (arity, partial application and dispatch are then
+        // already implemented). A USER definition of the same name wins: it is a
+        // real binding, so it is handled below. (`%` is not here: it was removed
+        // in `218a981` — Haskell 2010 has no `(%)` in the Prelude.)
+        if matches!(name, "+" | "-" | "*" | "/") && !self.defs.contains_key(name) {
             return self.lower_operator_value(name, span);
         }
         // Bare zero-argument collection constructors: `list`, `empty_map`,
@@ -6311,7 +6296,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
-            Expr::Arith { lhs, rhs, .. } => {
+            Expr::Logic { lhs, rhs, .. } => {
                 self.free_vars_impl(lhs, bound, out, seen);
                 self.free_vars_impl(rhs, bound, out, seen);
             }
@@ -6396,10 +6381,6 @@ impl<'a> Lowerer<'a> {
                 for (_, ve) in entries {
                     self.free_vars_impl(ve, bound, out, seen);
                 }
-            }
-            Expr::Cmp { lhs, rhs, .. } | Expr::Logic { lhs, rhs, .. } => {
-                self.free_vars_impl(lhs, bound, out, seen);
-                self.free_vars_impl(rhs, bound, out, seen);
             }
         }
     }
@@ -7559,11 +7540,21 @@ impl<'a> Lowerer<'a> {
                     } else {
                         raw
                     };
+                    // The payload's OWN type parameters belong to this level, so
+                    // a nested pattern resolves its placeholders against them —
+                    // not against the enclosing level's args. `Just (Just x)`
+                    // binds `x` from the INNER `Maybe`'s argument; reusing the
+                    // outer `[Maybe a]` typed `x` as a whole `Maybe`, and a
+                    // method call on it then dispatched on the wrong type.
+                    let sub_args: Vec<ValueTy> = match &pty {
+                        ValueTy::App(_, a) | ValueTy::Data(_, a) => a.clone(),
+                        _ => Vec::new(),
+                    };
                     pass = self.lower_pattern_test(
                         arg,
                         payload_regs[i],
                         &pty,
-                        top_args,
+                        &sub_args,
                         else_t,
                         span,
                     )?;
@@ -8312,7 +8303,6 @@ impl<'a> Lowerer<'a> {
                 msg: "string literal is only valid as a parameter name".into(),
                 span: *span,
             }),
-            Expr::Arith { op, lhs, rhs, .. } => self.lower_arith(*op, lhs, rhs, args),
             Expr::Let {
                 defs,
                 body,
@@ -8403,7 +8393,6 @@ impl<'a> Lowerer<'a> {
             Expr::Bool(_, _)
             | Expr::ListLit(_, _)
             | Expr::MapLit(_, _)
-            | Expr::Cmp { .. }
             | Expr::Logic { .. } => Err(CompileError::Unsupported(
                 "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
                     .into(),
@@ -8773,33 +8762,6 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// `A op B` — elementwise arithmetic on the single output wire of each side.
-    fn lower_arith(
-        &mut self,
-        op: ArithOp,
-        lhs: &Expr,
-        rhs: &Expr,
-        args: &[usize],
-    ) -> Result<Vec<usize>, CompileError> {
-        let a = self.lower(lhs, args)?;
-        let b = self.lower(rhs, args)?;
-        let arith = match op {
-            ArithOp::Add => BinArith::Add,
-            ArithOp::Sub => BinArith::Sub,
-            ArithOp::Mul => BinArith::Mul,
-            ArithOp::Div => BinArith::Div,
-            ArithOp::Rem => BinArith::Rem,
-        };
-        let dst = self.fresh_value_reg();
-        self.emit_value(ValueInstr::ValueBufferBin {
-            dst,
-            op: arith,
-            a: a[0],
-            b: b[0],
-        });
-        Ok(vec![dst])
-    }
-
     /// Lower a signal expression as a `Value::Buffer` value-track register, for an
     /// input-channel primitive. A bare reference to a program BUFFER input
     /// resolves to the input's buffer register; any
@@ -8866,12 +8828,6 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
         Expr::Annot { expr, ty, span } => Expr::Annot {
             expr: Box::new(rename_bound(expr, renames)),
             ty: ty.clone(),
-            span: *span,
-        },
-        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
-            op: *op,
-            lhs: Box::new(rename_bound(lhs, renames)),
-            rhs: Box::new(rename_bound(rhs, renames)),
             span: *span,
         },
         Expr::Let { defs, body, span } => {
@@ -8985,12 +8941,6 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
                 .collect(),
             *span,
         ),
-        Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
-            op: *op,
-            lhs: Box::new(rename_bound(lhs, renames)),
-            rhs: Box::new(rename_bound(rhs, renames)),
-            span: *span,
-        },
         Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
             op: *op,
             lhs: Box::new(rename_bound(lhs, renames)),
@@ -9074,10 +9024,6 @@ pub(crate) fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
         }
         Expr::Neg(inner, _) => collect_def_ref_names(inner, out),
         Expr::Annot { expr, .. } => collect_def_ref_names(expr, out),
-        Expr::Arith { lhs, rhs, .. } => {
-            collect_def_ref_names(lhs, out);
-            collect_def_ref_names(rhs, out);
-        }
         Expr::If {
             cond, then, els, ..
         } => {
@@ -9155,14 +9101,19 @@ fn const_f64(e: &Expr) -> Option<f64> {
         Expr::Double(v, _) => Some(*v),
         Expr::Int(v, _) => Some(*v as f64),
         Expr::Neg(inner, _) => const_f64(inner).map(|v| -v),
-        Expr::Arith { op, lhs, rhs, .. } => {
+        // Constant arithmetic: an infix operator IS an application of the
+        // method (`a + b` ≡ `(+) a b`), so folding matches the same shape.
+        Expr::Apply { name, args, .. } => {
+            let [lhs, rhs] = args.as_slice() else {
+                return None;
+            };
             let a = const_f64(lhs)?;
             let b = const_f64(rhs)?;
-            Some(match op {
-                ArithOp::Add => a + b,
-                ArithOp::Sub => a - b,
-                ArithOp::Mul => a * b,
-                ArithOp::Div => a / b,
+            Some(match name.as_str() {
+                "+" => a + b,
+                "-" => a - b,
+                "*" => a * b,
+                "/" => a / b,
                 _ => return None,
             })
         }
@@ -9296,6 +9247,7 @@ pub fn lower_program_with_channels(
         value_entry: 0,
         next_value_reg: 0,
         next_tyvar: 0,
+        dict_selections: tp.dict_selections.clone(),
         next_method_param: 0,
         value_regs_out: Vec::new(),
         value_out_tys: Vec::new(),
@@ -9661,6 +9613,7 @@ mod tests {
             value_entry: 0,
             next_value_reg: 0,
             next_tyvar: 0,
+            dict_selections: HashMap::new(),
             next_method_param: 0,
             value_regs_out: Vec::new(),
             value_out_tys: Vec::new(),

@@ -1011,9 +1011,9 @@ fn value_to_f64(v: &Value) -> Option<f64> {
 /// `Double` — it is float division in this language, and truncating it would
 /// silently change `3 / 2`. Everything else (a `Double` operand, an unbound or
 /// non-numeric slot) computes in `f64` and yields a `Double`, exactly as before.
-/// The static type tracks this rule in `infer_arith` / `lower`'s `Expr::Arith`
-/// arm — a typed `Int` slot therefore holds a real `Value::Int`, which the flat
-/// array primitives require of an offset.
+/// The static type tracks this rule in `lower_primitive_method`'s arithmetic
+/// kernel (`Num`'s instance body) — a typed `Int` slot therefore holds a real
+/// `Value::Int`, which the flat array primitives require of an offset.
 ///
 /// The operands are read BEFORE any `dst` occupant is released, so `dst` may
 /// alias an operand (`dst == a` or `dst == b`) without losing its value.

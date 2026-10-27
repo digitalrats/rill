@@ -81,16 +81,30 @@ fn output(prog: &WorldState<f32, 256>) -> Value {
 /// helper outright (the harness reports the panic), so every caller doubles as
 /// the "clean error, never a panic" assertion.
 fn fault(src: &str) -> String {
-    let (defs, expr) = src
-        .rsplit_once("main = ")
-        .expect("the source must bind `main` to the evaluated expression");
-    let expr = expr.trim().trim_end_matches(';');
-    let ffi = ForeignRegistry::<f32>::new();
-    match eval_ffi(defs, expr, ffi) {
-        Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
-        Err(rill_lang::CompileError::Unsupported(msg)) => msg,
-        Err(other) => panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}"),
-    }
+    // Same grown-stack thread as [`with_output`]: a nested `ixmap` builds a
+    // deep lowering chain in debug builds, and the fault path compiles the
+    // program before it fails.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn_scoped(scope, || {
+                let (defs, expr) = src
+                    .rsplit_once("main = ")
+                    .expect("the source must bind `main` to the evaluated expression");
+                let expr = expr.trim().trim_end_matches(';');
+                let ffi = ForeignRegistry::<f32>::new();
+                match eval_ffi(defs, expr, ffi) {
+                    Ok(_) => panic!("expected a fault, but the program ran\nsrc:\n{src}"),
+                    Err(rill_lang::CompileError::Unsupported(msg)) => msg,
+                    Err(other) => {
+                        panic!("expected a latched processing fault, got {other:?}\nsrc:\n{src}")
+                    }
+                }
+            })
+            .expect("the compile thread must spawn")
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
 }
 
 /// The two field VALUES of a `Pair` record, resolved through the arena.
@@ -554,8 +568,9 @@ fn ixmap_transposes_a_three_by_two_matrix() {
         b2(0, 0, 1, 2),
         b2(0, 0, 2, 1)
     );
-    let (prog, v) = run(&src);
-    let (values, (low, high)) = matrix(&prog, &v);
+    // `with_output` (the grown-stack helper): the program nests `ixmap` deep
+    // enough that debug-build lowering needs more than libtest's default stack.
+    let (values, (low, high)) = with_output(&src, matrix);
     assert_eq!((low, high), ((0, 0), (1, 2)), "the target bounds are 2x3");
     // Target (0,0)=s(0,0)=1, (0,1)=s(1,0)=3, (0,2)=s(2,0)=5, then the row 1.
     assert_eq!(values, vec![1.0, 3.0, 5.0, 2.0, 4.0, 6.0]);
@@ -578,8 +593,7 @@ fn ixmap_with_shifted_bounds_reaches_the_source_cells_through_both_origins() {
         b2(2, 1, 4, 2),
         b2(1, 2, 2, 4)
     );
-    let (prog, v) = run(&src);
-    let (values, (low, high)) = matrix(&prog, &v);
+    let (values, (low, high)) = with_output(&src, matrix);
     assert_eq!((low, high), ((2, 1), (4, 2)), "the target origin is (2,1)");
     // Target row-major: (2,1)->s(1,2)=10, (2,2)->s(2,2)=40, (3,1)->s(1,3)=20, …
     assert_eq!(values, vec![10.0, 40.0, 20.0, 50.0, 30.0, 60.0]);

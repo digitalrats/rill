@@ -37,6 +37,32 @@ fn run(src: &str) -> (WorldState<f32, 256>, Value) {
     (prog, v)
 }
 
+/// Compile `src`, run it once, and hand the program plus its single result to
+/// `f` — all on a grown-stack thread.
+///
+/// Debug-build lowering recurses once per nested call and scope, and an `ixmap`
+/// chain (a constrained definition whose body maps a λ over `range`) needs more
+/// than libtest's default ~2 MiB test thread. A stack overflow is an ABORT, not
+/// a catchable panic — it takes the whole binary down and reports a signal
+/// instead of a diagnostic — so the work runs where there is room. The subject
+/// here is the array surface, not stack arithmetic.
+///
+/// A [`WorldState`] owns `Rc`-backed arenas and is therefore not `Send`: the
+/// world cannot outlive the thread, so `f` extracts plain data instead.
+fn with_output<R: Send>(src: &str, f: impl FnOnce(&WorldState<f32, 256>, &Value) -> R + Send) -> R {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(16 << 20)
+            .spawn_scoped(scope, || {
+                let (prog, v) = run(src);
+                f(&prog, &v)
+            })
+            .expect("the compile thread must spawn")
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    })
+}
+
 /// The single run result of an already-run program.
 fn output(prog: &WorldState<f32, 256>) -> Value {
     let v = prog.result().expect("the run must produce a single result");
@@ -648,28 +674,37 @@ fn ixmap_transposes_a_two_by_three_matrix() {
                  (listArray \
                    (Pair { first: Pair { first: 0, second: 0 }, second: Pair { first: 1, second: 2 } }) \
                    [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);";
-    let (prog, v) = run(src);
-    let (bounds_ref, elems) = array_parts(&v);
-    let bounds = prog
-        .arena()
-        .get(bounds_ref)
-        .expect("bounds resolve")
-        .clone();
-    let (l, u) = pair_values(&prog, &bounds);
-    let (l1, l2) = pair_values(&prog, &l);
-    let (u1, u2) = pair_values(&prog, &u);
+    // Compile, run and extract on a grown-stack thread: debug-build lowering
+    // recurses once per nested call, and an `ixmap` over an array built by a
+    // constrained definition is deep enough to exceed libtest's default ~2 MiB
+    // (the constraint `tests/array_matrix.rs` documents). A stack overflow is an
+    // ABORT that takes the whole binary down, so the work runs on a thread with
+    // room and returns plain data (a `WorldState` owns `Rc`-backed arenas and is
+    // not `Send`).
+    let (l1, l2, u1, u2, values) = with_output(src, |prog, v| {
+        let (bounds_ref, elems) = array_parts(v);
+        let bounds = prog
+            .arena()
+            .get(bounds_ref)
+            .expect("bounds resolve")
+            .clone();
+        let (l, u) = pair_values(prog, &bounds);
+        let (l1, l2) = pair_values(prog, &l);
+        let (u1, u2) = pair_values(prog, &u);
+        let values: Vec<f64> = elems
+            .iter()
+            .map(|r| match prog.arena().get(*r) {
+                Some(Value::Double(f)) => *f,
+                other => panic!("expected a Double element, got {other:?}"),
+            })
+            .collect();
+        (l1, l2, u1, u2, values)
+    });
     assert_eq!(
         (l1, l2, u1, u2),
         (Value::Int(0), Value::Int(0), Value::Int(2), Value::Int(1)),
         "the result has the new 3x2 bounds"
     );
-    let values: Vec<f64> = elems
-        .iter()
-        .map(|r| match prog.arena().get(*r) {
-            Some(Value::Double(f)) => *f,
-            other => panic!("expected a Double element, got {other:?}"),
-        })
-        .collect();
     // Row-major 3x2: (0,0)=m(0,0)=1, (0,1)=m(1,0)=4, (1,0)=m(0,1)=2, …
     assert_eq!(values, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
 }

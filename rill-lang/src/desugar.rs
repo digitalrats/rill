@@ -582,12 +582,6 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
             span,
         },
         Expr::Neg(inner, span) => Expr::Neg(Box::new(desugar_expr(*inner)?), span),
-        Expr::Arith { op, lhs, rhs, span } => Expr::Arith {
-            op,
-            lhs: Box::new(desugar_expr(*lhs)?),
-            rhs: Box::new(desugar_expr(*rhs)?),
-            span,
-        },
         Expr::Record(fields, span) => Expr::Record(
             fields
                 .into_iter()
@@ -676,12 +670,6 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
         Expr::Annot { expr, ty, span } => Expr::Annot {
             expr: Box::new(desugar_expr(*expr)?),
             ty,
-            span,
-        },
-        Expr::Cmp { op, lhs, rhs, span } => Expr::Cmp {
-            op,
-            lhs: Box::new(desugar_expr(*lhs)?),
-            rhs: Box::new(desugar_expr(*rhs)?),
             span,
         },
         Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
