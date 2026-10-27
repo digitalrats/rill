@@ -161,8 +161,19 @@ answers):
 
 Same-type arithmetic is unchanged: `show_int (1 + 2)` → `3`,
 `show_bool (1 == 1)` → `True`, `1.0 + 2.0` → `3.0`.
-`&&`/`||` still short-circuit (`false && ((1.0/0.0) == 0.0)` → `False`) and
-`Expr::Logic` was left untouched, because it is control flow, not a class method.
+`&&`/`||` produce correct **values** and `Expr::Logic` was left untouched, because
+it is control flow, not a class method.
+
+**Correction (2026-10-27).** An earlier draft of this note claimed `&&`/`||`
+"still short-circuit" and cited `false && ((1.0/0.0) == 0.0)` → `False` as the
+proof. That proof is worthless: `1.0/0.0` is `inf` under IEEE arithmetic, so the
+right operand produces a VALUE whether or not it is evaluated — the test cannot
+distinguish lazy from eager. A discriminating probe (`loop x = loop x;
+false && loop 1.0`) shows rill **does not** short-circuit: it fails with
+`value-track resource exhausted` where GHC prints `False`. Recorded as
+**OD-25**. So the justification for leaving `Expr::Logic` alone is the *category*
+(it is a lazily-taken second argument in Haskell 2010, not a class method), not any
+short-circuit behaviour — which rill does not have yet.
 
 **Deleted:** `Expr::Arith`, `Expr::Cmp`, `ArithOp`, `infer_arith`, `lower_arith` —
 `grep` finds zero occurrences of `Expr::Arith|Expr::Cmp`. `CmpOp` survives as an
