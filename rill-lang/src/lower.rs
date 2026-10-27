@@ -825,18 +825,23 @@ fn check_specialized_result(
     declared: &ValueTy,
     span: Span,
 ) -> Result<(), CompileError> {
-    let (Some(actual), Some(declared)) = (
+    let (Some(actual_key), Some(declared_key)) = (
         crate::types::ty::value_type_key(env, actual),
         crate::types::ty::value_type_key(env, declared),
     ) else {
         return Ok(());
     };
-    if actual == declared {
+    if actual_key == declared_key {
         return Ok(());
     }
+    // The comparison is on registry KEYS (nominal constructor names), but the
+    // diagnostic quotes the SOURCE spelling, so a list or tuple reads back as
+    // `[Int]` / `(a, b)` rather than `List Int` / `Pair a b`.
     Err(CompileError::Type {
         msg: format!(
-            "body of `{name}` has type `{actual}`, but its signature declares `{declared}`"
+            "body of `{name}` has type `{}`, but its signature declares `{}`",
+            env.type_spelling(actual),
+            env.type_spelling(declared)
         ),
         span,
     })

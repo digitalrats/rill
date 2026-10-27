@@ -1264,8 +1264,16 @@ impl<'a> Parser<'a> {
                 // name (e.g. `main` on the following line) would be swallowed
                 // as one more payload type. The renderer's def separator is the
                 // bare newline — the same boundary a definition would hit.
+                //
+                // Every token that can START a type is accepted here, not only a
+                // name: a payload may be a parenthesized tuple (`Mk (Int,
+                // Double)`) or a list (`Mk [Int]`), which are ordinary type
+                // atoms (Haskell 2010 §4.1.2).
                 while !self.at_line_start()
-                    && matches!(self.peek().tok, Tok::Ident(_) | Tok::Int(_) | Tok::Bang)
+                    && matches!(
+                        self.peek().tok,
+                        Tok::Ident(_) | Tok::Int(_) | Tok::Bang | Tok::LParen | Tok::LBracket
+                    )
                 {
                     let strict = if self.peek().tok == Tok::Bang {
                         self.bump();
@@ -1326,15 +1334,19 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a single, non-absorbing type atom: a bare type or type-variable
-    /// name, or a parenthesized type expression. It does not consume following
-    /// juxtaposed atoms — the caller's application and currying loops collect
-    /// those.
+    /// name, a parenthesized type expression, or a bracketed list type. It does
+    /// not consume following juxtaposed atoms — the caller's application and
+    /// currying loops collect those.
     fn parse_type_single(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
         match t.tok {
             Tok::LParen => {
                 self.bump();
                 self.parse_paren_type()
+            }
+            Tok::LBracket => {
+                self.bump();
+                self.parse_bracket_type()
             }
             Tok::KwForall => self.parse_forall_type(),
             Tok::Ident(name) => {
@@ -1345,9 +1357,31 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse the inside of a `[…]` type: Haskell 2010 §3.7's built-in list
+    /// syntax. `[t]` desugars to `TApp("List", [t])` and the bare `[]` — the
+    /// list type CONSTRUCTOR — to `TName("List")`, so a bracketed type IS the
+    /// nominal `List` application and needs no second AST shape. The kind
+    /// checker then rejects `[]` in a `*` position (`List` has arity 1) and
+    /// accepts `[t]` exactly as it accepts `List t`. The opening `LBracket`
+    /// must already be consumed; this eats the closing `RBracket`.
+    fn parse_bracket_type(&mut self) -> Result<TypeExpr, CompileError> {
+        if self.peek().tok == Tok::RBracket {
+            self.bump();
+            return Ok(TypeExpr::TName("List".into()));
+        }
+        // The element is a full type expression, so `[Int -> Double]`,
+        // `[Maybe Int]` and `[[Int]]` all follow from this one rule: the
+        // `RBracket` terminates the enclosed expression like any other atom
+        // boundary.
+        let elem = self.parse_type_expr()?;
+        self.eat(&Tok::RBracket)?;
+        Ok(TypeExpr::TApp("List".into(), vec![elem]))
+    }
+
     /// Parse a type atom: a single atom, or a name applied to juxtaposed atoms
     /// (`List Double`, `f a`). Juxtaposed arguments stay flat — each is one
-    /// non-absorbing [`Parser::parse_type_single`].
+    /// non-absorbing [`Parser::parse_type_single`]. A bracketed list type is an
+    /// atom in its own right (`[Int] -> Int`, `Maybe [Int]`).
     fn parse_type_atom(&mut self) -> Result<TypeExpr, CompileError> {
         let t = self.peek().clone();
         match t.tok {
@@ -1355,11 +1389,15 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.parse_paren_type()
             }
+            Tok::LBracket => {
+                self.bump();
+                self.parse_bracket_type()
+            }
             Tok::KwForall => self.parse_forall_type(),
             Tok::Ident(name) => {
                 self.bump();
                 let mut args = Vec::new();
-                while matches!(self.peek().tok, Tok::Ident(_) | Tok::LParen)
+                while matches!(self.peek().tok, Tok::Ident(_) | Tok::LParen | Tok::LBracket)
                     && !self.type_arg_closes_layout()
                 {
                     args.push(self.parse_type_single()?);

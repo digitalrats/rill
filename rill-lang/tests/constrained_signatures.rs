@@ -23,8 +23,9 @@ fn single_constraint_signature_roundtrips() {
 main = 1.0;"#;
     let first = render(&program(src)).unwrap();
     assert!(
-        first.contains("listArray :: Ix i => (Pair i i -> List e -> Array i e) = "),
-        "a single-constraint context renders bare: {first}"
+        first.contains("listArray :: Ix i => ((i, i) -> [e] -> Array i e) = "),
+        "a single-constraint context renders bare, and the built-in list/tuple \
+         constructors render in their Haskell 2010 source spelling: {first}"
     );
     // Render is a fixed point: the rendered text re-parses and re-renders
     // identically.
@@ -37,8 +38,9 @@ fn multi_constraint_signature_roundtrips() {
 main = 1.0;"#;
     let first = render(&program(src)).unwrap();
     assert!(
-        first.contains("ixmap :: (Ix i, Ix j) => (Pair i i -> Pair j j -> Double) = "),
-        "two constraints render parenthesized and comma-separated: {first}"
+        first.contains("ixmap :: (Ix i, Ix j) => ((i, i) -> (j, j) -> Double) = "),
+        "two constraints render parenthesized and comma-separated, and the \
+         tuple constructor renders `(a, b)`: {first}"
     );
     assert_eq!(render(&program(&first)).unwrap(), first);
 }

@@ -2511,10 +2511,14 @@ impl TypeEnv {
     }
 
     /// The source spelling of a type expression for diagnostics
-    /// (`Pair Int`, `List a`) — the canonical instance-key spelling, which is
-    /// also what a writer would have written.
+    /// (`[Int]`, `(a, b)`, `Maybe Int`) — the form a program writes.
+    ///
+    /// This is NOT the instance-registry key: that one
+    /// ([`crate::render::render_type_key`]) must agree byte for byte with
+    /// [`value_type_key`], which keys a selector's value type by the nominal
+    /// constructor names. Diagnostics quote the source form instead.
     pub fn type_expr_spelling(&self, te: &crate::ast::TypeExpr) -> String {
-        crate::render::render_type_key(te)
+        crate::render::render_type_spelling(te)
     }
 
     /// The source spelling of a scalar value type (`Int`, `Double`, `Bool`,
@@ -3096,6 +3100,12 @@ impl TypeEnv {
             ValueTy::Data(n, args) | ValueTy::Newtype(n, args) | ValueTy::App(n, args) => {
                 if args.is_empty() {
                     n.clone()
+                } else if let Some(spelling) = self.source_spelling_named(n, args, names) {
+                    // The built-in list/tuple CONSTRUCTORS are spelled with the
+                    // syntax the user wrote (`[Int]`, `(a, b)`), not with the
+                    // internal constructor name — a diagnostic must quote the
+                    // form the signature is written in.
+                    spelling
                 } else {
                     let rendered: Vec<String> = args
                         .iter()
@@ -3140,6 +3150,33 @@ impl TypeEnv {
                     .collect();
                 format!("{head} {}", rendered.join(" "))
             }
+        }
+    }
+
+    /// The SOURCE spelling of a built-in list or tuple CONSTRUCTOR application —
+    /// `[Int]` for `List Int`, `(a, b)` for `Pair a b` — or `None` when the head
+    /// is not one of those or is not fully applied.
+    ///
+    /// Haskell 2010 §3.7 spells these two constructors with bracket/comma
+    /// syntax, and the parser desugars that syntax to the nominal application
+    /// (see [`crate::parser`]), so a diagnostic that printed the nominal form
+    /// would quote a spelling no program contains. A partially applied head
+    /// (`List`, `Pair a`) has no source spelling: the nominal form is the only
+    /// thing that can name it.
+    fn source_spelling_named(
+        &self,
+        head: &str,
+        args: &[ValueTy],
+        names: &mut HashMap<TypeVarId, String>,
+    ) -> Option<String> {
+        match (head, args) {
+            ("List", [elem]) => Some(format!("[{}]", self.type_spelling_named(elem, names))),
+            ("Pair", [first, second]) => Some(format!(
+                "({}, {})",
+                self.type_spelling_named(first, names),
+                self.type_spelling_named(second, names)
+            )),
+            _ => None,
         }
     }
 

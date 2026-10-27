@@ -267,6 +267,9 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
             write!(buf, "{n}").ok();
         }
         TypeExpr::TApp(head, args) => {
+            if render_builtin_type_sugar(head, args, buf, &mut render_type_arg) {
+                return;
+            }
             write!(buf, "{head}").ok();
             for a in args {
                 write!(buf, " ").ok();
@@ -315,6 +318,40 @@ fn render_type_expr(t: &TypeExpr, buf: &mut String) {
     }
 }
 
+/// Write the built-in list or tuple constructor in its SOURCE spelling —
+/// `[Int]` for `List Int`, `(a, b)` for `Pair a b` — and report whether it did.
+///
+/// Haskell 2010 §3.7 spells these two constructors with bracket/comma syntax;
+/// the parser desugars that syntax to the nominal application
+/// (`TApp("List", [t])`, `TApp("Pair", [a, b])`), so printing the nominal form
+/// back would show a spelling nobody writes. A PARTIALLY applied constructor
+/// (`Pair a`, `List`) has no source spelling and returns `false`, keeping the
+/// nominal form the diag must still be able to name.
+fn render_builtin_type_sugar(
+    head: &str,
+    args: &[TypeExpr],
+    buf: &mut String,
+    render_arg: &mut dyn FnMut(&TypeExpr, &mut String),
+) -> bool {
+    match (head, args) {
+        ("List", [elem]) => {
+            buf.push('[');
+            render_arg(elem, buf);
+            buf.push(']');
+            true
+        }
+        ("Pair", [first, second]) => {
+            buf.push('(');
+            render_arg(first, buf);
+            buf.push_str(", ");
+            render_arg(second, buf);
+            buf.push(')');
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Render a type expression in argument position: a `forall` binder must be
 /// parenthesized so it does not absorb a following arrow chain on re-parse
 /// (`(forall b. a) -> a` must not re-read as `forall b. (a -> a)`).
@@ -337,29 +374,93 @@ fn render_type_arg(t: &TypeExpr, buf: &mut String) {
 /// `Pair Int (Pair Int Int)`. Unlike [`render_type_expr`], a nested
 /// application is parenthesized so the spelling is unambiguous (a flat
 /// `Pair Int Pair Int Int` would not re-parse to the same tree).
+///
+/// This is deliberately NOT the source spelling: it must agree byte for byte
+/// with [`crate::types::ty::value_type_key`] (dispatch keys a selector's value
+/// type that way), so it keeps the nominal `Pair`/`List` names. Diagnostics
+/// that quote what a user wrote go through [`render_type_spelling`].
 pub(crate) fn render_type_key(t: &TypeExpr) -> String {
     let mut buf = String::new();
     render_type_key_into(t, &mut buf);
     buf
 }
 
+/// The SOURCE spelling of a type expression for diagnostics: the built-in list
+/// and tuple applications read back as `[t]` / `(a, b)`, exactly as a program
+/// writes them (Haskell 2010 §3.7). A partially applied constructor keeps its
+/// nominal name (`Pair Int`, `List`) — those have no sugar spelling.
+pub(crate) fn render_type_spelling(t: &TypeExpr) -> String {
+    let mut buf = String::new();
+    render_type_spelling_into(t, &mut buf);
+    buf
+}
+
+fn render_type_spelling_into(t: &TypeExpr, buf: &mut String) {
+    render_type_into(t, buf, Spelling::Source);
+}
+
+/// Whether a `TApp` is written with the built-in list/tuple syntax.
+fn is_builtin_type_sugar(t: &TypeExpr) -> bool {
+    matches!(
+        t,
+        TypeExpr::TApp(head, args)
+            if matches!((head.as_str(), args.len()), ("List", 1) | ("Pair", 2))
+    )
+}
+
 fn render_type_key_into(t: &TypeExpr, buf: &mut String) {
+    render_type_into(t, buf, Spelling::Nominal);
+}
+
+/// Which spelling a single-line type renderer produces.
+#[derive(Clone, Copy, PartialEq)]
+enum Spelling {
+    /// Nominal constructor application: `Pair Int (List Int)`, `(a, b)`-free.
+    /// The instance-registry key; must agree with
+    /// [`crate::types::ty::value_type_key`].
+    Nominal,
+    /// Haskell 2010 source syntax: `(Int, [Int])`.
+    Source,
+}
+
+/// Render a type on ONE line, parenthesizing a nested application so the
+/// spelling is unambiguous and re-parses to the same tree.
+fn render_type_into(t: &TypeExpr, buf: &mut String, spelling: Spelling) {
     match t {
         TypeExpr::TName(n) => buf.push_str(n),
         TypeExpr::TApp(head, args) => {
+            if spelling == Spelling::Source
+                && render_builtin_type_sugar(head, args, buf, &mut |a, b| {
+                    render_type_into(a, b, spelling)
+                })
+            {
+                return;
+            }
             buf.push_str(head);
             for a in args {
                 buf.push(' ');
-                let nested = !matches!(a, TypeExpr::TName(_));
+                // A nested application must be parenthesized to stay
+                // unambiguous — except a sugar form, which already carries its
+                // own brackets/parens.
+                let nested = match spelling {
+                    // The registry key parenthesizes every non-name argument,
+                    // so a key is unambiguous whatever the argument's shape.
+                    Spelling::Nominal => !matches!(a, TypeExpr::TName(_)),
+                    Spelling::Source => {
+                        matches!(a, TypeExpr::TApp(..)) && !is_builtin_type_sugar(a)
+                    }
+                };
                 if nested {
                     buf.push('(');
                 }
-                render_type_key_into(a, buf);
+                render_type_into(a, buf, spelling);
                 if nested {
                     buf.push(')');
                 }
             }
         }
+        // Function types and binders render identically in both spellings;
+        // [`render_type_expr`] already parenthesizes them for re-parsing.
         other => render_type_expr(other, buf),
     }
 }
@@ -980,9 +1081,11 @@ mod tests {
     #[test]
     fn render_roundtrip_constrained_def_signature() {
         // A single-constraint context renders unparenthesized (`C v => T`) and
-        // survives render → parse → render.
+        // survives render → parse → render. The built-in list/tuple
+        // constructors render in their SOURCE spelling (`[e]`, `(i, i)`), which
+        // re-parses to the same `TApp("List"/"Pair")` tree.
         let dsl = roundtrip_main("main :: Ix i => Pair i i -> List e -> Array i e = g;");
-        assert_eq!(dsl, "main :: Ix i => (Pair i i -> List e -> Array i e) = g");
+        assert_eq!(dsl, "main :: Ix i => ((i, i) -> [e] -> Array i e) = g");
     }
 
     #[test]
