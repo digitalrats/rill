@@ -1,6 +1,6 @@
 # rill-lang: dictionary stage 3 — operators must select a dictionary first
 
-> **Status:** ready to implement, **as two sub-tasks in this order**.
+> **Status:** **3a DONE** (`d9d6bfb`, 1096 tests); **3b pending**.
 > **Design:** `2026-10-25-rill-lang-runtime-dictionaries-design.md` §3.7 step 3
 > (pass a dictionary parameter), §3.3/§3.4 (what it replaces).
 > **Predecessor:** stage 2 (`105bf22`) built and proved the table.
@@ -60,16 +60,16 @@ byte-identical — preserve that property).
 constructs them. `Expr::Logic` (`&&`, `||`) stays: it is short-circuit control
 flow, not a class method, and Haskell 2010 has no `Logic` class.
 
-- [ ] **Step 1: Desugar operators to method calls.** `desugar_infix_op` produces
+- [x] **Step 1: Desugar operators to method calls.** `desugar_infix_op` produces
       `Ref(op) applied to lhs, rhs` for every class-method operator. Keep
       `Expr::Logic` as-is.
-- [ ] **Step 2: Prove selection is recorded.** `1.0 == 2.0` and `1.0 < 2.0` must
+- [x] **Step 2: Prove selection is recorded.** `1.0 == 2.0` and `1.0 < 2.0` must
       produce a non-empty dictionary table (`Eq Double` / `Ord Double`, with
       `Ord`'s `Eq` superclass). This is the whole point of 3a.
-- [ ] **Step 3: Delete the legacy paths.** Remove `Expr::Arith` / `Expr::Cmp`
+- [x] **Step 3: Delete the legacy paths.** Remove `Expr::Arith` / `Expr::Cmp`
       construction and their inference/lowering arms; the compiler finds every
       site. `infer_arith` / `lower_arith` go with them.
-- [ ] **Step 4: Close the semantic holes the legacy path hid.** Because
+- [x] **Step 4: Close the semantic holes the legacy path hid.** Because
       operators now unify one `Num a` across both operands, these become what
       Haskell 2010 requires, and they are the acceptance evidence:
 
@@ -83,7 +83,7 @@ flow, not a class method, and Haskell 2010 has no `Logic` class.
 
       This is OD-16 / OD-17, and closing them is **conformance work**, not a side
       effect: `AGENTS.md` forbids a documented gap standing in for behaviour.
-- [ ] **Step 5: Full suite + all three gates.** Every test that asserted a
+- [x] **Step 5: Full suite + all three gates.** Every test that asserted a
       legacy numeric coercion is wrong by the table above — fix it and cite the
       GHC result.
 
@@ -132,3 +132,50 @@ projection (the table already orders supers; projection comes later), stage 7's
 literal `fromInteger` and defaulting, stage 8's deletion of `ConstrainedDef`.
 Stage 3 makes the dictionary reach the body; it does not yet project slots for
 every method form.
+
+## Outcome of 3a (`d9d6bfb`)
+
+Operators are now class-method sugar, desugared to the same `Expr::Apply { name }`
+shape the `++`/`<>` operators already used. Controller-verified:
+
+| Expression | Dictionary table |
+|---|---|
+| `1.0 == 2.0` | `[Eq Double]` |
+| `1.0 < 2.0` | `[Eq Double, Ord Double]` |
+| `1.0 + 2.0` | `[Eq, Ord, Num Double]` |
+| `1.0 / 2.0` | `[Eq, Ord, Num, Fractional Double]` |
+| `(+) 1.0 2.0` (prefix) | identical to the infix table |
+| `(+ 1.0) 2.0` (section) | identical to the infix table |
+
+Before stage 3a all of these were `dicts=0`.
+
+**OD-13/16/17 closed.** These are now type errors (they were silent wrong
+answers):
+
+| Expression | Before | Now |
+|---|---|---|
+| `1 == 1.0` | `False` | `cannot unify value type Int with Double` |
+| `5 < 2.0` | `True` | type error |
+| `2 < 1.5` | `True` | type error |
+| `(1::Int) + 1.0` | `2.0` | type error |
+
+Same-type arithmetic is unchanged: `show_int (1 + 2)` → `3`,
+`show_bool (1 == 1)` → `True`, `1.0 + 2.0` → `3.0`.
+`&&`/`||` still short-circuit (`false && ((1.0/0.0) == 0.0)` → `False`) and
+`Expr::Logic` was left untouched, because it is control flow, not a class method.
+
+**Deleted:** `Expr::Arith`, `Expr::Cmp`, `ArithOp`, `infer_arith`, `lower_arith` —
+`grep` finds zero occurrences of `Expr::Arith|Expr::Cmp`. `CmpOp` survives as an
+**IR instruction** operand (`ValueCompare`), which is a different layer and is
+correct.
+
+**Still present, owned by stage 4:** `instantiate_method`,
+`lower_primitive_method`, `lower_method_value`, `lower_operator_value`,
+`lower_constrained_apply_site`. 3a removed the *legacy operator* path; the
+*specialisation* paths are stage 4's deletion.
+
+**Open concern for stage 7:** `1 == 1.0` is a type error at this stage. GHC prints
+`True` for it because a literal is `fromInteger`-polymorphic and both operands
+unify at one `Num a`. That becomes true when stage 7 makes literals
+`fromInteger`; until then a type error is correct and strictly better than the
+silent `False` it used to return.
