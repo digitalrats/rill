@@ -72,3 +72,8 @@ fn roundtrips_mode_pragma() {
     // Mode pragma values are lowercase (`strict` / `complete`).
     roundtrip("{-# MODE complete #-} main = 1.0");
 }
+
+#[test]
+fn roundtrips_an_out_of_range_integer_literal() {
+    roundtrip("main = 123456789012345678901234567890");
+}

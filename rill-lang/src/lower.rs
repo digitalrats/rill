@@ -1285,6 +1285,20 @@ impl<'a> Lowerer<'a> {
                     });
                     return Ok((dst, ValueTy::Integer));
                 }
+                // An integer literal in a `Double` position is Haskell's
+                // `fromInteger` (Report §6.4.1), which `def_arg_widens_to`
+                // already accepts. The conversion must happen from the
+                // arbitrary-precision value, NOT from the truncated `i64`
+                // widening the `Int` track: `f 9223372036854775808` is
+                // `9.223372036854776e18`, not the negated double that the low
+                // 64 bits happen to spell.
+                if matches!(expected, Some(ValueTy::Double)) {
+                    self.emit_value(ValueInstr::ValueConstDouble {
+                        dst,
+                        value: literal_to_f64(v),
+                    });
+                    return Ok((dst, ValueTy::Double));
+                }
                 self.emit_value(ValueInstr::ValueConstInt {
                     dst,
                     value: literal_to_i64(v),
@@ -3555,6 +3569,18 @@ impl<'a> Lowerer<'a> {
                             value: Box::new(-v),
                         });
                         return Ok((dst, ValueTy::Integer));
+                    }
+                    // The `fromInteger` widening (see the `Expr::Int` arm):
+                    // negate in arbitrary precision FIRST, then convert, so
+                    // `f (-9223372036854775809)` is the negated double of the
+                    // literal's value rather than the negation of its low 64
+                    // bits.
+                    if matches!(expected, Some(ValueTy::Double)) {
+                        self.emit_value(ValueInstr::ValueConstDouble {
+                            dst,
+                            value: literal_to_f64(&-v),
+                        });
+                        return Ok((dst, ValueTy::Double));
                     }
                     self.emit_value(ValueInstr::ValueConstInt {
                         dst,
@@ -9197,7 +9223,13 @@ pub(crate) fn literal_to_i64(v: &BigInt) -> i64 {
 /// `to_f64` truncates the mantissa instead of rounding, and `num-traits` is not
 /// a direct dependency of this crate.
 fn literal_to_f64(v: &BigInt) -> f64 {
-    v.to_str_radix(10).parse().unwrap_or(f64::NAN)
+    // UNREACHABLE failure: `to_str_radix(10)` yields an optionally-signed run of
+    // ASCII digits, which is always a valid `f64` literal (out-of-range
+    // magnitudes parse to `INFINITY` rather than `Err`). A silent `NAN` here
+    // would poison arithmetic, so an unreachable case is an assertion failure.
+    v.to_str_radix(10)
+        .parse()
+        .expect("decimal integer text always parses as f64")
 }
 
 fn const_f64(e: &Expr) -> Option<f64> {
@@ -10353,5 +10385,37 @@ mod tests {
         assert_eq!(literal_to_i64(&v), 1234567890123);
         assert_eq!(literal_to_i64(&-v.clone()), -1234567890123);
         assert_eq!(literal_to_f64(&v), 1234567890123.0);
+    }
+
+    #[test]
+    fn literal_to_f64_rounds_and_saturates_like_frominteger() {
+        // Measured on GHC 9.10.3: `show (fromInteger n :: Double)` for every
+        // value below. These pin the TWO properties `to_str_radix` +
+        // `str::parse` promise and that `num-bigint`'s `ToPrimitive::to_f64`
+        // would NOT satisfy: correct rounding of a mantissa-cut value, and
+        // saturation to infinity instead of a wrap or a panic.
+        for (literal, ghc) in [
+            // Far beyond i64, and a value whose mantissa is 54 significant bits:
+            // truncating (instead of rounding) gives a different double.
+            ("123456789012345678901234567890", 1.2345678901234568e29f64),
+            // 2^53 + 1: the first integer a double cannot represent exactly.
+            // Round-to-nearest-EVEN must give 2^53, i.e. ...992, not ...994.
+            ("9007199254740993", 9007199254740992.0f64),
+            // The i64 boundary itself: 2^63 is exactly representable.
+            ("9223372036854775808", 9.223372036854776e18f64),
+            ("-9223372036854775809", -9.223372036854776e18f64),
+        ] {
+            let v: BigInt = literal.parse().unwrap();
+            assert_eq!(
+                literal_to_f64(&v),
+                ghc,
+                "literal {literal} must convert to GHC's Double"
+            );
+        }
+        // A 400-digit integer is outside f64's finite range: GHC prints
+        // `Infinity`, and the sign is preserved.
+        let huge: BigInt = "9".repeat(400).parse().unwrap();
+        assert_eq!(literal_to_f64(&huge), f64::INFINITY);
+        assert_eq!(literal_to_f64(&-huge), f64::NEG_INFINITY);
     }
 }

@@ -54,10 +54,9 @@ fn integer_is_a_distinct_type_name() {
 
 #[test]
 fn integer_arithmetic_is_exact_and_does_not_overflow() {
-    // The PRODUCT is outside i64's range while both operands fit an i64
-    // literal (literal widening to arbitrary precision is a later stage, so a
-    // literal beyond 2^63 cannot be written yet). `Int` would wrap here;
-    // `Integer` must not.
+    // The PRODUCT is outside i64's range while both operands fit an i64.
+    // `Int` would wrap here; `Integer` must not. (An out-of-range integer
+    // literal is itself writable — see `integer_literals_are_arbitrary_precision`.)
     assert_eq!(
         run(&shows_int(
             "(4000000000 :: Integer) * (4000000000 :: Integer)"
@@ -201,5 +200,52 @@ fn an_out_of_range_literal_on_the_int_track_truncates_like_ghc() {
     assert_eq!(
         run(&shows_i64("123456789012345678901234567890")),
         "-4362896299872285998"
+    );
+}
+
+#[test]
+fn an_out_of_range_literal_in_a_double_position_is_the_right_double() {
+    // `def_arg_widens_to` lets an integer literal inhabit a `Double` parameter
+    // (Haskell 2010 §6.4.1 `fromInteger`). Before this fix the literal was
+    // truncated to i64 FIRST and then widened, flipping the sign:
+    // `f 9223372036854775808` printed `-9.223372036854776e18` where GHC prints
+    // `9.223372036854776e18`.
+    assert_eq!(
+        run("f :: Double -> Double;\nf x = x;\nmain = do { write (Just (show_double (f 9223372036854775808))) stdout; return () };"),
+        "9.223372036854776e18"
+    );
+    assert_eq!(
+        run("f :: Double -> Double;\nf x = x;\nmain = do { write (Just (show_double (f 123456789012345678901234567890))) stdout; return () };"),
+        "1.2345678901234568e29"
+    );
+    // In-range controls: unchanged behaviour.
+    assert_eq!(
+        run("f :: Double -> Double;\nf x = x;\nmain = do { write (Just (show_double (f 9223372036854775807))) stdout; return () };"),
+        "9.223372036854776e18"
+    );
+    assert_eq!(
+        run("f :: Double -> Double;\nf x = x;\nmain = do { write (Just (show_double (f 2))) stdout; return () };"),
+        "2.0"
+    );
+    // The same widening under the `Expr::Neg` constant fold: the literal is
+    // negated in arbitrary precision BEFORE it becomes a double. GHC 9.10.3:
+    // `f x = x * 2.0; f (-9223372036854775809)` = `-1.8446744073709552e19`
+    // (at 67f44b7 rill printed the sign-flipped `1.8446744073709552e19`).
+    //
+    // A signature-less definition is used because `def_arg_widens_to` accepts a
+    // literal against a `Double` formal only for `Expr::Int`, not for `Expr::Neg`
+    // — `f :: Double -> Double; f (-2)` is a type error, which is the stage 7b
+    // literal-polymorphism gap and is NOT changed here.
+    assert_eq!(
+        run("f x = x * 2.0;\nmain = do { write (Just (show_double (f (-9223372036854775809)))) stdout; return () };"),
+        "-1.8446744073709552e19"
+    );
+    assert_eq!(
+        run("f x = x * 2.0;\nmain = do { write (Just (show_double (f (-123456789012345678901234567890)))) stdout; return () };"),
+        "-2.4691357802469136e29"
+    );
+    assert_eq!(
+        run("f x = x * 2.0;\nmain = do { write (Just (show_double (f (-9223372036854775808)))) stdout; return () };"),
+        "-1.8446744073709552e19"
     );
 }
