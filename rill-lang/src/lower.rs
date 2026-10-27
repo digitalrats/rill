@@ -5656,17 +5656,23 @@ impl<'a> Lowerer<'a> {
         let mut arg_regs: Vec<usize> = Vec::with_capacity(call_args.len());
         let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(call_args.len());
         for (i, a) in call_args.iter().enumerate() {
+            let expected = param_tys.get(i);
+            // The prefetched register is a fast path, NOT an authority: the
+            // instance's solved parameter type decides the argument's
+            // representation. A selector literal (`0 == x`) is lowered before
+            // dispatch with no expected type, so its recorded type can disagree
+            // with the parameter it flows into. The solved parameter types are
+            // concrete here (`Num Integer` → `Integer -> Integer -> Integer`),
+            // so a plain `==` is the whole test; there is no widening relation
+            // between `Int` and `Integer` to consider.
             if let Some((idx, reg, ty)) = &prefetched {
-                if *idx == i {
-                    // A prefetched argument keeps its existing register AND
-                    // type: it was lowered before the instance was known, and
-                    // the dispatch above is authoritative.
+                if *idx == i && expected.is_none_or(|e| e == ty) {
                     arg_regs.push(*reg);
                     arg_tys.push(ty.clone());
                     continue;
                 }
             }
-            let (r, t) = match param_tys.get(i) {
+            let (r, t) = match expected {
                 Some(exp) => self.lower_value_expected(a, Some(exp))?,
                 None => self.lower_value(a)?,
             };

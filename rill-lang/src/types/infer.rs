@@ -6515,7 +6515,27 @@ fn infer_apply_impl(
                             || ctx.fresh_vty(),
                         ))
                     };
-                let mut dispatch = try_dispatch(ctx, &args[selector_idx])?;
+                // An integer LITERAL is `fromInteger`-polymorphic (Haskell 2010
+                // §6.4.1): its own static type is the DEFAULT (`Int`), not
+                // evidence for what the shared class variable is. Every operand
+                // of `(==) :: a -> a -> Bool` is the same `a`, so in
+                // `isZero x = 0 == x` with `x : Integer` the literal takes
+                // `Integer` from `x`. Selecting the instance from the literal
+                // itself selected `Eq Int`, and the two operands then disagreed
+                // — the comparison silently became a cross-kind one.
+                //
+                // The literal is a FALLBACK, not an exclusion: with no other
+                // operand naming an instance (`f x = x == 0`, `x` unconstrained)
+                // the literal's default is still the only evidence there is.
+                let selector_is_literal = matches!(args[selector_idx], Expr::Int(_, _));
+                let selector_dispatch = try_dispatch(ctx, &args[selector_idx])?;
+                // The literal's dispatch is a FALLBACK, kept for the case where
+                // no other operand names an instance.
+                let mut dispatch = if selector_is_literal {
+                    None
+                } else {
+                    selector_dispatch.clone()
+                };
                 if dispatch.is_none() {
                     for (i, a) in args.iter().enumerate() {
                         if i == selector_idx {
@@ -6526,6 +6546,9 @@ fn infer_apply_impl(
                             break;
                         }
                     }
+                }
+                if dispatch.is_none() && selector_is_literal {
+                    dispatch = selector_dispatch;
                 }
                 // NUMERIC DEFAULTING (Haskell 2010 §4.3.4). An operand whose
                 // type the body never constrains — the λ-parameter of

@@ -136,6 +136,46 @@ fn an_unannotated_literal_in_an_integer_position_is_an_integer() {
 }
 
 #[test]
+fn a_literal_on_the_selector_side_is_also_an_integer() {
+    // `(==)`/`(<)` select their instance from the FIRST class-var argument, so
+    // `0 == x` puts the literal in the SELECTOR position, not the tail. Every
+    // case here silently returned the wrong Bool (or was rejected) before this
+    // fix, while the mirror shapes with the literal on the right worked.
+    assert_eq!(
+        run("isZero :: Integer -> Bool;\nisZero x = 0 == x;\nmain = do { write (Just (show_bool (isZero (0 :: Integer)))) stdout; return () };"),
+        "True"
+    );
+    assert_eq!(
+        run("isZero :: Integer -> Bool;\nisZero x = x == 0;\nmain = do { write (Just (show_bool (isZero (0 :: Integer)))) stdout; return () };"),
+        "True"
+    );
+    assert_eq!(
+        run("isPos :: Integer -> Bool;\nisPos x = 0 < x;\nmain = do { write (Just (show_bool (isPos (0 :: Integer)))) stdout; return () };"),
+        "False"
+    );
+    assert_eq!(
+        run("isPos :: Integer -> Bool;\nisPos x = x < 0;\nmain = do { write (Just (show_bool (isPos (0 :: Integer)))) stdout; return () };"),
+        "False"
+    );
+    assert_eq!(
+        run("inc :: Integer -> Integer;\ninc x = 1 + x;\nmain = do { write (Just (show_integer (inc (2 :: Integer)))) stdout; return () };"),
+        "3"
+    );
+    assert_eq!(
+        run("inc :: Integer -> Integer;\ninc x = x + 1;\nmain = do { write (Just (show_integer (inc (2 :: Integer)))) stdout; return () };"),
+        "3"
+    );
+}
+
+#[test]
+fn the_selector_fix_does_not_widen_int_and_double_calls() {
+    // The solved parameter type is authoritative, not permissive: a mixed pair
+    // still has to be a type error.
+    rejects("main = (1 :: Int) + (2 :: Integer);");
+    rejects("main = (1 :: Integer) == (2 :: Int);");
+}
+
+#[test]
 fn int_still_wraps_where_integer_does_not() {
     // The CONTROL for the exactness test: the same shape on the Int track is
     // i64 arithmetic, and the report leaves overflow of fixed-width types
