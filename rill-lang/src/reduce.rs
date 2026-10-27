@@ -241,6 +241,57 @@ fn defs_map(defs: &[Def]) -> HashMap<String, Def> {
         .collect()
 }
 
+/// Attach each argument's DECLARED parameter type as an `:: T` annotation,
+/// before the argument is substituted into the definition's body.
+///
+/// β-reduction is type-erasing: after `body[id x := literal]` the literal sits
+/// in a position that no longer remembers `f`'s formal was a `Double`, so
+/// lowering gives it the default `Int` track — `f 9223372036854775808` then
+/// prints the low-64-bit `-9.223372036854776e18` where Haskell prints
+/// `9.223372036854776e18`. Complete mode never saw this because it keeps the
+/// call on the closure path, which threads the parameter types from inference.
+///
+/// The annotation is the carrier: `Expr::Annot` is the ONE node that survives
+/// both β-reduction and `substitute`, and lowering erases it (Haskell 2010
+/// §3.12) while using its type as the literal's `fromInteger` target. Its
+/// `TypeExpr` is kept verbatim rather than resolved here — `reduce` has no type
+/// environment, and lowering already resolves a name against the registry (so a
+/// `type D = Double` alias behaves like `Double`).
+///
+/// Only LITERAL arguments are annotated. A non-literal argument's type is
+/// carried by its own expression, and annotating it would change nothing that
+/// the call site's expected type does not already say — keeping the rewrite off
+/// every other argument keeps this pass's blast radius to the reported defect.
+fn annotate_formal_arg_types(def: &Def, args: Vec<Expr>) -> Vec<Expr> {
+    let Some(sig) = def.sig() else {
+        return args;
+    };
+    let formals = sig.arg_types();
+    args.into_iter()
+        .enumerate()
+        .map(|(i, arg)| match formals.get(i) {
+            Some(te) if is_integer_literal(&arg) => {
+                let span = arg.span();
+                Expr::Annot {
+                    expr: Box::new(arg),
+                    ty: te.clone(),
+                    span,
+                }
+            }
+            _ => arg,
+        })
+        .collect()
+}
+
+/// Whether `e` is an integer literal, optionally negated (`-3`).
+fn is_integer_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Int(_, _) => true,
+        Expr::Neg(inner, _) => is_integer_literal(inner),
+        _ => false,
+    }
+}
+
 /// Whether `name` resolves to a closure-valued definition: a bare `Def::Eval`
 /// whose body is a lambda literal or a reference/application chain that
 /// produces one (e.g. `add2 = adder 2.0`). Applying a closure value is a
@@ -500,6 +551,24 @@ fn reduce_expr(
                     }
                 } else {
                     // β-reduce: substitute args for params in the definition's body
+                    //
+                    // β-reduction DISCARDS the formal parameter's type: after
+                    // substituting, `f 9223372036854775808` is a bare literal
+                    // in the body, and nothing records that `f`'s formal was a
+                    // `Double`, so lowering gives the literal its default `Int`
+                    // track (the sign-flipped `-9.223372036854775808e18`).
+                    // Complete mode never hit this: it keeps the call on the
+                    // closure path, which threads `fn_param_tys`.
+                    //
+                    // The fix is to carry the declared type WITH the
+                    // substituted literal, as an `:: T` annotation. The
+                    // annotation is erased at lowering exactly like any other
+                    // (Haskell 2010 §3.12), but it is the one node that
+                    // survives β-reduction with the `fromInteger` target type
+                    // attached — so `lower_value_expected`'s `Expr::Annot` arm
+                    // can emit the same constant the un-reduced call site
+                    // would.
+                    let reduced_args = annotate_formal_arg_types(def, reduced_args);
                     let np = def.params().len();
                     let mut subst = HashMap::new();
                     for (idx, p) in def.params().iter().enumerate() {

@@ -233,15 +233,16 @@ fn a_mixed_int_and_double_operand_is_a_type_error_not_a_wrong_answer() {
     // OD-16 / OD-17. Before stage 3a these were `Expr::Cmp`/`Expr::Arith` nodes
     // that typed both sides independently and compared them with the
     // interpreter's cross-kind `kind_rank` total order — so `1 == 1.0` was
-    // `false` (GHC: `True`) and `5 < 2.0` was `true` (GHC: a type error). Both
-    // are now the unification failure Haskell 2010 requires: rill has no
-    // `fromInteger`/`fromRational` literal elaboration yet (design §3.6, stage
-    // 7), so `Int` and `Double` cannot become one `Num a`.
+    // `false` (GHC: `True`) and `5 < 2.0` was `true` (GHC: `False`). Stage 3a
+    // made them a `Num a`/`Eq a` method call, and THIS test then pinned them as
+    // type errors on the grounds that rill had no literal elaboration. That pin
+    // was itself the divergence: GHC accepts every one of these because the
+    // integer LITERAL is `fromInteger`-polymorphic (Report §6.4.1), and only a
+    // variable of a FIXED `Int` type fails. The accepted rows are now asserted
+    // against GHC's values (see
+    // `an_integer_literal_takes_the_other_operands_numeric_type`); what stays a
+    // type error is a fixed `Int` variable meeting a `Double`.
     for (src, why) in [
-        ("main = 1 == 1.0;", "GHC: `1 == 1.0` is True"),
-        ("main = 1 /= 1.0;", "GHC: `1 /= 1.0` is False"),
-        ("main = 5 < 2.0;", "GHC: `5 < 2.0` is a type error"),
-        ("main = 2 < 1.5;", "GHC: `2 < 1.5` is a type error"),
         (
             "i :: Int = 1; f :: Double = 1.0; main = i == f;",
             "GHC: `(1 :: Int) == (1.0 :: Double)` is a type error",
@@ -249,10 +250,6 @@ fn a_mixed_int_and_double_operand_is_a_type_error_not_a_wrong_answer() {
         (
             "main = (1 :: Int) + 1.0;",
             "GHC: No instance for `Fractional Int`",
-        ),
-        (
-            "main = 1.0 + 1;",
-            "GHC: `1` in a `Double` position unifies only through fromInteger",
         ),
     ] {
         let err = compile_eval::<f32, 256>(src, "main", Mode::Strict)
@@ -282,6 +279,48 @@ fn a_mixed_int_and_double_operand_is_a_type_error_not_a_wrong_answer() {
     assert_eq!(
         out_value(&eval("", "1.0 + 2.0").unwrap()),
         Value::Double(3.0)
+    );
+}
+
+#[test]
+fn an_integer_literal_takes_the_other_operands_numeric_type() {
+    // Haskell 2010 §6.4.1 `fromInteger`: an integer LITERAL in a numeric
+    // position is polymorphic, so `1 == 1.0` elaborates `1` at `Double` and is
+    // `True` (measured with GHC 9.10.3). Only a fixed `:: Int` node is stuck —
+    // that is the row `a_mixed_int_and_double_operand_is_a_type_error_…` keeps.
+    // The dictionary selected is the `Double` one, which is what proves the
+    // literal really took the operand's type and not the reverse.
+    let ir = ir_of("main = 1 == 1.0;");
+    assert_eq!(
+        table(&ir),
+        vec![("Eq".to_string(), "Double".to_string())],
+        "`1 == 1.0` must select `Eq Double`; table = {:?}",
+        table(&ir)
+    );
+    assert_eq!(
+        out_value(&eval("", "1 == 1.0").unwrap()),
+        Value::bool(true),
+        "GHC: `1 == 1.0` is True"
+    );
+    assert_eq!(
+        out_value(&eval("", "1 /= 1.0").unwrap()),
+        Value::bool(false),
+        "GHC: `1 /= 1.0` is False"
+    );
+    assert_eq!(
+        out_value(&eval("", "5 < 2.0").unwrap()),
+        Value::bool(false),
+        "GHC: `5 < 2.0` is False (not a type error)"
+    );
+    assert_eq!(
+        out_value(&eval("", "2 < 1.5").unwrap()),
+        Value::bool(false),
+        "GHC: `2 < 1.5` is False (not a type error)"
+    );
+    assert_eq!(
+        out_value(&eval("", "1.0 + 1").unwrap()),
+        Value::Double(2.0),
+        "GHC: `1.0 + 1` is 2.0"
     );
 }
 

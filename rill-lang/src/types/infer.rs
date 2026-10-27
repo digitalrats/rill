@@ -3939,6 +3939,13 @@ fn infer_expr_expected(
             // narrow rule is stage 7a only: it disappears when stage 7b makes
             // every integer literal a `fromInteger`-polymorphic value.
             Some(ValueTy::Integer) => ValueTy::Integer,
+            // An integer literal at `Double` type is Haskell's `fromInteger`
+            // (Report §6.4.1). Without this, `show_double 2` inferred the
+            // literal as `Int` and the call failed to unify — while the SAME
+            // literal in a `Double` formal's argument position was accepted by
+            // `def_arg_widens_to`. One rule, not two: a literal takes whatever
+            // `Num` type its position demands.
+            Some(ValueTy::Double) => ValueTy::Double,
             _ => ValueTy::Int,
         })),
         Expr::Double(_, _) => Ok(ArrowTy::value(match expected {
@@ -5786,7 +5793,14 @@ fn infer_apply_impl(
             let resolved_pt = ctx.subst.resolve_value(&pt);
             let directed = matches!(&resolved_pt, ValueTy::Con(n, _) if n == "IO")
                 || matches!(resolved_pt, ValueTy::Thunk(..));
-            let at0 = if directed {
+            // An integer LITERAL argument is `fromInteger`-polymorphic (Haskell
+            // 2010 §6.4.1): it takes the declared parameter's type, so a
+            // `Double`/`Integer` parameter must type it there — otherwise
+            // `show_double 2` is `Int` vs `Double` and rejected, which is what
+            // made `show_double 123456789012345678901234567890` a phantom type
+            // error. Same rule as [`def_arg_widens_to`]'s literal arm.
+            let literal_widens = int_literal_widens_to(&resolved_pt, a);
+            let at0 = if directed || literal_widens {
                 infer_expr_expected(ctx, a, Some(pt.clone()))?
             } else {
                 infer_expr(ctx, a)?
@@ -7546,14 +7560,27 @@ fn def_arg_widens_to(formal: &ValueTy, actual: &ValueTy, arg: &Expr, defaulted: 
         // `Buffer` parameter.
         (ValueTy::Buffer(_), _) => true,
         (ValueTy::Double | ValueTy::Int, ValueTy::Buffer(_)) => true,
-        // `f 2` against `Double -> …`: an integer literal is `fromInteger`-
-        // polymorphic (Haskell 2010 §6.4.1), so it inhabits `Double` too. A
-        // `Double` literal against an `Int` parameter is NOT (there is no
-        // `fromRational` narrowing), which is the mismatch this rejects.
-        (ValueTy::Double, ValueTy::Int) if matches!(arg, Expr::Int(_, _)) => true,
+        _ if int_literal_widens_to(formal, arg) => true,
         _ if defaulted => numeric_default_widens(formal, actual),
         _ => false,
     }
+}
+
+/// Whether an integer LITERAL argument inhabits `param` without unification.
+///
+/// Haskell 2010 §6.4.1: an integer literal is `fromInteger`-polymorphic, so
+/// `f 2` is well typed at `Double -> …` AND at `Integer -> …` — the literal
+/// takes the formal's type. Only a literal has this freedom (a variable of type
+/// `Int` does not inhabit `Double`), and only in the `Num` direction: a
+/// `Double` literal against an `Int` parameter is still the mismatch this
+/// rejects, because there is no `fromRational` narrowing.
+///
+/// The SAME rule serves a definition call ([`def_arg_widens_to`]) and a builtin
+/// signature (`show_double 123456789012345678901234567890`), so the two cannot
+/// disagree about whether a literal is accepted at `Double`/`Integer`.
+fn int_literal_widens_to(param: &ValueTy, arg: &Expr) -> bool {
+    matches!(param, ValueTy::Double | ValueTy::Integer | ValueTy::Int)
+        && matches!(arg, Expr::Int(_, _))
 }
 
 /// `Double` positions accept `Int` positions, structurally.

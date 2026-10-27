@@ -509,6 +509,34 @@ fn is_curried_thunk(vty: &ValueTy) -> bool {
         if caps.len() == 1 && res.len() == 1 && matches!(res[0], ValueTy::Thunk(..)))
 }
 
+/// The DECLARED parameter types of a builtin, from its `foreign fn` signature
+/// in [`TypeEnv::builtin_sigs`]. An empty list means the name has no declared
+/// signature (or its signature is not a function type), in which case the
+/// caller lowers arguments without an expected type.
+///
+/// A `TForall`-bound or free type-variable parameter (`a`, `e`, `s`) resolves
+/// to a fresh unification variable, which the caller must NOT thread as an
+/// expected type — it would pin an unrelated type at the argument. Concrete
+/// entries are what make a literal take the declared parameter's track.
+fn builtin_param_tys(env: &TypeEnv, name: &str) -> Vec<ValueTy> {
+    let Some(sig) = env.builtin_sigs.get(name) else {
+        return Vec::new();
+    };
+    let mut vars: HashMap<String, ValueTy> = HashMap::new();
+    let mut next = 0u32;
+    let mut fresh = || {
+        next += 1;
+        ValueTy::Var(u32::MAX - next)
+    };
+    sig.arg_types()
+        .iter()
+        .map(|te| {
+            crate::types::infer::sig_ty_to_vty(env, te, &HashMap::new(), &mut vars, &mut fresh)
+                .unwrap_or(ValueTy::Var(u32::MAX))
+        })
+        .collect()
+}
+
 /// Wrap a flat argument list back into the curried nest a leftover closure
 /// value has at runtime: `([b, c], [r])` → `Thunk([b], [Thunk([c], [r])])`.
 /// Keeping the nest (rather than a flat `Thunk([b, c], [r])`) means a further
@@ -2325,8 +2353,19 @@ impl<'a> Lowerer<'a> {
                         arg_regs.extend(regs);
                         arg_tys.extend(tys);
                     } else {
-                        for a in call_args {
-                            let (r, t) = self.lower_value(a)?;
+                        // Thread each argument's DECLARED parameter type from
+                        // the builtin's `foreign fn` signature as its expected
+                        // type. `show_double :: Double -> String` therefore
+                        // lowers `show_double 9223372036854775808` as the
+                        // `fromInteger` conversion of the literal, instead of
+                        // the `Int` truncation `lower_value` would pick.
+                        let declared = builtin_param_tys(self.env, name);
+                        for (i, a) in call_args.iter().enumerate() {
+                            let exp = declared.get(i).filter(|t| is_concrete_ty(t));
+                            let (r, t) = match exp {
+                                Some(e) => self.lower_value_expected(a, Some(e))?,
+                                None => self.lower_value(a)?,
+                            };
                             arg_regs.push(r);
                             arg_tys.push(t);
                         }
@@ -6205,7 +6244,20 @@ impl<'a> Lowerer<'a> {
                         self.emit_value(ValueInstr::ValueWriteCell { cell: sc, src: dst });
                     }
                 }
-                let arg_tys = def_params.iter().map(|_| ValueTy::Double).collect();
+                // The closure's signature carries the DECLARED parameter types,
+                // not a Double placeholder: the call site threads them into the
+                // arguments (`f 2` with `f :: Integer -> Integer` must convert
+                // the literal to an `Integer`), and a placeholder makes the
+                // call site emit a `Double`-typed constant into an
+                // `Integer`-typed fragment slot — the "primitive effect with an
+                // unbound operand" fault. `fn_param_tys` is inference's resolved
+                // parameter list for this def.
+                let arg_tys = self
+                    .fn_param_tys
+                    .get(name)
+                    .filter(|tys| tys.len() == def_params.len())
+                    .cloned()
+                    .unwrap_or_else(|| vec![ValueTy::Double; def_params.len()]);
                 Ok((dst, ValueTy::Thunk(arg_tys, vec![ret_ty])))
             }
             _ => Err(CompileError::Type {
@@ -6861,7 +6913,12 @@ impl<'a> Lowerer<'a> {
         // the cell.
         self.emit_value(ValueInstr::ValueWriteCell { cell, src: dst });
         let ty = if is_anchor {
-            let arg_tys = def_params.iter().map(|_| ValueTy::Double).collect();
+            // The closure's signature carries the DECLARED parameter types (see
+            // the `Def::Eval` value arm): a `Double` placeholder here makes the
+            // call site lower an argument for a slot whose static type is not
+            // `Double`, so `f 2` with `f :: Integer -> Integer` emitted a
+            // `Double` constant into an `Integer` fragment parameter.
+            let arg_tys = param_tys.clone();
             ValueTy::Thunk(arg_tys, vec![ret_ty])
         } else {
             ret_ty
