@@ -1,6 +1,6 @@
 # rill-lang: type-level list and tuple syntax (`[a]`, `(a, b)`)
 
-> **Status:** ready to implement.
+> **Status:** **DONE** — commit `ad732ff` (1063 tests).
 > **Predecessor:** `2026-10-26-rill-lang-kind-mechanism.md` (K1–K2, `5fdced5`) —
 > the kind checker already accepts a kind-`* -> *` constructor applied to one
 > argument, so it can check `[a]` as soon as the parser produces it.
@@ -39,26 +39,26 @@ does not touch instance heads or dispatch.
 
 ## Steps
 
-- [ ] **Step 1: `[t]` in type position.** In the type parser (`parse_type_single`
+- [x] **Step 1: `[t]` in type position.** In the type parser (`parse_type_single`
       and `parse_type_atom`), accept `Tok::LBracket`, parse one type expression,
       expect `Tok::RBracket`, and desugar to `TApp("List", [t])`. Nested forms
       (`[[Int]]`, `[Maybe Int]`, `(Int, [Double])`) must follow from this rule
       with no special case.
-- [ ] **Step 2: `[]` as a type constructor.** `Tok::LBracket` immediately
+- [x] **Step 2: `[]` as a type constructor.** `Tok::LBracket` immediately
       followed by `Tok::RBracket` desugars to `TName("List")` — the bare
       constructor, which K1 then rejects in a `*` position with its existing
       message and accepts where a `* -> *` is wanted.
-- [ ] **Step 3: `(,)`, `(,,)` are out of scope.** Do not add tuple-constructor
+- [x] **Step 3: `(,)`, `(,,)` are out of scope.** Do not add tuple-constructor
       syntax; record it as a gap if a probe needs it. `(a, b)` already works.
-- [ ] **Step 4: The renderer round-trips.** A type that parses from `[Int]` must
+- [x] **Step 4: The renderer round-trips.** A type that parses from `[Int]` must
       render back as `[Int]`, not `List Int`, or diagnostics will show the
       internal spelling. Check `render.rs` and `TypeEnv::type_spelling`; if the
       renderer prints `List Int` today, make it print `[Int]` and say so.
-- [ ] **Step 5: Prove it.** `[Int]`, `[[Int]]`, `[Maybe Int]`, `(Int, [Double])`,
+- [x] **Step 5: Prove it.** `[Int]`, `[[Int]]`, `[Maybe Int]`, `(Int, [Double])`,
       `[FixedBuffer Double]` parse and type-check; `[]` in a `*` position is a
       **kind** error (not a parse error); an FFI signature written with `[t]`
       classifies the same as the `List t` spelling.
-- [ ] **Step 6: No behaviour change** for programs written with the nominal
+- [x] **Step 6: No behaviour change** for programs written with the nominal
       spellings. Full suite green.
 
 ## Acceptance
@@ -69,3 +69,28 @@ does not touch instance heads or dispatch.
 - `[FixedBuffer Double]` compiles — a list of buffers is a list of a kind-`*` type.
 - A type printed in a diagnostic shows `[Int]`, not `List Int`.
 - All existing tests stay green.
+
+## Outcome (`ad732ff`)
+
+Controller-verified after the fact:
+
+| Check | Result |
+|---|---|
+| `f :: [Int] -> Int` | accepted |
+| `f :: [[Int]] -> Int`, `f :: [Maybe Int] -> Int`, `f :: (Int, [Double]) -> Int` | accepted, from the one rule, no special case |
+| `f :: [FixedBuffer Double] -> Int` | accepted |
+| `f :: [] -> Int` | **kind** error: ``expecting 1 more argument to `List`; expected a type, but `List` has kind `* -> *` `` |
+| renderer | `List Int` → `[Int]`, `List (List Int)` → `[[Int]]`, `Pair Int Double` → `(Int, Double)` |
+| FFI | a `[t]` signature and its `List t` spelling give an identical AST and an identical `FfiSig` |
+
+`[t]` desugars to `TApp("List", [t])` and `[]` to `TName("List")` — one
+representation, so the K1 kind checker and the FFI classifier needed no change.
+
+**Four renderer paths** were changed; `render_type_key` deliberately stayed
+nominal because it is the **instance-key identity** and must agree byte for byte
+with the prelude's `instance Num List` spelling — changing it would silently break
+instance lookup.
+
+**Still open:** `instance Monoid [a]` (variable-headed instance — needs the
+dictionary work), tuple-constructor syntax `(,)` (recorded as **OD-23**), and the
+unchecked-element half of OD-19 (`List Int` still unifies with `List Bool`).
