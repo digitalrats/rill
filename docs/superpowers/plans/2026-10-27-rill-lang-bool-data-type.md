@@ -1,7 +1,8 @@
 # rill-lang: `Bool` as a real data type (true/false constructors)
 
-> **Status:** planned — one decision needed before implementation (see
-> "The decision" below).
+> **Status:** decision made — **B**, split into B1 and B2.
+> **B1** = full erasure: `docs/superpowers/plans/2026-10-27-rill-lang-bool-b1-erasure.md`.
+> **B2** = `Eq`/`Ord`/deriving for sum types + the `App` vs `Data` unification defect.
 > **Blocks:** OD-25 (`&&`/`||` must be lazily-evaluating functions, not an IR
 > primitive), and the general rule that a Haskell 2010 data type is spelled the
 > way the Report spells it.
