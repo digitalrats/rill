@@ -11,7 +11,7 @@ fn not_negates_bool() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Bool(false)
+        &rill_lang::arena::Value::bool(false)
     );
 }
 
@@ -28,7 +28,7 @@ fn comparisons_and_logic() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Bool(true)
+        &rill_lang::arena::Value::bool(true)
     );
 }
 
@@ -39,6 +39,6 @@ fn not_combines_with_member() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Bool(true)
+        &rill_lang::arena::Value::bool(true)
     );
 }

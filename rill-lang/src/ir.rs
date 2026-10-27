@@ -117,8 +117,8 @@ pub enum ValueBuiltinOp {
     ShowDouble,
     /// Render an Int as a String (`show_int`).
     ShowInt,
-    /// Render a Bool as a String (`show_bool`): `true` → `"True"`,
-    /// `false` → `"False"` (the Haskell constructor spelling).
+    /// Render a Bool as a String (`show_bool`): `True` → `"True"`,
+    /// `False` → `"False"` (the Haskell constructor spelling).
     ShowBool,
     // ---- Immutable array storage (flat, type-agnostic primitives) ----
     // Every index computation lives in the language (`Ix`); the interpreter
@@ -265,15 +265,6 @@ pub enum CmpOp {
     Ge,
 }
 
-/// Value-track boolean logic operators.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogicOp {
-    /// Boolean conjunction.
-    And,
-    /// Boolean disjunction.
-    Or,
-}
-
 /// A straight-line run of value instructions ending in a terminator.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueBlock {
@@ -298,16 +289,11 @@ impl Default for ValueBlock {
 pub enum ValueTerm {
     /// Run the block with the given id.
     Fallthrough(usize),
-    /// Branch on a Bool value register.
-    Branch {
-        /// Value register holding the Bool condition.
-        cond: usize,
-        /// Block to run when the condition is true.
-        then: usize,
-        /// Block to run when the condition is false.
-        els: usize,
-    },
     /// Branch on a sum value's constructor tag.
+    ///
+    /// This is the ONLY conditional terminator: a boolean condition is an
+    /// ordinary `Bool` sum value (`data Bool = False | True`), so `if`, a guard,
+    /// and a `case` arm all test a constructor tag on the same term.
     BranchCtor {
         /// Value register holding the scrutinee sum.
         slot: usize,
@@ -529,13 +515,6 @@ pub enum ValueInstr {
         /// Constructor index to match.
         ctor: u32,
     },
-    /// Boolean literal.
-    ValueBool {
-        /// Destination value register.
-        dst: usize,
-        /// The value.
-        value: bool,
-    },
     /// Read a named parameter slot as a Double value.
     ///
     /// The IR index selects a NAME in [`Ir::params`]; the run-time store is the
@@ -601,17 +580,6 @@ pub enum ValueInstr {
         dst: usize,
         /// Comparison operator.
         op: CmpOp,
-        /// Left operand value register.
-        a: usize,
-        /// Right operand value register.
-        b: usize,
-    },
-    /// Value-track boolean logic.
-    ValueLogic {
-        /// Destination value register.
-        dst: usize,
-        /// Boolean logic operator.
-        op: LogicOp,
         /// Left operand value register.
         a: usize,
         /// Right operand value register.

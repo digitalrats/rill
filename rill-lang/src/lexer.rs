@@ -118,10 +118,6 @@ pub enum Tok {
     AndAnd,
     /// `||`
     OrOr,
-    /// `true` keyword.
-    KwTrue,
-    /// `false` keyword.
-    KwFalse,
     /// `do` keyword — monadic sequencing block.
     KwDo,
     /// `<-` — do-block monadic binding.
@@ -510,8 +506,6 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, CompileError> {
                 "then" if !followed_by_paren => Tok::KwThen,
                 "else" if !followed_by_paren => Tok::KwElse,
                 "do" if !followed_by_paren => Tok::KwDo,
-                "true" if !followed_by_paren => Tok::KwTrue,
-                "false" if !followed_by_paren => Tok::KwFalse,
                 _ => Tok::Ident(text.to_string()),
             };
             out.push(Token { tok, span });
@@ -894,8 +888,11 @@ mod tests {
                 Tok::Ge,
                 Tok::AndAnd,
                 Tok::OrOr,
-                Tok::KwTrue,
-                Tok::KwFalse,
+                // `true` / `false` are ordinary IDENTIFIERS: they name the
+                // Prelude constructors `True` / `False` (via the parser's
+                // alias), not keywords.
+                Tok::Ident("true".into()),
+                Tok::Ident("false".into()),
                 Tok::Eof,
             ]
         );

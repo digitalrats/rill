@@ -6,8 +6,8 @@ use crate::arena::KernelId;
 use crate::ast::{Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::error::{CompileError, Span};
 use crate::ir::{
-    BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Ir, LogicOp, ParamDef, StateLayout,
-    UnOp, ValueBlock, ValueBuiltinOp, ValueEffectOp, ValueInstr, ValueLayout, ValueTerm,
+    BinArith, BuiltinInstance, CmpOp, FragmentIr, FuncSig, Ir, ParamDef, StateLayout, UnOp,
+    ValueBlock, ValueBuiltinOp, ValueEffectOp, ValueInstr, ValueLayout, ValueTerm,
 };
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
@@ -204,7 +204,6 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueUpdateField { .. }
             | ValueInstr::ValueMakeClosure { .. }
             | ValueInstr::ValueCallFunc { .. }
-            | ValueInstr::ValueBool { .. }
             | ValueInstr::ValueConstVoid { .. }
             | ValueInstr::ValueConstOpaque { .. }
             | ValueInstr::ValueReadParam { .. }
@@ -213,7 +212,6 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueListLit { .. }
             | ValueInstr::ValueMapLit { .. }
             | ValueInstr::ValueCompare { .. }
-            | ValueInstr::ValueLogic { .. }
             | ValueInstr::ValueNot { .. }
             | ValueInstr::ValueCallBuiltin { .. }
             | ValueInstr::ValueLazy { .. }
@@ -233,6 +231,26 @@ fn is_alloc_producing(i: &ValueInstr) -> bool {
             | ValueInstr::ValueCallForeign { .. }
             | ValueInstr::ValueBufferParamRead { .. }
     )
+}
+
+/// The host boolean a condition expression statically IS, when it is written as
+/// a bare constructor reference (`True` / `False`, or the lowercase aliases the
+/// parser resolves into the same references).
+///
+/// This is a compile-time constant-folding convenience, not a boolean case in
+/// the IR: a literal `if True then a else b` selects `a` without leaving a dead
+/// branch in the program.
+fn static_bool_ctor(e: &Expr) -> Option<bool> {
+    match e {
+        Expr::Ref(name, _) => match name.as_str() {
+            "True" => Some(true),
+            "False" => Some(false),
+            _ => None,
+        },
+        // An annotation is erased at lowering: `True :: Bool` is `True`.
+        Expr::Annot { expr, .. } => static_bool_ctor(expr),
+        _ => None,
+    }
 }
 
 /// Resolve a leftover inference variable to the runtime's default numeric type.
@@ -523,16 +541,6 @@ fn nest_value_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
             ty
         }
         None => ret_tys.first().cloned().unwrap_or(ValueTy::Double),
-    }
-}
-
-/// Map a parsed logic operator to its IR form.
-fn logic_op_from_ast(op: crate::ast::LogicOp) -> LogicOp {
-    use crate::ast::LogicOp as A;
-    use crate::ir::LogicOp as I;
-    match op {
-        A::And => I::And,
-        A::Or => I::Or,
     }
 }
 
@@ -1168,11 +1176,7 @@ impl<'a> Lowerer<'a> {
                 let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
             }
-            Expr::Lambda { .. }
-            | Expr::Double(_, _)
-            | Expr::Int(_, _)
-            | Expr::Bool(_, _)
-            | Expr::Str(_, _) => {
+            Expr::Lambda { .. } | Expr::Double(_, _) | Expr::Int(_, _) | Expr::Str(_, _) => {
                 let (r, _) = self.lower_value_expected(e, expected)?;
                 return Ok(r);
             }
@@ -1185,7 +1189,6 @@ impl<'a> Lowerer<'a> {
                 | Expr::Lambda { .. }
                 | Expr::Double(_, _)
                 | Expr::Int(_, _)
-                | Expr::Bool(_, _)
                 | Expr::Str(_, _) => {
                     let (r, _) = self.lower_value_expected(e, expected)?;
                     return Ok(r);
@@ -1606,10 +1609,9 @@ impl<'a> Lowerer<'a> {
                 // A guarded arm can fail its guard at runtime, so the static
                 // fast path (compile-time ctor selection) is only sound for
                 // guard-free matches.
-                let has_guards = arms.iter().any(|a| {
-                    a.guards.len() > 1
-                        || !matches!(a.guards.first(), Some((Expr::Bool(true, _), _)))
-                });
+                let has_guards = arms
+                    .iter()
+                    .any(|a| a.guards.len() > 1 || !matches!(a.guards.first(), Some((None, _))));
                 // Static fast path (guard-free, statically-known ctor): lower
                 // ONLY the matching arm — preserves exact-capacity behavior.
                 if !has_guards {
@@ -1713,10 +1715,11 @@ impl<'a> Lowerer<'a> {
                 els,
                 span,
             } => {
-                // Static fast path: a literal Bool condition selects one branch
-                // at compile time (single block, no Branch term).
-                if let Expr::Bool(b, _) = cond.as_ref() {
-                    let (reg, ty) = if *b {
+                // Static fast path: a condition written as a constructor
+                // REFERENCE (`if True then …`, `if False then …`) selects one
+                // branch at compile time (single block, no branch term).
+                if let Some(b) = static_bool_ctor(cond.as_ref()) {
+                    let (reg, ty) = if b {
                         self.lower_value_expected(then, expected)?
                     } else {
                         self.lower_value_expected(els, expected)?
@@ -1724,7 +1727,7 @@ impl<'a> Lowerer<'a> {
                     return Ok((reg, ty));
                 }
                 let (cond_reg, cond_ty) = self.lower_value(cond)?;
-                if cond_ty != ValueTy::Bool {
+                if cond_ty != ValueTy::bool_ty() {
                     return Err(CompileError::Type {
                         msg: "if condition must be a Bool value".into(),
                         span: *span,
@@ -1747,10 +1750,15 @@ impl<'a> Lowerer<'a> {
                 let els_b = self.new_value_block();
                 let join = self.new_value_block();
                 let out = self.fresh_value_reg();
+                // A boolean condition is an ordinary `Bool` sum value, so the
+                // branch is the SAME constructor-tag terminator a `case` uses:
+                // `True` is tag 1 (`data Bool = False | True`), so the `then`
+                // block runs when the tag matches it.
                 self.set_value_term(
                     self.cur_value_block,
-                    ValueTerm::Branch {
-                        cond: cond_reg,
+                    ValueTerm::BranchCtor {
+                        slot: cond_reg,
+                        ctor: crate::arena::BOOL_TRUE_TAG,
                         then: then_b,
                         els: els_b,
                     },
@@ -2135,7 +2143,7 @@ impl<'a> Lowerer<'a> {
                         ValueEffectOp::StreamRead => {
                             ValueTy::App("Maybe".into(), vec![elem.unwrap_or(ValueTy::Double)])
                         }
-                        ValueEffectOp::StreamAtEnd => ValueTy::Bool,
+                        ValueEffectOp::StreamAtEnd => ValueTy::bool_ty(),
                         _ => ValueTy::Void,
                     };
                     let effect = self.fresh_value_reg();
@@ -2246,7 +2254,7 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     let (src, ty) = self.lower_value(&call_args[0])?;
-                    if ty != ValueTy::Bool {
+                    if ty != ValueTy::bool_ty() {
                         return Err(CompileError::Type {
                             msg: format!("`not` expects a Bool argument, got {ty:?}"),
                             span: call_args[0].span(),
@@ -2254,7 +2262,7 @@ impl<'a> Lowerer<'a> {
                     }
                     let dst = self.fresh_value_reg();
                     self.emit_value(ValueInstr::ValueNot { dst, src });
-                    return Ok((dst, ValueTy::Bool));
+                    return Ok((dst, ValueTy::bool_ty()));
                 }
                 // Collection operation (`length`, `cons`, `head`, `tail`, `map`,
                 // `fold`, `filter`, `list`, `insert`, `lookup`, `member`,
@@ -3605,11 +3613,6 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok((dst, ValueTy::Thunk(param_tys, vec![ret_ty])))
             }
-            Expr::Bool(b, _) => {
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBool { dst, value: *b });
-                Ok((dst, ValueTy::Bool))
-            }
             Expr::Void(_) => {
                 let dst = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueConstVoid { dst });
@@ -3668,18 +3671,6 @@ impl<'a> Lowerer<'a> {
                 let ret = ValueTy::App("Map".into(), vec![ValueTy::String, val_ty]);
                 self.note_container(&ret);
                 Ok((dst, ret))
-            }
-            Expr::Logic { op, lhs, rhs, .. } => {
-                let (a, _) = self.lower_value(lhs)?;
-                let (b, _) = self.lower_value(rhs)?;
-                let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueLogic {
-                    dst,
-                    op: logic_op_from_ast(*op),
-                    a,
-                    b,
-                });
-                Ok((dst, ValueTy::Bool))
             }
             Expr::Let { defs, body, span } => {
                 // A bang binding forces its right-hand side AT the binding
@@ -4122,7 +4113,7 @@ impl<'a> Lowerer<'a> {
             }
             "member" => {
                 check_ord(args.first().unwrap_or(&ValueTy::Double), "key")?;
-                Ok(ValueTy::Bool)
+                Ok(ValueTy::bool_ty())
             }
             "empty_map" => Ok(ValueTy::App(
                 "Map".into(),
@@ -5671,7 +5662,7 @@ impl<'a> Lowerer<'a> {
                     a: arg_regs[0],
                     b: arg_regs[1],
                 });
-                Ok((dst, ValueTy::Bool))
+                Ok((dst, ValueTy::bool_ty()))
             }
             // Ring arithmetic: scalar (`ValueAdd` family) or whole-buffer
             // element-wise (`ValueBufferBin`), decided by the instance's kind.
@@ -6296,10 +6287,6 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
-            Expr::Logic { lhs, rhs, .. } => {
-                self.free_vars_impl(lhs, bound, out, seen);
-                self.free_vars_impl(rhs, bound, out, seen);
-            }
             Expr::Let { defs, body, .. } => {
                 // Inner `let` bindings shadow outer names inside the body, and
                 // each binding's own parameters (a local FUNCTION `g y = e`, or
@@ -6347,7 +6334,9 @@ impl<'a> Lowerer<'a> {
                         inner.insert(v);
                     }
                     for (g, b) in &arm.guards {
-                        self.free_vars_impl(g, &inner, out, seen);
+                        if let Some(g) = g {
+                            self.free_vars_impl(g, &inner, out, seen);
+                        }
                         self.free_vars_impl(b, &inner, out, seen);
                     }
                 }
@@ -6371,7 +6360,6 @@ impl<'a> Lowerer<'a> {
                     self.free_vars_impl(d, bound, out, seen);
                 }
             }
-            Expr::Bool(_, _) => {}
             Expr::ListLit(elems, _) => {
                 for el in elems {
                     self.free_vars_impl(el, bound, out, seen);
@@ -7472,14 +7460,6 @@ impl<'a> Lowerer<'a> {
                 });
                 Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
             }
-            Pattern::LitBool(v) => {
-                let lit_reg = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBool {
-                    dst: lit_reg,
-                    value: *v,
-                });
-                Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
-            }
             Pattern::LitStr(v) => {
                 let lit_reg = self.fresh_value_reg();
                 self.emit_value(ValueInstr::ValueConstString {
@@ -7597,10 +7577,13 @@ impl<'a> Lowerer<'a> {
         });
         let pass_b = self.new_value_block();
         let cur = self.cur_value_block;
+        // The comparison produced an ordinary `Bool` SUM value, so the test is
+        // the same constructor-tag branch every other data match uses.
         self.set_value_term(
             cur,
-            ValueTerm::Branch {
-                cond: dst,
+            ValueTerm::BranchCtor {
+                slot: dst,
+                ctor: crate::arena::BOOL_TRUE_TAG,
                 then: pass_b,
                 els: else_t,
             },
@@ -7630,7 +7613,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 else_t
             };
-            if idx == 0 && matches!(g, Expr::Bool(true, _)) {
+            let Some(g) = g else {
                 // Bare `pattern -> body`: no guard to test.
                 let (body_reg, body_ty) = self.lower_value(body)?;
                 self.emit_value(ValueInstr::ValueMove {
@@ -7642,19 +7625,22 @@ impl<'a> Lowerer<'a> {
                     first_ty = Some(body_ty);
                 }
                 break;
-            }
+            };
             let (guard_reg, guard_ty) = self.lower_value(g)?;
-            if guard_ty != ValueTy::Bool {
+            if guard_ty != ValueTy::bool_ty() {
                 return Err(CompileError::Type {
                     msg: "match guard must be a Bool value".into(),
                     span: g.span(),
                 });
             }
             let body_b = self.new_value_block();
+            // A guard evaluates to a `Bool` SUM value, so the test is the
+            // constructor-tag branch (`True` is tag 1).
             self.set_value_term(
                 self.cur_value_block,
-                ValueTerm::Branch {
-                    cond: guard_reg,
+                ValueTerm::BranchCtor {
+                    slot: guard_reg,
+                    ctor: crate::arena::BOOL_TRUE_TAG,
                     then: body_b,
                     els: next,
                 },
@@ -7738,7 +7724,6 @@ impl<'a> Lowerer<'a> {
         match vty {
             ValueTy::Int
             | ValueTy::Double
-            | ValueTy::Bool
             | ValueTy::String
             | ValueTy::Buffer(_)
             | ValueTy::Void
@@ -8390,12 +8375,8 @@ impl<'a> Lowerer<'a> {
                 msg: "lambda is a value expression; it cannot be used in a signal position".into(),
                 span: *span,
             }),
-            Expr::Bool(_, _)
-            | Expr::ListLit(_, _)
-            | Expr::MapLit(_, _)
-            | Expr::Logic { .. } => Err(CompileError::Unsupported(
-                "value expressions (bool/list/map literals, comparisons, logic) are not yet supported"
-                    .into(),
+            Expr::ListLit(_, _) | Expr::MapLit(_, _) => Err(CompileError::Unsupported(
+                "value expressions (list/map literals, comparisons) are not yet supported".into(),
             )),
         }
     }
@@ -8897,7 +8878,12 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
                         guards: arm
                             .guards
                             .iter()
-                            .map(|(g, b)| (rename_bound(g, &inner), rename_bound(b, &inner)))
+                            .map(|(g, b)| {
+                                (
+                                    g.as_ref().map(|g| rename_bound(g, &inner)),
+                                    rename_bound(b, &inner),
+                                )
+                            })
                             .collect(),
                         span: arm.span,
                     }
@@ -8941,17 +8927,7 @@ fn rename_bound(e: &Expr, renames: &HashMap<String, String>) -> Expr {
                 .collect(),
             *span,
         ),
-        Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
-            op: *op,
-            lhs: Box::new(rename_bound(lhs, renames)),
-            rhs: Box::new(rename_bound(rhs, renames)),
-            span: *span,
-        },
-        Expr::Int(_, _)
-        | Expr::Double(_, _)
-        | Expr::Void(_)
-        | Expr::Str(_, _)
-        | Expr::Bool(_, _) => e.clone(),
+        Expr::Int(_, _) | Expr::Double(_, _) | Expr::Void(_) | Expr::Str(_, _) => e.clone(),
     }
 }
 
@@ -9046,7 +9022,9 @@ pub(crate) fn collect_def_ref_names(e: &Expr, out: &mut HashSet<String>) {
             collect_def_ref_names(scrutinee, out);
             for arm in arms {
                 for (g, b) in &arm.guards {
-                    collect_def_ref_names(g, out);
+                    if let Some(g) = g {
+                        collect_def_ref_names(g, out);
+                    }
                     collect_def_ref_names(b, out);
                 }
             }
@@ -9583,7 +9561,7 @@ mod tests {
             vec![ValueTy::Int]
         );
         assert!(
-            record_args_from_fields(&fields, &[ValueTy::Int, ValueTy::Bool]).is_empty(),
+            record_args_from_fields(&fields, &[ValueTy::Int, ValueTy::String]).is_empty(),
             "a contradictory field must void the whole record's type arguments"
         );
         // An unresolved field type keeps the parameterized type opaque.
@@ -10060,8 +10038,8 @@ mod tests {
         assert!(
             ir.value_blocks
                 .iter()
-                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
-            "a literal match must lower to a Branch"
+                .any(|b| matches!(b.term, ValueTerm::BranchCtor { .. })),
+            "a literal match must lower to a constructor-tag branch"
         );
     }
 
@@ -10090,30 +10068,31 @@ mod tests {
     }
 
     #[test]
-    fn lower_if_emits_branch() {
+    fn lower_if_emits_branch_ctor() {
         // A non-constant Bool condition (here: a comparison over a value def,
-        // whose result is a runtime value, not a literal) must lower to a
-        // runtime Branch term. (`main` λ-params are gone, so a runtime Bool
-        // comes from a value expression, not a launch-argument read.)
+        // whose result is a runtime value, not a literal) must lower to runtime
+        // dispatch. The condition is an ordinary `Bool` SUM value, so the
+        // terminator is the constructor-tag branch a `case` uses — there is no
+        // separate boolean branch node.
         let ir = ir_of("g = 1.0; main = if g > 0.5 then 1.0 else 2.0;");
         assert!(
             ir.value_blocks
                 .iter()
-                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
-            "a non-constant if condition must lower to a Branch"
+                .any(|b| matches!(b.term, ValueTerm::BranchCtor { .. })),
+            "a non-constant if condition must lower to a BranchCtor"
         );
     }
 
     #[test]
     fn lower_if_static_literal_skips_branch() {
         // A literal Bool condition selects one branch at compile time: a single
-        // block, no Branch term.
+        // block, no branch term at all.
         let ir = ir_of("main = if false then 1.0 else 2.0;");
         assert!(
             !ir.value_blocks
                 .iter()
-                .any(|b| matches!(b.term, ValueTerm::Branch { .. })),
-            "a literal-Bool if must not lower to a Branch"
+                .any(|b| matches!(b.term, ValueTerm::BranchCtor { .. })),
+            "a literal-Bool if must not lower to a branch"
         );
     }
 

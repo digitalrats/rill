@@ -8,8 +8,7 @@ use rill_core::traits::ProcessError;
 
 use crate::arena::{Arena, ArenaRef, ThunkState, Value};
 use crate::ir::{
-    BinArith, CmpOp, FragmentIr, Ir, LogicOp, UnOp, ValueBlock, ValueBuiltinOp, ValueInstr,
-    ValueTerm,
+    BinArith, CmpOp, FragmentIr, Ir, UnOp, ValueBlock, ValueBuiltinOp, ValueInstr, ValueTerm,
 };
 use crate::program::{
     StCell, StreamHandle, WorldState, MAX_BUILTIN_CHANNELS, STREAM_HANDLE_TAG, WORLD_TOKEN,
@@ -235,13 +234,6 @@ fn run_blocks<T: Transcendental, const BUF: usize>(
         }
         cur = match b.term {
             ValueTerm::Fallthrough(n) => n,
-            ValueTerm::Branch { cond, then, els } => {
-                if value_reg_is_true(ir, world, cond + base) {
-                    then
-                } else {
-                    els
-                }
-            }
             ValueTerm::BranchCtor {
                 slot,
                 ctor,
@@ -381,24 +373,6 @@ fn latch_fault<T: Transcendental, const BUF: usize>(
             "value-track fault: {what}"
         )));
     }
-}
-
-/// Whether a value register holds `Bool(true)`. Non-Bool/`None` is `false`
-/// (defensive; static typing guarantees a Bool here).
-fn value_reg_is_true<T: Transcendental, const BUF: usize>(
-    _ir: &Ir,
-    world: &WorldState<T, BUF>,
-    reg: usize,
-) -> bool {
-    matches!(
-        world
-            .value_regs
-            .get(reg)
-            .copied()
-            .flatten()
-            .and_then(|r| world.arena.get(r)),
-        Some(Value::Bool(true))
-    )
 }
 
 /// The constructor tag of a value register's sum value, if any.
@@ -829,7 +803,6 @@ fn value_cmp_ref(arena: &Arena<Value>, a: &Value, b: &Value) -> i8 {
         // intransitive equivalence (NaN ≈ 3.0 but 3.0 < 5.0), breaking the
         // sorted Map/Set binary search.
         (Double(x), Double(y)) => x.total_cmp(y) as i8,
-        (Bool(x), Bool(y)) => x.cmp(y) as i8,
         (String(x), String(y)) => x.cmp(y) as i8,
         (Newtype(x), Newtype(y)) => value_cmp(arena, *x, *y),
         (Sum(i, px), Sum(j, py)) => {
@@ -915,7 +888,9 @@ fn cmp_ref_slices(arena: &Arena<Value>, xs: &[ArenaRef], ys: &[ArenaRef]) -> i8 
 fn kind_rank(v: &Value) -> i8 {
     use Value::*;
     match v {
-        Bool(_) => 0,
+        // Rank 0 belonged to the retired inline boolean arm. A boolean is now a
+        // `Sum` like every other constructor value and takes the `Sum` rank;
+        // the slot stays vacant rather than renumbering every later kind.
         Int(_) => 1,
         Double(_) => 2,
         String(_) => 3,
@@ -1716,9 +1691,6 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                 }
             }
         }
-        ValueInstr::ValueBool { dst, value } => {
-            world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Bool(*value));
-        }
         ValueInstr::ValueConstVoid { dst } => {
             world.value_regs[*dst + base] = alloc_owned(ir, world, Value::Void);
         }
@@ -1777,37 +1749,21 @@ fn exec_value_instr<T: Transcendental, const BUF: usize>(
                             CmpOp::Le => c <= 0,
                             CmpOp::Ge => c >= 0,
                         };
-                        Some(Value::Bool(b))
+                        Some(Value::bool(b))
                     }
                 },
                 _ => None,
             };
             world.value_regs[*dst + base] = res.and_then(|v| alloc_owned(ir, world, v));
         }
-        ValueInstr::ValueLogic { dst, op, a, b } => {
-            let (ar, br) = (
-                forced_operand(ir, world, *a + base, drops),
-                forced_operand(ir, world, *b + base, drops),
-            );
-            let res = match (ar, br) {
-                (Some(x), Some(y)) => match (world.arena.get(x), world.arena.get(y)) {
-                    (Some(Value::Bottom), _) | (_, Some(Value::Bottom)) => Some(Value::Bottom),
-                    (Some(Value::Bool(p)), Some(Value::Bool(q))) => Some(Value::Bool(match op {
-                        LogicOp::And => *p && *q,
-                        LogicOp::Or => *p || *q,
-                    })),
-                    _ => None,
-                },
-                _ => None,
-            };
-            world.value_regs[*dst + base] = res.and_then(|v| alloc_owned(ir, world, v));
-        }
         ValueInstr::ValueNot { dst, src } => {
+            // `not` flips the constructor tag; both constructors are nullary, so
+            // the operand's host boolean fully determines the result.
             let b = match forced_operand(ir, world, *src + base, drops) {
                 Some(r) => match world.arena.get(r) {
                     Some(Value::Bottom) => Some(Value::Bottom),
-                    Some(Value::Bool(p)) => Some(Value::Bool(!*p)),
-                    _ => None,
+                    Some(v) => v.as_bool().map(|p| Value::bool(!p)),
+                    None => None,
                 },
                 _ => None,
             };
@@ -2866,10 +2822,11 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
             for e in &src {
                 let pred = call_closure_single(ir, world, base + args[0], *e, dst, drops);
                 let is_keep = match pred {
-                    Some(pr) => match world.arena.get(pr) {
-                        Some(Value::Bool(b)) => *b,
-                        _ => false,
-                    },
+                    Some(pr) => world
+                        .arena
+                        .get(pr)
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     None => false,
                 };
                 if is_keep {
@@ -3014,7 +2971,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 }
                 _ => false,
             };
-            world.value_regs[dst] = alloc_owned(ir, world, Value::Bool(found));
+            world.value_regs[dst] = alloc_owned(ir, world, Value::bool(found));
         }
         InsertSet => {
             // insert k s: COW-insert the element into the sorted set; a
@@ -3201,10 +3158,7 @@ fn exec_value_call_builtin<T: Transcendental, const BUF: usize>(
                 .copied()
                 .flatten()
                 .and_then(|r| world.arena.get(r))
-                .and_then(|v| match v {
-                    Value::Bool(b) => Some(*b),
-                    _ => None,
-                });
+                .and_then(|v| v.as_bool());
             world.value_regs[dst] = v.and_then(|b| {
                 alloc_owned(
                     ir,
@@ -5195,7 +5149,7 @@ fn exec_stream_at_end<T: Transcendental, const BUF: usize>(
             ReadOutcome::Fault => return None,
         },
     };
-    alloc_owned(ir, world, Value::Bool(at_end))
+    alloc_owned(ir, world, Value::bool(at_end))
 }
 
 /// Perform `unread x s`: push a value back onto an input stream so the next
@@ -6946,8 +6900,8 @@ mod value_track_tests {
 
     #[test]
     fn trampoline_branch_and_move() {
-        // A 5-block CFG: block 0 loads Bool(true) and two floats, moves the
-        // then-path value into reg 3, then Branches on the Bool. Block 1 (the
+        // A 5-block CFG: block 0 constructs `True` and two floats, moves the
+        // then-path value into reg 3, then Branches on the `Bool`. Block 1 (the
         // `then` target) moves the else-path value into the out reg 4 and
         // falls through to Halt; block 2 (the `els` target) would overwrite
         // reg 4 with 999.0 if the branch dispatched wrongly. Block 3 is the
@@ -6958,16 +6912,18 @@ mod value_track_tests {
             vec![
                 ValueBlock {
                     instrs: vec![
-                        ValueInstr::ValueBool {
+                        ValueInstr::ValueConstructSum {
                             dst: 0,
-                            value: true,
+                            ctor: crate::arena::BOOL_TRUE_TAG,
+                            payload: vec![],
                         },
                         ValueInstr::ValueConstDouble { dst: 1, value: 1.0 },
                         ValueInstr::ValueConstDouble { dst: 2, value: 0.0 },
                         ValueInstr::ValueMove { dst: 3, src: 1 },
                     ],
-                    term: ValueTerm::Branch {
-                        cond: 0,
+                    term: ValueTerm::BranchCtor {
+                        slot: 0,
+                        ctor: crate::arena::BOOL_TRUE_TAG,
                         then: 1,
                         els: 2,
                     },
@@ -7027,23 +6983,25 @@ mod value_track_tests {
 
     #[test]
     fn trampoline_branch_false_takes_els() {
-        // A `Branch` with a `Bool(false)` condition must run the `els` block,
-        // not the `then` block: block 0 loads Bool(false); block 1 (`then`)
+        // A `Branch` with a `False` condition must run the `els` block,
+        // not the `then` block: block 0 constructs `False`; block 1 (`then`)
         // would write 999.0 into reg 3, block 2 (`els`) writes 0.0. The sentinel
         // block after Halt must stay `None` (reg 4).
         let (ir, mut world) = prog_with(
             vec![
                 ValueBlock {
                     instrs: vec![
-                        ValueInstr::ValueBool {
+                        ValueInstr::ValueConstructSum {
                             dst: 0,
-                            value: false,
+                            ctor: crate::arena::BOOL_FALSE_TAG,
+                            payload: vec![],
                         },
                         ValueInstr::ValueConstDouble { dst: 1, value: 1.0 },
                         ValueInstr::ValueConstDouble { dst: 2, value: 0.0 },
                     ],
-                    term: ValueTerm::Branch {
-                        cond: 0,
+                    term: ValueTerm::BranchCtor {
+                        slot: 0,
+                        ctor: crate::arena::BOOL_TRUE_TAG,
                         then: 1,
                         els: 2,
                     },
@@ -7105,8 +7063,19 @@ mod value_cmp_tests {
         let s1 = a.alloc(Value::String("a".into())).unwrap();
         let s2 = a.alloc(Value::String("b".into())).unwrap();
         assert!(value_cmp(&a, s1, s2) < 0);
-        let b = a.alloc(Value::Bool(true)).unwrap();
-        assert!(value_cmp(&a, b, r1) < 0, "Bool sorts before Int");
+        // A boolean is a `Sum`, so it sorts with the constructor values (rank
+        // order, not a `Bool`-specific place in the table).
+        let b = a.alloc(Value::bool(true)).unwrap();
+        assert_eq!(value_cmp(&a, b, b), 0);
+        assert!(
+            value_cmp(&a, b, r1) > 0,
+            "a Sum sorts after a scalar by kind rank"
+        );
+        let f = a.alloc(Value::bool(false)).unwrap();
+        assert!(
+            value_cmp(&a, f, b) < 0,
+            "False (tag 0) sorts before True (tag 1)"
+        );
     }
 
     fn int_list(a: &mut Arena<Value>, len: usize) -> ArenaRef {

@@ -1,6 +1,6 @@
 //! Recursive-descent + Pratt (operator-precedence) parser.
 
-use crate::ast::{Def, Expr, LogicOp, MatchArm, Param, Pattern, Program, TypeExpr};
+use crate::ast::{Def, Expr, MatchArm, Param, Pattern, Program, TypeExpr};
 use crate::error::{CompileError, Span};
 use crate::lexer::{Tok, Token};
 use crate::mode::Mode;
@@ -38,11 +38,13 @@ enum InfixOp {
 impl InfixOp {
     /// The NAME this operator denotes as an ordinary application — the class
     /// method for every operator that is one (System FC: `a + b` ≡ `(+) a b`),
-    /// or the Prelude function behind `:`, `++`, `!` and `,`.
+    /// or the Prelude function behind `:`, `++`, `!`, `&&`, `||` and `,`.
     ///
-    /// `None` for the operators that are NOT applications: `&&`/`||` (short
-    /// circuit, [`Expr::Logic`]) and a backtick application (already desugared
-    /// before the right operand is parsed).
+    /// `None` only for a backtick application (already desugared before the
+    /// right operand is parsed). `&&`/`||` are ordinary Prelude FUNCTIONS
+    /// (their short-circuit falls out of the Report's constructor-pattern
+    /// equations and rill's existing laziness), so they desugar like every
+    /// other operator — there is no operator node in the core.
     fn method_name(self) -> Option<&'static str> {
         Some(match self {
             InfixOp::Add => "+",
@@ -60,20 +62,10 @@ impl InfixOp {
             InfixOp::Index => "index",
             InfixOp::AppendList => "++",
             InfixOp::AppendSemigroup => "<>",
-            InfixOp::LogicAnd | InfixOp::LogicOr | InfixOp::Backtick => return None,
+            InfixOp::LogicAnd => "&&",
+            InfixOp::LogicOr => "||",
+            InfixOp::Backtick => return None,
         })
-    }
-
-    fn is_logic(self) -> bool {
-        matches!(self, InfixOp::LogicAnd | InfixOp::LogicOr)
-    }
-
-    fn to_logic(self) -> LogicOp {
-        match self {
-            InfixOp::LogicAnd => LogicOp::And,
-            InfixOp::LogicOr => LogicOp::Or,
-            _ => unreachable!("not a logic operator"),
-        }
     }
 
     /// Whether this is a comparison operator (`infix 4`, non-associative in
@@ -210,25 +202,13 @@ fn infix_op_from_name(name: &str) -> Option<InfixOp> {
     })
 }
 
-/// Desugar one infix application `lhs op rhs` into the AST node the operator
-/// denotes: a call to the class method (or Prelude function) the operator
-/// names, or — for `&&`/`||` only — a short-circuit [`Expr::Logic`] node.
+/// Desugar one infix application `lhs op rhs` into the call the operator names:
+/// a class method, or a Prelude function (`&&`/`||`/`++`/`:`/`!`).
 ///
 /// Shared by the Pratt loop and by operator sections (Haskell 2010 §3.5), so a
 /// section's body is byte-identical to the parenthesized infix spelling.
 fn desugar_infix_op(op: InfixOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span().merge(rhs.span());
-    // `&&` / `||` are NOT class methods: they are short-circuit control flow
-    // (Haskell 2010 has no `Logic` class), so they keep a bespoke node whose
-    // lowering evaluates the left operand first and may skip the right one.
-    if op.is_logic() {
-        return Expr::Logic {
-            op: op.to_logic(),
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-            span,
-        };
-    }
     // `,` is not an operator in Haskell 2010 — it is tuple syntax. rill spells
     // its value tuple `a , b` as `Pair { first: a, second: b }`.
     if op == InfixOp::Par {
@@ -308,8 +288,6 @@ fn is_atom_start(tok: &Tok) -> bool {
             | Tok::LParen
             | Tok::LBrace
             | Tok::LBracket
-            | Tok::KwTrue
-            | Tok::KwFalse
             | Tok::Minus
             | Tok::Question
     )
@@ -361,8 +339,6 @@ fn is_pattern_start(tok: &Tok) -> bool {
             | Tok::Int(_)
             | Tok::Double(_)
             | Tok::Str(_)
-            | Tok::KwTrue
-            | Tok::KwFalse
             | Tok::Wire
             | Tok::LParen
             | Tok::Bang
@@ -427,7 +403,7 @@ fn plain_definition(
     let [(guard, body)] = eq.guards.as_slice() else {
         return None;
     };
-    if !matches!(guard, Expr::Bool(true, _)) {
+    if guard.is_some() {
         return None;
     }
     if eq.patterns.len() != spans.len() {
@@ -666,13 +642,22 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Ok(Pattern::LitStr(s.clone()))
             }
-            Tok::KwTrue => {
+            Tok::Ident(name) => {
+                // `true` / `false` are ALIASES of the constructors `True` /
+                // `False`, so they are constructor patterns here — a lowercase
+                // spelling must not silently become a fresh variable binding.
+                let name = ctor_alias(name);
+                let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
                 self.bump();
-                Ok(Pattern::LitBool(true))
-            }
-            Tok::KwFalse => {
-                self.bump();
-                Ok(Pattern::LitBool(false))
+                if is_ctor {
+                    let mut args = Vec::new();
+                    while is_pattern_start(&self.peek().tok) {
+                        args.push(self.parse_pattern()?);
+                    }
+                    Ok(Pattern::Ctor(name.to_string(), args))
+                } else {
+                    Ok(Pattern::Var(name.to_string()))
+                }
             }
             Tok::LParen => {
                 self.bump();
@@ -689,19 +674,6 @@ impl<'a> Parser<'a> {
                 }
                 self.bump();
                 Ok(Pattern::Bang(Box::new(self.parse_pattern()?)))
-            }
-            Tok::Ident(name) => {
-                let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
-                self.bump();
-                if is_ctor {
-                    let mut args = Vec::new();
-                    while is_pattern_start(&self.peek().tok) {
-                        args.push(self.parse_pattern()?);
-                    }
-                    Ok(Pattern::Ctor(name.clone(), args))
-                } else {
-                    Ok(Pattern::Var(name.clone()))
-                }
             }
             _ => Err(CompileError::Parse {
                 msg: format!("expected a pattern, found {:?}", t.tok),
@@ -978,10 +950,59 @@ impl<'a> Parser<'a> {
         let mut spans = Vec::new();
         while self.at_equation_arg_start() {
             let span = self.peek().span;
-            patterns.push(self.parse_pattern()?);
+            patterns.push(self.parse_apat()?);
             spans.push(span);
         }
         Ok((patterns, spans))
+    }
+
+    /// One equation LHS argument: an **atomic** pattern (Haskell 2010 §4.4.3.1
+    /// gives each argument position an `apat`).
+    ///
+    /// The distinction matters because a constructor pattern with ARGUMENTS must
+    /// be parenthesized: `f (Just x) = …` is one argument, while `f Just x = …`
+    /// is two (a bare nullary-shaped `Just` and `x`, which the constructor's
+    /// arity then rejects). `myAnd True y = …` is therefore two arguments, with
+    /// `True` a nullary constructor pattern.
+    fn parse_apat(&mut self) -> Result<Pattern, CompileError> {
+        let t = self.peek().clone();
+        match &t.tok {
+            Tok::Bang => {
+                if !is_attached_bang(self.toks, self.cur()) {
+                    return Err(
+                        self.error("a bang pattern must be written `!pat` (no space after `!`)")
+                    );
+                }
+                self.bump();
+                Ok(Pattern::Bang(Box::new(self.parse_apat()?)))
+            }
+            Tok::LParen => {
+                self.bump();
+                let p = self.parse_pattern()?;
+                self.eat(&Tok::RParen)?;
+                Ok(p)
+            }
+            Tok::Int(_) | Tok::Double(_) | Tok::Str(_) | Tok::Wire => self.parse_pattern(),
+            Tok::Ident(name) => {
+                // An uppercase name is a CONSTRUCTOR pattern here, and a
+                // constructor's arguments are not part of one atom: `f Just x`
+                // is `f` applied to two patterns. A lowercase name is a
+                // variable — unless it is the boolean alias, which names the
+                // `True`/`False` constructors.
+                let name = ctor_alias(name);
+                let is_ctor = name.chars().next().is_some_and(|c| c.is_uppercase());
+                self.bump();
+                if is_ctor {
+                    Ok(Pattern::Ctor(name.to_string(), Vec::new()))
+                } else {
+                    Ok(Pattern::Var(name.to_string()))
+                }
+            }
+            _ => Err(CompileError::Parse {
+                msg: format!("expected a pattern, found {:?}", t.tok),
+                span: t.span,
+            }),
+        }
     }
 
     /// Whether an equation argument pattern may start here. Adjacency rules
@@ -995,8 +1016,6 @@ impl<'a> Parser<'a> {
             | Tok::Int(_)
             | Tok::Double(_)
             | Tok::Str(_)
-            | Tok::KwTrue
-            | Tok::KwFalse
             | Tok::Wire
             | Tok::LParen => true,
             _ => false,
@@ -1091,16 +1110,15 @@ impl<'a> Parser<'a> {
                 let g = self.parse_expr(0, true)?;
                 self.eat(&Tok::Eq)?;
                 let b = self.parse_expr(0, true)?;
-                guards.push((g, b));
+                guards.push((Some(g), b));
             }
         } else {
-            // Plain equation: one unconditional alternative (guard `true`).
+            // Plain equation: one unconditional alternative — no guard at all.
             // The right-hand side is a full expression, so the top-level `,`
             // tuple operator stays available (`main = 1.0, 2.0`).
-            let eq_span = self.peek().span;
             self.eat(&Tok::Eq)?;
             let body = self.parse_expr(0, false)?;
-            guards.push((Expr::Bool(true, eq_span), body));
+            guards.push((None, body));
         }
         let end = guards.last().map(|(_, b)| b.span().end).unwrap_or(start);
         let where_defs = self.parse_trailing_where()?;
@@ -1128,8 +1146,25 @@ impl<'a> Parser<'a> {
         ) {
             i += 1;
         }
-        let Tok::Ident(head) = self.toks.get(i)?.tok.clone() else {
-            return None;
+        // A parenthesized OPERATOR head (`(&&) True y = y`) continues its group
+        // exactly like an identifier head: Haskell 2010 §4.4.2 defines an
+        // operator as an ordinary function, so it takes multiple equations.
+        let head = match self.toks.get(i)?.tok.clone() {
+            Tok::Ident(head) => head,
+            Tok::LParen => {
+                let op_name = bare_operator_name(&self.toks.get(i + 1)?.tok)?;
+                if !matches!(self.toks.get(i + 2).map(|t| &t.tok), Some(Tok::RParen)) {
+                    return None;
+                }
+                // Consume nothing: the caller seeks to the ARGUMENT start, which
+                // for a parenthesized head is three tokens further on.
+                if op_name != name {
+                    return None;
+                }
+                i += 2;
+                op_name.to_string()
+            }
+            _ => return None,
         };
         if head != name {
             return None;
@@ -1936,20 +1971,20 @@ impl<'a> Parser<'a> {
                             let g = self.parse_expr(0, true)?;
                             self.eat(&Tok::ThinArrow)?;
                             let b = self.parse_expr(0, true)?;
-                            guards.push((g, b));
+                            guards.push((Some(g), b));
                         }
                     } else {
                         // Bare arm: `pat -> body | g1 -> b1 | ...` — the first
-                        // alternative is unconditional (guard `true`).
+                        // alternative is unconditional (no guard expression).
                         self.eat(&Tok::ThinArrow)?;
                         let first = self.parse_expr(0, true)?;
-                        guards.push((Expr::Bool(true, pat_span), first));
+                        guards.push((None, first));
                         while self.peek().tok == Tok::Pipe {
                             self.bump();
                             let g = self.parse_expr(0, true)?;
                             self.eat(&Tok::ThinArrow)?;
                             let b = self.parse_expr(0, true)?;
-                            guards.push((g, b));
+                            guards.push((Some(g), b));
                         }
                     }
                     let arm_span = pat_span.merge(guards.last().unwrap().1.span());
@@ -1993,6 +2028,9 @@ impl<'a> Parser<'a> {
             Tok::KwDo => self.parse_do_block(),
             Tok::Ident(name) => {
                 let start = t.span.start;
+                // `true` / `false` resolve to the constructors `True` /
+                // `False` they name (the Report's spelling is canonical).
+                let name = ctor_alias(&name).to_string();
                 self.bump();
                 if self.peek().tok == Tok::Dot {
                     let proj = self.parse_field(Expr::Ref(name, t.span), start)?;
@@ -2291,6 +2329,9 @@ impl<'a> Parser<'a> {
             Tok::Star => Ok(Expr::Ref("*".into(), t.span)),
             Tok::Slash => Ok(Expr::Ref("/".into(), t.span)),
             Tok::Ident(name) => {
+                // `true` / `false` resolve to the constructors `True` /
+                // `False` they name (the Report's spelling is canonical).
+                let name = ctor_alias(&name).to_string();
                 if self.peek().tok == Tok::Dot {
                     let proj = self.parse_field(Expr::Ref(name, t.span), t.span.start)?;
                     Ok(proj)
@@ -2414,13 +2455,27 @@ impl<'a> Parser<'a> {
                 self.eat(&Tok::RBracket)?;
                 Ok(Expr::ListLit(elems, self.span_from(start)))
             }
-            Tok::KwTrue => Ok(Expr::Bool(true, t.span)),
-            Tok::KwFalse => Ok(Expr::Bool(false, t.span)),
             other => Err(CompileError::Parse {
                 msg: format!("unexpected token {other:?}"),
                 span: t.span,
             }),
         }
+    }
+}
+
+/// Resolve the legacy lowercase boolean spelling to the Prelude constructor it
+/// names.
+///
+/// Haskell 2010 §4.1.1 declares the type as `data Bool = False | True`, so the
+/// canonical source spelling is the constructor. `true`/`false` are kept as
+/// ALIASES of those constructors — the same values, not a second boolean type —
+/// so a program written with the lowercase spelling needs no respelling. `True`
+/// and `False` name themselves and pass through unchanged.
+fn ctor_alias(name: &str) -> &str {
+    match name {
+        "true" => "True",
+        "false" => "False",
+        other => other,
     }
 }
 
@@ -2546,7 +2601,9 @@ fn curry_expr(e: &mut Expr) {
             curry_expr(scrutinee);
             for arm in arms {
                 for (g, b) in arm.guards.iter_mut() {
-                    curry_expr(g);
+                    if let Some(g) = g {
+                        curry_expr(g);
+                    }
                     curry_expr(b);
                 }
             }
@@ -2568,10 +2625,6 @@ fn curry_expr(e: &mut Expr) {
             for (_, v) in fields.iter_mut() {
                 curry_expr(v);
             }
-        }
-        Expr::Logic { lhs, rhs, .. } => {
-            curry_expr(lhs);
-            curry_expr(rhs);
         }
         _ => {}
     }
@@ -2920,30 +2973,20 @@ mod tests {
     fn logic_operators_are_right_associative_and_ordered() {
         // `infixr 3 &&` binds tighter than `infixr 2 ||`:
         // `a || b && c` ≡ `a || (b && c)`; `a && b && c` ≡ `a && (b && c)`.
-        match body("main = a || b && c") {
-            Expr::Logic {
-                op: LogicOp::Or,
-                rhs,
-                ..
-            } => match rhs.as_ref() {
-                Expr::Logic {
-                    op: LogicOp::And, ..
-                } => {}
-                other => panic!("expected `&&` under `||`, got {other:?}"),
-            },
+        // Both are ordinary named applications (the Prelude functions), so the
+        // shape is the curried `ApplyExpr` chain every operator desugars to.
+        match curry_head(&body("main = a || b && c")) {
+            Some(("||", args)) => assert!(
+                matches!(curry_head(&args[1]), Some(("&&", inner)) if inner.len() == 2),
+                "`&&` must nest under `||`"
+            ),
             other => panic!("expected `||` at the root, got {other:?}"),
         }
-        match body("main = a && b && c") {
-            Expr::Logic {
-                op: LogicOp::And,
-                rhs,
-                ..
-            } => match rhs.as_ref() {
-                Expr::Logic {
-                    op: LogicOp::And, ..
-                } => {}
-                other => panic!("expected the right-nested `&&`, got {other:?}"),
-            },
+        match curry_head(&body("main = a && b && c")) {
+            Some(("&&", args)) => assert!(
+                matches!(curry_head(&args[1]), Some(("&&", inner)) if inner.len() == 2),
+                "`&&` must be right-associative"
+            ),
             other => panic!("expected `&&` at the root, got {other:?}"),
         }
     }
@@ -3777,15 +3820,15 @@ mod tests {
                     && matches!(&args[0], Pattern::Var(v) if v == "r")
         ));
         assert!(
-            matches!(arms[0].guards[0].0, Expr::Bool(true, _)),
-            "a bare `Circle r -> r` arm's first guard is `true`"
+            arms[0].guards[0].0.is_none(),
+            "a bare `Circle r -> r` arm carries no guard at all"
         );
         assert!(matches!(arms[1].pattern, Pattern::LitInt(0)));
         assert!(matches!(arms[2].pattern, Pattern::Wild));
         assert!(matches!(&arms[3].pattern, Pattern::Var(v) if v == "n"));
         assert!(
             matches!(
-                curry_head(&arms[3].guards[0].0),
+                arms[3].guards[0].0.as_ref().and_then(curry_head),
                 Some((">", args)) if args.len() == 2
             ),
             "a guarded arm's first alternative is the written guard (`n > 0`)"
@@ -3876,24 +3919,29 @@ mod tests {
             Expr::MapLit(entries, _) => assert_eq!(entries.len(), 1),
             other => panic!("expected MapLit, got {other:?}"),
         }
+        // `true` / `false` are aliases of the Prelude constructors, so they
+        // parse as ordinary references to `True` / `False`.
         match body("main = true") {
-            Expr::Bool(true, _) => {}
-            other => panic!("expected Bool, got {other:?}"),
+            Expr::Ref(name, _) => assert_eq!(name, "True"),
+            other => panic!("expected Ref(True), got {other:?}"),
         }
-        match body("main = 1.0 < 2.0 && 3.0 > 1.0") {
-            Expr::Logic { .. } => {}
-            other => panic!("expected Logic, got {other:?}"),
+        match curry_head(&body("main = 1.0 < 2.0 && 3.0 > 1.0")) {
+            Some(("&&", args)) => {
+                assert!(matches!(curry_head(&args[0]), Some(("<", _))));
+                assert!(matches!(curry_head(&args[1]), Some((">", _))));
+            }
+            other => panic!("expected `&&` at the root, got {other:?}"),
         }
     }
 
     #[test]
     fn comparison_binds_tighter_than_logic() {
-        match body("main = a < b || c > d") {
-            Expr::Logic { lhs, rhs, .. } => {
-                assert!(matches!(curry_head(&lhs), Some(("<", args)) if args.len() == 2));
-                assert!(matches!(curry_head(&rhs), Some((">", args)) if args.len() == 2));
+        match curry_head(&body("main = a < b || c > d")) {
+            Some(("||", args)) => {
+                assert!(matches!(curry_head(&args[0]), Some(("<", a)) if a.len() == 2));
+                assert!(matches!(curry_head(&args[1]), Some((">", a)) if a.len() == 2));
             }
-            other => panic!("expected Logic, got {other:?}"),
+            other => panic!("expected `||` at the root, got {other:?}"),
         }
     }
 

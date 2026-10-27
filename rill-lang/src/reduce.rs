@@ -28,15 +28,14 @@ pub(crate) fn pattern_vars(p: &Pattern) -> Vec<String> {
 }
 
 /// The body of a match arm that is usable as a plain `pattern -> body` arm.
-/// Returns `Some(body)` when the arm is bare (its single alternative carries the
-/// trivial `true` guard), and `None` when the arm is guarded (`pattern | g ->
-/// body`) — a guarded body runs only when its guard succeeds at runtime, so it
-/// has no statically-usable unguarded form.
+/// Returns `Some(body)` when the arm is bare (its single alternative carries no
+/// guard), and `None` when the arm is guarded (`pattern | g -> body`) — a
+/// guarded body runs only when its guard succeeds at runtime, so it has no
+/// statically-usable unguarded form.
 pub(crate) fn unguarded_arm_body(arm: &MatchArm) -> Option<&Expr> {
-    if arm.guards.len() == 1 && matches!(arm.guards[0].0, Expr::Bool(true, _)) {
-        Some(&arm.guards[0].1)
-    } else {
-        None
+    match arm.guards.as_slice() {
+        [(None, body)] => Some(body),
+        _ => None,
     }
 }
 
@@ -128,7 +127,12 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                         guards: arm
                             .guards
                             .iter()
-                            .map(|(g, b)| (substitute(g, &inner), substitute(b, &inner)))
+                            .map(|(g, b)| {
+                                (
+                                    g.as_ref().map(|g| substitute(g, &inner)),
+                                    substitute(b, &inner),
+                                )
+                            })
                             .collect(),
                         span: arm.span,
                     }
@@ -173,7 +177,6 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 .collect(),
             *span,
         ),
-        Expr::Bool(_, _) => e.clone(),
         Expr::ListLit(elems, span) => Expr::ListLit(
             elems.iter().map(|el| substitute(el, subst)).collect(),
             *span,
@@ -185,12 +188,6 @@ pub(crate) fn substitute(e: &Expr, subst: &HashMap<String, Expr>) -> Expr {
                 .collect(),
             *span,
         ),
-        Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
-            op: *op,
-            lhs: Box::new(substitute(lhs, subst)),
-            rhs: Box::new(substitute(rhs, subst)),
-            span: *span,
-        },
         Expr::Let { defs, body, span } => {
             // Let bindings shadow outer names inside the body: drop them from
             // the substitution while descending. The def bodies themselves are
@@ -664,12 +661,6 @@ fn reduce_expr(
                 .collect(),
             *span,
         ),
-        Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
-            op: *op,
-            lhs: Box::new(reduce_expr(lhs, ctx, cafs, reducing, mode)),
-            rhs: Box::new(reduce_expr(rhs, ctx, cafs, reducing, mode)),
-            span: *span,
-        },
         Expr::Match {
             scrutinee,
             arms,
@@ -698,7 +689,8 @@ fn reduce_expr(
                             .iter()
                             .map(|(g, b)| {
                                 (
-                                    reduce_expr(g, &inner_ctx, cafs, reducing, mode),
+                                    g.as_ref()
+                                        .map(|g| reduce_expr(g, &inner_ctx, cafs, reducing, mode)),
                                     reduce_expr(b, &inner_ctx, cafs, reducing, mode),
                                 )
                             })

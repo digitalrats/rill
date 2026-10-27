@@ -984,13 +984,8 @@ fn collect_static_calls(
                 collect_static_calls(ve, src, bound, nodes, out);
             }
         }
-        Expr::Bool(_, _) => {}
         Expr::Void(_) => {}
         Expr::Annot { expr, .. } => collect_static_calls(expr, src, bound, nodes, out),
-        Expr::Logic { lhs, rhs, .. } => {
-            collect_static_calls(lhs, src, bound, nodes, out);
-            collect_static_calls(rhs, src, bound, nodes, out);
-        }
         Expr::FieldProject { record, .. } => collect_static_calls(record, src, bound, nodes, out),
         Expr::FieldUpdate { record, value, .. } => {
             collect_static_calls(record, src, bound, nodes, out);
@@ -1006,7 +1001,9 @@ fn collect_static_calls(
                     inner.insert(v);
                 }
                 for (g, b) in &arm.guards {
-                    collect_static_calls(g, src, &inner, nodes, out);
+                    if let Some(g) = g {
+                        collect_static_calls(g, src, &inner, nodes, out);
+                    }
                     collect_static_calls(b, src, &inner, nodes, out);
                 }
             }
@@ -3641,9 +3638,11 @@ fn infer_guarded_arm_body(
     result: &mut Option<ValueTy>,
 ) -> Result<(), CompileError> {
     for (g, body) in &arm.guards {
-        if !matches!(g, Expr::Bool(true, _)) {
+        if let Some(g) = g {
             let gt = infer_expr(ctx, g)?;
-            if gt.arity_out() != 1 || !matches!(ctx.subst.resolve_value(&gt.vty), ValueTy::Bool) {
+            if gt.arity_out() != 1
+                || !matches!(ctx.subst.resolve_value(&gt.vty), t if t == ValueTy::bool_ty())
+            {
                 return Err(CompileError::Type {
                     msg: "match guard must be a Bool value".into(),
                     span: g.span(),
@@ -3662,9 +3661,9 @@ fn infer_guarded_arm_body(
 }
 
 /// An arm is "guarded" if it has more than one alternative or its first
-/// alternative is not the bare `-> body` form (guard `true`).
+/// alternative carries a guard expression (the bare `-> body` form has none).
 fn arm_is_guarded(arm: &MatchArm) -> bool {
-    arm.guards.len() > 1 || !matches!(arm.guards.first(), Some((Expr::Bool(true, _), _)))
+    arm.guards.len() > 1 || !matches!(arm.guards.first(), Some((None, _)))
 }
 
 /// Whether an arm's guard alternatives END in an unconditional fallback — a
@@ -3679,18 +3678,22 @@ fn arm_is_guarded(arm: &MatchArm) -> bool {
 /// `otherwise`), and so does this one — `otherwise` otherwise behaves as the
 /// ordinary Bool value it is.
 fn arm_ends_unconditionally(arm: &MatchArm) -> bool {
-    matches!(
-        arm.guards.last(),
-        Some((flag, _)) if guard_is_always_true(flag)
-    )
+    match arm.guards.last() {
+        // A written alternative with NO guard is the bare `pattern -> body`
+        // form, which always matches.
+        Some((None, _)) => true,
+        Some((Some(flag), _)) => guard_is_always_true(flag),
+        None => false,
+    }
 }
 
 /// Whether a guard expression is unconditionally true by construction: the
 /// literal `True`, or the Prelude constant `otherwise`.
 fn guard_is_always_true(guard: &Expr) -> bool {
     match guard {
-        Expr::Bool(true, _) => true,
-        Expr::Ref(name, _) => name == "otherwise",
+        // The Report spells the constructor `True`; the lowercase spelling is
+        // an alias the parser resolves to the same reference.
+        Expr::Ref(name, _) => name == "True" || name == "otherwise",
         _ => false,
     }
 }
@@ -3769,7 +3772,7 @@ fn bind_pattern(
             }
             Ok(())
         }
-        Pattern::LitInt(_) | Pattern::LitDouble(_) | Pattern::LitBool(_) | Pattern::LitStr(_) => {
+        Pattern::LitInt(_) | Pattern::LitDouble(_) | Pattern::LitStr(_) => {
             Err(CompileError::Type {
                 msg: "literal pattern requires a scalar scrutinee".into(),
                 span: arm_span,
@@ -3823,7 +3826,6 @@ fn check_scalar_pattern(
         Pattern::LitDouble(_) => {
             unify_value(scrutinee_vty, &ValueTy::Double, &mut ctx.subst, arm_span)
         }
-        Pattern::LitBool(_) => unify_value(scrutinee_vty, &ValueTy::Bool, &mut ctx.subst, arm_span),
         Pattern::LitStr(_) => {
             unify_value(scrutinee_vty, &ValueTy::String, &mut ctx.subst, arm_span)
         }
@@ -3835,35 +3837,22 @@ fn check_scalar_pattern(
     }
 }
 
-/// Scalar totality: a `Wild`/`Var` arm, or (for Bool) both literals.
+/// Scalar totality: the match needs a `Wild`/`Var` arm.
+///
+/// A boolean match is NOT a scalar match: `Bool` is an ordinary sum type, so a
+/// `case b of { False -> …; True -> … }` is checked against the sum's
+/// constructor set by [`check_exhaustive_sum`], exactly like `Maybe`.
 fn check_exhaustive_scalar(
-    ctx: &Ctx,
+    _ctx: &Ctx,
     arms: &[MatchArm],
-    scrutinee_vty: &ValueTy,
+    _scrutinee_vty: &ValueTy,
     span: Span,
 ) -> Result<(), CompileError> {
-    let is_bool = matches!(ctx.subst.resolve_value(scrutinee_vty), ValueTy::Bool);
-    let mut has_wild = false;
-    let mut has_true = false;
-    let mut has_false = false;
-    for a in arms {
-        if arm_is_guarded(a) && !arm_ends_unconditionally(a) {
-            continue;
-        }
-        match a.pattern.strip_bang() {
-            Pattern::Wild | Pattern::Var(_) => has_wild = true,
-            Pattern::LitBool(b) => {
-                if *b {
-                    has_true = true;
-                } else {
-                    has_false = true;
-                }
-            }
-            _ => {}
-        }
-    }
-    let ok = has_wild || (is_bool && has_true && has_false);
-    if ok {
+    let has_wild = arms.iter().any(|a| {
+        (!arm_is_guarded(a) || arm_ends_unconditionally(a))
+            && matches!(a.pattern.strip_bang(), Pattern::Wild | Pattern::Var(_))
+    });
+    if has_wild {
         return Ok(());
     }
     Err(CompileError::Type {
@@ -4486,7 +4475,7 @@ fn infer_expr_expected(
                     span: cond.span(),
                 });
             }
-            if !matches!(ctx.subst.resolve_value(&ct.vty), ValueTy::Bool) {
+            if ctx.subst.resolve_value(&ct.vty) != ValueTy::bool_ty() {
                 return Err(CompileError::Type {
                     msg: "if condition must be a Bool value".into(),
                     span: cond.span(),
@@ -4560,7 +4549,6 @@ fn infer_expr_expected(
                 vec![ret_ty],
             )))
         }
-        Expr::Bool(_, _) => Ok(ArrowTy::value_channel(ValueTy::Bool)),
         Expr::ListLit(elems, _) => {
             // Homogeneous list literal: every element is a value constant of the
             // same type; the literal's capacity is its length (a strict
@@ -4603,11 +4591,6 @@ fn infer_expr_expected(
                 "Map".into(),
                 vec![ValueTy::String, val_ty],
             )))
-        }
-        Expr::Logic { lhs, rhs, .. } => {
-            let _ = infer_const_value(ctx, lhs)?;
-            let _ = infer_const_value(ctx, rhs)?;
-            Ok(ArrowTy::value_channel(ValueTy::Bool))
         }
     }
 }
@@ -5957,13 +5940,13 @@ fn infer_apply_impl(
             });
         }
         let arg_vty = infer_method_value_vty(ctx, &args[0], "argument")?;
-        if arg_vty != ValueTy::Bool {
+        if arg_vty != ValueTy::bool_ty() {
             return Err(CompileError::Type {
                 msg: format!("`not` expects a Bool argument, got {arg_vty:?}"),
                 span: args[0].span(),
             });
         }
-        return Ok(ArrowTy::value_channel(ValueTy::Bool));
+        return Ok(ArrowTy::value_channel(ValueTy::bool_ty()));
     }
     // Binary elementwise buffer ops (`atan2 y x`, `min a b`, `max a b`): each
     // operand may be a Buffer computation or a scalar constant (broadcast), so
@@ -7674,7 +7657,7 @@ fn numeric_default_widens(formal: &ValueTy, actual: &ValueTy) -> bool {
     match (formal, actual) {
         (ValueTy::Double, ValueTy::Double | ValueTy::Int) => true,
         (ValueTy::Int, ValueTy::Int) => true,
-        (ValueTy::Bool, ValueTy::Bool) | (ValueTy::String, ValueTy::String) => true,
+        (ValueTy::String, ValueTy::String) => true,
         (ValueTy::Void, ValueTy::Void) => true,
         (ValueTy::Data(f, fa), ValueTy::Data(a, aa))
         | (ValueTy::Newtype(f, fa), ValueTy::Newtype(a, aa))
@@ -8158,7 +8141,7 @@ fn infer_collection_call(
             let kt = arg_vty(ctx, 0)?;
             check_ord(ctx, &kt, "key")?;
             let _ = arg_vty(ctx, 1)?;
-            Ok(ValueTy::Bool)
+            Ok(ValueTy::bool_ty())
         }
         "empty_map" => {
             if !args.is_empty() {
@@ -8224,7 +8207,7 @@ mod tests {
             vars: vec![7],
             constraints: vec![("Ix".to_string(), 7)],
             ty: ArrowTy {
-                vty: ValueTy::Thunk(vec![ValueTy::Var(7)], vec![ValueTy::Bool]),
+                vty: ValueTy::Thunk(vec![ValueTy::Var(7)], vec![ValueTy::bool_ty()]),
             },
         };
         let mut ctx = Ctx {

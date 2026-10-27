@@ -22,6 +22,17 @@ pub enum ThunkState {
     Bottom,
 }
 
+/// Constructor tag of `False` in the Prelude's `data Bool = False | True`.
+///
+/// The tag is the constructor's DECLARATION position (Haskell 2010 §4.1.1:
+/// `False` is the first alternative), so `False` is `0` and `True` is `1`.
+/// Nothing in the value model treats a `Bool` specially: these constants exist
+/// only so the few compiler primitives that produce a boolean (`ValueCompare`,
+/// `member`, `atEnd`, `show_bool`) build the right `Value::Sum`.
+pub const BOOL_FALSE_TAG: u32 = 0;
+/// Constructor tag of `True` in the Prelude's `data Bool = False | True`.
+pub const BOOL_TRUE_TAG: u32 = 1;
+
 /// The kind of a [`Value`], used for runtime dispatch.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ValueKind {
@@ -29,8 +40,6 @@ pub enum ValueKind {
     Int,
     /// Floating-point value.
     Double,
-    /// Boolean value.
-    Bool,
     /// String value.
     String,
     /// Record with named fields stored as arena refs.
@@ -163,13 +172,15 @@ pub enum Value {
     Int(i64),
     /// Floating-point payload.
     Double(f64),
-    /// Boolean payload.
-    Bool(bool),
     /// String payload.
     String(String),
     /// Record fields, one arena ref per field.
     Record(Vec<ArenaRef>),
     /// Constructor index plus one arena ref per constructor argument.
+    ///
+    /// Every Haskell 2010 data value is this shape, `Bool` included: a
+    /// boolean is `Sum(0, [])` (`False`) or `Sum(1, [])` (`True`). Nullary
+    /// constructors own no children, so the payload vector is empty.
     Sum(u32, Vec<ArenaRef>),
     /// A single inner value wrapped by a `newtype`.
     Newtype(ArenaRef),
@@ -273,7 +284,6 @@ impl Value {
         match self {
             Value::Int(_) => ValueKind::Int,
             Value::Double(_) => ValueKind::Double,
-            Value::Bool(_) => ValueKind::Bool,
             Value::String(_) => ValueKind::String,
             Value::Record(_) => ValueKind::Record,
             Value::Sum(_, _) => ValueKind::Sum,
@@ -292,6 +302,29 @@ impl Value {
             Value::Opaque(_) => ValueKind::Opaque,
             Value::BuiltinCallable { .. } => ValueKind::Callable,
             Value::Dictionary { .. } => ValueKind::Dictionary,
+        }
+    }
+
+    /// The `Bool` value for a host boolean: the nullary `Sum` constructor of
+    /// the Prelude's `data Bool = False | True`.
+    ///
+    /// This is the ONE place the compiler's own primitives build a boolean, so
+    /// no producer can disagree about the tag assignment. It is a value-level
+    /// helper only — nothing in the type system, the arena, the RC walkers or
+    /// the renderer knows that `Sum(1, [])` is `True`.
+    pub fn bool(b: bool) -> Value {
+        Value::Sum(if b { BOOL_TRUE_TAG } else { BOOL_FALSE_TAG }, Vec::new())
+    }
+
+    /// The host boolean this value denotes, when it is a `Bool` constructor.
+    ///
+    /// `None` for every other value — including a `Sum` of another type, which
+    /// the caller distinguishes by the constructor tag it expects.
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Sum(BOOL_FALSE_TAG, payload) if payload.is_empty() => Some(false),
+            Value::Sum(BOOL_TRUE_TAG, payload) if payload.is_empty() => Some(true),
+            _ => None,
         }
     }
 }

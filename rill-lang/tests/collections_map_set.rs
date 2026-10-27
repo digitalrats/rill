@@ -35,7 +35,7 @@ fn set_member_after_insert() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Bool(true)
+        &rill_lang::arena::Value::bool(true)
     );
 }
 
@@ -72,7 +72,7 @@ fn map_replace_on_duplicate_does_not_overflow() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Bool(true)
+        &rill_lang::arena::Value::bool(true)
     );
 }
 
@@ -84,7 +84,7 @@ fn set_insert_duplicate_does_not_overflow() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Bool(true)
+        &rill_lang::arena::Value::bool(true)
     );
 }
 
@@ -96,7 +96,7 @@ fn map_literal_entries_are_sorted_regardless_of_write_order() {
     let v = prog.result().unwrap();
     assert_eq!(
         prog.arena().get(v).unwrap(),
-        &rill_lang::arena::Value::Bool(true),
+        &rill_lang::arena::Value::bool(true),
         "lookup of a key written out of order must still find it"
     );
 }

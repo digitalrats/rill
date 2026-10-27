@@ -31,12 +31,9 @@ fn mentions_var(t: &ValueTy, id: TypeVarId) -> bool {
         ValueTy::Data(_, args) | ValueTy::Newtype(_, args) | ValueTy::App(_, args) => {
             args.iter().any(|a| mentions_var(a, id))
         }
-        ValueTy::Int
-        | ValueTy::Double
-        | ValueTy::Bool
-        | ValueTy::String
-        | ValueTy::Void
-        | ValueTy::Dict(_) => false,
+        ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void | ValueTy::Dict(_) => {
+            false
+        }
         // The element is part of the buffer type, so a variable inside it is
         // mentioned by the type.
         ValueTy::Buffer(elem) => mentions_var(elem, id),
@@ -224,7 +221,7 @@ fn dict_has_no_data_interpretation() {
     for data in [
         ValueTy::Int,
         ValueTy::Double,
-        ValueTy::Bool,
+        ValueTy::bool_ty(),
         ValueTy::String,
         ValueTy::Buffer(Box::new(ValueTy::Double)),
         ValueTy::Void,

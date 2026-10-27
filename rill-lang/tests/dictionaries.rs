@@ -86,7 +86,7 @@ fn infix_comparison_records_the_eq_dictionary() {
     );
     // And it still computes the value.
     let world = eval("", "1.0 == 2.0").expect("the program must run");
-    assert_eq!(out_value(&world), Value::Bool(false));
+    assert_eq!(out_value(&world), Value::bool(false));
 }
 
 #[test]
@@ -116,7 +116,7 @@ fn infix_ordering_records_ord_with_its_eq_superclass() {
     assert_eq!(sup_classes(&ir, ord), vec!["Eq"], "`Ord` holds `Eq`");
     assert_eq!(
         out_value(&eval("", "1.0 < 2.0").unwrap()),
-        Value::Bool(true)
+        Value::bool(true)
     );
 }
 
@@ -192,7 +192,7 @@ fn a_dictionary_is_still_built_once_per_pair_not_per_operator() {
     );
     let world = eval("", "(1.0 + 2.0) * 3.0 - 4.0 / 2.0 == 7.0").expect("runs");
     assert_eq!(world.dicts_len(), 4);
-    assert_eq!(out_value(&world), Value::Bool(true));
+    assert_eq!(out_value(&world), Value::bool(true));
 }
 
 #[test]

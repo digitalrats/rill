@@ -67,7 +67,7 @@ fn buffers_with_different_elements_are_different_types() {
     // The same at the `ValueTy` level, directly: the two buffer types are not
     // equal, and neither unifies with the other.
     let int_buf = ValueTy::Buffer(Box::new(ValueTy::Int));
-    let bool_buf = ValueTy::Buffer(Box::new(ValueTy::Bool));
+    let bool_buf = ValueTy::Buffer(Box::new(ValueTy::bool_ty()));
     assert_ne!(int_buf, bool_buf);
     let mut subst = rill_lang::types::Subst::default();
     assert!(
@@ -112,7 +112,7 @@ fn a_buffer_never_unifies_with_a_non_buffer() {
     for other in [
         ValueTy::Int,
         ValueTy::Double,
-        ValueTy::Bool,
+        ValueTy::bool_ty(),
         ValueTy::Data("FixedBuffer".into(), vec![]),
         ValueTy::App("List".into(), vec![ValueTy::Double]),
     ] {

@@ -278,18 +278,29 @@ fn equation_chain(
         let body = equation_chain(&branch_of(pattern, true), params, idx + 1)?;
         arms.push(MatchArm {
             pattern: pattern.clone(),
-            guards: vec![(Expr::Bool(true, span), body)],
+            guards: vec![(None, body)],
             span: e.span,
         });
     }
     if has_variable {
+        if arms.is_empty() {
+            // EVERY equation still in play has a VARIABLE pattern here, so
+            // there is nothing to test and nothing to distinguish. A
+            // `case v of { _ -> e }` would be semantically identical to `e`
+            // but would FORCE the argument to WHNF, which Haskell 2010 does
+            // not do — and that is exactly what makes `False && loop 1.0`
+            // short-circuit (`(&&) False _ = False` never looks at its second
+            // argument). Skip the match and continue at the next position.
+            let body = equation_chain(&branch_of(&Pattern::Wild, true), params, idx + 1)?;
+            return Ok(body);
+        }
         // Every equation whose pattern here is a variable survives the test
         // unchanged, so they all continue in ONE wildcard arm — in source order,
         // which keeps a more specific second position ahead of a general one.
         let body = equation_chain(&branch_of(&Pattern::Wild, true), params, idx + 1)?;
         arms.push(MatchArm {
             pattern: Pattern::Wild,
-            guards: vec![(Expr::Bool(true, span), body)],
+            guards: vec![(None, body)],
             span,
         });
     }
@@ -366,7 +377,11 @@ fn equation_arm(equation: &Equation) -> Result<MatchArm, CompileError> {
         // The `where` clause scopes over the WHOLE equation (Haskell 2010
         // §4.4.3.3), i.e. over every one of its guard alternatives.
         let body = wrap_equation_where(equation, desugar_expr(body.clone())?)?;
-        guards.push((desugar_expr(guard.clone())?, body));
+        let guard = match guard {
+            Some(g) => Some(desugar_expr(g.clone())?),
+            None => None,
+        };
+        guards.push((guard, body));
     }
     Ok(MatchArm {
         pattern: Pattern::Wild,
@@ -488,10 +503,18 @@ fn all_variable_patterns(patterns: &[Pattern]) -> bool {
     patterns.iter().all(is_variable_pattern)
 }
 
+/// Whether a pattern is IRREFUTABLE and BINDS NOTHING that the arm needs to
+/// test: a wildcard `_`, or a (possibly bang) variable binding.
+///
+/// Such an alternative matches every value without inspecting it, so the
+/// desugar pass can drop its match instead of emitting `case v of { _ -> e }`.
+/// Dropping it is not cosmetic: a match forces its scrutinee to WHNF, and
+/// Haskell 2010 does not — which is exactly why `False && loop 1.0` is `False`
+/// (`(&&) False _ = False` never looks at its second argument).
 fn is_variable_pattern(p: &Pattern) -> bool {
     match p {
-        Pattern::Var(_) => true,
-        Pattern::Bang(inner) => matches!(inner.as_ref(), Pattern::Var(_)),
+        Pattern::Wild | Pattern::Var(_) => true,
+        Pattern::Bang(inner) => matches!(inner.as_ref(), Pattern::Wild | Pattern::Var(_)),
         _ => false,
     }
 }
@@ -558,8 +581,9 @@ fn variable_params_or_fresh(
     Ok(params)
 }
 
+/// Whether an equation is written with no guard at all (`f x = e`).
 fn is_unconditional(equation: &Equation) -> bool {
-    matches!(equation.guards.as_slice(), [(Expr::Bool(true, _), _)])
+    matches!(equation.guards.as_slice(), [(None, _)])
 }
 
 /// Recursively desugar an expression: nested `let` blocks carry their own
@@ -635,7 +659,7 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
                         guards: arm
                             .guards
                             .into_iter()
-                            .map(|(g, b)| Ok((desugar_expr(g)?, desugar_expr(b)?)))
+                            .map(|(g, b)| Ok((g.map(desugar_expr).transpose()?, desugar_expr(b)?)))
                             .collect::<Result<Vec<_>, CompileError>>()?,
                         span: arm.span,
                     })
@@ -672,18 +696,11 @@ fn desugar_expr(e: Expr) -> Result<Expr, CompileError> {
             ty,
             span,
         },
-        Expr::Logic { op, lhs, rhs, span } => Expr::Logic {
-            op,
-            lhs: Box::new(desugar_expr(*lhs)?),
-            rhs: Box::new(desugar_expr(*rhs)?),
-            span,
-        },
         other @ (Expr::Int(..)
         | Expr::Double(..)
         | Expr::Void(..)
         | Expr::Str(..)
-        | Expr::Ref(..)
-        | Expr::Bool(..)) => other,
+        | Expr::Ref(..)) => other,
     })
 }
 
@@ -742,7 +759,10 @@ mod tests {
         assert_eq!(arms[0].guards.len(), 2);
         // The final alternative is the `otherwise` guard, which is the Prelude
         // constant — an ordinary `Ref`, not a keyword.
-        assert!(matches!(&arms[0].guards[1].0, Expr::Ref(n, _) if n == "otherwise"));
+        assert!(matches!(
+            &arms[0].guards[1].0,
+            Some(Expr::Ref(n, _)) if n == "otherwise"
+        ));
     }
 
     #[test]

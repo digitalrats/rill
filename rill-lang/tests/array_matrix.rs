@@ -79,7 +79,9 @@ fn run_float(src: &str) -> f64 {
 /// Run `src` and return its single `Bool` value.
 fn run_bool(src: &str) -> bool {
     with_output(src, |_prog, v| match v {
-        Value::Bool(b) => *b,
+        other => other
+            .as_bool()
+            .unwrap_or_else(|| panic!("expected a Bool result, got {other:?}")),
         other => panic!("expected a Bool, got {other:?}\nsrc:\n{src}"),
     })
 }

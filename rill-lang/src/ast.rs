@@ -76,22 +76,6 @@ impl TypeExpr {
     }
 }
 
-/// A value-track boolean logic operator.
-///
-/// `&&` / `||` are the ONLY operator nodes in the AST: they are short-circuit
-/// control flow, not class methods (Haskell 2010 has no `Logic` class), so they
-/// cannot be ordinary applications. Every other infix operator is sugar over a
-/// named function or class method and desugars to `Expr::Apply` in the parser
-/// (Haskell 2010 §3.4, System FC).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum LogicOp {
-    /// `&&`
-    And,
-    /// `||`
-    Or,
-}
-
 /// A match pattern. The case convention: an uppercase-initial identifier is a
 /// constructor, a lowercase-initial identifier is a variable binding, `_` is a
 /// wildcard.
@@ -106,11 +90,13 @@ pub enum Pattern {
     LitInt(i64),
     /// Double literal.
     LitDouble(f64),
-    /// Boolean literal.
-    LitBool(bool),
     /// String literal.
     LitStr(String),
     /// Constructor application with (possibly nested) argument patterns.
+    ///
+    /// `True` / `False` are ordinary constructor patterns of the Prelude's
+    /// `data Bool = False | True`, so this is the ONLY pattern form a boolean
+    /// match uses — there is no separate boolean-literal pattern.
     Ctor(String, Vec<Pattern>),
     /// Bang pattern `!pat` — force the matched value to WHNF before matching
     /// the inner pattern (GHC-style extension; no deep strictness).
@@ -130,17 +116,19 @@ impl Pattern {
 }
 
 /// One `case` arm: a pattern, then a sequence of `(guard, body)` alternatives.
-/// The first alternative's guard is `true` only for the bare `-> body` form; a
-/// guarded arm (`pat | g -> body`) carries the user-written guard `g` as its
-/// first alternative.
+///
+/// A guard-less alternative (`pattern -> body`) carries `None` — Haskell 2010
+/// §3.13 gives it no guard expression at all (GHC's `GRHS` holds an empty guard
+/// list), so there is no "always true" sentinel a user could shadow. A guarded
+/// alternative (`pattern | g -> body`) carries `Some(g)`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct MatchArm {
     /// The pattern tested against the scrutinee.
     pub pattern: Pattern,
-    /// `(guard_expr, body_expr)` pairs, evaluated in order; the first that is
-    /// true runs its body.
-    pub guards: Vec<(Expr, Expr)>,
+    /// `(guard_expr, body_expr)` alternatives, evaluated in order; the first
+    /// whose guard holds runs its body. `None` is an unconditional alternative.
+    pub guards: Vec<(Option<Expr>, Expr)>,
     /// Span of the whole arm (for diagnostics).
     pub span: Span,
 }
@@ -265,23 +253,10 @@ pub enum Expr {
         /// Full span, from the expression through the type.
         span: Span,
     },
-    /// Boolean literal `true` / `false`.
-    Bool(bool, Span),
     /// List literal `[e1, e2]`.
     ListLit(Vec<Expr>, Span),
     /// Map literal `{ "k": v, ... }` (string keys).
     MapLit(Vec<(String, Expr)>, Span),
-    /// Short-circuit logic `a && b` / `a || b` (only valid in value position).
-    Logic {
-        /// The operator.
-        op: LogicOp,
-        /// Left operand.
-        lhs: Box<Expr>,
-        /// Right operand.
-        rhs: Box<Expr>,
-        /// Full span.
-        span: Span,
-    },
 }
 
 impl Expr {
@@ -305,10 +280,8 @@ impl Expr {
             | Expr::If { span, .. }
             | Expr::Lambda { span, .. }
             | Expr::Annot { span, .. }
-            | Expr::Bool(_, span)
             | Expr::ListLit(_, span)
-            | Expr::MapLit(_, span)
-            | Expr::Logic { span, .. } => *span,
+            | Expr::MapLit(_, span) => *span,
         }
     }
 }
@@ -339,10 +312,10 @@ pub struct Equation {
     /// The argument patterns, one per formal parameter (`f 0.0 y = …` has two).
     pub patterns: Vec<Pattern>,
     /// The `(guard, body)` alternatives in source order. A plain `= body`
-    /// equation is one alternative whose guard is the literal `true`; a
-    /// guarded equation (`| g1 = e1 | g2 = e2`) carries one alternative per
-    /// guard (Haskell 2010 §4.4.3). Never empty.
-    pub guards: Vec<(Expr, Expr)>,
+    /// equation is one alternative with NO guard (`None`); a guarded equation
+    /// (`| g1 = e1 | g2 = e2`) carries one alternative per guard (Haskell 2010
+    /// §4.4.3). Never empty.
+    pub guards: Vec<(Option<Expr>, Expr)>,
     /// The equation's own `where` block (empty when absent).
     pub where_defs: Vec<Def>,
     /// Span of the whole equation.

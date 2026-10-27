@@ -161,7 +161,7 @@ fn annotation_tighter_than_arithmetic() {
     // `1 < 2 :: Bool` is `(1 < 2) :: Bool`. This is DISCRIMINATING — the
     // tighter reading `1 < (2 :: Bool)` must annotate an Int literal as Bool
     // and is rejected. So `true` proves the loose grouping.
-    assert_eq!(run_value("main = 1 < 2 :: Bool;"), Value::Bool(true));
+    assert_eq!(run_value("main = 1 < 2 :: Bool;"), Value::bool(true));
 
     let tight = compile_err("main = 1 < (2 :: Bool);");
     assert!(

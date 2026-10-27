@@ -5,7 +5,7 @@
 //! isomorphism between JSON and DSL representations. Rendering is total:
 //! `if` and `match` render every arm, including guarded alternatives.
 
-use crate::ast::{Def, Expr, LogicOp, Pattern, Program, TypeExpr};
+use crate::ast::{Def, Expr, Pattern, Program, TypeExpr};
 use crate::error::CompileError;
 use crate::mode::Mode;
 use std::fmt::Write;
@@ -621,17 +621,19 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, " of {{ ").ok();
             for arm in arms {
                 render_pattern(&arm.pattern, buf);
-                for (i, (g, body)) in arm.guards.iter().enumerate() {
-                    // A bare arm's FIRST alternative carries the synthetic
-                    // `true` guard and renders without a `| guard` prefix;
-                    // every other alternative — including a written `true`
-                    // guard — renders its guard explicitly.
-                    if i == 0 && matches!(g, Expr::Bool(true, _)) {
-                        write!(buf, " -> ").ok();
-                    } else {
-                        write!(buf, " | ").ok();
-                        render_expr(g, buf, 0)?;
-                        write!(buf, " -> ").ok();
+                for (g, body) in &arm.guards {
+                    // An alternative with NO guard (`pattern -> body`) renders
+                    // without a `| guard` prefix; a written guard — even one
+                    // that happens to be `True` — renders explicitly.
+                    match g {
+                        None => {
+                            write!(buf, " -> ").ok();
+                        }
+                        Some(g) => {
+                            write!(buf, " | ").ok();
+                            render_expr(g, buf, 0)?;
+                            write!(buf, " -> ").ok();
+                        }
                     }
                     render_expr(body, buf, 0)?;
                 }
@@ -663,10 +665,6 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             render_expr(body, buf, 0)?;
             Ok(())
         }
-        Expr::Bool(v, _) => {
-            write!(buf, "{}", if *v { "true" } else { "false" }).ok();
-            Ok(())
-        }
         Expr::ListLit(elems, _) => {
             write!(buf, "[").ok();
             for (i, e) in elems.iter().enumerate() {
@@ -690,7 +688,6 @@ fn render_expr(expr: &Expr, buf: &mut String, outer_bp: u8) -> Result<(), Compil
             write!(buf, " }}").ok();
             Ok(())
         }
-        Expr::Logic { op, lhs, rhs, .. } => render_bin(lhs, rhs, buf, outer_bp, logic_info(op)),
     }
 }
 
@@ -769,6 +766,10 @@ fn infix_spelling(name: &str) -> Option<(u8, u8, u8, &'static str)> {
         ">" => (5, 6, 6, ">"),
         "<=" => (5, 6, 6, "<="),
         ">=" => (5, 6, 6, ">="),
+        // `infixr 2` / `infixr 3`: `&&` and `||` are ordinary Prelude
+        // functions, so they render exactly like every other operator.
+        "||" => (1, 2, 1, "||"),
+        "&&" => (3, 4, 3, "&&"),
         // `infixr 5` / `infixr 6`.
         "++" => (7, 8, 7, "++"),
         "<>" => (9, 10, 9, "<>"),
@@ -779,13 +780,6 @@ fn infix_spelling(name: &str) -> Option<(u8, u8, u8, &'static str)> {
         "/" => (13, 13, 14, "/"),
         _ => return None,
     })
-}
-
-fn logic_info(op: &LogicOp) -> (u8, u8, u8, &'static str) {
-    match op {
-        LogicOp::And => (1, 1, 2, "&&"),
-        LogicOp::Or => (1, 1, 2, "||"),
-    }
 }
 
 /// Whether the expression on the LEFT of `::` needs parentheses to stay a
@@ -819,9 +813,6 @@ fn render_pattern(p: &Pattern, buf: &mut String) {
             write!(buf, "{v}").ok();
         }
         Pattern::LitDouble(v) => {
-            write!(buf, "{v}").ok();
-        }
-        Pattern::LitBool(v) => {
             write!(buf, "{v}").ok();
         }
         Pattern::LitStr(s) => {
@@ -1000,8 +991,11 @@ mod tests {
 
     #[test]
     fn render_roundtrip_if() {
+        // A condition renders with the CANONICAL constructor spelling: `true`
+        // is an alias of `True` (`data Bool = False | True`), and the renderer
+        // quotes the constructor it resolved to.
         let dsl = roundtrip_main("main = if true then 1.0 else 2.0;");
-        assert_eq!(dsl, "main = if true then 1.0 else 2.0");
+        assert_eq!(dsl, "main = if True then 1.0 else 2.0");
     }
 
     #[test]
@@ -1227,12 +1221,13 @@ main = 1.0;";
     #[test]
     fn render_roundtrip_match_written_true_guard() {
         // A written `true` guard in a non-first position must not be conflated
-        // with the bare arm's synthetic first-alternative `true` sentinel
-        // (regression: it previously rendered as `n -> 1.0 -> 2.0`).
+        // with a bare arm's UNGUARDED alternative (regression: it previously
+        // rendered as `n -> 1.0 -> 2.0`). It renders as the constructor it
+        // resolved to, `True`.
         let dsl = roundtrip_main(r"main = case n of { n -> 1.0 | true -> 2.0; _ -> 0.0; };");
         assert_eq!(
             dsl,
-            r"main = case n of { n -> 1.0 | true -> 2.0; _ -> 0.0; }"
+            r"main = case n of { n -> 1.0 | True -> 2.0; _ -> 0.0; }"
         );
     }
 

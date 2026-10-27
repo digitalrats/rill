@@ -35,8 +35,6 @@ pub enum ValueTy {
     Int,
     /// Floating point value.
     Double,
-    /// Boolean value type.
-    Bool,
     /// String value type.
     String,
     /// A signal buffer over an element type (a block of `elem` samples):
@@ -95,6 +93,17 @@ impl ValueTy {
     /// The type of a constant of type `t`: a nullary thunk `Thunk([], [t])`.
     pub fn const_ty(t: ValueTy) -> ValueTy {
         ValueTy::Thunk(vec![], vec![t])
+    }
+
+    /// The value type of the Prelude's `data Bool = False | True`.
+    ///
+    /// `Bool` is an ordinary declared sum type with no type parameters, so this
+    /// is nothing but its zero-argument `Data` application. The helper exists so
+    /// the compiler's own boolean-producing primitives (`ValueCompare`,
+    /// `member`, `atEnd`, `show_bool`, `not`) do not each re-spell it — there is
+    /// no `Bool` case in the type system.
+    pub fn bool_ty() -> ValueTy {
+        ValueTy::Data("Bool".to_string(), Vec::new())
     }
 }
 
@@ -637,6 +646,27 @@ pub struct TypeEnv {
 /// "standard" prelude. A buffer is an ordinary value; `Buffer` is an ordinary
 /// type class next to `Functor`/`Monad`/`Monoid`.
 pub(crate) const PRELUDE: &str = r#"
+--  --- Bool ----------------------------------------------------------------
+--  Haskell 2010 §4.1.1 declares the boolean type as an ordinary data type
+--  with two nullary constructors:
+--
+--      data Bool = False | True
+--
+--  Declaration order fixes the constructor tags: `False` is tag 0 and `True`
+--  is tag 1. There is nothing else special about it — `Bool` is
+--  `Data("Bool", [])` and a boolean value is `Sum(tag, [])`, exactly like
+--  `Maybe`/`Either`. `if`, `&&` and `||` all work through that representation.
+data Bool = False | True;
+
+--  The two boolean operators, written as the Report's equations (§6.1.4/§6.1.5
+--  in the Haskell Prelude). Their short-circuiting is NOT a special mechanism:
+--  `False && _` simply ignores its second argument, and rill already evaluates
+--  arguments lazily, so `False && loop 1.0` is `False`.
+(&&) True  y = y;
+(&&) False _ = False;
+(||) True  _ = True;
+(||) False y = y;
+
 typeclass Functor f where { fmap: (a -> b) -> f a -> f b; }
 typeclass (Functor f) => Applicative f where { pure: a -> f a; ap: f (a -> b) -> f a -> f b; }
 typeclass (Applicative m) => Monad m where { return: a -> m a; bind: m a -> (a -> m b) -> m b; }
@@ -768,7 +798,7 @@ instance Buffer (Tape Double) where { }
 --  the lexer) lets a guard read `| otherwise = e` exactly like any other guard,
 --  and lets the totality rule recognise the final unconditional alternative
 --  without special-casing surface syntax.
-otherwise = true;
+otherwise = True;
 
 
 --  --- Standard library -----------------------------------------------------
@@ -1163,10 +1193,11 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
     );
     let defs = program.ok().unwrap().defs;
     // Prelude `data` declarations (`data Kleisli m a b = …`, the catalog's
-    // record types) and ABSTRACT declarations (`data World;` — the primitive
-    // opaque tokens) register here. User `data` declarations register in infer
-    // phase 2 (`infer_program_with`) — `register_decls` deliberately does NOT
-    // handle `Def::Data`/`Def::Abstract`, so a declaration reaches exactly one
+    // record types), ABSTRACT declarations (`data World;` — the primitive
+    // opaque tokens) and SUM declarations (`data Bool = False | True`, the
+    // Prelude's data types) register here. User `data` declarations register in
+    // infer phase 2 (`infer_program_with`) — `register_decls` deliberately does
+    // NOT handle `Def::Data`/`Def::Sum`, so a declaration reaches exactly one
     // registration path (no double-register).
     for def in &defs {
         if let Def::Data {
@@ -1187,6 +1218,37 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
                 .collect();
             env.data_types
                 .insert(name.clone(), DataInfo::Record(fields_ty));
+            if !tyvars.is_empty() {
+                env.data_arities.insert(name.clone(), tyvars.len());
+            }
+        }
+        if let Def::Sum {
+            name,
+            tyvars,
+            ctors,
+            ..
+        } = def
+        {
+            let mut free: Vec<String> = Vec::new();
+            let ctors_ty = ctors
+                .iter()
+                .map(|(c, ts)| {
+                    (
+                        c.clone(),
+                        ts.iter()
+                            .map(|(t, strict)| {
+                                (
+                                    crate::types::infer::data_field_vty_with_free(
+                                        env, tyvars, t, &mut free,
+                                    ),
+                                    *strict,
+                                )
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            env.data_types.insert(name.clone(), DataInfo::Sum(ctors_ty));
             if !tyvars.is_empty() {
                 env.data_arities.insert(name.clone(), tyvars.len());
             }
@@ -1234,15 +1296,39 @@ fn register_prelude(env: &mut TypeEnv, src: &str) {
             }
         }
     }
-    // Plain function definitions in a prelude (`seq = \ f -> \ g -> …`)
-    // become top-level defs visible to inference — see
-    // [`TypeEnv::prelude_defs`]. `Def::Foreign`/`Typeclass`/`Instance`/`Data`
-    // are registered by [`Self::register_decls`]; only `Eval` defs (the
-    // combinator sugar over Buffer arrows) land here.
-    for def in &defs {
+    // Plain function definitions in a prelude (`&& True y = y`,
+    // `otherwise = True`) become top-level defs visible to inference — see
+    // [`TypeEnv::prelude_defs`]. `Def::Foreign`/`Typeclass`/`Instance`/`Data`/
+    // `Sum` are registered by the loops above and `register_decls`; only value
+    // definitions (an `Eval`, or the parser's intermediate `Equations` form for
+    // an equation group) land here, plus the type-level `type`/`newtype`
+    // declarations that carry no body of their own.
+    //
+    // An `Equations` group is DESUGARED here: nothing else desugars a prelude
+    // fragment, and inference/lowering never read the intermediate form. The
+    // group is rewritten exactly as a user program's is — into a `Def::Eval`
+    // whose body is the `case`-shaped match chain — so the Prelude's `&&`/`||`
+    // are ordinary functions with ordinary constructor patterns.
+    let mut desugared: Vec<Def> = Vec::with_capacity(defs.len());
+    for def in defs {
+        match def {
+            Def::Equations { .. } => {
+                let mut one = crate::ast::Program {
+                    defs: vec![def],
+                    mode: crate::mode::Mode::Complete,
+                    mode_explicit: false,
+                };
+                crate::desugar::desugar_program(&mut one)
+                    .expect("compiler-owned prelude equations must desugar");
+                desugared.extend(one.defs);
+            }
+            other => desugared.push(other),
+        }
+    }
+    for def in &desugared {
         if matches!(
             def,
-            Def::Eval { .. } | Def::TypeAlias { .. } | Def::Newtype { .. } | Def::Sum { .. }
+            Def::Eval { .. } | Def::TypeAlias { .. } | Def::Newtype { .. }
         ) && def.name() != "main"
         {
             env.prelude_defs.push(def.clone());
@@ -1326,10 +1412,13 @@ impl TypeEnv {
         // 2010 spells the unit type as the empty tuple; there is no `Void`
         // type name). This is the ONE place that says which names are types —
         // every consumer asks [`TypeEnv::type_entry`].
+        // `Bool` is NOT here: it is a declared data type
+        // (`data Bool = False | True` in the PRELUDE), registered by the
+        // prelude's own `Def::Sum` path like every other sum. Nothing in this
+        // registry knows a boolean.
         for (name, vty, ffi_scalar, buffer_element) in [
             ("Int", ValueTy::Int, true, false),
             ("Double", ValueTy::Double, true, true),
-            ("Bool", ValueTy::Bool, true, false),
             ("String", ValueTy::String, true, false),
             ("()", ValueTy::Void, false, false),
         ] {
@@ -2800,7 +2889,9 @@ impl TypeEnv {
                         self.validate_def_type_names(w)?;
                     }
                     for (g, b) in &eq.guards {
-                        self.validate_body_type_names(g, &[])?;
+                        if let Some(g) = g {
+                            self.validate_body_type_names(g, &[])?;
+                        }
                         self.validate_body_type_names(b, &[])?;
                     }
                 }
@@ -2976,10 +3067,6 @@ impl TypeEnv {
                 Ok(())
             }
             Expr::Neg(inner, _) => self.validate_body_type_names(inner, tyvars),
-            Expr::Logic { lhs, rhs, .. } => {
-                self.validate_body_type_names(lhs, tyvars)?;
-                self.validate_body_type_names(rhs, tyvars)
-            }
             Expr::If {
                 cond, then, els, ..
             } => {
@@ -3016,7 +3103,9 @@ impl TypeEnv {
                 self.validate_body_type_names(scrutinee, tyvars)?;
                 for arm in arms {
                     for (g, b) in &arm.guards {
-                        self.validate_body_type_names(g, tyvars)?;
+                        if let Some(g) = g {
+                            self.validate_body_type_names(g, tyvars)?;
+                        }
                         self.validate_body_type_names(b, tyvars)?;
                     }
                 }
@@ -3026,12 +3115,9 @@ impl TypeEnv {
                 Some(d) => self.validate_body_type_names(d, tyvars),
                 None => Ok(()),
             },
-            Expr::Int(..)
-            | Expr::Double(..)
-            | Expr::Void(..)
-            | Expr::Str(..)
-            | Expr::Ref(..)
-            | Expr::Bool(..) => Ok(()),
+            Expr::Int(..) | Expr::Double(..) | Expr::Void(..) | Expr::Str(..) | Expr::Ref(..) => {
+                Ok(())
+            }
         }
     }
 
@@ -3085,7 +3171,7 @@ impl TypeEnv {
             ValueTy::Buffer(elem) => {
                 format!("FixedBuffer {}", self.type_spelling_named(elem, names))
             }
-            ValueTy::Int | ValueTy::Double | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
+            ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void => {
                 self.scalar_name_of(t).unwrap_or_else(|| format!("{t:?}"))
             }
             // A dictionary is not a data type, so it has no nominal name — spell
@@ -3219,7 +3305,7 @@ impl TypeEnv {
             // monomorphic head whose key is the full applied type — see
             // [`value_type_key`]).
             ValueTy::Buffer(_) => Some("FixedBuffer".to_string()),
-            ValueTy::Int | ValueTy::Double | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
+            ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void => {
                 self.scalar_name_of(v)
             }
             ValueTy::Data(n, _) => Some(n.clone()),
@@ -3598,7 +3684,7 @@ pub fn value_type_key(env: &TypeEnv, v: &ValueTy) -> Option<String> {
             // (FixedBuffer Double)` head renders as. The key therefore
             // distinguishes elements: there is no `Buffer`-spelled key.
             ValueTy::Buffer(elem) => format!("FixedBuffer {}", key(env, elem)?),
-            ValueTy::Int | ValueTy::Double | ValueTy::Bool | ValueTy::String | ValueTy::Void => {
+            ValueTy::Int | ValueTy::Double | ValueTy::String | ValueTy::Void => {
                 env.scalar_name_of(v)?
             }
             // A dictionary is never a registry key: it is compiler-side
@@ -3659,7 +3745,9 @@ pub fn kind_rank(v: &ValueTy) -> i8 {
     match v {
         ValueTy::Int => 0,
         ValueTy::Double => 1,
-        ValueTy::Bool => 2,
+        // Rank 2 belonged to the retired primitive boolean leaf. `Bool` is now
+        // `Data("Bool", [])` and ranks as a data form (6); the slot stays
+        // vacant rather than renumbering every later form.
         ValueTy::String => 3,
         // A buffer ranks by its FORM (the element it carries does not give it a
         // different rank: rank orders forms, not types).
@@ -3873,20 +3961,22 @@ mod hkt_value_ty_tests {
     }
 
     #[test]
-    fn bool_string_are_leaves() {
-        assert_ne!(ValueTy::Bool, ValueTy::Double);
-        assert_ne!(ValueTy::String, ValueTy::Bool);
+    fn bool_is_a_declared_data_type_and_string_is_a_leaf() {
+        // `Bool` is an ordinary declared sum type: `Data("Bool", [])`, exactly
+        // like `Maybe`/`Either`. It is NOT a primitive value type.
+        assert_eq!(ValueTy::bool_ty(), ValueTy::Data("Bool".into(), vec![]));
+        assert_ne!(ValueTy::bool_ty(), ValueTy::Double);
+        assert_ne!(ValueTy::String, ValueTy::bool_ty());
     }
 
     #[test]
-    fn vty_of_name_resolves_primitive_bool_string() {
-        // Regression: `vty_of_name` must resolve `Bool`/`String` to the
-        // primitive value types, not to `Data("Bool"/"String", [])`. Before
-        // the fix, a `data` field of type `String`
-        // became `Data("String", [])`, which failed to unify with string
-        // literals (`ValueTy::String`).
+    fn vty_of_name_resolves_bool_as_data_and_string_as_a_leaf() {
+        // `String` is a primitive leaf, so a `data` field of type `String` must
+        // stay `ValueTy::String` (it unifies with string literals). `Bool` is
+        // the Prelude's declared sum type, so its name resolves to the
+        // zero-argument `Data` application the prelude registered.
         let env = TypeEnv::with_builtins();
-        assert_eq!(env.vty_of_name("Bool"), Some(ValueTy::Bool));
+        assert_eq!(env.vty_of_name("Bool"), Some(ValueTy::bool_ty()));
         assert_eq!(env.vty_of_name("String"), Some(ValueTy::String));
         assert_eq!(env.vty_of_name("Double"), Some(ValueTy::Double));
         assert_eq!(env.vty_of_name("Int"), Some(ValueTy::Int));

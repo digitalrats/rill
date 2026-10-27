@@ -9,7 +9,7 @@ use crate::error::{CompileError, Span};
 /// `v` (a `Var` or `TyConVar` id) — the occurs-check. A variable chain is
 /// followed (with a visited set, so a pre-existing cyclic binding cannot loop),
 /// and compound types (`Func`, `Data`, `Newtype`, `App`) are walked
-/// structurally. `Bool`/`String`/`Cap` are leaves.
+/// structurally. `Int`/`Double`/`String` are leaves.
 fn value_contains_var(subst: &Subst, ty: &ValueTy, v: TypeVarId) -> bool {
     let mut seen = HashSet::new();
     value_contains_var_impl(subst, ty, v, &mut seen)
@@ -58,7 +58,7 @@ fn value_contains_var_impl(
             args.iter()
                 .any(|a| value_contains_var_impl(subst, a, v, seen))
         }
-        ValueTy::Bool | ValueTy::String => false,
+        ValueTy::String => false,
         // The element is part of the buffer type: an occurs-check must look
         // inside it, or `a ~ FixedBuffer a` would be accepted.
         ValueTy::Buffer(elem) => value_contains_var_impl(subst, elem, v, seen),
@@ -150,7 +150,6 @@ pub fn unify_value(
             }
         }
         (ValueTy::Int, ValueTy::Int) | (ValueTy::Double, ValueTy::Double) => Ok(()),
-        (ValueTy::Bool, ValueTy::Bool) => Ok(()),
         (ValueTy::String, ValueTy::String) => Ok(()),
         // `FixedBuffer a` unifies with `FixedBuffer b` exactly when `a` unifies
         // with `b`: the element is part of the type, so `FixedBuffer Int` and
@@ -393,11 +392,12 @@ mod tests {
     }
 
     #[test]
-    fn bool_string_unify_are_leaves() {
+    fn bool_is_a_data_application_and_string_is_a_leaf() {
         let mut s = Subst::default();
-        unify_value(&ValueTy::Bool, &ValueTy::Bool, &mut s, sp()).unwrap();
+        let b = ValueTy::bool_ty();
+        unify_value(&b, &b, &mut s, sp()).unwrap();
         unify_value(&ValueTy::String, &ValueTy::String, &mut s, sp()).unwrap();
-        assert!(unify_value(&ValueTy::Bool, &ValueTy::Double, &mut s, sp()).is_err());
+        assert!(unify_value(&ValueTy::bool_ty(), &ValueTy::Double, &mut s, sp()).is_err());
     }
 
     #[test]

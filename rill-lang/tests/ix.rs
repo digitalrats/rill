@@ -229,7 +229,7 @@ fn ix_int_in_range_includes_both_endpoints() {
     let b = bounds(-2, 2);
     for (i, want) in [(-2, true), (2, true), (0, true), (-3, false), (3, false)] {
         let src = format!("main = inRange {b} {i};");
-        assert_eq!(run(&src).1, Value::Bool(want), "inRange {b} {i}");
+        assert_eq!(run(&src).1, Value::bool(want), "inRange {b} {i}");
     }
 }
 
@@ -330,7 +330,7 @@ fn ix_pair_in_range_checks_both_dimensions() {
         (1, 3, false),
     ] {
         let src = format!("main = inRange {b} (Pair {{ first: {i1}, second: {i2} }});");
-        assert_eq!(run(&src).1, Value::Bool(want), "inRange ({i1},{i2})");
+        assert_eq!(run(&src).1, Value::bool(want), "inRange ({i1},{i2})");
     }
 }
 
