@@ -86,15 +86,29 @@ redesign.
   **Do not leave a second path beside the new one** — `grep` must not show two
   ways to reach a constrained definition's body.
 - [ ] **Step 5: Prove.**
-  - `sumTo :: Num a => a -> a; sumTo n = if n == 0.0 then 0.0 else n + sumTo (n - 1.0);`
-    compiles **and runs** (`sumTo 4.0` → `10.0`).
-  - A mutually recursive pair of constrained definitions compiles and runs.
-  - A constrained definition used at two different types uses **one** body
-    (prove it structurally — e.g. one fragment, or a debug count of lowered
-    bodies, not just "it compiles").
-  - Non-recursive constrained definitions keep working (`f 2.0` → `4.0`,
-    `f 2.0 + f 3.0` → `10.0`).
-  - `no instance of …` is still a **compile-time** error.
+
+  > **Correction (user, 2026-10-27): an earlier version of this step was
+  > impossible.** It asked for `sumTo n = if n == 0.0 then 0.0 else n + sumTo (n - 1.0)`
+  > with the signature `Num a => a -> a`. That body is **not** well-typed Haskell:
+  > a floating literal in a `Num a` body needs `Fractional a`, and GHC rejects it
+  > (`Could not deduce 'Fractional a' arising from the literal '1.0' from the
+  > context: Num a`). Worse, rill has **no literal polymorphism yet** — a `1.0`
+  > literal is monomorphic `Double` — so demanding that program would have
+  > required stage 7 inside stage 3b. The proofs below are the correct ones.
+
+  | Proof | Required |
+  |---|---|
+  | `sumTo :: Num a => a -> a -> a; sumTo zero n = if n == zero then zero else n + sumTo zero (n - zero);` called as `sumTo 0.0 4.0` | compiles **and runs** → `10.0` |
+  | a mutually recursive pair of constrained definitions | compiles and runs |
+  | one constrained definition used at two different types | **one** body — prove structurally (one fragment / a body count), not "it compiles" |
+  | non-recursive unchanged | `f 2.0` → `4.0`; `f 2.0 + f 3.0` → `10.0` |
+  | `no instance of …` | still a **compile-time** error |
+
+  **Do not** use a monomorphic floating literal inside a `Num a` body as a proof.
+  `fromInteger` is the only lawful way to write "the literal one" there, and
+  making it resolve against the GIVEN dictionary is **stage 7**; if it does not
+  resolve yet, that is expected and is not a 3b failure — report it, do not fix
+  it.
 - [ ] **Step 6: Full suite + gates.**
 
 ## Acceptance
@@ -123,3 +137,30 @@ selection recorded — two of stage 2's reported gaps), the call has nothing to
 pass. In that case: report it as BLOCKED with the exact case rather than
 inventing a fallback or silently reverting to expansion. A silent fallback is the
 one outcome that would be worse than the current limitation.
+
+## Correction log
+
+**2026-10-27 (user).** The penetration criterion for this task originally
+included
+
+```haskell
+sumTo :: Num a => a -> a
+sumTo n = if n == 0.0 then 0.0 else n + sumTo (n - 1.0)
+```
+
+That program is **wrong in two independent ways**, and asking for it is what made
+the implementation look stuck:
+
+1. **Not well-typed Haskell.** A floating literal in a `Num a` body needs
+   `Fractional a`. GHC: *"Could not deduce 'Fractional a' arising from the
+   literal '1.0' from the context: Num a"*. The lawful spelling is
+   `fromInteger 1`.
+2. **Outside rill's current type system.** rill has no literal polymorphism yet:
+   a `1.0` literal is monomorphic `Double` (measured: `1.0 + 1` →
+   `cannot unify value type Double with Int`). Requiring that program would have
+   pulled stage 7 (`fromInteger` + defaulting) into stage 3b.
+
+The correct 3b proof passes the zero/one in as a parameter, which is
+dictionary-polymorphic without needing literals. Verified: that form **compiles**
+today; only the recursive *call* still fails with
+`recursive class-constrained definition` — which is exactly what 3b removes.
