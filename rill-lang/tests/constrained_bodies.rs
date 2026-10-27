@@ -288,10 +288,14 @@ fn type_err(src: &str) -> String {
 }
 
 /// The evidence recorded for the selection whose class is `class`, if any.
+///
+/// Selections are keyed by `(span, class)`, because one operator span can carry
+/// more than one selection (`0 == (x + 0)`); the class is what this helper picks
+/// by.
 fn selection_for(t: &rill_lang::types::infer::TypedProgram, class: &str) -> Option<ValueTy> {
     t.dict_selections
-        .values()
-        .find(|(c, _)| c == class)
+        .iter()
+        .find(|((_, c), _)| c == class)
         .map(|(_, e)| e.clone())
 }
 
@@ -347,7 +351,7 @@ fn a_superclass_method_resolves_in_a_body() {
     assert!(
         !t.dict_selections
             .values()
-            .any(|(_, e)| matches!(e, ValueTy::Double | ValueTy::Int)),
+            .any(|e| matches!(e, ValueTy::Double | ValueTy::Int)),
         "a superclass call in a body must not dispatch to a scalar default; \
          selections: {:?}",
         t.dict_selections
@@ -453,5 +457,56 @@ fn an_ix_body_still_compiles() {
         world.arena().get(v),
         Some(&rill_lang::arena::Value::Double(2.0)),
         "`index arr 1` must read the second element through the Ix bodies"
+    );
+}
+
+/// Compile and run `src`, returning the concatenated stdout.
+fn run(src: &str) -> String {
+    let mut prog = rill_lang::compile::<f32, 256>(src, rill_lang::ffi::ForeignRegistry::new())
+        .unwrap_or_else(|e| panic!("compile failed for:\n{src}\n{e}"));
+    prog.run()
+        .unwrap_or_else(|e| panic!("run failed for:\n{src}\n{e}"));
+    prog.stdout().concat()
+}
+
+#[test]
+fn an_inner_operator_sharing_the_selector_span_does_not_erase_the_selection() {
+    // The outer `==`/`<` and the inner `+`/`-` sit at the SAME operator span.
+    // The selection record was keyed by span alone, so the inner `Num` insert
+    // overwrote the outer `Eq`/`Ord` one and lowering fell back to `Int` for
+    // the literal selector — silently wrong Bools.
+    assert_eq!(
+        run("f :: Integer -> Bool;\nf x = 0 == (x + 0);\nmain = do { write (Just (show_bool (f (0 :: Integer)))) stdout; return () };"),
+        "True"
+    );
+    assert_eq!(
+        run("f :: Integer -> Bool;\nf x = 0 < x + 1;\nmain = do { write (Just (show_bool (f (-1 :: Integer)))) stdout; return () };"),
+        "False"
+    );
+    assert_eq!(
+        run("f :: Integer -> Bool;\nf x = 0 == x - x;\nmain = do { write (Just (show_bool (f (5 :: Integer)))) stdout; return () };"),
+        "True"
+    );
+    // The control that already worked: the outer operator's other operand is a
+    // bare parameter, so no span collides.
+    assert_eq!(
+        run("f :: Integer -> Integer;\nf x = 1 + (x + 1);\nmain = do { write (Just (show_integer (f (0 :: Integer)))) stdout; return () };"),
+        "2"
+    );
+}
+
+#[test]
+fn both_selections_at_one_span_are_recorded() {
+    let t = typed("f x :: Integer -> Bool = 0 == (x + 0);\nmain = 0.0;");
+    // The outer comparison and the inner addition share an operator span; both
+    // must be recorded, with the right class each.
+    let classes: Vec<String> = t.dict_selections.keys().map(|(_, c)| c.clone()).collect();
+    assert!(
+        classes.iter().any(|c| c == "Eq"),
+        "Eq selection lost: {classes:?}"
+    );
+    assert!(
+        classes.iter().any(|c| c == "Num"),
+        "Num selection lost: {classes:?}"
     );
 }

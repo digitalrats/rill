@@ -88,7 +88,15 @@ pub struct TypedProgram {
     /// Prelude bodies are typed in a SEPARATE context whose spans index the
     /// prelude text, so their selections are deliberately NOT merged here — a
     /// span from that text would not name a position in the user's source.
-    pub dict_selections: HashMap<Span, (String, ValueTy)>,
+    ///
+    /// The key is the call's span **together with the class whose method is
+    /// called**. A span alone is not unique: in `0 == (x + 0)` the outer `==`
+    /// and the inner `+` are the same desugared operator token, so the two
+    /// selections share a span. Keying on span alone let the inner insert
+    /// overwrite the outer one, and lowering then fell back to its own coarse
+    /// static type for the literal selector — a silent wrong `Bool`. Keying on
+    /// both keeps every enclosing selection.
+    pub dict_selections: HashMap<(Span, String), ValueTy>,
 }
 
 /// Inference context: fresh var supply, definition schemes, local bindings,
@@ -158,8 +166,9 @@ struct Ctx {
     /// inference, exactly like `locals`.
     given: Vec<GivenVar>,
     /// The dictionary the type checker selected at each method call position,
-    /// keyed by the call's span (see [`TypedProgram::dict_selections`]).
-    dict_selections: HashMap<Span, (String, ValueTy)>,
+    /// keyed by the call's span and the class whose method is called (see
+    /// [`TypedProgram::dict_selections`]).
+    dict_selections: HashMap<(Span, String), ValueTy>,
 }
 
 impl Ctx {
@@ -551,12 +560,15 @@ fn selection_evidence(cv: &ClassVarSubst) -> ValueTy {
 /// variable IS the given variable, so the incoming dictionary is the only
 /// witness that exists — there is no concrete type to record yet.
 ///
-/// Recording is keyed by the call's span. Nothing is written for a position
-/// with no witness: a call whose class variable neither the given context
-/// witnesses nor a concrete type solves is a typing error before this point.
+/// Recording is keyed by the call's span AND the class whose method is called.
+/// The span alone is not unique — an inner and an outer operator desugar to the
+/// same token span (`0 == (x + 0)`), so keying on the span alone silently
+/// dropped one of the two selections. Nothing is written for a position with no
+/// witness: a call whose class variable neither the given context witnesses nor
+/// a concrete type solves is a typing error before this point.
 fn record_selection(ctx: &mut Ctx, span: Span, class: &str, evidence: &ValueTy) {
     ctx.dict_selections
-        .insert(span, (class.to_string(), evidence.clone()));
+        .insert((span, class.to_string()), evidence.clone());
 }
 
 ///

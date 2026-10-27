@@ -628,13 +628,14 @@ struct Lowerer<'a> {
     /// typeclass method-call lowering, which threads expected types).
     next_tyvar: u32,
     /// The dictionary the type checker SELECTED at each method call, keyed by
-    /// the call's span (from `TypedProgram::dict_selections`). Lowering has no
+    /// the call's span AND the class whose method is called (from
+    /// `TypedProgram::dict_selections`). Lowering has no
     /// unification substitution, so its own static types are often coarser than
     /// inference's (`x` bound by `Just x` from a `Maybe a` scrutinee is a `Var`
     /// here, `Double` there). The recorded selection is the AUTHORITATIVE
     /// answer: a method call that finds one uses it instead of re-deriving the
     /// instance from the coarser type.
-    dict_selections: HashMap<Span, (String, ValueTy)>,
+    dict_selections: HashMap<(Span, String), ValueTy>,
     /// Fresh-name counter for capture-avoiding method instantiation. Every
     /// instantiation renames the method's own parameters to `$`-prefixed names
     /// carrying this value, so two instantiations never share a binding name
@@ -5606,15 +5607,19 @@ impl<'a> Lowerer<'a> {
     /// inference solved it to `Double`). Re-deriving the instance from the
     /// coarser type would reject a program that type-checked, so the recorded
     /// selection is consulted FIRST — it is the same judgement, recorded once.
+    ///
+    /// Looked up by span AND class: two selections can share one operator span
+    /// (`0 == (x + 0)`), and asking for `Eq` must not find the inner `Num`
+    /// record.
     fn recorded_selection(
         &mut self,
         span: Span,
         class_name: &str,
     ) -> Option<(String, crate::types::infer::ClassVarSubst)> {
-        let (recorded_class, evidence) = self.dict_selections.get(&span)?.clone();
-        if recorded_class != class_name {
-            return None;
-        }
+        let evidence = self
+            .dict_selections
+            .get(&(span, class_name.to_string()))?
+            .clone();
         // A GIVEN witness (`Dict("Ord")`) has no concrete instance to lower
         // here; those flows keep their existing path.
         if matches!(evidence, ValueTy::Dict(_)) {
@@ -9382,8 +9387,8 @@ pub fn lower_program_with_channels(
     // cannot change the program's behaviour. Nothing reads the table yet.
     let mentioned: Vec<(String, ValueTy)> = tp
         .dict_selections
-        .values()
-        .map(|(class, ty)| (class.clone(), ty.clone()))
+        .iter()
+        .map(|((_, class), ty)| (class.clone(), ty.clone()))
         .collect();
     let dict_plan = crate::dicts::plan(&tp.type_env, &mentioned)?;
     let (dicts, dict_gaps) = lw.build_dict_descriptors(&dict_plan);
