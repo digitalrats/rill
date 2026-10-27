@@ -988,15 +988,28 @@ fn value_to_f64(v: &Value) -> Option<f64> {
 /// Execute one value-track arithmetic instruction and store the result in
 /// `dst`.
 ///
-/// The result keeps the Int track: when BOTH operands are `Value::Int` and the
-/// operation is `+`, `-`, or `*`, the result is a `Value::Int` (wrapping, so a
-/// pathological overflow cannot panic a debug build). `/` always yields a
-/// `Double` — it is float division in this language, and truncating it would
-/// silently change `3 / 2`. Everything else (a `Double` operand, an unbound or
-/// non-numeric slot) computes in `f64` and yields a `Double`, exactly as before.
+/// The result keeps the operands' numeric TRACK. Three tracks exist:
+///
+/// - `Int`: when BOTH operands are `Value::Int` and the operation is `+`, `-`,
+///   or `*`, the result is a `Value::Int` (wrapping, so a pathological overflow
+///   cannot panic a debug build).
+/// - `Integer`: when BOTH operands are `Value::Integer`, `+`/`-`/`*` compute
+///   exactly (no wrapping, no `f64` round-trip) and yield a `Value::Integer`.
+/// - `Double`: a `Double` operand computes in `f64` and yields a `Double`.
+///
+/// `/` always yields a `Double` — it is float division in this language, and
+/// truncating it would silently change `3 / 2`. An `Integer` never reaches the
+/// `f64` path: a mixed `Integer`/float (or `Integer`/`Int`) pair latches a fault
+/// ("arithmetic mixes an Integer operand with a floating one") rather than
+/// rounding a bignum into an `f64`. An unbound or non-numeric slot is likewise
+/// a fault, never `0.0`. Lowering makes both operands the same kind — the solved
+/// instance fixes `Num a` for both parameters — so a mixed pair means lowering
+/// emitted mismatched representations.
+///
 /// The static type tracks this rule in `lower_primitive_method`'s arithmetic
 /// kernel (`Num`'s instance body) — a typed `Int` slot therefore holds a real
-/// `Value::Int`, which the flat array primitives require of an offset.
+/// `Value::Int`, which the flat array primitives require of an offset, and a
+/// typed `Integer` slot holds a real `Value::Integer`.
 ///
 /// The operands are read BEFORE any `dst` occupant is released, so `dst` may
 /// alias an operand (`dst == a` or `dst == b`) without losing its value.

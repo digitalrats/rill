@@ -224,6 +224,7 @@ fn dict_has_no_data_interpretation() {
     for data in [
         ValueTy::Int,
         ValueTy::Double,
+        ValueTy::Integer,
         ValueTy::bool_ty(),
         ValueTy::String,
         ValueTy::Buffer(Box::new(ValueTy::Double)),

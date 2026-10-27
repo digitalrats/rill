@@ -1679,6 +1679,7 @@ impl TypeEnv {
         //   stdin           :: InputStream String
         //   show_double      :: Double -> String
         //   show_int        :: Int -> String
+        //   show_integer    :: Integer -> String
         //   show_bool       :: Bool -> String
         let forall_a = |inner: crate::ast::TypeExpr| {
             crate::ast::TypeExpr::TForall(vec!["a".to_string()], Box::new(inner))
@@ -3826,9 +3827,13 @@ pub fn kind_rank(v: &ValueTy) -> i8 {
     match v {
         ValueTy::Int => 0,
         ValueTy::Double => 1,
-        // Rank 2 belonged to the retired primitive boolean leaf. `Bool` is now
-        // `Con("Bool", [])` and ranks as a constructor application (6); the slot
-        // stays vacant rather than renumbering every later form.
+        // A numeric leaf ranks WITH the leaves. Rank 2 is the vacant leaf slot
+        // (it belonged to the retired primitive boolean leaf; `Bool` is now
+        // `Con("Bool", [])` and ranks as a constructor application). `Integer`
+        // fills it rather than appending after `Dict`: a dictionary must rank
+        // ABOVE every data form and never interleave with one, so a data leaf
+        // can never be given a rank past `Dict`'s 13.
+        ValueTy::Integer => 2,
         ValueTy::String => 3,
         // A buffer ranks by its FORM (the element it carries does not give it a
         // different rank: rank orders forms, not types).
@@ -3845,9 +3850,6 @@ pub fn kind_rank(v: &ValueTy) -> i8 {
         ValueTy::TyConVar(_) => 11,
         ValueTy::TyConApp(..) => 12,
         ValueTy::Dict(_) => 13,
-        // `Integer` is a fresh leaf form, so it appends after every existing
-        // rank; no established ordering is reshuffled.
-        ValueTy::Integer => 14,
     }
 }
 

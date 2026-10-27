@@ -368,11 +368,16 @@ pub enum ValueInstr {
         /// The value.
         value: f64,
     },
-    /// Element-wise arithmetic on two value channels: reads the Double (or Int)
-    /// payloads of the value registers `a` and `b`, allocates the Double result
-    /// into `dst`. Unbound operands read as `0.0`.
+    /// Element-wise arithmetic on two value channels: reads the numeric
+    /// payloads of the value registers `a` and `b` and allocates the result into
+    /// `dst`. The kernel preserves the operands' numeric TRACK: an `Int` pair
+    /// computes in `i64` (wrapping) and yields an `Int`, an `Integer` pair
+    /// computes exactly and yields an `Integer`, and a `Double` operand computes
+    /// in `f64` and yields a `Double`. Lowering makes both operands the same
+    /// kind (the solved instance fixes the `Num a` variable), so a mixed pair is
+    /// a lowering bug. Unbound operands are a fault, not `0.0`.
     ValueAdd {
-        /// Destination value register (the Double result).
+        /// Destination value register (the result, on the operands' track).
         dst: usize,
         /// Left operand value register.
         a: usize,
@@ -381,7 +386,7 @@ pub enum ValueInstr {
     },
     /// See [`ValueInstr::ValueAdd`].
     ValueSub {
-        /// Destination value register (the Double result).
+        /// Destination value register (the result, on the operands' track).
         dst: usize,
         /// Left operand value register.
         a: usize,
@@ -390,7 +395,7 @@ pub enum ValueInstr {
     },
     /// See [`ValueInstr::ValueAdd`].
     ValueMul {
-        /// Destination value register (the Double result).
+        /// Destination value register (the result, on the operands' track).
         dst: usize,
         /// Left operand value register.
         a: usize,
@@ -399,7 +404,7 @@ pub enum ValueInstr {
     },
     /// See [`ValueInstr::ValueAdd`].
     ValueDiv {
-        /// Destination value register (the Double result).
+        /// Destination value register (a `Double`: division is float division).
         dst: usize,
         /// Left operand value register.
         a: usize,

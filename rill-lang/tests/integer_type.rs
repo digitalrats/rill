@@ -22,11 +22,29 @@ fn shows_i64(expr: &str) -> String {
     format!("main = do {{ write (Just (show_int ({expr}))) stdout; return () }};")
 }
 
+/// A program that prints one `show_bool` result.
+fn shows_bool(expr: &str) -> String {
+    format!("main = do {{ write (Just (show_bool ({expr}))) stdout; return () }};")
+}
+
+/// Assert `src` is rejected BECAUSE the operand types cannot unify.
+///
+/// `is_err()` alone would stay green if `Integer` or `+` became unresolvable —
+/// an unknown name is also an error. The reason is what makes the test evidence
+/// for the mixed-`Int`/`Integer` rule.
 fn rejects(src: &str) {
-    assert!(
-        compile::<f32, 256>(src, ForeignRegistry::new()).is_err(),
-        "must be a type error:\n{src}"
-    );
+    rejects_with(src, "cannot unify");
+}
+
+/// Assert `src` is rejected and that the error text names `reason`.
+fn rejects_with(src: &str, reason: &str) {
+    match compile::<f32, 256>(src, ForeignRegistry::new()) {
+        Ok(_) => panic!("must be a type error:\n{src}"),
+        Err(e) => assert!(
+            e.to_string().contains(reason),
+            "must fail for the stated reason (`{reason}`), not another:\n{src}\ngot: {e}"
+        ),
+    }
 }
 
 #[test]
@@ -73,8 +91,12 @@ fn integer_and_int_do_not_mix() {
 
 #[test]
 fn integer_is_not_fractional() {
-    // GHC: `No instance for 'Fractional Integer'`.
-    rejects("main = (1 :: Integer) / (2 :: Integer);");
+    // GHC: `No instance for 'Fractional Integer'`. This is NOT a unification
+    // failure — `Integer` IS a `Num`, it simply has no `Fractional` instance.
+    rejects_with(
+        "main = (1 :: Integer) / (2 :: Integer);",
+        "no instance of `Fractional` for type `Integer`",
+    );
 }
 
 #[test]
@@ -83,6 +105,34 @@ fn integer_unary_minus_stays_integer() {
     // zero must be an `Integer` zero, not an `Int` one.
     assert_eq!(run(&shows_int("-(3 :: Integer)")), "-3");
     assert_eq!(run(&shows_int("(0 :: Integer) - (3 :: Integer)")), "-3");
+}
+
+#[test]
+fn a_negative_integer_literal_stays_integer() {
+    // GHC: `-3 :: Integer` is `-3`. The fold must not emit an Int constant:
+    // the annotation types the node `Integer`, so an `Int` payload would be the
+    // typed-`Integer`-slot-holding-an-`Int` defect. At 5e2b082 this was a type
+    // error (`cannot unify value type Int with Integer`).
+    assert_eq!(run(&shows_int("-3 :: Integer")), "-3");
+}
+
+#[test]
+fn an_unannotated_literal_in_an_integer_position_is_an_integer() {
+    // The literal is in range and needs no arbitrary precision: only its
+    // REPRESENTATION was wrong. Each of these silently returned False or
+    // faulted at 5e2b082, because the primitive's arguments were lowered
+    // without the solved instance's parameter type.
+    assert_eq!(run(&shows_bool("(2 :: Integer) == 2")), "True");
+    assert_eq!(run(&shows_bool("(1 :: Integer) < 2")), "True");
+    assert_eq!(run(&shows_int("(2 :: Integer) + 1")), "3");
+    assert_eq!(
+        run("f :: Integer -> Integer;\nf x = x + 1;\nmain = do { write (Just (show_integer (f (2 :: Integer)))) stdout; return () };"),
+        "3"
+    );
+    assert_eq!(
+        run("f :: Integer -> Bool;\nf x = x == 0;\nmain = do { write (Just (show_bool (f (0 :: Integer)))) stdout; return () };"),
+        "True"
+    );
 }
 
 #[test]

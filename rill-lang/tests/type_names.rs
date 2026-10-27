@@ -92,9 +92,10 @@ fn an_undeclared_type_name_is_rejected() {
 #[test]
 fn char_is_still_undeclared_for_now() {
     // `Char` is a real Haskell 2010 type, but rill has no `Char` payload yet
-    // (that is a later sub-task). Until it is REGISTERED it must be rejected,
-    // exactly like `Integer`: accepting it would resurrect the phantom-type
-    // defect for the one name the next task is about to make real.
+    // (that is a later sub-task). Until it is REGISTERED it must be rejected —
+    // accepting an undeclared name would resurrect the phantom-type defect for
+    // the one name the next task is about to make real. `Integer` shows the
+    // other half of the rule: registered, so accepted.
     let err = compile_err("f :: Char -> Char; f x = x; main = f 1;");
     assert!(
         err.contains("unknown type name `Char`"),

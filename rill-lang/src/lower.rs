@@ -1304,12 +1304,14 @@ impl<'a> Lowerer<'a> {
             // The ONE exception is a numeric literal annotated with the
             // registered `Integer` leaf: `(2 :: Integer)` must lower as an
             // `Integer` constant, so the annotation becomes the literal's
-            // expected type. The annotation is still erased — it contributes no
-            // instruction — and every other annotation keeps passing the
-            // caller's `expected` through untouched. Stage 7a only: it is
-            // subsumed when stage 7b makes literals `fromInteger`-polymorphic.
+            // expected type. The literal may be under unary minus (`-3 ::
+            // Integer`), which is the same constant shape. The annotation is
+            // still erased — it contributes no instruction — and every other
+            // annotation keeps passing the caller's `expected` through
+            // untouched. Stage 7a only: it is subsumed when stage 7b makes
+            // literals `fromInteger`-polymorphic.
             Expr::Annot { expr, ty, .. } => {
-                let integer_annotation = matches!(expr.as_ref(), Expr::Int(_, _))
+                let integer_annotation = const_i64(expr).is_some()
                     && matches!(
                         ty,
                         crate::ast::TypeExpr::TName(n)
@@ -2593,6 +2595,26 @@ impl<'a> Lowerer<'a> {
                             // comparison kernel for (class, type, method) pHere
                             // instead of inlining equations.
                             if self.is_primitive_instance(&class_name, ty_name.as_str()) {
+                                // The instance key solves the signature's
+                                // class variable, so each parameter type is
+                                // CONCRETE (`Num Integer` → `Integer -> Integer
+                                // -> Integer`). Threading it into the argument
+                                // lowering is what makes a bare literal in an
+                                // `Integer` position lower as an `Integer`
+                                // instead of an `Int`: without it the kernel
+                                // received `[Integer, Int]` for
+                                // `(2 :: Integer) == 2`.
+                                let param_tys = crate::types::infer::signature_param_tys_conv(
+                                    self.env,
+                                    &class_var,
+                                    &cv_subst,
+                                    sig,
+                                    || {
+                                        let v = self.next_tyvar;
+                                        self.next_tyvar += 1;
+                                        ValueTy::Var(v)
+                                    },
+                                );
                                 return self.lower_primitive_method(
                                     &class_name,
                                     name,
@@ -2600,6 +2622,7 @@ impl<'a> Lowerer<'a> {
                                     call_args,
                                     *span,
                                     None,
+                                    &param_tys,
                                 );
                             }
                             let (params, body) = match self.instantiate_method(
@@ -2789,8 +2812,22 @@ impl<'a> Lowerer<'a> {
                             };
                             // Primitive instance: dispatch to the kernel,
                             // reusing the selector register the dispatch above
-                            // already emitted.
+                            // already emitted. The solved instance key makes
+                            // every parameter type concrete, so a bare literal
+                            // in an `Integer` position lowers as an `Integer`
+                            // (see the result-directed path above).
                             if self.is_primitive_instance(&class_name, ty_name.as_str()) {
+                                let param_tys = crate::types::infer::signature_param_tys_conv(
+                                    self.env,
+                                    &class_var,
+                                    &cv_subst,
+                                    sig,
+                                    || {
+                                        let v = self.next_tyvar;
+                                        self.next_tyvar += 1;
+                                        ValueTy::Var(v)
+                                    },
+                                );
                                 return self.lower_primitive_method(
                                     &class_name,
                                     name,
@@ -2798,6 +2835,7 @@ impl<'a> Lowerer<'a> {
                                     call_args,
                                     *span,
                                     Some((selector_idx, arg_reg, arg_vty)),
+                                    &param_tys,
                                 );
                             }
                             let (params, body) = match self.instantiate_method(
@@ -3495,14 +3533,24 @@ impl<'a> Lowerer<'a> {
                 //
                 // The result keeps the OPERAND's track: an integer literal
                 // negates to a `Value::Int` (an `Expr::Int` is Int-track
-                // unconditionally, so `-3` must be too), a float literal to a
-                // `Value::Double`, and a non-literal follows its lowered type.
-                // Without this, `-1` was the one place a statically-`Int` slot
-                // held a `Value::Double` — and an `Ix` offset computed from a
-                // negative lower bound then failed the interpreter's
-                // "index is not an Int" check.
+                // unconditionally, so `-3` must be too) unless the expected
+                // type is `Integer`, in which case it folds to a
+                // `ValueConstInteger` — `-3 :: Integer` must be a typed-`Integer`
+                // slot holding an `Integer`, the same invariant the literal
+                // path keeps. A float literal to a `Value::Double`, and a
+                // non-literal follows its lowered type. Without this, `-1` was
+                // the one place a statically-`Int` slot held a `Value::Double` —
+                // and an `Ix` offset computed from a negative lower bound then
+                // failed the interpreter's "index is not an Int" check.
                 if let Some(v) = const_i64(inner) {
                     let dst = self.fresh_value_reg();
+                    if matches!(expected, Some(ValueTy::Integer)) {
+                        self.emit_value(ValueInstr::ValueConstInteger {
+                            dst,
+                            value: Box::new((-v).into()),
+                        });
+                        return Ok((dst, ValueTy::Integer));
+                    }
                     self.emit_value(ValueInstr::ValueConstInt { dst, value: -v });
                     return Ok((dst, ValueTy::Int));
                 }
@@ -5586,6 +5634,7 @@ impl<'a> Lowerer<'a> {
         Some((key, crate::types::infer::ClassVarSubst::Ty(evidence)))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lower_primitive_method(
         &mut self,
         class_name: &str,
@@ -5594,19 +5643,33 @@ impl<'a> Lowerer<'a> {
         call_args: &[Expr],
         span: Span,
         prefetched: Option<(usize, usize, ValueTy)>,
+        param_tys: &[ValueTy],
     ) -> Result<(usize, ValueTy), CompileError> {
-        // Lower the arguments once; a primitive kernel consumes registers.
+        // Lower the arguments once; a primitive kernel consumes registers. Each
+        // argument is lowered with its SIGNATURE parameter type as the expected
+        // type: the instance key already solved the class variable, so the
+        // parameter type is concrete (`Num Integer` → `Integer -> Integer ->
+        // Integer`). Without it a bare literal in an `Integer` position lowered
+        // as a `ValueConstInt`, and the kernel then saw `[Integer, Int]` — the
+        // comparison silently degraded to the cross-kind total order and the
+        // arithmetic latched its mixed-kind fault.
         let mut arg_regs: Vec<usize> = Vec::with_capacity(call_args.len());
         let mut arg_tys: Vec<ValueTy> = Vec::with_capacity(call_args.len());
         for (i, a) in call_args.iter().enumerate() {
             if let Some((idx, reg, ty)) = &prefetched {
                 if *idx == i {
+                    // A prefetched argument keeps its existing register AND
+                    // type: it was lowered before the instance was known, and
+                    // the dispatch above is authoritative.
                     arg_regs.push(*reg);
                     arg_tys.push(ty.clone());
                     continue;
                 }
             }
-            let (r, t) = self.lower_value(a)?;
+            let (r, t) = match param_tys.get(i) {
+                Some(exp) => self.lower_value_expected(a, Some(exp))?,
+                None => self.lower_value(a)?,
+            };
             arg_regs.push(r);
             arg_tys.push(t);
         }
@@ -5686,9 +5749,13 @@ impl<'a> Lowerer<'a> {
                 }
                 // The result track follows the operands' ONE numeric type: two
                 // `Int`s stay `Int`, two `Integer`s stay `Integer`, everything
-                // else is `Double`. A mixed pair is unreachable — `(+)`'s `Num a
-                // => a -> a -> a` rejects it — so the fallback is the existing
-                // Double case, not a widening.
+                // else is `Double`. The two arguments are NOT typed
+                // independently: the solved instance fixes the class variable,
+                // so both are lowered with the SAME signature parameter type
+                // (`Num a => a -> a -> a` applied at `Integer` gives
+                // `Integer -> Integer -> Integer`). The pair is therefore
+                // same-kind here, and the `Double` arm is the float track — not
+                // a widening of a mixed pair.
                 let ret = match (arg_tys.first(), arg_tys.get(1)) {
                     (Some(ValueTy::Int), Some(ValueTy::Int)) => ValueTy::Int,
                     (Some(ValueTy::Integer), Some(ValueTy::Integer)) => ValueTy::Integer,

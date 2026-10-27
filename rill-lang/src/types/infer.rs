@@ -3936,10 +3936,14 @@ fn infer_expr_expected(
         Expr::Void(_) => Ok(ArrowTy::value_channel(ValueTy::Void)),
         Expr::Ref(name, span) => infer_ref_expected(ctx, name, *span, expected),
         // Unary minus keeps the operand's type: `-3` is an `Int`, `-3.0` a
-        // `Double`. Haskell 2010 spells it `negate x`, whose `Num` dictionary
-        // is a later stage's slot projection; the operand unification is what
-        // makes a mixed `-(1) + 1.0` a type error.
-        Expr::Neg(inner, _span) => infer_expr(ctx, inner),
+        // `Double`, `-3 :: Integer` an `Integer`. Haskell 2010 spells it
+        // `negate x`, whose `Num` dictionary is a later stage's slot
+        // projection; the operand unification is what makes a mixed
+        // `-(1) + 1.0` a type error. The expected type is threaded through, so
+        // an `Integer`-expected literal under the minus types as an `Integer`
+        // instead of defaulting to `Int` and failing the annotation's
+        // unification.
+        Expr::Neg(inner, _span) => infer_expr_expected(ctx, inner, expected),
         Expr::Annot { expr, ty, span } => {
             // `e :: T` (Haskell 2010 §3.12). The annotation pins the inner
             // expression's type and the whole node takes the declared type:
