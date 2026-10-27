@@ -1,6 +1,10 @@
 # rill-lang: B2 — `Eq`/`Ord` for sum types, and the `Data` vs `App` split
 
-> **Status:** ready to implement.
+> **Status:** SUPERSEDED — see `2026-10-27-rill-lang-b2-one-con.md`.
+> The user decision (2026-10-27) replaced the "one unify rule" draft with a full
+> merge of `App` and `Data` into `ValueTy::Con`, matching GHC's `TyConApp`:
+> four of the remaining large tasks (5.5c, OD-18, `deriving`, `kind_of`) all ask
+> the same question the split answers twice.
 > **Predecessor:** B1 (`d5bb035`) erased the `Bool` special case, which exposed
 > this. Tracked as **OD-26 / B2**.
 
