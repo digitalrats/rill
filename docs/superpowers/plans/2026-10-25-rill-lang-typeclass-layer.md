@@ -322,7 +322,15 @@ typeclass_layer.rs}` (new).
 - Modify: `rill-lang/src/types/ty.rs` (classes + instances), `rill-lang/src/parser.rs` (`[a..b]` desugaring), `rill-lang/src/lower.rs` (`%` moves to `rem`)
 - Test: `rill-lang/tests/typeclass_layer.rs`
 
-- [ ] **Step 1: Write failing tests** — `div`/`mod`/`quot`/`rem`; `floor`/`ceiling`/`round`/`truncate`; `fromIntegral`/`toInteger`; `succ`/`pred`; `enumFromTo`; `[1..5]`; `minBound`/`maxBound`.
+- [ ] **Step 1: Write failing tests** — `div`/`mod`/`quot`/`rem`;
+  `floor`/`ceiling`/`round`/`truncate`; `fromIntegral`/`toInteger`;
+  `succ`/`pred`; `enumFromTo`; `[1..5]`; `minBound`/`maxBound`.
+
+  **Note (2026-10-27, `218a981`):** rill's old spelling of remainder was the
+  infix `%`, which was removed — it took a name that means something else in
+  Haskell (`Data.Ratio.%`) and never worked for values (`value % is not
+  supported`). The `ArithOp::Rem` / `BinArith::Rem` cores remain, so these four
+  functions need a source surface, not new kernels. Recorded as **OD-24**.
 - [ ] **Step 2: Run — expect `unknown identifier`.**
 - [ ] **Step 3: Implement the four classes** (`Integral Int`, `RealFrac Double`
   — and `RealFrac Float` once P3 landed `Float` — `Enum Int`, `Bounded Int`),
