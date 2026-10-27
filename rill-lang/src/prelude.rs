@@ -15,3 +15,6 @@ pub use crate::test_eval;
 // The runtime dictionary value's slot and kernel vocabulary (see
 // `Value::Dictionary`).
 pub use crate::arena::{DictSlot, KernelId};
+// The dictionary table's compile-time description and the one kernel table.
+pub use crate::ir::DictDesc;
+pub use crate::kernels::{has_instruction, kernel_for_method, missing_kernels, MissingKernel};

@@ -1,0 +1,261 @@
+//! The ONE `(class, method) → kernel` table.
+//!
+//! A primitive instance (`Num Int`, `Ord Double`, the structural `Eq`/`Ord`, a
+//! buffer arithmetic instance) has no source equations: its methods are compiler
+//! kernels. Two consumers need that decision and **must** agree:
+//!
+//! * lowering, when it inlines a primitive method call
+//!   ([`lower_primitive_method`](crate::lower)), and
+//! * dictionary construction, when it fills
+//!   [`DictSlot::Kernel`](crate::arena::DictSlot).
+//!
+//! Keeping two copies of the mapping is exactly the defect class the dictionary
+//! work removes, so [`kernel_for_method`] is the only place a
+//! `(class, method)` pair becomes a [`KernelId`]. The kernel → *instruction*
+//! mapping is a different (and unavoidable) relation: one instruction serves a
+//! whole kernel, and it lives where the instruction is emitted.
+//!
+//! Design §3.9: some kernels have **no IR instruction yet**. Those are
+//! *reported*, never silently dropped — see [`has_instruction`] and
+//! [`missing_kernels`].
+
+use crate::arena::KernelId;
+use crate::ir::Ir;
+
+/// The kernel that implements `class`'s `method`, if any.
+///
+/// This is the single `(class, method) → KernelId` decision in the compiler.
+/// Every method declared by a *primitive* instance must resolve here (or, when
+/// the class declares a default body, fall back to that body — `Ord`'s
+/// `min`/`max` are ordinary definitions, not kernels).
+///
+/// It is deliberately keyed on `(class, method)`, not on `(class, type,
+/// method)`: the kernel is an *operation*. `(+)` selects
+/// [`KernelId::Add`] for `Int`, for `Double` and for a buffer alike; the kernel
+/// implementation dispatches on its operand kinds. That is why adding a class
+/// does not grow [`KernelId`].
+pub fn kernel_for_method(class: &str, method: &str) -> Option<KernelId> {
+    Some(match (class, method) {
+        // `Eq`: structural equality and inequality.
+        ("Eq", "==") => KernelId::Eq,
+        ("Eq", "/=") => KernelId::Ne,
+        // `Ord`: the comparison predicates plus the three-way order.
+        ("Ord", "compare") => KernelId::Compare,
+        ("Ord", "<") => KernelId::Lt,
+        ("Ord", ">") => KernelId::Gt,
+        ("Ord", "<=") => KernelId::Le,
+        ("Ord", ">=") => KernelId::Ge,
+        // `Num`: ring arithmetic and the unary numeric operations.
+        ("Num", "+") => KernelId::Add,
+        ("Num", "-") => KernelId::Sub,
+        ("Num", "*") => KernelId::Mul,
+        ("Num", "negate") => KernelId::Negate,
+        ("Num", "abs") => KernelId::Abs,
+        ("Num", "signum") => KernelId::Signum,
+        ("Num", "fromInteger") => KernelId::FromInteger,
+        // `Fractional`: division and reciprocal.
+        ("Fractional", "/") => KernelId::Div,
+        ("Fractional", "recip") => KernelId::Recip,
+        _ => return None,
+    })
+}
+
+/// Whether `kernel` can be executed for an instance of a scalar or a buffer
+/// type.
+///
+/// Most kernels are implemented for both operand kinds. The exceptions are the
+/// design §3.9 gaps, and one of them is *partial*:
+///
+/// * [`KernelId::Abs`] exists for buffers (`ValueBufferUn`/`UnOp::Abs`) but
+///   **not** for scalars, so it is the one kernel whose answer depends on the
+///   instance's type — `is_buffer` is the instance's kind, derived from the
+///   same registry key that selects the instance.
+/// * [`KernelId::Negate`] has no instruction for either kind: lowering has
+///   never emitted a negation *kernel*, so a buffer `negate` is unimplemented
+///   too (`UnOp::Neg` exists, but no primitive instance binds it).
+///
+/// The remaining four — [`KernelId::Compare`], [`KernelId::Signum`],
+/// [`KernelId::FromInteger`], [`KernelId::Recip`] — have no instruction at all.
+///
+/// This predicate is what keeps §3.9 **visible**: a primitive instance may
+/// legitimately declare (for example) `signum`, so the dictionary must be built
+/// with that slot; the report from [`missing_kernels`] is how the gap is
+/// surfaced instead of being hidden.
+pub fn has_instruction(kernel: KernelId, is_buffer: bool) -> bool {
+    match kernel {
+        KernelId::Eq
+        | KernelId::Ne
+        | KernelId::Lt
+        | KernelId::Gt
+        | KernelId::Le
+        | KernelId::Ge
+        | KernelId::Add
+        | KernelId::Sub
+        | KernelId::Mul
+        | KernelId::Div => true,
+        KernelId::Abs => is_buffer,
+        KernelId::Compare
+        | KernelId::Negate
+        | KernelId::Signum
+        | KernelId::FromInteger
+        | KernelId::Recip => false,
+    }
+}
+
+/// One dictionary slot whose kernel has no IR instruction yet.
+///
+/// Machine-readable on purpose: stage 7's checklist is exactly this list, and
+/// stage 4 (slot projection) must never return such a slot as if it worked.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MissingKernel {
+    /// The class whose dictionary owns the slot.
+    pub class: String,
+    /// The instance's registry key (see
+    /// [`DictDesc::ty_key`](crate::ir::DictDesc::ty_key)).
+    pub ty_key: String,
+    /// The method's name, at the slot's index in the class's method list.
+    pub method: String,
+    /// The method's positional slot index.
+    pub slot: usize,
+    /// The kernel the slot names.
+    pub kernel: KernelId,
+}
+
+/// Every `(class, type, method)` in `ir`'s dictionary table whose slot names a
+/// kernel with no IR instruction, in dictionary order and then slot order.
+///
+/// Empty for a program that mentions no class, and empty for a program whose
+/// dictionaries only name implemented kernels.
+pub fn missing_kernels(ir: &Ir) -> Vec<MissingKernel> {
+    missing_kernels_in(&ir.dicts)
+}
+
+/// [`missing_kernels`] over a descriptor slice (a seated world keeps its own
+/// copy and no longer has the `Ir`).
+pub fn missing_kernels_in(descs: &[crate::ir::DictDesc]) -> Vec<MissingKernel> {
+    let mut out = Vec::new();
+    for desc in descs {
+        for (slot_index, (slot, method)) in desc
+            .methods
+            .iter()
+            .zip(desc.method_names.iter())
+            .enumerate()
+        {
+            let crate::arena::DictSlot::Kernel(kernel) = slot else {
+                continue;
+            };
+            if has_instruction(*kernel, desc.is_buffer) {
+                continue;
+            }
+            out.push(MissingKernel {
+                class: desc.class.clone(),
+                ty_key: desc.ty_key.clone(),
+                method: method.clone(),
+                slot: slot_index,
+                kernel: *kernel,
+            });
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_table_covers_every_primitive_instance_method() {
+        // Every method a primitive instance can be asked for resolves to exactly
+        // one kernel: `Eq`'s two, `Ord`'s six on top of `Eq`, `Num`'s seven on
+        // top of those, `Fractional`'s two. `Ord`'s `min`/`max` are absent by
+        // design — they are ordinary default bodies, not kernels.
+        let expected = [
+            ("Eq", "==", KernelId::Eq),
+            ("Eq", "/=", KernelId::Ne),
+            ("Ord", "compare", KernelId::Compare),
+            ("Ord", "<", KernelId::Lt),
+            ("Ord", ">", KernelId::Gt),
+            ("Ord", "<=", KernelId::Le),
+            ("Ord", ">=", KernelId::Ge),
+            ("Num", "+", KernelId::Add),
+            ("Num", "-", KernelId::Sub),
+            ("Num", "*", KernelId::Mul),
+            ("Num", "negate", KernelId::Negate),
+            ("Num", "abs", KernelId::Abs),
+            ("Num", "signum", KernelId::Signum),
+            ("Num", "fromInteger", KernelId::FromInteger),
+            ("Fractional", "/", KernelId::Div),
+            ("Fractional", "recip", KernelId::Recip),
+        ];
+        for (class, method, kernel) in expected {
+            assert_eq!(
+                kernel_for_method(class, method),
+                Some(kernel),
+                "`{class}.{method}` must select {kernel:?}"
+            );
+        }
+        // `Ord`'s default-body methods and unrelated names have no kernel: a
+        // mapping for them would be a second dispatch path.
+        for (class, method) in [
+            ("Ord", "min"),
+            ("Ord", "max"),
+            ("Eq", "eq"),
+            ("Num", "negate2"),
+        ] {
+            assert_eq!(
+                kernel_for_method(class, method),
+                None,
+                "`{class}.{method}` must not select a kernel"
+            );
+        }
+    }
+
+    #[test]
+    fn exactly_the_six_section_3_9_kernels_lack_an_instruction() {
+        // Pinned so a new kernel cannot be added without deciding whether it
+        // is executable — and so stage 7's checklist cannot drift. The list is
+        // design §3.9's six names in `KernelId` declaration order; `Abs` is
+        // last-unimplemented only for scalars, which is why the filter takes
+        // the union over both operand kinds.
+        let gaps: Vec<KernelId> = [
+            KernelId::Eq,
+            KernelId::Ne,
+            KernelId::Lt,
+            KernelId::Gt,
+            KernelId::Le,
+            KernelId::Ge,
+            KernelId::Compare,
+            KernelId::Add,
+            KernelId::Sub,
+            KernelId::Mul,
+            KernelId::Div,
+            KernelId::Negate,
+            KernelId::Abs,
+            KernelId::Signum,
+            KernelId::FromInteger,
+            KernelId::Recip,
+        ]
+        .into_iter()
+        .filter(|k| !has_instruction(*k, false) || !has_instruction(*k, true))
+        .collect();
+        assert_eq!(
+            gaps,
+            vec![
+                KernelId::Compare,
+                KernelId::Negate,
+                KernelId::Abs,
+                KernelId::Signum,
+                KernelId::FromInteger,
+                KernelId::Recip,
+            ],
+            "design §3.9's missing kernels, in `KernelId` declaration order"
+        );
+        // `abs` is the one PARTIAL kernel: implemented for buffers, not for
+        // scalars. That asymmetry is why the report must know the instance kind.
+        assert!(!has_instruction(KernelId::Abs, false));
+        assert!(has_instruction(KernelId::Abs, true));
+        // `negate` is missing for buffers too: no primitive instance binds
+        // `UnOp::Neg`, so nothing would execute the slot.
+        assert!(!has_instruction(KernelId::Negate, true));
+    }
+}

@@ -304,6 +304,20 @@ pub struct WorldState<T: Transcendental, const BUF: usize> {
     /// allocated and releases them on exit, so the table is truncated back
     /// after each region and never grows across ticks.
     pub(crate) st_cells: Vec<Option<StCell>>,
+    /// The program's runtime dictionaries, one arena slot per
+    /// [`DictDesc`](crate::ir::DictDesc) in [`Ir::dicts`] order — the vtable of
+    /// a `(class, type)` pair, built once at [`seat`](Self::seat).
+    ///
+    /// Each value owns its superclass refs (they are RC children, see
+    /// [`Value::Dictionary`](crate::arena::Value::Dictionary)); the table owns
+    /// one ref per entry. Nothing reads this table yet: it exists so later
+    /// stages can pass and project dictionaries, and so
+    /// [`dicts_len`](Self::dicts_len) can prove it matches the IR.
+    pub(crate) dicts: Vec<crate::arena::ArenaRef>,
+    /// A copy of the IR's dictionary descriptors, parallel to [`Self::dicts`].
+    /// Kept so the debug accessors can check a built value against the plan it
+    /// came from without the IR being in scope (a world outlives its IR).
+    pub(crate) dict_descs: Vec<crate::ir::DictDesc>,
 }
 
 impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
@@ -354,6 +368,8 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
             value_error: None,
             regions: Vec::new(),
             st_cells: Vec::new(),
+            dicts: Vec::new(),
+            dict_descs: Vec::new(),
         }
     }
 
@@ -445,14 +461,14 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         }
         self.delays = delays;
         self.builtins = builtins;
-        self.fill_layout(ir);
+        self.fill_layout(ir)?;
         Ok(())
     }
 
     /// Size the IR-derived structural tables (everything the seat owns except
     /// the tapes, delay sites and built-in instances built from the
     /// allocator).
-    fn fill_layout(&mut self, ir: &Ir) {
+    fn fill_layout(&mut self, ir: &Ir) -> Result<(), CompileError> {
         // A seat (re)defines the whole value track. Refs from an earlier
         // seat/run belong to the arena replaced below, so the bookkeeping is
         // cleared wholesale instead of ref-by-ref.
@@ -513,6 +529,163 @@ impl<T: Transcendental, const BUF: usize> WorldState<T, BUF> {
         let mut arena = Arena::with_capacity(ir.value_state.capacity);
         arena.pool = BufferPool::new(ir.value_state.buffer_budget, self.config.growable);
         self.arena = arena;
+        self.build_dicts(ir)?;
+        Ok(())
+    }
+
+    /// Materialise the program's dictionaries: one
+    /// [`Value::Dictionary`](crate::arena::Value::Dictionary) per
+    /// [`DictDesc`](crate::ir::DictDesc), in [`Ir::dicts`] order.
+    ///
+    /// The IR orders descriptors topologically (a superclass precedes its
+    /// referrer), so this is a single forward pass: a `supers` index always
+    /// names a slot this loop has already built. Each built dictionary takes
+    /// its own reference on those supers — a dictionary OWNS its superclass
+    /// refs, which is what the RC walkers already account for.
+    ///
+    /// A `DictSlot::Fragment` index is checked against [`Ir::fragments`] and a
+    /// `supers` index against the descriptors' own count, so a malformed table
+    /// fails at seat rather than producing a dictionary with a dangling slot.
+    fn build_dicts(&mut self, ir: &Ir) -> Result<(), CompileError> {
+        self.dicts.clear();
+        self.dict_descs.clear();
+        let mut built: Vec<crate::arena::ArenaRef> = Vec::with_capacity(ir.dicts.len());
+        for (idx, desc) in ir.dicts.iter().enumerate() {
+            let mut supers = Vec::with_capacity(desc.supers.len());
+            for &sup in &desc.supers {
+                let Some(&r) = built.get(sup) else {
+                    return Err(CompileError::Unsupported(format!(
+                        "dictionary {idx} (`{} {}`) references superclass {sup}, \
+                         which is not built yet — the IR's dictionaries must be in \
+                         topological order",
+                        desc.class, desc.ty_key
+                    )));
+                };
+                // The new dictionary is a separate owner of its super.
+                self.arena
+                    .copy(r)
+                    .map_err(|e| seat_arena_error("dictionary superclass", e))?;
+                supers.push(r);
+            }
+            for slot in &desc.methods {
+                if let crate::arena::DictSlot::Fragment { fragment } = slot {
+                    if (*fragment as usize) >= ir.fragments.len() {
+                        return Err(CompileError::Unsupported(format!(
+                            "dictionary {idx} (`{} {}`) names fragment {fragment}, but \
+                             the program has only {} fragments",
+                            desc.class,
+                            desc.ty_key,
+                            ir.fragments.len()
+                        )));
+                    }
+                }
+            }
+            let value = crate::arena::Value::Dictionary {
+                supers,
+                methods: desc.methods.clone(),
+            };
+            let r = self
+                .arena
+                .alloc(value)
+                .map_err(|(e, _)| seat_arena_error("dictionary", e))?;
+            built.push(r);
+        }
+        self.dicts = built;
+        self.dict_descs = ir.dicts.clone();
+        Ok(())
+    }
+
+    /// Number of dictionaries the world holds (one per
+    /// [`Ir::dicts`](crate::ir::Ir::dicts) entry).
+    pub fn dicts_len(&self) -> usize {
+        self.dicts.len()
+    }
+
+    /// The descriptor the dictionary at `index` was built from, if any.
+    pub fn dict_desc(&self, index: usize) -> Option<&crate::ir::DictDesc> {
+        self.dict_descs.get(index)
+    }
+
+    /// The arena ref of the dictionary at `index`, if any.
+    pub fn dict_ref(&self, index: usize) -> Option<crate::arena::ArenaRef> {
+        self.dicts.get(index).copied()
+    }
+
+    /// Check that the built table matches its descriptors one-to-one: every
+    /// descriptor has exactly one [`Value::Dictionary`](crate::arena::Value::Dictionary)
+    /// slot, with the planned method slots and superclass refs.
+    ///
+    /// Returns the defects found (empty when the table is consistent), as a
+    /// machine-readable list rather than a log line or a panic: a test — and a
+    /// tool — can assert the table is exactly what the descriptors say. This is
+    /// the stage-2 consistency accessor; it is not on the RT path.
+    pub fn dict_consistency(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.dicts.len() != self.dict_descs.len() {
+            problems.push(format!(
+                "table has {} entries but {} descriptors",
+                self.dicts.len(),
+                self.dict_descs.len()
+            ));
+        }
+        for (idx, (&r, desc)) in self.dicts.iter().zip(self.dict_descs.iter()).enumerate() {
+            let Some(value) = self.arena.get(r) else {
+                problems.push(format!("dictionary {idx} is a dangling ref"));
+                continue;
+            };
+            let crate::arena::Value::Dictionary { supers, methods } = value else {
+                problems.push(format!(
+                    "slot {idx} holds {:?}, not a Dictionary",
+                    value.kind()
+                ));
+                continue;
+            };
+            if methods.len() != desc.methods.len() {
+                problems.push(format!(
+                    "dictionary {idx} (`{} {}`) has {} method slots, descriptor says {}",
+                    desc.class,
+                    desc.ty_key,
+                    methods.len(),
+                    desc.methods.len()
+                ));
+            }
+            if methods != &desc.methods {
+                problems.push(format!(
+                    "dictionary {idx} (`{} {}`) method slots differ from the descriptor",
+                    desc.class, desc.ty_key
+                ));
+            }
+            if supers.len() != desc.supers.len() {
+                problems.push(format!(
+                    "dictionary {idx} (`{} {}`) has {} superclass refs, descriptor says {}",
+                    desc.class,
+                    desc.ty_key,
+                    supers.len(),
+                    desc.supers.len()
+                ));
+            }
+            for (&held, &expected) in supers.iter().zip(desc.supers.iter()) {
+                if self.dicts.get(expected) != Some(&held) {
+                    problems.push(format!(
+                        "dictionary {idx} (`{} {}`)'s superclass ref is not the \
+                         dictionary built at descriptor index {expected}",
+                        desc.class, desc.ty_key
+                    ));
+                }
+            }
+        }
+        problems
+    }
+
+    /// Every `(class, type, method)` in the table whose slot names a kernel with
+    /// no IR instruction yet (design §3.9), in table order.
+    ///
+    /// A primitive instance may legitimately declare such a method (`Num Int`
+    /// has `signum`), so the dictionary is built with the slot; this report is
+    /// how the gap stays visible instead of becoming a silent hole at slot
+    /// projection. Stage 7's checklist is exactly this list.
+    pub fn missing_kernels(&self) -> Vec<crate::kernels::MissingKernel> {
+        crate::kernels::missing_kernels_in(&self.dict_descs)
     }
 
     /// Carve the program-level buffer table out of a fresh region allocator:
@@ -615,6 +788,11 @@ fn max_drops(ir: &Ir) -> usize {
             .iter()
             .map(|f| f.value_blocks.iter().map(instrs).sum::<usize>())
             .sum::<usize>()
+}
+
+/// A seat-time arena failure, named so the diagnostic says which table ran out.
+fn seat_arena_error(what: &str, e: crate::arena::ArenaError) -> CompileError {
+    CompileError::Unsupported(format!("{what} allocation failed at seat: {e:?}"))
 }
 
 impl<T: Transcendental, const BUF: usize> Default for WorldState<T, BUF> {
@@ -1124,6 +1302,8 @@ mod program_value_tests {
             num_buffers: 0,
             input_buffers: Vec::new(),
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
         world.seat(&ir).expect("seat");
@@ -1167,6 +1347,8 @@ mod program_value_tests {
             num_buffers: 0,
             input_buffers: Vec::new(),
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut preseeded = WorldState::<f32, 256>::new(WorldConfig {
             params: rill_core::Params::new(44_100.0),
@@ -1226,6 +1408,8 @@ mod program_value_tests {
             num_buffers: 0,
             input_buffers: Vec::new(),
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
         world.seat(&ir).expect("seat");
@@ -1281,6 +1465,8 @@ mod program_value_tests {
             num_buffers: 0,
             input_buffers: Vec::new(),
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut out_of_range = WorldState::<f32, 256>::new(WorldConfig::default());
         out_of_range.set_param("level", ParamValue::Float(9.0));
@@ -1330,6 +1516,8 @@ mod program_value_tests {
             num_buffers: 0,
             input_buffers: Vec::new(),
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
         world.seat(&ir).expect("seat");

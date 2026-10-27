@@ -6288,6 +6288,8 @@ mod closure_dispatch_tests {
             input_buffers: Vec::new(),
 
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
             fragments: vec![std::sync::Arc::new(FragmentIr {
                 value_blocks: vec![ValueBlock {
                     instrs: vec![ValueInstr::ValueConstInt { dst: 0, value: 7 }],
@@ -6359,6 +6361,8 @@ mod closure_dispatch_tests {
             num_buffers: 0,
             input_buffers: Vec::new(),
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
             fragments: vec![
                 // Thunk body: return an eager closure over fragment 1.
                 std::sync::Arc::new(FragmentIr {
@@ -6447,6 +6451,8 @@ mod value_track_tests {
             input_buffers: Vec::new(),
 
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
         world.seat(&ir).unwrap();
@@ -7269,6 +7275,8 @@ mod lazy_track_tests {
             input_buffers: Vec::new(),
 
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut world = WorldState::<f32, 256>::new(WorldConfig::default());
         world.seat(&ir).unwrap();
@@ -7675,6 +7683,8 @@ mod dictionary_walker_tests {
             num_buffers: 0,
             input_buffers: Vec::new(),
             tapes: Vec::new(),
+            dicts: Vec::new(),
+            dict_gaps: Vec::new(),
         };
         let mut w = WorldState::<f32, 256>::new(WorldConfig::default());
         w.seat(&ir).unwrap();

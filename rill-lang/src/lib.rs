@@ -48,6 +48,14 @@ pub mod types;
 #[cfg(feature = "debug")]
 pub mod debug;
 
+/// Dictionary planning: the `(class, type)` pairs a program needs and their
+/// build order (design §3.7 step 2).
+pub mod dicts;
+
+/// The one `(class, method) → kernel` table (design §3.9), shared by lowering
+/// and dictionary construction.
+pub mod kernels;
+
 /// `Program` ↔ JSON serialization contract.
 #[cfg(feature = "serialization")]
 pub mod program_serde;

@@ -905,6 +905,77 @@ pub struct ParamDef {
     pub max: f64,
 }
 
+/// One runtime dictionary the program needs, as the IR's description of it.
+///
+/// A dictionary is the vtable of a `(class, type)` pair (design §3.1), built
+/// once at [`WorldState::seat`](crate::program::WorldState::seat) into a
+/// [`Value::Dictionary`](crate::arena::Value::Dictionary). The descriptor is
+/// the compile-time half: it carries exactly what seat needs to assemble the
+/// value, and nothing that a runtime dispatch would have to look up (no
+/// names in the dispatch path — the strings here are metadata for the table,
+/// the report, and diagnostics; the built value never holds them).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DictDesc {
+    /// The class this dictionary belongs to (`Num`, `Eq`, …).
+    pub class: String,
+    /// The instance-registry key of the type, from
+    /// [`TypeEnv::value_type_key`](crate::types::ty::value_type_key) — falling
+    /// back to the instance's head name exactly as the registry's own dispatch
+    /// does. Sharing that identity is what stops a dictionary and its instance
+    /// from ever disagreeing.
+    pub ty_key: String,
+    /// Whether `ty_key` names a buffer type.
+    ///
+    /// A kernel's availability can depend on the operand kind
+    /// ([`has_instruction`](crate::kernels::has_instruction): `abs` is
+    /// implemented for buffers, not scalar values), so the kind travels with
+    /// the descriptor instead of being re-derived from the key's spelling.
+    pub is_buffer: bool,
+    /// Indices into [`Ir::dicts`] of this class's DIRECT superclass
+    /// dictionaries, in the order the class declares them. A superclass's
+    /// descriptor always precedes this one, so seat can build in a single
+    /// forward pass.
+    pub supers: Vec<usize>,
+    /// Method slots in the class's declaration order, so a slot index resolves
+    /// to the same method the compiler statically decided.
+    pub methods: Vec<crate::arena::DictSlot>,
+    /// The method name of each slot, parallel to [`Self::methods`].
+    ///
+    /// Purely metadata: it names the method in the unimplemented-kernel report
+    /// and in diagnostics (a `DictSlot` itself is positional and nameless).
+    /// The IR carries no class table, so without this the runtime table could
+    /// not report *which* method a missing kernel belongs to.
+    pub method_names: Vec<String>,
+}
+
+/// A `(class, type)` pair the program mentions whose dictionary could **not**
+/// be described, with the reason.
+///
+/// Stage 2 builds every dictionary a flat vtable can express. The pairs it
+/// cannot describe are recorded here rather than silently dropped, so a gap is
+/// visible instead of looking like a pair the program never mentioned. The
+/// reasons are:
+///
+/// * an abstract given-constraint witness (`C g` inside a constrained body) —
+///   its dictionary ARRIVES as a parameter (design §3.7 step 3);
+/// * a constraint-parameterised instance (`instance Monad m => Arrow (Kleisli
+///   m)`) — its dictionary is a function of another dictionary (design §3.10);
+/// * a pair whose superclass dictionary could not be built, so its superclass
+///   field would dangle;
+/// * a pair whose method body cannot be compiled as a standalone fragment (a
+///   body that captures an enclosing value, which a dictionary built at seat
+///   has no scope to snapshot);
+/// * a pair with no registered instance.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DictGap {
+    /// The class whose dictionary is missing.
+    pub class: String,
+    /// The instance key, when the pair had a concrete type.
+    pub ty_key: Option<String>,
+    /// Why no descriptor was produced.
+    pub reason: String,
+}
+
 /// A complete lowered program.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ir {
@@ -995,6 +1066,20 @@ pub struct Ir {
     /// and named `name = tape_loop <capacity>` declarations (one cell per
     /// name); the build allocates a `rill_core::buffer::SharedCell` per entry.
     pub tapes: Vec<usize>,
+    /// The program's runtime dictionaries, in **topological** order: every
+    /// descriptor's supers point at already-earlier entries, so
+    /// [`WorldState::seat`](crate::program::WorldState::seat) builds them in
+    /// one forward pass. One `Value::Dictionary` arena slot per entry, in this
+    /// order (see [`WorldState::dicts`](crate::program::WorldState::dicts)).
+    ///
+    /// Populated by lowering from
+    /// [`TypedProgram::dict_selections`](crate::types::infer::TypedProgram::dict_selections)
+    /// plus the superclass closure each mentioned class declares. Empty for a
+    /// program that mentions no class.
+    pub dicts: Vec<DictDesc>,
+    /// Pairs the program mentions whose dictionary this stage cannot
+    /// describe. Empty for the programs stage 2 supports; see [`DictGap`].
+    pub dict_gaps: Vec<DictGap>,
 }
 
 #[cfg(test)]

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::arena::KernelId;
 use crate::ast::{ArithOp, Def, Expr, MatchArm, Param, Pattern, Program};
 use crate::error::{CompileError, Span};
 use crate::ir::{
@@ -5391,6 +5392,225 @@ impl<'a> Lowerer<'a> {
             .unwrap_or(false)
     }
 
+    /// Compile one dictionary method slot to a fragment: the instance's
+    /// equation, or the class default when the instance omits it.
+    ///
+    /// The fragment is the method's curried body, taking the method's declared
+    /// arguments as its leading value registers — exactly the shape
+    /// [`Value::Callable`](crate::arena::Value::Callable) dispatches, so a
+    /// projected slot needs no new call machinery.
+    ///
+    /// Returns `Err(reason)` when the body cannot be compiled as a standalone
+    /// fragment. The one real limitation: a body with a FREE variable would
+    /// need a creation site to snapshot the capture, and a dictionary is built
+    /// once at seat with no enclosing scope. The caller records that as a
+    /// [`DictGap`](crate::ir::DictGap) instead of emitting a slot that would
+    /// read an absent cell.
+    fn compile_dict_method(
+        &mut self,
+        plan: &crate::dicts::DictPlan,
+        method: &str,
+    ) -> Result<u32, String> {
+        let Some((body_params, body)) =
+            crate::dicts::body_of(self.env, &plan.class, &plan.ty_key, method)
+        else {
+            return Err(format!(
+                "no body and no class default for method `{method}`"
+            ));
+        };
+        // A slot must be a fragment taking the method's arguments in its leading
+        // value registers — that is the shape `DictSlot::Fragment` promises
+        // (design §3.1: "the same kind of index a `Value::Callable` uses").
+        //
+        // An instance EQUATION carries its parameters explicitly, but a class
+        // DEFAULT body is stored as the parser curried it: a λ-nest with an
+        // empty parameter list (`min = \x -> \y -> …`). Lowering that as-is
+        // would produce a zero-argument fragment returning a closure, so the
+        // λ-nest is peeled into the slot's parameters first, up to the method's
+        // declared arity.
+        let arity = self
+            .env
+            .typeclasses
+            .get(&plan.class)
+            .and_then(|c| c.methods.iter().find(|(m, _)| m == method))
+            .map(|(_, s)| s.sig_arg_count())
+            .unwrap_or(body_params.len());
+        let (body_params, body) = if body_params.is_empty() {
+            let (peeled, peeled_body) = crate::types::ty::split_curried_params(arity, &[], &body);
+            let names: Vec<String> = peeled.iter().map(|p| p.name.clone()).collect();
+            (names, peeled_body)
+        } else {
+            (body_params, body)
+        };
+        // Capture-avoiding rename, exactly as `instantiate_method` does: a
+        // method's own parameter name must never collide with a name at the
+        // (absent) call site.
+        let (names, body) = self.fresh_method_params(&body_params, &body);
+        let sig = self
+            .env
+            .typeclasses
+            .get(&plan.class)
+            .and_then(|c| c.methods.iter().find(|(m, _)| m == method))
+            .map(|(_, s)| s.clone());
+        // Which substitution the method's own signature is typed under mirrors
+        // the registry's own dispatch: an arity-0 class solved its variable to
+        // the FULL concrete type, a constructor class only to the head.
+        let subst = if plan.class_arity == 0 {
+            crate::types::infer::ClassVarSubst::Ty(plan.ty.clone())
+        } else {
+            crate::types::infer::ClassVarSubst::Ctor(plan.ty_key.clone())
+        };
+        let (param_tys, result_ty) = match &sig {
+            Some(sig) => crate::types::infer::signature_param_and_result_tys_conv(
+                self.env,
+                &plan.class_var,
+                &subst,
+                sig,
+                || {
+                    let v = self.next_tyvar;
+                    self.next_tyvar += 1;
+                    ValueTy::Var(v)
+                },
+            ),
+            None => (vec![ValueTy::Double; names.len()], None),
+        };
+        let span = crate::error::Span::new(0, 0);
+        let params: Vec<Param> = names
+            .iter()
+            .map(|n| Param {
+                name: n.clone(),
+                span,
+                bang: false,
+            })
+            .collect();
+        let bound: HashSet<String> = names.iter().cloned().collect();
+        let free = self.free_vars(&body, &bound);
+        if !free.is_empty() {
+            return Err(format!(
+                "method `{method}`'s body captures {} — a dictionary is built at seat \
+                 with no enclosing scope to snapshot the capture",
+                free.join(", ")
+            ));
+        }
+        let saved_pending = self.pending_param_tys.take();
+        self.pending_param_tys = Some(param_tys.clone());
+        let frag = self.lower_fragment(
+            &params,
+            &body,
+            &free,
+            &[],
+            &param_tys,
+            result_ty.as_ref(),
+            span,
+        );
+        self.pending_param_tys = saved_pending;
+        let (fragment, _ret) = frag.map_err(|e| format!("method `{method}`: {e}"))?;
+        Ok(fragment as u32)
+    }
+
+    /// Turn the dictionary plan into IR descriptors: one
+    /// [`DictDesc`](crate::ir::DictDesc) per buildable plan entry, in plan
+    /// (topological) order, with each `Body` slot compiled to a fragment.
+    ///
+    /// A dictionary is emitted **whole or not at all**: if any slot cannot be
+    /// compiled, or any superclass dictionary is missing, the pair becomes a
+    /// [`DictGap`](crate::ir::DictGap) instead. A half-filled vtable would be a
+    /// silent hole, which is exactly what this stage exists to prevent.
+    fn build_dict_descriptors(
+        &mut self,
+        plan: &crate::dicts::Plan,
+    ) -> (Vec<crate::ir::DictDesc>, Vec<crate::ir::DictGap>) {
+        let mut gaps = plan.gaps.clone();
+        let mut dicts: Vec<crate::ir::DictDesc> = Vec::new();
+        // Plan index → descriptor index, for resolving `supers`.
+        let mut desc_index: HashMap<usize, usize> = HashMap::new();
+        for (plan_idx, entry) in plan.dicts.iter().enumerate() {
+            // A dictionary is emitted whole or not at all. Code fragments
+            // compiled for a descriptor that is then dropped are unreachable
+            // (only its own slots could name them), so the fragment table is
+            // rewound to here: leaving them would grow the arena/call-scratch
+            // budget for code nothing can call.
+            let frag_mark = self.fragments.len();
+            // Each superclass is identified by the same `(class, registry key)`
+            // pair the plan produced it from, so a superclass dictionary is
+            // resolved by identity rather than by a second type comparison. The
+            // plan orders supers first, so a missing one means that pair was
+            // dropped as a gap.
+            let super_indexes: Vec<usize> = entry
+                .supers
+                .iter()
+                .filter_map(|sup| {
+                    plan.dicts
+                        .iter()
+                        .position(|p| (&p.class, &p.ty_key) == (&sup.0, &sup.1))
+                        .and_then(|i| desc_index.get(&i).copied())
+                })
+                .collect();
+            if super_indexes.len() != entry.supers.len() {
+                // Name the superclass that is missing, so the gap points at the
+                // pair whose own gap entry explains why.
+                let missing = entry
+                    .supers
+                    .iter()
+                    .find(|(sup_class, sup_key)| {
+                        plan.dicts
+                            .iter()
+                            .position(|p| (&p.class, &p.ty_key) == (sup_class, sup_key))
+                            .and_then(|i| desc_index.get(&i))
+                            .is_none()
+                    })
+                    .map(|(sup_class, sup_key)| format!("`{sup_class} {sup_key}`"))
+                    .unwrap_or_else(|| "a superclass".to_string());
+                gaps.push(crate::ir::DictGap {
+                    class: entry.class.clone(),
+                    ty_key: Some(entry.ty_key.clone()),
+                    reason: format!(
+                        "the superclass dictionary {missing} could not be built, so this \
+                         dictionary's superclass field would dangle"
+                    ),
+                });
+                continue;
+            }
+            let mut methods = Vec::with_capacity(entry.slots.len());
+            let mut failure: Option<String> = None;
+            for (slot, method) in entry.slots.iter().zip(&entry.method_names) {
+                match slot {
+                    crate::dicts::SlotKind::Kernel(kernel) => {
+                        methods.push(crate::arena::DictSlot::Kernel(*kernel));
+                    }
+                    crate::dicts::SlotKind::Body => match self.compile_dict_method(entry, method) {
+                        Ok(fragment) => {
+                            methods.push(crate::arena::DictSlot::Fragment { fragment });
+                        }
+                        Err(reason) => {
+                            failure = Some(reason);
+                            break;
+                        }
+                    },
+                }
+            }
+            if let Some(reason) = failure {
+                self.fragments.truncate(frag_mark);
+                gaps.push(crate::ir::DictGap {
+                    class: entry.class.clone(),
+                    ty_key: Some(entry.ty_key.clone()),
+                    reason,
+                });
+                continue;
+            }
+            desc_index.insert(plan_idx, dicts.len());
+            dicts.push(crate::ir::DictDesc {
+                class: entry.class.clone(),
+                ty_key: entry.ty_key.clone(),
+                is_buffer: entry.is_buffer,
+                supers: super_indexes,
+                methods,
+                method_names: entry.method_names.clone(),
+            });
+        }
+        (dicts, gaps)
+    }
+
     /// Lower a call to a primitive instance's method by emitting the
     /// corresponding kernel. This is the System FC "primitive dictionary": the
     /// instance has no equations, so the (class, type, method) triple selects
@@ -5416,108 +5636,101 @@ impl<'a> Lowerer<'a> {
             arg_regs.push(r);
             arg_tys.push(t);
         }
-        // Comparison: `== ^= < <= > >=` over the structural total order.
-        if let Some(op) = match (class_name, name) {
-            ("Eq", "==") => Some(crate::ir::CmpOp::Eq),
-            ("Eq", "/=") => Some(crate::ir::CmpOp::Ne),
-            ("Ord", "<") => Some(crate::ir::CmpOp::Lt),
-            ("Ord", ">") => Some(crate::ir::CmpOp::Gt),
-            ("Ord", "<=") => Some(crate::ir::CmpOp::Le),
-            ("Ord", ">=") => Some(crate::ir::CmpOp::Ge),
-            _ => None,
-        } {
-            if arg_regs.len() < 2 {
-                return Err(CompileError::Type {
-                    msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
-                    span,
-                });
-            }
-            let dst = self.fresh_value_reg();
-            self.emit_value(ValueInstr::ValueCompare {
-                dst,
-                op,
-                a: arg_regs[0],
-                b: arg_regs[1],
+        // The ONE `(class, method) → kernel` table also consulted by dictionary
+        // construction; a second copy of this decision is the defect the
+        // dictionary work removes.
+        let Some(kernel) = crate::kernels::kernel_for_method(class_name, name) else {
+            // `min`/`max` from `Ord`'s defaults are NOT primitive: they have
+            // real default bodies and go through the ordinary method path.
+            return Err(CompileError::Type {
+                msg: format!(
+                    "primitive instance `{class_name} {ty_name}` has no kernel for method `{name}`"
+                ),
+                span,
             });
-            return Ok((dst, ValueTy::Bool));
-        }
-        // Scalar numeric arithmetic / negation.
-        if let Some(op) = match (class_name, name) {
-            ("Num", "+") => Some(ArithOp::Add),
-            ("Num", "-") => Some(ArithOp::Sub),
-            ("Num", "*") => Some(ArithOp::Mul),
-            ("Fractional", "/") => Some(ArithOp::Div),
-            _ => None,
-        } {
-            if arg_regs.len() < 2 {
-                return Err(CompileError::Type {
-                    msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
-                    span,
-                });
-            }
-            let ret = if matches!(arg_tys.first(), Some(ValueTy::Int))
-                && matches!(arg_tys.get(1), Some(ValueTy::Int))
-            {
-                ValueTy::Int
-            } else {
-                ValueTy::Double
-            };
-            let dst = self.fresh_value_reg();
-            self.emit_value(match op {
-                ArithOp::Add => ValueInstr::ValueAdd {
-                    dst,
-                    a: arg_regs[0],
-                    b: arg_regs[1],
-                },
-                ArithOp::Sub => ValueInstr::ValueSub {
-                    dst,
-                    a: arg_regs[0],
-                    b: arg_regs[1],
-                },
-                ArithOp::Mul => ValueInstr::ValueMul {
-                    dst,
-                    a: arg_regs[0],
-                    b: arg_regs[1],
-                },
-                ArithOp::Div => ValueInstr::ValueDiv {
-                    dst,
-                    a: arg_regs[0],
-                    b: arg_regs[1],
-                },
-                ArithOp::Rem => unreachable!("no primitive instance binds `%`"),
-            });
-            return Ok((dst, ret));
-        }
-        // Buffer arithmetic: the `Num`/`Fractional` instance for a buffer emits
-        // the whole-buffer kernel. A buffer is an ordinary value; the kernel is
-        // its dictionary entry. Scalar operands materialize as buffer constants.
-        // The instance key is the full applied head (`FixedBuffer Double`), so
-        // the selector asks the registry whether the key names a buffer rather
-        // than matching a spelling list.
-        if self.env.instance_key_is_buffer(ty_name) {
-            if let Some(op) = match (class_name, name) {
-                ("Num", "+") => Some(crate::ir::BinArith::Add),
-                ("Num", "-") => Some(crate::ir::BinArith::Sub),
-                ("Num", "*") => Some(crate::ir::BinArith::Mul),
-                ("Fractional", "/") => Some(crate::ir::BinArith::Div),
-                _ => None,
-            } {
+        };
+        match kernel {
+            // Comparison: `==` `/=`, `<` `<=` `>` `>=` over the structural total
+            // order.
+            KernelId::Eq
+            | KernelId::Ne
+            | KernelId::Lt
+            | KernelId::Gt
+            | KernelId::Le
+            | KernelId::Ge => {
                 if arg_regs.len() < 2 {
                     return Err(CompileError::Type {
                         msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
                         span,
                     });
                 }
-                let a = self.buffer_operand(arg_regs[0], &arg_tys[0])?;
-                let b = self.buffer_operand(arg_regs[1], &arg_tys[1])?;
+                let op = match kernel {
+                    KernelId::Eq => CmpOp::Eq,
+                    KernelId::Ne => CmpOp::Ne,
+                    KernelId::Lt => CmpOp::Lt,
+                    KernelId::Gt => CmpOp::Gt,
+                    KernelId::Le => CmpOp::Le,
+                    KernelId::Ge => CmpOp::Ge,
+                    _ => unreachable!("the comparison kernels are the only ones in this arm"),
+                };
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBufferBin { dst, op, a, b });
-                return Ok((dst, self.env.buffer_vty()));
+                self.emit_value(ValueInstr::ValueCompare {
+                    dst,
+                    op,
+                    a: arg_regs[0],
+                    b: arg_regs[1],
+                });
+                Ok((dst, ValueTy::Bool))
             }
-            if let Some(op) = match (class_name, name) {
-                ("Num", "abs") => Some(crate::ir::UnOp::Abs),
-                _ => None,
-            } {
+            // Ring arithmetic: scalar (`ValueAdd` family) or whole-buffer
+            // element-wise (`ValueBufferBin`), decided by the instance's kind.
+            // A buffer is an ordinary value; the kernel is its dictionary entry.
+            // Scalar operands materialize as buffer constants.
+            arith_op @ (KernelId::Add | KernelId::Sub | KernelId::Mul | KernelId::Div) => {
+                if arg_regs.len() < 2 {
+                    return Err(CompileError::Type {
+                        msg: format!("`{name}` expects 2 arguments, got {}", arg_regs.len()),
+                        span,
+                    });
+                }
+                // The instance key is the full applied head (`FixedBuffer
+                // Double`), so the selector asks the registry whether the key
+                // names a buffer rather than matching a spelling list.
+                if self.env.instance_key_is_buffer(ty_name) {
+                    let op = match arith_op {
+                        KernelId::Add => BinArith::Add,
+                        KernelId::Sub => BinArith::Sub,
+                        KernelId::Mul => BinArith::Mul,
+                        KernelId::Div => BinArith::Div,
+                        _ => unreachable!("only the arithmetic kernels reach here"),
+                    };
+                    let a = self.buffer_operand(arg_regs[0], &arg_tys[0])?;
+                    let b = self.buffer_operand(arg_regs[1], &arg_tys[1])?;
+                    let dst = self.fresh_value_reg();
+                    self.emit_value(ValueInstr::ValueBufferBin { dst, op, a, b });
+                    return Ok((dst, self.env.buffer_vty()));
+                }
+                let ret = if matches!(arg_tys.first(), Some(ValueTy::Int))
+                    && matches!(arg_tys.get(1), Some(ValueTy::Int))
+                {
+                    ValueTy::Int
+                } else {
+                    ValueTy::Double
+                };
+                let dst = self.fresh_value_reg();
+                let (a, b) = (arg_regs[0], arg_regs[1]);
+                self.emit_value(match arith_op {
+                    KernelId::Add => ValueInstr::ValueAdd { dst, a, b },
+                    KernelId::Sub => ValueInstr::ValueSub { dst, a, b },
+                    KernelId::Mul => ValueInstr::ValueMul { dst, a, b },
+                    KernelId::Div => ValueInstr::ValueDiv { dst, a, b },
+                    _ => unreachable!("only the arithmetic kernels reach here"),
+                });
+                Ok((dst, ret))
+            }
+            // `abs` over a buffer is `ValueBufferUn`; the SCALAR form has no
+            // instruction yet (design §3.9).
+            KernelId::Abs if self.env.instance_key_is_buffer(ty_name) => {
                 if arg_regs.is_empty() {
                     return Err(CompileError::Type {
                         msg: format!("`{name}` expects 1 argument"),
@@ -5526,19 +5739,23 @@ impl<'a> Lowerer<'a> {
                 }
                 let a = self.buffer_operand(arg_regs[0], &arg_tys[0])?;
                 let dst = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueBufferUn { dst, op, src: a });
-                return Ok((dst, self.env.buffer_vty()));
+                self.emit_value(ValueInstr::ValueBufferUn {
+                    dst,
+                    op: crate::ir::UnOp::Abs,
+                    src: a,
+                });
+                Ok((dst, self.env.buffer_vty()))
             }
+            // A kernel with no IR instruction yet (design §3.9). Reported, never
+            // executed, and named so the gap cannot be mistaken for a typo.
+            other => Err(CompileError::Type {
+                msg: format!(
+                    "primitive method `{class_name}.{name}` for `{ty_name}` selects kernel \
+                     `{other:?}`, which has no IR instruction yet (design §3.9)"
+                ),
+                span,
+            }),
         }
-        // `min`/`max` from `Ord`'s defaults are NOT primitive: they have real
-        // default bodies and go through the ordinary method path.
-        let _ = (ty_name, call_args);
-        Err(CompileError::Type {
-            msg: format!(
-                "primitive instance `{class_name} {ty_name}` has no kernel for method `{name}`"
-            ),
-            span,
-        })
     }
 
     fn lower_operator_value(
@@ -7568,7 +7785,11 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or(1)
                 }
                 "List" | "Set" => {
-                    let elem = &args[0];
+                    // An empty argument list means the collection's element type
+                    // was not known at this site (`list` as a bare value, a
+                    // partial head). The budget is a static heuristic, so the
+                    // element defaults to one slot rather than panicking.
+                    let elem = args.first().unwrap_or(&ValueTy::Double);
                     1 + Self::ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
                 "Array" => {
@@ -7593,8 +7814,11 @@ impl<'a> Lowerer<'a> {
                     1 + Self::ARRAY_ELEM_EST * self.subtree_size_impl(elem, visiting)
                 }
                 "Map" => {
-                    let k = &args[0];
-                    let v = &args[1];
+                    // An unknown key/value type (a bare `empty_map` value, a
+                    // partial head) defaults to one slot each; the budget is a
+                    // static heuristic, never a type judgement.
+                    let k = args.first().unwrap_or(&ValueTy::String);
+                    let v = args.get(1).unwrap_or(&ValueTy::Double);
                     1 + Self::ELEM_EST
                         * (self.subtree_size_impl(k, visiting)
                             + self.subtree_size_impl(v, visiting))
@@ -9151,6 +9375,17 @@ pub fn lower_program_with_channels(
         ));
     }
     let num_outputs = output_channels.unwrap_or(outs.len());
+    // The program's dictionary table (design §3.7 step 2). Built AFTER the main
+    // body so every call site has recorded its selection; it emits no code into
+    // the value track (a slot body is compiled into its own fragment), so it
+    // cannot change the program's behaviour. Nothing reads the table yet.
+    let mentioned: Vec<(String, ValueTy)> = tp
+        .dict_selections
+        .values()
+        .map(|(class, ty)| (class.clone(), ty.clone()))
+        .collect();
+    let dict_plan = crate::dicts::plan(&tp.type_env, &mentioned)?;
+    let (dicts, dict_gaps) = lw.build_dict_descriptors(&dict_plan);
     // of allocations one tick can issue (value registers are per-tick scratch,
     // dropped at tick end), so the count of alloc-producing value instructions
     // is a strict upper bound on simultaneously-live per-tick slots. On top of
@@ -9205,7 +9440,12 @@ pub fn lower_program_with_channels(
             .map(|t| lw.subtree_size(t))
             .sum::<usize>()
         + container_capacity
-        + fragment_capacity;
+        + fragment_capacity
+        // The dictionaries are ONE arena slot each, held for the world's whole
+        // lifetime (not per tick), so they are charged once here. Their
+        // superclass refs are extra owners of already-charged slots, not new
+        // ones, and `methods`/`supers` are plain `Vec`s outside the arena.
+        + dicts.len();
     let slot_capacity = value_capacity * Lowerer::POOL_SAFETY_MULTIPLIER;
     // Payload buffer budget: every live slot may hold one pooled payload
     // buffer (a Record/Sum/List/Set payload). `value_capacity` bounds the
@@ -9336,6 +9576,8 @@ pub fn lower_program_with_channels(
         num_buffers: lw.next_value_reg,
         input_buffers: lw.input_buffers,
         tapes: lw.tapes,
+        dicts,
+        dict_gaps,
     })
 }
 

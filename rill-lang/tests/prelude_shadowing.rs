@@ -161,7 +161,16 @@ main = do {{ xs <- fromList (take {n}.0 (from 1.0)); ys <- toList xs; write (Jus
         (1104, 4416),
         "recorded length-expression budget"
     );
-    assert_eq!(one, (2120, 8480), "recorded drain-program budget");
+    // The drain program's budget rose from (2120, 8480) with dictionary stage 2:
+    // it uses `do`-notation over `IO`, so it now also compiles the `IO` monad
+    // tower's method bodies (Functor/Applicative/Monad = 15 fragments) and
+    // charges the three dictionary slots. The number is still a property of the
+    // PROGRAM, not of demand — which is the property this test exists for.
+    assert_eq!(
+        one,
+        (3880, 15520),
+        "recorded drain-program budget (dictionary stage 2)"
+    );
 }
 
 #[test]
