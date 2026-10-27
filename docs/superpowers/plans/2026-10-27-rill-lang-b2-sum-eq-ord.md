@@ -124,14 +124,55 @@ comment describes.
 
 ### Step 4: prove the regression is reversed
 
-| Expression | Required |
-|---|---|
-| `False == False` | `True` |
-| `False == True` | `False` |
-| `False < True` | `True` |
-| `compare True False` | `GT`-equivalent (rill's `1`) |
-| `data MyB = Off \| On; Off < On` | ordering by tag |
-| `data Opt a = Some a \| None; Some 1.0 == Some 1.0` | `True` |
+**`compare` is NOT in this task's proofs** (see "Two defects, kept apart").
+
+| Expression | Required | Served by |
+|---|---|---|
+| `False == False` | `True` | `ValueCompare` / `CmpOp::Eq` (exists) |
+| `False == True` | `False` | same |
+| `False < True` | `True` | `ValueCompare` / `CmpOp::Lt` (exists) |
+| `data MyB = Off \| On; Off < On` | ordering by tag | `value_cmp_ref`'s `Sum` arm (`interp.rs:808` — **already correct**) |
+| `data Opt a = Some a \| None; Some 1.0 == Some 1.0` | `True` | same |
+| `data Opt a = Some a \| None; Some 1.0 < Some 2.0` | `True` | same |
+
+## Two defects, kept apart (measured)
+
+Do not fix both here. They are independent, and conflating them is how this task
+drifts.
+
+**Defect 1 — this task.** The `Data` vs `App` split. `Bool` is
+`App("Bool", [])` in some paths and `Data("Bool", [])` in others, so unification
+rejects the pair before any comparison runs.
+
+**Defect 2 — NOT this task (design §3.9, tracked as B3).** `KernelId::Compare`
+has **no IR instruction**, so `compare` fails for **every** type:
+
+```
+compare 1.0 2.0   →  primitive method `Ord.compare` for `Double` selects kernel
+                     `Compare`, which has no IR instruction yet (design §3.9)
+```
+
+Note that failure is on `Double`, not on `Bool` — it is general, not sum-specific.
+The fix is small and belongs to the kernel work: `value_cmp` (`interp.rs:796`)
+already returns the `-1`/`0`/`1` ordering as an `i8`, and `ValueCompare` already
+dispatches on `CmpOp`. What is missing is a three-valued result exposed as an
+`Int` — no new comparison logic.
+
+**And the crucial fact that keeps them apart:** the ordering logic for sums
+**already exists and is correct**:
+
+```rust
+// interp.rs:808
+(Sum(i, px), Sum(j, py)) => {
+    let c = i.cmp(j) as i8;          // tag first
+    if c != 0 { return c; }
+    cmp_ref_slices(arena, px, py)    // then payloads
+}
+```
+
+So `False < True` needs **only** Defect 1 fixed (`False` is tag 0, `True` tag 1 by
+declaration order). Do **not** add a `Bool` ordering kernel, do not add a
+`Compare` instruction, and do not touch `kernels.rs` in this task.
 
 ## Constraints
 
@@ -158,5 +199,10 @@ comment describes.
 
 ## Out of scope
 
-`deriving` clauses as *syntax* (only the implicit structural instance), `Show`
-for sums (that is P2's `show`), and any JIT representation choice.
+- **B3: `KernelId::Compare` / the three-valued `compare`.** Needs an IR
+  instruction for every type, not just sums. `value_cmp` already computes the
+  answer; only the exposure is missing. Tracked separately so this task stays
+  about the `Data`/`App` split.
+- `deriving` clauses as *syntax* (only the implicit structural instance).
+- `Show` for sums (that is P2's `show`).
+- Any JIT representation choice.
