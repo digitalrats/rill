@@ -1,6 +1,6 @@
 # rill-lang: `Bool` as a real data type — B1 (erase the special case)
 
-> **Status:** ready to implement.
+> **Status:** ready to implement. Tracked as **OD-26 / B1**.
 > **Decision (user, 2026-10-27):** take **B** — full erasure — split into two
 > independent tasks. This plan is **B1**. `Eq`/`Ord` for sum types and the
 > `App` vs `Data` unification defect are **B2**, a separate task.
