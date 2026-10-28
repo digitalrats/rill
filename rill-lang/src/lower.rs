@@ -107,6 +107,27 @@ fn param_placeholder_max(ty: &ValueTy) -> u32 {
     }
 }
 
+/// The numeric LEAF a type annotation names (`Int`, `Integer` or `Double`), or
+/// `None` when it names anything else.
+///
+/// An integer literal's representation is decided by its expected type alone
+/// (the invariant this module enforces). An `:: T` annotation IS an expected
+/// type, so `(2 :: Integer)` and `(123456789012345678901234567890 :: Double)`
+/// must both take the annotated leaf. Resolving aliases through
+/// [`TypeEnv::vty_of_name`] means `type D = Double; (2 :: D)` behaves like
+/// `Double`, and a type VARIABLE (`(2 :: a)`) resolves to `None` — it names no
+/// leaf, so the annotation stays inert and the literal keeps the caller's
+/// expected type.
+fn numeric_leaf_of(ty: &crate::ast::TypeExpr, env: &crate::types::ty::TypeEnv) -> Option<ValueTy> {
+    let crate::ast::TypeExpr::TName(n) = ty else {
+        return None;
+    };
+    match env.vty_of_name(n) {
+        Some(leaf @ (ValueTy::Int | ValueTy::Integer | ValueTy::Double)) => Some(leaf),
+        _ => None,
+    }
+}
+
 /// Whether a value type is fully concrete — no unresolved type variable, no
 /// type-constructor variable, no function type, no dictionary. Exactly the
 /// types [`crate::types::ty::value_type_key`] can spell as an
@@ -1348,26 +1369,25 @@ impl<'a> Lowerer<'a> {
             // stays `ValueTy::Int` in an `Ix` offset position even when it is
             // annotated `:: Int`.
             //
-            // The ONE exception is a numeric literal annotated with the
-            // registered `Integer` leaf: `(2 :: Integer)` must lower as an
-            // `Integer` constant, so the annotation becomes the literal's
-            // expected type. The literal may be under unary minus (`-3 ::
-            // Integer`), which is the same constant shape. The annotation is
-            // still erased — it contributes no instruction — and every other
-            // annotation keeps passing the caller's `expected` through
-            // untouched. Stage 7a only: it is subsumed when stage 7b makes
-            // literals `fromInteger`-polymorphic.
+            // The ONE exception is a numeric literal under a NUMERIC-LEAF
+            // annotation (`Int`, `Integer`, `Double`, or an alias of one):
+            // there the annotation IS the literal's expected type, so
+            // `(2 :: Integer)` lowers as an `Integer` constant and
+            // `(123456789012345678901234567890 :: Double)` as the correctly
+            // rounded `Double`. The literal may be under unary minus (`-3 ::
+            // Integer`), which is the same constant shape — the shared
+            // [`Expr::is_int_literal`] decides, so `Expr::Neg` counts here
+            // exactly as it does in inference. The annotation is still erased
+            // (no instruction, no register); every non-numeric annotation keeps
+            // passing the caller's `expected` through untouched.
+            //
+            // Honouring only `Integer` made a `:: Double` annotation INERT:
+            // `x = (9223372036854775808 :: Double)` lowered the literal on the
+            // `Int` track and printed `-9.223372036854776e18`.
             Expr::Annot { expr, ty, .. } => {
-                let integer_annotation = const_bigint(expr).is_some()
-                    && matches!(
-                        ty,
-                        crate::ast::TypeExpr::TName(n)
-                            if self.env.vty_of_name(n) == Some(ValueTy::Integer)
-                    );
-                if integer_annotation {
-                    self.lower_value_expected(expr, Some(&ValueTy::Integer))
-                } else {
-                    self.lower_value_expected(expr, expected)
+                match numeric_leaf_of(ty, self.env).filter(|_| expr.is_int_literal()) {
+                    Some(leaf) => self.lower_value_expected(expr, Some(&leaf)),
+                    None => self.lower_value_expected(expr, expected),
                 }
             }
             Expr::FieldProject {
@@ -1749,7 +1769,8 @@ impl<'a> Lowerer<'a> {
                         arm.span,
                     )?;
                     self.cur_value_block = pass;
-                    let arm_ty = self.lower_match_guards_and_body(arm, &out, join, else_t)?;
+                    let arm_ty =
+                        self.lower_match_guards_and_body(arm, &out, join, else_t, expected)?;
                     self.value_locals.pop();
                     self.value_local_ctors.pop();
                     if out_ty.is_none() {
@@ -6137,7 +6158,19 @@ impl<'a> Lowerer<'a> {
                 // parameter types (threaded through `pending_param_tys`).
                 let saved_pending = self.pending_param_tys.take();
                 self.pending_param_tys = self.fn_param_tys.get(name).cloned();
-                let res = self.lower_value(&body);
+                // A binding's OWN declared type is the expected type of its
+                // body: `x :: Double; x = 9223372036854775808` must lower the
+                // literal as the `Double` its signature declares, not on the
+                // `Int` track (Haskell 2010 §6.4.1 `fromInteger`). This is the
+                // same rule [`Self::closure_param_tys`] applies to a parameter:
+                // only a DECLARED numeric leaf participates, never inference's
+                // default, so a bare `x = 9223372036854775808` keeps the
+                // `Int`-track fallback it had before.
+                let declared = self.declared_binding_leaf(name);
+                let res = match declared {
+                    Some(leaf) => self.lower_value_expected(&body, Some(&leaf)),
+                    None => self.lower_value(&body),
+                };
                 self.pending_param_tys = saved_pending;
                 self.value_inline.remove(name);
                 // A bang binding (`!x = e`, `where !x = e`) forces its value to
@@ -6219,13 +6252,14 @@ impl<'a> Lowerer<'a> {
                     .filter(|tys| tys.len() == def_params.len())
                     .cloned()
                     .unwrap_or_else(|| vec![ValueTy::Double; def_params.len()]);
+                let declared_result = self.declared_result_leaf(name);
                 let (fragment_id, ret_ty) = self.lower_fragment(
                     &def_params,
                     &body,
                     &free,
                     &self.capture_tys(&free),
                     &param_tys,
-                    None,
+                    declared_result.as_ref(),
                     dspan,
                 )?;
                 let (env_reg, self_cell) = self.emit_env_snapshot(&free, dspan, Some(name))?;
@@ -6244,20 +6278,14 @@ impl<'a> Lowerer<'a> {
                         self.emit_value(ValueInstr::ValueWriteCell { cell: sc, src: dst });
                     }
                 }
-                // The closure's signature carries the DECLARED parameter types,
-                // not a Double placeholder: the call site threads them into the
-                // arguments (`f 2` with `f :: Integer -> Integer` must convert
-                // the literal to an `Integer`), and a placeholder makes the
-                // call site emit a `Double`-typed constant into an
-                // `Integer`-typed fragment slot — the "primitive effect with an
-                // unbound operand" fault. `fn_param_tys` is inference's resolved
-                // parameter list for this def.
-                let arg_tys = self
-                    .fn_param_tys
-                    .get(name)
-                    .filter(|tys| tys.len() == def_params.len())
-                    .cloned()
-                    .unwrap_or_else(|| vec![ValueTy::Double; def_params.len()]);
+                // The closure's signature carries the parameter types inference
+                // actually PINNED, and a `Double` placeholder for one it did
+                // not ([`Self::closure_param_tys`]). Advertising a defaulted
+                // parameter as `Int` makes the call site truncate a literal GHC
+                // converts from `Integer`; advertising a DECLARED one is what
+                // makes `f 2` at `Integer -> Integer` an `Integer` constant in
+                // the fragment slot instead of a `Double` one.
+                let arg_tys = self.closure_param_tys(name, def_params.len());
                 Ok((dst, ValueTy::Thunk(arg_tys, vec![ret_ty])))
             }
             _ => Err(CompileError::Type {
@@ -6265,6 +6293,66 @@ impl<'a> Lowerer<'a> {
                 span,
             }),
         }
+    }
+
+    /// The parameter value types a closure's SIGNATURE advertises, from
+    /// inference's resolved parameter list ([`Self::fn_param_tys`]).
+    ///
+    /// A default is not a declaration. `f x = x` schemes as `a -> a`, and
+    /// inference resolves the unconstrained `a` to a residual type VARIABLE —
+    /// but a variable is not the type `Int` either, and advertising
+    /// `Int -> Int` for it makes every call site lower its argument as an
+    /// `Int`, which truncates a literal that GHC converts from `Integer`
+    /// (`f 9223372036854775808` printed `-9.223372036854776e18`). So a
+    /// parameter whose inferred type is not CONCRETE keeps the pre-existing
+    /// `Double` placeholder: it is the polymorphic slot lowering cannot name,
+    /// and `Double` is the scalar default the rest of the value track uses.
+    /// A parameter inference DID pin (`:: Integer -> Integer`, `first p = p.x`
+    /// → `Point`, `x + 1.0` → `Double`) is used as written, which is what makes
+    /// `f 2` at `Integer -> Integer` an `Integer` constant.
+    fn closure_param_tys(&self, name: &str, arity: usize) -> Vec<ValueTy> {
+        match self.fn_param_tys.get(name).filter(|tys| tys.len() == arity) {
+            Some(tys) => tys
+                .iter()
+                .map(|t| {
+                    if is_concrete_ty(t) {
+                        t.clone()
+                    } else {
+                        ValueTy::Double
+                    }
+                })
+                .collect(),
+            None => vec![ValueTy::Double; arity],
+        }
+    }
+
+    /// The numeric leaf a NULLARY binding's own signature declares, if any.
+    ///
+    /// A default is not a declaration: only the written `::` counts. This keeps
+    /// `x :: Double; x = 2` lowering the literal as the declared `Double` while
+    /// a bare `x = 2` (whose inferred type is a default) stays on the `Int`
+    /// track, exactly as before.
+    fn declared_binding_leaf(&self, name: &str) -> Option<ValueTy> {
+        let sig = self.defs.get(name)?.sig()?;
+        if !crate::types::infer::sig_func_parts(sig).0.is_empty() {
+            return None;
+        }
+        numeric_leaf_of(sig, self.env)
+    }
+
+    /// The numeric leaf a definition's own signature declares as its RESULT
+    /// type (`f :: Double -> Double` → `Double`), if any.
+    ///
+    /// A closure's body is lowered in its own fragment, where the call site's
+    /// expected type cannot reach it. Without the declared result,
+    /// `f :: Double -> Double; f p = 123456789012345678901234567890` lowered the
+    /// literal on the `Int` track and printed the truncation `-4.362896299872286e18`.
+    /// Only the written `::` counts — a defaulted result type is not a
+    /// declaration.
+    fn declared_result_leaf(&self, name: &str) -> Option<ValueTy> {
+        let sig = self.defs.get(name)?.sig()?;
+        let (_, ret) = crate::types::infer::sig_func_parts(sig);
+        numeric_leaf_of(ret, self.env)
     }
 
     /// Free variables of `e`: `Ref` names not in `bound` and not shadowed by
@@ -6878,13 +6966,18 @@ impl<'a> Lowerer<'a> {
         if !is_anchor {
             self.pending_param_tys = self.fn_param_tys.get(name).cloned();
         }
+        // The fragment's body expected type is the def's DECLARED result leaf:
+        // a closure body is its own fragment, so no call-site expected type can
+        // reach it, and `f :: Double -> Double; f p = 1234…890` otherwise
+        // lowered the literal on the `Int` track.
+        let declared_result = self.declared_result_leaf(name);
         let frag = self.lower_fragment(
             &def_params,
             &body,
             &free,
             &self.capture_tys(&free),
             &param_tys,
-            None,
+            declared_result.as_ref(),
             dspan,
         );
         self.pending_param_tys = saved_pending;
@@ -6913,12 +7006,17 @@ impl<'a> Lowerer<'a> {
         // the cell.
         self.emit_value(ValueInstr::ValueWriteCell { cell, src: dst });
         let ty = if is_anchor {
-            // The closure's signature carries the DECLARED parameter types (see
-            // the `Def::Eval` value arm): a `Double` placeholder here makes the
-            // call site lower an argument for a slot whose static type is not
-            // `Double`, so `f 2` with `f :: Integer -> Integer` emitted a
-            // `Double` constant into an `Integer` fragment parameter.
-            let arg_tys = param_tys.clone();
+            // The closure's signature carries the parameter types inference
+            // actually PINNED, and a `Double` placeholder for one it did not
+            // ([`Self::closure_param_tys`]). A defaulted parameter (`f x = x`
+            // schemes as `a -> a`) must NOT become a declared `Int`: the call
+            // site would then truncate a literal GHC converts from `Integer`,
+            // and `f 9223372036854775808` printed `-9.223372036854776e18`
+            // instead of `9.223372036854776e18`. A DECLARED parameter
+            // (`f :: Integer -> Integer`) still reaches the call site, which is
+            // what makes `f 2` an `Integer` constant rather than a `Double`
+            // constant in an `Integer` fragment slot.
+            let arg_tys = self.closure_param_tys(name, def_params.len());
             ValueTy::Thunk(arg_tys, vec![ret_ty])
         } else {
             ret_ty
@@ -7608,11 +7706,27 @@ impl<'a> Lowerer<'a> {
             }
             Pattern::Wild => Ok(self.cur_value_block),
             Pattern::LitInt(v) => {
+                // The pattern literal takes its representation from the
+                // SCRUTINEE's type — the one expected type a pattern has. An
+                // `Integer`/`Double` scrutinee therefore compares against an
+                // `Integer`/`Double` constant built from the arbitrary-precision
+                // value, not against a truncated `Int` (a cross-kind comparison
+                // that silently never matched).
                 let lit_reg = self.fresh_value_reg();
-                self.emit_value(ValueInstr::ValueConstInt {
-                    dst: lit_reg,
-                    value: literal_to_i64(v),
-                });
+                match vty {
+                    ValueTy::Integer => self.emit_value(ValueInstr::ValueConstInteger {
+                        dst: lit_reg,
+                        value: Box::new(v.clone()),
+                    }),
+                    ValueTy::Double => self.emit_value(ValueInstr::ValueConstDouble {
+                        dst: lit_reg,
+                        value: literal_to_f64(v),
+                    }),
+                    _ => self.emit_value(ValueInstr::ValueConstInt {
+                        dst: lit_reg,
+                        value: literal_to_i64(v),
+                    }),
+                }
                 Ok(self.emit_literal_test(scrutinee_reg, lit_reg, else_t))
             }
             Pattern::LitDouble(v) => {
@@ -7765,6 +7879,7 @@ impl<'a> Lowerer<'a> {
         out: &usize,
         join: usize,
         else_t: usize,
+        expected: Option<&ValueTy>,
     ) -> Result<ValueTy, CompileError> {
         let mut first_ty: Option<ValueTy> = None;
         let m = arm.guards.len();
@@ -7775,8 +7890,16 @@ impl<'a> Lowerer<'a> {
                 else_t
             };
             let Some(g) = g else {
-                // Bare `pattern -> body`: no guard to test.
-                let (body_reg, body_ty) = self.lower_value(body)?;
+                // Bare `pattern -> body`: no guard to test. The body carries the
+                // MATCH's expected type, exactly as an `if` branch does: an arm
+                // body that is an integer literal takes its representation from
+                // there (`f :: Integer -> Integer; f p = case p of { 2 -> 5; _ ->
+                // p }`), instead of defaulting to `Int` and disagreeing with the
+                // other arm's `Integer`.
+                let (body_reg, body_ty) = match expected {
+                    Some(exp) => self.lower_value_expected(body, Some(exp))?,
+                    None => self.lower_value(body)?,
+                };
                 self.emit_value(ValueInstr::ValueMove {
                     dst: *out,
                     src: body_reg,
@@ -7807,7 +7930,10 @@ impl<'a> Lowerer<'a> {
                 },
             );
             self.cur_value_block = body_b;
-            let (body_reg, body_ty) = self.lower_value(body)?;
+            let (body_reg, body_ty) = match expected {
+                Some(exp) => self.lower_value_expected(body, Some(exp))?,
+                None => self.lower_value(body)?,
+            };
             self.emit_value(ValueInstr::ValueMove {
                 dst: *out,
                 src: body_reg,

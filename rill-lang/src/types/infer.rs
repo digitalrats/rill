@@ -2870,6 +2870,18 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     let (params, body) = effective_def_params(def);
     let saved_locals = ctx.locals.clone();
     if params.is_empty() {
+        // A binding's OWN declared type is the expected type of its right-hand
+        // side. `x :: Double; x = 2` is well typed in Haskell 2010 because the
+        // literal's representation comes from the signature (Report §6.4.1: it
+        // is `fromInteger` at `Double`); inferring the body with NO expected
+        // type made the literal an `Int` and the signature check a type error.
+        // A FUNCTION signature has no bare result to publish here — its
+        // parameters are typed by the param path below — so only a nullary
+        // declared type participates.
+        let binding_ty: Option<ValueTy> = match def.sig() {
+            Some(sig) if sig_func_parts(sig).0.is_empty() => Some(def_sig_tys(ctx, sig)?.1),
+            _ => None,
+        };
         // Capture the pre-attempt definition environment: a failed attempt may
         // have left nested placeholder schemes behind (an inlined instance body
         // such as `Monad (ST s)`'s `let p = … in let q = …` registers `p` in
@@ -2880,7 +2892,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         // re-infers, so Strict mode skips the map clones entirely.
         let attempt =
             (ctx.mode == Mode::Complete).then(|| (ctx.defs.clone(), ctx.def_bodies.clone()));
-        let r = infer_expr(ctx, &body);
+        let r = infer_expr_expected(ctx, &body, binding_ty.clone());
         if r.is_err() && ctx.mode == Mode::Complete {
             // Complete mode, self-recursive local (`fibs = cons … fibs …`):
             // the placeholder scheme defaults to a signal scalar, so the
@@ -2894,7 +2906,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                 ctx.def_bodies = bodies;
             }
             rerate_value(ctx, def.name(), 0, leading_lambda_count(&body));
-            let retry = infer_expr(ctx, &body);
+            let retry = infer_expr_expected(ctx, &body, binding_ty);
             if retry.is_err() {
                 ctx.subst = saved_subst;
                 ctx.next = saved_next;
@@ -2933,13 +2945,21 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     // (shared type variables become fresh unification vars), instead of the
     // scalar `Double` default. The effective parameter list is the signature's
     // arity — `def.params()` is empty for a curried multi-parameter definition.
-    let sig_param_tys: Option<Vec<ValueTy>> = match def.sig() {
+    //
+    // The signature's RESULT is the body's expected type for the same reason a
+    // nullary binding's is: `f :: Double -> Double; f p = 5` is well typed
+    // because the literal's representation comes from the declared result
+    // (Haskell 2010 §6.4.1 `fromInteger`), and inferring the body with no
+    // expected type made it an `Int` and rejected the declaration.
+    let sig_tys: Option<(Vec<ValueTy>, ValueTy)> = match def.sig() {
         Some(sig) => {
-            let tys = def_sig_tys(ctx, sig)?.0;
-            (tys.len() == params.len()).then_some(tys)
+            let (param_tys, ret_ty, _) = def_sig_tys(ctx, sig)?;
+            (param_tys.len() == params.len()).then_some((param_tys, ret_ty))
         }
         None => None,
     };
+    let sig_param_tys: Option<&Vec<ValueTy>> = sig_tys.as_ref().map(|(p, _)| p);
+    let sig_ret: Option<ValueTy> = sig_tys.as_ref().map(|(_, r)| r.clone());
     for (i, p) in params.iter().enumerate() {
         // λ-parameters take the signature's declared type when annotated. An
         // unannotated parameter starts as a FRESH TYPE VARIABLE, not a `Double`
@@ -2957,7 +2977,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
         ctx.locals
             .insert(p.name.clone(), ArrowTy::uniform(0, 1, ty));
     }
-    let (result, lambda_param_tys) = match infer_expr(ctx, &body) {
+    let (result, lambda_param_tys) = match infer_expr_expected(ctx, &body, sig_ret.clone()) {
         Ok(t) => (
             Ok(t),
             // The parameter types the body was checked against, resolved
@@ -3005,7 +3025,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
                     }
                 }
             }
-            let retry = infer_expr(ctx, &body);
+            let retry = infer_expr_expected(ctx, &body, sig_ret.clone());
             // Carry the VALUE-track retry's resolved λ-parameter types in the
             // returned body type: the body's value demands (`tail xs` → xs :
             // List, `k - 1.0` → k : Double) resolve the fresh param vars here,
@@ -3040,7 +3060,7 @@ fn infer_def_body(ctx: &mut Ctx, def: &Def) -> Result<DefBodyTy, CompileError> {
     ctx.locals = saved_locals;
     result.map(|ty| DefBodyTy {
         ty,
-        sig_params: sig_param_tys.unwrap_or_default(),
+        sig_params: sig_param_tys.cloned().unwrap_or_default(),
         lambda_param_tys,
     })
 }
@@ -3618,10 +3638,17 @@ fn value_instantiate(t: &ValueTy, fresh: &HashMap<TypeVarId, TypeVarId>) -> Valu
 /// Infer one arm's guards (each must be a Bool value) and unify all its bodies
 /// into the running result type. The arm's pattern vars must already be bound
 /// in `ctx.locals`.
+///
+/// `expected` is the whole `match`'s expected type, threaded into each arm body
+/// exactly as `if` threads it into its branches: an arm body that IS a literal
+/// takes its representation from there (`f :: Integer -> Integer; f p = case p
+/// of { 2 -> 5; _ -> p }`), instead of defaulting to `Int` and contradicting the
+/// declaration.
 fn infer_guarded_arm_body(
     ctx: &mut Ctx,
     arm: &MatchArm,
     result: &mut Option<ValueTy>,
+    expected: Option<ValueTy>,
 ) -> Result<(), CompileError> {
     for (g, body) in &arm.guards {
         if let Some(g) = g {
@@ -3635,7 +3662,7 @@ fn infer_guarded_arm_body(
                 });
             }
         }
-        let bt = infer_expr(ctx, body)?;
+        let bt = infer_expr_expected(ctx, body, expected.clone())?;
         let bv = arm_result_vty(bt, body, body.span())?;
         if let Some(acc) = result {
             unify_value(acc, &bv, &mut ctx.subst, body.span())?;
@@ -3781,12 +3808,13 @@ fn check_match_arms(
     scrutinee_vty: &ValueTy,
     arms: &[MatchArm],
     span: Span,
+    expected: Option<ValueTy>,
 ) -> Result<ValueTy, CompileError> {
     let mut result: Option<ValueTy> = None;
     for arm in arms {
         let saved = ctx.locals.clone();
         bind_pattern(ctx, &arm.pattern, scrutinee_vty, sum_name, arm.span)?;
-        infer_guarded_arm_body(ctx, arm, &mut result)?;
+        infer_guarded_arm_body(ctx, arm, &mut result, expected.clone())?;
         ctx.locals = saved;
     }
     check_exhaustive_sum(ctx, sum_name, arms, span)?;
@@ -3808,7 +3836,20 @@ fn check_scalar_pattern(
             Ok(())
         }
         Pattern::Wild => Ok(()),
-        Pattern::LitInt(_) => unify_value(scrutinee_vty, &ValueTy::Int, &mut ctx.subst, arm_span),
+        Pattern::LitInt(_) => {
+            // An integer PATTERN literal is the same `fromInteger` leaf its
+            // scrutinee has: `f :: Double -> Double; f 2 = …` is well typed in
+            // Haskell 2010 (§3.17/§6.4.1), exactly like `f 2` as an argument.
+            // Pinning every integer pattern to `Int` rejected that AND made the
+            // lowered constant (`lower_pattern_test`) a cross-kind comparison
+            // against an `Integer`/`Double` scrutinee.
+            let resolved = ctx.subst.resolve_value(scrutinee_vty);
+            if matches!(resolved, ValueTy::Int | ValueTy::Integer | ValueTy::Double) {
+                Ok(())
+            } else {
+                unify_value(scrutinee_vty, &ValueTy::Int, &mut ctx.subst, arm_span)
+            }
+        }
         Pattern::LitDouble(_) => {
             unify_value(scrutinee_vty, &ValueTy::Double, &mut ctx.subst, arm_span)
         }
@@ -4364,7 +4405,8 @@ fn infer_expr_expected(
                     None => ValueTy::Con(sum_name.clone(), vec![]),
                 };
                 unify_value(&scrutinee_vty, &pin_ty, &mut ctx.subst, *span)?;
-                let result = check_match_arms(ctx, &sum_name, &pin_ty, arms, *span)?;
+                let result =
+                    check_match_arms(ctx, &sum_name, &pin_ty, arms, *span, expected.clone())?;
                 Ok(ArrowTy::value_channel(result))
             } else {
                 // Scalar (or unknown) match: literal/Var/Wild patterns only.
@@ -4373,7 +4415,7 @@ fn infer_expr_expected(
                 for a in arms {
                     let saved = ctx.locals.clone();
                     check_scalar_pattern(ctx, &a.pattern, &scrutinee_vty, a.span)?;
-                    infer_guarded_arm_body(ctx, a, &mut result)?;
+                    infer_guarded_arm_body(ctx, a, &mut result, expected.clone())?;
                     ctx.locals = saved;
                 }
                 check_exhaustive_scalar(ctx, arms, &scrutinee_vty, *span)?;
@@ -7578,9 +7620,15 @@ fn def_arg_widens_to(formal: &ValueTy, actual: &ValueTy, arg: &Expr, defaulted: 
 /// The SAME rule serves a definition call ([`def_arg_widens_to`]) and a builtin
 /// signature (`show_double 123456789012345678901234567890`), so the two cannot
 /// disagree about whether a literal is accepted at `Double`/`Integer`.
+///
+/// What counts as an integer literal is [`Expr::is_int_literal`] — the shared
+/// predicate `reduce` uses when it attaches a formal's declared type to a
+/// β-substituted argument. `-2` is a literal by Haskell 2010 §3.8, so
+/// `f (-2)` at `Double -> Double` is as well typed as `f 2`; counting only
+/// `Expr::Int` here while `reduce` counted `Expr::Neg` too accepted `f 2` and
+/// rejected `f (-2)` at the same formal.
 fn int_literal_widens_to(param: &ValueTy, arg: &Expr) -> bool {
-    matches!(param, ValueTy::Double | ValueTy::Integer | ValueTy::Int)
-        && matches!(arg, Expr::Int(_, _))
+    matches!(param, ValueTy::Double | ValueTy::Integer | ValueTy::Int) && arg.is_int_literal()
 }
 
 /// `Double` positions accept `Int` positions, structurally.

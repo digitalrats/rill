@@ -267,6 +267,44 @@ pub enum Expr {
 }
 
 impl Expr {
+    /// Whether this node IS an integer literal — the syntactic class whose
+    /// runtime representation (`Int`, `Integer` or `Double`) is decided by its
+    /// expected type alone.
+    ///
+    /// `-3` counts: the parser folds the sign into an [`Expr::Neg`] over
+    /// [`Expr::Int`], and Haskell 2010 §3.8's negative literal is one literal,
+    /// not an application of `negate` to a literal. This is the ONE definition
+    /// of "integer literal" in the compiler — `reduce`'s annotation carrier,
+    /// inference's widening rule and the `fromInteger` typing of a literal all
+    /// consult it, so they cannot disagree about what a literal is (a
+    /// disagreement is how `f 2` was accepted at `Double` while `f (-2)` was
+    /// rejected).
+    ///
+    /// A parenthesised/annotated literal (`(2 :: Integer)`, `-3 :: Integer`) is
+    /// NOT included: [`Expr::Annot`] supplies its own expected type at both the
+    /// inference and lowering sites, which is stronger than the widening rule.
+    pub fn is_int_literal(&self) -> bool {
+        match self {
+            Expr::Int(_, _) => true,
+            Expr::Neg(inner, _) => inner.is_int_literal(),
+            _ => false,
+        }
+    }
+
+    /// The arbitrary-precision value of this node when it is an integer literal
+    /// ([`Self::is_int_literal`]), with the sign already applied.
+    ///
+    /// This is the shared constant fold: `Expr::Neg` negates in `BigInt`, so
+    /// `-9223372036854775808` is the exact value `-(9223372036854775808)` and
+    /// only the FINAL `Int`/`Double` conversion truncates or rounds.
+    pub fn int_literal_value(&self) -> Option<BigInt> {
+        match self {
+            Expr::Int(v, _) => Some(v.clone()),
+            Expr::Neg(inner, _) => inner.int_literal_value().map(|v| -v),
+            _ => None,
+        }
+    }
+
     /// The source span of this node.
     pub fn span(&self) -> Span {
         match self {

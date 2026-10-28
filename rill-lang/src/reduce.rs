@@ -284,12 +284,13 @@ fn annotate_formal_arg_types(def: &Def, args: Vec<Expr>) -> Vec<Expr> {
 }
 
 /// Whether `e` is an integer literal, optionally negated (`-3`).
+///
+/// Delegates to [`Expr::is_int_literal`], the ONE definition shared with
+/// inference's `fromInteger` widening rule — two predicates that disagreed
+/// about `Expr::Neg` is how `f 2` was accepted at a `Double` formal while
+/// `f (-2)` was rejected at the same formal.
 fn is_integer_literal(e: &Expr) -> bool {
-    match e {
-        Expr::Int(_, _) => true,
-        Expr::Neg(inner, _) => is_integer_literal(inner),
-        _ => false,
-    }
+    e.is_int_literal()
 }
 
 /// Whether `name` resolves to a closure-valued definition: a bare `Def::Eval`

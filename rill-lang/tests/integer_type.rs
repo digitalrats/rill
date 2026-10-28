@@ -243,11 +243,6 @@ fn an_out_of_range_literal_in_a_double_position_is_the_right_double() {
     // negated in arbitrary precision BEFORE it becomes a double. GHC 9.10.3:
     // `f x = x * 2.0; f (-9223372036854775809)` = `-1.8446744073709552e19`
     // (at 67f44b7 rill printed the sign-flipped `1.8446744073709552e19`).
-    //
-    // A signature-less definition is used because `def_arg_widens_to` accepts a
-    // literal against a `Double` formal only for `Expr::Int`, not for `Expr::Neg`
-    // — `f :: Double -> Double; f (-2)` is a type error, which is the stage 7b
-    // literal-polymorphism gap and is NOT changed here.
     assert_eq!(
         run("f x = x * 2.0;\nmain = do { write (Just (show_double (f (-9223372036854775809)))) stdout; return () };"),
         "-1.8446744073709552e19"
@@ -375,5 +370,161 @@ fn an_integer_literal_argument_reaches_an_integer_formal_in_both_modes() {
         "f :: Integer -> Integer;\nf x = x;\nmain = do { write (Just (show_integer (f 123456789012345678901234567890))) stdout; return () };",
         "123456789012345678901234567890",
         "123456789012345678901234567890123456789012345678901234567890",
+    );
+}
+
+// --- Fix round 3: the representation comes ONLY from the expected type --------
+//
+// Rounds 1 and 2 fixed one SITE at a time, and each fix left the next site
+// broken (round 2's own fix turned `f x = x; f 9223372036854775808` back into
+// the sign-flipped `-9.223372036854776e18`). Round 3 states the invariant
+// instead:
+//
+//   The representation of an integer literal — `Int`, `Integer` or `Double` —
+//   is decided ONLY by its expected type. Every path that lowers a literal
+//   carries that expected type or explicitly establishes that it has none.
+//
+// Every expected value below was measured on this machine with `runghc`
+// (GHC 9.10.3) before it was pinned; the numbers are GHC's, not hand-derived.
+
+#[test]
+fn an_annotated_literal_binding_takes_the_annotated_type_in_both_modes() {
+    // `Expr::Annot` honoured only `:: Integer`, so a `:: Double` annotation was
+    // INERT: the literal lowered on the `Int` track and printed the truncated,
+    // sign-flipped `-9.223372036854776e18` (`-4.362896299872286e18` for the
+    // 30-digit literal). GHC prints the `fromInteger` value in both cases.
+    assert_both_modes(
+        "x = (9223372036854775808 :: Double);\nmain = do { write (Just (show_double x)) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    assert_both_modes(
+        "x = (123456789012345678901234567890 :: Double);\nmain = do { write (Just (show_double x)) stdout; return () };",
+        "1.2345678901234568e29",
+        "1.2345678901234568e291.2345678901234568e29",
+    );
+    assert_both_modes(
+        "x = (123456789012345678901234567890 :: Integer);\nmain = do { write (Just (show_integer x)) stdout; return () };",
+        "123456789012345678901234567890",
+        "123456789012345678901234567890123456789012345678901234567890",
+    );
+}
+
+#[test]
+fn an_annotation_survives_the_negation_fold_in_both_modes() {
+    // The annotation's expected type must reach a literal under `Expr::Neg`
+    // too: `-N` is one literal (Haskell 2010 §3.8), not `negate N`.
+    assert_both_modes(
+        "x = ((-123456789012345678901234567890) :: Double);\nmain = do { write (Just (show_double x)) stdout; return () };",
+        "-1.2345678901234568e29",
+        "-1.2345678901234568e29-1.2345678901234568e29",
+    );
+}
+
+#[test]
+fn a_negated_literal_argument_widens_like_a_positive_one_in_both_modes() {
+    // `reduce::is_integer_literal` counted `Expr::Neg` while
+    // `infer::int_literal_widens_to` did not, so `f 2` was accepted at
+    // `Double -> Double` and `f (-2)` was rejected. GHC accepts both. The two
+    // now share ONE predicate (`Expr::is_int_literal`).
+    assert_both_modes(
+        "f :: Double -> Double;\nf p = p;\nmain = do { write (Just (show_double (f (-2)))) stdout; return () };",
+        "-2.0",
+        "-2.0-2.0",
+    );
+    assert_both_modes(
+        "f :: Integer -> Integer;\nf p = p;\nmain = do { write (Just (show_integer (f (-2)))) stdout; return () };",
+        "-2",
+        "-2-2",
+    );
+}
+
+#[test]
+fn a_signature_less_identity_does_not_default_its_parameter_to_int() {
+    // REGRESSION from round 2: `compile_anchor_closure` used inference's
+    // DEFAULTED parameter list, so `f x = x` (schemed `Int -> Int`) advertised
+    // `Int -> Int` and every call site truncated the literal. A default is not
+    // a declaration. GHC prints `9.223372036854776e18` for both spellings.
+    assert_both_modes(
+        "f x = x;\nmain = do { write (Just (show_double (f 9223372036854775808))) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    assert_both_modes(
+        "f :: a -> a;\nf y = y;\nmain = do { write (Just (show_double (f 9223372036854775808))) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    // The polymorphic definition still works at non-numeric types — the
+    // placeholder only replaces the SLOT's advertised scalar, never the
+    // argument's own typing.
+    assert_both_modes(
+        "f x = x;\nmain = do { write (Just (f \"hi\")) stdout; return () };",
+        "hi",
+        "hihi",
+    );
+}
+
+#[test]
+fn a_declared_binding_and_a_declared_result_reach_the_literal_in_both_modes() {
+    // In Strict mode a call's reduced literal lands in a binding whose type
+    // nobody supplies. A binding's OWN `::` is that declaration, and it must
+    // reach both the literal and the closure body. A BARE binding stays
+    // defaulted: GHC prints `-4362896299872285998`-style `Int` truncation only
+    // when the use site is monomorphic `Int`; used at `Double` GHC prints
+    // `9.223372036854776e18`, which the annotation-carrying call site below
+    // also produces.
+    assert_both_modes(
+        "f :: Double -> Double;\nf p = p;\nx = f 9223372036854775808;\nmain = do { write (Just (show_double x)) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    assert_both_modes(
+        "x :: Double;\nx = 9223372036854775808;\nmain = do { write (Just (show_double x)) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    assert_both_modes(
+        "x :: Integer;\nx = 123456789012345678901234567890;\nmain = do { write (Just (show_integer x)) stdout; return () };",
+        "123456789012345678901234567890",
+        "123456789012345678901234567890123456789012345678901234567890",
+    );
+    // A declared RESULT type reaches a literal body: a closure body is its own
+    // fragment, so no call-site expected type can get there.
+    assert_both_modes(
+        "f :: Double -> Double;\nf p = 123456789012345678901234567890;\nmain = do { write (Just (show_double (f 1.0))) stdout; return () };",
+        "1.2345678901234568e29",
+        "1.2345678901234568e291.2345678901234568e29",
+    );
+    assert_both_modes(
+        "f :: Integer -> Integer;\nf p = 123456789012345678901234567890;\nmain = do { write (Just (show_integer (f 1))) stdout; return () };",
+        "123456789012345678901234567890",
+        "123456789012345678901234567890123456789012345678901234567890",
+    );
+}
+
+#[test]
+fn an_integer_pattern_literal_takes_the_scrutinee_type_in_both_modes() {
+    // A `Pattern::LitInt` is an integer literal too, and its ONE expected type
+    // is the scrutinee's. Pinning every such pattern to `Int` rejected
+    // `f :: Integer -> Integer; f 2 = 5` (GHC accepts it) and made the lowered
+    // constant a cross-kind comparison against an `Integer`/`Double`
+    // scrutinee.
+    assert_both_modes(
+        "f :: Integer -> Integer;\nf 2 = 5;\nf p = p;\nmain = do { write (Just (show_integer (f 2))) stdout; return () };",
+        "5",
+        "55",
+    );
+    assert_both_modes(
+        "f :: Double -> Double;\nf 2 = 5.0;\nf p = p;\nmain = do { write (Just (show_double (f 2))) stdout; return () };",
+        "5.0",
+        "5.05.0",
+    );
+    // The pattern still misses a different value (the constant is not the
+    // always-true degenerate).
+    assert_both_modes(
+        "f :: Integer -> Integer;\nf 2 = 5;\nf p = p;\nmain = do { write (Just (show_integer (f 7))) stdout; return () };",
+        "7",
+        "77",
     );
 }
