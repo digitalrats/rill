@@ -592,6 +592,21 @@ fn pin_ret_head_types(
     let Some(exp) = expected else {
         return (arg_tys.to_vec(), ret_tys.to_vec());
     };
+    if let Some(ValueTy::Var(v)) = ret_tys.first() {
+        if is_concrete_ty(exp) {
+            let v = *v;
+            return (
+                arg_tys
+                    .iter()
+                    .map(|t| subst_tycon_head(t, v, exp))
+                    .collect(),
+                ret_tys
+                    .iter()
+                    .map(|t| subst_tycon_head(t, v, exp))
+                    .collect(),
+            );
+        }
+    }
     let repl = match exp {
         ValueTy::Con(c, _) => ValueTy::Con(c.clone(), vec![]),
         _ => return (arg_tys.to_vec(), ret_tys.to_vec()),
@@ -2567,19 +2582,7 @@ impl<'a> Lowerer<'a> {
                 }
                 // Newtype constructor: `Hz 440.0` wraps its single argument.
                 if self.env.newtypes.contains_key(name) {
-                    if call_args.len() != 1 {
-                        return Err(CompileError::Type {
-                            msg: format!(
-                                "newtype constructor `{name}` expects 1 argument, got {}",
-                                call_args.len()
-                            ),
-                            span: *span,
-                        });
-                    }
-                    let (src, _) = self.lower_value(&call_args[0])?;
-                    let dst = self.fresh_value_reg();
-                    self.emit_value(ValueInstr::ValueNewtype { dst, src });
-                    return Ok((dst, ValueTy::Newtype(name.clone(), vec![])));
+                    return self.lower_newtype_constructor(name, call_args, *span);
                 }
                 // Typeclass method call: the argument's static type selects the
                 // instance, and the method body is inlined with the parameters
@@ -5732,6 +5735,46 @@ impl<'a> Lowerer<'a> {
         Some((key, crate::types::infer::ClassVarSubst::Ty(evidence)))
     }
 
+    /// Lower a newtype constructor application (`Hz 440.0` → one
+    /// `ValueNewtype` wrapper).
+    ///
+    /// The newtype's declared target type is the ONE argument's expected type:
+    /// `newtype PBox = Point; PBox (Point { x: 9223372036854775808, … })` only
+    /// reaches `Point`'s declared field types through it, exactly as a
+    /// binding's own `::` does for its body. A target that resolves to nothing
+    /// concrete (a type variable) supplies NO expectation, so no guessed type
+    /// can convert the argument's literal.
+    ///
+    /// Kept out of line so the (already deep) `lower_value` dispatch frame does
+    /// not grow — a nested 2-D `assocs`/`listArray` program overflowed the
+    /// stack when this branch was inlined there.
+    #[inline(never)]
+    fn lower_newtype_constructor(
+        &mut self,
+        name: &str,
+        call_args: &[Expr],
+        span: Span,
+    ) -> Result<(usize, ValueTy), CompileError> {
+        if call_args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!(
+                    "newtype constructor `{name}` expects 1 argument, got {}",
+                    call_args.len()
+                ),
+                span,
+            });
+        }
+        let target = self.env.newtypes.get(name).cloned().unwrap_or_default();
+        let expected_arg = self.env.vty_of_name(&target).filter(is_concrete_ty);
+        let (src, _) = match &expected_arg {
+            Some(exp) => self.lower_value_expected(&call_args[0], Some(exp))?,
+            None => self.lower_value(&call_args[0])?,
+        };
+        let dst = self.fresh_value_reg();
+        self.emit_value(ValueInstr::ValueNewtype { dst, src });
+        Ok((dst, ValueTy::Newtype(name.to_string(), vec![])))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn lower_primitive_method(
         &mut self,
@@ -6166,9 +6209,9 @@ impl<'a> Lowerer<'a> {
                 // only a DECLARED numeric leaf participates, never inference's
                 // default, so a bare `x = 9223372036854775808` keeps the
                 // `Int`-track fallback it had before.
-                let declared = self.declared_binding_leaf(name);
+                let declared = self.declared_binding_ty(name);
                 let res = match declared {
-                    Some(leaf) => self.lower_value_expected(&body, Some(&leaf)),
+                    Some(ty) => self.lower_value_expected(&body, Some(&ty)),
                     None => self.lower_value(&body),
                 };
                 self.pending_param_tys = saved_pending;
@@ -6312,17 +6355,10 @@ impl<'a> Lowerer<'a> {
     /// `f 2` at `Integer -> Integer` an `Integer` constant.
     fn closure_param_tys(&self, name: &str, arity: usize) -> Vec<ValueTy> {
         match self.fn_param_tys.get(name).filter(|tys| tys.len() == arity) {
-            Some(tys) => tys
-                .iter()
-                .map(|t| {
-                    if is_concrete_ty(t) {
-                        t.clone()
-                    } else {
-                        ValueTy::Double
-                    }
-                })
+            Some(tys) => tys.clone(),
+            None => (0..arity)
+                .map(|k| ValueTy::Var(u32::MAX - 1 - k as u32))
                 .collect(),
-            None => vec![ValueTy::Double; arity],
         }
     }
 
@@ -6332,12 +6368,19 @@ impl<'a> Lowerer<'a> {
     /// `x :: Double; x = 2` lowering the literal as the declared `Double` while
     /// a bare `x = 2` (whose inferred type is a default) stays on the `Int`
     /// track, exactly as before.
-    fn declared_binding_leaf(&self, name: &str) -> Option<ValueTy> {
+    fn declared_binding_ty(&self, name: &str) -> Option<ValueTy> {
         let sig = self.defs.get(name)?.sig()?;
         if !crate::types::infer::sig_func_parts(sig).0.is_empty() {
             return None;
         }
-        numeric_leaf_of(sig, self.env)
+        let mut vars: HashMap<String, ValueTy> = HashMap::new();
+        let mut next = 0u32;
+        let mut fresh = || {
+            next += 1;
+            ValueTy::Var(u32::MAX - next)
+        };
+        crate::types::infer::sig_ty_to_vty(self.env, sig, &HashMap::new(), &mut vars, &mut fresh)
+            .ok()
     }
 
     /// The numeric leaf a definition's own signature declares as its RESULT

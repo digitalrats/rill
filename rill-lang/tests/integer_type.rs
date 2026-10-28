@@ -528,3 +528,132 @@ fn an_integer_pattern_literal_takes_the_scrutinee_type_in_both_modes() {
         "77",
     );
 }
+
+// --- Fix round 4: a GUESSED type never converts an integer literal ------------
+//
+// Round 3 shipped a `Double` placeholder for a parameter whose type inference
+// left polymorphic. That was the same mistake in the other direction from the
+// `Int` default it replaced: `Double` happens to be right at 2^63 and lossy
+// above 2^53. GHC's model has no guess at all — `42` is `fromInteger (42 ::
+// Integer)` and its type comes from unification with the context — so a slot
+// with NO declaration supplies NO expected type and the literal keeps its own
+// conversion. A record literal's field, by contrast, HAS a declared type
+// (the field's type in the record type the binding declares) and must receive
+// it.
+//
+// Every expected value below was measured on this machine with `runghc`
+// (GHC 9.10.3) before it was pinned. Strict prints each `write` twice (the
+// pre-existing doubling quirk), so its expectation is the doubled text.
+
+#[test]
+fn a_record_field_literal_takes_the_declared_field_type_in_both_modes() {
+    // `p :: Pair Double Double` declares `first: Double`, so `9223372036854775808`
+    // is `fromInteger` at `Double`. Before this fix the field received no
+    // expected type (the caller's `expected` only reached the constructor for a
+    // `Con` head), so the literal stayed on the `Int` track and printed the
+    // low-64-bit truncation `-9.223372036854776e18` — a WRONG VALUE, not an
+    // error. `123456789012345678901234567890` printed `-4.362896299872286e18`.
+    assert_both_modes(
+        "p :: Pair Double Double;\np = Pair { first: 9223372036854775808, second: 1.0 };\nmain = do { write (Just (show_double p.first)) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    assert_both_modes(
+        "p :: Pair Double Double;\np = Pair { first: 123456789012345678901234567890, second: 1.0 };\nmain = do { write (Just (show_double p.first)) stdout; return () };",
+        "1.2345678901234568e29",
+        "1.2345678901234568e291.2345678901234568e29",
+    );
+    // Control: an in-range field is unchanged in both modes.
+    assert_both_modes(
+        "p :: Pair Double Double;\np = Pair { first: 2, second: 1.0 };\nmain = do { write (Just (show_double p.first)) stdout; return () };",
+        "2.0",
+        "2.02.0",
+    );
+}
+
+#[test]
+fn a_user_record_field_literal_takes_the_declared_field_type_in_both_modes() {
+    // The same rule for a declared `data` record: `x: Double` is the field's
+    // declaration, so the field literal is `fromInteger` at `Double`.
+    assert_both_modes(
+        "data Point = { x: Double, y: Double };\np :: Point;\np = Point { x: 9223372036854775808, y: 1.0 };\nmain = do { write (Just (show_double p.x)) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    // A type SYNONYM of the record is the same declaration.
+    assert_both_modes(
+        "data Point = { x: Double, y: Double };\ntype P = Point;\np :: P;\np = Point { x: 9223372036854775808, y: 1.0 };\nmain = do { write (Just (show_double p.x)) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    // A NEWTYPE over the record declares its own target type, which is the
+    // constructor argument's expected type.
+    assert_both_modes(
+        "data Point = { x: Double, y: Double };\nnewtype PBox = Point;\nreach :: PBox -> Double;\nreach b = 1.0;\nz :: PBox;\nz = PBox (Point { x: 9223372036854775808, y: 1.0 });\nmain = do { write (Just \"ok\") stdout; return () };",
+        "ok",
+        "okok",
+    );
+}
+
+#[test]
+fn a_polymorphic_identity_converts_its_argument_by_the_call_sites_type_in_both_modes() {
+    // REGRESSION from round 3: `closure_param_tys` advertised a `Double`
+    // placeholder for `f x = x`'s polymorphic parameter, so every call site
+    // lowered its argument as a `Double`. `9007199254740993` (2^53+1) is an
+    // exact `Int` and a rounded `Double`, so the placeholder printed
+    // `9007199254740992` — GHC prints `9007199254740993`.
+    //
+    // The parameter now advertises its residual VARIABLE (no information), so
+    // the call site supplies no expected type and the literal keeps its exact
+    // `Int` conversion. `show_double (f 9223372036854775808)` still gets
+    // `Double` because `pin_ret_head_types` performs the `a -> a` unification
+    // the signature describes.
+    assert_both_modes(
+        "f x = x;\nmain = do { write (Just (show_int (f 9007199254740993))) stdout; return () };",
+        "9007199254740993",
+        "90071992547409939007199254740993",
+    );
+    // Control: the literal with no call at all.
+    assert_both_modes(
+        "main = do { write (Just (show_int (9007199254740993))) stdout; return () };",
+        "9007199254740993",
+        "90071992547409939007199254740993",
+    );
+    // The 2^63 case the placeholder was added for must still work: `Double` is
+    // right there, but only because the signature says so.
+    assert_both_modes(
+        "f :: Double -> Double;\nf x = x;\nmain = do { write (Just (show_double (f 9223372036854775808))) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    assert_both_modes(
+        "f :: Integer -> Integer;\nf x = x;\nmain = do { write (Just (show_integer (f 2))) stdout; return () };",
+        "2",
+        "22",
+    );
+}
+
+#[test]
+fn a_guessed_type_does_not_convert_a_negated_literal_either() {
+    // `-9007199254740993` is one literal (Haskell 2010 §3.8). The same
+    // placeholder reached it through the `Expr::Neg` fold.
+    assert_both_modes(
+        "f x = x;\nmain = do { write (Just (show_int (f (-9007199254740993)))) stdout; return () };",
+        "-9007199254740993",
+        "-9007199254740993-9007199254740993",
+    );
+}
+
+#[test]
+fn an_out_of_range_literal_through_a_polymorphic_slot_keeps_ghcs_int_truncation() {
+    // The sharpest separation of the two guesses: at `Int` type GHC truncates
+    // the 30-digit literal to `-4362896299872285998`, while the `Double`
+    // placeholder rounded it to `9223372036854775807` (via 1.234…e29 saturated
+    // and cast). The exact `Int` conversion is the `Int`-track answer, and it is
+    // what a slot with no declaration must produce.
+    assert_both_modes(
+        "f x = x;\nmain = do { write (Just (show_int (f 123456789012345678901234567890))) stdout; return () };",
+        "-4362896299872285998",
+        "-4362896299872285998-4362896299872285998",
+    );
+}
