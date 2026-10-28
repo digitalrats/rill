@@ -586,12 +586,117 @@ fn a_user_record_field_literal_takes_the_declared_field_type_in_both_modes() {
         "9.223372036854776e18",
         "9.223372036854776e189.223372036854776e18",
     );
-    // A NEWTYPE over the record declares its own target type, which is the
-    // constructor argument's expected type.
+    // A NEWTYPE's declared target is the constructor argument's expected type,
+    // so its literal converts as a declaration does.
+    //
+    // This assertion PROJECTS the value (a `Map` key comparison). A
+    // `write (Just "ok")` body would prove nothing: it never forces the
+    // binding, so the constructor is never lowered and neither
+    // `lower_newtype_constructor` nor its target threading is exercised — the
+    // reviewer proved exactly that. A `Map` probe DOES force it: a key built
+    // from `9223372036854775808` matches the correctly converted
+    // `9.223372036854776e18` and does NOT match the low-64-bit truncation
+    // `-9.223372036854776e18`, so a regression to the `Int` track flips both
+    // rows. Every expected value was measured with GHC 9.10.3
+    // (`Data.Map.insert`/`member` on a `deriving (Eq, Ord)` newtype).
     assert_both_modes(
-        "data Point = { x: Double, y: Double };\nnewtype PBox = Point;\nreach :: PBox -> Double;\nreach b = 1.0;\nz :: PBox;\nz = PBox (Point { x: 9223372036854775808, y: 1.0 });\nmain = do { write (Just \"ok\") stdout; return () };",
-        "ok",
-        "okok",
+        "newtype Hz = Double;\nm = insert (Hz 9223372036854775808) 1.0 (empty_map);\nmain = do { write (Just (show_bool (member (Hz 9.223372036854776e18) m))) stdout; return () };",
+        "True",
+        "TrueTrue",
+    );
+    // The sign-flipped twin: the truncation WOULD match this key, so `False`
+    // here is the falsifiable direction (the defect printed `True`).
+    assert_both_modes(
+        "newtype Hz = Double;\nm = insert (Hz 9223372036854775808) 1.0 (empty_map);\nmain = do { write (Just (show_bool (member (Hz (-9.223372036854776e18)) m))) stdout; return () };",
+        "False",
+        "FalseFalse",
+    );
+    // The 30-digit literal through the same target: the correct
+    // `1.2345678901234568e29` matches.
+    assert_both_modes(
+        "newtype Hz = Double;\nm = insert (Hz 123456789012345678901234567890) 1.0 (empty_map);\nmain = do { write (Just (show_bool (member (Hz 1.2345678901234568e29) m))) stdout; return () };",
+        "True",
+        "TrueTrue",
+    );
+    // Control: an in-range literal is unchanged.
+    assert_both_modes(
+        "newtype Hz = Double;\nm = insert (Hz 2) 1.0 (empty_map);\nmain = do { write (Just (show_bool (member (Hz 2.0) m))) stdout; return () };",
+        "True",
+        "TrueTrue",
+    );
+}
+
+#[test]
+fn an_expected_type_flows_through_a_chain_of_polymorphic_calls() {
+    // The expectation must unify the callee's SCHEME: `f x = x` schemes as
+    // `a -> a`, so an expected `Double` at the call site pins `a` in BOTH the
+    // parameter and the result. Matching only the result's residual var left
+    // the parameter unpinned, so the literal kept its i64 truncation and the
+    // sign flipped (-9.22…e18 where GHC prints 9.22…e18).
+    //
+    // Every expected value below was measured with `runghc` (GHC 9.10.3) on
+    // this machine before it was pinned.
+    assert_both_modes(
+        "f x = x;\ng y = f y;\nmain = do { write (Just (show_double (g 9223372036854775808))) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    assert_both_modes(
+        "f x = x;\ng y = f y;\nmain = do { write (Just (show_double (g 123456789012345678901234567890))) stdout; return () };",
+        "1.2345678901234568e29",
+        "1.2345678901234568e291.2345678901234568e29",
+    );
+    // A λ indirection: `g = \y -> f y` has the SAME `a -> a` scheme, so it is
+    // the same unification, not a second mechanism.
+    assert_both_modes(
+        "f x = x;\ng = \\y -> f y;\nmain = do { write (Just (show_double (g 9223372036854775808))) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
+    );
+    // A chain of any length: each hop is the same `a -> a` unification, so no
+    // hop count is special.
+    //
+    // GHC 9.10.3 prints `1.2345678901234568e29` here, NOT the `2.4691357802469136e29`
+    // the brief's table gave: that value is exactly TWICE this one. Re-measured
+    // with `runghc` (plain, and via `h 1234…890 + h 1234…890`, which prints the
+    // doubled value) — the program has a single `h` call, so GHC's answer is the
+    // undoubled one, and rill now agrees with it. The `2.469…e29` row is kept
+    // below as a separate assertion reached through an explicit doubling, so
+    // neither value is lost.
+    assert_both_modes(
+        "f x = x;\ng y = f y;\nh z = g z;\nmain = do { write (Just (show_double (h 123456789012345678901234567890))) stdout; return () };",
+        "1.2345678901234568e29",
+        "1.2345678901234568e291.2345678901234568e29",
+    );
+    // The doubled value, reachable only by doubling the call: GHC 9.10.3 prints
+    // `2.4691357802469136e29` for `h n + h n` with the same 30-digit literal.
+    assert_both_modes(
+        "f x = x;\ng y = f y;\nh z = g z;\nmain = do { write (Just (show_double (h 123456789012345678901234567890 + h 123456789012345678901234567890))) stdout; return () };",
+        "2.4691357802469136e29",
+        "2.4691357802469136e292.4691357802469136e29",
+    );
+    // The same scheme at two DISTINCT types: each call site gets a FRESH
+    // `Subst`, so the `Double` use and the `Int` use do not leak into each
+    // other. `9007199254740993` (2^53+1) is exact as an `Int` and rounds as a
+    // `Double`, so a leaked bind shows up as `9007199254740992`. GHC 9.10.3
+    // prints exactly these two lines.
+    assert_both_modes(
+        "f x = x;\ng y = f y;\nh z = g z;\nmain = do { write (Just (show_double (h 9223372036854775808))) stdout; write (Just (show_int (h 9007199254740993))) stdout; return () };",
+        "9.223372036854776e189007199254740993",
+        "9.223372036854776e189.223372036854776e1890071992547409939007199254740993",
+    );
+    // The literal's type also reaches the OTHER operand of `==`, so `1` is a
+    // `Double` here and the comparison is `True` (GHC 9.10.3).
+    assert_both_modes(
+        "f x = x;\ng y = f y;\nmain = do { write (Just (show_bool (g 1 == 1.0))) stdout; return () };",
+        "True",
+        "TrueTrue",
+    );
+    // Control: zero hops, unchanged.
+    assert_both_modes(
+        "f x = x;\nmain = do { write (Just (show_double (f 9223372036854775808))) stdout; return () };",
+        "9.223372036854776e18",
+        "9.223372036854776e189.223372036854776e18",
     );
 }
 

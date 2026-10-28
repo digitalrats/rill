@@ -6211,8 +6211,15 @@ fn infer_apply_impl(
                 span,
             });
         }
-        let vt = infer_const_value(ctx, &args[0])?;
+        // The newtype's declared TARGET type is the single argument's expected
+        // type — the same rule a formal parameter follows, and a DECLARATION
+        // rather than a guess. Without it `Hz 9223372036854775808` inferred the
+        // literal on the `Int` track and then failed to unify against the
+        // declared `Double` (an error where GHC accepts the program, since a
+        // literal is `fromInteger`-polymorphic). A target that names no
+        // concrete type supplies no expectation.
         let inner = resolve_type_name(&ctx.env, &inner_name);
+        let vt = infer_const_value_expected(ctx, &args[0], Some(&inner))?;
         unify_value(&vt, &inner, &mut ctx.subst, args[0].span())?;
         return Ok(ArrowTy::value_channel(ValueTy::Newtype(
             name.to_string(),
@@ -7400,6 +7407,21 @@ fn infer_apply_impl(
                     span,
                 )?;
                 for (a, pty) in args.iter().zip(arg_tys.iter()) {
+                    // A generalised parameter (`g = \y -> f y`, `g y = f y`
+                    // schemes as `a -> a`) is a FRESH variable of this
+                    // instantiation. An integer literal must DEFER against it:
+                    // the literal's type IS its expected type (Haskell 2010
+                    // §6.4.1 `fromInteger`), so binding the fresh variable to
+                    // the `Int` a context-free literal defaults to decides the
+                    // literal before the enclosing expectation is known, and
+                    // `show_double (g 9223372036854775808)` then fails to
+                    // unify instead of taking `Double`. Deferring leaves the
+                    // variable free for the call's own result to receive the
+                    // expectation from.
+                    let bare_var = matches!(ctx.subst.resolve_value(pty), ValueTy::Var(_));
+                    if bare_var && a.is_int_literal() {
+                        continue;
+                    }
                     let vt =
                         infer_method_value_vty_expected(ctx, a, "argument", Some(pty.clone()))?;
                     // PARK M10: a signature-less CURRIED definition
@@ -7554,8 +7576,31 @@ fn check_def_call_args(
     let defaulted = !ctx.sig_defs.contains(name);
     for (i, (a, formal)) in args.iter().zip(formals.iter()).enumerate() {
         let formal = ctx.subst.resolve_value(formal);
-        if matches!(formal, ValueTy::Var(_) | ValueTy::TyConVar(_)) {
-            // Polymorphic parameter: defer (see above).
+        if matches!(formal, ValueTy::TyConVar(_)) {
+            // A type-CONSTRUCTOR variable parameter (`m`, `f`) has no value
+            // shape to check against: defer.
+            continue;
+        }
+        if matches!(formal, ValueTy::Var(_)) {
+            // A generalised parameter (`id x = x` schemes as `a -> a`). The
+            // variable is FRESH for this instantiation, so unifying it records
+            // the call's argument type and nothing about the definition. That
+            // link is what makes the RESULT type mean the argument type: with
+            // the unification skipped, `g y = f y` schemed as `a -> b`, so a
+            // call site could not relate its expected type to the parameter.
+            //
+            // An integer literal DEFERS: its type IS its expected type
+            // (Haskell 2010 §6.4.1, `fromInteger`), so pinning the fresh
+            // variable to the `Int` a context-free literal defaults to would
+            // decide the literal before the enclosing expectation is known
+            // (`show_double (f 9223372036854775808)` must type the literal at
+            // `Double`).
+            if !a.is_int_literal() {
+                let actual = infer_method_value_vty(ctx, a, "argument")?;
+                if !is_unknown_thunk(&actual) {
+                    unify_value(&actual, &formal, &mut ctx.subst, a.span())?;
+                }
+            }
             continue;
         }
         let actual = infer_argument_ty(ctx, a, &formal)?;

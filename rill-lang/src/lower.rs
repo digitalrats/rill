@@ -11,7 +11,8 @@ use crate::ir::{
 };
 use crate::mode::Mode;
 use crate::types::infer::TypedProgram;
-use crate::types::ty::{concat_map_result_elem, DataInfo, TypeEnv, ValueTy};
+use crate::types::ty::{concat_map_result_elem, DataInfo, Subst, TypeEnv, ValueTy};
+use crate::types::unify::unify_value;
 use num_bigint::BigInt;
 
 /// Match a concrete value type against a structural pattern that may contain
@@ -584,6 +585,14 @@ fn nest_value_thunk(arg_tys: &[ValueTy], ret_tys: Vec<ValueTy>) -> ValueTy {
 /// `Kleisli m a b` becomes `Kleisli Maybe a b`, so a result-directed method
 /// chain in an argument (`arr f` inside `apply (compose …) 3.0`) threads the
 /// concrete monad into the instance body's `return`/`bind`.
+///
+/// This is a FALLBACK for a callee with no scheme to unify (the caller tries
+/// [`Lowerer::scheme_pinned_params`] first). It deliberately does NOT try to bind
+/// a bare `Var` result: the type lists it receives come from a LOWERED closure
+/// signature, where the parameter and the result are independent residual
+/// variables even for `f x = x`. Pinning the result variable there pins nothing
+/// about the parameter — a guess in disguise: it converts no literal but does
+/// suppress the literal's own exact conversion.
 fn pin_ret_head_types(
     arg_tys: &[ValueTy],
     ret_tys: &[ValueTy],
@@ -592,21 +601,6 @@ fn pin_ret_head_types(
     let Some(exp) = expected else {
         return (arg_tys.to_vec(), ret_tys.to_vec());
     };
-    if let Some(ValueTy::Var(v)) = ret_tys.first() {
-        if is_concrete_ty(exp) {
-            let v = *v;
-            return (
-                arg_tys
-                    .iter()
-                    .map(|t| subst_tycon_head(t, v, exp))
-                    .collect(),
-                ret_tys
-                    .iter()
-                    .map(|t| subst_tycon_head(t, v, exp))
-                    .collect(),
-            );
-        }
-    }
     let repl = match exp {
         ValueTy::Con(c, _) => ValueTy::Con(c.clone(), vec![]),
         _ => return (arg_tys.to_vec(), ret_tys.to_vec()),
@@ -3409,14 +3403,18 @@ impl<'a> Lowerer<'a> {
                 match &callee_ty {
                     ValueTy::Thunk(_, _) => {
                         let (arg_tys, ret_tys) = flatten_value_thunk(&callee_ty);
-                        // Mirror inference's `pin_result_to_expected`: a def whose
-                        // result is `m b` (`apply k x = k.unKleisli x`) applied
-                        // under a concrete container expected (`apply (compose …)
-                        // 3.0` matched by `Just v`) pins the monad BEFORE its
-                        // arguments are lowered, so a result-directed /
-                        // constructor-class method inside an argument (`arr f`)
-                        // threads the concrete monad into the instance body.
-                        let (arg_tys, ret_tys) = pin_ret_head_types(&arg_tys, &ret_tys, expected);
+                        // A def's SCHEME is the declaration a call site needs:
+                        // unifying its result with the caller's expected type
+                        // and applying the substitution to its parameters is
+                        // what makes `a -> a` pin BOTH (`f x = x; g y = f y`),
+                        // at any chain length and through a λ indirection.
+                        // Only when the callee has no scheme of this arity does
+                        // the structural fallback run.
+                        let (arg_tys, ret_tys) =
+                            match self.scheme_pinned_params(name, arg_tys.len(), expected, *span) {
+                                Some(params) => (params, ret_tys),
+                                None => pin_ret_head_types(&arg_tys, &ret_tys, expected),
+                            };
                         if call_args.len() > arg_tys.len() {
                             return Err(CompileError::Type {
                                 msg: format!(
@@ -4919,13 +4917,15 @@ impl<'a> Lowerer<'a> {
                 span,
             });
         }
-        // Mirror the ordinary application path before the arguments lower: a
-        // result type holding a type-constructor variable (`apply k x =
-        // k.unKleisli x` → `m b`) is pinned from the caller's expected type, so
-        // a result-directed/constructor-class method inside an argument (`arr
-        // f`) threads the concrete monad into its instance body.
+        // A call site's expectation reaches the arguments by UNIFYING the
+        // callee's SCHEME (`a -> a` pins both sides of one bind), which is the
+        // same rule the ordinary application path applies. The structural
+        // fallback runs only when no scheme of this arity exists.
         let result_tys = self.def_result_tys.get(name).cloned().unwrap_or_default();
-        let (arg_tys, _) = pin_ret_head_types(param_tys, &result_tys, expected);
+        let (arg_tys, _) = match self.scheme_pinned_params(name, param_tys.len(), expected, span) {
+            Some(params) => (params, result_tys),
+            None => pin_ret_head_types(param_tys, &result_tys, expected),
+        };
         // Lower the applied arguments (each against its recovered parameter type
         // as the expectation) and bind each λ-parameter to its argument register
         // and CONCRETE static type, so the body's own method calls dispatch by
@@ -6336,6 +6336,48 @@ impl<'a> Lowerer<'a> {
                 span,
             }),
         }
+    }
+
+    /// The callee's parameter types after UNIFYING its SCHEME's result type with
+    /// the caller's expected type.
+    ///
+    /// This is the rule a call site needs. A definition's scheme is a complete
+    /// declaration: `f x = x` schemes as `a -> a`, `apply k x = k x` as
+    /// `(a -> b) -> a -> b`. When the call site expects a type `T`, the way `T`
+    /// reaches the ARGUMENTS is ordinary unification — unify the scheme's RESULT
+    /// with `T`, then apply the resulting substitution to every one of the scheme's
+    /// PARAMETER types. One bind therefore covers every position the scheme
+    /// instantiates the same variable in, however many there are:
+    ///
+    /// - `a -> a` with `Double` expected pins BOTH the parameter and the result, so
+    ///   a chain (`f x = x; g y = f y; h z = g z`) works at any length — each `y =`
+    ///   `f y` link is the same `a -> a` scheme, so every hop repeats the same
+    ///   unification, and
+    /// - a λ indirection (`g = \y -> f y`) has the same scheme, so it is the same
+    ///   mechanism, not a second one.
+    ///
+    /// It invents nothing: a scheme used at two DISTINCT types (`show_int (f 1)` and
+    /// `show_double (f 1.0)`) gets a FRESH `Subst` per call site, so each site's
+    /// bind is local and the other site's use is untouched. And when there is no
+    /// expected type, or the result does not unify with it, `None` comes back and
+    /// the caller keeps the callee's own signature — the literal then keeps its own
+    /// exact conversion rather than being converted against a guess.
+    ///
+    /// `None` also means "no scheme of this arity", so a local/closure value whose
+    /// signature lowering synthesized is never pinned by a def's scheme.
+    fn scheme_pinned_params(
+        &self,
+        name: &str,
+        arity: usize,
+        expected: Option<&ValueTy>,
+        span: Span,
+    ) -> Option<Vec<ValueTy>> {
+        let exp = expected.filter(|e| is_concrete_ty(e))?;
+        let param_tys = self.fn_param_tys.get(name).filter(|t| t.len() == arity)?;
+        let ret = self.def_result_tys.get(name)?.first()?;
+        let mut subst = Subst::default();
+        unify_value(ret, exp, &mut subst, span).ok()?;
+        Some(param_tys.iter().map(|t| subst.resolve_value(t)).collect())
     }
 
     /// The parameter value types a closure's SIGNATURE advertises, from
