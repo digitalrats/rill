@@ -7595,9 +7595,22 @@ fn check_def_call_args(
             // decide the literal before the enclosing expectation is known
             // (`show_double (f 9223372036854775808)` must type the literal at
             // `Double`).
+            //
+            // The link is made ONLY from an argument whose type is still an
+            // unresolved variable — the `g y = f y` shape, where `y` is a bare
+            // parameter reference with no type of its own. Any other argument
+            // comes with a type already settled by its OWN inference: a
+            // computed `2 + 3` or `if True then 1 else 2` defaults its
+            // unconstrained `Num` operand to `Int`, and an annotated `d ::
+            // Double` is `Double`. Committing that settled type to the fresh
+            // formal would decide the argument before the enclosing
+            // expectation (`show_double`) could reach it, turning the valid
+            // `show_double (f (2 + 3))` into a type error.
             if !a.is_int_literal() {
                 let actual = infer_method_value_vty(ctx, a, "argument")?;
-                if !is_unknown_thunk(&actual) {
+                if !is_unknown_thunk(&actual)
+                    && matches!(ctx.subst.resolve_value(&actual), ValueTy::Var(_))
+                {
                     unify_value(&actual, &formal, &mut ctx.subst, a.span())?;
                 }
             }

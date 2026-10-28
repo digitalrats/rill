@@ -762,3 +762,23 @@ fn an_out_of_range_literal_through_a_polymorphic_slot_keeps_ghcs_int_truncation(
         "-4362896299872285998-4362896299872285998",
     );
 }
+
+#[test]
+fn a_polymorphic_helper_accepts_a_computed_argument() {
+    // These worked before this plan started and were briefly rejected: the
+    // call-site unify committed the argument's own DEFAULTED `Int` to the
+    // callee's formal before the expected `Double` could reach it. Only a bare
+    // parameter reference (the `g y = f y` chain case) may be linked here.
+    assert_eq!(
+        run("f x = x;\nmain = do { write (Just (show_double (f (2 + 3)))) stdout; return () };"),
+        "5.0"
+    );
+    assert_eq!(
+        run("f x = x;\nd :: Double;\nd = 1 + 2;\nmain = do { write (Just (show_double (f d))) stdout; return () };"),
+        "3.0"
+    );
+    assert_eq!(
+        run("f x = x;\nmain = do { write (Just (show_double (f (if True then 1 else 2)))) stdout; return () };"),
+        "1.0"
+    );
+}
