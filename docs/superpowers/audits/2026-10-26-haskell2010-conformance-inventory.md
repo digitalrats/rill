@@ -1,8 +1,18 @@
 # Haskell 2010 conformance inventory — 2026-10-26
 
-> **Status:** inventory only. **No fix has been applied.** Every entry is a
-> confirmed divergence between rill (branch `feature/rill-lang-haskell2010-conformance`,
-> HEAD `12bcc44`, 1005 tests green) and GHC 9.10.3 / the Haskell 2010 Report.
+> **Status:** inventory only. **No fix has been applied** *by this file's own
+> audit.* Every entry is a confirmed divergence between rill (branch
+> `feature/rill-lang-haskell2010-conformance`, HEAD `12bcc44`, 1005 tests green
+> at the time of measurement) and GHC 9.10.3 / the Haskell 2010 Report.
+>
+> **Dated re-measurement (2026-10-28, HEAD `498cb62`, 1157 tests green):** the
+> `Integer` and literal-typing rows below have been re-checked against stage 7a
+> and corrected in place — see A1 (`fromIntegral`/`toInteger`), A4 (the four
+> literal rows and the defaulting row), A8 (the silent-wrong-answer table) and
+> the summary counts. Corrections are marked with the date, because the
+> inventory is a dated record and silently rewriting it would hide what stage 7a
+> changed. The rows that say **MISSING** and were not touched are unchanged and
+> still open.
 >
 > Per `AGENTS.md` there is **no "pre-existing" exemption**: these are defects to
 > fix, not behaviour to document. This file is the work list, not a licence.
@@ -24,7 +34,7 @@
 | `recip` | same | WRONG |
 | `div`, `mod`, `quot`, `rem` | `unknown identifier` | MISSING |
 | `floor`, `ceiling`, `round`, `truncate` | `unknown identifier` | MISSING |
-| `fromIntegral`, `toInteger` | `unknown identifier` | MISSING |
+| `fromIntegral`, `toInteger` | `unknown identifier` | MISSING — the *target* type now exists after stage 7a, the functions do not; `fromIntegral (1 :: Int) :: Integer` still reports `unknown identifier \`fromIntegral\`` |
 | `succ`, `pred`, `minBound` (and `maxBound`) | `unknown identifier` | MISSING |
 | `pi`, `log`, `(**)` | `unknown identifier` / parse error on `**` | MISSING |
 | `compare` | `cannot unify Thunk([Int],[Thunk([Int],[Int])]) with Int` | WRONG |
@@ -71,19 +81,22 @@ Haskell 2010 names.
 
 | Expression | rill | GHC | Verdict |
 |---|---|---|---|
-| `1 + 1.0` | `2.0` | `2.0` | OK (by accident: forced `Float`) |
-| `1 == 1.0` | **`False`** | `True` | **WRONG — silent** |
-| `5 < 2.0` | **`True`** | `False` | **WRONG — silent** |
-| `(1::Int) + 1.0` | **`2.0`** | type error (`Fractional Int`) | **EXTRA — silent** |
+| `1 + 1.0` | `2.0` | `2.0` | OK (**measured 2026-10-28 at `498cb62`**, by the §6.4.1 literal rule: the literal takes the other operand's type — not "by accident: forced `Float`") |
+| `1 == 1.0` | `True` | `True` | OK (**measured 2026-10-28 at `498cb62`**; was `False`) |
+| `5 < 2.0` | `False` | `False` | OK (**measured 2026-10-28 at `498cb62`**; was `True`; GHC's answer is `False`, **not** a type error) |
+| `(1::Int) + 1.0` | type error (`cannot unify value type Int with Double`) | type error (`Fractional Int`) | OK (**measured 2026-10-28 at `498cb62`**; was `2.0`) |
 | `add x y = x + y; add 1 2` | type error | `3` | MISSING (no `Num` polymorphism) |
 | `add 1.0 2.0` | `3.0` | `3.0` | OK |
 | `id x = x` at `Int` and `Float` | works | works | OK |
 | integer literal in a `Float` context (`f x = x + 1.0; f 1`) | `2.0` | `2.0` | OK |
-| defaulting (`1 + 2` → `Int`) | `Int` (`i64`) | `Integer` (bignum, no `Bounded` instance) | **WRONG — not a "numeral set" choice.** `1 + 2` is `Integer` in GHC, so it does **not** overflow; rill's is `Int`, so it does. Verified: `maxBound :: Int + 1` wraps to `-9223372036854775808`, while `1 + 2 + 10^27` gives `1000000000000000000000000003` in GHC. `Integer` does not exist in rill at all (`unknown type name`), so `fromInteger` has no target type. Recorded as **OD-27**; belongs with stage 7. |
+| defaulting (`1 + 2` → `Int`) | `Int` (`i64`) | `Integer` (bignum, no `Bounded` instance) | **WRONG — still open after 7a, now DEFAULTING-ONLY.** `Integer` **exists** as of stage 7a (`5e2b082`..`498cb62`), so the earlier "`Integer` does not exist in rill at all (`unknown type name`), so `fromInteger` has no target type" sentence is superseded: the target type now exists. What remains wrong is the default: an unresolved literal still defaults to `Int`, where GHC's `default (Integer, Double)` gives `Integer`. `1 + 2` is `Integer` in GHC, so it does **not** overflow; rill's is `Int`, so it does. Verified: `maxBound :: Int + 1` wraps to `-9223372036854775808`, and `1 + 2 + 10^27` gives `1000000000000000000000000003` in GHC while rill prints `-6930898827444486141`. Recorded as **OD-27(b)**; owned by stage **7b**, together with `fromInteger`/`fromRational` elaboration. |
 
-Root cause of the three WRONG/EXTRA rows: operators still go through the legacy
-`Expr::Arith` / `Expr::Cmp` path with a `kind_rank` fallback instead of the class
-methods (design §3.7 stages 4–9). This is **OD-16 / OD-17**.
+Root cause of the three WRONG/EXTRA rows **as recorded on 2026-10-26**: operators
+still went through the legacy `Expr::Arith` / `Expr::Cmp` path with a
+`kind_rank` fallback instead of the class methods (design §3.7 stages 4–9). That
+was **OD-16 / OD-17**, and both were closed by dictionary stage 3a (`d9d6bfb`),
+which is why the four rows above now read OK (re-measured 2026-10-28 at
+`498cb62`).
 
 ### A4b. Precision, buffer element types, and the numeric tower (measured 2026-10-26)
 
@@ -131,7 +144,7 @@ Fix order: §Task 5.5pre-0 (precision) → 5.5pre-1 (element type) → 5.5a
 | `if` with a non-`Bool` condition | compile error | OK |
 | non-exhaustive `case` | compile error naming the missing ctor | OK |
 | `let` shadowing (`let x = 1; let x = 2`) | error: `duplicate definition x` | WRONG (Haskell allows shadowing) |
-| left section `(1 +)` | `cannot unify Int with Float` | WRONG |
+| left section `(1 +)` | **measured 2026-10-28:** works at `Int` (`(1 +) 2` → `3`); at `Double` → `cannot unify value type Int with Double` (was: `cannot unify Int with Float` — same defect, renamed type). Right sections `(+ 1)` behave identically. See **OD-28** for the whole family | WRONG |
 | `1.0 / 0.0` | `inf` (no exception) | OK for IEEE, but see A8 |
 | `head` of an empty list via `case` | `0.0` from the `Nothing` arm | OK |
 
@@ -160,15 +173,24 @@ Fix order: §Task 5.5pre-0 (precision) → 5.5pre-1 (element type) → 5.5a
 
 | Case | rill | Expected |
 |---|---|---|
-| `1 == 1.0` | `False` | `True` (or a type error) |
-| `5 < 2.0` | `True` | `False` (or a type error) |
-| `(1::Int) + 1.0` | `2.0` | type error |
+| `1 == 1.0` | `False` — **now `True`** (2026-10-28) | `True` (or a type error) |
+| `5 < 2.0` | `True` — **now `False`** (2026-10-28; `False` is GHC's answer, not a type error) | `False` (or a type error) |
+| `(1::Int) + 1.0` | `2.0` — **now a type error** (2026-10-28) | type error |
+| **operator section with a literal** (`(0 <) x` at `Double`/`Integer`) | **`True` for every `x`** — cross-kind `kind_rank`, not numeric order (**OD-28**) | numeric order |
 | `"a\nb"` string escape | literal `\n` | newline |
 | mixed `Int`/`Float` comparison in general | `kind_rank` ordering | type error |
 | `Float` is really `Double` | f64 precision | single precision |
 | `FixedBuffer Zork` | accepted | unknown type |
 | `FixedBuffer Int` unified with `FixedBuffer Bool` | accepted | type error |
 | `%` on `Float` elements | accepted | `No instance for 'Integral Float'` |
+| a DEFINITION's undeclared parameter accepts any argument type (`f x = x; f True` / `f "s"` / `f y::Int` at `Double`) | run fault, or silently `3.0` (**OD-30**) | type error |
+
+*(2026-10-28: the `%` operator is now a **parse error** — it was removed in
+`218a981`, and GHC also has no `%` in the Prelude, so that row is no longer a
+divergence. `Value::Float` is renamed `Double` and `Float` is `unknown type
+name`; `FixedBuffer Zork` and `FixedBuffer Int ~ FixedBuffer Bool` are both
+rejected now. The rows are left in place because the two `kind_rank`-order
+entries, the string escape and the OD-30 row are still live.)*
 
 ---
 
@@ -179,19 +201,30 @@ Fix order: §Task 5.5pre-0 (precision) → 5.5pre-1 (element type) → 5.5a
 | A1 Prelude (40 probed) | 4 | 26 | 9 | 1 |
 | A2 Syntax (12) | 9 | 4 | 0 | 0 |
 | A3 Declarations (7) | 6 | 1 | 0 | 0 |
-| A4 Types/numeric (9) | 5 | 1 | 2 | 1 |
+| A4 Types/numeric (9) | 7 | 1 | 1 | 0 |
 | A5 Expressions (7) | 5 | 0 | 2 | 0 |
 | A6 Classes (5) | 3 | 1 | 1 | 0 |
 | A7 Values (6) | 3 | 2 | 1 | 0 |
-| A8 Silent wrong answers | — | — | 5 | — |
+| A8 Silent wrong answers | — | — | not recounted 2026-10-28 | — |
 
-**The five silent wrong answers come first**: a program that runs and prints a
-plausible wrong value is worse than one that fails to compile.
+*(A4 re-counted 2026-10-28 at `498cb62`: three of the four A4 literal rows and
+`(1::Int) + 1.0` are fixed — the literal now takes the other operand's type, so
+`1 + 1.0`, `1 == 1.0`, `5 < 2.0` and `(1::Int) + 1.0` all match GHC. The
+remaining A4 defect is `add x y = x + y; add 1 2` (no `Num` polymorphism). The
+A8 row count is deliberately **not** updated: several rows there describe
+defects that other stages have since fixed and the table has never been
+re-measured as a whole, so a number would be a guess. Two NEW silent wrong
+answers on the same literal surface are recorded as **OD-28** and **OD-30**.)*
+
+**Silent wrong answers come first**: a program that runs and prints a plausible
+wrong value is worse than one that fails to compile.
 
 ## Proposed fix order
 
-1. **A8 silent wrong answers** (OD-16/OD-17, string escapes) — they corrupt
-   results silently.
+1. **A8 silent wrong answers** (string escapes, plus the two new literal-surface
+   ones: the operator section **OD-28** and the guessed-parameter argument
+   **OD-30**) — they corrupt results silently. OD-16/OD-17 were closed by
+   dictionary stage 3a (`d9d6bfb`).
 2. **A4 numeric polymorphism** — needs the operator/dictionary stages (design
    §3.7 stages 4–9); this is also what makes `add 1 2` work.
 3. **A1 Prelude surface** — the missing kernels (`compare`, `negate`, `signum`,
@@ -199,7 +232,13 @@ plausible wrong value is worse than one that fails to compile.
    Prelude library (design P2–P5 of the typeclass plan).
 4. **A2/A7 syntax** — `newtype` payload, as-patterns, list patterns, nested ctor
    patterns, `(**)`, hex literals, tuples, `[a..b]`.
-5. **A5/A6** — `let` shadowing, left sections, class default methods.
+5. **A5/A6** — `let` shadowing, left sections, class default methods. **The
+   section family is now precise (2026-10-28):** the defect is not only that the
+   left section `(1 +)`/`(- 0)` is rejected — an unannotated literal inside ANY
+   section body never takes the section's type, so the comparison is answered by
+   the cross-kind `kind_rank` order and is constant in the argument (OD-28), and
+   a `/=` section panics the parser. Fix the section LITERAL typing with the
+   literal work, and the `(- …)`/`(/= …)` sections as parser fixes.
 6. **A3/A4 remaining** — recursive constrained definitions.
 
 ## Instrumentation note
