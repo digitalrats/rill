@@ -532,6 +532,18 @@ fn a_constructor_class_method_section_is_a_curried_value() {
     );
     // The SAME binding is usable at another container: the instance is selected
     // at each use site, not at the binding.
+    //
+    // SCOPE OF THIS FIX — a known limitation, not a general solution: the
+    // β-substitution in `lower_applied_method_binding_site` covers a
+    // single-expression use and the FIRST statement of a `do` block ONLY. A
+    // `do` block lowers as nested fragments, so a binding whose name is a
+    // fragment capture is skipped — a `g = fmap (+ 1.0)` reached from the
+    // second `do` statement or passed as a higher-order argument is still
+    // rejected ("the argument type is not a constructor application") where
+    // GHC 9.10.3 accepts it. That is the same gap as bare `g = fmap`: the
+    // instance is chosen at the use site, so both need a runtime dictionary.
+    // Recorded as an open defect; `a_method_binding_works_after_the_first_do_
+    // statement` below pins the current failure.
     let src = r#"
         g = fmap (+ 1.0);
         main = length (g [1.0, 2.0]);
@@ -541,5 +553,18 @@ fn a_constructor_class_method_section_is_a_curried_value() {
     assert_eq!(
         prog.arena().get(v).unwrap(),
         &rill_lang::arena::Value::Int(2)
+    );
+}
+
+#[test]
+#[ignore = "open defect: a method binding is beta-substituted only in a non-capture \
+            position; needs a runtime dictionary. Remove this ignore when that lands."]
+fn a_method_binding_works_after_the_first_do_statement() {
+    // GHC 9.10.3 accepts all of these. rill reaches the rewrite only when the
+    // binding is not a fragment capture, i.e. a single-expression use or the
+    // first `do` statement.
+    assert_eq!(
+        run_out("g = fmap (+ 1.0);\nmain = do { write (Just (show_int 0)) stdout; write (Just (show_int (length (g [1.0, 2.0])))) stdout; return () };"),
+        "02"
     );
 }
