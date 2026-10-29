@@ -798,6 +798,127 @@ instance Num Integer where { }
 instance Num Double where { }
 instance Fractional Double where { }
 
+--  --- Rational numbers (`Data.Ratio`) ---------------------------------------
+--  Haskell 2010 §9.5: `data Ratio a = a :% a`, with `type Rational = Ratio
+--  Integer`. rill spells it as an ordinary parameterized RECORD, which is what
+--  it is on the value side too — a `Ratio Integer` is an arena `Record` of two
+--  `Integer` leaves. There is no ratio `Value` variant: the instances below do
+--  all their work through ordinary field projection.
+data Ratio a = { num: a, den: a };
+type Rational = Ratio Integer;
+
+--  The instances have a POLYMORPHIC head (`Ratio a`), and they are EXPLICIT.
+--  `derive_eq_ord` also derives a structural `Eq`/`Ord` marker for every
+--  comparable declared type (under the bare name `Ratio`), and for a ratio that
+--  derivation is WRONG: structurally, `1/2` and `2/4` differ in both fields, so
+--  a derived `(==)` answers `False` where GHC answers `True`, and structural
+--  `compare` orders by `num` then `den` instead of by value.
+--
+--  A polymorphic explicit instance registers under the same `Ratio` key and
+--  therefore covers every field type: MEASURED `1/2 == 2/4` → `True` at BOTH
+--  `Ratio Integer` and `Ratio Int`. A CONCRETE head (`instance Eq (Ratio
+--  Integer)`) registers under the full applied key `Ratio Integer` instead, so
+--  it covers only that one instantiation and every other field type still falls
+--  back to the derived marker: MEASURED, the same concrete instance answers
+--  `True` at `Ratio Integer` and `False` at `Ratio Int`. `Rational` is a
+--  synonym for `Ratio Integer`, so a concrete head would leave `Ratio` itself
+--  half-specified — the polymorphic head is the only spelling that makes the
+--  instance mean what the class means.
+--
+--  `(==)`/`(/=)` are cross-multiplications, exactly the Report's value
+--  comparison. The nested `*`/`==` dispatch on the FIELD type (`a`), never on
+--  `Ratio a`, so there is no recursion through this instance.
+--
+--  `(/=)` is written out rather than inherited, even though the `Eq` class
+--  declares it as a default body. MEASURED: a class default does not resolve in
+--  rill — its stored parameter list is empty (the body is a λ-nest,
+--  `\x -> \y -> …`, and the λ parameters never receive the class signature's
+--  types), so `compare x y` inside the default fails with "cannot resolve
+--  method `compare` of `Ord`: the argument type is not concrete". That is the
+--  same recorded defect that makes `min`/`max` unusable on ANY user instance
+--  (`min 1.0 2.0` on the primitive `Ord Double` reports "no kernel for method
+--  `min`"); it is not specific to `Ratio`. Every method below is therefore
+--  spelled out, and each one is SELF-CONTAINED: no instance body dispatches a
+--  sibling method of its own class, the same reason `Ix (Pair Int Int)` inlines
+--  its arithmetic.
+instance Eq (Ratio a) where {
+    (==) x y = x.num * y.den == y.num * x.den;
+    (/=) x y = if x.num * y.den == y.num * x.den then False else True;
+}
+
+--  `Ord` encodes an order as `-1`/`0`/`1` (see the class declaration above).
+--  `compare` is the class's own method; `<`, `<=`, `>`, `>=`, `min` and `max`
+--  are declared here too, for the reason given above — their class defaults do
+--  not resolve, so an instance that supplied only `compare` would answer
+--  `r > s` with "cannot resolve method `compare` of `Ord`". Measured on a
+--  monomorphic user record as well, so it is the default mechanism, not the
+--  polymorphic head.
+instance Ord (Ratio a) where {
+    compare x y = if x.num * y.den < y.num * x.den then -1 else if x.num * y.den > y.num * x.den then 1 else 0;
+    (<) x y = x.num * y.den < y.num * x.den;
+    (<=) x y = x.num * y.den <= y.num * x.den;
+    (>) x y = x.num * y.den > y.num * x.den;
+    (>=) x y = x.num * y.den >= y.num * x.den;
+    min x y = if x.num * y.den <= y.num * x.den then x else y;
+    max x y = if x.num * y.den <= y.num * x.den then y else x;
+}
+
+--  The zero these bodies need is built FROM THE FIELDS (`x.num - x.num`), not
+--  written as a literal: an unannotated `0` is an `Int` today, and an annotated
+--  `(0 :: Integer)` would type the whole method at `Integer` only. A
+--  field-typed zero keeps `negate` usable at every field type: MEASURED,
+--  `negate` on `Ratio Int` works.
+--
+--  `negate`/`abs`/`signum` are written against `<`, `-` and `+` over the fields
+--  (the Report's equations, expanded) because their KERNELS have no IR
+--  instruction yet ("kernel `Signum`, which has no IR instruction yet", design
+--  §3.9).
+--
+--  `abs` is supplied because the class declares it, but NO value-track call
+--  site can reach it today: a bare `abs` is routed to the buffer unary path
+--  before class dispatch, so `abs r` and even `f x = abs x` with
+--  `f :: Ratio Integer -> Ratio Integer` both report "`abs` signal argument
+--  must be a Buffer" (MEASURED, in Strict and Complete mode alike). That is a
+--  pre-existing routing defect, not a `Ratio` one — `abs (-3.0 :: Double)` is
+--  rejected the same way — and it means the body below is CORRECT BY THE
+--  REPORT but UNEXERCISED. It is kept rather than dropped so the instance is
+--  complete when the routing is fixed.
+--
+--  `signum` spells its `1` as `(1 :: Integer)`, so that method alone is typed
+--  at an `Integer` field — the value `Rational` needs. A field-typed one cannot
+--  be built without `fromInteger`, which is exactly what this task omits (next
+--  paragraph); the instance therefore answers `signum` for `Ratio Integer` and
+--  reports "cannot unify value type Int with Integer" for `Ratio Int`. That is
+--  a loud, local limit, not a wrong value.
+--
+--  `fromInteger` is DELIBERATELY OMITTED. The Prelude still declares it
+--  `fromInteger : Int -> a`, so `fromInteger n = Ratio { num: n, den: 1 }`
+--  types `n` as an `Int` while the field is the class variable — measured:
+--  `cannot unify value type Int with Integer`. An unannotated literal field
+--  (`num: 1`) fails the same way, and rill has no `fromInteger` at `Ratio` to
+--  build a literal from. An instance MAY omit a method, and an omitted method
+--  fails LOUDLY at the call site — measured: "no instance of `Num` for type
+--  `Ratio` and no default for `fromInteger`" — instead of silently producing
+--  the wrong value. Stage 7b's `fromInteger : Integer -> a` corrects the
+--  signature and adds the body.
+instance Num (Ratio a) where {
+    (+) x y = Ratio { num: x.num * y.den + y.num * x.den, den: x.den * y.den };
+    (-) x y = Ratio { num: x.num * y.den - y.num * x.den, den: x.den * y.den };
+    (*) x y = Ratio { num: x.num * y.num, den: x.den * y.den };
+    negate x = let z = x.num - x.num in Ratio { num: z - x.num, den: x.den };
+    abs x = Ratio { num: let z = x.num - x.num in if x.num < z then z - x.num else x.num, den: let z = x.den - x.den in if x.den < z then z - x.den else x.den };
+    signum x = Ratio { num: let z = x.num - x.num in let one = z + (1 :: Integer) in if x.num < z then z - one else if x.num > z then one else z, den: (1 :: Integer) };
+}
+
+--  `(/)` multiplies by the reciprocal: `(n1/d1) / (n2/d2) = (n1*d2)/(d1*n2)`.
+--  `recip` swaps the fields (the `Recip` KERNEL has no IR instruction either).
+--  No `fromRational` here: the class does not declare that method yet (stage
+--  7b adds it together with the literal rule that needs it).
+instance Fractional (Ratio a) where {
+    (/) x y = Ratio { num: x.num * y.den, den: x.den * y.num };
+    recip x = Ratio { num: x.den, den: x.num };
+}
+
 --  A buffer is an ordinary value and a NUMERIC one: `Buffer` is a subclass of
 --  `Num` (and therefore of `Eq`/`Ord`), so it uses the SAME operator vocabulary
 --  with no re-declaration and no possibility of a name collision. An instance's
