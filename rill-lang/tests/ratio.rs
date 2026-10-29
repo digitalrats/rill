@@ -331,9 +331,14 @@ fn division_normalises_the_sign() {
     //
     // This task has no `gcd`, so the pair is NOT reduced: what must hold is the
     // H2010 invariant `den > 0`, which turns `4 / -6` into `-4 / 6`. The
-    // numerator/denominator are therefore GHC's cross-multipled by 2, the same
-    // value. `numerator`/`denominator` reporting the unreduced pair is Task 4's
-    // `%`/`gcd` work and is recorded in the report.
+    // numerator/denominator are therefore GHC's cross-multiplied by 2, the same
+    // value. The reduction gap does NOT close when `%`/`numerator`/
+    // `denominator` are declared: those are plain field projections, and only
+    // `%` would normalise, so an intermediate produced by `(/)` stays `-4/6`.
+    // It closes only when the ARITHMETIC BODIES themselves reduce, which needs
+    // `gcd` (available from Task 4) — i.e. Task 4 must also reduce in
+    // `+ - * /`, not only in `%`. Recorded in the report; do not read `-4/6` as
+    // a new defect.
     assert_eq!(
         run("a = Ratio { num: (1 :: Integer), den: (2 :: Integer) };\nb = Ratio { num: (-3 :: Integer), den: (4 :: Integer) };\nq = a / b;\nmain = do { write (Just (show_integer q.num)) stdout; write (Just (show_integer q.den)) stdout; return () };"),
         "-46"
@@ -388,17 +393,47 @@ fn a_zero_denominator_faults() {
 
 #[test]
 fn a_user_error_definition_shadows_the_prelude_error() {
-    // The zero-denominator fault is spelled with Prelude §9.1's `error`, so
-    // `error` must remain an ordinary NAME: a Prelude binding is shadowable in
-    // Haskell 2010, and a program that defines its own `error` must get its own
-    // function, not a fault. This is the control that keeps the new builtin
-    // from behaving like a keyword.
+    // `error` is Prelude §9.1's ordinary, SHADOWABLE binding — a user program
+    // that defines its own `error` must get its own function, not a fault.
+    // This is the control that keeps the builtin from behaving like a keyword.
+    //
+    // Note the Ratio fault does NOT depend on this name any more: the instance
+    // bodies spell their bottom `__fault` (reserved to the prelude), so
+    // shadowing `error` is safe by construction — see
+    // `a_user_error_does_not_hijack_the_ratio_fault`.
     assert_eq!(
         run("error x = x + 1.0;\nmain = do { write (Just (show_double (error 1.0))) stdout; return () };"),
         "2.0"
     );
     // A non-String message is a type error, not an ignored argument.
     rejects_with("main = error 1.0;", "`error` expects a String message");
+}
+
+#[test]
+fn a_user_error_does_not_hijack_the_ratio_fault() {
+    // The Ratio instance's bottom must not be reachable through a shadowable
+    // name: `recip (0/1)` has to fault even when the program defines `error`.
+    // MEASURED before the fix: `q` was `7/1` — the instance body's `error` was
+    // inlined BY NAME and the user's binding answered it. `run_faults` accepts
+    // either loud channel but rejects "the program ran", so a `7/1` answer
+    // panics; the message check additionally rules out an unrelated failure.
+    let msg = run_faults("error x = Ratio { num: (7 :: Integer), den: (1 :: Integer) };\na = Ratio { num: (0 :: Integer), den: (1 :: Integer) };\nq = recip a;\nmain = do { write (Just (show_integer q.num)) stdout; return () };");
+    assert!(
+        msg.contains("Ratio has zero denominator"),
+        "the Ratio zero-denominator fault must survive a user `error`, got: {msg}"
+    );
+}
+
+#[test]
+fn a_lambda_parameter_named_error_is_captured() {
+    // H2010: a parameter shadows a Prelude name, including inside a nested
+    // lambda. This compiled before `error` became a special form and must keep
+    // compiling. MEASURED before the fix: "`error` expects a String message,
+    // got Double" — the special form ran before the capture set was consulted.
+    assert_eq!(
+        run("f error = \\y -> error y;\ninc x = x + 1.0;\nmain = do { write (Just (show_double ((f inc) 1.0))) stdout; return () };"),
+        "2.0"
+    );
 }
 
 #[test]

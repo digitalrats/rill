@@ -6100,6 +6100,31 @@ fn infer_apply_impl(
     // does. A non-`String` message is rejected here, before lowering. A USER
     // definition of the name shadows it (a Prelude name is a binding, not a
     // keyword), the same precedence every other builtin name follows.
+    //
+    // `__fault` is the PRELUDE-INTERNAL spelling of the same instruction
+    // (`ir::VALUE_FAULT_PRIMITIVE`). It is deliberately NOT shadowable: the
+    // language's own partial operations (the `Ratio` zero-denominator fault)
+    // must not be reachable through a name a program can redefine, or a user
+    // `error` would replace the fault with a value. A `__`-prefixed name is
+    // reserved to the prelude, so this branch does not consult `locals`/`defs`
+    // — and it precedes them, exactly as the collection ops do.
+    if name == crate::ir::VALUE_FAULT_PRIMITIVE {
+        if args.len() != 1 {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` expects 1 argument, got {}", args.len()),
+                span,
+            });
+        }
+        let msg = infer_const_value(ctx, &args[0])?;
+        if ctx.subst.resolve_value(&msg) != ValueTy::String {
+            return Err(CompileError::Type {
+                msg: format!("`{name}` expects a String message, got {msg:?}"),
+                span: args[0].span(),
+            });
+        }
+        let ret = ctx.fresh_vty();
+        return Ok(ArrowTy::value_channel(ret));
+    }
     if name == "error" && !ctx.locals.contains_key(name) && !ctx.defs.contains_key(name) {
         if args.len() != 1 {
             return Err(CompileError::Type {

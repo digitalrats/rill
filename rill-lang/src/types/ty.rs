@@ -877,9 +877,13 @@ instance Eq (Ratio a) where {
 --  `-`. `(+)` needs it only because an INPUT may violate the invariant; `*`,
 --  `-`, `/` and `recip` can produce a negative denominator themselves.
 --
---  Reduction is deliberately absent: `1/2 + 1/3` stays `5/6` and
---  `numerator`/`denominator` of an unreduced intermediate report the
---  unreduced pair. `gcd` is Task 4's work and needs `Integral`.
+--  Reduction is deliberately absent: `1/2 + 1/3` stays `5/6` and an
+--  intermediate produced by `(/)` stays `-4/6`. Declaring `%`, `numerator` and
+--  `denominator` does NOT close this: Task 4 defines them as plain field
+--  projections (`numerator r = r.num`) and only `%` normalises, so the gap
+--  survives that task as planned. It closes only when the ARITHMETIC BODIES
+--  themselves reduce, which needs `gcd` (available from Task 4) — i.e. Task 4
+--  must also reduce in `+ - * /`, not only in `%`. `gcd` needs `Integral`.
 
 --  `Ord` encodes an order as `-1`/`0`/`1` (see the class declaration above).
 --  `compare` is the class's own method; `<`, `<=`, `>`, `>=`, `min` and `max`
@@ -955,14 +959,22 @@ instance Num (Ratio a) where {
 --  Both NORMALISE THE SIGN and FAULT on a zero denominator — see the
 --  normalisation note above; a zero denominator is a fault because H2010's
 --  `Ratio` is a partial construction (GHC: "Ratio has zero denominator").
---  `error` is Prelude §9.1's `error :: String -> a`, so the fault arm has the
---  method's own type and the branch typechecks as it does in GHC.
+--
+--  The fault is spelled `__fault`, NOT `error`. `error` is Prelude §9.1's
+--  ordinary, SHADOWABLE binding, and an instance body is inlined BY NAME, so
+--  a program's own `error x = Ratio { num: 7, den: 1 }` would answer this
+--  branch and turn `recip (0/1)` into `7/1`. The name here is reserved to the
+--  prelude (`__` prefix, like `__prelude_end`), so no user binding can reach
+--  it and this fault is not merely likely but GUARANTEED. Programs still write
+--  `error`; only the language's own partial operations use `__fault`. Both
+--  lower to the same `ValueFault` instruction, so the branch has the method's
+--  own type and typechecks as GHC's does.
 --
 --  No `fromRational` here: the class does not declare that method yet (stage
 --  7b adds it together with the literal rule that needs it).
 instance Fractional (Ratio a) where {
-    (/) x y = let n = x.num * y.den in let d = x.den * y.num in let z = d - d in if d == z then error "Ratio has zero denominator" else if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
-    recip x = let d = x.num in let z = d - d in if d == z then error "Ratio has zero denominator" else if d < z then Ratio { num: z - x.den, den: z - d } else Ratio { num: x.den, den: d };
+    (/) x y = let n = x.num * y.den in let d = x.den * y.num in let z = d - d in if d == z then __fault "Ratio has zero denominator" else if d < z then Ratio { num: z - n, den: z - d } else Ratio { num: n, den: d };
+    recip x = let d = x.num in let z = d - d in if d == z then __fault "Ratio has zero denominator" else if d < z then Ratio { num: z - x.den, den: z - d } else Ratio { num: x.den, den: d };
 }
 
 --  A buffer is an ordinary value and a NUMERIC one: `Buffer` is a subclass of

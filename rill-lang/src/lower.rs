@@ -1180,25 +1180,30 @@ impl<'a> Lowerer<'a> {
     /// guess here. It lowers to a fault instruction: the message operand is read
     /// and latched as the run's clean fault, and no value is produced.
     ///
+    /// Also lowers [`VALUE_FAULT_PRIMITIVE`](crate::ir::VALUE_FAULT_PRIMITIVE),
+    /// the prelude-internal spelling of the same instruction whose NAME cannot
+    /// be shadowed; `name` selects the diagnostic text only.
+    ///
     /// Kept out of the `Apply` arm so `lower_value`'s stack frame does not grow
     /// (a large inline branch has pushed a nested-array program over the stack
     /// limit before).
     fn lower_error_apply(
         &mut self,
+        name: &str,
         call_args: &[Expr],
         span: &Span,
         expected: Option<&ValueTy>,
     ) -> Result<(usize, ValueTy), CompileError> {
         if call_args.len() != 1 {
             return Err(CompileError::Type {
-                msg: format!("`error` expects 1 argument, got {}", call_args.len()),
+                msg: format!("`{name}` expects 1 argument, got {}", call_args.len()),
                 span: *span,
             });
         }
         let (src, ty) = self.lower_value(&call_args[0])?;
         if ty != ValueTy::String {
             return Err(CompileError::Type {
-                msg: format!("`error` expects a String message, got {ty:?}"),
+                msg: format!("`{name}` expects a String message, got {ty:?}"),
                 span: call_args[0].span(),
             });
         }
@@ -1916,6 +1921,23 @@ impl<'a> Lowerer<'a> {
                 args: call_args,
                 span,
             } => {
+                // `__fault msg` — the PRELUDE's internal bottom. This is the
+                // instruction the language's own partial operations use (the
+                // `Ratio` zero-denominator fault), and it is deliberately NOT
+                // reachable through a shadowable source name: `error` is an
+                // ordinary Prelude BINDING, so a user `error` would otherwise
+                // hijack an instance body's fault and answer a plausible value
+                // (`recip (0/1)` → `7/1`).
+                //
+                // A `__`-prefixed name is reserved to the prelude (the same
+                // convention as `__prelude_end`), so this is resolved FIRST —
+                // before every definition-site specialization below, not merely
+                // before the ordinary def lookup. That makes the reservation
+                // structural: no user `__fault`, with or without a signature,
+                // curried or not, can intercept an instance body's fault.
+                if name == crate::ir::VALUE_FAULT_PRIMITIVE {
+                    return self.lower_error_apply(name, call_args, span, expected);
+                }
                 // A binding whose whole body is an UNDER-APPLIED method call
                 // (`g = fmap (+ 1.0)`) applied to its remaining arguments. The
                 // value has no dictionary to carry: a constructor-class method's
@@ -2414,11 +2436,22 @@ impl<'a> Lowerer<'a> {
                 // a`. Out of line so this arm does not grow `lower_value`'s
                 // stack frame (a large inline branch has pushed a nested-array
                 // program over the limit before).
+                //
+                // The name is an ordinary BINDING, so every enclosing value
+                // scope is consulted first, in the same order as
+                // `free_vars_impl`/`note_callee_name`: a definition, a
+                // λ-parameter (`value_locals`) OR a capture of the fragment we
+                // are inside (`fragment_captures`). The capture set is what a
+                // nested lambda sees — `f error = \y -> error y` captures the
+                // parameter named `error`, and without this check the special
+                // form below would answer the body with "`error` expects a
+                // String message, got Double" (a valid H2010 program rejected).
                 if name == "error"
                     && !self.defs.contains_key(name)
                     && !self.value_locals.iter().any(|s| s.contains_key(name))
+                    && !self.fragment_captures.iter().any(|(n, _)| n == name)
                 {
-                    return self.lower_error_apply(call_args, span, expected);
+                    return self.lower_error_apply(name, call_args, span, expected);
                 }
                 // Collection operation (`length`, `cons`, `head`, `tail`, `map`,
                 // `fold`, `filter`, `list`, `insert`, `lookup`, `member`,
@@ -4162,8 +4195,11 @@ impl<'a> Lowerer<'a> {
             )
             // `error` is lowered to its own fault instruction (see the `Apply`
             // arm), so it is a builtin op for capture purposes too — unless a
-            // user definition of the name shadows it.
+            // user definition of the name shadows it. `__fault` is the
+            // prelude-internal spelling: it is NEVER shadowable (see
+            // `ir::VALUE_FAULT_PRIMITIVE`), so it is unconditional.
             || (name == "error" && !self.defs.contains_key(name))
+            || name == crate::ir::VALUE_FAULT_PRIMITIVE
     }
 
     fn value_builtin(&mut self, name: &str, nargs: usize) -> Option<ValueBuiltinOp> {

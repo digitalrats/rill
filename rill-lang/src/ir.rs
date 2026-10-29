@@ -312,6 +312,22 @@ pub enum ValueTerm {
     Halt,
 }
 
+/// The Prelude-internal spelling of the value-track fault instruction
+/// ([`ValueInstr::ValueFault`]).
+///
+/// `error` (Haskell 2010 Prelude §9.1) is an ordinary, SHADOWABLE binding: a
+/// user program may define its own `error`, and a λ-parameter named `error` is
+/// a captured value. The language's OWN partial operations therefore cannot
+/// spell their bottom with it — `Ratio`'s zero-denominator fault would be
+/// hijacked by a user `error x = Ratio { num: 7, den: 1 }`, and `recip (0/1)`
+/// would answer `7/1` instead of faulting.
+///
+/// This name is reserved to the prelude by convention (the same `__` prefix as
+/// `__prelude_end`): a source identifier can never shadow it, so an instance
+/// body's fault is a guaranteed fault. Programs use `error`; the prelude uses
+/// this.
+pub const VALUE_FAULT_PRIMITIVE: &str = "__fault";
+
 /// A value instruction. Runs in the value-track phase of the program's single
 /// execution (the entry fragment body), operating on value registers and the
 /// fixed arena.
